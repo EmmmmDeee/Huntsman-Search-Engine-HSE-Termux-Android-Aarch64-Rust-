@@ -11,6 +11,7 @@ use std::net::IpAddr;
 
 use serde::Serialize;
 
+use crate::cymru;
 use crate::dns;
 use crate::domain_cli::{self, DomainRun};
 use crate::email_cli::{self, EmailRun};
@@ -366,12 +367,20 @@ pub fn type_listing(quiet: bool) -> String {
     out
 }
 
+/// What one scan printed, and the sources that failed without failing the whole scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SfRun {
+    pub body: String,
+    pub warnings: Vec<String>,
+}
+
 /// Execute one supported sf target over the already-rebuilt lookup front-ends.
 pub fn run_scan<T: Transport + ?Sized>(
     transport: &T,
     scan: &SfScan,
     now_unix: u64,
-) -> Result<String, Error> {
+) -> Result<SfRun, Error> {
+    let mut warnings = Vec::new();
     if scan.use_case == "passive" && scan.target_type != "PHONE_NUMBER" {
         return Err(Error::Invalid(format!(
             "sf passive mode has no rebuilt offline collector for {} yet",
@@ -415,7 +424,17 @@ pub fn run_scan<T: Transport + ?Sized>(
             }
             DomainRun::Failed(message) => return Err(Error::Invalid(message)),
         },
-        "IP_ADDRESS" | "IPV6_ADDRESS" => ip_entities(transport, &scan.target)?,
+        "IP_ADDRESS" | "IPV6_ADDRESS" | "NETBLOCK_OWNER" | "NETBLOCKV6_OWNER" | "BGP_AS_OWNER" => {
+            let (entities, partial) = match scan.target_type {
+                "BGP_AS_OWNER" => asn_entities(transport, &scan.target)?,
+                "NETBLOCK_OWNER" | "NETBLOCKV6_OWNER" => {
+                    netblock_entities(transport, &scan.target)?
+                }
+                _ => ip_entities(transport, &scan.target)?,
+            };
+            warnings = partial;
+            entities
+        }
         other => {
             return Err(Error::Invalid(format!(
                 "sf target type {other} is detected but its rebuilt scan path is not available yet"
@@ -431,40 +450,194 @@ pub fn run_scan<T: Transport + ?Sized>(
                 .any(|wanted| wanted.eq_ignore_ascii_case(row.event_type))
         });
     }
-    render_rows(&rows, &scan.output)
+    Ok(SfRun {
+        body: render_rows(&rows, &scan.output)?,
+        warnings,
+    })
 }
 
-/// The target address plus every host name its PTR records carry, through the `DoH` pool.
-fn ip_entities<T: Transport + ?Sized>(transport: &T, raw: &str) -> Result<Vec<Entity>, Error> {
+/// Entities gathered from independent network sources for one target. One source failing is a
+/// warning; every source failing is an error, so a total outage never prints as an empty scan.
+struct Collected {
+    entities: Vec<Entity>,
+    warnings: Vec<String>,
+    answered: usize,
+}
+
+impl Collected {
+    fn seeded(kind: EntityKind, value: &str, scan_id: &str) -> Self {
+        let mut seed = Entity::new(kind, value, 1.0, scan_id);
+        seed.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("seed", scan_id),
+            "scan target",
+        ));
+        Self {
+            entities: vec![seed],
+            warnings: Vec::new(),
+            answered: 0,
+        }
+    }
+
+    fn add(&mut self, source: &str, result: Result<Vec<Entity>, dns::ResolveError>) {
+        match result {
+            Ok(entities) => {
+                self.answered += 1;
+                self.entities.extend(entities);
+            }
+            Err(error) => self.warnings.push(format!(
+                "{source} failed ({}): {}",
+                error.kind.as_str(),
+                error.detail
+            )),
+        }
+    }
+
+    fn finish(mut self, target: &str) -> Result<(Vec<Entity>, Vec<String>), Error> {
+        if self.answered == 0 {
+            return Err(Error::Network(format!(
+                "no source answered for {target}: {}",
+                self.warnings.join("; ")
+            )));
+        }
+        crate::entity::merge_by_uid(&mut self.entities);
+        Ok((self.entities, self.warnings))
+    }
+}
+
+fn ptr_entities<T: Transport + ?Sized>(
+    transport: &T,
+    ip: IpAddr,
+    scan_id: &str,
+) -> Result<Vec<Entity>, dns::ResolveError> {
+    Ok(dns::lookup_ptr(transport, ip)?
+        .into_iter()
+        .map(|name| {
+            let mut host = Entity::new(EntityKind::Domain, &name, 0.9, scan_id);
+            host.add_evidence(
+                Evidence::new(
+                    EvidenceProvenance::for_scan("dns", scan_id),
+                    format!("PTR {} -> {name}", dns::reverse_name(ip)),
+                )
+                .with_attr("address", ip.to_string()),
+            );
+            host
+        })
+        .collect())
+}
+
+/// The announced prefixes covering `ip` and the ASes that originate them.
+fn origin_entities<T: Transport + ?Sized>(
+    transport: &T,
+    ip: IpAddr,
+    scan_id: &str,
+) -> Result<Vec<Entity>, dns::ResolveError> {
+    let mut entities = Vec::new();
+    for origin in cymru::lookup_origin(transport, ip)? {
+        let asns: Vec<String> = origin.asns.iter().map(|asn| format!("AS{asn}")).collect();
+        let summary = format!(
+            "{} announces {} covering {ip} ({}, {}, allocated {})",
+            asns.join(" "),
+            origin.prefix,
+            origin.country,
+            origin.registry,
+            origin.allocated
+        );
+        let mut block = Entity::new(EntityKind::Netblock, &origin.prefix, 0.9, scan_id);
+        block.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("cymru", scan_id), &summary)
+                .with_attr("address", ip.to_string())
+                .with_attr("country", &origin.country)
+                .with_attr("registry", &origin.registry),
+        );
+        entities.push(block);
+        for asn in asns {
+            let mut owner = Entity::new(EntityKind::Asn, &asn, 0.9, scan_id);
+            owner.add_evidence(
+                Evidence::new(EvidenceProvenance::for_scan("cymru", scan_id), &summary)
+                    .with_attr("prefix", &origin.prefix),
+            );
+            entities.push(owner);
+        }
+    }
+    Ok(entities)
+}
+
+fn as_entities<T: Transport + ?Sized>(
+    transport: &T,
+    asn: u32,
+    scan_id: &str,
+) -> Result<Vec<Entity>, dns::ResolveError> {
+    Ok(cymru::lookup_as(transport, asn)?
+        .map(|info| {
+            let mut owner = Entity::new(EntityKind::Asn, format!("AS{asn}"), 0.9, scan_id);
+            owner.add_evidence(
+                Evidence::new(
+                    EvidenceProvenance::for_scan("cymru", scan_id),
+                    format!(
+                        "AS{asn} {} ({}, {}, allocated {})",
+                        info.name, info.country, info.registry, info.allocated
+                    ),
+                )
+                .with_attr("as_name", &info.name)
+                .with_attr("country", &info.country)
+                .with_attr("registry", &info.registry),
+            );
+            owner
+        })
+        .into_iter()
+        .collect())
+}
+
+/// IP target: reverse DNS plus the covering announced prefixes and their origin ASes.
+fn ip_entities<T: Transport + ?Sized>(
+    transport: &T,
+    raw: &str,
+) -> Result<(Vec<Entity>, Vec<String>), Error> {
     let ip: IpAddr = raw
         .parse()
         .map_err(|_| Error::Invalid(format!("sf target {raw:?} is not an IP address")))?;
     let scan_id = crate::entity::scan_id("ip", &ip.to_string());
-    let mut target = Entity::new(EntityKind::IpAddress, ip.to_string(), 1.0, &scan_id);
-    target.add_evidence(Evidence::new(
-        EvidenceProvenance::for_scan("seed", &scan_id),
-        "scan target",
-    ));
-    let names = dns::lookup_ptr(transport, ip).map_err(|error| {
-        Error::Network(format!(
-            "reverse DNS for {ip} failed ({}): {}",
-            error.kind.as_str(),
-            error.detail
-        ))
-    })?;
-    let mut entities = vec![target];
-    for name in names {
-        let mut host = Entity::new(EntityKind::Domain, &name, 0.9, &scan_id);
-        host.add_evidence(
-            Evidence::new(
-                EvidenceProvenance::for_scan("dns", &scan_id),
-                format!("PTR {} -> {name}", dns::reverse_name(ip)),
-            )
-            .with_attr("address", ip.to_string()),
-        );
-        entities.push(host);
-    }
-    Ok(entities)
+    let mut collected = Collected::seeded(EntityKind::IpAddress, &ip.to_string(), &scan_id);
+    collected.add("reverse DNS", ptr_entities(transport, ip, &scan_id));
+    collected.add(
+        "Team Cymru origin",
+        origin_entities(transport, ip, &scan_id),
+    );
+    collected.finish(&ip.to_string())
+}
+
+/// Netblock target: the prefixes announced over its network address and their origin ASes.
+fn netblock_entities<T: Transport + ?Sized>(
+    transport: &T,
+    raw: &str,
+) -> Result<(Vec<Entity>, Vec<String>), Error> {
+    let (network, bits) = cymru::parse_prefix(raw)
+        .ok_or_else(|| Error::Invalid(format!("sf target {raw:?} is not a CIDR netblock")))?;
+    let prefix = format!("{network}/{bits}");
+    let scan_id = crate::entity::scan_id("netblock", &prefix);
+    let mut collected = Collected::seeded(EntityKind::Netblock, &prefix, &scan_id);
+    collected.add(
+        "Team Cymru origin",
+        origin_entities(transport, network, &scan_id),
+    );
+    collected.finish(&prefix)
+}
+
+/// AS target (`sf.py` reads a bare number as `BGP_AS_OWNER`): its registration record.
+fn asn_entities<T: Transport + ?Sized>(
+    transport: &T,
+    raw: &str,
+) -> Result<(Vec<Entity>, Vec<String>), Error> {
+    let asn = raw
+        .parse::<u32>()
+        .ok()
+        .filter(|asn| *asn != 0)
+        .ok_or_else(|| Error::Invalid(format!("sf target {raw:?} is not an AS number")))?;
+    let label = format!("AS{asn}");
+    let scan_id = crate::entity::scan_id("asn", &label);
+    let mut collected = Collected::seeded(EntityKind::Asn, &label, &scan_id);
+    collected.add("Team Cymru AS", as_entities(transport, asn, &scan_id));
+    collected.finish(&label)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -627,6 +800,12 @@ pub fn sf_target_type(raw: &str) -> Option<(&'static str, String)> {
     if target.is_empty() {
         return None;
     }
+    // sf.py quotes every dotless target, so its CLI can never reach BGP_AS_OWNER: a bare
+    // number is a USERNAME there and stays one here. `AS13335` / `ASN13335` is the explicit
+    // Huntsman form for an AS target.
+    if let Some(asn) = as_target(&target) {
+        return Some(("BGP_AS_OWNER", asn.to_string()));
+    }
     if target.contains(char::is_whitespace)
         || (!target.contains('.')
             && !target.contains(':')
@@ -672,6 +851,17 @@ pub fn sf_target_type(raw: &str) -> Option<(&'static str, String)> {
     Some((code, value.trim_matches('"').to_owned()))
 }
 
+fn as_target(value: &str) -> Option<u32> {
+    let upper = value.to_ascii_uppercase();
+    let digits = upper
+        .strip_prefix("ASN")
+        .or_else(|| upper.strip_prefix("AS"))?;
+    if digits.is_empty() || digits.len() > 10 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u32>().ok().filter(|asn| *asn != 0)
+}
+
 fn quoted(value: &str) -> bool {
     value.len() > 2 && value.starts_with('"') && value.ends_with('"')
 }
@@ -713,8 +903,8 @@ pub fn type_table() -> &'static [(&'static str, &'static str, &'static str)] {
         ("IPV6_ADDRESS", "IPv6 Address", "ip_address"),
         ("IP_ADDRESS", "IP Address", "ip_address"),
         ("LINKED_URL_EXTERNAL", "Linked URL - External", "url"),
-        ("NETBLOCK_OWNER", "Netblock Ownership", "cidr"),
-        ("NETBLOCKV6_OWNER", "IPv6 Netblock Ownership", "cidr"),
+        ("NETBLOCK_OWNER", "Netblock Ownership", "netblock"),
+        ("NETBLOCKV6_OWNER", "IPv6 Netblock Ownership", "netblock"),
         ("PHONE_NUMBER", "Phone Number", "phone"),
         ("PHYSICAL_ADDRESS", "Physical Address", "address"),
         (
@@ -774,6 +964,7 @@ fn sf_type(kind: &EntityKind) -> (&'static str, &'static str) {
         ),
         EntityKind::MacAddress => ("HSE_MAC_ADDRESS", "MAC Address (HSE)"),
         EntityKind::Asn => ("BGP_AS_OWNER", "BGP AS Ownership"),
+        EntityKind::Netblock => ("NETBLOCK_OWNER", "Netblock Ownership"),
     }
 }
 
@@ -937,9 +1128,14 @@ mod tests {
 
     #[test]
     fn ip_target_reverse_resolves_through_the_doh_pool() {
-        let fake = Fake::new(vec![Ok(doh(
-            r#"{"Status":0,"Answer":[{"type":12,"data":"one.one.one.one."}]}"#,
-        ))]);
+        let fake = Fake::new(vec![
+            Ok(doh(
+                r#"{"Status":0,"Answer":[{"type":12,"data":"one.one.one.one."}]}"#,
+            )),
+            Ok(doh(
+                r#"{"Status":0,"Answer":[{"type":16,"data":"\"13335 | 1.1.1.0/24 | AU | apnic | 2011-08-11\""}]}"#,
+            )),
+        ]);
         let scan = SfScan {
             target: "1.1.1.1".into(),
             target_type: "IP_ADDRESS",
@@ -950,20 +1146,109 @@ mod tests {
                 ..SfOutput::default()
             },
         };
-        let value: serde_json::Value =
-            serde_json::from_str(&run_scan(&fake, &scan, 1).unwrap_or_default())
-                .unwrap_or_default();
-        assert_eq!(value[0]["event_type"], "IP_ADDRESS");
-        assert_eq!(value[0]["data"], "1.1.1.1");
-        assert_eq!(value[1]["event_type"], "DOMAIN_NAME");
-        assert_eq!(value[1]["data"], "one.one.one.one");
-        assert_eq!(value[1]["source"], "dns");
+        let run = run_scan(&fake, &scan, 1).unwrap_or_else(|e| panic!("{e}"));
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+        let value: serde_json::Value = serde_json::from_str(&run.body).unwrap_or_default();
+        let rows: Vec<(String, String, String)> = value
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .map(|r| {
+                        (
+                            r["event_type"].as_str().unwrap_or_default().to_owned(),
+                            r["data"].as_str().unwrap_or_default().to_owned(),
+                            r["source"].as_str().unwrap_or_default().to_owned(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for want in [
+            ("IP_ADDRESS", "1.1.1.1", "seed"),
+            ("DOMAIN_NAME", "one.one.one.one", "dns"),
+            ("NETBLOCK_OWNER", "1.1.1.0/24", "cymru"),
+            ("BGP_AS_OWNER", "AS13335", "cymru"),
+        ] {
+            assert!(
+                rows.iter()
+                    .any(|(t, d, s)| (t.as_str(), d.as_str(), s.as_str()) == want),
+                "missing {want:?} in {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_failed_source_is_a_warning_not_a_lost_scan() {
+        let servfail = r#"{"Status":2}"#;
+        let fake = Fake::new(vec![
+            Ok(doh(r#"{"Status":3}"#)),
+            Ok(doh(r#"{"Status":3}"#)),
+            Ok(doh(r#"{"Status":3}"#)),
+            Ok(doh(servfail)),
+            Ok(doh(servfail)),
+            Ok(doh(servfail)),
+        ]);
+        let scan = SfScan {
+            target: "192.0.2.7".into(),
+            target_type: "IP_ADDRESS",
+            use_case: "all".into(),
+            shown_types: None,
+            output: SfOutput::default(),
+        };
+        let run = run_scan(&fake, &scan, 1).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(run.warnings.len(), 1, "{:?}", run.warnings);
+        assert!(
+            run.warnings[0].starts_with("Team Cymru origin failed"),
+            "{:?}",
+            run.warnings
+        );
+        assert!(run.body.contains("192.0.2.7"), "{}", run.body);
+    }
+
+    #[test]
+    fn as_and_netblock_targets_execute() {
+        let asn = Fake::new(vec![Ok(doh(
+            r#"{"Status":0,"Answer":[{"type":16,"data":"\"13335 | US | arin | 2010-07-14 | CLOUDFLARENET, US\""}]}"#,
+        ))]);
+        let scan = SfScan {
+            target: "13335".into(),
+            target_type: "BGP_AS_OWNER",
+            use_case: "all".into(),
+            shown_types: None,
+            output: SfOutput {
+                include_source: true,
+                ..SfOutput::default()
+            },
+        };
+        let run = run_scan(&asn, &scan, 1).unwrap_or_else(|e| panic!("{e}"));
+        // The registration record merges into the target row rather than duplicating it.
+        assert_eq!(run.body.lines().count(), 2, "{}", run.body);
+        assert!(run.body.contains("AS13335"), "{}", run.body);
+
+        let block = Fake::new(vec![Ok(doh(
+            r#"{"Status":0,"Answer":[{"type":16,"data":"\"64500 | 192.0.2.0/24 | AU | apnic | 2001-01-01\""}]}"#,
+        ))]);
+        let scan = SfScan {
+            target: "192.0.2.77/24".into(),
+            target_type: "NETBLOCK_OWNER",
+            use_case: "all".into(),
+            shown_types: Some(vec!["BGP_AS_OWNER".into()]),
+            output: SfOutput::default(),
+        };
+        let run = run_scan(&block, &scan, 1).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            run.body,
+            "Source\tType\tData\ncymru\tBGP AS Ownership\tAS64500\n"
+        );
     }
 
     #[test]
     fn ip_target_resolver_failure_is_a_network_error_not_an_empty_scan() {
         let servfail = r#"{"Status":2}"#;
         let fake = Fake::new(vec![
+            Ok(doh(servfail)),
+            Ok(doh(servfail)),
+            Ok(doh(servfail)),
             Ok(doh(servfail)),
             Ok(doh(servfail)),
             Ok(doh(servfail)),
@@ -1037,6 +1322,25 @@ mod tests {
             sf_target_type("example.org"),
             Some(("INTERNET_NAME", "example.org".to_owned()))
         );
+        // sf.py parity: a bare number is quoted into a USERNAME.
+        assert_eq!(
+            sf_target_type("13335"),
+            Some(("USERNAME", "13335".to_owned()))
+        );
+        for raw in ["AS13335", "as13335", "ASN13335"] {
+            assert_eq!(
+                sf_target_type(raw),
+                Some(("BGP_AS_OWNER", "13335".to_owned())),
+                "{raw}"
+            );
+        }
+        for raw in ["AS0", "AS", "ASX1", "AS99999999999"] {
+            assert_ne!(
+                sf_target_type(raw).map(|(c, _)| c),
+                Some("BGP_AS_OWNER"),
+                "{raw}"
+            );
+        }
     }
 
     #[test]
@@ -1088,7 +1392,7 @@ mod tests {
                 ..SfOutput::default()
             },
         };
-        let rendered = run_scan(&fake, &scan, 1).unwrap();
+        let rendered = run_scan(&fake, &scan, 1).unwrap().body;
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
         assert_eq!(value.as_array().map(Vec::len), Some(1));
         assert_eq!(value[0]["event_type"], "PHONE_NUMBER");

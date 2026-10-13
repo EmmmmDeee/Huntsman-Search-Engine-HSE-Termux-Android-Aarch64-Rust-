@@ -134,7 +134,7 @@ pub fn techniques_for_entity_kind(kind: &EntityKind) -> &'static [&'static str] 
         EntityKind::Phone | EntityKind::CryptoAddress => &["T1589"],
         EntityKind::Username => &["T1593.001", "T1589.003"],
         EntityKind::Credential | EntityKind::ApiKey => &["T1589.001"],
-        EntityKind::IpAddress => &["T1590.005"],
+        EntityKind::IpAddress | EntityKind::Netblock => &["T1590.005"],
         EntityKind::Domain => &["T1590.001", "T1596.002", "T1593.002", "T1594"],
         EntityKind::Url => &["T1594"],
         EntityKind::Asn => &["T1590.004"],

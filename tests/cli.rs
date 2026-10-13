@@ -537,13 +537,13 @@ fn sf_metadata_and_offline_phone_path_work() {
 }
 
 #[test]
-fn sf_rejects_unrebuilt_target_classes_explicitly() {
+fn sf_rejects_an_undetectable_target_explicitly() {
     let out = bin()
-        .args(["sf", "-s", "192.0.2.0/24", "-u", "all"])
+        .args(["sf", "-s", "not..a..target", "-u", "all"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(65));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not available yet"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unable to detect target type"));
 }
 
 #[test]

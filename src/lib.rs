@@ -46,6 +46,7 @@ pub mod coverage;
 pub mod credential_origin;
 pub mod cross_scan;
 pub mod crtsh;
+pub mod cymru;
 pub mod deadline;
 pub mod dehashed;
 pub mod dependency;

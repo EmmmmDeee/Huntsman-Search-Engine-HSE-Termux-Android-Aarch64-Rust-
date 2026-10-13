@@ -184,6 +184,7 @@ mod tests {
             EntityKind::ApiKey,
             EntityKind::MacAddress,
             EntityKind::Asn,
+            EntityKind::Netblock,
             EntityKind::Other,
         ];
         for kind in &all {
@@ -208,6 +209,7 @@ mod tests {
                 | EntityKind::ApiKey
                 | EntityKind::MacAddress
                 | EntityKind::Asn
+                | EntityKind::Netblock
                 | EntityKind::Other => {}
             }
         }

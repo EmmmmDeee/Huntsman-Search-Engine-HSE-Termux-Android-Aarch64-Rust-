@@ -50,6 +50,7 @@ impl ClassifyDiamondVertex for EntityKind {
             | Self::Domain
             | Self::Url
             | Self::Asn
+            | Self::Netblock
             | Self::Address
             | Self::Coordinates
             | Self::MacAddress
@@ -108,6 +109,7 @@ mod tests {
             EntityKind::Domain,
             EntityKind::Url,
             EntityKind::Asn,
+            EntityKind::Netblock,
             EntityKind::Address,
             EntityKind::Coordinates,
             EntityKind::MacAddress,

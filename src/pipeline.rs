@@ -87,6 +87,7 @@ fn seed_rank(kind: &EntityKind) -> u8 {
         EntityKind::Credential => 18,
         EntityKind::Document => 19,
         EntityKind::Other => 20,
+        EntityKind::Netblock => 21,
     }
 }
 

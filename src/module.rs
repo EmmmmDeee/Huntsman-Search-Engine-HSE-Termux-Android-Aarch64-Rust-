@@ -469,6 +469,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "DNS and mail-policy lookup",
     },
     ReachableModule {
+        name: "cymru",
+        command: "sf -s IP|CIDR|ASN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1590.004", "T1590.005"],
+        description: "Team Cymru IP-to-ASN and netblock mapping over DNS-over-HTTPS",
+    },
+    ReachableModule {
         name: "dns_graph",
         command: "graph DOMAIN...",
         access: "keyless",

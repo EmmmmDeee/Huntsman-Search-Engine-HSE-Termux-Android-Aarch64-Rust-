@@ -104,8 +104,13 @@ pub(in crate::cli) fn sf_cmd(args: &[String]) -> ExitCode {
                 .map_or(0, |duration| duration.as_secs());
             let transport = UreqTransport::new(&TransportConfig::default());
             match sf_compat::run_scan(&transport, &scan, now) {
-                Ok(body) => {
-                    print!("{body}");
+                Ok(run) => {
+                    print!("{}", run.body);
+                    if !parsed.quiet {
+                        for warning in &run.warnings {
+                            eprintln!("[WARNING] {}", escape_controls(warning));
+                        }
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(Error::Network(message)) => fail(EX_UNAVAILABLE, &message),

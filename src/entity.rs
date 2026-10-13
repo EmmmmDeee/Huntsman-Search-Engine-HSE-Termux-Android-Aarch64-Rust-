@@ -83,6 +83,8 @@ pub enum EntityKind {
     ApiKey,
     MacAddress,
     Asn,
+    /// A CIDR prefix such as `192.0.2.0/24`.
+    Netblock,
     Other,
 }
 
@@ -110,6 +112,7 @@ impl EntityKind {
             Self::ApiKey => "api_key",
             Self::MacAddress => "mac_address",
             Self::Asn => "asn",
+            Self::Netblock => "netblock",
             Self::Other => "other",
         }
     }
@@ -571,6 +574,7 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
         | EntityKind::ApiKey
         | EntityKind::MacAddress
         | EntityKind::Asn
+        | EntityKind::Netblock
         | EntityKind::Other => canonical_whitespace(value),
     }
 }
