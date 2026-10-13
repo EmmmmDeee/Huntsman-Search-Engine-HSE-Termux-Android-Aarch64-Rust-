@@ -36,7 +36,7 @@ case "$CHANNEL" in
     DEST_NAME="huntsman-recon"
     echo "Note: huntsman-recon is still a partial replacement for the legacy HSE surface."
     ;;
-  *) die "HUNTSMAN_CHANNEL must be 'hse' (default) or 'recon'" ;;
+  *) die "HUNTSMAN_CHANNEL must be 'recon' (default) or 'hse', got '$CHANNEL'" ;;
 esac
 [[ "$TAG" =~ ^(latest|main-[0-9a-f]{7}|v[0-9]+\.[0-9]+\.[0-9]+)$ ]] || die "bad release tag '$TAG'"
 [ -n "${PREFIX:-}" ] && [ -d "$PREFIX/bin" ] || die "\$PREFIX/bin not found; run this inside Termux"

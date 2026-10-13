@@ -42,14 +42,17 @@ huntsman-recon check
 huntsman-recon search "brisbane port"
 ```
 
-Upgrade by running the same `cargo install` command again. The repository's
-`install.sh` wrapper keeps Cargo intermediates under
-`$HOME/.cache/huntsman-recon-target` by default and does not force-rebuild an
-already matching install; set `CARGO_TARGET_DIR` to override that cache path.
-By default the wrapper freezes the current `main` head and supplies that full SHA
-to Cargo, so a branch movement during compilation cannot change the source being
-built. To request a specific revision explicitly, run the installer with a full
-40-character SHA in `HUNTSMAN_REV`.
+Upgrade by running the same two commands again. The installer resolves the
+current `main` head to a full SHA and hands that SHA to Cargo, so a branch
+movement during compilation cannot change the source being built. Cargo rebuilds
+only when that revision differs from the installed one, and the installer then
+repeats the runtime acceptance and the provenance record. Do not upgrade with a
+bare `cargo install`: without the installer's `--root "$PREFIX"` it installs
+into `~/.cargo/bin`, and Termux keeps running the old
+`$PREFIX/bin/huntsman-recon`. Cargo intermediates stay under
+`$HOME/.cache/huntsman-recon-target` by default; set `CARGO_TARGET_DIR` to
+override that cache path. To build a specific revision, run the installer with a
+full 40-character SHA in `HUNTSMAN_REV`.
 
 ## Prebuilt Termux release
 
@@ -83,6 +86,33 @@ Only a staged binary that passes both offline runtime checks can replace the
 existing executable. Reinstalling identical verified bytes keeps the existing
 live inode. A checksum detects transfer/corruption errors; review the release
 provenance and attestation if you need to verify publisher/build identity.
+
+## Uninstall from Termux
+
+Remove the binary the way it was installed. A build from source (`install.sh`)
+is registered with Cargo:
+
+```sh
+cargo uninstall --root "$PREFIX" huntsman-recon
+```
+
+A prebuilt install (`install-termux.sh`) is a single file:
+
+```sh
+rm -f "$PREFIX/bin/huntsman-recon"   # or "$PREFIX/bin/hse" for the legacy channel
+```
+
+Installing and running Huntsman also creates state that those commands keep.
+Remove it only when you no longer need it; `~/.huntsman.env` holds your
+provider keys:
+
+```sh
+rm -rf ~/.huntsman ~/.cache/huntsman-recon-target
+rm -f ~/.huntsman.env
+```
+
+If you set `HUNTSMAN_HOME`, `HUNTSMAN_ENV_FILE` or `CARGO_TARGET_DIR` when
+installing, remove those locations instead.
 
 ## Railway deployment
 
