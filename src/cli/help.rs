@@ -50,12 +50,14 @@ pub(super) fn print_command_help(command: &str) {
         "coarsen" => {
             "coarsen LAT,LON\nRound coordinates to one decimal place for approximate location sharing."
         }
-        "id" => "id TOKEN\nClassify and validate an Australian ABN, ACN, or BSB.",
+        "id" => {
+            "id TOKEN...\nClassify and validate an Australian ABN, ACN, or BSB. The rest of the line is the token, so spaced digits need no quotes."
+        }
         "search" => {
             "search QUERY [DIR]\nSearch built-in examples, or .txt/.md files in one directory. Every query term must occur; an email address or domain must occur whole. Short HTML challenge pages and unsafe or oversized inputs are skipped."
         }
         "sources" => {
-            "sources QUERY\nClassify an indicator and print curated public/browser search routes. Does not fetch those routes."
+            "sources QUERY...\nClassify an indicator and print curated public/browser search routes. The rest of the line is the query, so a name needs no quotes. Does not fetch those routes."
         }
         "domain-lifecycle" => huntsman_recon::domain_lifecycle::USAGE,
         "people" => PEOPLE_HELP,
@@ -89,7 +91,7 @@ pub(super) fn print_command_help(command: &str) {
             "attack status|coverage|gaps [--json] | attack navigator\nRender current Reconnaissance capability coverage from the reachable module catalogue. Parent techniques are roll-ups, not extra scored capabilities."
         }
         "classify" => {
-            "classify STATUS BODY\nClassify an HTTP response as a result, challenge, or other outcome."
+            "classify STATUS BODY...\nClassify an HTTP response as a result, challenge, or other outcome. The rest of the line is the body."
         }
         "fetch" => huntsman_recon::fetch_cli::FETCH_USAGE,
         "hibp" => HIBP_USAGE,

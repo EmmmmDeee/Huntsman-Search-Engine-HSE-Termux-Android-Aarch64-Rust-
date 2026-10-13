@@ -313,11 +313,11 @@ pub(super) fn modules_cmd(args: &[String]) -> ExitCode {
     }
 }
 
-pub(super) fn keys_cmd(path: Option<String>) -> ExitCode {
-    let Some(path) = path else {
+pub(super) fn keys_cmd(args: &[String]) -> ExitCode {
+    let [path] = args else {
         return fail(EX_USAGE, "usage: huntsman-recon keys FILE");
     };
-    match Keys::load(Path::new(&path)) {
+    match Keys::load(Path::new(path)) {
         Ok(keys) => {
             for slot in keys.slots() {
                 if let Some(secret) = keys.get(slot) {
@@ -343,11 +343,11 @@ fn ledger_error_code(error: &Error) -> u8 {
     }
 }
 
-pub(super) fn verify(path: Option<String>) -> ExitCode {
-    let Some(path) = path else {
+pub(super) fn verify(args: &[String]) -> ExitCode {
+    let [path] = args else {
         return fail(EX_USAGE, "usage: huntsman-recon verify LEDGER");
     };
-    match load_chain(Path::new(&path)) {
+    match load_chain(Path::new(path)) {
         Ok(entries) => {
             println!("entries={}", entries.len());
             println!("admitted={}", admitted(&entries).len());

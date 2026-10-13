@@ -117,18 +117,20 @@ pub(in crate::cli) fn sf_cmd(args: &[String]) -> ExitCode {
     }
 }
 
-pub(in crate::cli) fn search_cmd(query: Option<String>, dir: Option<String>) -> ExitCode {
-    let Some(query) = query else {
-        return fail(EX_USAGE, "usage: huntsman-recon search QUERY [DIR]");
+pub(in crate::cli) fn search_cmd(args: &[String]) -> ExitCode {
+    let (query, dir) = match args {
+        [query] => (query, None),
+        [query, dir] => (query, Some(dir)),
+        _ => return fail(EX_USAGE, "usage: huntsman-recon search QUERY [DIR]"),
     };
-    if tokenize(&query).is_empty() {
+    if tokenize(query).is_empty() {
         return fail(
             EX_USAGE,
             "query has no searchable term (words need two or more letters or digits)",
         );
     }
     let docs = if let Some(dir) = dir {
-        match load_dir(Path::new(&dir)) {
+        match load_dir(Path::new(dir)) {
             Ok(loaded) => {
                 for skipped in &loaded.skipped {
                     eprintln!(
@@ -155,7 +157,7 @@ pub(in crate::cli) fn search_cmd(query: Option<String>, dir: Option<String>) -> 
             },
         ]
     };
-    let hits = search(&docs, &query);
+    let hits = search(&docs, query);
     if hits.is_empty() {
         println!("hits=0");
     }
@@ -170,11 +172,12 @@ pub(in crate::cli) fn search_cmd(query: Option<String>, dir: Option<String>) -> 
     ExitCode::SUCCESS
 }
 
-pub(in crate::cli) fn sources_cmd(query: Option<String>) -> ExitCode {
-    let Some(query) = query else {
-        return fail(EX_USAGE, "usage: huntsman-recon sources QUERY");
-    };
-    let classified = classify_indicator(&query);
+/// The rest of the line is the query, so `sources Ada Lovelace` reads as it does quoted.
+pub(in crate::cli) fn sources_cmd(args: &[String]) -> ExitCode {
+    if args.is_empty() {
+        return fail(EX_USAGE, "usage: huntsman-recon sources QUERY...");
+    }
+    let classified = classify_indicator(&args.join(" "));
     // Residual and unsupported kinds have no descriptors, so the empty-route check
     // is the gate. A confidence floor here would drop low-confidence but routable
     // kinds such as `@handle` usernames.
