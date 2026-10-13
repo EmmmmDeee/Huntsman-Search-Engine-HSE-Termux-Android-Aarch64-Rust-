@@ -923,6 +923,15 @@ mod tests {
         }
     }
 
+    /// The RDAP bootstrap request failing: registry data is not what these tests exercise.
+    fn rdap_down() -> Result<Response, TransportFailure> {
+        Err(TransportFailure {
+            kind: crate::source_outcome::SourceOutcomeKind::ConnectFailure,
+            detail: "rdap down".into(),
+            blocked: false,
+        })
+    }
+
     fn doh(body: &str) -> Response {
         Response {
             status: 200,
@@ -1048,6 +1057,7 @@ mod tests {
             Ok(doh(
                 r#"{"Status":0,"Answer":[{"type":16,"data":"\"13335 | 1.1.1.0/24 | AU | apnic | 2011-08-11\""}]}"#,
             )),
+            rdap_down(),
         ]);
         let scan = SfScan {
             target: "1.1.1.1".into(),
@@ -1060,7 +1070,13 @@ mod tests {
             },
         };
         let run = run_scan(&fake, &scan, 1).unwrap_or_else(|e| panic!("{e}"));
-        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+        // Only the deliberately failed registry lookup warns.
+        assert_eq!(run.warnings.len(), 1, "{:?}", run.warnings);
+        assert!(
+            run.warnings[0].starts_with("rdap failed"),
+            "{:?}",
+            run.warnings
+        );
         let value: serde_json::Value = serde_json::from_str(&run.body).unwrap_or_default();
         let rows: Vec<(String, String, String)> = value
             .as_array()
@@ -1100,6 +1116,7 @@ mod tests {
             Ok(doh(servfail)),
             Ok(doh(servfail)),
             Ok(doh(servfail)),
+            rdap_down(),
         ]);
         let scan = SfScan {
             target: "192.0.2.7".into(),
@@ -1109,9 +1126,15 @@ mod tests {
             output: SfOutput::default(),
         };
         let run = run_scan(&fake, &scan, 1).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(run.warnings.len(), 1, "{:?}", run.warnings);
+        // Each failed source is its own warning; the answering one keeps the scan alive.
+        assert_eq!(run.warnings.len(), 2, "{:?}", run.warnings);
         assert!(
             run.warnings[0].starts_with("cymru failed (inconclusive)"),
+            "{:?}",
+            run.warnings
+        );
+        assert!(
+            run.warnings[1].starts_with("rdap failed (connect_failure)"),
             "{:?}",
             run.warnings
         );
@@ -1120,9 +1143,12 @@ mod tests {
 
     #[test]
     fn as_and_netblock_targets_execute() {
-        let asn = Fake::new(vec![Ok(doh(
-            r#"{"Status":0,"Answer":[{"type":16,"data":"\"13335 | US | arin | 2010-07-14 | CLOUDFLARENET, US\""}]}"#,
-        ))]);
+        let asn = Fake::new(vec![
+            Ok(doh(
+                r#"{"Status":0,"Answer":[{"type":16,"data":"\"13335 | US | arin | 2010-07-14 | CLOUDFLARENET, US\""}]}"#,
+            )),
+            rdap_down(),
+        ]);
         let scan = SfScan {
             target: "13335".into(),
             target_type: "BGP_AS_OWNER",
@@ -1142,9 +1168,12 @@ mod tests {
         assert!(row.contains("CLOUDFLARENET, US"), "{row}");
         assert!(row.ends_with("\tAS13335"), "{row}");
 
-        let block = Fake::new(vec![Ok(doh(
-            r#"{"Status":0,"Answer":[{"type":16,"data":"\"64500 | 192.0.2.0/24 | AU | apnic | 2001-01-01\""}]}"#,
-        ))]);
+        let block = Fake::new(vec![
+            Ok(doh(
+                r#"{"Status":0,"Answer":[{"type":16,"data":"\"64500 | 192.0.2.0/24 | AU | apnic | 2001-01-01\""}]}"#,
+            )),
+            rdap_down(),
+        ]);
         let scan = SfScan {
             target: "192.0.2.77/24".into(),
             target_type: "NETBLOCK_OWNER",
@@ -1169,6 +1198,7 @@ mod tests {
             Ok(doh(servfail)),
             Ok(doh(servfail)),
             Ok(doh(servfail)),
+            rdap_down(),
         ]);
         let scan = SfScan {
             target: "192.0.2.7".into(),

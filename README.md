@@ -364,7 +364,7 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 ### Network lookup
 
-`network IP|CIDR|ASN [--save FILE]` maps an IPv4/IPv6 address (reverse DNS plus Team Cymru's covering announced prefix and origin AS), a CIDR netblock (the prefixes announced over its network address and their origin ASes) or an AS number written `AS13335`/`ASN13335` (its Team Cymru registration), all over DNS-over-HTTPS with no key. `scan` and `/api/lookup` infer this route for an address, CIDR or `AS` number, and `sf -s` uses the same front-end for IP, netblock and AS targets. Each source reports its own outcome; the run exits 69 only when no source answered. `--save` writes an unverified ledger that `verify` can reload.
+`network IP|CIDR|ASN [--save FILE]` maps an IPv4/IPv6 address (reverse DNS plus Team Cymru's covering announced prefix and origin AS, and the RIR's RDAP registration: allocated blocks, registrant organisation and abuse contact, routed by the IANA bootstrap), a CIDR netblock (the prefixes announced over its network address and their origin ASes) or an AS number written `AS13335`/`ASN13335` (its Team Cymru registration), all over DNS-over-HTTPS with no key. `scan` and `/api/lookup` infer this route for an address, CIDR or `AS` number, and `sf -s` uses the same front-end for IP, netblock and AS targets. Each source reports its own outcome; the run exits 69 only when no source answered. `--save` writes an unverified ledger that `verify` can reload.
 
 ### Domain lookup
 

@@ -173,6 +173,30 @@ pub fn run_target<T: Transport + ?Sized>(
         }
         NetworkTarget::Asn(asn) => record("cymru", as_entities(transport, asn, &scan_id)),
     }
+    // Registry ownership from the RIR: the registrant, the allocated blocks, abuse contacts.
+    let rdap = match target {
+        NetworkTarget::Ip(ip) | NetworkTarget::Netblock(ip, _) => {
+            crate::rdap::lookup_ip(transport, ip, &scan_id)
+        }
+        NetworkTarget::Asn(asn) => crate::rdap::lookup_autnum(transport, asn, &scan_id),
+    };
+    match rdap {
+        Ok(report) => {
+            outcomes.push(if report.entities.is_empty() {
+                SourceExecutionOutcome::valid_zero("rdap", now_unix)
+            } else {
+                SourceExecutionOutcome::success("rdap", now_unix, report.entities.len())
+            });
+            entities.extend(report.entities);
+        }
+        Err(failure) => outcomes.push(SourceExecutionOutcome::failed(
+            "rdap",
+            now_unix,
+            failure.kind,
+            failure.http_status,
+            format!("{}: {}", failure.kind.as_str(), failure.detail),
+        )),
+    }
     if !outcomes.iter().any(|outcome| outcome.kind.is_accepted()) {
         let failures: Vec<String> = outcomes
             .iter()
@@ -375,6 +399,11 @@ mod tests {
         let fake = Fake::new(&[
             r#"{"Status":0,"Answer":[{"type":12,"data":"one.one.one.one."}]}"#,
             r#"{"Status":0,"Answer":[{"type":16,"data":"\"13335 | 1.1.1.0/24 | AU | apnic | 2011-08-11\""}]}"#,
+            r#"{"services":[[["1.0.0.0/8"],["https://rdap.apnic.net/"]]]}"#,
+            r#"{"objectClassName":"ip network","handle":"1.1.1.0 - 1.1.1.255","name":"APNIC-LABS",
+                "startAddress":"1.1.1.0","endAddress":"1.1.1.255","cidr0_cidrs":[{"v4prefix":"1.1.1.0","length":24}],
+                "entities":[{"roles":["registrant"],"vcardArray":["vcard",[["fn",{},"text","APNIC Research and Development"]]],
+                  "entities":[{"roles":["abuse"],"vcardArray":["vcard",[["fn",{},"text","IRT-APNICRANDNET-AU"],["email",{},"text","helpdesk@apnic.net"]]]}]}]}"#,
         ]);
         let report = printed(run(&fake, "1.1.1.1", 1));
         let found = values(&report);
@@ -398,8 +427,21 @@ mod tests {
             modules,
             vec![
                 ("dns", SourceOutcomeKind::Success),
-                ("cymru", SourceOutcomeKind::Success)
+                ("cymru", SourceOutcomeKind::Success),
+                ("rdap", SourceOutcomeKind::Success)
             ]
+        );
+        // The registrant and the abuse contact nested inside it, from the RIR record.
+        assert!(
+            found.contains(&(
+                EntityKind::Organisation,
+                "APNIC Research and Development".into()
+            )),
+            "{found:?}"
+        );
+        assert!(
+            found.contains(&(EntityKind::Email, "helpdesk@apnic.net".into())),
+            "{found:?}"
         );
     }
 
