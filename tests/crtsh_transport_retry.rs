@@ -1,6 +1,10 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
+#[allow(dead_code)]
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 use huntsman_recon::crtsh::{CrtShError, lookup};
 use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::recon::ReconTargetKind;
@@ -48,7 +52,7 @@ fn ok_json() -> Response {
     Response {
         status: 200,
         headers: Vec::new(),
-        body: br#"[{"name_value":"api.example.com"}]"#.to_vec(),
+        body: fixtures::bytes("crtsh/one_name_value.json"),
         truncated: false,
     }
 }

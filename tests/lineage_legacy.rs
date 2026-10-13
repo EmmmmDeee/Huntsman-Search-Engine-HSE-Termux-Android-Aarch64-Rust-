@@ -7,7 +7,10 @@
 //! assumption that two differently named corpora are automatically independent proof.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+
+#[allow(dead_code)]
+#[path = "support/fixtures.rs"]
+mod fixtures;
 
 use huntsman_recon::entity::{Evidence, EvidenceProvenance};
 use huntsman_recon::evidence_ancestry::EvidenceNodeId;
@@ -18,9 +21,7 @@ use huntsman_recon::lineage::{MergeOutcome, Observation, Resolution, resolve_wit
 use serde_json::Value;
 
 fn oracle() -> Value {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/legacy_7dca720_breach_consensus.json");
-    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    serde_json::from_str(&fixtures::text("legacy_7dca720_breach_consensus.json")).unwrap()
 }
 
 fn observations(fixture: &Value) -> Vec<Observation> {

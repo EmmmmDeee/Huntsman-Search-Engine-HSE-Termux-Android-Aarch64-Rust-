@@ -2,6 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
+#[allow(dead_code)]
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 const ALLOWED: [&str; 5] = ["runtime", "adapter", "exporter", "leaf", "diagnostic"];
 const REQUIRED_RUNTIME: [&str; 21] = [
     "analysis",
@@ -45,8 +49,7 @@ fn compiled_modules() -> BTreeSet<String> {
 }
 
 fn dispositions() -> BTreeMap<String, String> {
-    let text = fs::read_to_string(root().join("tests/fixtures/runtime_module_dispositions.tsv"))
-        .expect("runtime module dispositions");
+    let text = fixtures::text("runtime_module_dispositions.tsv");
     let mut out = BTreeMap::new();
     for (line_number, line) in text.lines().enumerate() {
         if line.trim().is_empty() {

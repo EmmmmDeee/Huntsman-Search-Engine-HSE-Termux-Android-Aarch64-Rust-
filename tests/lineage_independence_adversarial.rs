@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
 use huntsman_recon::entity::{Evidence, EvidenceProvenance};
 use huntsman_recon::evidence_ancestry::EvidenceNodeId;
 use huntsman_recon::identity_resolution::{
@@ -115,17 +119,9 @@ fn two_explicit_dataset_names_from_one_collector_are_not_independence_proof() {
 /// `source_family: "abn_lookup"` must not pass the registry gate.
 #[test]
 fn tampered_stored_source_family_cannot_claim_registry_class() {
-    let tampered: Evidence = serde_json::from_str(
-        r#"{
-            "provenance": {
-                "source": "hibp",
-                "source_family": "abn_lookup",
-                "recorded_at_unix": 1790000000
-            },
-            "summary": "tampered record",
-            "attributes": { "registry": "ABR" }
-        }"#,
-    )
+    let tampered: Evidence = serde_json::from_str(&fixtures::text(
+        "evidence/tampered_registry_source_family.json",
+    ))
     .unwrap();
     assert_eq!(tampered.provenance.source_family, "abn_lookup");
     let observations = vec![
