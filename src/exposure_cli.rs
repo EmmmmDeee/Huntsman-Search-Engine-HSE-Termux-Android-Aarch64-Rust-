@@ -1445,7 +1445,7 @@ mod tests {
             }
             assert!(section.starts_with("incidents=2\n"), "{order}: {section}");
             assert!(
-                text.contains("\nhibp_account\tsuccess\tfound=2\n"),
+                text.contains("\nhibp_account\tsuccess\tfound=2\t"),
                 "{order}: the outcome counts the incidents the section prints: {text}"
             );
             let detail = report.outcomes[0].detail.as_deref().unwrap_or_default();

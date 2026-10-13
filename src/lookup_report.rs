@@ -40,9 +40,28 @@ pub fn evidence_row(evidence: &Evidence) -> String {
     )
 }
 
+/// Longest outcome detail shown, in characters.
+const MAX_DETAIL_CHARS: usize = 200;
+
+/// Why a source reached its outcome, as one escaped line of at most 200 characters, when the
+/// source said. Detail can quote a provider, so every control character is escaped.
+#[must_use]
+pub fn outcome_detail(outcome: &SourceExecutionOutcome) -> Option<String> {
+    let detail = outcome.detail.as_deref()?.trim();
+    if detail.is_empty() {
+        return None;
+    }
+    let shown = match detail.char_indices().nth(MAX_DETAIL_CHARS) {
+        Some((cut, _)) => format!("{}...", &detail[..cut]),
+        None => detail.to_owned(),
+    };
+    Some(escape_controls(&shown))
+}
+
 /// The report of one lookup. The first line is `entities=N`. Each entity follows as a
 /// tab-separated line (kind, value, confidence, tags), then each source outcome (module, kind,
-/// found count), and the lineage block closes the report.
+/// found count, and `detail=` when the source gave a reason), and the lineage block closes the
+/// report.
 ///
 /// # Errors
 /// The first formatting or lineage-resolution error, as text.
@@ -60,12 +79,16 @@ pub fn render(entities: &[Entity], outcomes: &[SourceExecutionOutcome]) -> Resul
             .ok()
             .and_then(|value| value.as_str().map(str::to_owned))
             .unwrap_or_else(|| "unknown".into());
-        writeln!(
+        write!(
             out,
             "{}\t{kind}\tfound={found}",
             escape_controls(&outcome.module)
         )
         .map_err(|err| err.to_string())?;
+        if let Some(detail) = outcome_detail(outcome) {
+            write!(out, "\tdetail={detail}").map_err(|err| err.to_string())?;
+        }
+        out.push('\n');
     }
     append_lineage(entities, &mut out)?;
     Ok(out)
@@ -104,6 +127,37 @@ mod tests {
         }
         entity.add_evidence(evidence);
         entity
+    }
+
+    #[test]
+    fn a_failed_outcome_shows_its_reason_escaped_and_capped() {
+        let mut failed = SourceExecutionOutcome::success("au_people", 1, 0);
+        failed.kind = crate::source_outcome::SourceOutcomeKind::Inconclusive;
+        failed.found = None;
+        failed.detail = Some(HOSTILE.to_owned());
+        let mut long = SourceExecutionOutcome::success("asic_director", 1, 0);
+        long.detail = Some("x".repeat(500));
+        let silent = SourceExecutionOutcome::success("asic_persons", 1, 3);
+
+        let report = render(&[], &[failed, long, silent]).unwrap();
+        let lines: Vec<&str> = report.lines().collect();
+
+        assert_eq!(lines.len(), 4, "{report}");
+        assert!(lines[1].starts_with("au_people\tinconclusive\tfound=none\tdetail=Ada"));
+        assert_eq!(lines[1].split('\t').count(), 4, "{}", lines[1]);
+        assert!(
+            unexpected_controls(lines[1], &['\t']).is_empty(),
+            "{}",
+            lines[1]
+        );
+        assert_eq!(
+            lines[2],
+            format!(
+                "asic_director\tinconclusive\tfound=0\tdetail={}...",
+                "x".repeat(200)
+            )
+        );
+        assert_eq!(lines[3], "asic_persons\tsuccess\tfound=3");
     }
 
     #[test]
