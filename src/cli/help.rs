@@ -83,6 +83,7 @@ pub(super) fn print_command_help(command: &str) {
         "fetch" => huntsman_recon::fetch_cli::FETCH_USAGE,
         "hibp" => HIBP_USAGE,
         "recon" => RECON_USAGE,
+        "graph" => super::graph::GRAPH_USAGE,
         "seeknow" => SEEKNOW_HELP,
         "run-history" => huntsman_recon::run_history::cli::USAGE,
         "dehashed" => DEHASHED_USAGE,

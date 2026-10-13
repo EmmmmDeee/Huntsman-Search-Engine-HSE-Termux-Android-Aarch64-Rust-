@@ -75,7 +75,7 @@ huntsman-recon search "brisbane port"
 ```
 
 `check` runs offline self-acceptance and rejects an invalid engineering-command contract; when run from a source checkout containing the canonical directive, it also rejects directive drift. `command` validates and prints the fixed engineering hierarchy. `huntsman-recon directive check [ROOT]` verifies a specific checkout when `ROOT` is supplied, auto-discovers a checkout from the current directory or its parents when possible, and otherwise verifies the canonical directive embedded in the installed binary. `huntsman-recon directive sync [ROOT]` requires a real checkout and rewrites all agent-facing mirrors byte-for-byte from the canonical file. `search` and `sources` are offline.
-`fetch`, `hibp`, `recon`, `seeknow`, `email`, `username`, and `people` make HTTP
+`graph` sends DNS queries to one resolver. `fetch`, `hibp`, `recon`, `seeknow`, `email`, `username`, and `people` make HTTP
 requests and use public-only egress by default. `phone` is fully offline. `serve` accepts inbound HTTP on `127.0.0.1:8080` by default.
 Review [`docs/INSTALL.md`](docs/INSTALL.md) and the command reference below
 before using credentials or network access.
@@ -149,6 +149,7 @@ cargo run -- serve --help                    # embedded UI/API command options; 
 cargo run -- modules --json               # only modules currently reachable from the binary
 cargo run -- attack status --json          # offline ATT&CK Reconnaissance capability posture
 cargo run -- recon crtsh https://example.com/
+cargo run -- graph --help                 # DNS topology walk + graph store options; does not query a resolver
 ```
 
 `attack status|coverage|gaps [--json]` restores the MITRE ATT&CK Reconnaissance reporting surface over currently reachable network modules. The TA0043 slice is reconciled through ATT&CK v19.2, including T1681 and T1682; the repository's complete embedded Enterprise matrix remains the older v17.1 baseline and is reported separately rather than mislabeled as current. `attack navigator` emits Reconnaissance Navigator JSON. Coverage is hierarchy-aware and evidence-backed: only module-mapped independent leaf techniques count as covered, parent techniques remain roll-ups, and coverage is not proof that a technique was executed or a measure of detection effectiveness.
@@ -175,7 +176,7 @@ Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys fi
 
 `sources` is offline routing, not collection. It classifies the input using the existing Huntsman classifier and renders only compatible, independently curated public/browser search routes from `source_registry`. Generated routes are `LeadOnly`: a URL is never corroborating evidence by itself. External catalogue code or data is not embedded.
 
-Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch`/`recon`/`seeknow`/`email` got no usable response or `people` registers were unusable, 74 artifact write failure, 77 `fetch`/`recon`/`seeknow`/`email` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal. `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print help and the usage line.
+Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch`/`recon`/`seeknow`/`email` got no usable response or `people` registers were unusable or `graph` discovered nothing because its collectors failed, 74 artifact write failure (including the `graph` store), 77 `fetch`/`recon`/`seeknow`/`email` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal or `graph` was given a non-public resolver without `--allow-private`. `check` uses 2–11 for its individual gates. Running the binary with no command runs `check`; `help`, `-h` and `--help` print help and the usage line.
 
 `tests/readme.rs` runs every offline example above, checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to the CLI composition sources under `src/cli/`. Network HIBP examples below are exercised through a fake transport by `tests/hibp_cli.rs` rather than against the internet in CI.
 
@@ -251,6 +252,19 @@ DMARC (RFC 7489) and TLSRPT (RFC 8460) parsing. Output is
 and `tlsrpt_emails=` when those records parse, plus `failed` rows. An invalid
 selector exits 65 before any request, and a blank target is a usage error (exit 64); no usable answer exits 69. DoH is
 keyless. There is no live receipt in CI.
+
+`graph DOMAIN... [--depth N] [--resolver IP[:PORT]] [--store FILE] [--allow-private]`
+runs the workspace DAG engine (`huntsman-pipeline`): it resolves each seed's A/AAAA
+records and each discovered address's PTR record, alternating to `--depth` hops
+(0–4, default 2), and persists every distinct domain and address, with its
+provenance, to an append-only redb graph store (default
+`$HOME/.huntsman/graph.redb`, directory created mode 700; re-runs add
+observations). Only the resolver is contacted, over UDP (default `1.1.1.1:53`);
+a non-public resolver exits 77 unless `--allow-private` is given. Output is
+`KIND<TAB>VALUE<TAB>HOP<TAB>SOURCE` lines then one `summary` line with the
+engine's emitted/expanded/failure/depth counts. A malformed seed exits 65 before
+anything is opened, and a run whose collectors failed without discovering
+anything beyond the seeds exits 69. There is no CI live receipt.
 
 `recon stolen-tax QUERY [--keys FILE]` is an explicit paid lookup requiring
 `HUNTSMAN_STOLEN_TAX_KEY`; a missing key exits 66 before any request. The v2

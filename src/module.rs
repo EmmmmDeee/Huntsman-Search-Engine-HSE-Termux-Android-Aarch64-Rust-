@@ -469,6 +469,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "DNS and mail-policy lookup",
     },
     ReachableModule {
+        name: "dns_graph",
+        command: "graph DOMAIN...",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1590.002", "T1590.005"],
+        description: "forward and reverse DNS topology walk persisted to a graph store",
+    },
+    ReachableModule {
         name: "stolen_tax",
         command: "recon stolen-tax QUERY",
         access: "operator_key",

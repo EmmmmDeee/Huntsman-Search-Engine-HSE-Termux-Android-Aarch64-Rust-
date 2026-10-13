@@ -14,6 +14,7 @@ commit, which `build-sha` and `diagnostics` print, and by its `main-<sha7>` pre-
 report. A stable release needs its own version heading in this file, cut when the owner approves it.
 
 ## [Unreleased]
+- Add `graph DOMAIN...`: the first command path into the workspace engine crates. `huntsman_pipeline::run_dns_graph` runs the DNS and reverse-DNS collectors through the DAG engine on its own current-thread runtime and persists every entity to the redb graph store (default `~/.huntsman/graph.redb`); registered as the `dns_graph` reachable module. Previously `huntsman-core`, `huntsman-collectors`, `huntsman-storage` and `huntsman-pipeline` were tested but unreachable from the binary.
 - Fix the main-channel release race where a queued build could become historical before `gh release create --target <sha>` and fail with GitHub's built-in workflow token. Publication now uses a draft created from the live main head, verifies its tag exactly, and discards a raced draft rather than failing or publishing the wrong commit.
 
 ### Changed

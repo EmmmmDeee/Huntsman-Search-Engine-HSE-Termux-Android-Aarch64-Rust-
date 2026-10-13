@@ -7,7 +7,7 @@
 use std::env;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone] [--save-dir DIR] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
+const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN | search QUERY [DIR] | sources QUERY | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone] [--save-dir DIR] | investigate TEXT...|--file FILE | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY | fetch URL [options] | hibp SUBCOMMAND | graph DOMAIN... [--depth N] [--resolver IP[:PORT]] [--store FILE] [--allow-private] | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -46,6 +46,7 @@ Commands:
   fetch                 Make a guarded HTTP request (network access)
   hibp                  Have I Been Pwned lookups (opt-in; keyed subcommands need a key)
   dehashed              DeHashed exact-match search (opt-in; needs a key and --purpose)
+  graph                 Walk and persist DNS topology from domain seeds (network access)
   recon                 One crt.sh, DNS/mail, or stolen.tax lookup (network access)
   seeknow               SeekNow/See-Know lookup (opt-in; needs HUNTSMAN_SEEKNOW_KEY)
   keys                  Validate a private keys file; print slots and fingerprints
@@ -53,10 +54,11 @@ Commands:
   verify                Verify a saved evidence ledger
 
 Run `huntsman-recon <COMMAND> --help` for command details.
-Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
+Search and sources do not collect remote results. `fetch`, `hibp`, `recon`, `graph`,
 `seeknow`, `people`, `email`, `exposure`, `username`, `query`, and networked `sf -s` lookups make HTTP requests; `serve` accepts inbound HTTP connections; their default
 egress policy is public-only.";
 const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
+mod graph;
 mod help;
 mod lookup;
 mod meta;
@@ -114,6 +116,7 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         Some("fetch") => network::fetch_cmd(&remaining.collect::<Vec<_>>()),
         Some("hibp") => network::hibp_cmd(&remaining.collect::<Vec<_>>()),
         Some("dehashed") => network::dehashed_cmd(&remaining.collect::<Vec<_>>()),
+        Some("graph") => graph::graph_cmd(&remaining.collect::<Vec<_>>()),
         Some("recon") => network::recon_cmd(&remaining.collect::<Vec<_>>()),
         Some("seeknow") => network::seeknow_cmd(&remaining.collect::<Vec<_>>()),
         Some("keys") => meta::keys_cmd(remaining.next()),

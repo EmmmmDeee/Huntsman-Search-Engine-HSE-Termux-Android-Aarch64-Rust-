@@ -13,8 +13,11 @@ description = "Assembles the Huntsman DAG engine and the embedded graph store in
 huntsman-core = { path = "../huntsman-core" }
 # The embedded graph store this crate persists discovered entities into.
 huntsman-storage = { path = "../huntsman-storage" }
-# Bounded channel between the engine's sink and the persistence drain, run concurrently.
-tokio = { version = "1.38", default-features = false, features = ["rt", "sync", "macros"] }
+# The DNS and reverse-DNS collectors the blocking `run_dns_graph` entry point registers.
+huntsman-collectors = { path = "../huntsman-collectors" }
+# Bounded channel between the engine's sink and the persistence drain, run concurrently; the
+# current-thread runtime (with its socket and timer drivers) behind `run_dns_graph`.
+tokio = { version = "1.38", default-features = false, features = ["rt", "sync", "macros", "net", "time"] }
 # Typed domain error enum for the pipeline layer.
 thiserror = "2.0"
 

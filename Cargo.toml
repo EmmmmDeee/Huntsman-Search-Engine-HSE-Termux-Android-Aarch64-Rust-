@@ -27,6 +27,9 @@ serde_json = "1.0"
 thiserror = "2.0"
 # The one blocking HTTP client behind the guarded fetch layer (rustls, no async runtime).
 ureq = "3"
+# The DNS-topology DAG engine and redb graph store behind `graph`, exposed through one blocking
+# entry point that owns its own async runtime, so no module in this crate is async.
+huntsman-pipeline = { path = "crates/huntsman-pipeline" }
 
 # forbid cannot be reopened by a local allow, where deny can. The xtask crate sets the same.
 # Every crate-level lint level lives here; tests/manifest_policy.rs refuses one in a crate root.
