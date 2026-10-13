@@ -19,10 +19,15 @@ pub(super) fn unknown_command(other: &str) -> ExitCode {
     fail(EX_USAGE, &format!("unknown command: {other}\n{USAGE}"))
 }
 
+/// Usage error for no command at all: the help on stderr, and nothing written.
+pub(super) fn no_command() -> ExitCode {
+    fail(EX_USAGE, &format!("{HELP}\n{USAGE}"))
+}
+
 pub(super) fn print_command_help(command: &str) {
     let help = match command {
         "check" => {
-            "check\nRun offline self-acceptance and regenerate var/ledger.json, var/navigator.json, and var/stix-bundle.json."
+            "check\nRun offline self-acceptance and regenerate var/ledger.json, var/navigator.json, and var/stix-bundle.json in the current directory, creating var/ if needed. Run it in an empty directory or a checkout."
         }
         "diagnostics" => {
             "diagnostics [--json]\nPrint offline build provenance, target/runtime context, reachable-module counts, ATT&CK-mapped collector counts, and provider credential completeness without values or network access."

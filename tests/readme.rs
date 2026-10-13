@@ -111,6 +111,36 @@ fn every_command_has_an_example_and_every_example_is_a_command() {
     assert_eq!(documented, usage_subcommands());
 }
 
+/// Every file under `dir` with its bytes, keyed by its path.
+fn contents_under(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in fs::read_dir(&next).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.insert(path.clone(), fs::read(&path).unwrap());
+            }
+        }
+    }
+    files
+}
+
+/// Whether an example asks to write a file: `check` regenerates `var/*.json` in the current
+/// directory, and an output option names a file or a directory. Any other command must leave the
+/// directory it runs in as it found it.
+fn asks_to_write(args: &[String]) -> bool {
+    args.first().is_some_and(|a| a == "check")
+        || args.iter().any(|a| {
+            matches!(
+                a.as_str(),
+                "--save" | "--save-dir" | "--save-artifact" | "--output" | "--session-dir"
+            )
+        })
+}
+
 /// Runs the examples in README order in a scratch directory holding a copy of `docs/`
 /// and a mode-600 `keys.env`. Examples that need the internet are excluded: the
 /// fetch layer is proven against a local server in `tests/http_local.rs`.
@@ -133,6 +163,7 @@ fn readme_examples_run_as_written() {
     }
     let mut ran = 0;
     for args in readme_examples().iter().filter(|a| !is_network(a)) {
+        let before = contents_under(&dir);
         let out = bin().args(args).current_dir(&dir).output().unwrap();
         assert_eq!(
             out.status.code(),
@@ -146,6 +177,13 @@ fn readme_examples_run_as_written() {
             "`{}` printed nothing",
             args.join(" ")
         );
+        if !asks_to_write(args) {
+            assert!(
+                contents_under(&dir) == before,
+                "`{}` changed the working directory without being asked to write",
+                args.join(" ")
+            );
+        }
         ran += 1;
     }
     assert!(ran >= 10, "only {ran} examples ran");

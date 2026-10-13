@@ -38,9 +38,15 @@ Start with:
 
 ```sh
 huntsman-recon --help
-huntsman-recon check
+huntsman-recon diagnostics
 huntsman-recon search "brisbane port"
 ```
+
+`diagnostics` reports the build, whether it runs in Termux, and how many
+provider keys are configured, without values and without the network. The
+installer has already run `check`, the offline self-test, in a scratch
+directory. To run it yourself, do so in an empty directory: it writes
+`var/*.json` into the current one.
 
 Upgrade by running the same two commands again. The installer resolves the
 current `main` head to a full SHA and hands that SHA to Cargo, so a branch

@@ -18,7 +18,7 @@ Usage:
   huntsman-recon --version
 
 Commands:
-  check                 Run offline self-acceptance and regenerate var/*.json
+  check                 Run offline self-acceptance; writes var/*.json here
   diagnostics           Print offline build/runtime/module/provider diagnostics
   build-sha             Print the embedded source commit or unknown
   command               Print and validate the executable engineering hierarchy
@@ -73,14 +73,12 @@ use report::{exit_on_output_failure, fail};
 
 pub(crate) fn run(argv: Vec<String>) -> ExitCode {
     exit_on_output_failure();
-    if argv.is_empty() {
-        return selfcheck::check();
-    }
-    if matches!(argv[0].as_str(), "help" | "-h" | "--help") {
+    let first = argv.first().map(String::as_str);
+    if matches!(first, Some("help" | "-h" | "--help")) {
         println!("{HELP}\n{USAGE}");
         return ExitCode::SUCCESS;
     }
-    if matches!(argv[0].as_str(), "-V" | "--version") {
+    if matches!(first, Some("-V" | "--version")) {
         println!("huntsman-recon {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
@@ -125,7 +123,8 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         Some("verify") => meta::verify(remaining.next()),
         Some("correlate") => meta::correlate_cmd(&remaining.collect::<Vec<_>>()),
         Some("run-history") => meta::run_history_cmd(&remaining.collect::<Vec<_>>()),
-        Some("check") | None => selfcheck::check(),
+        Some("check") => selfcheck::check(),
         Some(other) => help::unknown_command(other),
+        None => help::no_command(),
     }
 }
