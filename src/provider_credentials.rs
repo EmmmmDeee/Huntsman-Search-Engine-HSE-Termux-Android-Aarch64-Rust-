@@ -11,6 +11,12 @@ use crate::service_defs::{ProbeVerdict, probe_service, service_for_env};
 pub struct Provider {
     pub name: &'static str,
     pub slots: &'static [&'static str],
+    /// Where an operator obtains this key. A stable provider page, never a
+    /// value. Empty only for a provider with no public signup.
+    pub get_key_url: &'static str,
+    /// One line on the free tier or cost, as of this catalogue. Terms drift, so
+    /// it is guidance, not a guarantee.
+    pub free_tier: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,6 +24,8 @@ pub struct ProviderStatus {
     pub name: &'static str,
     pub slots: Vec<SlotStatus>,
     pub configured: bool,
+    pub get_key_url: &'static str,
+    pub free_tier: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,6 +70,8 @@ pub struct ProviderProbeStatus {
 pub const PROVIDERS: &[Provider] = &[
     Provider {
         name: "WiGLE",
+        get_key_url: "https://wigle.net/account",
+        free_tier: "free; encode user:token as base64",
         slots: &[
             crate::environment::WIGLE_USER_ENV,
             crate::environment::WIGLE_TOKEN_ENV,
@@ -69,54 +79,80 @@ pub const PROVIDERS: &[Provider] = &[
     },
     Provider {
         name: "Brave Search",
+        get_key_url: "https://api-dashboard.search.brave.com/app/keys",
+        free_tier: "free tier; prepaid credit since 2026-09",
         slots: &[crate::environment::BRAVE_KEY_ENV],
     },
     Provider {
         name: "Shodan",
+        get_key_url: "https://account.shodan.io",
+        free_tier: "one-time membership unlocks query credits",
         slots: &[crate::environment::SHODAN_KEY_ENV],
     },
     Provider {
         name: "Whoxy",
+        get_key_url: "https://www.whoxy.com/pricing.php",
+        free_tier: "pay-as-you-go, ~$2 minimum balance",
         slots: &[crate::environment::WHOXY_KEY_ENV],
     },
     Provider {
         name: "Citadel",
+        get_key_url: "",
+        free_tier: "service offline; leave unset",
         slots: &[crate::environment::CITADEL_KEY_ENV],
     },
     Provider {
         name: "HIBP",
+        get_key_url: "https://haveibeenpwned.com/API/Key",
+        free_tier: "US$3.50/mo, key required",
         slots: &[crate::environment::HUNTSMAN_HIBP_KEY_ENV],
     },
     Provider {
         name: "SeekNow",
+        get_key_url: "",
+        free_tier: "invite/paid; no public signup",
         slots: &[crate::environment::SEEKNOW_KEY_ENV],
     },
     Provider {
         name: "OathNet",
+        get_key_url: "https://oathnet.org",
+        free_tier: "paid API",
         slots: &[crate::environment::OATHNET_KEY_ENV],
     },
     Provider {
         name: "Exa",
+        get_key_url: "https://dashboard.exa.ai/api-keys",
+        free_tier: "free tier with signup credits",
         slots: &[crate::environment::EXA_KEY_ENV],
     },
     Provider {
         name: "OpenRouter",
+        get_key_url: "https://openrouter.ai/keys",
+        free_tier: "free tier; pay-as-you-go models",
         slots: &[crate::environment::OPENROUTER_KEY_ENV],
     },
     Provider {
         name: "Google Gemini",
+        get_key_url: "https://aistudio.google.com/apikey",
+        free_tier: "free tier via AI Studio",
         slots: &[crate::environment::GEMINI_KEY_ENV],
     },
     Provider {
         name: "GitHub",
+        get_key_url: "https://github.com/settings/tokens",
+        free_tier: "free; raises the API rate limit",
         slots: &[crate::environment::GITHUB_TOKEN_ENV],
     },
     Provider {
         name: "VirusTotal",
+        get_key_url: "https://www.virustotal.com/gui/user/apikey",
+        free_tier: "free: 4 req/min, 500/day",
         slots: &[crate::environment::VIRUSTOTAL_KEY_ENV],
     },
     Provider {
         name: "Censys",
+        get_key_url: "https://platform.censys.io/account/api",
+        free_tier: "free: 250 req/month",
         slots: &[
             crate::environment::CENSYS_ID_ENV,
             crate::environment::CENSYS_SECRET_ENV,
@@ -149,6 +185,8 @@ pub fn status(keys: &Keys) -> Vec<ProviderStatus> {
                 name: provider.name,
                 slots,
                 configured,
+                get_key_url: provider.get_key_url,
+                free_tier: provider.free_tier,
             }
         })
         .collect()
@@ -263,6 +301,16 @@ fn write_status(
         out.push('=');
         out.push_str(if slot.configured { "set" } else { "unset" });
     }
+    if !provider.configured {
+        if !provider.get_key_url.is_empty() {
+            out.push_str("\tget_key=");
+            out.push_str(provider.get_key_url);
+        }
+        if !provider.free_tier.is_empty() {
+            out.push_str("\tfree_tier=");
+            out.push_str(&one_line(provider.free_tier, 80));
+        }
+    }
     for (key, value) in evidence {
         out.push_str("\tprobe.");
         out.push_str(&one_line(key, 64));
@@ -297,6 +345,49 @@ mod tests {
             self.seen.borrow_mut().push(request.clone());
             Ok(self.response.clone())
         }
+    }
+
+    #[test]
+    fn every_provider_names_where_to_get_the_key_and_its_tier() {
+        for provider in PROVIDERS {
+            assert!(!provider.free_tier.is_empty(), "{}", provider.name);
+            // A provider either has a signup URL or explains why it has none.
+            if provider.get_key_url.is_empty() {
+                assert!(
+                    provider.free_tier.contains("offline")
+                        || provider.free_tier.contains("no public signup"),
+                    "{} has no URL and no reason",
+                    provider.name
+                );
+            } else {
+                assert!(
+                    provider.get_key_url.starts_with("https://"),
+                    "{}",
+                    provider.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unconfigured_provider_shows_where_to_get_the_key() {
+        let out = render(&Keys::default());
+        assert!(
+            out.contains(
+                "provider=HIBP\tstate=incomplete\tHUNTSMAN_HIBP_KEY=unset\t\
+                 get_key=https://haveibeenpwned.com/API/Key\tfree_tier=US$3.50/mo, key required\n"
+            ),
+            "{out}"
+        );
+        // A configured provider does not repeat the signup guidance.
+        let keys = Keys::parse("HUNTSMAN_HIBP_KEY=abcdef0123456789abcdef0123456789").expect("keys");
+        let configured = render(&keys);
+        let hibp = configured
+            .lines()
+            .find(|line| line.starts_with("provider=HIBP\t"))
+            .expect("HIBP line");
+        assert!(hibp.contains("state=configured"), "{hibp}");
+        assert!(!hibp.contains("get_key="), "{hibp}");
     }
 
     #[test]
