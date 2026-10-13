@@ -96,12 +96,6 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::WHOXY_KEY_ENV],
     },
     Provider {
-        name: "Citadel",
-        get_key_url: "",
-        free_tier: "service offline; leave unset",
-        slots: &[crate::environment::CITADEL_KEY_ENV],
-    },
-    Provider {
         name: "HIBP",
         get_key_url: "https://haveibeenpwned.com/API/Key",
         free_tier: "US$3.50/mo, key required",
