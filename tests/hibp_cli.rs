@@ -21,6 +21,11 @@ use huntsman_recon::http::{Method, Request, Response, Transport, TransportFailur
 const KEY: &str = "fake-hibp-key-5f0c1d2e3a4b";
 const PASSWORD: &str = "correct horse battery staple";
 
+fn fixture(name: &str) -> String {
+    fs::read_to_string(format!("tests/fixtures/hibp/{name}"))
+        .unwrap_or_else(|e| panic!("failed to load fixture {name}: {e}"))
+}
+
 #[derive(Default)]
 struct Fake {
     responses: Mutex<VecDeque<Response>>,
@@ -112,7 +117,6 @@ fn assert_never_shown(run: &Run, secret: &str) {
     );
 }
 
-const ADOBE: &str = r#"{"Name":"Adobe","Title":"Adobe","Domain":"adobe.com","BreachDate":"2013-10-04","AddedDate":"2013-12-04T00:00Z","ModifiedDate":"2022-05-15T23:52Z","PwnCount":152445165,"Description":"In October 2013, <em>153 million</em>\naccounts.","LogoPath":"Adobe.png","DataClasses":["Email addresses","Password hints","Passwords","Usernames"],"IsVerified":true,"IsFabricated":false,"IsSensitive":false,"IsRetired":false,"IsSpamList":false,"IsMalware":false,"IsStealerLog":false,"IsSubscriptionFree":false,"Attribution":"provided by a researcher"}"#;
 
 /// Every field of the Adobe fixture, as the CLI prints it.
 const ADOBE_LINES: [&str; 23] = [
@@ -152,7 +156,7 @@ fn assert_attributed(stdout: &str, results: usize) {
 #[test]
 fn catalogue_breach_by_name_prints_every_field_with_attribution_and_no_key() {
     let (cmd, fake) = command(Some(KEY));
-    fake.push(200, ADOBE, &[]);
+    fake.push(200, &fixture("adobe_breach.json"), &[]);
     let out = run(&cmd, &["breach", "Adobe"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 1);
@@ -199,7 +203,7 @@ fn catalogue_breaches_are_complete_and_domain_filter_is_sent() {
     assert_eq!(out.stdout.matches("data_class=Passwords").count(), 250);
     assert_eq!(out.stdout.matches("title=<none>").count(), 250);
 
-    fake.push(200, &format!("[{ADOBE}]"), &[]);
+    fake.push(200, &format!("[{}]", fixture("adobe_breach.json")), &[]);
     let out = run(&cmd, &["breaches", "--domain", "adobe.com"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 1);
@@ -218,7 +222,7 @@ fn catalogue_breaches_are_complete_and_domain_filter_is_sent() {
 #[test]
 fn t1589_002_breached_account_asks_for_the_full_model_with_the_key() {
     let (cmd, fake) = command(Some(KEY));
-    fake.push(200, &format!("[{ADOBE}]"), &[]);
+    fake.push(200, &format!("[{}]", fixture("adobe_breach.json")), &[]);
     let out = run(&cmd, &["account", " a+b@example.com "], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 1);
@@ -254,11 +258,7 @@ fn t1589_002_breached_account_404_is_no_results() {
 #[test]
 fn t1589_002_pastes_print_every_paste_field_and_404_is_no_results() {
     let (cmd, fake) = command(Some(KEY));
-    fake.push(
-        200,
-        r#"[{"Source":"Pastebin","Id":"8Q0BvKD8","Title":"syslog","Date":"2014-03-04T19:14:54Z","EmailCount":139},{"Source":"Pastie","Id":"7152479","Date":null,"EmailCount":30}]"#,
-        &[],
-    );
+    fake.push(200, &fixture("pastes_response.json"), &[]);
     let out = run(&cmd, &["pastes", "a@example.com"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 2);
@@ -297,11 +297,7 @@ fn t1589_002_pastes_print_every_paste_field_and_404_is_no_results() {
 #[test]
 fn t1589_001_password_range_lists_every_suffix_without_a_key() {
     let (cmd, fake) = command(Some(KEY));
-    fake.push(
-        200,
-        "0018A45C4D1DEF81644B54AB7F969B88D65:1\r\n00D4F6E8FA6EECAD2A3AA415EEC418D38EC:2\r\n011053FD0102E94D6AE2F8B83D76FAF94F6:0\r\n",
-        &[],
-    );
+    fake.push(200, &fixture("password_range.txt"), &[]);
     let out = run(&cmd, &["password-range", "21bd1"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     let lines: Vec<&str> = out.stdout.lines().collect();
@@ -438,11 +434,7 @@ fn t1589_001_password_is_never_echoed_on_error_paths() {
 #[test]
 fn subscription_prints_every_status_field_and_the_key_source_not_the_key() {
     let (cmd, fake) = command(Some(KEY));
-    fake.push(
-        200,
-        r#"{"SubscriptionName":"Pro 1","Description":"Up to 10 emails per minute","SubscribedUntil":"2027-01-01T00:00:00","Rpm":10,"DomainSearchMaxBreachedAccounts":100,"MaxBreachedDomains":null,"IncludesStealerLogs":true,"IncludesBulkDomainAdd":false,"IncludesAutoSubdomainVerification":false,"IncludesCustomerDomains":false,"IncludesKAnon":true}"#,
-        &[],
-    );
+    fake.push(200, &fixture("subscription.json"), &[]);
     let out = run(&cmd, &["subscription"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_attributed(&out.stdout, 1);
@@ -547,11 +539,7 @@ fn catalogue_breach_429_without_retry_after_reports_unknown() {
 #[test]
 fn t1589_002_absent_empty_and_literal_none_paste_fields_are_distinct() {
     let (cmd, fake) = command(Some(KEY));
-    fake.push(
-        200,
-        r#"[{"Source":"Pastebin","Id":"","Title":"<none>","Date":null}]"#,
-        &[],
-    );
+    fake.push(200, &fixture("paste_distinct_fields.json"), &[]);
     let out = run(&cmd, &["pastes", "a@example.com"], "");
     assert_eq!(out.code, 0, "{}", out.stderr);
     let lines: Vec<&str> = out.stdout.lines().skip(6).collect();
