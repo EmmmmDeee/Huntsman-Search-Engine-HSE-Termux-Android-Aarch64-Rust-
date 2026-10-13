@@ -1359,6 +1359,202 @@ fn installer_rejects_an_unknown_channel_before_any_download_and_names_the_real_d
     );
 }
 
+/// A fake `curl` that knows commit refs and per-tag release assets, and logs every URL it is asked
+/// for. `$FAKE_ASSETS/refs/main~N` holds the commit id the API returns for `main~N`;
+/// `$FAKE_ASSETS/releases/TAG/ASSET` is a published asset. Anything else is a 404 (exit 22).
+const TAGGED_FAKE_CURL: &str = r#"#!/usr/bin/env bash
+out=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o | -H | --proto) [ "$1" = -o ] && out="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+printf '%s\n' "$url" >> "$FAKE_LOG"
+case "$url" in
+  https://api.github.com/repos/*/commits/main~*) file="$FAKE_ASSETS/refs/${url##*/commits/}" ;;
+  https://github.com/*/releases/download/*) file="$FAKE_ASSETS/releases/${url#*/releases/download/}" ;;
+  *) exit 22 ;;
+esac
+[ -f "$file" ] || exit 22
+if [ -n "$out" ]; then cp "$file" "$out"; else cat "$file"; fi
+"#;
+
+/// Runs `script` as the Termux installer for the recon channel without `HUNTSMAN_RELEASE_TAG`.
+/// `refs[n]` is the commit id of `main~n`; `released` are the commit ids with a published recon
+/// build. Returns (exit code, output, URLs asked for, scratch root).
+fn run_tag_resolving_installer(
+    name: &str,
+    script: &Path,
+    refs: &[String],
+    released: &[&str],
+) -> (Option<i32>, String, String, PathBuf) {
+    let root = scratch(&format!("resolve-{name}"));
+    let (assets, fakes, prefix) = (root.join("assets"), root.join("fakes"), root.join("prefix"));
+    for d in [
+        &assets.join("refs"),
+        &fakes,
+        &prefix.join("bin"),
+        &root.join("tmp"),
+    ] {
+        fs::create_dir_all(d).unwrap();
+    }
+    for (depth, sha) in refs.iter().enumerate() {
+        fs::write(assets.join(format!("refs/main~{depth}")), sha).unwrap();
+    }
+    let asset = "huntsman-recon-aarch64-linux-android";
+    for sha in released {
+        let tag = format!("main-{}", &sha[..7]);
+        let dir = assets.join("releases").join(&tag);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(asset), GOOD_RECON_FIXTURE).unwrap();
+        fs::write(
+            dir.join(format!("{asset}.sha256")),
+            installer_sha_line(&tag, GOOD_RECON_FIXTURE),
+        )
+        .unwrap();
+    }
+    fs::write(prefix.join("bin/huntsman-recon"), b"old build\n").unwrap();
+    write_exec(&fakes.join("curl"), TAGGED_FAKE_CURL);
+    write_exec(&fakes.join("uname"), "#!/usr/bin/env bash\necho aarch64\n");
+    let log = root.join("urls.log");
+    fs::write(&log, "").unwrap();
+    let path = format!(
+        "{}:{}",
+        fakes.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new(tool("bash").expect("bash must be available"))
+        .arg(script)
+        .env("PATH", path)
+        .env("PREFIX", &prefix)
+        .env("TMPDIR", root.join("tmp"))
+        .env("FAKE_ASSETS", &assets)
+        .env("FAKE_LOG", &log)
+        .env("HUNTSMAN_CHANNEL", "recon")
+        .env_remove("HUNTSMAN_RELEASE_TAG")
+        .output()
+        .expect("bash must run");
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    (
+        out.status.code(),
+        text,
+        fs::read_to_string(&log).unwrap(),
+        root,
+    )
+}
+
+fn commit_id(digit: char) -> String {
+    std::iter::repeat_n(digit, 40).collect()
+}
+
+#[test]
+fn the_repository_installer_installs_the_newest_published_recon_build() {
+    if !installer_tools_present() {
+        return;
+    }
+    // main~0 has no build yet (a docs-only change, or one still building); main~1 has one.
+    let refs = [commit_id('a'), commit_id('b'), commit_id('c')];
+    let (code, text, urls, root) =
+        run_tag_resolving_installer("newest", Path::new(INSTALL), &refs, &[&refs[1], &refs[2]]);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(
+        fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
+        GOOD_RECON_FIXTURE
+    );
+    assert!(
+        text.contains("Installed") && text.contains("(main-bbbbbbb)"),
+        "{text}"
+    );
+    let asked: Vec<&str> = urls.lines().collect();
+    assert!(
+        asked[0].ends_with("/commits/main~0")
+            && asked[1].ends_with("/main-aaaaaaa/huntsman-recon-aarch64-linux-android.sha256")
+            && asked[2].ends_with("/commits/main~1")
+            && asked[3].ends_with("/main-bbbbbbb/huntsman-recon-aarch64-linux-android.sha256"),
+        "walks back from the head of main and stops at the first published build: {asked:?}"
+    );
+    assert!(
+        !urls.contains("main-ccccccc") && !urls.contains("main~2"),
+        "{asked:?}"
+    );
+    assert_live_binary_only(&root);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_repository_installer_stops_when_no_recent_commit_has_a_build() {
+    if !installer_tools_present() {
+        return;
+    }
+    let refs: Vec<String> = (0..40)
+        .map(|n| format!("{n:040x}").replace('0', "d"))
+        .collect();
+    let (code, text, urls, root) =
+        run_tag_resolving_installer("none", Path::new(INSTALL), &refs, &[]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(
+        text.contains(
+            "no published recon build among the last 30 commits of main; set HUNTSMAN_RELEASE_TAG=main-<sha7>"
+        ),
+        "{text}"
+    );
+    assert_eq!(urls.matches("/commits/main~").count(), 30, "{urls}");
+    assert_eq!(
+        fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
+        b"old build\n",
+        "the live binary is untouched"
+    );
+    assert_live_binary_only(&root);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_release_stamped_installer_never_asks_the_api_for_a_tag() {
+    if !installer_tools_present() {
+        return;
+    }
+    // Stamp a copy the way the release job does.
+    let stamped_dir = scratch("stamped-installer");
+    let stamped = stamped_dir.join("install-termux.sh");
+    let source = fs::read_to_string(INSTALL).unwrap();
+    fs::write(&stamped, source.replace("@RECON_TAG@", "main-eeeeeee")).unwrap();
+    let refs = [commit_id('a'), commit_id('e')];
+    let (code, text, urls, root) =
+        run_tag_resolving_installer("stamped", &stamped, &refs, &[&refs[0], &refs[1]]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("(main-eeeeeee)"), "{text}");
+    assert!(!urls.contains("api.github.com"), "{urls}");
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&stamped_dir);
+}
+
+#[test]
+fn install_doc_fetches_the_repository_installer_from_its_real_path() {
+    let script = fs::read_to_string(INSTALL).unwrap();
+    let repo = script
+        .lines()
+        .find_map(|line| line.strip_prefix("REPO=\""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("the installer names its repository");
+    let url = format!("https://raw.githubusercontent.com/{repo}/main/{INSTALL}");
+    let doc = fs::read_to_string("docs/INSTALL.md").unwrap();
+    let section = doc
+        .split("## Prebuilt Termux release")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("docs/INSTALL.md keeps its prebuilt section");
+    assert!(
+        section.contains(&format!(
+            "curl -fsSL {url} -o \"$TMPDIR/install-termux.sh\""
+        )),
+        "the no-compiler install must fetch {url}"
+    );
+    assert!(section.contains("bash \"$TMPDIR/install-termux.sh\""));
+}
+
 /// The scanner copy inlined in the publish job, de-indented.
 fn inlined_scanner() -> String {
     let wf = release();
