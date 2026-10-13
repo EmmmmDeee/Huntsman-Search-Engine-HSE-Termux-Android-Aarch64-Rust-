@@ -6,21 +6,19 @@
 //! own "unclaimed" signature. A status code alone is never a signature: a plain 404 is what most
 //! of the web answers for an unknown name.
 //!
-//! The pass over a subdomain list runs under one [`Deadline`]: every probe is capped at what is
-//! left of the budget (never more than [`PROBE_TIMEOUT`]), and a probe that would start after the
-//! budget is spent is not sent and is counted as skipped. Worst case: [`BUDGET`], not
+//! The pass over a subdomain list runs under the caller's [`Deadline`]: every probe is capped at
+//! what is left of the budget (never more than [`PROBE_TIMEOUT`]), and a probe that would start
+//! after the budget is spent is not sent and is counted as skipped. Worst case: the budget, not
 //! `MAX_PROBES x PROBE_TIMEOUT`.
 
 use std::time::Duration;
 
-use crate::deadline::{Clock, Deadline};
+use crate::deadline::Deadline;
 use crate::entity::{Evidence, EvidenceProvenance};
 use crate::http::{Request, Response, Transport};
 
 /// Cap on one probe, recomputed against the budget before every send.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-/// Wall-clock budget for the whole pass over a subdomain list.
-pub const BUDGET: Duration = Duration::from_secs(20);
 /// Subdomains probed per pass; the rest are reported as skipped.
 pub const MAX_PROBES: usize = 50;
 
@@ -214,13 +212,12 @@ pub fn finding_to_evidence(finding: &TakeoverFinding, scan_id: &str) -> Evidence
     evidence
 }
 
-/// Probe up to [`MAX_PROBES`] subdomains within one [`BUDGET`].
+/// Probe up to [`MAX_PROBES`] subdomains within `deadline`.
 pub fn detect_in_subdomains<T: Transport + ?Sized>(
     transport: &T,
-    clock: &dyn Clock,
+    deadline: &Deadline<'_>,
     subdomains: &[String],
 ) -> TakeoverReport {
-    let deadline = Deadline::start(clock, BUDGET);
     let mut report = TakeoverReport::default();
     for subdomain in subdomains {
         if report.probed >= MAX_PROBES || deadline.expired() {
@@ -354,7 +351,8 @@ mod tests {
     #[test]
     fn the_pass_probes_at_most_max_probes_and_reports_the_rest_skipped() {
         let edge = Edge::answering(200, &[], "");
-        let report = detect_in_subdomains(&edge, &SystemClock, &names(MAX_PROBES + 10));
+        let deadline = Deadline::start(&SystemClock, Duration::from_secs(60));
+        let report = detect_in_subdomains(&edge, &deadline, &names(MAX_PROBES + 10));
         assert_eq!(report.probed, MAX_PROBES);
         assert_eq!(report.skipped, 10);
         assert!(report.findings.is_empty());
@@ -365,7 +363,9 @@ mod tests {
     fn hanging_hosts_spend_one_budget_not_one_timeout_each() {
         let clock = FakeClock::new();
         let edge = Edge::hanging(&clock);
-        let report = detect_in_subdomains(&edge, &clock, &names(MAX_PROBES));
+        let budget = Duration::from_secs(20);
+        let deadline = Deadline::start(&clock, budget);
+        let report = detect_in_subdomains(&edge, &deadline, &names(MAX_PROBES));
         // 20 s / 3 s: six full probes, a seventh capped at the 2 s left, then nothing.
         let caps = edge.caps.borrow();
         assert_eq!(caps.len(), 7, "{caps:?}");
@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(caps[6], Duration::from_secs(2));
         assert_eq!(report.probed, 7);
         assert_eq!(report.skipped, MAX_PROBES - 7);
-        assert_eq!(clock.elapsed(), BUDGET);
+        assert_eq!(clock.elapsed(), budget);
     }
 
     #[test]

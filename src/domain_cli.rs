@@ -5,10 +5,11 @@
 //! report merge into one entity) and rendered report.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::canonical::canonical_domain;
 use crate::crtsh::{self, CrtShError};
-use crate::deadline::SystemClock;
+use crate::deadline::{Deadline, SystemClock};
 use crate::dns;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::error::Error;
@@ -423,6 +424,7 @@ fn dns_outcome(
 /// Supplementary to the DNS/CT sources, so it contributes no outcome.
 fn subdomain_takeover_detection<T: Transport + ?Sized>(
     transport: &T,
+    deadline: &Deadline<'_>,
     entities: &[Entity],
     root_domain: &str,
 ) -> (Vec<Entity>, Option<String>) {
@@ -439,7 +441,7 @@ fn subdomain_takeover_detection<T: Transport + ?Sized>(
         return (Vec::new(), None);
     }
 
-    let report = subdomain_takeover::detect_in_subdomains(transport, &SystemClock, &subdomains);
+    let report = subdomain_takeover::detect_in_subdomains(transport, deadline, &subdomains);
 
     let result_entities: Vec<Entity> = report
         .findings
@@ -486,10 +488,10 @@ fn subdomain_takeover_detection<T: Transport + ?Sized>(
 /// Supplementary to the DNS/CT sources, so it contributes no outcome.
 fn infrastructure_fingerprinting<T: Transport + ?Sized>(
     transport: &T,
+    deadline: &Deadline<'_>,
     domain: &str,
 ) -> (Vec<Entity>, Option<String>) {
-    // Try HTTPS first, fallback to HTTP
-    let findings = waf_fingerprint::fingerprint_domain(transport, domain);
+    let findings = waf_fingerprint::fingerprint_domain(transport, deadline, domain);
 
     if findings.is_empty() {
         return (Vec::new(), None);
@@ -536,20 +538,24 @@ fn infrastructure_fingerprinting<T: Transport + ?Sized>(
     (result_entities, Some(section))
 }
 
-/// Web-layer signals over the collected entities and the domain's web roots. None of them
-/// carries an outcome, so they never decide whether the scan succeeded: that stays with the
-/// CT, RDAP and DNS sources.
+/// One wall-clock budget for all three web-layer signals of a domain scan.
+pub const WEB_SIGNALS_BUDGET: Duration = Duration::from_secs(30);
+
+/// Web-layer signals over the collected entities and the domain's web roots, within one
+/// [`WEB_SIGNALS_BUDGET`]. None of them carries an outcome, so they never decide whether the
+/// scan succeeded: that stays with the CT, RDAP and DNS sources.
 fn supplementary_signals<T: Transport + ?Sized>(
     transport: &T,
     domain: &str,
     entities: &mut Vec<Entity>,
     sections: &mut Vec<String>,
 ) {
-    let takeover = subdomain_takeover_detection(transport, entities, domain);
+    let deadline = Deadline::start(&SystemClock, WEB_SIGNALS_BUDGET);
+    let takeover = subdomain_takeover_detection(transport, &deadline, entities, domain);
     for (found, section) in [
         takeover,
-        infrastructure_fingerprinting(transport, domain),
-        redirect_analysis(transport, domain),
+        infrastructure_fingerprinting(transport, &deadline, domain),
+        redirect_analysis(transport, &deadline, domain),
     ] {
         entities.extend(found);
         sections.extend(section);
@@ -561,13 +567,14 @@ fn supplementary_signals<T: Transport + ?Sized>(
 /// Supplementary to the DNS/CT sources, so it contributes no outcome.
 fn redirect_analysis<T: Transport + ?Sized>(
     transport: &T,
+    deadline: &Deadline<'_>,
     domain: &str,
 ) -> (Vec<Entity>, Option<String>) {
     let mut found = Vec::new();
     let mut notes = Vec::new();
     for scheme in ["http", "https"] {
         let start = format!("{scheme}://{domain}");
-        let Some(chain) = redirect_chain::follow_redirects(transport, &start) else {
+        let Some(chain) = redirect_chain::follow_redirects(transport, deadline, &start) else {
             continue;
         };
         if chain.hops.is_empty() && chain.anomaly.is_none() {

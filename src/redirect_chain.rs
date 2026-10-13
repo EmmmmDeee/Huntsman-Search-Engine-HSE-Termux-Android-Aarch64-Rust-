@@ -3,13 +3,21 @@
 //! Follows HTTP redirect chains to identify security issues like open redirects,
 //! redirect loops, suspicious cross-domain redirects, and infrastructure patterns.
 //! The transport never follows redirects itself, so every hop is observed here.
+//!
+//! A chain runs under the caller's [`Deadline`]: every hop is capped at what is left of it
+//! (never more than [`HOP_TIMEOUT`]), and a hop that would start after the budget is spent is
+//! not sent; the chain then ends with [`RedirectAnomaly::BudgetSpent`] rather than posing as
+//! final.
 
 use std::collections::HashSet;
 use std::time::Duration;
 
+use crate::deadline::Deadline;
 use crate::http::{Request, Transport, parse_http_uri, resolve_location};
 
 const MAX_HOPS: usize = 10;
+/// Cap on one hop, recomputed against the budget before every send.
+pub const HOP_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedirectChain {
@@ -38,6 +46,8 @@ pub enum RedirectAnomaly {
     ClientError,
     /// Redirect without a usable `Location` (absent, or not an http(s) URL)
     Suspicious,
+    /// The lookup budget was spent before the chain ended; `final_url` was not fetched.
+    BudgetSpent,
 }
 
 impl RedirectAnomaly {
@@ -49,6 +59,7 @@ impl RedirectAnomaly {
             Self::CrossDomainRedirect => "cross_domain_redirect",
             Self::ClientError => "client_error",
             Self::Suspicious => "suspicious",
+            Self::BudgetSpent => "budget_spent",
         }
     }
 }
@@ -62,13 +73,14 @@ pub fn host_of(url: &str) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
-/// Follow the redirect chain from `start_url`, up to `MAX_HOPS`.
+/// Follow the redirect chain from `start_url`, up to `MAX_HOPS`, within `deadline`.
 ///
-/// `None` when `start_url` is not an absolute http(s) URL or the first request
-/// obtains no response at all.
+/// `None` when `start_url` is not an absolute http(s) URL or a request obtains no response
+/// at all.
 #[must_use]
 pub fn follow_redirects<T: Transport + ?Sized>(
     transport: &T,
+    deadline: &Deadline<'_>,
     start_url: &str,
 ) -> Option<RedirectChain> {
     let start_host = host_of(start_url)?;
@@ -90,9 +102,12 @@ pub fn follow_redirects<T: Transport + ?Sized>(
         if !seen_urls.insert(current_url.clone()) {
             return finish(current_url, hops, Some(RedirectAnomaly::Loop));
         }
+        if deadline.expired() {
+            return finish(current_url, hops, Some(RedirectAnomaly::BudgetSpent));
+        }
 
-        let mut request = Request::get(&current_url);
-        request.timeout = Some(Duration::from_secs(3));
+        let cap = deadline.remaining().min(HOP_TIMEOUT);
+        let request = Request::get(&current_url).with_timeout(cap);
         let response = transport.send(&request).ok()?;
 
         if !(300..400).contains(&response.status) {
@@ -130,26 +145,47 @@ pub fn follow_redirects<T: Transport + ?Sized>(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
+    use crate::deadline::{FakeClock, SystemClock};
     use crate::http::{Response, TransportFailure};
 
-    /// Answers each listed URL with its status and `Location`; any other URL is a 200.
-    struct Hops(Vec<(String, u16, Option<String>)>);
+    /// Answers each listed URL with its status and `Location`; any other URL is a 200. Records
+    /// each request's timeout and, with a clock, "hangs" for its whole cap before answering.
+    struct Hops<'c> {
+        rows: Vec<(String, u16, Option<String>)>,
+        caps: RefCell<Vec<Duration>>,
+        clock: Option<&'c FakeClock>,
+    }
 
-    impl Hops {
+    impl Hops<'_> {
         fn new(rows: &[(&str, u16, Option<&str>)]) -> Self {
-            Self(
+            Self::from_rows(
                 rows.iter()
                     .map(|(u, s, l)| ((*u).to_owned(), *s, l.map(str::to_owned)))
                     .collect(),
             )
         }
+
+        fn from_rows(rows: Vec<(String, u16, Option<String>)>) -> Self {
+            Self {
+                rows,
+                caps: RefCell::new(Vec::new()),
+                clock: None,
+            }
+        }
     }
 
-    impl Transport for Hops {
+    impl Transport for Hops<'_> {
         fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            let cap = request.timeout.expect("every hop carries its cap");
+            self.caps.borrow_mut().push(cap);
+            if let Some(clock) = self.clock {
+                clock.advance(cap);
+            }
             let (status, location) = self
-                .0
+                .rows
                 .iter()
                 .find(|(url, _, _)| *url == request.url)
                 .map_or((200, None), |(_, s, l)| (*s, l.clone()));
@@ -165,7 +201,20 @@ mod tests {
     }
 
     fn chain(rows: &[(&str, u16, Option<&str>)], start: &str) -> RedirectChain {
-        follow_redirects(&Hops::new(rows), start).expect("start url is absolute http(s)")
+        let deadline = Deadline::start(&SystemClock, Duration::from_secs(60));
+        follow_redirects(&Hops::new(rows), &deadline, start).expect("start url is absolute http(s)")
+    }
+
+    fn ladder(rungs: usize) -> Vec<(String, u16, Option<String>)> {
+        (0..rungs)
+            .map(|i| {
+                (
+                    format!("https://example.com/{i}"),
+                    302,
+                    Some(format!("/{}", i + 1)),
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -192,6 +241,7 @@ mod tests {
         );
         assert_eq!(RedirectAnomaly::ClientError.as_str(), "client_error");
         assert_eq!(RedirectAnomaly::Suspicious.as_str(), "suspicious");
+        assert_eq!(RedirectAnomaly::BudgetSpent.as_str(), "budget_spent");
     }
 
     #[test]
@@ -274,22 +324,38 @@ mod tests {
 
     #[test]
     fn a_chain_longer_than_max_hops_is_depth_exceeded() {
-        let rows: Vec<(String, u16, Option<String>)> = (0..=MAX_HOPS)
-            .map(|i| {
-                (
-                    format!("https://example.com/{i}"),
-                    302,
-                    Some(format!("/{}", i + 1)),
-                )
-            })
-            .collect();
-        let got = follow_redirects(&Hops(rows), "https://example.com/0").expect("absolute");
+        let hops = Hops::from_rows(ladder(MAX_HOPS + 1));
+        let deadline = Deadline::start(&SystemClock, Duration::from_secs(60));
+        let got = follow_redirects(&hops, &deadline, "https://example.com/0").expect("absolute");
         assert_eq!(got.anomaly, Some(RedirectAnomaly::DepthExceeded));
         assert_eq!(got.hops.len(), MAX_HOPS);
+        assert!(hops.caps.borrow().iter().all(|c| *c == HOP_TIMEOUT));
+    }
+
+    #[test]
+    fn hanging_hops_spend_the_budget_and_say_so() {
+        let clock = FakeClock::new();
+        let mut hops = Hops::from_rows(ladder(MAX_HOPS + 1));
+        hops.clock = Some(&clock);
+        let deadline = Deadline::start(&clock, Duration::from_secs(7));
+        let got = follow_redirects(&hops, &deadline, "https://example.com/0").expect("absolute");
+        // 7 s / 3 s: two full hops, a third capped at the 1 s left, then nothing is sent.
+        assert_eq!(
+            *hops.caps.borrow(),
+            vec![HOP_TIMEOUT, HOP_TIMEOUT, Duration::from_secs(1)]
+        );
+        assert_eq!(got.hops.len(), 3);
+        assert_eq!(got.anomaly, Some(RedirectAnomaly::BudgetSpent));
+        assert_eq!(got.final_url, "https://example.com/3");
+        assert_eq!(clock.elapsed(), Duration::from_secs(7));
     }
 
     #[test]
     fn a_non_http_start_url_is_none() {
-        assert_eq!(follow_redirects(&Hops::new(&[]), "example.com"), None);
+        let deadline = Deadline::start(&SystemClock, Duration::from_secs(1));
+        assert_eq!(
+            follow_redirects(&Hops::new(&[]), &deadline, "example.com"),
+            None
+        );
     }
 }

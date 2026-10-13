@@ -3,8 +3,18 @@
 //! Analyzes HTTP response headers and status codes to detect commonly deployed WAF and CDN
 //! solutions. Useful for understanding infrastructure and potential bypass vectors during
 //! legitimate security assessments.
+//!
+//! A pass over a domain's web roots runs under the caller's [`Deadline`]: every probe is capped
+//! at what is left of it (never more than [`PROBE_TIMEOUT`]), and a probe that would start after
+//! the budget is spent is not sent.
 
+use std::time::Duration;
+
+use crate::deadline::Deadline;
 use crate::http::{Request, Transport};
+
+/// Cap on one probe, recomputed against the budget before every send.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Known WAF/CDN patterns detected by analyzing response headers and behavior.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -119,47 +129,41 @@ impl FingerprintFinding {
     }
 }
 
-/// Probe a domain/URL for WAF/CDN fingerprints via HTTP headers.
+/// Probe one URL for WAF/CDN fingerprints via HTTP headers, with `cap` as the request timeout.
 ///
-/// Returns `Some(findings)` if any patterns match, `None` if probe fails or no matches found.
+/// `Some(Some(finding))` when a pattern matched, `Some(None)` when the URL answered without
+/// one, `None` when no response was obtained.
 #[must_use]
 pub fn fingerprint<T: Transport + ?Sized>(
     transport: &T,
     url: &str,
+    cap: Duration,
 ) -> Option<Option<FingerprintFinding>> {
-    use std::time::Duration;
-
-    // Create request with short timeout
-    let mut request = Request::get(url);
-    request.timeout = Some(Duration::from_secs(5));
-
+    let request = Request::get(url).with_timeout(cap);
     let response = transport.send(&request).ok()?;
 
-    // Check against all patterns
     for pattern in FINGERPRINT_PATTERNS {
         let mut matched_headers = Vec::new();
         let mut match_score: f64 = 0.0;
 
-        // Check each header pattern
         for header_name in pattern.headers {
             if let Some(value) = response.header_value(header_name) {
                 let lowered = value.to_lowercase();
-                for header_value_pattern in pattern.header_values {
-                    if lowered.contains(&header_value_pattern.to_lowercase()) {
-                        matched_headers.push(format!("{header_name}: {value}"));
-                        match_score += 0.4;
-                        break;
-                    }
+                if pattern
+                    .header_values
+                    .iter()
+                    .any(|needle| lowered.contains(&needle.to_lowercase()))
+                {
+                    matched_headers.push(format!("{header_name}: {value}"));
+                    match_score += 0.4;
                 }
             }
         }
 
-        // Check status code match
         if pattern.status_indicators.contains(&response.status) {
             match_score += 0.3;
         }
 
-        // If we have matches, return finding
         if match_score > 0.3 && !matched_headers.is_empty() {
             let confidence = (match_score / 0.7).min(1.0_f64);
             return Some(Some(FingerprintFinding {
@@ -175,62 +179,138 @@ pub fn fingerprint<T: Transport + ?Sized>(
     Some(None)
 }
 
-/// Fingerprint a domain and all its common subdomains/paths.
+/// Fingerprint a domain's web roots and `robots.txt` over both schemes, within `deadline`.
 pub fn fingerprint_domain<T: Transport + ?Sized>(
     transport: &T,
+    deadline: &Deadline<'_>,
     domain: &str,
 ) -> Vec<FingerprintFinding> {
-    let mut findings = Vec::new();
-
-    // Try root and common paths
-    let urls = vec![
+    let urls = [
         format!("http://{domain}"),
         format!("https://{domain}"),
         format!("http://{domain}/robots.txt"),
         format!("https://{domain}/robots.txt"),
     ];
 
+    let mut findings = Vec::new();
     for url in urls {
-        if let Some(Some(finding)) = fingerprint(transport, &url) {
+        if deadline.expired() {
+            break;
+        }
+        let cap = deadline.remaining().min(PROBE_TIMEOUT);
+        if let Some(Some(finding)) = fingerprint(transport, &url, cap) {
             findings.push(finding);
         }
     }
-
     findings
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
+    use crate::deadline::{FakeClock, SystemClock};
+    use crate::http::{Response, TransportFailure};
+
+    /// Answers every URL with the same headers and status; records each request's timeout and,
+    /// with a clock, "hangs" for its whole cap before answering.
+    struct Edge<'c> {
+        status: u16,
+        headers: Vec<(String, String)>,
+        caps: RefCell<Vec<Duration>>,
+        clock: Option<&'c FakeClock>,
+    }
+
+    impl Edge<'_> {
+        fn answering(status: u16, headers: &[(&str, &str)]) -> Self {
+            Self {
+                status,
+                headers: headers
+                    .iter()
+                    .map(|(n, v)| ((*n).to_owned(), (*v).to_owned()))
+                    .collect(),
+                caps: RefCell::new(Vec::new()),
+                clock: None,
+            }
+        }
+    }
+
+    impl Transport for Edge<'_> {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            let cap = request.timeout.expect("every probe carries its cap");
+            self.caps.borrow_mut().push(cap);
+            if let Some(clock) = self.clock {
+                clock.advance(cap);
+            }
+            Ok(Response {
+                status: self.status,
+                headers: self.headers.clone(),
+                body: Vec::new(),
+                truncated: false,
+            })
+        }
+    }
+
+    #[test]
+    fn a_server_header_names_the_edge() {
+        let edge = Edge::answering(200, &[("Server", "cloudflare")]);
+        let finding = fingerprint(&edge, "https://example.com", PROBE_TIMEOUT)
+            .flatten()
+            .expect("cloudflare matched");
+        assert_eq!(finding.detected_service, "Cloudflare");
+        assert_eq!(finding.category, "cdn");
+        assert_eq!(
+            finding.headers_matched,
+            vec!["server: cloudflare".to_owned()]
+        );
+        assert_eq!(finding.confidence_level(), "low");
+    }
+
+    #[test]
+    fn a_status_alone_is_not_a_fingerprint() {
+        let edge = Edge::answering(403, &[("Server", "something-else")]);
+        assert_eq!(
+            fingerprint(&edge, "https://example.com", PROBE_TIMEOUT),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn the_pass_probes_four_urls_within_the_budget() {
+        let edge = Edge::answering(200, &[]);
+        let deadline = Deadline::start(&SystemClock, Duration::from_secs(30));
+        assert!(fingerprint_domain(&edge, &deadline, "example.com").is_empty());
+        let caps = edge.caps.borrow();
+        assert_eq!(caps.len(), 4);
+        assert!(caps.iter().all(|c| *c == PROBE_TIMEOUT));
+    }
+
+    #[test]
+    fn hanging_roots_spend_the_budget_not_four_timeouts() {
+        let clock = FakeClock::new();
+        let mut edge = Edge::answering(200, &[]);
+        edge.clock = Some(&clock);
+        let deadline = Deadline::start(&clock, Duration::from_secs(7));
+        fingerprint_domain(&edge, &deadline, "example.com");
+        // 7 s / 5 s: one full probe, a second capped at the 2 s left, then nothing.
+        let caps = edge.caps.borrow();
+        assert_eq!(*caps, vec![PROBE_TIMEOUT, Duration::from_secs(2)]);
+        assert_eq!(clock.elapsed(), Duration::from_secs(7));
+    }
 
     #[test]
     fn confidence_levels_map_correctly() {
-        let high = FingerprintFinding {
+        let at = |confidence: f64| FingerprintFinding {
             url: "test".to_owned(),
-            detected_service: "Cloudflare".to_owned(),
+            detected_service: "x".to_owned(),
             category: "cdn".to_owned(),
             headers_matched: vec![],
-            confidence: 0.95,
+            confidence,
         };
-        assert_eq!(high.confidence_level(), "high");
-
-        let medium = FingerprintFinding {
-            url: "test".to_owned(),
-            detected_service: "Nginx".to_owned(),
-            category: "webserver".to_owned(),
-            headers_matched: vec![],
-            confidence: 0.75,
-        };
-        assert_eq!(medium.confidence_level(), "medium");
-
-        let low = FingerprintFinding {
-            url: "test".to_owned(),
-            detected_service: "Unknown".to_owned(),
-            category: "other".to_owned(),
-            headers_matched: vec![],
-            confidence: 0.5,
-        };
-        assert_eq!(low.confidence_level(), "low");
+        assert_eq!(at(0.95).confidence_level(), "high");
+        assert_eq!(at(0.75).confidence_level(), "medium");
+        assert_eq!(at(0.5).confidence_level(), "low");
     }
 
     #[test]
