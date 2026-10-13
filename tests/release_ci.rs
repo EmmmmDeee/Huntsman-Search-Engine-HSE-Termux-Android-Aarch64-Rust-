@@ -1922,6 +1922,98 @@ fn hex_run_rule_catches_a_key_packed_against_other_hex() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Runs that adjacent read-only data makes in a linked binary, each with at most four different
+/// digits in any 32-character window. "style" laid out before a zero-filled 64-hex constant is
+/// what failed the aarch64 release build of #907; the other two are `x86_64` release layouts.
+fn uniform_runs() -> Vec<(&'static str, Vec<u8>)> {
+    let zeros = "0".repeat(64);
+    vec![
+        (
+            "tag-then-zero-hash.bin",
+            [b"\x00\x01style".as_slice(), zeros.as_bytes(), b"\x00"].concat(),
+        ),
+        (
+            "digit-then-zeros-then-ca.bin",
+            [b"\x00\x014".as_slice(), zeros.as_bytes(), b"ca\x00"].concat(),
+        ),
+        (
+            "splat-vectors.bin",
+            [
+                b"\x00\x01".as_slice(),
+                "d".repeat(16).as_bytes(),
+                "6".repeat(16).as_bytes(),
+                b"\x00",
+            ]
+            .concat(),
+        ),
+        (
+            "zero-hash-text.txt",
+            format!("prev={zeros}e\n").into_bytes(),
+        ),
+        (
+            "four-digits.txt",
+            format!("v={}\n", "0a1b".repeat(8)).into_bytes(),
+        ),
+    ]
+}
+
+/// A key is 32 random hex digits: it uses 14 different ones on average and four or fewer with
+/// probability 9.9e-17 (exactly sum_{j<=4} C(16,j) S(32,j) j! / 16^32). A run whose every
+/// 32-digit window uses four or fewer is layout, not a key.
+#[test]
+fn hex_run_rule_ignores_a_run_too_uniform_to_be_a_key() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let dir = scratch("uniform-runs");
+    clean_fixture(&dir);
+    for (file, bytes) in uniform_runs() {
+        fs::write(dir.join(file), bytes).unwrap();
+    }
+    let (code, text) = scan(&dir);
+    assert_eq!(code, Some(0), "uniform runs are layout, not keys:\n{text}");
+    assert!(text.contains("key scan: 0 finding(s)"), "{text}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The boundary: five different digits in one 32-digit window is still key-shaped, and a key
+/// glued to a uniform run is still found by its own window.
+#[test]
+fn hex_run_rule_still_flags_five_different_digits_and_a_key_next_to_zeros() {
+    if !scanner_tools_present() {
+        return;
+    }
+    let dir = scratch("uniform-boundary");
+    clean_fixture(&dir);
+    let five = "0a1b2".repeat(7);
+    let key = random_hex32();
+    let zeros = "0".repeat(64);
+    fs::write(dir.join("five-digits.txt"), format!("v={five}\n")).unwrap();
+    fs::write(
+        dir.join("key-in-zeros.bin"),
+        [
+            b"\x00\x01".as_slice(),
+            zeros.as_bytes(),
+            key.as_bytes(),
+            zeros.as_bytes(),
+            b"\x00",
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let (code, text) = scan(&dir);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("key scan: 2 finding(s)"), "{text}");
+    for file in ["five-digits.txt", "key-in-zeros.bin"] {
+        assert!(
+            text.contains(&format!("{file} rule=hibp-key-hex (value withheld)")),
+            "{file} must be a finding:\n{text}"
+        );
+    }
+    assert_redacted(&text, &key, "key in zeros");
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// The loosening Security blocked must not come back in any form.
 #[test]
 fn hex_run_rule_has_no_length_exception_or_end_trim() {
