@@ -15,7 +15,6 @@ these slots without printing their values.
 | Brave Search | `HUNTSMAN_BRAVE_KEY` | owned credential material located; validate/reissue before production use if historical exposure applies |
 | Shodan | `HUNTSMAN_SHODAN_KEY` | private stored credential located; validity unverified |
 | Whoxy | `HUNTSMAN_WHOXY_KEY` | private stored credential located; validity unverified |
-| Citadel | `HUNTSMAN_CITADEL_KEY` | private stored credential located; validity unverified |
 | HIBP | `HUNTSMAN_HIBP_KEY` | owned subscription/key history; clean current credential required |
 | SeekNow | `HUNTSMAN_SEEKNOW_KEY` | historical credential only; clean current credential required |
 | OathNet | `HUNTSMAN_OATHNET_KEY` | historical credential only; clean current credential required |
@@ -37,7 +36,6 @@ HUNTSMAN_WIGLE_TOKEN=
 HUNTSMAN_BRAVE_KEY=
 HUNTSMAN_SHODAN_KEY=
 HUNTSMAN_WHOXY_KEY=
-HUNTSMAN_CITADEL_KEY=
 HUNTSMAN_HIBP_KEY=
 HUNTSMAN_SEEKNOW_KEY=
 HUNTSMAN_OATHNET_KEY=
