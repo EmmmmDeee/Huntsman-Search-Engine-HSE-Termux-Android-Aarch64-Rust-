@@ -131,19 +131,19 @@ mod tests {
 
     #[test]
     fn a_failed_outcome_shows_its_reason_escaped_and_capped() {
-        let mut failed = SourceExecutionOutcome::success("au_people", 1, 0);
+        let mut failed = SourceExecutionOutcome::success("asic_director", 1, 0);
         failed.kind = crate::source_outcome::SourceOutcomeKind::Inconclusive;
         failed.found = None;
         failed.detail = Some(HOSTILE.to_owned());
-        let mut long = SourceExecutionOutcome::success("asic_director", 1, 0);
+        let mut long = SourceExecutionOutcome::success("asic_persons", 1, 0);
         long.detail = Some("x".repeat(500));
-        let silent = SourceExecutionOutcome::success("asic_persons", 1, 3);
+        let silent = SourceExecutionOutcome::success("gravatar", 1, 3);
 
         let report = render(&[], &[failed, long, silent]).unwrap();
         let lines: Vec<&str> = report.lines().collect();
 
         assert_eq!(lines.len(), 4, "{report}");
-        assert!(lines[1].starts_with("au_people\tinconclusive\tfound=none\tdetail=Ada"));
+        assert!(lines[1].starts_with("asic_director\tinconclusive\tfound=none\tdetail=Ada"));
         assert_eq!(lines[1].split('\t').count(), 4, "{}", lines[1]);
         assert!(
             unexpected_controls(lines[1], &['\t']).is_empty(),
@@ -153,11 +153,11 @@ mod tests {
         assert_eq!(
             lines[2],
             format!(
-                "asic_director\tinconclusive\tfound=0\tdetail={}...",
+                "asic_persons\tinconclusive\tfound=0\tdetail={}...",
                 "x".repeat(200)
             )
         );
-        assert_eq!(lines[3], "asic_persons\tsuccess\tfound=3");
+        assert_eq!(lines[3], "gravatar\tsuccess\tfound=3");
     }
 
     #[test]

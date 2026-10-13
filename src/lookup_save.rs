@@ -62,8 +62,6 @@ pub const USERNAME_POLICY: SavePolicy = SavePolicy {
 fn people_outcome_provenance(label: &str) -> (&str, &'static str) {
     match label.split('.').next().unwrap_or(label) {
         "asic_director" => ("asic_director", "src/asic_director.rs"),
-        "au_people" => ("au_people", "src/au_people.rs"),
-        "au_electoral" => ("au_electoral", "src/au_electoral.rs"),
         _ => ("asic_persons", "src/asic_persons.rs"),
     }
 }
