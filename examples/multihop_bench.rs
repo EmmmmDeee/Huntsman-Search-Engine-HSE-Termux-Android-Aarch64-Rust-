@@ -186,10 +186,10 @@ fn measure(label: &str, size: usize, detail: &str, mut work: impl FnMut() -> (u6
 }
 
 fn rules_over(label: &str, size: usize, entities: &[Entity]) {
-    let relations = derive_all(entities, SCAN);
-    let detail = format!("relations={}", relations.len());
+    // The rules derive the relations they read; these are derived here only to count them.
+    let detail = format!("relations={}", derive_all(entities, SCAN).len());
     measure(label, size, &detail, || {
-        let correlations = evaluate_rules(entities, &relations, SCAN);
+        let correlations = evaluate_rules(entities, &[], SCAN);
         (correlations_checksum(&correlations), by_rule(&correlations))
     });
 }
