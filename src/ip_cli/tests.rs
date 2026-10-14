@@ -15,6 +15,8 @@ const VIRUSTOTAL: &str = r#"{"data":{"id":"1.1.1.1","type":"ip_address","attribu
 
 const PULSEDIVE_UNKNOWN: &str = r#"{"error":"Indicator not found."}"#;
 const SHODAN: &str = r#"{"ip_str":"1.1.1.1","ports":[53,443],"hostnames":["one.one.one.one"],"domains":["one.one"],"org":"APNIC Research and Development","isp":"Cloudflare, Inc.","asn":"AS13335","tags":[],"country_code":"AU"}"#;
+const URLSCAN_NONE: &str = r#"{"results":[],"total":0,"took":49,"has_more":false}"#;
+const IPINFO: &str = r#"{"ip":"1.1.1.1","hostname":"one.one.one.one","city":"Brisbane","region":"Queensland","country":"AU","loc":"-27.4820,153.0136","org":"AS13335 Cloudflare, Inc.","postal":"9010","anycast":true}"#;
 const SHODAN_KEY: &str = "shodan-test-key-0123456789abcdef";
 
 /// Answers by URL prefix and records every request.
@@ -88,6 +90,9 @@ fn keyless() -> Routes {
         ("https://www.virustotal.com/", 200, VIRUSTOTAL),
         ("https://pulsedive.com/", 404, PULSEDIVE_UNKNOWN),
         ("https://app.netlas.io/", 404, ""),
+        ("https://otx.alienvault.com/", 404, ""),
+        ("https://urlscan.io/", 200, URLSCAN_NONE),
+        ("https://ipinfo.io/", 200, IPINFO),
         ("https://api.shodan.io/", 200, SHODAN),
     ])
 }
@@ -139,7 +144,10 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "stat.ripe.net",
             "api.greynoise.io",
             "pulsedive.com",
-            "app.netlas.io"
+            "app.netlas.io",
+            "otx.alienvault.com",
+            "urlscan.io",
+            "ipinfo.io"
         ]
     );
     assert_eq!(outcome(&report, "internetdb"), SourceOutcomeKind::Success);
@@ -147,7 +155,10 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     assert_eq!(outcome(&report, "greynoise"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "pulsedive"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "netlas"), SourceOutcomeKind::ValidZero);
-    assert_eq!(report.outcomes.len(), 5, "an unkeyed leg reports nothing");
+    assert_eq!(outcome(&report, "otx"), SourceOutcomeKind::ValidZero);
+    assert_eq!(outcome(&report, "urlscan"), SourceOutcomeKind::ValidZero);
+    assert_eq!(outcome(&report, "ipinfo"), SourceOutcomeKind::Success);
+    assert_eq!(report.outcomes.len(), 8, "an unkeyed leg reports nothing");
 
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
     assert!(ip.has_tag(tags::VULNERABLE));

@@ -325,6 +325,24 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::ABUSECH_KEY_ENV],
     },
     Provider {
+        name: "AlienVault OTX",
+        get_key_url: "https://otx.alienvault.com/settings",
+        free_tier: "free key; works keyless at a lower limit",
+        slots: &[crate::environment::OTX_KEY_ENV],
+    },
+    Provider {
+        name: "urlscan.io",
+        get_key_url: "https://urlscan.io/user/profile/",
+        free_tier: "free key; searches work keyless at a lower quota",
+        slots: &[crate::environment::URLSCAN_KEY_ENV],
+    },
+    Provider {
+        name: "IPinfo",
+        get_key_url: "https://ipinfo.io/account/token",
+        free_tier: "free token: 50,000 lookups/month; works keyless at a lower limit",
+        slots: &[crate::environment::IPINFO_KEY_ENV],
+    },
+    Provider {
         name: "Censys",
         get_key_url: "https://platform.censys.io/account/api",
         free_tier: "free: 250 req/month",

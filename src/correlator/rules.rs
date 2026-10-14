@@ -42,7 +42,7 @@ pub fn source_family(source: &str) -> &'static str {
         "social_probe" | "gravatar" | "duolingo" => "social",
         "username_search" | "epieos" => "presence",
         "search_engines" | "google" | "exa_search" => "search",
-        "smtp_vrfy" | "emailrep" | "openpgp_keys" | "hunter" => "email_intel",
+        "smtp_vrfy" | "emailrep" | "openpgp_keys" | "hunter" | "kickbox" => "email_intel",
         "proxycurl" | "name_intel" | "fullcontact" | "contact_enrich" | "gleif_lei"
         | "asic_director" | "au_electoral" | "au_people" | "ahpra" | "acnc_charities" => {
             "identity_registry"
@@ -51,7 +51,7 @@ pub fn source_family(source: &str) -> &'static str {
         | "mylnikov" | "abuseipdb" | "bgpview" | "criminal_ip" | "ipqs" | "netblock" | "netlas"
         | "onyphe" | "portscan" | "ripestat" | "securitytrails" | "zoomeye" | "domainsdb"
         | "internetdb" | "greynoise" | "virustotal" | "pulsedive" | "threatfox" | "urlhaus"
-        | "whoxy" => "infra",
+        | "whoxy" | "otx" | "urlscan" | "ipinfo" => "infra",
         _ if source.contains("github") || source.contains("npm") => "code",
         _ if source.contains("forum") || source.contains("reddit") => "forum",
         _ if source.contains("search") => "search",
