@@ -82,7 +82,7 @@ pub(super) fn print_command_help(command: &str) {
         }
         "sf" => SF_USAGE,
         "serve" => {
-            "serve [--bind ADDR]\nStart the embedded Web UI and JSON API, including GET /api/lookup (needs the X-Huntsman-Lookup: 1 header). Default: 127.0.0.1:8080. HSE_BIND supplies the default bind; an explicit non-loopback bind requires HSE_AUTH_TOKEN."
+            "serve [--bind ADDR]\nStart the embedded Web UI and JSON API, including GET /api/lookup (needs the X-Huntsman-Lookup: 1 header) and GET /api/analyze?seeds=... (offline multi-hop analysis, one seed per line, no network request). Default: 127.0.0.1:8080. HSE_BIND supplies the default bind; an explicit non-loopback bind requires HSE_AUTH_TOKEN."
         }
         "modules" => {
             "modules [--json]\nList only rebuilt modules that are currently reachable through a huntsman-recon command."
