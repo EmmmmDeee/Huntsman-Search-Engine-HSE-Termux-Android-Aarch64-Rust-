@@ -23,9 +23,10 @@ The installer is no-root userland only. It refreshes Termux repository metadata,
 installs `git rust clang curl coreutils`, aligns the Termux Rust compiler with
 its host `rust-std-<target>` package, compiles a native toolchain probe, resolves
 `main` once to a full immutable commit SHA (unless `HUNTSMAN_REV` already names
-one), builds that exact locked revision, creates `~/.huntsman` and a private
-`~/.huntsman.env`, then runs `check` and ledger verification in the same
-disposable directory. Only after those gates pass does it atomically write
+one), builds that exact locked revision with the SHA embedded, creates `~/.huntsman`
+and a private `~/.huntsman.env`, then runs `check` and ledger verification in
+the same disposable directory and requires `huntsman-recon build-sha` to print
+the revision it built. Only after those gates pass does it atomically write
 `~/.huntsman/installed-revision` with the accepted source revision and toolchain
 provenance. It reports success only after runtime acceptance and provenance
 verification pass.

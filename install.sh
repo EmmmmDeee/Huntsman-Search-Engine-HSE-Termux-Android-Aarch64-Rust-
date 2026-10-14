@@ -176,6 +176,10 @@ fi
 [[ "$install_rev" =~ ^[0-9a-fA-F]{40}$ ]] ||
   die "HUNTSMAN_REV must be a full 40-character Git commit SHA"
 
+# Embed the resolved commit so `huntsman-recon build-sha` and diagnostics name the
+# source on the phone, the same way CI and release builds do.
+export HUNTSMAN_BUILD_SHA="${install_rev,,}"
+
 cargo install   --git "$REPO"   --rev "$install_rev"   --locked   --root "$TERMUX_PREFIX"   huntsman-recon
 
 STATE_DIR="${HUNTSMAN_HOME:-$HOME/.huntsman}"
@@ -199,6 +203,11 @@ accept_dir="$(mktemp -d "${TMPDIR:-$TERMUX_PREFIX/tmp}/huntsman-install-accept.X
   timeout 30 "$installed" check >/dev/null
   timeout 30 "$installed" verify var/ledger.json >/dev/null
 )
+# The binary must report the revision it was built from. Without this check a
+# build that lost its provenance, or a stale binary Cargo kept, would be accepted.
+installed_sha="$(timeout 30 "$installed" build-sha)" || installed_sha=""
+[[ "$installed_sha" == "$HUNTSMAN_BUILD_SHA" ]] ||
+  die "installed binary reports build-sha ${installed_sha:-<none>}, expected $HUNTSMAN_BUILD_SHA"
 
 rm -rf "$accept_dir"
 accept_dir=""

@@ -36,7 +36,14 @@ fn install_fake_termux_toolchain(fake_bin: &Path, fake_target_libdir: &Path) {
     );
     write_executable(
         &fake_bin.join("timeout"),
-        "#!/bin/sh\nprintf 'timeout %s\\n' \"$*\" >> \"$INSTALL_LOG\"\nexit 0\n",
+        // `build-sha` answers with what the fake cargo embedded, as the real binary would.
+        r#"#!/bin/sh
+printf 'timeout %s\n' "$*" >> "$INSTALL_LOG"
+case "$*" in
+  *' build-sha') cat "$INSTALL_LOG.build-sha" 2>/dev/null || printf '%s\n' unknown ;;
+esac
+exit 0
+"#,
     );
     write_executable(
         &fake_bin.join("pkg"),
@@ -96,7 +103,10 @@ esac
     );
     write_executable(
         &fake_bin.join("cargo"),
-        "#!/bin/sh\nprintf 'hibp=%s target=%s cargo %s\\n' \"${HUNTSMAN_HIBP_NO_EMBED:-}\" \"${CARGO_TARGET_DIR:-}\" \"$*\" >> \"$INSTALL_LOG\"\n",
+        r#"#!/bin/sh
+printf 'hibp=%s target=%s cargo %s\n' "${HUNTSMAN_HIBP_NO_EMBED:-}" "${CARGO_TARGET_DIR:-}" "$*" >> "$INSTALL_LOG"
+printf '%s\n' "${HUNTSMAN_BUILD_SHA:-unknown}" > "$INSTALL_LOG.build-sha"
+"#,
     );
 }
 
@@ -155,6 +165,13 @@ fn assert_first_install_contract(calls: &str, temp: &Path, prefix: &Path, rev: &
             prefix.display()
         )),
         "installer must verify the generated ledger before success: {calls}"
+    );
+    assert!(
+        calls.contains(&format!(
+            "timeout 30 {}/bin/huntsman-recon build-sha",
+            prefix.display()
+        )),
+        "installer must check the installed binary's embedded revision: {calls}"
     );
 }
 
@@ -257,6 +274,72 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
         "default installs must pin Cargo to the resolved main revision: {calls}"
     );
     assert_private_state(&temp, DEFAULT_MAIN_REV);
+
+    let _ = fs::remove_dir_all(&temp);
+}
+
+#[test]
+fn installer_embeds_the_resolved_revision_and_rejects_a_binary_without_it() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let installer = root.join("install.sh");
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+
+    // An upper-case pin is embedded in the lower-case form build-sha accepts.
+    let temp = scratch();
+    let fake_bin = temp.join("fake-bin");
+    let fake_target_libdir = temp.join("rustlib");
+    let log = temp.join("install.log");
+    let tmpdir = temp.join("tmp");
+    fs::create_dir_all(&tmpdir).unwrap();
+    install_fake_termux_toolchain(&fake_bin, &fake_target_libdir);
+    let run = |home: &Path, rev: &str| {
+        Command::new("bash")
+            .arg(&installer)
+            .env("PATH", format!("{}:{existing_path}", fake_bin.display()))
+            .env("PREFIX", "/data/data/com.termux/files/usr")
+            .env("INSTALL_LOG", &log)
+            .env("FAKE_RUST_TARGET_LIBDIR", &fake_target_libdir)
+            .env("HUNTSMAN_REV", rev)
+            .env("HOME", home)
+            .env("TMPDIR", &tmpdir)
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("HUNTSMAN_BUILD_SHA")
+            .output()
+            .expect("installer must execute")
+    };
+    let output = run(&temp, "B2731D117009A841C302A124F38A808D36F6EAC7");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(log.with_extension("log.build-sha")).unwrap(),
+        "b2731d117009a841c302a124f38a808d36f6eac7\n"
+    );
+
+    // A binary that does not report the revision (stale, or built without
+    // provenance) fails the install and records no provenance.
+    write_executable(
+        &fake_bin.join("cargo"),
+        "#!/bin/sh\nprintf '%s\\n' unknown > \"$INSTALL_LOG.build-sha\"\n",
+    );
+    let home = temp.join("stale-home");
+    fs::create_dir_all(&home).unwrap();
+    let output = run(&home, "b2731d117009a841c302a124f38a808d36f6eac7");
+    assert!(
+        !output.status.success(),
+        "a binary without provenance was accepted"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("installed binary reports build-sha unknown, expected b2731d117009a841c302a124f38a808d36f6eac7"),
+        "{stderr}"
+    );
+    assert!(
+        !home.join(".huntsman/installed-revision").exists(),
+        "provenance must not be recorded for a rejected binary"
+    );
 
     let _ = fs::remove_dir_all(&temp);
 }
