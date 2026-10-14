@@ -144,6 +144,30 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::VIRUSTOTAL_KEY_ENV],
     },
     Provider {
+        name: "AbuseIPDB",
+        get_key_url: "https://www.abuseipdb.com/account/api",
+        free_tier: "free: 1,000 checks/day",
+        slots: &[crate::environment::ABUSEIPDB_KEY_ENV],
+    },
+    Provider {
+        name: "GreyNoise",
+        get_key_url: "https://viz.greynoise.io/account/api-key",
+        free_tier: "free Community key; works keyless at a lower limit",
+        slots: &[crate::environment::GREYNOISE_KEY_ENV],
+    },
+    Provider {
+        name: "Hunter.io",
+        get_key_url: "https://hunter.io/api-keys",
+        free_tier: "free: 25 searches/month",
+        slots: &[crate::environment::HUNTER_KEY_ENV],
+    },
+    Provider {
+        name: "Numverify (APILayer)",
+        get_key_url: "https://apilayer.com/marketplace/number_verification-api",
+        free_tier: "free: 100 lookups/month",
+        slots: &[crate::environment::NUMVERIFY_KEY_ENV],
+    },
+    Provider {
         name: "Censys",
         get_key_url: "https://platform.censys.io/account/api",
         free_tier: "free: 250 req/month",

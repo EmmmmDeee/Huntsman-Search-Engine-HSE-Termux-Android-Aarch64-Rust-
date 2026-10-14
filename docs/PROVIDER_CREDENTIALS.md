@@ -22,7 +22,11 @@ these slots without printing their values.
 | OpenRouter | `HUNTSMAN_OPENROUTER_KEY` | account confirmed; current credential not recovered |
 | Google Gemini | `HUNTSMAN_GEMINI_KEY` | provider key existence confirmed; current value requires provider account |
 | GitHub | `HUNTSMAN_GITHUB_TOKEN` | token lifecycle confirmed; current credential requires provider account |
-| VirusTotal | `HUNTSMAN_VIRUSTOTAL_KEY` | account/API relationship supported; current credential not recovered |
+| VirusTotal | `HUNTSMAN_VIRUSTOTAL_KEY` | used by `domain` and `ip` (CLI, `scan`, web UI) when set in the environment; free: 4 lookups/min, 500/day |
+| AbuseIPDB | `HUNTSMAN_ABUSEIPDB_KEY` | used by `ip` when set in the environment; free: 1,000 checks/day |
+| GreyNoise | `HUNTSMAN_GREYNOISE_KEY` | optional for `ip`: the Community API answers without a key at a lower limit; a free Community key raises it |
+| Hunter.io | `HUNTSMAN_HUNTER_KEY` | used by `domain` when set in the environment; free: 25 searches/month, 10 addresses each |
+| Numverify (APILayer) | `HUNTSMAN_NUMVERIFY_KEY` | used by `phone` when set in the environment; APILayer marketplace key (`api.apilayer.com`), free: 100 lookups/month |
 | Censys | `HUNTSMAN_CENSYS_ID`, `HUNTSMAN_CENSYS_SECRET` | do not assume usable; provider access must be revalidated |
 
 ## Private runtime template
@@ -44,6 +48,10 @@ HUNTSMAN_OPENROUTER_KEY=
 HUNTSMAN_GEMINI_KEY=
 HUNTSMAN_GITHUB_TOKEN=
 HUNTSMAN_VIRUSTOTAL_KEY=
+HUNTSMAN_ABUSEIPDB_KEY=
+HUNTSMAN_GREYNOISE_KEY=
+HUNTSMAN_HUNTER_KEY=
+HUNTSMAN_NUMVERIFY_KEY=
 HUNTSMAN_CENSYS_ID=
 HUNTSMAN_CENSYS_SECRET=
 ```

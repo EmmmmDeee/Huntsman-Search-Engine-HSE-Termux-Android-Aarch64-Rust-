@@ -5,7 +5,8 @@
 //! exact same classifier.
 
 use crate::canonical::{
-    canonical_domain, canonical_email, canonical_handle, canonical_name, canonical_phone,
+    canonical_domain, canonical_email, canonical_handle, canonical_ip, canonical_name,
+    canonical_phone,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +20,8 @@ pub enum ScanKind {
     Phone,
     /// Domain recon: crt.sh certificate transparency and DNS record lookups.
     Domain,
+    /// One public IP address: `InternetDB`, `RIPEstat`, `GreyNoise`, and keyed reputation legs.
+    Ip,
 }
 
 impl ScanKind {
@@ -31,6 +34,7 @@ impl ScanKind {
             Self::Username => "username",
             Self::Phone => "phone",
             Self::Domain => "domain",
+            Self::Ip => "ip",
         }
     }
 }
@@ -47,6 +51,7 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
         "username" | "handle" => Ok(ScanKind::Username),
         "phone" => Ok(ScanKind::Phone),
         "domain" => Ok(ScanKind::Domain),
+        "ip" | "address" => Ok(ScanKind::Ip),
         other => Err(other),
     }
 }
@@ -59,6 +64,7 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
         ScanKind::Username => canonical_handle(raw),
         ScanKind::Phone => canonical_phone(raw),
         ScanKind::Domain => canonical_domain(raw),
+        ScanKind::Ip => canonical_ip(raw),
         // The people command owns the two-token rule and its offline skip path;
         // here only an empty name is non-canonical.
         ScanKind::People => {
@@ -70,8 +76,8 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
 
 /// Infer the rebuilt lookup front-end for one selector.
 ///
-/// Precedence is intentional: canonical email, explicit `@handle`, recognised
-/// phone syntax, then a person/name fallback. This preserves the existing CLI
+/// Precedence is intentional: canonical email, explicit `@handle`, public IP address,
+/// recognised phone syntax, domain, then a person/name fallback. This preserves the existing CLI
 /// behavior while making it independently testable.
 #[must_use]
 pub fn infer_kind(selector: &str) -> ScanKind {
@@ -79,6 +85,8 @@ pub fn infer_kind(selector: &str) -> ScanKind {
         ScanKind::Email
     } else if selector.starts_with('@') {
         ScanKind::Username
+    } else if canonical_ip(selector).is_some() {
+        ScanKind::Ip
     } else if crate::phone_intl::canonicalize(selector).is_some() {
         ScanKind::Phone
     } else if canonical_domain(selector).is_some() {
@@ -162,6 +170,10 @@ mod tests {
         assert_eq!(infer_kind("@ada"), ScanKind::Username);
         assert_eq!(infer_kind("+61412345678"), ScanKind::Phone);
         assert_eq!(infer_kind("example.com"), ScanKind::Domain);
+        assert_eq!(infer_kind("1.1.1.1"), ScanKind::Ip);
+        assert_eq!(infer_kind("2606:4700:4700::1111"), ScanKind::Ip);
+        assert_eq!(parse_kind("ip"), Ok(ScanKind::Ip));
+        assert_eq!(canonical_selector(ScanKind::Ip, "10.0.0.1"), None);
         assert_eq!(infer_kind("Ada Lovelace"), ScanKind::People);
     }
 

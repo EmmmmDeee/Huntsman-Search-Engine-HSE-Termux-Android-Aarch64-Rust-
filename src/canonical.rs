@@ -96,6 +96,60 @@ pub fn canonical_phone(raw: &str) -> Option<String> {
     crate::value_syntax::canonical_phone(raw)
 }
 
+/// `raw` as a public unicast IP address in its standard text form (IPv6 compressed and
+/// lower-case), or `None`. A bracketed IPv6 address is accepted. A private, loopback, link-local,
+/// shared (CGNAT), documentation, benchmarking, multicast, reserved or unspecified address is
+/// `None`: nothing public is known about it, and asking a provider would only disclose it.
+#[must_use]
+pub fn canonical_ip(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let raw = raw
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(raw);
+    let ip: std::net::IpAddr = raw.parse().ok()?;
+    is_public_ip(ip).then(|| ip.to_string())
+}
+
+/// Whether `ip` is public unicast: see [`canonical_ip`]. IPv6 is public only inside global
+/// unicast `2000::/3` and outside the documentation and transition prefixes; an IPv4-mapped
+/// address is judged as its IPv4 address. **Pure.**
+#[must_use]
+pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => is_public_ipv4(v4),
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_ipv4(v4);
+            }
+            let s = v6.segments();
+            let global_unicast = s[0] & 0xe000 == 0x2000;
+            let documentation = s[0] == 0x2001 && s[1] == 0x0db8;
+            // 2001::/23 holds Teredo, benchmarking and other IETF special-purpose blocks;
+            // 2002::/16 is 6to4.
+            let special = (s[0] == 0x2001 && s[1] < 0x0200) || s[0] == 0x2002;
+            global_unicast && !documentation && !special
+        }
+    }
+}
+
+fn is_public_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    let reserved = a == 0
+        || a == 10
+        || a == 127
+        || a >= 224
+        || (a == 100 && (64..128).contains(&b))
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..32).contains(&b))
+        || (a == 192 && b == 168)
+        || (a == 192 && b == 0 && (c == 0 || c == 2))
+        || (a == 198 && (b == 18 || b == 19))
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113);
+    !reserved
+}
+
 #[must_use]
 pub fn canonical_coordinates(raw: &str) -> Option<String> {
     let (lat, lon) = raw.split_once(',')?;
@@ -258,6 +312,45 @@ pub fn canonicalise_token(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_public_unicast_addresses_are_canonical_ips() {
+        assert_eq!(canonical_ip(" 1.1.1.1 ").as_deref(), Some("1.1.1.1"));
+        assert_eq!(
+            canonical_ip("[2606:4700:4700:0:0:0:0:1111]").as_deref(),
+            Some("2606:4700:4700::1111")
+        );
+        assert_eq!(
+            canonical_ip("::ffff:8.8.8.8").as_deref(),
+            Some("::ffff:8.8.8.8")
+        );
+        for refused in [
+            "10.0.0.1",
+            "172.16.4.4",
+            "192.168.1.1",
+            "127.0.0.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "192.0.2.1",
+            "198.51.100.7",
+            "203.0.113.9",
+            "198.18.0.1",
+            "224.0.0.1",
+            "255.255.255.255",
+            "0.0.0.0",
+            "::1",
+            "::",
+            "fe80::1",
+            "fd00::1",
+            "2001:db8::1",
+            "::ffff:10.0.0.1",
+            "1.1.1",
+            "example.com",
+            "",
+        ] {
+            assert_eq!(canonical_ip(refused), None, "{refused}");
+        }
+    }
 
     #[test]
     fn handle_collapses_separators() {

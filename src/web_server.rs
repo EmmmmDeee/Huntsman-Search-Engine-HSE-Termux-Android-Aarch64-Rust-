@@ -1043,11 +1043,12 @@ small,.dim{color:var(--dim)}
 <select id="kind" aria-label="kind">
 <option value="auto">auto</option><option value="people">people</option><option value="email">email</option>
 <option value="exposure">exposure</option><option value="username">username</option><option value="phone">phone</option>
+<option value="domain">domain</option><option value="ip">ip</option>
 </select>
-<input id="q" required maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="name, email, @handle or phone" aria-label="selector">
+<input id="q" required maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="name, email, @handle, phone, domain or IP" aria-label="selector">
 <button id="run" type="submit">Look up</button>
 </form>
-<small>Runs one lookup through the same front-ends as the CLI. It makes network requests; exposure spends operator keys.</small>
+<small>Runs one lookup through the same front-ends as the CLI. It makes network requests; exposure spends operator keys, and phone, domain and ip use the free-tier keys you have set.</small>
 </section>
 <section id="result" hidden>
 <div class="row"><b id="route"></b><span id="status" class="dim"></span><button id="download" type="button">Download JSON</button></div>
@@ -1056,7 +1057,7 @@ small,.dim{color:var(--dim)}
 </section>
 <section>
 <form id="analyze">
-<textarea id="seeds" required rows="4" maxlength="2048" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="a seed per line: name, email, @handle, phone or domain" aria-label="seeds"></textarea>
+<textarea id="seeds" required rows="4" maxlength="2048" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="a seed per line: name, email, @handle, phone, domain or IP" aria-label="seeds"></textarea>
 <button id="arun" type="submit">Analyze</button>
 </form>
 <small>Multi-hop analysis, offline: links the seeds, ranks the next pivots, names the gaps and plans the sources, with no network request and no key.</small>

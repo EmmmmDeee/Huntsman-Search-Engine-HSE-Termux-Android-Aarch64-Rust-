@@ -274,7 +274,12 @@ pub fn run_scan<T: Transport + ?Sized>(
             UsernameRun::Printed { report, .. } => report.entities,
             UsernameRun::Failed(message) => return Err(Error::Invalid(message)),
         },
-        "PHONE_NUMBER" => match phone_cli::run(&scan.target, now_unix) {
+        // Passive mode stays offline; otherwise the Numverify leg runs when its key is set.
+        "PHONE_NUMBER" => match if scan.use_case == "passive" {
+            phone_cli::run(&scan.target, now_unix)
+        } else {
+            phone_cli::run_keyed(transport, keys, &scan.target, now_unix)
+        } {
             PhoneRun::Printed { report, .. } => report.entities,
             PhoneRun::Failed(message) => return Err(Error::Invalid(message)),
         },
