@@ -2,6 +2,7 @@
 
 use std::env;
 use std::io::Write;
+use std::path::Path;
 use std::process::ExitCode;
 
 use super::fail;
@@ -9,7 +10,8 @@ use huntsman_recon::diagnostics::TermuxState;
 use huntsman_recon::environment::SERVE_TOKEN_ENV;
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
-use huntsman_recon::runtime::analyze_offline;
+use huntsman_recon::runtime::analyze_offline_with_history;
+use huntsman_recon::scan_artifact::{ArtifactError, ArtifactHistory};
 use huntsman_recon::scan_route::{
     ScanKind, canonical_selector, explicit_people_is_name, infer_kind, inferred_people_is_name,
     parse_kind,
@@ -31,9 +33,13 @@ fn bad_selector(message: &str) -> LookupError {
     }
 }
 
-/// `/api/analyze`: the offline investigation spine on the seeds, as `plan` runs it.
-fn web_analyze(seeds: &[String]) -> Result<serde_json::Value, LookupError> {
-    analyze_offline(seeds).map_err(|error| LookupError {
+/// `/api/analyze`: the offline investigation spine on the seeds, as `plan` runs it, bridged to the
+/// saved scans in `history` when `serve --history` gave one.
+fn web_analyze(
+    seeds: &[String],
+    history: Option<&ArtifactHistory>,
+) -> Result<serde_json::Value, LookupError> {
+    analyze_offline_with_history(seeds, history).map_err(|error| LookupError {
         status: match error {
             Error::Invalid(_) => 422,
             _ => 500,
@@ -104,6 +110,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         Err(Error::Invalid(message)) => return fail(EX_DATAERR, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };
+    let mut history_dir: Option<String> = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -114,16 +121,42 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
                 bind.clone_from(value);
                 index += 2;
             }
+            "--history" => {
+                let Some(value) = args.get(index + 1) else {
+                    return fail(EX_USAGE, "serve --history needs DIR");
+                };
+                history_dir = Some(value.clone());
+                index += 2;
+            }
             other => {
                 return fail(
                     EX_USAGE,
                     &format!(
-                        "unknown serve option: {other}\nusage: huntsman-recon serve [--bind ADDR]"
+                        "unknown serve option: {other}\nusage: huntsman-recon serve [--bind ADDR] [--history DIR]"
                     ),
                 );
             }
         }
     }
+
+    // Load the history before the listener binds, so a bad directory stops `serve` at startup
+    // instead of failing each analysis. The exit codes match `correlate --history`.
+    let history = match history_dir {
+        Some(dir) => match ArtifactHistory::open(Path::new(&dir)) {
+            Ok(history) => {
+                eprintln!(
+                    "serve: {} saved scan(s) in {dir} bridge the analysis",
+                    history.scan_count()
+                );
+                Some(std::sync::Arc::new(history))
+            }
+            Err(ArtifactError::Io(error)) => {
+                return fail(EX_NOINPUT, &format!("serve --history: {error}"));
+            }
+            Err(error) => return fail(EX_DATAERR, &format!("serve --history: {error}")),
+        },
+        None => None,
+    };
 
     let token = env::var(SERVE_TOKEN_ENV).ok();
     let config = match ServeConfig::parse(&bind, token) {
@@ -133,10 +166,13 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };
     let config_needs_token = config.bearer_token.is_some();
+    let analyze_history = history.clone();
     let server = match Server::bind(config) {
         Ok(server) => server
             .with_lookup(std::sync::Arc::new(web_lookup))
-            .with_analyze(std::sync::Arc::new(web_analyze)),
+            .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
+                web_analyze(seeds, analyze_history.as_deref())
+            })),
         Err(Error::Store(message)) => return fail(EX_UNAVAILABLE, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };

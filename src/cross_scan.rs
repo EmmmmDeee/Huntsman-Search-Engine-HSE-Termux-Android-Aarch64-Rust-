@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-use crate::entity::{Entity, EntityKind};
+use crate::entity::{Entity, EntityKind, Evidence};
 use crate::error::Error;
 use crate::tags;
 
@@ -338,7 +338,9 @@ pub fn is_bridgeable(entity: &Entity) -> bool {
     {
         return false;
     }
-    if entity.confidence < 0.45 {
+    // A finding must reach 0.45 to bridge. An operator's seed is the query itself, which every
+    // seed carries at 0.25, so the seed bridges on its value and a weak finding still does not.
+    if entity.confidence < 0.45 && !entity.evidence.iter().any(Evidence::is_operator_seed) {
         return false;
     }
     match entity.kind {
