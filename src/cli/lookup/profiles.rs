@@ -97,8 +97,9 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
             }
         }
         ScanKind::Email => {
-            let transport = UreqTransport::new(&TransportConfig::default());
-            match huntsman_recon::email_cli::run(&transport, selector, now) {
+            let keys = Keys::from_env();
+            let transport = UreqTransport::new(&api_leg::transport_config());
+            match huntsman_recon::email_cli::run_keyed(&transport, &keys, selector, now) {
                 EmailRun::Printed { text, report } => {
                     Ok(done(text, report.entities, report.outcomes, EMAIL_POLICY))
                 }

@@ -265,7 +265,8 @@ pub fn run_scan<T: Transport + ?Sized>(
     }
 
     let entities = match scan.target_type {
-        "EMAILADDR" => match email_cli::run(transport, &scan.target, now_unix) {
+        // Every keyed source for the address runs when its key is set.
+        "EMAILADDR" => match email_cli::run_keyed(transport, keys, &scan.target, now_unix) {
             EmailRun::Printed { report, .. } => report.entities,
             EmailRun::Network(message) => return Err(Error::Network(message)),
             EmailRun::Failed(message) => return Err(Error::Invalid(message)),

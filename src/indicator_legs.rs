@@ -13,7 +13,9 @@ use crate::http::Transport;
 use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Source};
 use crate::keys::Keys;
 use crate::source_outcome::SourceExecutionOutcome;
-use crate::{ipqs, leakix, netlas, pulsedive, securitytrails, shodan, threatfox, urlhaus, whoxy};
+use crate::{
+    hunter, ipqs, leakix, netlas, pulsedive, securitytrails, shodan, threatfox, urlhaus, whoxy,
+};
 
 /// Every indicator source, in the order a lookup runs them.
 pub const SOURCES: &[Source] = &[
@@ -26,6 +28,7 @@ pub const SOURCES: &[Source] = &[
     ipqs::INTEL,
     whoxy::INTEL,
     securitytrails::INTEL,
+    hunter::VERIFY,
 ];
 
 /// Confidence of the queried indicator.
@@ -118,6 +121,8 @@ fn fold(
     let (seed_kind, seed_attr) = match indicator {
         Indicator::Ip(_) => (EntityKind::IpAddress, "ip"),
         Indicator::Domain(_) => (EntityKind::Domain, "domain"),
+        Indicator::Email(_) => (EntityKind::Email, "email"),
+        Indicator::Phone(_) => (EntityKind::Phone, "phone"),
     };
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(source, scan_id),
@@ -163,7 +168,7 @@ fn fold(
 mod tests {
     use super::*;
     use crate::http::{Request, Response, TransportFailure};
-    use crate::indicator_sources::Pivot;
+    use crate::indicator_sources::{IndicatorKind, Pivot};
     use crate::source_outcome::SourceOutcomeKind;
     use std::sync::Mutex;
 
@@ -215,14 +220,17 @@ mod tests {
     #[test]
     fn every_configured_key_runs_its_source() {
         let keys = all_keys();
-        for indicator in [Indicator::Ip("1.1.1.1"), Indicator::Domain("example.com")] {
+        for kind in [
+            IndicatorKind::Ip,
+            IndicatorKind::Domain,
+            IndicatorKind::Email,
+            IndicatorKind::Phone,
+        ] {
+            let indicator = sample(kind);
             let legs = run(&Offline::default(), &keys, indicator, "s", 1);
             let expected: Vec<&str> = SOURCES
                 .iter()
-                .filter(|s| match indicator {
-                    Indicator::Ip(_) => s.ip,
-                    Indicator::Domain(_) => s.domain,
-                })
+                .filter(|s| s.kinds.contains(&indicator.kind()))
                 .map(|s| s.api.source)
                 .collect();
             let ran: Vec<&str> = legs.outcomes.iter().map(|o| o.module.as_str()).collect();
@@ -233,7 +241,7 @@ mod tests {
     #[test]
     fn every_source_answers_for_some_indicator_and_labels_are_unique() {
         let mut labels: Vec<&str> = SOURCES.iter().map(|s| s.api.source).collect();
-        assert!(SOURCES.iter().all(|s| s.ip || s.domain));
+        assert!(SOURCES.iter().all(|s| !s.kinds.is_empty()));
         labels.sort_unstable();
         let before = labels.len();
         labels.dedup();
@@ -244,11 +252,7 @@ mod tests {
     fn a_key_required_source_applies_only_with_its_key() {
         for source in SOURCES {
             let Some(key) = source.api.key else { continue };
-            let indicator = if source.ip {
-                Indicator::Ip("1.1.1.1")
-            } else {
-                Indicator::Domain("example.com")
-            };
+            let indicator = sample(source.kinds[0]);
             assert_eq!(
                 source.applies(indicator, &Keys::default()),
                 !key.required,
@@ -258,6 +262,15 @@ mod tests {
             let keys = Keys::parse(&format!("{}=k-0123456789abcdef\n", key.slot))
                 .unwrap_or_else(|e| panic!("{e}"));
             assert!(source.applies(indicator, &keys), "{}", source.api.source);
+        }
+    }
+
+    fn sample(kind: IndicatorKind) -> Indicator<'static> {
+        match kind {
+            IndicatorKind::Ip => Indicator::Ip("1.1.1.1"),
+            IndicatorKind::Domain => Indicator::Domain("example.com"),
+            IndicatorKind::Email => Indicator::Email("ada@example.com"),
+            IndicatorKind::Phone => Indicator::Phone("+61412345678"),
         }
     }
 

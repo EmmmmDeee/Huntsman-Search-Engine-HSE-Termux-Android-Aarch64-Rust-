@@ -7,12 +7,17 @@
 //! attributes to it, and how many public pages it was found on. The organisation and the address
 //! pattern are kept for the domain. When Hunter reports more addresses than one page holds, the
 //! answer is marked partial.
+//!
+//! The same key also verifies one address ([`VERIFY`], an indicator source for `email`): one
+//! `GET https://api.hunter.io/v2/email-verifier?email={address}`, keeping Hunter's verdict, score,
+//! the disposable, webmail, accept-all and blocked flags, and how many public pages carry it.
 
 use serde::Deserialize;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::canonical::canonical_email;
 use crate::http::{Transport, percent_encode_component};
+use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
 
 pub const SOURCE: &str = "hunter";
@@ -26,6 +31,12 @@ pub const API: Api = Api {
         place: KeyPlace::Header("X-API-KEY"),
         required: true,
     }),
+};
+/// Verifies one address with the same key; see [`verify`].
+pub const VERIFY: Source = Source {
+    api: &API,
+    kinds: &[IndicatorKind::Email],
+    lookup: verify,
 };
 /// Addresses read per search. The free plan's ceiling.
 pub const LIMIT: usize = 10;
@@ -176,6 +187,87 @@ pub fn decode(body: &[u8], domain: &str) -> Result<Search, LegError> {
     })
 }
 
+#[derive(Deserialize)]
+struct VerifyEnvelope {
+    data: Verification,
+}
+
+#[derive(Deserialize)]
+struct Verification {
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    score: Option<u8>,
+    #[serde(default)]
+    disposable: Option<bool>,
+    #[serde(default)]
+    webmail: Option<bool>,
+    #[serde(default)]
+    accept_all: Option<bool>,
+    #[serde(default)]
+    block: Option<bool>,
+    #[serde(default)]
+    sources: Vec<serde_json::Value>,
+}
+
+/// The verifier URL for `email`. **Pure.**
+#[must_use]
+pub fn verify_url(email: &str) -> String {
+    format!(
+        "https://api.hunter.io/v2/email-verifier?email={}",
+        percent_encode_component(email)
+    )
+}
+
+/// Verify `indicator` when it is an address.
+///
+/// # Errors
+/// The [`LegError`] that stopped the lookup.
+pub fn verify(
+    transport: &dyn Transport,
+    keys: &Keys,
+    indicator: Indicator<'_>,
+    now_unix: u64,
+) -> Result<Option<Finding>, LegError> {
+    let Indicator::Email(email) = indicator else {
+        return Ok(None);
+    };
+    match api_leg::get(transport, &API, keys, &verify_url(email), now_unix)? {
+        Answer::Body(body) => decode_verification(&body, email).map(Some),
+        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
+    }
+}
+
+/// One verifier answer for `email`. **Pure.**
+///
+/// # Errors
+/// [`LegError::Decode`] for an error envelope, another shape, or another address.
+pub fn decode_verification(body: &[u8], email: &str) -> Result<Finding, LegError> {
+    let data = api_leg::decode::<VerifyEnvelope>(body)?.data;
+    if data
+        .email
+        .as_deref()
+        .is_some_and(|e| !e.eq_ignore_ascii_case(email))
+    {
+        return Err(LegError::Decode("answer names another address".into()));
+    }
+    let status = api_leg::clean(data.status.as_deref()).unwrap_or_else(|| "unknown".into());
+    let mut finding = Finding::new(format!("Hunter verifier: {status}"))
+        .attr("verification", &status)
+        .opt_attr("score", data.score.map(|s| s.min(100).to_string()))
+        .attr("public_sources", data.sources.len().to_string())
+        .tag_if(data.disposable == Some(true), "disposable")
+        .tag_if(data.webmail == Some(true), "webmail")
+        .tag_if(data.accept_all == Some(true), "accept_all")
+        .tag_if(data.block == Some(true), "blocked");
+    if status == "invalid" {
+        finding = finding.tag("undeliverable");
+    }
+    Ok(finding)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +311,29 @@ mod tests {
     fn an_error_envelope_is_not_an_empty_domain() {
         let refused = r#"{"errors":[{"id":"authentication_failed","code":401,"details":"No user found for the API key supplied"}]}"#;
         assert!(decode(refused.as_bytes(), "example.com").is_err());
+    }
+
+    /// The `email-verifier` example of the Hunter v2 documentation.
+    const VERIFIED: &str = r#"{"data":{"status":"valid","result":"deliverable","_deprecation_notice":"Using result is deprecated, use status instead","score":100,"email":"patrick@stripe.com","regexp":true,"gibberish":false,"disposable":false,"webmail":false,"mx_records":true,"smtp_server":true,"smtp_check":true,"accept_all":false,"block":false,"sources":[{"domain":"beta.paperbook.app","uri":"http://beta.paperbook.app/x","extracted_on":"2020-12-01","last_seen_on":"2021-01-12","still_on_page":true}]},"meta":{"params":{"email":"patrick@stripe.com"}}}"#;
+
+    #[test]
+    fn the_documented_verification_keeps_status_score_and_sources() {
+        let f = decode_verification(VERIFIED.as_bytes(), "patrick@stripe.com")
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(f.summary, "Hunter verifier: valid");
+        assert!(f.attrs.contains(&("score", "100".into())));
+        assert!(f.attrs.contains(&("public_sources", "1".into())));
+        assert!(f.tags.is_empty());
+        assert!(decode_verification(VERIFIED.as_bytes(), "ada@example.com").is_err());
+    }
+
+    #[test]
+    fn a_verifier_error_envelope_is_not_a_verdict() {
+        let refused = r#"{"errors":[{"id":"authentication_failed","code":401,"details":"No user found for the API key supplied"}]}"#;
+        assert!(decode_verification(refused.as_bytes(), "ada@example.com").is_err());
+        assert_eq!(
+            verify_url("a+b@example.com"),
+            "https://api.hunter.io/v2/email-verifier?email=a%2Bb%40example.com"
+        );
     }
 }

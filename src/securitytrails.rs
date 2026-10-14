@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
-use crate::indicator_sources::{Finding, Indicator, PivotKind, Source};
+use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
 
 pub const SOURCE: &str = "securitytrails";
@@ -26,8 +26,7 @@ pub const API: Api = Api {
 };
 pub const INTEL: Source = Source {
     api: &API,
-    ip: false,
-    domain: true,
+    kinds: &[IndicatorKind::Domain],
     lookup,
 };
 

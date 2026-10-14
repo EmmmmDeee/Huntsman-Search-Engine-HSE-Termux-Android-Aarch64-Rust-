@@ -6,12 +6,15 @@
 //! key is reported as a rejected key and an empty balance as a plan refusal, never as a zero.
 //! What is kept: registrar, dates, status codes, name servers, and from the registrant the name,
 //! organisation, country and address. Street address, phone and fax are not kept.
+//!
+//! For an address the same key runs a reverse WHOIS (`?reverse=whois&email={address}`, one reverse
+//! credit per page): the first page of domains registered with that address, each a domain pivot.
 
 use serde::Deserialize;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::{Transport, percent_encode_component};
-use crate::indicator_sources::{Finding, Indicator, PivotKind, Source};
+use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
 
 pub const SOURCE: &str = "whoxy";
@@ -28,8 +31,7 @@ pub const API: Api = Api {
 };
 pub const INTEL: Source = Source {
     api: &API,
-    ip: false,
-    domain: true,
+    kinds: &[IndicatorKind::Domain, IndicatorKind::Email],
     lookup,
 };
 
@@ -90,7 +92,16 @@ pub fn url(domain: &str) -> String {
     )
 }
 
-/// Look `indicator` up; an address has no WHOIS record here.
+/// The reverse WHOIS URL for `email`. **Pure.**
+#[must_use]
+pub fn reverse_url(email: &str) -> String {
+    format!(
+        "https://api.whoxy.com/?reverse=whois&email={}",
+        percent_encode_component(email)
+    )
+}
+
+/// Look `indicator` up: the WHOIS record of a domain, or the domains registered with an address.
 ///
 /// # Errors
 /// The [`LegError`] that stopped the lookup.
@@ -100,13 +111,68 @@ pub fn lookup(
     indicator: Indicator<'_>,
     now_unix: u64,
 ) -> Result<Option<Finding>, LegError> {
-    let Indicator::Domain(domain) = indicator else {
-        return Ok(None);
+    let (url, email) = match indicator {
+        Indicator::Domain(domain) => (url(domain), None),
+        Indicator::Email(email) => (reverse_url(email), Some(email)),
+        Indicator::Ip(_) | Indicator::Phone(_) => return Ok(None),
     };
-    match api_leg::get(transport, &API, keys, &url(domain), now_unix)? {
-        Answer::Body(body) => decode(&body, domain),
+    match api_leg::get(transport, &API, keys, &url, now_unix)? {
+        Answer::Body(body) => match email {
+            Some(_) => decode_reverse(&body),
+            None => decode(&body, indicator.value()),
+        },
         Answer::NotFound(_) => Err(LegError::Unexpected(404)),
     }
+}
+
+#[derive(Deserialize)]
+struct Reverse {
+    status: i64,
+    #[serde(default)]
+    status_reason: Option<String>,
+    #[serde(default)]
+    total_results: Option<u64>,
+    #[serde(default)]
+    search_result: Vec<ReverseHit>,
+}
+
+#[derive(Deserialize)]
+struct ReverseHit {
+    #[serde(default)]
+    domain_name: Option<String>,
+}
+
+/// One reverse WHOIS page. No domains is a valid zero. **Pure.**
+///
+/// # Errors
+/// The refusal Whoxy's `status: 0` means, or [`LegError::Decode`] for another shape.
+pub fn decode_reverse(body: &[u8]) -> Result<Option<Finding>, LegError> {
+    let body: Reverse = api_leg::decode(body)?;
+    if body.status != 1 {
+        return Err(refusal(body.status_reason.as_deref()));
+    }
+    let domains: Vec<&str> = body
+        .search_result
+        .iter()
+        .filter_map(|h| h.domain_name.as_deref())
+        .collect();
+    if domains.is_empty() {
+        return Ok(None);
+    }
+    let total = body.total_results.unwrap_or(domains.len() as u64);
+    let mut finding = Finding::new(format!(
+        "Whoxy reverse WHOIS: {total} domain(s) registered with the address"
+    ))
+    .attr("registered_domains", total.to_string())
+    .tag_if(total > domains.len() as u64, "truncated");
+    for domain in domains {
+        finding = finding.pivot(
+            PivotKind::Domain,
+            domain,
+            "Domain whose WHOIS record names the address",
+        );
+    }
+    Ok(Some(finding))
 }
 
 /// The error Whoxy's `status: 0` reason means. **Pure.**
@@ -272,6 +338,33 @@ mod tests {
         assert_eq!(
             url("example.com"),
             "https://api.whoxy.com/?whois=example.com"
+        );
+    }
+
+    /// Whoxy's published `reverseWhois.json` shape, trimmed to two results.
+    const REVERSE: &str = r#"{"status":1,"total_pages":1,"current_page":1,"total_results":3,"search_result":[{"num":1,"domain_name":"mindspark.com","query_time":"2016-06-11 19:19:24","create_date":"1999-02-08","update_date":"2016-01-09","expiry_date":"2017-02-08","domain_registered":"yes","registrant_contact":{"full_name":"Domain Administrator","email_address":"dnsmanager@mindspark.com","phone_number":"+1.9145912000"}},{"num":2,"domain_name":"excite.com","create_date":"1995-09-19"}]}"#;
+
+    #[test]
+    fn a_reverse_page_turns_each_domain_into_a_pivot() {
+        let f = decode_reverse(REVERSE.as_bytes())
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("sample must decode"));
+        let names: Vec<&str> = f.pivots.iter().map(|p| p.value.as_str()).collect();
+        assert_eq!(names, ["mindspark.com", "excite.com"]);
+        assert_eq!(f.tags, ["truncated"]);
+        assert!(!format!("{f:?}").contains("9145912000"));
+        assert_eq!(
+            decode_reverse(br#"{"status":1,"total_results":0,"search_result":[]}"#),
+            Ok(None)
+        );
+        assert_eq!(
+            decode_reverse(INVALID_KEY.as_bytes()),
+            Err(LegError::Unauthorized)
+        );
+        assert_eq!(
+            reverse_url("a+b@example.com"),
+            "https://api.whoxy.com/?reverse=whois&email=a%2Bb%40example.com"
         );
     }
 }

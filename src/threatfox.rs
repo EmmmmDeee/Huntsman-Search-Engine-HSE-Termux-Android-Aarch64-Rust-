@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::circuit::host_of;
 use crate::http::Transport;
-use crate::indicator_sources::{Finding, Indicator, Source};
+use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
 use crate::tags;
 
@@ -31,8 +31,7 @@ pub const API: Api = Api {
 };
 pub const INTEL: Source = Source {
     api: &API,
-    ip: true,
-    domain: true,
+    kinds: &[IndicatorKind::Ip, IndicatorKind::Domain],
     lookup,
 };
 /// Most malware family names kept in one attribute.
@@ -102,6 +101,7 @@ fn names(ioc: &str, indicator: Indicator<'_>) -> bool {
         Indicator::Domain(domain) => {
             ioc.contains("://") && host_of(ioc).is_some_and(|h| h.eq_ignore_ascii_case(domain))
         }
+        Indicator::Email(_) | Indicator::Phone(_) => false,
     }
 }
 
