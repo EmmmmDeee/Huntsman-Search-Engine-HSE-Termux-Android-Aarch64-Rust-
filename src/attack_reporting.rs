@@ -87,12 +87,7 @@ pub fn coverage_from_observations(
 }
 
 fn seed_evidence(evidence: &Evidence) -> bool {
-    matches!(
-        evidence.provenance.source.as_str(),
-        "operator_input" | "seed"
-    ) || evidence
-        .attr_values("evidence_role")
-        .any(|value| value == "seed_not_external_verification")
+    evidence.is_operator_seed()
 }
 
 /// Derive a hierarchy-aware coverage view from the current ATT&CK catalogue.
