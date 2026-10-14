@@ -105,6 +105,7 @@ pub mod method_actors_osint;
 pub mod metrics;
 pub mod module;
 pub mod navigator;
+pub mod oathnet;
 pub mod oui;
 pub mod oui_ieee;
 pub mod path;
