@@ -166,8 +166,8 @@ PLANNED: a source failure is recorded per source with its outcome and does not a
 
 ## VERIFICATION
 
-CURRENT gates (CI `ci.yml`, toolchains 1.87 and stable, owned by VERIFICATION LEAD):
-- `cargo fmt --check` and `cargo clippy --all-targets --locked -- -D warnings` (stable).
+CURRENT gates (CI `ci.yml`, toolchains 1.87 and the pinned stable 1.99, owned by VERIFICATION LEAD):
+- `cargo fmt --check` and `cargo clippy --all-targets --locked -- -D warnings` (pinned stable).
 - `cargo test --locked`: unit tests plus integration suites including `accept.rs`, `cli.rs`, `http_local.rs` (loopback sockets only), `differential_harness.rs`, `readme.rs`, `android_ci.rs`, `hibp_build.rs`, `hibp_cli.rs`, `architecture_doc.rs`, `architecture_boundaries.rs`, `corroboration_key.rs`, `lineage_merge_rule.rs`, `lineage_legacy.rs`, `lineage_independence_adversarial.rs`, `release_ci.rs`, `env_autoload.rs`, `source_registry_cli.rs`, `source_registry_metadata.rs` and `termux_runtime_acceptance.rs`.
 - `cargo run --locked -p xtask -- gate full` and `gate msrv` run `cargo run --locked -- check` and refuse the run if it changes any tracked or untracked content or moves HEAD. That is the `var/*.json` drift check; there is no separate `git diff --exit-code -- var/` step.
 - The Android aarch64 cross-build.
