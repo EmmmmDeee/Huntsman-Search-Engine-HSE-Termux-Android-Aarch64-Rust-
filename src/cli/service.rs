@@ -85,12 +85,20 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
     }
 }
 
-/// Printed by `serve` when `HSE_AUTH_TOKEN` is set. The page and every API call except health
-/// then need the token, and nothing else tells the operator so: the page only showed
-/// `unauthorized`. The value is never printed, so it stays out of terminal scrollback and logs.
+/// Printed by `serve` on a public bind, where the page and every API call except health need
+/// the token, and nothing else tells the operator so. The value is never printed, so it stays
+/// out of terminal scrollback and logs.
 fn token_hint(addr: std::net::SocketAddr) -> String {
     format!(
-        "serve: {SERVE_TOKEN_ENV} is set, so the API needs it: enter its value (echo \"${SERVE_TOKEN_ENV}\") in the page's token field, or open http://{addr}/#token=VALUE once; unset {SERVE_TOKEN_ENV} before serve to run a loopback server without a token"
+        "serve: this public bind needs {SERVE_TOKEN_ENV}: enter its value (echo \"${SERVE_TOKEN_ENV}\") in the page's token field, or open http://{addr}/#token=VALUE once"
+    )
+}
+
+/// Printed when `HSE_AUTH_TOKEN` is set for a loopback bind, which needs no token, so the
+/// operator is not left wondering whether the value guards anything.
+fn loopback_token_unused() -> String {
+    format!(
+        "serve: a loopback bind needs no token, so the page and API answer without {SERVE_TOKEN_ENV}"
     )
 }
 
@@ -159,13 +167,14 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     };
 
     let token = env::var(SERVE_TOKEN_ENV).ok();
+    let token_supplied = token.is_some();
     let config = match ServeConfig::parse(&bind, token) {
         Ok(config) => config,
         Err(Error::MissingCredential(message)) => return fail(EX_NOINPUT, &message),
         Err(Error::Invalid(message)) => return fail(EX_DATAERR, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };
-    let config_needs_token = config.bearer_token.is_some();
+    let config_needs_token = config.needs_token();
     let analyze_history = history.clone();
     let server = match Server::bind(config) {
         Ok(server) => server
@@ -181,6 +190,8 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
             println!("serving=http://{addr}/");
             if config_needs_token {
                 eprintln!("{}", token_hint(addr));
+            } else if token_supplied {
+                eprintln!("{}", loopback_token_unused());
             }
             if TermuxState::current() == TermuxState::Detected {
                 eprintln!("{TERMUX_BACKGROUND_HINT}");

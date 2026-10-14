@@ -1147,55 +1147,33 @@ fn the_huntsman_command_and_its_shortcuts_come_from_the_same_commit() {
     );
 }
 
+/// The phone's web UI asked for a token once an installer gave the service one (Matt,
+/// 2026-10-14: "remove these weird token requirements"). The service now runs without one, and a
+/// reinstall removes the token file an earlier installer wrote.
 #[test]
-fn the_web_ui_gets_a_private_token_that_survives_reinstalls() {
+fn the_web_ui_service_runs_without_a_token_and_a_reinstall_drops_the_old_one() {
     let t = Prebuilt::new().with_runit();
     publish_release(&t.releases, BUILT_REV, FAKE_RECON, FAKE_RECON);
     let rev = ("HUNTSMAN_REV", BUILT_REV);
+    let file = t.temp.join(".huntsman/serve.token");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, "5f0c8e4a9b7d6c3e2f1a0b9c8d7e6f5a\n").unwrap();
+
     let out = t.run(&[rev], BUILT_REV);
     assert!(out.status.success(), "{}", stderr(&out));
-
-    let file = t.temp.join(".huntsman/serve.token");
-    let token = fs::read_to_string(&file).unwrap();
-    let token = token.trim_end();
-    assert_eq!(token.len(), 64, "{token}");
-    assert!(token.bytes().all(|b| b.is_ascii_hexdigit()), "{token}");
-    assert_eq!(
-        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    assert!(!file.exists(), "the earlier installer's token file is removed");
     assert!(
-        !stdout(&out).contains(token) && !stderr(&out).contains(token),
-        "the token is never printed"
-    );
-    assert!(
-        stdout(&out).contains("Next: huntsman open (the web UI, signed in), or huntsman help"),
+        stdout(&out).contains("Next: huntsman open (the web UI), or huntsman help"),
         "{}",
         stdout(&out)
     );
     let run = fs::read_to_string(t.service().join("run")).unwrap();
-    assert!(
-        run.contains(&format!(
-            "HSE_AUTH_TOKEN=\"$(head -n 1 '{}' 2>/dev/null)\"",
-            file.display()
-        )) && run.contains("export HSE_AUTH_TOKEN"),
-        "the service reads the token from the file, not from the run script: {run}"
-    );
-    assert!(!run.contains(token), "{run}");
+    assert!(!run.contains("HSE_AUTH_TOKEN"), "{run}");
+    assert!(!run.contains("serve.token"), "{run}");
 
     let out = t.run(&[rev], BUILT_REV);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(
-        fs::read_to_string(&file).unwrap().trim_end(),
-        token,
-        "a reinstall keeps the token, so a signed-in browser stays signed in"
-    );
-
-    // An emptied file turns the token off and stays that way.
-    fs::write(&file, "").unwrap();
-    let out = t.run(&[rev], BUILT_REV);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(fs::read_to_string(&file).unwrap(), "");
+    assert!(!file.exists(), "a reinstall writes no token");
 }
 
 #[test]

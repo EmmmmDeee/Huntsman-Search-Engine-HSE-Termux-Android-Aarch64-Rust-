@@ -1,6 +1,6 @@
 //! Minimal embedded Web UI and HTTP API for Huntsman Recon.
 //!
-//! The default bind is loopback-only. Explicit non-loopback binds require a
+//! The default bind is loopback-only and needs no token. Explicit non-loopback binds require a
 //! non-empty bearer token supplied by the caller. The server is dependency-free,
 //! blocking and bounded per request. It exposes read-only metadata endpoints and, when the
 //! binary installs a [`LookupHandler`], `GET /api/lookup`, which runs one lookup through the
@@ -155,40 +155,51 @@ struct Routes {
     analyze: Option<AnalyzeHandler>,
 }
 
+/// Where `serve` listens and the token its API needs. Only [`ServeConfig::parse`] builds one, so a
+/// loopback bind can never carry a token.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ServeConfig {
     pub bind: SocketAddr,
-    pub bearer_token: Option<String>,
+    bearer_token: Option<String>,
 }
 
 impl ServeConfig {
     /// Build and validate server configuration.
     ///
+    /// A loopback bind never needs the token: the operator chose a page that asks for none on
+    /// the phone (2026-10-14), so a token supplied for a loopback bind is not used. The `Host`
+    /// guard and the lookup header still keep other websites out. A non-loopback bind is public
+    /// and always needs it.
+    ///
     /// # Errors
-    /// Rejects malformed bind addresses, empty supplied tokens, and explicit
-    /// non-loopback binds without a token.
+    /// Rejects malformed bind addresses, and a non-loopback bind without a non-empty token.
     pub fn parse(bind: &str, bearer_token: Option<String>) -> Result<Self, Error> {
         let bind = normalize_bind(bind)?;
-        let bearer_token = match bearer_token {
-            Some(token) => {
-                let token = token.trim().to_owned();
-                if token.is_empty() {
-                    return Err(Error::missing_credential(
-                        "HSE_AUTH_TOKEN must not be empty",
-                    ));
-                }
-                Some(token)
-            }
-            None => None,
-        };
-
-        if !bind.ip().is_loopback() && bearer_token.is_none() {
-            return Err(Error::missing_credential(
-                "non-loopback serve bind requires HSE_AUTH_TOKEN",
-            ));
+        if bind.ip().is_loopback() {
+            return Ok(Self {
+                bind,
+                bearer_token: None,
+            });
         }
+        match bearer_token.map(|token| token.trim().to_owned()) {
+            Some(token) if !token.is_empty() => Ok(Self {
+                bind,
+                bearer_token: Some(token),
+            }),
+            Some(_) => Err(Error::missing_credential(
+                "HSE_AUTH_TOKEN must not be empty",
+            )),
+            None => Err(Error::missing_credential(
+                "non-loopback serve bind requires HSE_AUTH_TOKEN",
+            )),
+        }
+    }
 
-        Ok(Self { bind, bearer_token })
+    /// Whether every endpoint but the page and health needs the bearer token: only on a public
+    /// bind.
+    #[must_use]
+    pub fn needs_token(&self) -> bool {
+        self.bearer_token.is_some()
     }
 }
 
@@ -517,12 +528,7 @@ fn handle_stream_with(
     let request = read_request(&mut stream, deadline)?;
     // A whole request: the connection is busy now, not idle, and is no longer closed early.
     drop(waiting);
-    let response = respond(
-        &request,
-        config.bearer_token.as_deref(),
-        config.bind,
-        routes,
-    );
+    let response = respond(&request, config, routes);
     stream
         .write_all(response.as_bytes())
         .map_err(|error| Error::Store(format!("serve write: {error}")))?;
@@ -692,12 +698,20 @@ struct Health<'a> {
     auth: &'a str,
 }
 
+/// The router for a server started with this bind and token, built the way `serve` builds it.
 #[cfg(test)]
 fn response_for_request(request: &str, bearer_token: Option<&str>, bind: SocketAddr) -> String {
-    respond(request, bearer_token, bind, &Routes::default())
+    respond(request, &test_config(bind, bearer_token), &Routes::default())
 }
 
-fn respond(request: &str, bearer_token: Option<&str>, bind: SocketAddr, routes: &Routes) -> String {
+#[cfg(test)]
+fn test_config(bind: SocketAddr, bearer_token: Option<&str>) -> ServeConfig {
+    ServeConfig::parse(&bind.to_string(), bearer_token.map(str::to_owned))
+        .unwrap_or_else(|error| panic!("{bind} with {bearer_token:?}: {error}"))
+}
+
+fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
+    let (bind, bearer_token) = (config.bind, config.bearer_token.as_deref());
     if request == "REQUEST_TOO_LARGE" {
         return response(
             413,
@@ -1284,6 +1298,20 @@ mod tests {
         "127.0.0.1:8080".parse().unwrap()
     }
 
+    /// A public bind, the only kind whose API needs the token.
+    fn public_bind() -> SocketAddr {
+        "0.0.0.0:8080".parse().unwrap()
+    }
+
+    /// The bind of a server started with `token`: a token is used only on a public bind.
+    fn bind_for(token: Option<&str>) -> SocketAddr {
+        if token.is_some() {
+            public_bind()
+        } else {
+            loopback_bind()
+        }
+    }
+
     /// Running out of descriptors or memory, or losing the pending connection, must not end
     /// `serve`; only a listener that can never accept again does.
     #[test]
@@ -1366,13 +1394,58 @@ mod tests {
     fn config_defaults_and_public_token_requirement_are_explicit() {
         let local = ServeConfig::parse(DEFAULT_BIND, None).unwrap();
         assert!(local.bind.ip().is_loopback());
+        assert!(!local.needs_token());
         assert!(ServeConfig::parse("0.0.0.0:8080", None).is_err());
-        assert!(ServeConfig::parse(DEFAULT_BIND, Some("   ".into())).is_err());
-        assert!(ServeConfig::parse("0.0.0.0:8080", Some("token".into())).is_ok());
+        assert!(ServeConfig::parse("0.0.0.0:8080", Some("   ".into())).is_err());
+        assert!(
+            ServeConfig::parse("0.0.0.0:8080", Some("token".into()))
+                .unwrap()
+                .needs_token()
+        );
         assert_eq!(
             ServeConfig::parse("localhost:9000", None).unwrap().bind,
             "127.0.0.1:9000".parse::<SocketAddr>().unwrap()
         );
+    }
+
+    /// The phone's web UI asked for a token on every load once the installer gave the service
+    /// one (seen 2026-10-14, "remove these weird token requirements"). A loopback server now
+    /// needs none, whatever `HSE_AUTH_TOKEN` holds: every endpoint answers without
+    /// `Authorization`, and health tells the page not to ask.
+    #[test]
+    fn a_loopback_server_needs_no_token_even_when_one_is_supplied() {
+        let lookups = echo_lookups();
+        for bind in ["127.0.0.1:8080", "localhost:8080", "[::1]:8080"] {
+            for token in [None, Some("phone-service-token"), Some("   ")] {
+                let config = ServeConfig::parse(bind, token.map(str::to_owned)).unwrap();
+                assert!(!config.needs_token(), "{bind} {token:?}");
+                let routes = Routes {
+                    lookups: Some(lookups.clone()),
+                    analyze: echo_seeds().analyze,
+                };
+                let ask = |path: &str| {
+                    respond(
+                        &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n{HEADER}\r\n"),
+                        &config,
+                        &routes,
+                    )
+                };
+                for path in [
+                    "/",
+                    "/api/modules",
+                    "/api/command",
+                    "/api/analyze?seeds=a",
+                    "/api/lookup?q=a",
+                ] {
+                    let answer = ask(path);
+                    assert!(
+                        answer.starts_with("HTTP/1.1 200"),
+                        "{bind} {token:?} {path}: {answer}"
+                    );
+                }
+                assert!(ask("/api/health").contains("\"auth\": \"none\""));
+            }
+        }
     }
 
     #[test]
@@ -1380,7 +1453,7 @@ mod tests {
         let health = response_for_request(
             "GET /api/health HTTP/1.1\r\n\r\n",
             Some("secret"),
-            loopback_bind(),
+            public_bind(),
         );
         assert!(health.starts_with("HTTP/1.1 200"));
         assert!(health.contains("\"status\": \"ok\""));
@@ -1388,14 +1461,14 @@ mod tests {
         let denied = response_for_request(
             "GET /api/modules HTTP/1.1\r\n\r\n",
             Some("secret"),
-            loopback_bind(),
+            public_bind(),
         );
         assert!(denied.starts_with("HTTP/1.1 401"));
 
         let allowed = response_for_request(
             "GET /api/modules HTTP/1.1\r\nAuthorization: bearer secret\r\n\r\n",
             Some("secret"),
-            loopback_bind(),
+            public_bind(),
         );
         assert!(allowed.starts_with("HTTP/1.1 200"));
         assert!(allowed.contains("\"modules\""));
@@ -1408,7 +1481,7 @@ mod tests {
     #[test]
     fn health_says_whether_a_token_is_needed_and_a_refusal_names_the_remedy() {
         let health = |token| {
-            response_for_request("GET /api/health HTTP/1.1\r\n\r\n", token, loopback_bind())
+            response_for_request("GET /api/health HTTP/1.1\r\n\r\n", token, bind_for(token))
         };
         assert!(health(Some("secret")).contains("\"auth\": \"token\""));
         assert!(health(None).contains("\"auth\": \"none\""));
@@ -1417,7 +1490,7 @@ mod tests {
             let denied = response_for_request(
                 &format!("GET {path} HTTP/1.1\r\nAuthorization: Bearer wrong\r\n\r\n"),
                 Some("secret"),
-                loopback_bind(),
+                public_bind(),
             );
             assert!(denied.starts_with("HTTP/1.1 401"), "{path}: {denied}");
             assert_eq!(
@@ -1823,10 +1896,9 @@ mod tests {
     }
 
     #[test]
-    fn the_host_guard_runs_before_authentication() {
-        // A rebound request to a protected endpoint is refused for its Host even with a
-        // valid token, so the guard never reveals the 200/401 distinction to a
-        // disallowed origin.
+    fn the_host_guard_refuses_a_rebound_host_whatever_it_carries() {
+        // A loopback server needs no token, so the Host guard is what keeps a rebound page
+        // out: a request with a disallowed Host is refused even when it carries a token.
         let served = response_for_request(
             "GET /api/command HTTP/1.1\r\nHost: evil.example\r\nAuthorization: Bearer secret\r\n\r\n",
             Some("secret"),
@@ -1875,7 +1947,7 @@ mod tests {
             lookups: lookups.cloned(),
             analyze: None,
         };
-        respond(request, token, loopback_bind(), &routes)
+        respond(request, &test_config(bind_for(token), token), &routes)
     }
 
     const HEADER: &str = "X-Huntsman-Lookup: 1\r\n";
@@ -2159,8 +2231,7 @@ mod tests {
     fn analyze(query: &str, extra: &str, token: Option<&str>, routes: &Routes) -> String {
         respond(
             &format!("GET /api/analyze?{query} HTTP/1.1\r\nHost: localhost\r\n{extra}\r\n"),
-            token,
-            loopback_bind(),
+            &test_config(bind_for(token), token),
             routes,
         )
     }
@@ -2227,8 +2298,7 @@ mod tests {
         }
         let post = respond(
             "POST /api/analyze?seeds=a HTTP/1.1\r\nHost: localhost\r\n\r\n",
-            None,
-            loopback_bind(),
+            &test_config(loopback_bind(), None),
             &echo_seeds(),
         );
         assert!(post.starts_with("HTTP/1.1 405"), "{post}");

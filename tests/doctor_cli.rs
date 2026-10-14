@@ -73,10 +73,10 @@ impl Drop for Serve {
     }
 }
 
-fn start_serve(home: &Path, token: Option<&str>) -> Serve {
+fn start_serve(home: &Path, bind: &str, token: Option<&str>) -> Serve {
     let mut command = bin(home);
     command
-        .args(["serve", "--bind", "127.0.0.1:0"])
+        .args(["serve", "--bind", bind])
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     if let Some(token) = token {
@@ -99,7 +99,7 @@ fn start_serve(home: &Path, token: Option<&str>) -> Serve {
 #[test]
 fn doctor_serve_reports_a_real_server_healthy_and_a_stopped_one_not_running() {
     let home = scratch("serve");
-    let serve = start_serve(&home, None);
+    let serve = start_serve(&home, "127.0.0.1:0", None);
     let out = bin(&home)
         .args(["doctor", "serve", "--bind", &serve.addr])
         .output()
@@ -152,10 +152,26 @@ fn doctor_serve_reports_a_real_server_healthy_and_a_stopped_one_not_running() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// The phone's service still exports the token an earlier installer wrote. A loopback server
+/// started with it needs none, so `doctor serve` finds it healthy from a shell without it.
 #[test]
-fn doctor_serve_needs_the_token_a_locked_server_was_started_with() {
+fn doctor_serve_finds_a_loopback_server_started_with_a_token_healthy_without_it() {
+    let home = scratch("loopback-token");
+    let serve = start_serve(&home, "127.0.0.1:0", Some("doctor-test-serve-token"));
+    let out = bin(&home)
+        .args(["doctor", "serve", "--bind", &serve.addr])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+    assert!(stdout(&out).starts_with("serve=healthy "), "{}", stdout(&out));
+    drop(serve);
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn doctor_serve_needs_the_token_a_public_server_was_started_with() {
     let home = scratch("token");
-    let serve = start_serve(&home, Some("doctor-test-serve-token"));
+    let serve = start_serve(&home, "0.0.0.0:0", Some("doctor-test-serve-token"));
     let out = bin(&home)
         .args(["doctor", "serve", "--bind", &serve.addr])
         .output()
