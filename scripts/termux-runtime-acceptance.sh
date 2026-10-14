@@ -197,6 +197,32 @@ verify_api() {
   [ "$(curl --silent --max-time 5 -o /dev/null -w '%{http_code}' "$base/api/lookup?kind=phone&q=%2B61412345678")" = 403 ] || return 1
 }
 
+# The page the phone's browser opens. It must arrive whole with the policy that lets its own
+# inline script run, and that script must call the endpoints this harness proves, so a page
+# that no longer loads or no longer reaches the server cannot pass.
+verify_web_ui() {
+  local base="$1"
+  local page="$WORK_DIR/page.html"
+  local head="$WORK_DIR/page.head"
+  local analysis="$WORK_DIR/analysis.json"
+
+  curl --fail --silent --show-error --max-time 5 -D "$head" "$base/" -o "$page" || return 1
+  kill -0 "$SERVER_PID" 2>/dev/null || return 1
+  grep -qi '^content-type: text/html' "$head" || return 1
+  grep -qi "^content-security-policy: .*script-src 'sha256-" "$head" || return 1
+  grep -qi '^<!doctype html>' "$page" || return 1
+  grep -q '</html>' "$page" || return 1
+  for endpoint in /api/lookup /api/analyze /api/health; do
+    grep -qF "$endpoint" "$page" || return 1
+  done
+  # The page's analysis form, offline: linking seeds needs no network and no key.
+  curl --fail --silent --show-error --max-time 10 \
+    "$base/api/analyze?seeds=alice%40example.com%0Aexample.com" -o "$analysis" || return 1
+  grep -q '"entities"' "$analysis" || return 1
+  grep -q '"relations"' "$analysis" || return 1
+  grep -q '"termination"' "$analysis" || return 1
+}
+
 # A browser opens speculative connections and sends nothing on them. A server that serves one
 # connection at a time makes the next request wait for each of them, so the web UI stalls for
 # seconds. Hold two such connections open and ask for the health page with a short limit.
@@ -231,6 +257,9 @@ start_and_verify_server() {
 
   verify_api "$base" || fail 'module/command APIs did not pass functional checks'
   pass 'module and command APIs return current structured state'
+
+  verify_web_ui "$base" || fail 'the web UI page or its offline analysis did not load'
+  pass 'web UI page loads under its policy and its offline analysis answers'
 
   verify_idle_connections "$bind" ||
     fail 'a request waited for idle connections, as a browser with speculative sockets would'
