@@ -283,6 +283,30 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::NUMVERIFY_KEY_ENV],
     },
     Provider {
+        name: "LeakIX",
+        get_key_url: "https://leakix.net/settings/api",
+        free_tier: "free account key",
+        slots: &[crate::environment::LEAKIX_KEY_ENV],
+    },
+    Provider {
+        name: "Pulsedive",
+        get_key_url: "https://pulsedive.com/account/",
+        free_tier: "free key; works keyless at a lower limit",
+        slots: &[crate::environment::PULSEDIVE_KEY_ENV],
+    },
+    Provider {
+        name: "IPQualityScore",
+        get_key_url: "https://www.ipqualityscore.com/user/settings",
+        free_tier: "free: 1,000 lookups/month",
+        slots: &[crate::environment::IPQS_KEY_ENV],
+    },
+    Provider {
+        name: "ThreatFox (abuse.ch)",
+        get_key_url: "https://auth.abuse.ch/",
+        free_tier: "free abuse.ch Auth-Key",
+        slots: &[crate::environment::THREATFOX_KEY_ENV],
+    },
+    Provider {
         name: "Censys",
         get_key_url: "https://platform.censys.io/account/api",
         free_tier: "free: 250 req/month",

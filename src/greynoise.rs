@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyUse, LegError};
+use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
 use crate::keys::Keys;
 
@@ -19,7 +19,7 @@ pub const API: Api = Api {
     origin: "https://api.greynoise.io:443",
     key: Some(KeyUse {
         slot: KEY_SLOT,
-        header: "key",
+        place: KeyPlace::Header("key"),
         required: false,
     }),
 };

@@ -1,6 +1,7 @@
 //! The one request path of the free and free-tier JSON API legs.
 //!
-//! A leg is one `GET` to one provider for one selector. [`Api`] declares everything that differs
+//! A leg is one request (a `GET`, or a JSON `POST` with [`post_json`]) to one provider for one
+//! selector. [`Api`] declares everything that differs
 //! between providers: the source label, the only origin a key may be sent to, and how the key is
 //! carried. [`get`] does the rest the same way for each of them, through [`crate::fetch`]:
 //! redirects are not followed, so a key cannot leave its origin; a key is only built from an
@@ -29,13 +30,23 @@ pub const TIMEOUT: Duration = Duration::from_secs(20);
 /// Longest provider text kept in a diagnostic or an attribute, in characters.
 pub const MAX_TEXT_CHARS: usize = 160;
 
+/// Where a provider takes its key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyPlace {
+    /// A request header of this name.
+    Header(&'static str),
+    /// A query parameter of this name, added only as the request is sent (see
+    /// [`AuthStyle::Query`]); the URL a provider module builds never holds the key.
+    Query(&'static str),
+}
+
 /// How a provider takes its key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyUse {
     /// The slot the key is read from (a constant in [`crate::environment`]).
     pub slot: &'static str,
-    /// The request header that carries it.
-    pub header: &'static str,
+    /// Where the key goes in the request.
+    pub place: KeyPlace,
     /// `false` when the provider also answers without a key, at a lower limit.
     pub required: bool,
 }
@@ -87,7 +98,7 @@ pub enum LegError {
     BadRequest(u16),
     #[error("unauthorised (HTTP 401): the key was rejected")]
     Unauthorized,
-    #[error("forbidden (HTTP 403): the plan or quota does not allow it")]
+    #[error("forbidden (HTTP 403): the key, plan or quota does not allow it")]
     Forbidden,
     #[error("rate or quota limit reached (HTTP 429){}", describe_retry(*.retry_after))]
     RateLimited { retry_after: Option<u64> },
@@ -176,6 +187,33 @@ pub fn get<T: Transport + ?Sized>(
     url: &str,
     now_unix: u64,
 ) -> Result<Answer, LegError> {
+    send(transport, api, keys, Request::get(url), now_unix)
+}
+
+/// `POST url` with the JSON `body` for `api`, with its key from `keys` when it has one.
+///
+/// # Errors
+/// As [`get`].
+pub fn post_json<T: Transport + ?Sized>(
+    transport: &T,
+    api: &Api,
+    keys: &Keys,
+    url: &str,
+    body: &serde_json::Value,
+    now_unix: u64,
+) -> Result<Answer, LegError> {
+    let request = Request::post(url, body.to_string().into_bytes())
+        .header("Content-Type", "application/json");
+    send(transport, api, keys, request, now_unix)
+}
+
+fn send<T: Transport + ?Sized>(
+    transport: &T,
+    api: &Api,
+    keys: &Keys,
+    request: Request,
+    now_unix: u64,
+) -> Result<Answer, LegError> {
     let secret = match api.key {
         None => None,
         Some(key) => match keys.get(key.slot) {
@@ -189,7 +227,7 @@ pub fn get<T: Transport + ?Sized>(
         .map(|(key, secret)| credential(api, *key, secret.clone(), now_unix))
         .transpose()?;
     let scrub: Vec<&str> = secret.iter().map(|(_, s)| s.expose()).collect();
-    let request = Request::get(url)
+    let request = request
         .header("Accept", "application/json")
         .with_timeout(TIMEOUT);
     let fetched = fetch(
@@ -230,7 +268,11 @@ fn credential(
         approval_provenance: format!("operator configured {}", key.slot),
     })
     .map_err(|e| LegError::Refused(e.to_string()))?;
-    Credential::new(authority, secret, AuthStyle::Header(key.header.into()))
+    let style = match key.place {
+        KeyPlace::Header(name) => AuthStyle::Header(name.into()),
+        KeyPlace::Query(name) => AuthStyle::Query(name.into()),
+    };
+    Credential::new(authority, secret, style)
         .map(|c| c.only_for_origin(api.origin))
         .map_err(|e| LegError::Refused(e.to_string()))
 }
@@ -304,14 +346,14 @@ mod tests {
         origin: "https://api.example.com:443",
         key: Some(KeyUse {
             slot: SLOT,
-            header: "Key",
+            place: KeyPlace::Header("Key"),
             required: true,
         }),
     };
     const OPTIONAL: Api = Api {
         key: Some(KeyUse {
             slot: SLOT,
-            header: "Key",
+            place: KeyPlace::Header("Key"),
             required: false,
         }),
         ..KEYED
@@ -394,6 +436,39 @@ mod tests {
             .map(|(name, _)| name.as_str())
             .collect();
         assert_eq!(carrying, ["Key"]);
+    }
+
+    #[test]
+    fn a_query_key_is_added_as_sent_and_never_in_a_header() {
+        const QUERY: Api = Api {
+            key: Some(KeyUse {
+                slot: SLOT,
+                place: KeyPlace::Query("key"),
+                required: true,
+            }),
+            ..KEYED
+        };
+        let transport = Recorder::new(200, "{}");
+        assert!(get(&transport, &QUERY, &keys(), &format!("{URL}?ip=1.2.3.4"), 1).is_ok());
+        let sent = transport.sent();
+        assert_eq!(sent[0].url, format!("{URL}?ip=1.2.3.4&key={KEY}"));
+        assert!(sent[0].headers.iter().all(|(_, v)| !v.contains(KEY)));
+    }
+
+    #[test]
+    fn a_json_post_carries_its_body_and_the_header_key() {
+        let transport = Recorder::new(200, "{}");
+        let body = serde_json::json!({"query": "search_ioc", "search_term": "1.2.3.4"});
+        assert!(post_json(&transport, &KEYED, &keys(), URL, &body, 1).is_ok());
+        let sent = transport.sent();
+        assert_eq!(sent[0].method, Method::Post);
+        assert_eq!(
+            sent[0].header_value("content-type"),
+            Some("application/json")
+        );
+        assert_eq!(sent[0].header_value("key"), Some(KEY));
+        let echoed: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap_or_default();
+        assert_eq!(echoed, body);
     }
 
     #[test]
