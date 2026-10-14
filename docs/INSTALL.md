@@ -191,7 +191,7 @@ installing, remove those locations instead.
 The installer runs the web UI as a
 [termux-services](https://wiki.termux.com/wiki/Termux-services) service named
 `huntsman-serve` and installs the `huntsman` command, which drives it. Open
-the page in the phone's browser, signed in:
+the page in the phone's browser:
 
 ```sh
 huntsman open
@@ -201,7 +201,7 @@ huntsman open
 | --- | --- |
 | `huntsman start`, `stop`, `restart` | Start, stop or restart the web UI. `stop` keeps it off across reboots and reinstalls. |
 | `huntsman status` | Whether it runs, its PID, memory, threads and address; exits 0 only when the page works. |
-| `huntsman open` | Open the page in the phone's browser, signed in with the service's token. Needs the Termux:API app and `pkg install termux-api`. |
+| `huntsman open` | Open the page in the phone's browser. Needs the Termux:API app and `pkg install termux-api`. |
 | `huntsman logs` | Follow the server's log. |
 | `huntsman clean` | Remove the Rust build cache and Huntsman temporary files. |
 | `huntsman scan-pipe TARGET [KIND]` | Scan, save the ledger under `~/huntsman-reports`, verify it, and write a Markdown report next to it. |
@@ -215,10 +215,13 @@ and `cred` are short for the `huntsman` commands. `domain`, `email`, `username`,
 `did`, `dossier`, `latest_json`, `latest_md` and `clean_reports` read the saved
 scans. Your `~/.bashrc` is left alone.
 
-The page's analysis form runs entirely on the phone: it links the seeds you
-enter, ranks the next pivots, names the seeds left unlinked and plans the
-sources to query, with no network request and no API key, so it works with
-mobile data off.
+The page is the HSE console: an app bar with the server's state, and a tab
+bar at the bottom of the screen for Look up, Analyze and Status (a top nav on
+a wider screen). The theme button switches between dark and light, and the
+browser remembers the choice. The Analyze tab runs entirely on the phone: it
+links the seeds you enter, ranks the next pivots, names the seeds left unlinked
+and plans the sources to query, with no network request and no API key, so it
+works with mobile data off.
 
 The service takes a wake lock for Termux, restarts the server within a second
 whenever it stops, starts again the next time Termux opens after a reboot, and
@@ -226,15 +229,13 @@ is restarted onto the new binary by every install or upgrade. The installer's
 last lines say whether the page answers. `HUNTSMAN_SERVE_SERVICE=off` or `on`
 when running the installer is the same as `huntsman stop` or `huntsman start`.
 
-Other apps on the phone can reach 127.0.0.1 too, and a lookup spends your
-provider keys, so the installer gives the service a random token in
-`~/.huntsman/serve.token` (readable only by Termux). The page and every API
-call except the health check need it. `huntsman open` passes it to the browser
-in the address's `#token=` part, which the browser keeps and never sends to a
-server, so you sign in once per browser; `huntsman status` and the installer
-send it too. Reinstalls keep the token. To use a different one, delete the file
-and run the installer again; to turn it off, empty the file and run
-`huntsman restart`.
+The page and its API listen on 127.0.0.1 and ask for no token or sign-in.
+Other websites cannot use them: the server answers only a loopback `Host`, and
+a lookup needs a header another site cannot send. Other apps on the phone can
+reach 127.0.0.1, though, and a lookup they make spends your provider keys. An
+earlier installer gave the service a token in `~/.huntsman/serve.token`; the
+installer now removes that file, and a loopback server ignores
+`HSE_AUTH_TOKEN`.
 
 Port 8080 is also the default of other servers people run in Termux, such as
 code-server and File Browser. When another program holds it, `huntsman start`
@@ -251,9 +252,8 @@ huntsman-recon serve --bind 127.0.0.1:8081
 termux-open-url http://127.0.0.1:8081/
 ```
 
-A server started this way has no token unless you export `HSE_AUTH_TOKEN`
-first. The service's page is at `termux-open-url http://127.0.0.1:8080/` when
-you open it without `huntsman open`; it then asks for the token.
+The service's page is at `termux-open-url http://127.0.0.1:8080/` when you
+open it without `huntsman open`.
 
 `serve` prints the address it listens on as `serving=http://…/`;
 `--bind 127.0.0.1:0` has the system pick a free port. A port below 1024 needs

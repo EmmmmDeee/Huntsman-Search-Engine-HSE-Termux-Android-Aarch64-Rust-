@@ -391,21 +391,14 @@ setup_serve_service() {
   esac
 
   mkdir -p "$dir/log" && chmod 0700 "$dir" "$dir/log" || die "could not create $dir"
-  # The service's HSE_AUTH_TOKEN: 32 random bytes, kept across reinstalls. An
-  # empty file runs the loopback server without a token.
-  local token_file="$STATE_DIR/serve.token"
-  if [[ ! -e "$token_file" ]]; then
-    (umask 077 && od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$token_file.tmp.$$") &&
-      mv -f "$token_file.tmp.$$" "$token_file" || die "could not write $token_file"
-  fi
-  chmod 0600 "$token_file"
+  # The loopback web UI needs no token. An earlier installer gave the service
+  # one in serve.token; nothing reads it any more.
+  rm -f "$STATE_DIR/serve.token"
   # `huntsman start` writes serve.bind when port 8080 is taken.
   write_file "$dir/run" 0700 "#!$sh
 # Written by install.sh. Keeps the CPU awake for Termux, then serves the web UI.
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock >/dev/null 2>&1
 bind=\"\$(head -n 1 '$STATE_DIR/serve.bind' 2>/dev/null)\"
-HSE_AUTH_TOKEN=\"\$(head -n 1 '$token_file' 2>/dev/null)\"
-if [ -n \"\$HSE_AUTH_TOKEN\" ]; then export HSE_AUTH_TOKEN; else unset HSE_AUTH_TOKEN; fi
 exec \"$installed\" serve \${bind:+--bind \"\$bind\"} 2>&1
 "
   # runsv runs finish after every exit and waits for it. Exit 69 means the port
@@ -480,4 +473,4 @@ printf 'Runtime variables file: %s\n' "$ENV_FILE"
 printf 'Install provenance: %s\n' "$PROVENANCE_FILE"
 printf 'Web UI: %s\n' "$serve_health"
 printf 'Command: %s\n' "$controller_note"
-printf 'Next: huntsman open (the web UI, signed in), or huntsman help\n'
+printf 'Next: huntsman open (the web UI), or huntsman help\n'
