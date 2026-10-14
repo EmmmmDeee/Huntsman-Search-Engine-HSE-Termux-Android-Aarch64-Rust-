@@ -180,7 +180,31 @@ fi
 # source on the phone, the same way CI and release builds do.
 export HUNTSMAN_BUILD_SHA="${install_rev,,}"
 
-cargo install   --git "$REPO"   --rev "$install_rev"   --locked   --root "$TERMUX_PREFIX"   huntsman-recon
+installed="$TERMUX_PREFIX/bin/huntsman-recon"
+
+install_recon() {
+  cargo install   --git "$REPO"   --rev "$install_rev"   --locked   --root "$TERMUX_PREFIX"   "$@"   huntsman-recon
+}
+
+installed_build_sha() {
+  local sha
+  sha="$(timeout 30 "$installed" build-sha 2>/dev/null)" || sha=""
+  printf '%s' "$sha"
+}
+
+install_recon
+# Cargo skips the build when this revision is already recorded as installed,
+# even if that binary was built without provenance. The binary's own
+# build-sha decides: on a mismatch, rebuild once with --force.
+installed_sha="$(installed_build_sha)"
+if [[ "$installed_sha" != "$HUNTSMAN_BUILD_SHA" ]]; then
+  printf 'Installed binary reports build-sha %s, expected %s; rebuilding.\n' \
+    "${installed_sha:-<none>}" "$HUNTSMAN_BUILD_SHA"
+  install_recon --force
+  installed_sha="$(installed_build_sha)"
+fi
+[[ "$installed_sha" == "$HUNTSMAN_BUILD_SHA" ]] ||
+  die "installed binary reports build-sha ${installed_sha:-<none>}, expected $HUNTSMAN_BUILD_SHA"
 
 STATE_DIR="${HUNTSMAN_HOME:-$HOME/.huntsman}"
 mkdir -p "$STATE_DIR"
@@ -195,7 +219,6 @@ if [[ ! -e "$ENV_FILE" ]]; then
 fi
 chmod 0600 "$ENV_FILE"
 
-installed="$TERMUX_PREFIX/bin/huntsman-recon"
 accept_dir="$(mktemp -d "${TMPDIR:-$TERMUX_PREFIX/tmp}/huntsman-install-accept.XXXXXX")"
 
 (
@@ -203,11 +226,6 @@ accept_dir="$(mktemp -d "${TMPDIR:-$TERMUX_PREFIX/tmp}/huntsman-install-accept.X
   timeout 30 "$installed" check >/dev/null
   timeout 30 "$installed" verify var/ledger.json >/dev/null
 )
-# The binary must report the revision it was built from. Without this check a
-# build that lost its provenance, or a stale binary Cargo kept, would be accepted.
-installed_sha="$(timeout 30 "$installed" build-sha)" || installed_sha=""
-[[ "$installed_sha" == "$HUNTSMAN_BUILD_SHA" ]] ||
-  die "installed binary reports build-sha ${installed_sha:-<none>}, expected $HUNTSMAN_BUILD_SHA"
 
 rm -rf "$accept_dir"
 accept_dir=""

@@ -279,7 +279,7 @@ fn root_installer_builds_huntsman_recon_and_forwards_an_optional_revision() {
 }
 
 #[test]
-fn installer_embeds_the_resolved_revision_and_rejects_a_binary_without_it() {
+fn installer_embeds_the_resolved_revision_and_rebuilds_a_binary_without_it() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let installer = root.join("install.sh");
     let existing_path = std::env::var("PATH").unwrap_or_default();
@@ -318,13 +318,55 @@ fn installer_embeds_the_resolved_revision_and_rejects_a_binary_without_it() {
         "b2731d117009a841c302a124f38a808d36f6eac7\n"
     );
 
-    // A binary that does not report the revision (stale, or built without
-    // provenance) fails the install and records no provenance.
+    // Cargo reports "already installed" for this revision and keeps a binary
+    // built without provenance. The installer rebuilds once with --force.
+    write_executable(
+        &fake_bin.join("cargo"),
+        r#"#!/bin/sh
+printf 'cargo %s\n' "$*" >> "$INSTALL_LOG"
+case "$*" in
+  *--force*) printf '%s\n' "$HUNTSMAN_BUILD_SHA" > "$INSTALL_LOG.build-sha" ;;
+  *) printf '%s\n' unknown > "$INSTALL_LOG.build-sha" ;;
+esac
+"#,
+    );
+    let home = temp.join("stale-home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(&log, "").unwrap();
+    let output = run(&home, "b2731d117009a841c302a124f38a808d36f6eac7");
+    assert!(
+        output.status.success(),
+        "a stale binary must be rebuilt, not fail the install: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        calls.matches("cargo install").count(),
+        2,
+        "one normal install, then one forced rebuild: {calls}"
+    );
+    assert!(
+        calls
+            .lines()
+            .filter(|l| l.starts_with("cargo install"))
+            .nth(1)
+            .is_some_and(|l| l.contains("--force")),
+        "the rebuild must pass --force: {calls}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(
+            "Installed binary reports build-sha unknown, expected b2731d117009a841c302a124f38a808d36f6eac7; rebuilding."
+        )
+    );
+    assert_private_state(&home, "b2731d117009a841c302a124f38a808d36f6eac7");
+
+    // A build that never embeds the revision fails, even after the forced
+    // rebuild, and records no provenance.
     write_executable(
         &fake_bin.join("cargo"),
         "#!/bin/sh\nprintf '%s\\n' unknown > \"$INSTALL_LOG.build-sha\"\n",
     );
-    let home = temp.join("stale-home");
+    let home = temp.join("no-provenance-home");
     fs::create_dir_all(&home).unwrap();
     let output = run(&home, "b2731d117009a841c302a124f38a808d36f6eac7");
     assert!(

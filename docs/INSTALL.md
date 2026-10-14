@@ -25,8 +25,10 @@ its host `rust-std-<target>` package, compiles a native toolchain probe, resolve
 `main` once to a full immutable commit SHA (unless `HUNTSMAN_REV` already names
 one), builds that exact locked revision with the SHA embedded, creates `~/.huntsman`
 and a private `~/.huntsman.env`, then runs `check` and ledger verification in
-the same disposable directory and requires `huntsman-recon build-sha` to print
-the revision it built. Only after those gates pass does it atomically write
+the same disposable directory. `huntsman-recon build-sha` must print the
+revision it built; when Cargo keeps an already-installed binary that does not
+(for example one built before the SHA was embedded), the installer rebuilds
+once with `--force` and fails if the result still does not match. Only after those gates pass does it atomically write
 `~/.huntsman/installed-revision` with the accepted source revision and toolchain
 provenance. It reports success only after runtime acceptance and provenance
 verification pass.
