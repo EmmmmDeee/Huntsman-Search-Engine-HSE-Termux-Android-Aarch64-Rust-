@@ -6,5 +6,7 @@
 mod cli;
 
 fn main() -> std::process::ExitCode {
-    cli::run(std::env::args().skip(1).collect())
+    // `args_os`, not `args`: an argument that is not UTF-8 (a file name from shared storage,
+    // say) is a usage error for the CLI layer to report, not a panic.
+    cli::run(std::env::args_os().skip(1).collect())
 }

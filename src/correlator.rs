@@ -30,6 +30,7 @@ pub struct RuleContext<'a> {
     by_uid: RefCell<Option<BTreeMap<&'a str, &'a Entity>>>,
     by_canonical_handle: RefCell<Option<BTreeMap<String, Vec<&'a Entity>>>>,
     pathways: RefCell<Option<Vec<PairPathways<'a>>>>,
+    clusters: RefCell<Option<Vec<Vec<String>>>>,
 }
 
 impl<'a> RuleContext<'a> {
@@ -41,6 +42,7 @@ impl<'a> RuleContext<'a> {
             by_uid: RefCell::new(None),
             by_canonical_handle: RefCell::new(None),
             pathways: RefCell::new(None),
+            clusters: RefCell::new(None),
         }
     }
 
@@ -94,6 +96,18 @@ impl<'a> RuleContext<'a> {
         }
         Ref::map(self.pathways.borrow(), |pathways| {
             pathways.as_ref().expect("cache initialised")
+        })
+    }
+
+    /// The identity clusters (see [`relation::resolve_identity_clusters`]), found once: AU-060
+    /// and AU-071 both read them.
+    pub fn identity_clusters(&self) -> Ref<'_, Vec<Vec<String>>> {
+        if self.clusters.borrow().is_none() {
+            let clusters = relation::resolve_identity_clusters(self.relations);
+            *self.clusters.borrow_mut() = Some(clusters);
+        }
+        Ref::map(self.clusters.borrow(), |clusters| {
+            clusters.as_ref().expect("cache initialised")
         })
     }
 }
