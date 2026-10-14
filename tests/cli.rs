@@ -1015,7 +1015,7 @@ fn correlate_history_pivots_a_saved_scan_across_earlier_saved_scans() {
         .output()
         .unwrap();
     assert_eq!(bad.status.code(), Some(65));
-    assert!(bad.stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&bad.stdout), "");
     assert!(String::from_utf8_lossy(&bad.stderr).contains("broken.json"));
     let missing = dir.join("absent");
     let absent = bin()
