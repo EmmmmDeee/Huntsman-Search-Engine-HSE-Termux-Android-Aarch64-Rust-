@@ -22,6 +22,8 @@ pub const EX_UNAVAILABLE: u8 = 69;
 pub const EX_IOERR: u8 = 74;
 /// Refused by policy (egress, or a malformed URL or redirect target), or no permission for it.
 pub const EX_NOPERM: u8 = 77;
+/// Configuration error: `doctor` found a check that fails.
+pub const EX_CONFIG: u8 = 78;
 /// The reader of standard output or standard error went away before the command finished, as
 /// when the output is piped into `head`. 141 is 128 plus SIGPIPE, the status a shell reports
 /// for a process that signal ended. Rust ignores SIGPIPE, so each binary's panic hook exits with

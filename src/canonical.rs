@@ -161,6 +161,27 @@ pub fn canonical_coordinates(raw: &str) -> Option<String> {
     Some(format!("{lat:.6},{lon:.6}"))
 }
 
+/// A MAC address (BSSID) in the one form the crate stores: six `:`-separated hex pairs, lower
+/// case. `-` separators are accepted. `None` for anything else. **Pure.**
+#[must_use]
+pub fn canonical_mac(raw: &str) -> Option<String> {
+    let mac = raw.trim().replace('-', ":").to_ascii_lowercase();
+    is_colon_mac(&mac).then_some(mac)
+}
+
+/// Six `:`-separated pairs of hex digits, in either case. **Pure.**
+#[must_use]
+pub fn is_colon_mac(value: &str) -> bool {
+    let mut count = 0usize;
+    for part in value.split(':') {
+        if part.len() != 2 || !part.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return false;
+        }
+        count += 1;
+    }
+    count == 6
+}
+
 #[must_use]
 pub fn canonical_provenance_family(raw: &str) -> String {
     canonical_family(raw)

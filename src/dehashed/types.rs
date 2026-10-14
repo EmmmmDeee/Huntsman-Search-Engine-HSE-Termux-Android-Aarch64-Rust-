@@ -11,12 +11,16 @@
 //! - Unknown fields are ignored, so an additive vendor change does not break
 //!   decoding. Missing optional fields are reported as absent, never invented.
 //!
-//! Passwords and hashes are deserialized only to report that they exist. They
-//! are never stored in a printable form, and `Debug` is written by hand so no
-//! derived output can expose them.
+//! Passwords and hashes are decoded as presence flags only (see `present_flag`):
+//! the cleartext value is parsed with `IgnoredAny` and discarded during
+//! decoding, so an `Entry` can never hold or expose it. This makes the
+//! "exposed / not exposed" redaction rule a property of the type rather than a
+//! discipline every caller must keep. `Debug` is still written by hand so a
+//! future field cannot leak into the derived output by accident.
 
 use std::fmt;
 
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Deserializer};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -34,21 +38,21 @@ pub struct Entry {
     pub email: Vec<String>,
     #[serde(default, deserialize_with = "one_or_many")]
     pub username: Vec<String>,
-    #[serde(default)]
-    pub password: Option<String>,
-    #[serde(default)]
-    pub hashed_password: Option<String>,
+    #[serde(default, deserialize_with = "present_flag")]
+    pub password: bool,
+    #[serde(default, deserialize_with = "present_flag")]
+    pub hashed_password: bool,
 }
 
 impl Entry {
     #[must_use]
     pub const fn has_password(&self) -> bool {
-        self.password.is_some()
+        self.password
     }
 
     #[must_use]
     pub const fn has_hashed_password(&self) -> bool {
-        self.hashed_password.is_some()
+        self.hashed_password
     }
 }
 
@@ -78,6 +82,18 @@ fn one_or_many<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>
         Some(OneOrMany::One(value)) => vec![value],
         Some(OneOrMany::Many(values)) => values,
     })
+}
+
+/// Decode a possibly-secret field as presence only.
+///
+/// A present, non-null value of any shape becomes `true`; `null` or an absent
+/// field becomes `false`. The value is parsed with [`IgnoredAny`] and dropped
+/// immediately, so a cleartext password or hash is never retained on an
+/// [`Entry`]. This matches the previous `Option::is_some` behaviour while
+/// keeping the secret out of memory, and it tolerates a vendor schema change to
+/// the field's JSON type without failing to decode.
+fn present_flag<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    Ok(Option::<IgnoredAny>::deserialize(deserializer)?.is_some())
 }
 
 #[cfg(test)]
@@ -121,5 +137,31 @@ mod tests {
         assert!(!rendered.contains("hunter2-secret"), "{rendered}");
         assert!(!rendered.contains("deadbeef-hash"), "{rendered}");
         assert!(rendered.contains("has_password: true"), "{rendered}");
+    }
+
+    #[test]
+    fn secrets_decode_as_presence_only_and_are_never_retained() {
+        // Present and non-null -> exposed.
+        let present: Entry = serde_json::from_str(
+            r#"{"password": "hunter2-cleartext", "hashed_password": "$2b$12$live-hash"}"#,
+        )
+        .unwrap();
+        assert!(present.has_password());
+        assert!(present.has_hashed_password());
+
+        // null or absent -> not exposed (matches the previous Option::is_some rule).
+        let null: Entry =
+            serde_json::from_str(r#"{"password": null, "hashed_password": null}"#).unwrap();
+        assert!(!null.has_password());
+        assert!(!null.has_hashed_password());
+        let absent: Entry = serde_json::from_str(r#"{"email": "a@example.com"}"#).unwrap();
+        assert!(!absent.has_password());
+        assert!(!absent.has_hashed_password());
+
+        // The cleartext is discarded at decode time: the field is a bool, so no
+        // rendering of the whole Entry can leak the value.
+        let rendered = format!("{present:?}");
+        assert!(!rendered.contains("hunter2-cleartext"), "{rendered}");
+        assert!(!rendered.contains("live-hash"), "{rendered}");
     }
 }

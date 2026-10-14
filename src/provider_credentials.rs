@@ -3,9 +3,124 @@
 //! Values are resolved by the existing `keys` module at runtime. This module
 //! never stores, serializes, logs, or returns credential values.
 
-use crate::http::Transport;
+use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
+use crate::http::{Request, Transport};
 use crate::keys::{Keys, Secret};
 use crate::service_defs::{ProbeVerdict, probe_service, service_for_env};
+
+/// The only origin `WiGLE` credentials are ever sent to.
+pub const WIGLE_ORIGIN: &str = "https://api.wigle.net:443";
+/// `WiGLE`'s own-profile endpoint: it checks the credentials without spending a search query.
+pub const WIGLE_PROFILE_URL: &str = "https://api.wigle.net/api/v2/profile/user";
+
+/// The operator's `WiGLE` API name and token as one HTTP Basic credential pinned to
+/// [`WIGLE_ORIGIN`], with every form of the secret a diagnostic must not show.
+pub struct WigleCredential {
+    pub credential: Credential,
+    secrets: [Secret; 3],
+}
+
+impl WigleCredential {
+    /// The API name, the token and the joined pair, for scrubbing provider text.
+    #[must_use]
+    pub fn secrets(&self) -> [&str; 3] {
+        self.secrets.each_ref().map(Secret::expose)
+    }
+}
+
+/// Why no `WiGLE` credential could be built. Neither variant carries a value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WigleCredentialError {
+    /// One or both slots are empty.
+    Missing,
+    /// The values cannot be sent as Basic credentials.
+    Refused(String),
+}
+
+/// The one place the `WiGLE` slots become a credential, for searches and for the probe.
+///
+/// # Errors
+/// [`WigleCredentialError::Missing`] when either slot is empty;
+/// [`WigleCredentialError::Refused`] when the API name holds a `:`, which Basic auth cannot
+/// carry in a user name.
+pub fn wigle_credential(
+    keys: &Keys,
+    now_unix: u64,
+) -> Result<WigleCredential, WigleCredentialError> {
+    use crate::environment::{WIGLE_TOKEN_ENV, WIGLE_USER_ENV};
+    let (Some(user), Some(token)) = (keys.get(WIGLE_USER_ENV), keys.get(WIGLE_TOKEN_ENV)) else {
+        return Err(WigleCredentialError::Missing);
+    };
+    if user.expose().contains(':') {
+        return Err(WigleCredentialError::Refused(format!(
+            "{WIGLE_USER_ENV} must be the API Name alone; a ':' cannot be sent as a Basic-auth user"
+        )));
+    }
+    let refused = |e: crate::error::Error| WigleCredentialError::Refused(e.to_string());
+    // Joined with a char, not `format!("{}:{}")`: that format leaves a lone ":" literal in
+    // rodata, which the release key scan reads joined to the slot name before it as
+    // `HUNTSMAN_WIGLE_TOKEN:...` and refuses the binary.
+    let mut joined = String::with_capacity(user.expose().len() + 1 + token.expose().len());
+    joined.push_str(user.expose());
+    joined.push(':');
+    joined.push_str(token.expose());
+    let pair = Secret::new(joined).map_err(refused)?;
+    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
+        provider_id: "wigle.net".into(),
+        credential_slot: WIGLE_TOKEN_ENV.into(),
+        approved_at_unix: now_unix,
+        approval_provenance: format!("operator configured {WIGLE_USER_ENV} and {WIGLE_TOKEN_ENV}"),
+    })
+    .map_err(refused)?;
+    let credential = Credential::new(authority, pair.clone(), AuthStyle::Basic)
+        .map_err(refused)?
+        .only_for_origin(WIGLE_ORIGIN);
+    Ok(WigleCredential {
+        credential,
+        secrets: [user, token, pair],
+    })
+}
+
+/// Check the `WiGLE` credentials against the profile endpoint, which spends no search query.
+/// A 200 JSON answer that does not say `success: false` is valid; 401 is rejected; 429 is rate
+/// limited. Nothing from the profile is kept: it names the account holder.
+fn wigle_probe<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> ProbeState {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let Ok(wigle) = wigle_credential(keys, now) else {
+        return ProbeState::NotConfigured;
+    };
+    let request = Request::get(WIGLE_PROFILE_URL).header("Accept", "application/json");
+    let Ok(fetched) = fetch(
+        transport,
+        request,
+        Some(&wigle.credential),
+        &FetchOptions::no_redirects(),
+        "wigle",
+        now,
+    ) else {
+        return ProbeState::Unavailable;
+    };
+    let Some(response) = fetched.response else {
+        return ProbeState::Unavailable;
+    };
+    match response.status {
+        200 => {
+            let answer: Option<serde_json::Value> = serde_json::from_slice(&response.body).ok();
+            match answer {
+                Some(value) if value.get("success") != Some(&serde_json::Value::Bool(false)) => {
+                    ProbeState::Valid
+                }
+                _ => ProbeState::Indeterminate,
+            }
+        }
+        401 | 403 => ProbeState::Rejected,
+        429 => ProbeState::RateLimited,
+        _ => ProbeState::Indeterminate,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Provider {
@@ -71,7 +186,7 @@ pub const PROVIDERS: &[Provider] = &[
     Provider {
         name: "WiGLE",
         get_key_url: "https://wigle.net/account",
-        free_tier: "free; encode user:token as base64",
+        free_tier: "free; USER is the API Name, TOKEN the API Token (not the encoded value); daily search limit",
         slots: &[
             crate::environment::WIGLE_USER_ENV,
             crate::environment::WIGLE_TOKEN_ENV,
@@ -253,7 +368,7 @@ pub fn status(keys: &Keys) -> Vec<ProviderStatus> {
 }
 
 /// Probe every configured single-slot provider that has a canonical
-/// `service_defs` probe. Unsupported providers remain explicit rather than
+/// `service_defs` probe, and `WiGLE` through its own-profile endpoint. Unsupported providers remain explicit rather than
 /// being guessed healthy. Probe errors are reduced to `Unavailable`; raw
 /// transport text is deliberately not carried into this status surface.
 #[must_use]
@@ -265,6 +380,13 @@ pub fn probe<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> Vec<ProviderP
                 return ProviderProbeStatus {
                     provider,
                     probe: ProbeState::NotConfigured,
+                    evidence: Vec::new(),
+                };
+            }
+            if provider.name == "WiGLE" {
+                return ProviderProbeStatus {
+                    probe: wigle_probe(keys, transport),
+                    provider,
                     evidence: Vec::new(),
                 };
             }
@@ -405,6 +527,64 @@ mod tests {
             self.seen.borrow_mut().push(request.clone());
             Ok(self.response.clone())
         }
+    }
+
+    #[test]
+    fn wigle_probe_checks_the_profile_with_basic_auth_and_keeps_nothing() {
+        let keys = Keys::parse(
+            "HUNTSMAN_WIGLE_USER=AIDprobe0123456789\nHUNTSMAN_WIGLE_TOKEN=probe-token-0123456789abcdef\n",
+        )
+        .expect("keys");
+        for (status, body, expected) in [
+            (200, r#"{"success":true,"userid":"Ada"}"#, ProbeState::Valid),
+            (200, r#"{"success":false}"#, ProbeState::Indeterminate),
+            (200, "<html>", ProbeState::Indeterminate),
+            (401, "Not Authorized (WiGLE.net)", ProbeState::Rejected),
+            (429, "{}", ProbeState::RateLimited),
+            (500, "{}", ProbeState::Indeterminate),
+        ] {
+            let transport = FakeTransport {
+                response: Response {
+                    status,
+                    headers: Vec::new(),
+                    body: body.as_bytes().to_vec(),
+                    truncated: false,
+                },
+                seen: RefCell::new(Vec::new()),
+            };
+            let wigle = probe(&keys, &transport)
+                .into_iter()
+                .find(|p| p.provider.name == "WiGLE")
+                .expect("WiGLE");
+            assert_eq!(wigle.probe, expected, "HTTP {status} {body}");
+            assert!(
+                wigle.evidence.is_empty(),
+                "the profile names the account holder"
+            );
+            let seen = transport.seen.borrow();
+            assert_eq!(seen.len(), 1, "one request, and only for WiGLE");
+            assert_eq!(seen[0].url, WIGLE_PROFILE_URL);
+            assert_eq!(
+                seen[0].header_value("authorization"),
+                Some("Basic QUlEcHJvYmUwMTIzNDU2Nzg5OnByb2JlLXRva2VuLTAxMjM0NTY3ODlhYmNkZWY=")
+            );
+        }
+        let half = Keys::parse("HUNTSMAN_WIGLE_USER=AIDprobe0123456789\n").expect("keys");
+        let transport = FakeTransport {
+            response: Response {
+                status: 200,
+                headers: Vec::new(),
+                body: Vec::new(),
+                truncated: false,
+            },
+            seen: RefCell::new(Vec::new()),
+        };
+        let wigle = probe(&half, &transport)
+            .into_iter()
+            .find(|p| p.provider.name == "WiGLE")
+            .expect("WiGLE");
+        assert_eq!(wigle.probe, ProbeState::NotConfigured);
+        assert!(transport.seen.borrow().is_empty());
     }
 
     #[test]
