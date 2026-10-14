@@ -1,6 +1,6 @@
 //! Invariants of `tests/fixtures/`:
 //! - every fixture is named, by its full path under `tests/fixtures`, in a string literal in
-//!   `src/`, `tests/` or `crates/`; comments do not count. A `.md` note counts as read while its
+//!   `src/` or `tests/`; comments do not count. A `.md` note counts as read while its
 //!   directory still holds a fixture for it to describe.
 //! - run-time reads go through `support/fixtures.rs`, which works from any working directory.
 //! - `.gitattributes` keeps checkouts from rewriting fixture bytes, and no later rule overrides it.
@@ -78,7 +78,7 @@ fn sets_line_endings(rule: &str) -> bool {
 fn every_fixture_is_named_by_a_reader() {
     let fixture_root = fixtures::path("");
     let all = files_under(&fixture_root);
-    let literals: Vec<String> = string_literals(&["src", "tests", "crates"])
+    let literals: Vec<String> = string_literals(&["src", "tests"])
         .into_iter()
         .flat_map(|(_, literals)| literals)
         .collect();

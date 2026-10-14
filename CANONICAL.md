@@ -7,7 +7,6 @@ One operator repository. One crate. One installed binary.
 - Package: `huntsman-recon` 0.2.0, edition 2024, rust-version 1.87
 - Dependencies: serde, serde_json, thiserror, ureq
 - Target: Termux Android `aarch64-linux-android`, no root, no ports below 1024
-- Identity module: `src/repository_identity.rs`
 - Value normaliser: `src/canonical.rs`
 
 One command from a clone of `main`:
