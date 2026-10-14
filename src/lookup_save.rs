@@ -149,6 +149,10 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         "urlscan" => ("urlscan", "src/urlscan.rs"),
         "ipinfo" => ("ipinfo", "src/ipinfo.rs"),
         "kickbox" => ("kickbox", "src/kickbox.rs"),
+        "robtex" => ("robtex", "src/robtex.rs"),
+        "hackertarget" => ("hackertarget", "src/hackertarget.rs"),
+        "stopforumspam" => ("stopforumspam", "src/stopforumspam.rs"),
+        "xposed_or_not" => ("xposed_or_not", "src/xposedornot.rs"),
         _ => return None,
     })
 }

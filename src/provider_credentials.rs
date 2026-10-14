@@ -337,6 +337,12 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::URLSCAN_KEY_ENV],
     },
     Provider {
+        name: "HackerTarget",
+        get_key_url: "https://hackertarget.com/scan-membership/",
+        free_tier: "membership key; works keyless at 50 queries/day",
+        slots: &[crate::environment::HACKERTARGET_KEY_ENV],
+    },
+    Provider {
         name: "IPinfo",
         get_key_url: "https://ipinfo.io/account/token",
         free_tier: "free token: 50,000 lookups/month; works keyless at a lower limit",

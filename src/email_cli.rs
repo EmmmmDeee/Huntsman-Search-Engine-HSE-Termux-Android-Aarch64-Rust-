@@ -5,8 +5,9 @@
 //! account-by-email lookup and the keys.openpgp.org key index are queried through the
 //! shared transport. Evidence is rendered with lineage. Saving is handled by
 //! the L7 `lookup_save` module, and `lookup_args` reads the `--save` option.
-//! [`run_keyed`] then runs every indicator source for an address (`IPQualityScore`, the Hunter
-//! verifier, Whoxy reverse WHOIS) whose key is configured; with no key it is exactly [`run`].
+//! [`run_keyed`] then runs every indicator source for an address: the keyless `StopForumSpam`,
+//! Kickbox and `XposedOrNot` checks, and `IPQualityScore`, the Hunter verifier and Whoxy reverse
+//! WHOIS when their keys are configured.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -32,7 +33,7 @@ use crate::{duolingo, openpgp_keys};
 pub const EMAIL_USAGE: &str = "usage: huntsman-recon email ADDR [--save FILE]";
 pub const EMAIL_HELP: &str = "\
 email ADDR [--save FILE]
-Canonicalise ADDR, derive deterministic email pivots, and query its public Gravatar profile, any Duolingo account registered to it, and any OpenPGP key published for it on keys.openpgp.org. Kickbox Open says, from the domain alone, whether it is a disposable-mail provider. Each keyed source runs when its key is set: IPQualityScore (HUNTSMAN_IPQS_KEY), the Hunter.io verifier (HUNTSMAN_HUNTER_KEY) and Whoxy reverse WHOIS (HUNTSMAN_WHOXY_KEY). --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise ADDR, derive deterministic email pivots, and query its public Gravatar profile, any Duolingo account registered to it, and any OpenPGP key published for it on keys.openpgp.org. Kickbox Open says, from the domain alone, whether it is a disposable-mail provider. StopForumSpam forum-spam reports and the names of public breaches XposedOrNot lists for the address are asked without a key. Each keyed source runs when its key is set: IPQualityScore (HUNTSMAN_IPQS_KEY), the Hunter.io verifier (HUNTSMAN_HUNTER_KEY) and Whoxy reverse WHOIS (HUNTSMAN_WHOXY_KEY). --save FILE writes an unverified ledger that verify can reload.";
 
 const CONF_DOMAIN: f64 = 0.80;
 const CONF_USERNAME_CORPORATE: f64 = 0.70;
@@ -587,31 +588,40 @@ mod tests {
     }
 
     #[test]
-    fn keyed_sources_run_only_with_their_keys_and_never_echo_them() {
+    fn without_keys_only_the_keyless_address_checks_are_added() {
         let unkeyed = ScriptedTransport::new(vec![
             Ok(reply(404, "")),
             Ok(reply(200, r#"{"users":[]}"#)),
             Ok(reply(404, "No key found")),
+            Ok(reply(
+                200,
+                r#"{"success":1,"email":{"value":"x","appears":0,"frequency":0}}"#,
+            )),
             Ok(reply(200, r#"{"disposable":false}"#)),
+            Ok(reply(200, r#"{"Error":"Not found","email":null}"#)),
         ]);
         match run_keyed(&unkeyed, &Keys::default(), "ada@example.com", 1) {
             EmailRun::Printed { text, .. } => {
-                assert!(text.contains("kickbox\tvalid_zero"), "{text}");
+                for source in ["stopforumspam", "kickbox", "xposed_or_not"] {
+                    assert!(text.contains(&format!("{source}\tvalid_zero")), "{text}");
+                }
             }
             other => panic!("{other:?}"),
         }
         let seen = unkeyed.seen.borrow();
         assert_eq!(
             seen.len(),
-            4,
-            "no key: only the keyless Kickbox check is added"
+            6,
+            "no key: only the keyless StopForumSpam, Kickbox and XposedOrNot checks are added"
         );
         assert_eq!(
-            seen[3].url, "https://open.kickbox.com/v1/disposable/example.com",
+            seen[4].url, "https://open.kickbox.com/v1/disposable/example.com",
             "Kickbox is sent the domain, never the address"
         );
-        drop(seen);
+    }
 
+    #[test]
+    fn configured_keys_run_their_sources_and_each_key_goes_only_to_its_provider() {
         let keys = Keys::parse(&format!(
             "{}=ipqs-test-key-0123456789\n{}=whoxy-test-key-0123456789\n{}=hunter-test-key-0123456789\n",
             crate::ipqs::KEY_SLOT,
@@ -623,7 +633,12 @@ mod tests {
             Ok(reply(404, "")),
             Ok(reply(200, r#"{"users":[]}"#)),
             Ok(reply(404, "No key found")),
+            Ok(reply(
+                200,
+                r#"{"success":1,"email":{"value":"x","appears":1,"frequency":3}}"#,
+            )),
             Ok(reply(200, r#"{"disposable":true}"#)),
+            Ok(reply(200, r#"{"breaches":[["Artsy"]]}"#)),
             Ok(reply(
                 200,
                 r#"{"success":true,"valid":true,"disposable":true,"leaked":true,"fraud_score":40,"sanitized_email":"ada@example.com"}"#,
@@ -641,7 +656,14 @@ mod tests {
             EmailRun::Printed { text, report } => (text, report),
             other => panic!("{other:?}"),
         };
-        for source in ["kickbox", "ipqs", "whoxy", "hunter"] {
+        for source in [
+            "stopforumspam",
+            "kickbox",
+            "xposed_or_not",
+            "ipqs",
+            "whoxy",
+            "hunter",
+        ] {
             assert!(text.contains(&format!("{source}\tsuccess")), "{text}");
         }
         assert!(!text.contains("test-key"), "{text}");
@@ -652,7 +674,7 @@ mod tests {
                 .any(|e| e.kind == EntityKind::Domain && e.raw_value == "ada-lovelace.example")
         );
         let seen = transport.seen.borrow();
-        let sent: Vec<(&str, bool)> = seen[4..]
+        let sent: Vec<(&str, bool)> = seen[6..]
             .iter()
             .map(|r| {
                 let in_header = r.headers.iter().any(|(_, v)| v.contains("test-key"));

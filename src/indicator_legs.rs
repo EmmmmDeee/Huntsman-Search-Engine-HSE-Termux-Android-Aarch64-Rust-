@@ -14,8 +14,8 @@ use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Sour
 use crate::keys::Keys;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::{
-    hunter, ipinfo, ipqs, kickbox, leakix, netlas, otx, pulsedive, securitytrails, shodan,
-    threatfox, urlhaus, urlscan, whoxy,
+    hackertarget, hunter, ipinfo, ipqs, kickbox, leakix, netlas, otx, pulsedive, robtex,
+    securitytrails, shodan, stopforumspam, threatfox, urlhaus, urlscan, whoxy, xposedornot,
 };
 
 /// Every indicator source, in the order a lookup runs them.
@@ -26,7 +26,11 @@ pub const SOURCES: &[Source] = &[
     otx::INTEL,
     urlscan::INTEL,
     ipinfo::INTEL,
+    robtex::INTEL,
+    hackertarget::INTEL,
+    stopforumspam::INTEL,
     kickbox::INTEL,
+    xposedornot::INTEL,
     leakix::INTEL,
     threatfox::INTEL,
     urlhaus::INTEL,
@@ -217,9 +221,21 @@ mod tests {
             1,
         );
         let ran: Vec<&str> = legs.outcomes.iter().map(|o| o.module.as_str()).collect();
-        assert_eq!(ran, ["pulsedive", "netlas", "otx", "urlscan", "ipinfo"]);
+        assert_eq!(
+            ran,
+            [
+                "pulsedive",
+                "netlas",
+                "otx",
+                "urlscan",
+                "ipinfo",
+                "robtex",
+                "hackertarget",
+                "stopforumspam"
+            ]
+        );
         assert!(legs.network.is_some());
-        assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 5);
+        assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 8);
     }
 
     #[test]
