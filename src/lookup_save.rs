@@ -43,6 +43,7 @@ fn phone_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "phone_intl" => ("phone_intl", "src/phone_intl.rs"),
         "phone_au" => ("phone_au", "src/phone_cli.rs"),
+        "numverify" => ("numverify", "src/numverify.rs"),
         _ => (source, "src/phone_cli.rs"),
     }
 }
@@ -107,6 +108,8 @@ fn domain_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "crtsh" => ("crtsh", "src/crtsh.rs"),
         "dns" => ("dns", "src/dns.rs"),
+        "virustotal" => ("virustotal", "src/virustotal.rs"),
+        "hunter" => ("hunter", "src/hunter.rs"),
         _ => (source, "src/domain_cli.rs"),
     }
 }
@@ -116,6 +119,24 @@ pub const DOMAIN_POLICY: SavePolicy = SavePolicy {
     does_not_show: "a domain-recon lead is not an identity-resolution verdict",
     outcome_provenance: domain_provenance,
     entity_provenance: domain_provenance,
+};
+
+fn ip_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        "internetdb" => ("internetdb", "src/internetdb.rs"),
+        "ripestat" => ("ripestat", "src/ripestat.rs"),
+        "greynoise" => ("greynoise", "src/greynoise.rs"),
+        "abuseipdb" => ("abuseipdb", "src/abuseipdb.rs"),
+        "virustotal" => ("virustotal", "src/virustotal.rs"),
+        _ => (source, "src/ip_cli.rs"),
+    }
+}
+
+pub const IP_POLICY: SavePolicy = SavePolicy {
+    default_source: "internetdb",
+    does_not_show: "an address-reputation lead is not an identity-resolution verdict",
+    outcome_provenance: ip_provenance,
+    entity_provenance: ip_provenance,
 };
 
 fn network_provenance(source: &str) -> (&str, &'static str) {

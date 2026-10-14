@@ -39,6 +39,7 @@ pub const CA_BUNDLE_ENV: &str = "HUNTSMAN_CA_BUNDLE";
 
 // Credential slots: keys-file names that `keys::Keys::get` also reads from the environment.
 pub const ABUSECH_KEY_ENV: &str = "HUNTSMAN_ABUSECH_KEY";
+pub const ABUSEIPDB_KEY_ENV: &str = "HUNTSMAN_ABUSEIPDB_KEY";
 pub const BRAVE_KEY_ENV: &str = "HUNTSMAN_BRAVE_KEY";
 pub const CENSYS_ID_ENV: &str = "HUNTSMAN_CENSYS_ID";
 pub const CENSYS_SECRET_ENV: &str = "HUNTSMAN_CENSYS_SECRET";
@@ -49,6 +50,7 @@ pub const EXA_KEY_ENV: &str = "HUNTSMAN_EXA_KEY";
 pub const FULLCONTACT_KEY_ENV: &str = "HUNTSMAN_FULLCONTACT_KEY";
 pub const GEMINI_KEY_ENV: &str = "HUNTSMAN_GEMINI_KEY";
 pub const GITHUB_TOKEN_ENV: &str = "HUNTSMAN_GITHUB_TOKEN";
+pub const GREYNOISE_KEY_ENV: &str = "HUNTSMAN_GREYNOISE_KEY";
 pub const HLR_KEY_ENV: &str = "HUNTSMAN_HLR_KEY";
 pub const HUNTER_KEY_ENV: &str = "HUNTSMAN_HUNTER_KEY";
 pub const INTELX_KEY_ENV: &str = "HUNTSMAN_INTELX_KEY";
