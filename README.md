@@ -252,7 +252,7 @@ mailboxes, and public-CA issuers are filtered; subdomains of the target apex
 carry the `subdomain` tag. Output is
 `kind<TAB>value<TAB>confidence<TAB>tags`, with control characters escaped.
 
-`recon dns TARGET` accepts a domain, URL or email and queries Cloudflare, Quad9
+`recon dns TARGET` accepts a domain, URL or email and queries Cloudflare, DNS.SB
 and Google DNS-over-HTTPS (JSON) for apex A, AAAA, MX, NS and TXT, plus
 `_dmarc` and `_smtp._tls` TXT, through `fetch` with redirects off. One
 record-type failure does not abort the others. A challenge page is `bot_waf`,
