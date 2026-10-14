@@ -191,7 +191,8 @@ cmd_open() {
   t="$(token)"
   command -v termux-open-url >/dev/null 2>&1 ||
     die "termux-open-url is missing; open $url and enter the token from $TOKEN_FILE"
-  termux-open-url "$url${t:+#token=$t}"
+  termux-open-url "$url${t:+#token=$t}" ||
+    die "could not open the browser; is the Termux:API app installed? The page is at $url"
   ok "opened $url${t:+ (signed in with the service token)}"
 }
 
