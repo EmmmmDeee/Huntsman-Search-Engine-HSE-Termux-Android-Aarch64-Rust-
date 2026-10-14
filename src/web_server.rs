@@ -313,14 +313,27 @@ enum AcceptFailure {
 /// `EBADF`, the same number on Linux, Android, the BSDs and macOS.
 const EBADF: i32 = 9;
 
+/// Errors that say the listener itself is unusable: a closed descriptor, and on Linux and
+/// Android a descriptor that is not a socket (`ENOTSOCK`, 88) or not a listening one
+/// (`EOPNOTSUPP`, 95). std files neither of the last two under a named `ErrorKind`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const FATAL_ERRNOS: [i32; 3] = [EBADF, 88, 95];
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const FATAL_ERRNOS: [i32; 1] = [EBADF];
+
 impl AcceptFailure {
     fn of(error: &std::io::Error) -> Self {
-        // An invalid or non-listening socket (EINVAL, ENOTSOCK, EOPNOTSUPP map to InvalidInput
-        // or Unsupported) and a closed descriptor never recover; everything else is about the
-        // moment, not the listener.
+        // An invalid socket (EINVAL is `InvalidInput`), an unsupported operation, and the
+        // descriptors in `FATAL_ERRNOS` never recover; everything else is about the moment,
+        // not the listener.
         match error.kind() {
             std::io::ErrorKind::InvalidInput | std::io::ErrorKind::Unsupported => Self::Fatal,
-            _ if error.raw_os_error() == Some(EBADF) => Self::Fatal,
+            _ if error
+                .raw_os_error()
+                .is_some_and(|raw| FATAL_ERRNOS.contains(&raw)) =>
+            {
+                Self::Fatal
+            }
             _ => Self::Transient,
         }
     }
@@ -1277,6 +1290,15 @@ mod tests {
             AcceptFailure::of(&IoError::from_raw_os_error(22)),
             AcceptFailure::Fatal
         );
+        // ENOTSOCK and EOPNOTSUPP: std leaves both `Uncategorized`, so they are named by number.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        for raw in [88, 95] {
+            assert_eq!(
+                AcceptFailure::of(&IoError::from_raw_os_error(raw)),
+                AcceptFailure::Fatal,
+                "errno {raw}"
+            );
+        }
         assert_eq!(
             AcceptFailure::of(&IoError::from(ErrorKind::Unsupported)),
             AcceptFailure::Fatal

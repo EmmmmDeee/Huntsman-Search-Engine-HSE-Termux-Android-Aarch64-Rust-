@@ -142,10 +142,13 @@ pub struct DomainDns {
 /// The DNS RCODE for a name that does not exist (RFC 1035 section 4.1.1).
 const DNS_NXDOMAIN: u32 = 3;
 
+/// A DNS JSON API answer. `Status` is the RCODE and every resolver sends it; a 200 JSON body
+/// without one (a captive portal's, an API gateway's error) is not a DNS answer at all, so it
+/// is `None` here rather than a default of NOERROR.
 #[derive(Debug, Deserialize, Default)]
 struct DnsJsonResponse {
-    #[serde(rename = "Status", default)]
-    status: u32,
+    #[serde(rename = "Status")]
+    status: Option<u32>,
     #[serde(rename = "Answer", default)]
     answers: Vec<DnsJsonAnswer>,
 }
@@ -167,10 +170,15 @@ pub fn resolver_config() -> ResolverPoolConfig {
                 ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
                 doh_url: "https://cloudflare-dns.com/dns-query",
             },
+            // DNS.SB (xTom): unfiltered, no query logs, and it answers the DNS JSON API on
+            // 443. Quad9 was here before, but its `/dns-query` speaks only RFC 8484 wire
+            // format and answered every JSON query with HTTP 400, so that leg never resolved
+            // anything (its JSON API sits on port 5053, which mobile networks and proxies
+            // often block).
             ResolverServer {
-                provider: "Quad9",
-                ip: IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
-                doh_url: "https://dns.quad9.net/dns-query",
+                provider: "DNS.SB",
+                ip: IpAddr::V4(Ipv4Addr::new(185, 222, 222, 222)),
+                doh_url: "https://doh.dns.sb/dns-query",
             },
             ResolverServer {
                 provider: "Google",
@@ -342,18 +350,26 @@ fn parse_response(
             kind: ResolveErrorKind::Upstream,
             detail: "invalid DNS JSON".into(),
         })?;
-    // RCODE 3 (NXDOMAIN) is authoritative: the name does not exist. Any other non-zero code
-    // (SERVFAIL, REFUSED, a DNSSEC failure) is about this resolver, so the next one is asked.
-    if parsed.status == DNS_NXDOMAIN {
-        return Err(ResolveError {
-            kind: ResolveErrorKind::Empty,
-            detail: format!("dns status {}", parsed.status),
-        });
-    }
-    if parsed.status != 0 {
+    // A body with no RCODE is not a DNS answer, whatever else it holds: the next resolver is
+    // asked rather than reading it as "no such record".
+    let Some(status) = parsed.status else {
         return Err(ResolveError {
             kind: ResolveErrorKind::Upstream,
-            detail: format!("dns status {}", parsed.status),
+            detail: "not a DNS answer: no Status".into(),
+        });
+    };
+    // RCODE 3 (NXDOMAIN) is authoritative: the name does not exist. Any other non-zero code
+    // (SERVFAIL, REFUSED, a DNSSEC failure) is about this resolver, so the next one is asked.
+    if status == DNS_NXDOMAIN {
+        return Err(ResolveError {
+            kind: ResolveErrorKind::Empty,
+            detail: format!("dns status {status}"),
+        });
+    }
+    if status != 0 {
+        return Err(ResolveError {
+            kind: ResolveErrorKind::Upstream,
+            detail: format!("dns status {status}"),
         });
     }
     // Keep only answers of the queried record type. A DoH answer array may carry a CNAME
@@ -715,7 +731,7 @@ mod tests {
         let config = resolver_config();
         let ips: Vec<IpAddr> = config.name_servers.iter().map(|server| server.ip).collect();
         assert!(ips.contains(&IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
-        assert!(ips.contains(&IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))));
+        assert!(ips.contains(&IpAddr::V4(Ipv4Addr::new(185, 222, 222, 222))));
         assert!(ips.contains(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
     }
 
@@ -764,7 +780,7 @@ mod tests {
         assert_eq!(answer.records, ["1.2.3.4"]);
         let seen = transport.seen.borrow();
         assert!(seen[0].url.contains("cloudflare-dns.com"));
-        assert!(seen[1].url.contains("dns.quad9.net"));
+        assert!(seen[1].url.contains("doh.dns.sb"));
         assert!(seen[2].url.contains("dns.google"));
         assert_eq!(seen[0].header_value("accept"), Some("application/dns-json"));
         let timeout = seen[0].timeout.expect("DoH request is capped");
@@ -814,7 +830,7 @@ mod tests {
     }
 
     /// NXDOMAIN and "no record of this type" come from the zone, so the first resolver's
-    /// answer is final: asking Quad9 and Google again only costs two more round trips and
+    /// answer is final: asking DNS.SB and Google again only costs two more round trips and
     /// tells two more providers the name being looked up.
     #[test]
     fn an_authoritative_empty_answer_asks_one_resolver_only() {
@@ -866,9 +882,53 @@ mod tests {
                 },
             )
             .expect("the second resolver answers");
-            assert_eq!(answer.server.provider, "Quad9");
+            assert_eq!(answer.server.provider, "DNS.SB");
             assert_eq!(transport.seen.borrow().len(), 2);
         }
+    }
+
+    /// A 200 JSON body with no `Status` is not a DNS answer (a captive portal's page, a
+    /// gateway's error object), so it is the resolver's failure, never "no such record".
+    #[test]
+    fn a_body_without_a_status_is_a_resolver_failure_not_an_empty_answer() {
+        for body in [
+            &br#"{"error":"captive portal"}"#[..],
+            b"{}",
+            br#"{"Answer":[]}"#,
+        ] {
+            let transport = FakeTransport::new(vec![
+                Ok(doh(body)),
+                Ok(doh(
+                    br#"{"Status":0,"Answer":[{"type":1,"data":"1.2.3.4"}]}"#,
+                )),
+            ]);
+            let answer = resolve_with_pool(
+                &transport,
+                &ResolveQuery {
+                    name: "example.com".into(),
+                    record_type: RecordType::A,
+                },
+            )
+            .expect("the second resolver answers");
+            assert_eq!(answer.records, ["1.2.3.4"]);
+            assert_eq!(
+                transport.seen.borrow().len(),
+                2,
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        let transport = FakeTransport::new(vec![Ok(doh(b"{}")); 3]);
+        let error = resolve_with_pool(
+            &transport,
+            &ResolveQuery {
+                name: "example.com".into(),
+                record_type: RecordType::A,
+            },
+        )
+        .expect_err("no resolver answered");
+        assert_eq!(error.kind, ResolveErrorKind::Upstream);
+        assert_eq!(error.detail, "not a DNS answer: no Status");
     }
 
     /// A domain with A and MX records but no AAAA, DMARC or TLS-RPT record: before, each of

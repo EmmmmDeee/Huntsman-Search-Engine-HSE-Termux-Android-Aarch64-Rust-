@@ -28,8 +28,9 @@ thiserror = "2.0"
 # The one blocking HTTP client behind the guarded fetch layer (rustls, no async runtime).
 ureq = "3"
 
-# The shipped binary is built on the phone (`cargo install` in install.sh) and cross-built in CI,
-# both with this profile. Thin LTO lets rustc inline across crates (serde_json, rustls) for
+# Every release build uses this profile: the phone's `cargo install` (install.sh), CI's Android
+# cross-build, the Railway container (Dockerfile) and the trusted xtask builds in the issue-fix
+# workflow. Thin LTO lets rustc inline across crates (serde_json, rustls) for
 # 10-45% faster analysis and a quarter smaller binary, at about 1.3x the build time; fat LTO
 # with one codegen unit gains a little more but more than doubles the build and the linker's
 # memory on a phone. Stripping symbols saves storage the binary does not use: panic messages

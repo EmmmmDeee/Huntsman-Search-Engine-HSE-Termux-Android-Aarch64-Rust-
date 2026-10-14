@@ -2,6 +2,7 @@
 
 use std::process::ExitCode;
 
+use super::doctor::DOCTOR_HELP;
 use super::{HELP, RECON_USAGE, USAGE, fail};
 use huntsman_recon::dehashed::cli::DEHASHED_USAGE;
 use huntsman_recon::email_cli::EMAIL_HELP;
@@ -25,13 +26,29 @@ pub(super) fn no_command() -> ExitCode {
     fail(EX_USAGE, &format!("{HELP}\n{USAGE}"))
 }
 
-pub(super) fn print_command_help(command: &str) {
+/// Usage error for an argument that is not UTF-8. The bytes are not echoed: an argument can
+/// be a selector, and the CLI never prints one back.
+pub(super) fn argument_not_utf8(position: usize, bytes: usize) -> ExitCode {
+    fail(
+        EX_USAGE,
+        &format!(
+            "argument {position} is not valid UTF-8 ({bytes} bytes); arguments must be UTF-8 text\n{USAGE}"
+        ),
+    )
+}
+
+/// The help text of a dispatched command, or `None` for a word that is not one.
+pub(super) fn command_help(command: &str) -> Option<&'static str> {
     let help = match command {
         "check" => {
             "check\nRun offline self-acceptance and regenerate var/ledger.json, var/navigator.json, and var/stix-bundle.json in the current directory, creating var/ if needed. Run it in an empty directory or a checkout."
         }
         "diagnostics" => {
             "diagnostics [--json]\nPrint offline build provenance, target/runtime context, reachable-module counts, ATT&CK-mapped collector counts, and provider credential completeness without values or network access."
+        }
+        "doctor" => DOCTOR_HELP,
+        "fix" => {
+            "fix [--json] [--probe] [--bind ADDR]\nThe same as doctor --fix: run every doctor check, make each repair that can be undone, then check again. It creates ~/.huntsman (mode 700) and an empty ~/.huntsman.env (mode 600) when they are missing, tightens loose permissions, re-runs the install acceptance before recording this binary as installed (the old record is kept as installed-revision.bak-TIME), and removes the Rust build cache only when Cargo tagged it and it is stale or the disk is nearly full. It never deletes a ledger or scan data and never writes or prints a key. Exit 0 when nothing fails afterwards, 78 when something still does."
         }
         "build-sha" => {
             "build-sha\nPrint the source commit embedded at build time, or unknown for builds without provenance metadata."
@@ -113,10 +130,7 @@ pub(super) fn print_command_help(command: &str) {
         "verify" => {
             "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
         }
-        _ => {
-            println!("{HELP}\n{USAGE}");
-            return;
-        }
+        _ => return None,
     };
-    println!("{help}\n  -h, --help  Show this help");
+    Some(help)
 }

@@ -1,9 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::entity::{Entity, EntityKind};
-use crate::relation::{
-    PairPathways, RelationKind, basis_kind, connection_brokers, resolve_identity_clusters,
-};
+use crate::relation::{PairPathways, RelationKind, basis_kind, connection_brokers};
 use crate::tags;
 use crate::timefmt::parse_timestamp;
 
@@ -316,8 +314,9 @@ pub fn rule_au_060_transitive_identity_closure(
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    resolve_identity_clusters(context.relations())
-        .into_iter()
+    context
+        .identity_clusters()
+        .iter()
         .filter(|cluster| cluster.len() >= 3)
         .map(|cluster| {
             Correlation::new(
@@ -328,7 +327,7 @@ pub fn rule_au_060_transitive_identity_closure(
                     "{} entities joined by identity-binding relations",
                     cluster.len()
                 ),
-                cluster,
+                cluster.clone(),
                 scan_id,
                 now,
             )
@@ -449,38 +448,57 @@ pub fn rule_au_070_connection_broker(
         .collect()
 }
 
+/// An identity cluster of four or more entities held together by more than one kind of identity
+/// relation and more than one piece of evidence. Only relations that bind identity count: an
+/// association between two members says nothing about whether they are one identity. Relations
+/// that rest on one thing (see [`crate::relation::Relation::rests_on`]), such as the aliases
+/// and the name match that one shared handle implies, are one piece of evidence whatever their
+/// kinds, so a cluster that only a shared handle holds together is not robust; its
+/// corroboration gap (AU-063) says so.
 pub fn rule_au_071_robust_identity_cluster(
     context: &RuleContext<'_>,
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    resolve_identity_clusters(context.relations())
-        .into_iter()
-        .filter(|cluster| cluster.len() >= 4)
-        .filter_map(|cluster| {
-            let kinds = context
-                .relations()
-                .iter()
-                .filter(|relation| {
-                    cluster.contains(&relation.from_uid) && cluster.contains(&relation.to_uid)
-                })
-                .map(|relation| relation.kind)
-                .collect::<BTreeSet<_>>();
-            (kinds.len() >= 2).then(|| {
-                Correlation::new(
-                    "AU-071",
-                    "robust_identity_cluster",
-                    Severity::High,
-                    format!(
-                        "{} entities connected by {} distinct relation kinds",
-                        cluster.len(),
-                        kinds.len()
-                    ),
-                    cluster,
-                    scan_id,
-                    now,
-                )
-            })
+    let clusters = context.identity_clusters();
+    let mut cluster_of = HashMap::<&str, usize>::new();
+    for (number, cluster) in clusters.iter().enumerate() {
+        if cluster.len() >= 4 {
+            cluster_of.extend(cluster.iter().map(|uid| (uid.as_str(), number)));
+        }
+    }
+    let mut kinds = vec![BTreeSet::new(); clusters.len()];
+    let mut bases = vec![HashSet::new(); clusters.len()];
+    // A relation that binds identity joins two members of one cluster, so its first end places it.
+    for relation in context.relations() {
+        if let Some(&number) = cluster_of
+            .get(relation.from_uid.as_str())
+            .filter(|_| relation.kind.binds_identity())
+        {
+            kinds[number].insert(relation.kind);
+            bases[number].insert(relation.rests_on());
+        }
+    }
+    clusters
+        .iter()
+        .zip(kinds.iter().zip(&bases))
+        .filter(|(_, (kinds, bases))| kinds.len() >= 2 && bases.len() >= 2)
+        .map(|(cluster, (kinds, bases))| {
+            Correlation::new(
+                "AU-071",
+                "robust_identity_cluster",
+                Severity::High,
+                format!(
+                    "{} entities connected by {} kinds of identity relation resting on {} \
+                     independent pieces of evidence",
+                    cluster.len(),
+                    kinds.len(),
+                    bases.len()
+                ),
+                cluster.clone(),
+                scan_id,
+                now,
+            )
         })
         .collect()
 }
