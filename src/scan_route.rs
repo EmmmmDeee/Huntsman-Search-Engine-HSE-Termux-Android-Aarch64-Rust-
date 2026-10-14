@@ -29,13 +29,14 @@ pub enum ScanKind {
 
 impl ScanKind {
     /// Every kind, in the order the CLI usage and the Web UI list them.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::People,
         Self::Email,
         Self::Exposure,
         Self::Username,
         Self::Phone,
         Self::Domain,
+        Self::Ip,
         Self::Network,
     ];
 
