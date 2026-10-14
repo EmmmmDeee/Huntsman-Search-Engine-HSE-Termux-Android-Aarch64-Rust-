@@ -1537,7 +1537,7 @@ mod tests {
                 if unjoined == Some((left, right)) || unjoined == Some((right, left)) {
                     continue;
                 }
-                for _ in 0..1 + rng.below(3) {
+                for _ in 0..=rng.below(3) {
                     let (from, to) = if rng.below(2) == 0 {
                         (left, right)
                     } else {
