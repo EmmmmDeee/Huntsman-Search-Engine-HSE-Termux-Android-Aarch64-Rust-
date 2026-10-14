@@ -25,9 +25,18 @@ static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const LOCK_FILE: &str = "gate.lock";
 
 /// The repository root. This crate lives in `<root>/xtask`.
+///
+/// `cargo run`, and so `cargo gate`, names the package it runs in `CARGO_MANIFEST_DIR`, and that
+/// is the checkout to work on. The path compiled into the binary is only the fallback, for a
+/// binary run directly: checkouts that share a target directory share one `xtask` binary, which
+/// cargo does not rebuild for a checkout at another path, so its compiled path can name another
+/// checkout.
 #[must_use]
 pub fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
+    manifest
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
