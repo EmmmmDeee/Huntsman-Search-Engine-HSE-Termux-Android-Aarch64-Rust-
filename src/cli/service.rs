@@ -1,6 +1,7 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
 use std::env;
+use std::io::Write;
 use std::process::ExitCode;
 
 use super::fail;
@@ -138,8 +139,13 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         }
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     }
+    // A plain write, not `eprintln!`: once stderr is closed or its reader has gone,
+    // `eprintln!` panics, and the notice would end the server it reports on.
     let notice = |error: &std::io::Error| {
-        eprintln!("serve accept: {error}; waiting for open connections to finish");
+        let _ = writeln!(
+            std::io::stderr(),
+            "serve accept: {error}; waiting for open connections to finish"
+        );
     };
     match server.run(notice) {
         Ok(()) => ExitCode::SUCCESS,
