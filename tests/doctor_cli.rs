@@ -163,7 +163,11 @@ fn doctor_serve_finds_a_loopback_server_started_with_a_token_healthy_without_it(
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    assert!(stdout(&out).starts_with("serve=healthy "), "{}", stdout(&out));
+    assert!(
+        stdout(&out).starts_with("serve=healthy "),
+        "{}",
+        stdout(&out)
+    );
     drop(serve);
     let _ = fs::remove_dir_all(&home);
 }

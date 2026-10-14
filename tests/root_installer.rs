@@ -1161,7 +1161,10 @@ fn the_web_ui_service_runs_without_a_token_and_a_reinstall_drops_the_old_one() {
 
     let out = t.run(&[rev], BUILT_REV);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(!file.exists(), "the earlier installer's token file is removed");
+    assert!(
+        !file.exists(),
+        "the earlier installer's token file is removed"
+    );
     assert!(
         stdout(&out).contains("Next: huntsman open (the web UI), or huntsman help"),
         "{}",

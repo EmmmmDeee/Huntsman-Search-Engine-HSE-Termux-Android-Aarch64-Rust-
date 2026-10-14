@@ -191,7 +191,10 @@ fn on_loopback_serve_says_the_token_is_not_needed_without_printing_it() {
 #[test]
 fn on_a_public_bind_serve_says_the_page_needs_the_token_without_printing_it() {
     let value = "TEST-ONLY-serve-token-7f3a";
-    let (first, stderr) = startup_on("0.0.0.0:0", &[("HSE_AUTH_TOKEN", value), ("PREFIX", "/usr")]);
+    let (first, stderr) = startup_on(
+        "0.0.0.0:0",
+        &[("HSE_AUTH_TOKEN", value), ("PREFIX", "/usr")],
+    );
     assert!(first.starts_with("serving=http://0.0.0.0:"), "{first}");
     assert!(
         stderr.contains("this public bind needs HSE_AUTH_TOKEN")

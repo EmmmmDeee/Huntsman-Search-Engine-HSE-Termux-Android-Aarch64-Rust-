@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0d11">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<title>Huntsman Search Engine</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+:root{--bg:#0a0d11;--el:#11151b;--el2:#171d25;--hover:#1e2530;--line:#232a35;--line2:#333d4d;--fg:#e4e8ef;--muted:#8b94a3;--dim:#5f6b7d;--acc:#1cb8f5;--acc2:#5ed0ff;--accd:rgba(28,184,245,.15);--acct:#04303f;--ok:#2bbf6a;--okd:rgba(43,191,106,.15);--warn:#d9a441;--warnd:rgba(217,164,65,.15);--bad:#e0554f;--badd:rgba(224,85,79,.15);--sh:0 1px 2px rgba(0,0,0,.5);--r:6px;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;color-scheme:dark}
+:root.light{--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#838da0;--acc:#0a86bf;--acc2:#066a99;--accd:rgba(10,134,191,.1);--acct:#fff;--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans)}
+svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.appbar{position:fixed;top:0;left:0;right:0;z-index:10;display:flex;align-items:center;gap:10px;height:calc(52px + env(safe-area-inset-top));padding:env(safe-area-inset-top) max(8px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));background:var(--el);border-bottom:1px solid var(--line);box-shadow:var(--sh)}
+.brand{display:flex;align-items:center;gap:7px;min-width:0;min-height:44px;color:var(--fg);text-decoration:none}
+.brand svg.i{width:20px;height:20px;color:var(--acc)}
+.brand-text{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sep{color:var(--acc);margin:0 4px}
+.ver{font:10.5px var(--mono);color:var(--dim);white-space:nowrap}
+.bar-end{display:flex;align-items:center;gap:4px;margin-left:auto}
+.pill{font:600 10px/1 var(--sans);padding:5px 9px;border-radius:999px;background:var(--el2);color:var(--muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+.pill.ok{background:var(--okd);color:var(--ok)}
+.pill.warn{background:var(--warnd);color:var(--warn)}
+.pill.bad{background:var(--badd);color:var(--bad)}
+.iconbtn{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border:0;border-radius:var(--r);background:none;color:var(--muted);cursor:pointer}
+.iconbtn:hover{background:var(--hover);color:var(--fg)}
+.navbar{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;background:var(--el);border-top:1px solid var(--line);padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);box-shadow:0 -1px 2px rgba(0,0,0,.4)}
+.navlink{position:relative;flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:56px;color:var(--dim);font-size:11px;font-weight:500;text-decoration:none;-webkit-tap-highlight-color:transparent}
+.navlink svg.i{width:20px;height:20px}
+.navlink:hover{color:var(--muted)}
+.navlink.active{color:var(--acc)}
+.navlink.active::before{content:"";position:absolute;top:0;width:26px;height:2px;background:var(--acc);border-radius:0 0 2px 2px}
+main{max-width:1100px;margin:0 auto;padding:calc(64px + env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) calc(72px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
+h1{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:600;margin:0 0 12px}
+h1 svg.i{color:var(--acc)}
+.panel{background:var(--el);border:1px solid var(--line);border-radius:var(--r);margin:0 0 14px;box-shadow:var(--sh);overflow:hidden}
+.panel-heading{display:flex;align-items:center;gap:8px;min-height:44px;padding:4px 4px 4px 14px;background:var(--el2);border-bottom:1px solid var(--line);font-size:12.5px;font-weight:600}
+.panel-heading .btn{margin-left:auto}
+.panel-body{padding:14px}
+.badge{display:inline-block;min-width:20px;padding:1px 7px;border-radius:999px;background:var(--bg);color:var(--muted);font:600 10.5px/1.6 var(--mono);text-align:center}
+.help{margin:10px 0 0;color:var(--muted);font-size:12.5px}
+form{display:grid;grid-template-columns:1fr;gap:8px}
+@media (min-width:640px){#lookup{grid-template-columns:9em 1fr auto}#analyze{grid-template-columns:1fr auto;align-items:start}}
+input,select,textarea{min-height:44px;width:100%;padding:8px 12px;border:1px solid var(--line2);border-radius:var(--r);background:var(--bg);color:var(--fg);font:15px var(--sans)}
+#q,#seeds,#token{font-family:var(--mono)}
+textarea{resize:vertical}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--accd)}
+::placeholder{color:var(--dim)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:8px 16px;border:1px solid var(--line2);border-radius:var(--r);background:var(--el2);color:var(--fg);font:500 14px var(--sans);cursor:pointer;white-space:nowrap}
+.btn:hover{background:var(--hover)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-primary{background:var(--acc);border-color:var(--acc);color:var(--acct);font-weight:600}
+.btn-primary:hover{background:var(--acc2);border-color:var(--acc2)}
+.btn-ghost{border-color:transparent;background:none;color:var(--acc);font-size:12.5px}
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:0 0 14px}
+@media (min-width:768px){.stats{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.stat{min-width:0;padding:10px 14px;background:var(--el);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh)}
+.lab{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.val{font:600 19px/1.35 var(--mono);color:var(--fg);overflow-wrap:anywhere}
+.val.ok{color:var(--ok)}.val.bad{color:var(--bad)}.val.warn{color:var(--warn)}
+.alert{margin:0 0 14px;padding:10px 14px;border:1px solid var(--bad);border-radius:var(--r);background:var(--badd);color:var(--bad);font-size:13px;overflow-wrap:anywhere}
+.alert.warn{border-color:var(--warn);background:var(--warnd);color:var(--warn)}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{padding:8px 12px;text-align:left;background:var(--el2);color:var(--dim);border-bottom:1px solid var(--line);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+td{padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
+tbody tr:nth-child(even){background:var(--el2)}
+tbody tr:last-child td{border-bottom:0}
+td.none{color:var(--dim)}
+.label{display:inline-block;padding:2px 7px;border-radius:3px;background:var(--line2);color:var(--muted);font:600 10.5px/1.5 var(--mono)}
+.label.ok{background:var(--okd);color:var(--ok)}.label.info{background:var(--accd);color:var(--acc)}.label.warn{background:var(--warnd);color:var(--warn)}.label.bad{background:var(--badd);color:var(--bad)}
+pre{margin:0;padding:12px 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 var(--mono);color:var(--fg)}
+.note{margin:0;padding:8px 14px;color:var(--muted);font-size:12px;border-top:1px solid var(--line)}
+.note:empty{display:none}
+details summary{cursor:pointer;min-height:44px;display:flex;align-items:center;padding:0 14px;font-size:12.5px;font-weight:600;background:var(--el2)}
+details[open] summary{border-bottom:1px solid var(--line)}
+@media (max-width:420px){.brand-sub{display:none}}
+@media (max-width:767px){
+.table-wrap table,.table-wrap tbody,.table-wrap tr,.table-wrap td{display:block;width:auto}
+.table-wrap thead{display:none}
+.table-wrap tbody tr,.table-wrap tbody tr:nth-child(even){padding:4px 0;background:none;border-bottom:1px solid var(--line)}
+.table-wrap tbody tr:last-child{border-bottom:0}
+.table-wrap td{display:flex;gap:4px 12px;padding:4px 14px;border:0}
+.table-wrap td::before{content:attr(data-label);flex:0 0 32%;padding-top:2px;color:var(--dim);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.table-wrap td.none::before{display:none}
+.table-wrap td:empty{display:none}
+}
+@media (min-width:768px){
+.navbar{top:calc(52px + env(safe-area-inset-top));bottom:auto;gap:2px;padding:0 12px;border-top:0;border-bottom:1px solid var(--line);box-shadow:var(--sh)}
+.navlink{flex:0 0 auto;flex-direction:row;gap:7px;min-height:42px;padding:0 14px;font-size:13px}
+.navlink svg.i{width:15px;height:15px}
+.navlink.active{background:var(--accd)}
+.navlink.active::before{top:auto;bottom:0;width:100%;height:2px;border-radius:2px 2px 0 0}
+main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
+}
+</style>
+<header class="appbar">
+<a class="brand" href="#/lookup"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg><span class="brand-text">Huntsman<span class="brand-sub"><span class="sep">·</span>Search Engine</span></span><span class="ver" id="ver"></span></a>
+<div class="bar-end"><span class="pill" id="state">connecting</span><button class="iconbtn" id="theme" type="button" aria-label="Toggle light or dark theme"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z"/></svg></button></div>
+</header>
+<nav class="navbar" aria-label="Primary">
+<a class="navlink" id="nav-lookup" href="#/lookup"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-5-5"/></svg><span>Look up</span></a>
+<a class="navlink" id="nav-analyze" href="#/analyze"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 6h9M6.2 8.2l4.6 7.6M17.8 8.2l-4.6 7.6"/></svg><span>Analyze</span></a>
+<a class="navlink" id="nav-status" href="#/status"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Status</span></a>
+</nav>
+<main>
+<p class="alert warn" id="authnote" role="alert" hidden></p>
+<section id="view-lookup">
+<h1><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-5-5"/></svg>New lookup</h1>
+<div class="panel"><div class="panel-body">
+<form id="lookup">
+<select id="kind" aria-label="kind">
+<option value="auto">auto</option><option value="people">people</option><option value="email">email</option>
+<option value="exposure">exposure</option><option value="username">username</option><option value="phone">phone</option>
+<option value="domain">domain</option><option value="ip">ip</option><option value="network">network</option>
+</select>
+<input id="q" required maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="name, email, @handle, phone, domain, IP or BSSID" aria-label="selector">
+<button class="btn btn-primary" id="run" type="submit">Look up</button>
+</form>
+<p class="help">Runs one lookup through the same front-ends as the CLI. It makes network requests; exposure and network spend operator keys, and phone, domain and ip use the free-tier keys you have set.</p>
+</div></div>
+<p class="alert" id="lerror" role="alert" hidden></p>
+<div id="result" hidden>
+<div class="stats">
+<div class="stat"><div class="lab">route</div><div class="val" id="route"></div></div>
+<div class="stat"><div class="lab">entities</div><div class="val" id="lentities"></div></div>
+<div class="stat"><div class="lab">sources answered</div><div class="val" id="lsources"></div></div>
+<div class="stat"><div class="lab">time</div><div class="val" id="status"></div></div>
+</div>
+<div class="panel"><div class="panel-heading">Sources <span class="badge" id="outcomes-n"></span><button class="btn btn-ghost" id="download" type="button">Download JSON</button></div>
+<div class="table-wrap"><table><thead><tr><th>source</th><th>outcome</th><th>found</th></tr></thead><tbody id="outcomes"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Report</div><pre id="text"></pre></div>
+</div>
+</section>
+<section id="view-analyze" hidden>
+<h1><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 6h9M6.2 8.2l4.6 7.6M17.8 8.2l-4.6 7.6"/></svg>Multi-hop analysis</h1>
+<div class="panel"><div class="panel-body">
+<form id="analyze">
+<textarea id="seeds" required rows="4" maxlength="2048" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="a seed per line: name, email, @handle, phone, domain or IP" aria-label="seeds"></textarea>
+<button class="btn btn-primary" id="arun" type="submit">Analyze</button>
+</form>
+<p class="help">Offline: links the seeds, ranks the next pivots, names the gaps and plans the sources, with no network request and no key.</p>
+</div></div>
+<p class="alert" id="aerror" role="alert" hidden></p>
+<div id="aresult" hidden>
+<div class="stats">
+<div class="stat"><div class="lab">seeds</div><div class="val" id="aseeds"></div></div>
+<div class="stat"><div class="lab">entities</div><div class="val" id="aentities-c"></div></div>
+<div class="stat"><div class="lab">links</div><div class="val" id="alinks"></div></div>
+<div class="stat"><div class="lab">seeds linked</div><div class="val" id="alinked"></div></div>
+</div>
+<div class="panel"><div class="panel-heading">Summary<button class="btn btn-ghost" id="adownload" type="button">Download JSON</button></div><p class="note" id="astatus"></p></div>
+<div class="panel"><div class="panel-heading">Entities <span class="badge" id="aentities-n"></span></div>
+<div class="table-wrap"><table><thead><tr><th>kind</th><th>value</th><th>confidence</th></tr></thead><tbody id="aentities"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Links <span class="badge" id="arelations-n"></span></div>
+<div class="table-wrap"><table><thead><tr><th>from</th><th>relation</th><th>to</th></tr></thead><tbody id="arelations"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Next pivots <span class="badge" id="apivots-n"></span></div>
+<div class="table-wrap"><table><thead><tr><th>entity</th><th>links</th><th>reach</th><th>cut point</th></tr></thead><tbody id="apivots"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Correlations <span class="badge" id="acorrelations-n"></span></div>
+<div class="table-wrap"><table><thead><tr><th>rule</th><th>severity</th><th>finding</th><th>entities</th></tr></thead><tbody id="acorrelations"></tbody></table></div><p class="note" id="anote"></p></div>
+<div class="panel"><div class="panel-heading">Gaps <span class="badge" id="agaps-n"></span></div>
+<div class="table-wrap"><table><thead><tr><th>seed</th><th>isolation</th><th>next step</th></tr></thead><tbody id="agaps"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Planned sources <span class="badge" id="aplanned-n"></span></div>
+<div class="table-wrap"><table><thead><tr><th>target</th><th>source</th><th>route</th><th>utility</th></tr></thead><tbody id="aplanned"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Rejected seeds <span class="badge" id="arejected-n"></span></div>
+<div class="table-wrap"><table><thead><tr><th>seed</th><th>reason</th></tr></thead><tbody id="arejected"></tbody></table></div></div>
+</div>
+</section>
+<section id="view-status" hidden>
+<h1><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Server status</h1>
+<div class="stats">
+<div class="stat"><div class="lab">server</div><div class="val" id="sstate">…</div></div>
+<div class="stat"><div class="lab">version</div><div class="val" id="sversion">…</div></div>
+<div class="stat"><div class="lab">modules</div><div class="val" id="smodules">…</div></div>
+<div class="stat"><div class="lab">sign-in</div><div class="val" id="sauth">…</div></div>
+</div>
+<div class="panel" id="tokenpanel" hidden><div class="panel-heading">Token</div><div class="panel-body">
+<input id="token" type="password" autocomplete="off" placeholder="HSE_AUTH_TOKEN" aria-label="token">
+<p class="help">This server listens on a public address, so it needs the HSE_AUTH_TOKEN it was started with. On the phone it listens on loopback and needs none.</p>
+</div></div>
+<div class="panel"><div class="panel-heading">Details<button class="btn btn-ghost" id="refresh" type="button">Refresh</button></div>
+<details><summary>Health</summary><pre id="health">…</pre></details>
+<details><summary>Reachable modules</summary><pre id="modules">…</pre></details>
+<details><summary>Command contract</summary><pre id="command">…</pre></details>
+</div>
+</section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const root=document.documentElement;
+const store={get(k){try{return localStorage.getItem(k)||''}catch(_){return ''}},set(k,v){try{if(v)localStorage.setItem(k,v);else localStorage.removeItem(k)}catch(_){}}};
+if(store.get('hse-theme')==='light') root.classList.add('light');
+$('theme').onclick=()=>store.set('hse-theme',root.classList.toggle('light')?'light':'');
+// Only a public bind needs a token. A loopback server, as on the phone, never asks, so the
+// token panel stays hidden there and no call carries one.
+let token=store.get('hse-token'),needsToken=false;
+{
+  const m=/(?:^#|&)token=([^&]*)/.exec(location.hash);
+  if(m){try{token=decodeURIComponent(m[1]).trim()}catch(_){token=m[1]}store.set('hse-token',token);history.replaceState(null,'',location.pathname+location.search)}
+  $('token').value=token;
+}
+$('token').oninput=()=>{token=$('token').value.trim();store.set('hse-token',token)};
+$('token').onchange=()=>refresh();
+function headers(extra){const h=Object.assign({},extra);if(needsToken&&token)h.Authorization='Bearer '+token;return h}
+async function call(path,extra){const r=await fetch(path,{headers:headers(extra),cache:'no-store'});const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}return {r,text,body}}
+const reason=({text,body})=>(body&&body.error)||text.trim();
+function askToken(){
+  needsToken=true;$('tokenpanel').hidden=false;$('authnote').hidden=false;
+  $('authnote').textContent=token?'The server refused this token. Enter the exact HSE_AUTH_TOKEN under Status.':'This server is on a public address and needs its HSE_AUTH_TOKEN. Enter it under Status.';
+}
+const refused=res=>{if(res.r.status===401){askToken();return true}return false};
+const views=['lookup','analyze','status'];
+function route(){
+  const m=/^#\/(\w+)/.exec(location.hash),view=m&&views.includes(m[1])?m[1]:'lookup';
+  for(const v of views){$('view-'+v).hidden=v!==view;$('nav-'+v).classList.toggle('active',v===view);if(v===view)$('nav-'+v).setAttribute('aria-current','page');else $('nav-'+v).removeAttribute('aria-current')}
+}
+addEventListener('hashchange',route);route();
+function pill(text,tone){$('state').textContent=text;$('state').className='pill '+tone;$('sstate').textContent=text;$('sstate').className='val '+tone}
+async function refresh(){
+  let open=true,online=true;
+  for(const [id,path] of [['health','/api/health'],['modules','/api/modules'],['command','/api/command']]){
+    try{
+      const res=await call(path);$(id).textContent=res.text;
+      if(id==='health'&&res.body){
+        $('ver').textContent='v'+res.body.version;$('sversion').textContent=res.body.version;
+        $('sauth').textContent=res.body.auth==='token'?'token':'none';
+        if(res.body.auth==='token'){needsToken=true;$('tokenpanel').hidden=false;if(!token){askToken();open=false}}
+        else{needsToken=false;token='';store.set('hse-token','');$('tokenpanel').hidden=true}
+      }
+      if(id==='modules'&&res.body)$('smodules').textContent=res.body.count;
+      if(refused(res))open=false;
+    }catch(e){$(id).textContent=String(e);online=false}
+  }
+  if(!online)pill('offline','bad');else if(!open)pill('token','warn');else pill('online','ok');
+  if(open)$('authnote').hidden=true;
+}
+function cell(row,text,label){const td=document.createElement('td');td.textContent=text==null?'':String(text);if(label)td.dataset.label=label;row.appendChild(td);return td}
+function fill(id,items,cols){
+  const tb=$(id),heads=[...tb.parentNode.querySelectorAll('th')].map(th=>th.textContent);tb.replaceChildren();
+  for(const it of items){const tr=document.createElement('tr');cols(it).forEach((c,i)=>cell(tr,c,heads[i]));tb.appendChild(tr)}
+  if(!items.length){const tr=document.createElement('tr'),td=cell(tr,'none');td.className='none';td.colSpan=heads.length;tb.appendChild(tr)}
+  const n=$(id+'-n');if(n)n.textContent=items.length;
+}
+function fail(id,text){$(id).hidden=false;$(id).textContent=text}
+function save(body,name){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(body,null,2)],{type:'application/json'}));
+  a.download=name+'-'+Date.now()+'.json';a.click();URL.revokeObjectURL(a.href);
+}
+const tone={success:'ok',valid_zero:'info',auth_required:'warn',auth_rejected:'warn',entitlement_denied:'warn',quota_exhausted:'warn',rate_limited:'warn'};
+let last=null;
+$('lookup').onsubmit=async ev=>{
+  ev.preventDefault();
+  const q=$('q').value.trim(); if(!q) return;
+  const params=new URLSearchParams({kind:$('kind').value,q});
+  $('run').disabled=true;$('lerror').hidden=true;$('result').hidden=true;last=null;
+  $('run').textContent='Running…';
+  const started=Date.now();
+  try{
+    const res=await call('/api/lookup?'+params,{'X-Huntsman-Lookup':'1'}),body=res.body;
+    const secs=((Date.now()-started)/1000).toFixed(1)+'s';
+    if(!res.r.ok||!body){refused(res);fail('lerror','HTTP '+res.r.status+' · '+secs+' · '+reason(res));return}
+    last=body;$('result').hidden=false;
+    $('route').textContent=body.route;$('lentities').textContent=body.entities.length;$('status').textContent=secs;
+    $('lsources').textContent=body.outcomes.filter(o=>o.kind==='success'||o.kind==='valid_zero').length+' / '+body.outcomes.length;
+    fill('outcomes',body.outcomes,o=>[o.module,'',o.found]);
+    [...$('outcomes').rows].forEach((tr,i)=>{const o=body.outcomes[i];if(!o)return;const s=document.createElement('span');s.className='label '+(tone[o.kind]||'bad');s.textContent=o.kind;tr.cells[1].replaceChildren(s)});
+    $('text').textContent=body.text;
+  }catch(e){fail('lerror',String(e))}finally{$('run').disabled=false;$('run').textContent='Look up'}
+};
+$('download').onclick=()=>{if(last)save(last,'huntsman-'+last.route)};
+let alast=null;
+const show=v=>v==null?'':typeof v==='object'?JSON.stringify(v):String(v);
+$('analyze').onsubmit=async ev=>{
+  ev.preventDefault();
+  const seeds=$('seeds').value.trim(); if(!seeds) return;
+  $('arun').disabled=true;$('aerror').hidden=true;$('aresult').hidden=true;alast=null;
+  $('arun').textContent='Analyzing…';
+  try{
+    const res=await call('/api/analyze?'+new URLSearchParams({seeds})),body=res.body;
+    if(!res.r.ok||!body){refused(res);fail('aerror','HTTP '+res.r.status+' · '+reason(res));return}
+    alast=body;$('aresult').hidden=false;
+    const names=new Map(body.entities.map(e=>[e.uid,show(e.kind)+': '+e.value]));
+    const who=uid=>names.get(uid)||uid;
+    $('aseeds').textContent=body.accepted.length;$('aentities-c').textContent=body.entities.length;
+    $('alinks').textContent=body.relations.length;$('alinked').textContent=body.gaps.linked_seeds+' / '+body.gaps.total_seeds;
+    $('astatus').textContent=body.accepted.length+' seeds · '+body.entities.length+' entities · '+body.relations.length+' links · '+show(body.termination);
+    fill('aentities',body.entities,e=>[show(e.kind),e.value,Number(e.confidence).toFixed(2)]);
+    fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind),who(x.to_uid)]);
+    fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,p.articulation?'yes':'']);
+    fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,c.entity_uids.map(who).join(', ')]);
+    $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';
+    fill('agaps',body.gaps.orphans,o=>[who(o.uid),show(o.isolation),o.action]);
+    fill('aplanned',body.planned,p=>[show(p.kind)+': '+p.value,p.source,p.url||'',p.utility==null?'':Number(p.utility).toFixed(2)]);
+    fill('arejected',body.rejected,x=>[x.seed,x.reason]);
+  }catch(e){fail('aerror',String(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
+};
+$('adownload').onclick=()=>{if(alast)save(alast,'huntsman-analysis')};
+$('refresh').onclick=refresh;refresh();
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});
+</script>
+</html>

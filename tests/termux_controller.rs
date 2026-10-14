@@ -392,13 +392,18 @@ fn open_opens_the_plain_page_and_a_left_over_token_changes_nothing() {
     let out = phone.run(&["open"]);
     assert!(out.status.success(), "{}", text(&out));
     assert!(
-        phone.log().lines().any(|line| line == "open http://127.0.0.1:8080/"),
+        phone
+            .log()
+            .lines()
+            .any(|line| line == "open http://127.0.0.1:8080/"),
         "{}",
         phone.log()
     );
     assert!(!phone.log().contains("token"), "{}", phone.log());
     assert!(
-        text(&out).trim_end().ends_with("opened http://127.0.0.1:8080/"),
+        text(&out)
+            .trim_end()
+            .ends_with("opened http://127.0.0.1:8080/"),
         "{}",
         text(&out)
     );
