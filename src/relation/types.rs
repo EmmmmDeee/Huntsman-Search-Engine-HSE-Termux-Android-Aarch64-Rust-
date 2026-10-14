@@ -105,6 +105,13 @@ pub struct Relation {
     pub confidence: f64,
     pub scan_id: String,
     pub observed_at: u64,
+    /// The one piece of evidence this relation rests on with others, named `kind:value`, such as
+    /// `handle:jsmith` for a handle that many addresses share: every two of them are aliases, and
+    /// each of those relations rests on the handle. Pathway counting counts a basis once, however
+    /// many relations rest on it. `None` means the relation rests on the link between its own two
+    /// entities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<String>,
 }
 
 impl Relation {
@@ -132,7 +139,15 @@ impl Relation {
             },
             scan_id,
             observed_at: unix_now(),
+            basis: None,
         }
+    }
+
+    /// This relation, resting on `basis` (see [`Relation::basis`]).
+    #[must_use]
+    pub fn with_basis(mut self, basis: impl Into<String>) -> Self {
+        self.basis = Some(basis.into());
+        self
     }
 }
 
