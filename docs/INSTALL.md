@@ -152,11 +152,12 @@ provenance and attestation if you need to verify publisher/build identity.
 
 ## Uninstall from Termux
 
-Stop and remove the web UI service first:
+Stop and remove the web UI service and the `huntsman` command first:
 
 ```sh
 sv-disable huntsman-serve
 rm -rf "$PREFIX/var/service/huntsman-serve" "$PREFIX/var/log/sv/huntsman-serve"
+rm -f "$PREFIX/bin/huntsman" "$PREFIX/bin/huntsmanctl" "$PREFIX/etc/profile.d/huntsman.sh"
 ```
 
 Remove the binary the way it was installed. `~/.huntsman/installed-revision`
@@ -189,11 +190,29 @@ installing, remove those locations instead.
 
 The installer runs the web UI as a
 [termux-services](https://wiki.termux.com/wiki/Termux-services) service named
-`huntsman-serve`. Open it in the phone's browser:
+`huntsman-serve` and installs the `huntsman` command, which drives it. Open
+the page in the phone's browser:
 
 ```sh
 termux-open-url http://127.0.0.1:8080/
 ```
+
+| Command | What it does |
+| --- | --- |
+| `huntsman start`, `stop`, `restart` | Start, stop or restart the web UI. `stop` keeps it off across reboots and reinstalls. |
+| `huntsman status` | Whether it runs, its PID, memory, threads and address; exits 0 only when the page works. |
+| `huntsman logs` | Follow the server's log. |
+| `huntsman clean` | Remove the Rust build cache and Huntsman temporary files. |
+| `huntsman scan-pipe TARGET [KIND]` | Scan, save the ledger under `~/huntsman-reports`, verify it, and write a Markdown report next to it. |
+| `huntsman report SCAN.json` | Write the Markdown report for a saved scan: the full ledger, unredacted, with the result of `verify`. With Termux:API installed, it is also copied to the clipboard. |
+| `huntsman` anything else | Runs `huntsman-recon` with the same arguments, for example `huntsman doctor` or `huntsman email ADDR`. |
+
+New Termux sessions also load shortcuts from `$PREFIX/etc/profile.d/huntsman.sh`.
+`h`, `start`, `stop`, `restart`, `status`, `logs`, `clean`, `doc` and `cred` are
+short for the `huntsman` commands. `domain`, `email`, `username`, `asx`
+(`id`), `query` and `pipe` (`scan-pipe`) run lookups. `claims`, `verified`,
+`did`, `dossier`, `latest_json`, `latest_md` and `clean_reports` read the saved
+scans. Your `~/.bashrc` is left alone.
 
 The page's analysis form runs entirely on the phone: it links the seeds you
 enter, ranks the next pivots, names the seeds left unlinked and plans the
@@ -203,25 +222,19 @@ mobile data off.
 The service takes a wake lock for Termux, restarts the server within a second
 whenever it stops, starts again the next time Termux opens after a reboot, and
 is restarted onto the new binary by every install or upgrade. The installer's
-last lines say whether the page answers. Its log is
-`$PREFIX/var/log/sv/huntsman-serve/current`. Turn it off, or back on, with:
-
-```sh
-sv-disable huntsman-serve     # stays off across reinstalls
-sv-enable huntsman-serve
-```
-
-`HUNTSMAN_SERVE_SERVICE=off` or `on` when running the installer does the same.
-`huntsman-recon doctor serve` checks the page at any time, and
-`sv status huntsman-serve` shows whether the service runs.
+last lines say whether the page answers. `HUNTSMAN_SERVE_SERVICE=off` or `on`
+when running the installer is the same as `huntsman stop` or `huntsman start`.
 
 Port 8080 is also the default of other servers people run in Termux, such as
-code-server and File Browser. When it is taken, `serve` exits 69 and says so in
-the log, and the service waits a minute before trying again instead of
-retrying every second. To run the server by hand on another port instead, turn
-the service off and pass `--bind`:
+code-server and File Browser. When another program holds it, `huntsman start`
+picks the next free port, says which, and keeps using it (it is stored in
+`~/.huntsman/serve.bind`) until 8080 is free again. If the port is taken while
+the service runs, `serve` exits 69 and the service waits a minute before trying
+again instead of retrying every second. To run the server by hand instead, stop
+the service and pass `--bind`:
 
 ```sh
+huntsman stop
 termux-wake-lock
 huntsman-recon serve --bind 127.0.0.1:8081
 ```
