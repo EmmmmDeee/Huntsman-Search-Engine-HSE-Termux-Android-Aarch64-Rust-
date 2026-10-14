@@ -622,6 +622,56 @@ mod tests {
         );
     }
 
+    /// Addresses on one domain, domains on one address, a registrant and a handle guessed from a
+    /// name relate different people. Only the alias chain is one identity, so the clusters, the
+    /// pair counts and the brokers see the chain and nothing else.
+    #[test]
+    fn shared_infrastructure_merges_no_identities() {
+        let relations = vec![
+            Relation::new("ann@corp", "corp", RelationKind::BelongsToDomain, 0.9, "s"),
+            Relation::new("bob@corp", "corp", RelationKind::BelongsToDomain, 0.9, "s"),
+            Relation::new("www.corp", "corp", RelationKind::SubdomainOf, 0.9, "s"),
+            Relation::new("corp", "192.0.2.1", RelationKind::ResolvesTo, 0.9, "s"),
+            Relation::new("other", "192.0.2.1", RelationKind::ResolvesTo, 0.9, "s"),
+            Relation::new("www.corp", "192.0.2.1", RelationKind::HostedOn, 0.9, "s"),
+            Relation::new(
+                "192.0.2.1",
+                "192.0.2.2",
+                RelationKind::CoLocatedWith,
+                0.9,
+                "s",
+            ),
+            Relation::new("corp", "registrant", RelationKind::RegisteredBy, 0.9, "s"),
+            Relation::new("other", "registrant", RelationKind::RegisteredBy, 0.9, "s"),
+            Relation::new("ann@corp", "Ann", RelationKind::DerivedFrom, 0.9, "s"),
+            Relation::new("ann@corp", "ann", RelationKind::AliasOf, 0.8, "s"),
+            Relation::new("ann", "ann@mail", RelationKind::SameAs, 0.8, "s"),
+        ];
+        let identity = ["ann", "ann@corp", "ann@mail"].map(str::to_owned);
+        assert_eq!(resolve_identity_clusters(&relations), [identity.to_vec()]);
+        assert_eq!(strongest_path("bob@corp", "ann@corp", &relations, 8), None);
+        assert_eq!(reachable_count("corp", &relations), 0);
+        let mut uids = relations
+            .iter()
+            .flat_map(|relation| [relation.from_uid.as_str(), relation.to_uid.as_str()])
+            .collect::<Vec<_>>();
+        uids.sort_unstable();
+        uids.dedup();
+        let pairs = pairwise_disjoint_pathways(&uids, &relations, usize::MAX)
+            .into_iter()
+            .map(|(left, right, count)| (uids[left], uids[right], count))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pairs,
+            [
+                ("ann", "ann@corp", 1),
+                ("ann", "ann@mail", 1),
+                ("ann@corp", "ann@mail", 1),
+            ]
+        );
+        assert_eq!(connection_brokers(&relations), [("ann".to_owned(), 1)]);
+    }
+
     /// A ring of four identity relations with a pendant `e` on `d`, and one more relation that
     /// binds no identity. Each pair on the ring has two pathways, round either side; a pair with
     /// `e` has one, through `d`. A counted pathway retires every relation joining its steps, so
@@ -973,18 +1023,18 @@ mod tests {
         }
     }
 
-    /// A shared domain joins every pair of its addresses through itself. Each pair used to take
-    /// a search over a fresh copy of every relation, so a thousand addresses took minutes; one
-    /// search from each address is quadratic.
+    /// A person identified by a thousand handles joins every pair of them through itself. Each
+    /// pair used to take a search over a fresh copy of every relation, so a thousand handles
+    /// took minutes; one search from each handle is quadratic.
     #[test]
     fn a_shared_hub_is_counted_in_quadratic_time() {
         let leaves = (0..1000).map(|n| format!("user{n}")).collect::<Vec<_>>();
         let relations = leaves
             .iter()
-            .map(|leaf| Relation::new(leaf, "domain", RelationKind::BelongsToDomain, 0.9, "s"))
+            .map(|leaf| Relation::new("person", leaf, RelationKind::IdentifiedBy, 0.9, "s"))
             .collect::<Vec<_>>();
         let mut uids = leaves.iter().map(String::as_str).collect::<Vec<_>>();
-        uids.push("domain");
+        uids.push("person");
         let started = std::time::Instant::now();
         let counts = pairwise_disjoint_pathways(&uids, &relations, usize::MAX);
         let brokers = connection_brokers(&relations);
@@ -995,6 +1045,6 @@ mod tests {
         );
         assert_eq!(counts.len(), 1001 * 1000 / 2);
         assert!(counts.iter().all(|&(_, _, count)| count == 1));
-        assert_eq!(brokers, [("domain".to_owned(), 1000 * 999 / 2)]);
+        assert_eq!(brokers, [("person".to_owned(), 1000 * 999 / 2)]);
     }
 }
