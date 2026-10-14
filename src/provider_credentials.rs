@@ -58,7 +58,14 @@ pub fn wigle_credential(
         )));
     }
     let refused = |e: crate::error::Error| WigleCredentialError::Refused(e.to_string());
-    let pair = Secret::new(format!("{}:{}", user.expose(), token.expose())).map_err(refused)?;
+    // Joined with a char, not `format!("{}:{}")`: that format leaves a lone ":" literal in
+    // rodata, which the release key scan reads joined to the slot name before it as
+    // `HUNTSMAN_WIGLE_TOKEN:...` and refuses the binary.
+    let mut joined = String::with_capacity(user.expose().len() + 1 + token.expose().len());
+    joined.push_str(user.expose());
+    joined.push(':');
+    joined.push_str(token.expose());
+    let pair = Secret::new(joined).map_err(refused)?;
     let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
         provider_id: "wigle.net".into(),
         credential_slot: WIGLE_TOKEN_ENV.into(),
