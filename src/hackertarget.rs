@@ -93,9 +93,8 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         let reason = api_leg::clean(Some(&first)).unwrap_or_default();
         return Err(LegError::Decode(format!("HackerTarget: {reason}")));
     }
-    let own = match indicator {
-        Indicator::Domain(d) | Indicator::Ip(d) => d,
-        _ => return Ok(None),
+    let (Indicator::Domain(own) | Indicator::Ip(own)) = indicator else {
+        return Ok(None);
     };
     let mut total = 0usize;
     let mut hosts: Vec<String> = Vec::new();

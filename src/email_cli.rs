@@ -588,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn keyed_sources_run_only_with_their_keys_and_never_echo_them() {
+    fn without_keys_only_the_keyless_address_checks_are_added() {
         let unkeyed = ScriptedTransport::new(vec![
             Ok(reply(404, "")),
             Ok(reply(200, r#"{"users":[]}"#)),
@@ -618,8 +618,10 @@ mod tests {
             seen[4].url, "https://open.kickbox.com/v1/disposable/example.com",
             "Kickbox is sent the domain, never the address"
         );
-        drop(seen);
+    }
 
+    #[test]
+    fn configured_keys_run_their_sources_and_each_key_goes_only_to_its_provider() {
         let keys = Keys::parse(&format!(
             "{}=ipqs-test-key-0123456789\n{}=whoxy-test-key-0123456789\n{}=hunter-test-key-0123456789\n",
             crate::ipqs::KEY_SLOT,
