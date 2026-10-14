@@ -7,7 +7,7 @@ Web UI/API paths are present, but the full legacy surface is not yet at parity.
 The legacy archives and their extracted copies are read-only references, not
 installation sources.
 
-## Termux on Android arm64 (build from source)
+## Termux on Android arm64
 
 Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the
 [official GitHub releases](https://github.com/termux/termux-app/releases), and
@@ -20,21 +20,39 @@ bash "$TMPDIR/huntsman-install.sh"
 ```
 
 The installer is no-root userland only. It refreshes Termux repository metadata,
-installs `git rust clang curl coreutils`, aligns the Termux Rust compiler with
-its host `rust-std-<target>` package, compiles a native toolchain probe, resolves
-`main` once to a full immutable commit SHA (unless `HUNTSMAN_REV` already names
-one), builds that exact locked revision with the SHA embedded, creates `~/.huntsman`
-and a private `~/.huntsman.env`, then runs `check` and ledger verification in
-the same disposable directory. `huntsman-recon build-sha` must print the
-revision it built; when Cargo keeps an already-installed binary that does not
-(for example one built before the SHA was embedded), the installer rebuilds
-once with `--force` and fails if the result still does not match. Only after those gates pass does it atomically write
-`~/.huntsman/installed-revision` with the accepted source revision and toolchain
-provenance. It reports success only after runtime acceptance and provenance
+installs `git curl coreutils`, and resolves `main` once to a full immutable
+commit SHA (unless `HUNTSMAN_REV` already names one). Then it installs, in this
+order:
+
+1. **The verified prebuilt build of that commit**, when CI published one as the
+   `main-<sha7>` pre-release: about 5 MB, no compiler. The download must match
+   the release's SHA-256 file, `build-sha` must print the commit, and `check`
+   plus ledger verification must pass, all before the binary is staged next to
+   `$PREFIX/bin/huntsman-recon`, re-checked there and renamed into place.
+2. **The newest published build of `main`**, when the head of `main` has none
+   yet (CI is still building it, or a newer push superseded it) and no
+   `HUNTSMAN_REV` was given: the installer walks back from the head, at most 30
+   commits, through the GitHub API.
+3. **A source build**, only when no published build fits, or when
+   `HUNTSMAN_FROM_SOURCE=1` asks for one. It installs `rust clang`, aligns the
+   Termux Rust compiler with its host `rust-std-<target>` package, compiles a
+   native toolchain probe, then builds the locked revision with the SHA
+   embedded. When Cargo keeps an already-installed binary whose `build-sha`
+   does not match (for example one built before the SHA was embedded), the
+   installer rebuilds once with `--force` and fails if the result still does
+   not match.
+
+A published build that fails its checksum, `build-sha` or acceptance stops the
+install with the old binary untouched; it never falls back to compiling. Either
+way the installer creates `~/.huntsman` and a private `~/.huntsman.env`, and
+only after every gate passes does it atomically write
+`~/.huntsman/installed-revision` with the accepted revision and how it was
+installed (`installed_from=prebuilt main-<sha7>` or `installed_from=source
+rustc …`). It reports success only after runtime acceptance and provenance
 verification pass.
 
-The crate MSRV remains Rust 1.87. `HUNTSMAN_HIBP_NO_EMBED=1` is exported by
-the installer so build-time key embedding stays disabled; runtime key use remains
+The crate MSRV remains Rust 1.87. For a source build, `HUNTSMAN_HIBP_NO_EMBED=1`
+is exported by the installer so build-time key embedding stays disabled; runtime key use remains
 available.
 
 Start with:
@@ -52,20 +70,23 @@ directory. To run it yourself, do so in an empty directory: it writes
 `var/*.json` into the current one.
 
 Upgrade by running the same two commands again. The installer resolves the
-current `main` head to a full SHA and hands that SHA to Cargo, so a branch
-movement during compilation cannot change the source being built. Cargo rebuilds
-only when that revision differs from the installed one, and the installer then
-repeats the runtime acceptance and the provenance record. Do not upgrade with a
-bare `cargo install`: without the installer's `--root "$PREFIX"` it installs
-into `~/.cargo/bin`, and Termux keeps running the old
-`$PREFIX/bin/huntsman-recon`. Cargo intermediates stay under
+current `main` head to a full SHA once, so a branch movement during the install
+cannot change what is installed, then repeats the checks, the runtime
+acceptance and the provenance record. Do not upgrade with a bare
+`cargo install`: without the installer's `--root "$PREFIX"` it installs into
+`~/.cargo/bin`, and Termux keeps running the old `$PREFIX/bin/huntsman-recon`.
+For a source build, Cargo intermediates stay under
 `$HOME/.cache/huntsman-recon-target` by default; set `CARGO_TARGET_DIR` to
-override that cache path. To build a specific revision, run the installer with a
-full 40-character SHA in `HUNTSMAN_REV`.
+override that cache path. To install a specific revision, run the installer
+with a full 40-character SHA in `HUNTSMAN_REV`: its published build when it has
+one, otherwise a source build of exactly that commit.
 
-## Prebuilt Termux release
+## Prebuilt Termux release (`install-termux.sh`)
 
-Installing the newest verified build needs no compiler. It downloads one
+`install.sh` above already installs the verified build when one exists. The
+release installer below is the same download and checks without the source
+fallback, for a phone that should never compile. Installing the newest verified
+build needs no compiler. It downloads one
 binary of about 5 MB instead of compiling on the phone:
 
 ```sh
@@ -116,14 +137,15 @@ provenance and attestation if you need to verify publisher/build identity.
 
 ## Uninstall from Termux
 
-Remove the binary the way it was installed. A build from source (`install.sh`)
-is registered with Cargo:
+Remove the binary the way it was installed. `~/.huntsman/installed-revision`
+says which: `installed_from=source …` is registered with Cargo:
 
 ```sh
 cargo uninstall --root "$PREFIX" huntsman-recon
 ```
 
-A prebuilt install (`install-termux.sh`) is a single file:
+A prebuilt install (`installed_from=prebuilt …`, or `install-termux.sh`) is a
+single file:
 
 ```sh
 rm -f "$PREFIX/bin/huntsman-recon"   # or "$PREFIX/bin/hse" for the legacy channel

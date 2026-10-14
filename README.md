@@ -17,11 +17,11 @@ score.
 Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the
 [official GitHub releases](https://github.com/termux/termux-app/releases).
 Keep Termux and its plugins from the same distribution source. On an ARM64
-device, the repository installer refreshes package metadata, aligns the Termux
-Rust compiler and host stdlib, freezes `main` to one immutable commit SHA,
-installs that exact root crate revision, creates private state/config paths,
-runs offline acceptance, and records the accepted revision before reporting
-success:
+device, the repository installer freezes `main` to one immutable commit SHA,
+installs the checksum-verified prebuilt build of that commit (or the newest
+published one; it compiles from source only when none exists or
+`HUNTSMAN_FROM_SOURCE=1`), creates private state/config paths, runs offline
+acceptance, and records the accepted revision before reporting success:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/main/install.sh -o "$TMPDIR/huntsman-install.sh" && bash "$TMPDIR/huntsman-install.sh"

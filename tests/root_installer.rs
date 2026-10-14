@@ -108,6 +108,41 @@ printf 'hibp=%s target=%s cargo %s\n' "${HUNTSMAN_HIBP_NO_EMBED:-}" "${CARGO_TAR
 printf '%s\n' "${HUNTSMAN_BUILD_SHA:-unknown}" > "$INSTALL_LOG.build-sha"
 "#,
     );
+    install_fake_github(fake_bin);
+}
+
+fn install_fake_github(fake_bin: &Path) {
+    // GitHub, offline: a release asset is served from FAKE_RELEASE_DIR/<tag>/<name> and
+    // `commits/main~N` answers line N of FAKE_MAIN_HISTORY. Anything else is a 404 (exit 22),
+    // so no installer test reaches the network.
+    write_executable(
+        &fake_bin.join("curl"),
+        r#"#!/bin/sh
+out=''
+url=''
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) shift; out="$1" ;;
+    https://*) url="$1" ;;
+  esac
+  shift
+done
+printf 'curl %s\n' "$url" >> "$INSTALL_LOG"
+case "$url" in
+  https://github.com/*/releases/download/*)
+    src="${FAKE_RELEASE_DIR:-/nonexistent}/${url#*/releases/download/}"
+    [ -f "$src" ] || exit 22
+    cp "$src" "$out"
+    ;;
+  https://api.github.com/*/commits/main~*)
+    sha="$(sed -n "${url##*main~}p" "${FAKE_MAIN_HISTORY:-/nonexistent}" 2>/dev/null)"
+    [ -n "$sha" ] || exit 22
+    printf '%s' "$sha"
+    ;;
+  *) exit 22 ;;
+esac
+"#,
+    );
 }
 
 fn assert_first_install_contract(calls: &str, temp: &Path, prefix: &Path, rev: &str) {
@@ -651,4 +686,259 @@ fn install_doc_uninstall_removes_every_path_the_installer_creates() {
             "the uninstall steps must remove {path}, which install.sh creates ({var})"
         );
     }
+}
+
+const ASSET: &str = "huntsman-recon-aarch64-linux-android";
+const BUILT_REV: &str = "b2731d117009a841c302a124f38a808d36f6eac7";
+
+/// Publishes a fake `main-<sha7>` release of `bytes` under `releases`, with a checksum file in
+/// `sha256sum` format. `checksum_of` lets a test publish a checksum of other bytes.
+fn publish_release(releases: &Path, rev: &str, bytes: &[u8], checksum_of: &[u8]) {
+    let dir = releases.join(format!("main-{}", &rev[..7]));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(ASSET), bytes).unwrap();
+    let sums = scratch();
+    fs::write(sums.join(ASSET), checksum_of).unwrap();
+    let out = Command::new("sha256sum")
+        .arg(ASSET)
+        .current_dir(&sums)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    fs::write(dir.join(format!("{ASSET}.sha256")), out.stdout).unwrap();
+    let _ = fs::remove_dir_all(&sums);
+}
+
+struct Prebuilt {
+    temp: PathBuf,
+    fake_bin: PathBuf,
+    rustlib: PathBuf,
+    log: PathBuf,
+    releases: PathBuf,
+    root: PathBuf,
+}
+
+impl Prebuilt {
+    fn new() -> Self {
+        let temp = scratch();
+        let fake_bin = temp.join("fake-bin");
+        let rustlib = temp.join("rustlib");
+        install_fake_termux_toolchain(&fake_bin, &rustlib);
+        fs::create_dir_all(temp.join("tmp")).unwrap();
+        Self {
+            log: temp.join("install.log"),
+            releases: temp.join("releases"),
+            root: temp.join("install-root"),
+            fake_bin,
+            rustlib,
+            temp,
+        }
+    }
+
+    /// Runs install.sh. `build_sha` is what the downloaded binary answers to `build-sha`.
+    fn run(&self, env: &[(&str, &str)], build_sha: &str) -> std::process::Output {
+        fs::write(&self.log, "").unwrap();
+        fs::write(
+            self.log.with_extension("log.build-sha"),
+            format!("{build_sha}\n"),
+        )
+        .unwrap();
+        let existing_path = std::env::var("PATH").unwrap_or_default();
+        Command::new("bash")
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh"))
+            .env(
+                "PATH",
+                format!("{}:{existing_path}", self.fake_bin.display()),
+            )
+            .env("PREFIX", "/data/data/com.termux/files/usr")
+            .env("HUNTSMAN_INSTALL_ROOT", &self.root)
+            .env("INSTALL_LOG", &self.log)
+            .env("FAKE_RUST_TARGET_LIBDIR", &self.rustlib)
+            .env("FAKE_RELEASE_DIR", &self.releases)
+            .env("HOME", &self.temp)
+            .env("TMPDIR", self.temp.join("tmp"))
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("HUNTSMAN_BUILD_SHA")
+            .env_remove("HUNTSMAN_REV")
+            .env_remove("HUNTSMAN_FROM_SOURCE")
+            .envs(env.iter().copied())
+            .output()
+            .expect("installer must execute")
+    }
+
+    fn calls(&self) -> String {
+        fs::read_to_string(&self.log).unwrap()
+    }
+
+    fn installed(&self) -> PathBuf {
+        self.root.join("bin/huntsman-recon")
+    }
+
+    fn provenance(&self) -> String {
+        fs::read_to_string(self.temp.join(".huntsman/installed-revision")).unwrap_or_default()
+    }
+
+    fn tmp_is_clean(&self) -> bool {
+        fs::read_dir(self.temp.join("tmp"))
+            .unwrap()
+            .next()
+            .is_none()
+    }
+}
+
+impl Drop for Prebuilt {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.temp);
+    }
+}
+
+fn stderr(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn a_published_build_is_installed_without_a_compiler() {
+    let t = Prebuilt::new();
+    let bytes = b"#!/bin/sh\n# verified release build\n";
+    publish_release(&t.releases, BUILT_REV, bytes, bytes);
+    let out = t.run(&[("HUNTSMAN_REV", BUILT_REV)], BUILT_REV);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let calls = t.calls();
+    assert!(
+        calls.contains("pkg install -y git curl coreutils"),
+        "{calls}"
+    );
+    assert!(
+        !calls.contains("rust clang"),
+        "no compiler for a published build: {calls}"
+    );
+    assert!(
+        !calls.contains("cargo"),
+        "no cargo for a published build: {calls}"
+    );
+    for step in ["build-sha", "check", "verify var/ledger.json"] {
+        assert!(
+            calls.contains(&format!("{ASSET} {step}")),
+            "the downloaded build runs {step} before it replaces anything: {calls}"
+        );
+    }
+    assert_eq!(fs::read(t.installed()).unwrap(), bytes);
+    assert_eq!(
+        fs::metadata(t.installed()).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    assert_private_state(&t.temp, BUILT_REV);
+    assert!(
+        t.provenance()
+            .contains("installed_from=prebuilt main-b2731d1\n"),
+        "{}",
+        t.provenance()
+    );
+    assert!(t.tmp_is_clean(), "the download directory is removed");
+    assert!(
+        fs::read_dir(t.root.join("bin")).unwrap().count() == 1,
+        "no staging file is left next to the binary"
+    );
+}
+
+#[test]
+fn a_build_that_fails_its_checks_never_replaces_the_binary_or_falls_back() {
+    let t = Prebuilt::new();
+    fs::create_dir_all(t.root.join("bin")).unwrap();
+    fs::write(t.installed(), b"previous").unwrap();
+
+    // Bytes that do not match the published checksum.
+    publish_release(&t.releases, BUILT_REV, b"tampered", b"original");
+    let out = t.run(&[("HUNTSMAN_REV", BUILT_REV)], BUILT_REV);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("sha256 mismatch for main-b2731d1; not installing"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Matching bytes built from another commit.
+    publish_release(&t.releases, BUILT_REV, b"other", b"other");
+    let out = t.run(
+        &[("HUNTSMAN_REV", BUILT_REV)],
+        "0000000000000000000000000000000000000000",
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains(&format!(
+            "build main-b2731d1 reports build-sha 0000000000000000000000000000000000000000, expected {BUILT_REV}"
+        )),
+        "{}",
+        stderr(&out)
+    );
+
+    assert!(
+        !t.calls().contains("cargo"),
+        "a bad build is an error, not a reason to compile: {}",
+        t.calls()
+    );
+    assert_eq!(fs::read(t.installed()).unwrap(), b"previous");
+    assert!(
+        t.provenance().is_empty(),
+        "no provenance for a rejected build"
+    );
+}
+
+#[test]
+fn when_main_has_no_build_yet_the_newest_published_commit_is_installed() {
+    let t = Prebuilt::new();
+    let older = "1111111111111111111111111111111111111111";
+    let history = t.temp.join("history");
+    fs::write(
+        &history,
+        format!("2222222222222222222222222222222222222222\n{older}\n"),
+    )
+    .unwrap();
+    publish_release(&t.releases, older, b"older build", b"older build");
+    let out = t.run(&[("FAKE_MAIN_HISTORY", history.to_str().unwrap())], older);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "main is at 0123456, which has no published build yet; installing main-1111111."
+        ),
+        "{stdout}"
+    );
+    assert!(!t.calls().contains("cargo"), "{}", t.calls());
+    assert_private_state(&t.temp, older);
+}
+
+#[test]
+fn a_source_build_runs_only_without_a_published_build_or_on_request() {
+    // No build anywhere: the head of main is compiled.
+    let t = Prebuilt::new();
+    let out = t.run(&[], DEFAULT_MAIN_REV);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stdout)
+            .contains("No published build for 0123456; building from source.")
+    );
+    assert!(
+        t.calls().contains(&format!("--rev {DEFAULT_MAIN_REV}")),
+        "{}",
+        t.calls()
+    );
+    assert!(
+        t.provenance()
+            .contains("installed_from=source rustc 1.98.0 (fixture)\n"),
+        "{}",
+        t.provenance()
+    );
+
+    // A build exists, but HUNTSMAN_FROM_SOURCE=1 compiles anyway and never downloads.
+    publish_release(&t.releases, BUILT_REV, b"bin", b"bin");
+    let out = t.run(
+        &[("HUNTSMAN_REV", BUILT_REV), ("HUNTSMAN_FROM_SOURCE", "1")],
+        BUILT_REV,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let calls = t.calls();
+    assert!(calls.contains(&format!("--rev {BUILT_REV}")), "{calls}");
+    assert!(!calls.contains("releases/download"), "{calls}");
 }
