@@ -138,7 +138,10 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         }
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     }
-    match server.run() {
+    let notice = |error: &std::io::Error| {
+        eprintln!("serve accept: {error}; waiting for open connections to finish");
+    };
+    match server.run(notice) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
     }
