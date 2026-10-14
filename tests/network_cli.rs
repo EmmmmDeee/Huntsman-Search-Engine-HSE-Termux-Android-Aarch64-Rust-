@@ -1,6 +1,6 @@
-//! The `network` lookup end to end through the binary, with no WiGLE credentials so no request
+//! The `network` lookup end to end through the binary, with no `WiGLE` credentials so no request
 //! is made: `network`, `scan` inference and `scan -k network` reach the same front-end, the
-//! offline OUI classification runs, the WiGLE leg reports `auth_required` rather than a zero,
+//! offline OUI classification runs, the `WiGLE` leg reports `auth_required` rather than a zero,
 //! and `--save` writes a ledger that `verify` reloads.
 
 use std::fs;

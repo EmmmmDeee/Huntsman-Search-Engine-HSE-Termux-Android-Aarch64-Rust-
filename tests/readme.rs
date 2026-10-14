@@ -89,7 +89,7 @@ fn usage_subcommands() -> BTreeSet<String> {
 }
 
 /// Internet examples: a URL argument, any `email`/`exposure`/`username`/`query`/`domain`/`network`
-/// lookup (`network` queries WiGLE when its credentials are set), `serve`,
+/// lookup (`network` queries `WiGLE` when its credentials are set), `serve`,
 /// or any `hibp` lookup (`hibp help` is offline). Provider-specific tests cover these separately.
 fn is_network(args: &[String]) -> bool {
     args.iter()
