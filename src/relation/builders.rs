@@ -145,7 +145,7 @@ fn coreference_key(entity: &Entity) -> Option<String> {
     }
 }
 
-fn collapse_duplicates_max_confidence(relations: Vec<Relation>) -> Vec<Relation> {
+pub(crate) fn collapse_duplicates_max_confidence(relations: Vec<Relation>) -> Vec<Relation> {
     let mut out: Vec<Relation> = Vec::new();
     let mut seen = BTreeMap::<(String, String, RelationKind), usize>::new();
     for relation in relations {

@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::attack_reporting::{HierarchyCoverage, coverage_from_observations};
 use crate::coref::{self, CorefCluster};
-use crate::correlator::{Correlation, RuleContext, confirmed_only, rank_and_sort, registry};
+use crate::correlator::{Correlation, evaluate_rules};
 use crate::coverage::{CoverageVerdict, coverage_verdict};
 use crate::cross_scan::{
     CrossScanCategory, CrossScanOptions, CrossScanRecord, CrossScanStore, build_cross_scan_history,
@@ -17,7 +17,6 @@ use crate::intelligence::{self, IntelligenceReport};
 use crate::metrics::{self, ScanMetrics};
 use crate::pipeline::{AnalysisSnapshot, PipelineLimits};
 use crate::pivot::{self, PivotScore};
-use crate::relation;
 use crate::termination::{
     FrontierState, TerminationReason, TerminationSignals, decide_termination,
 };
@@ -50,39 +49,12 @@ fn termination_for(snapshot: &AnalysisSnapshot) -> TerminationReason {
     decide_termination(frontier, signals).unwrap_or(TerminationReason::FixedPoint)
 }
 
-fn correlate_entities_at(
-    entities: &[crate::entity::Entity],
-    scan_id: &str,
-    now_unix: u64,
-) -> Vec<Correlation> {
-    let confirmed = confirmed_only(entities);
-    // The rules read domain relations (`relation::Relation`): identity closure, multipath
-    // corroboration, connection brokers, shared registrant and shared hosting. The snapshot
-    // carries only their graph projection (`EntityRelation`), which the rules cannot read, so
-    // they are derived here by the same authority the pipeline uses, over the entities the
-    // rules see. Passing none left every relation rule silent on this path.
-    let relations = relation::derive_all(&confirmed, scan_id);
-    let context = RuleContext::new(&confirmed, &relations);
-    let mut correlations = Vec::new();
-    for rule in registry() {
-        correlations.extend(rule.run(&context, scan_id, now_unix));
-    }
-    rank_and_sort(&mut correlations, &confirmed);
-    correlations
-}
-
 fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
     let graph = Graph::build(&snapshot.entities, &snapshot.relations);
     let scan_id = snapshot
         .entities
         .first()
         .map_or("analysis", |entity| entity.scan_id.as_str());
-    let now_unix = snapshot
-        .entities
-        .iter()
-        .map(|entity| entity.observed_at_unix)
-        .max()
-        .unwrap_or(0);
     InvestigationReport {
         attack: coverage_from_observations(&snapshot.entities, &snapshot.relations),
         intelligence: intelligence::build_intelligence_report(
@@ -93,7 +65,9 @@ fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
         gaps: gap::analyze(&snapshot.entities, &snapshot.relations),
         pivots: pivot::rank_pivots(&graph),
         coreference: coref::cluster_entities(&snapshot.entities),
-        correlations: correlate_entities_at(&snapshot.entities, scan_id, now_unix),
+        // The rules read domain relations, which they derive from the entities. The snapshot's
+        // relations are only their graph projection (`EntityRelation`), so none are passed.
+        correlations: evaluate_rules(&snapshot.entities, &[], scan_id),
         cross_scan: None,
         cross_scan_history: build_cross_scan_history(&snapshot.entities),
         coverage: coverage_verdict(&snapshot.coverage),
