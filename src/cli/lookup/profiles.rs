@@ -22,6 +22,7 @@ use huntsman_recon::lookup_save::{
     self, DOMAIN_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, PEOPLE_POLICY, PHONE_POLICY, SavePolicy,
     USERNAME_POLICY,
 };
+use huntsman_recon::oathnet;
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
 use huntsman_recon::scan_route::ScanKind;
@@ -107,16 +108,21 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
             let client = KeyLoader::default_chain(None)
                 .load()
                 .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
-            // Same rule as `recon stolen-tax`: the key is read from the environment, never the
-            // default file.
+            // Same rule as `recon stolen-tax`: the stolen.tax and OathNet keys are read from the
+            // environment, never the default file.
             let keys = Keys::from_env();
             let transport = UreqTransport::new(&stolen_tax::transport_config());
+            let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
             let sources = Sources {
                 hibp: client.as_ref(),
                 stolen_tax: keys
                     .get(stolen_tax::KEY_SLOT)
                     .is_some()
                     .then_some((&transport as &dyn Transport, &keys)),
+                oathnet: keys
+                    .get(oathnet::KEY_SLOT)
+                    .is_some()
+                    .then_some((&oathnet_transport as &dyn Transport, &keys)),
             };
             match huntsman_recon::exposure_cli::run(sources, selector, now) {
                 ExposureRun::Printed { text, report } => Ok(done(

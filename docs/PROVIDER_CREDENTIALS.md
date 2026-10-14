@@ -17,7 +17,7 @@ these slots without printing their values.
 | Whoxy | `HUNTSMAN_WHOXY_KEY` | private stored credential located; validity unverified |
 | HIBP | `HUNTSMAN_HIBP_KEY` | owned subscription/key history; clean current credential required |
 | SeekNow | `HUNTSMAN_SEEKNOW_KEY` | historical credential only; clean current credential required |
-| OathNet | `HUNTSMAN_OATHNET_KEY` | historical credential only; clean current credential required |
+| OathNet | `HUNTSMAN_OATHNET_KEY` | used by `exposure` (CLI, `scan -k exposure`, web UI) when set in the environment; one daily lookup per search; validity unverified until a live search |
 | Exa | `HUNTSMAN_EXA_KEY` | account confirmed; current credential not recovered |
 | OpenRouter | `HUNTSMAN_OPENROUTER_KEY` | account confirmed; current credential not recovered |
 | Google Gemini | `HUNTSMAN_GEMINI_KEY` | provider key existence confirmed; current value requires provider account |
