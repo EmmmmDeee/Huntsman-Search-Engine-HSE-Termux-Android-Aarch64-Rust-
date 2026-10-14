@@ -107,6 +107,7 @@ pub mod method_actors_osint;
 pub mod metrics;
 pub mod module;
 pub mod navigator;
+pub mod network_cli;
 pub mod oathnet;
 pub mod openpgp_keys;
 pub mod oui;
@@ -174,6 +175,7 @@ pub mod value_syntax;
 pub mod wayback;
 pub mod web_query;
 pub mod web_server;
+pub mod wigle;
 
 pub use entity::{Entity, EntityKind, EntityRef, Evidence, EvidenceProvenance};
 pub use error::Error;

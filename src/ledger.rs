@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::fsio::{read_bounded, write_atomic};
+use crate::fsio::{read_bounded, write_atomic_private};
 use crate::sha256::{hex32, sha256};
 use crate::stage::{EvidenceLevel, Status};
 
@@ -155,7 +155,8 @@ pub fn admitted(entries: &[LedgerEntry]) -> Vec<&LedgerEntry> {
 
 const MAX_LEDGER_BYTES: u64 = 1_048_576;
 
-/// Persist a chain atomically. A broken chain is never written.
+/// Persist a chain atomically, mode 600 on Unix: a lookup's ledger names the addresses, phones
+/// and handles it found. A broken chain is never written.
 ///
 /// # Errors
 /// `Error::Invalid` for a broken chain; `Error::Store` for IO, size, or symlink refusal.
@@ -164,7 +165,7 @@ pub fn save_chain(path: &Path, entries: &[LedgerEntry]) -> Result<(), Error> {
         return Err(Error::Invalid("refusing to write a broken chain".into()));
     }
     let body = serde_json::to_vec_pretty(entries).map_err(|e| Error::Store(e.to_string()))?;
-    write_atomic(path, &body, MAX_LEDGER_BYTES)
+    write_atomic_private(path, &body, MAX_LEDGER_BYTES)
 }
 
 /// Load a chain and verify every link.

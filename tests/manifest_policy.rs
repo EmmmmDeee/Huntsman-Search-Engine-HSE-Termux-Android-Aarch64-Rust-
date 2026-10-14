@@ -88,3 +88,29 @@ fn crate_roots_set_no_lint_level_outside_the_manifests() {
         }
     }
 }
+
+/// The release profile is what both the phone (`cargo install`) and CI's Android build use, so
+/// the binary's speed and size come from it. Unwinding must stay: `serve` turns a panicking
+/// handler into a 500 for that request only (`web_server.rs`), and `panic = "abort"` would end
+/// the server instead.
+#[test]
+fn the_release_profile_optimises_across_crates_strips_and_unwinds() {
+    let manifest = fs::read_to_string("Cargo.toml").expect("root manifest");
+    let profile: Vec<&str> = section(&manifest, "profile.release")
+        .into_iter()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    assert!(
+        profile.contains(&"lto = \"thin\""),
+        "release profile must use thin LTO: {profile:?}"
+    );
+    assert!(
+        profile.contains(&"strip = \"symbols\""),
+        "release profile must strip symbols: {profile:?}"
+    );
+    assert!(
+        !profile.iter().any(|line| line.starts_with("panic")),
+        "release profile must keep the default unwinding panic strategy: {profile:?}"
+    );
+}
