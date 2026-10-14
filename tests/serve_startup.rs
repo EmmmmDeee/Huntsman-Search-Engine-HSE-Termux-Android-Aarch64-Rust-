@@ -163,3 +163,23 @@ fn the_install_doc_has_the_section_the_hint_names() {
         assert!(section.contains(needed), "missing {needed:?}");
     }
 }
+
+/// With `HSE_AUTH_TOKEN` set, every API call but health needs the token, and the page only said
+/// `unauthorized` (seen on a phone, 2026-10-14). `serve` now says so when it starts, names where
+/// the value goes, and never prints the value.
+#[test]
+fn with_a_token_serve_says_the_page_needs_it_without_printing_it() {
+    let value = "TEST-ONLY-serve-token-7f3a";
+    let (first, stderr) = startup(&[("HSE_AUTH_TOKEN", value), ("PREFIX", "/usr")]);
+    assert!(first.starts_with("serving=http://127.0.0.1:"), "{first}");
+    assert!(
+        stderr.contains("HSE_AUTH_TOKEN is set")
+            && stderr.contains("token field")
+            && stderr.contains("/#token=VALUE"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains(value) && !first.contains(value),
+        "{stderr}"
+    );
+}

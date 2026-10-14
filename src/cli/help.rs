@@ -26,7 +26,19 @@ pub(super) fn no_command() -> ExitCode {
     fail(EX_USAGE, &format!("{HELP}\n{USAGE}"))
 }
 
-pub(super) fn print_command_help(command: &str) {
+/// Usage error for an argument that is not UTF-8. The bytes are not echoed: an argument can
+/// be a selector, and the CLI never prints one back.
+pub(super) fn argument_not_utf8(position: usize, bytes: usize) -> ExitCode {
+    fail(
+        EX_USAGE,
+        &format!(
+            "argument {position} is not valid UTF-8 ({bytes} bytes); arguments must be UTF-8 text\n{USAGE}"
+        ),
+    )
+}
+
+/// The help text of a dispatched command, or `None` for a word that is not one.
+pub(super) fn command_help(command: &str) -> Option<&'static str> {
     let help = match command {
         "check" => {
             "check\nRun offline self-acceptance and regenerate var/ledger.json, var/navigator.json, and var/stix-bundle.json in the current directory, creating var/ if needed. Run it in an empty directory or a checkout."
@@ -118,10 +130,7 @@ pub(super) fn print_command_help(command: &str) {
         "verify" => {
             "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
         }
-        _ => {
-            println!("{HELP}\n{USAGE}");
-            return;
-        }
+        _ => return None,
     };
-    println!("{help}\n  -h, --help  Show this help");
+    Some(help)
 }
