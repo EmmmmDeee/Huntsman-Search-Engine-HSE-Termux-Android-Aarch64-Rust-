@@ -81,6 +81,18 @@ override that cache path. To install a specific revision, run the installer
 with a full 40-character SHA in `HUNTSMAN_REV`: its published build when it has
 one, otherwise a source build of exactly that commit.
 
+### Check and repair an install
+
+After an install or an upgrade, and whenever something stops working:
+
+```sh
+huntsman-recon doctor   # what is wrong, and the command that fixes each problem
+huntsman-recon fix      # make every repair that can be undone, then check again
+```
+
+`fix` never deletes a ledger or scan data and never writes a key. When the
+binary itself is missing or stale, it prints the installer command above.
+
 ## Prebuilt Termux release (`install-termux.sh`)
 
 `install.sh` above already installs the verified build when one exists. The
