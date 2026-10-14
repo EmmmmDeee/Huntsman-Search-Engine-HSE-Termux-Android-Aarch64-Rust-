@@ -15,9 +15,6 @@ SERVICE_LOG="$PREFIX/var/log/sv/huntsman-serve/current"
 # The address the service binds. The run script reads this file, so a port
 # chosen here survives restarts and reboots.
 BIND_FILE="$STATE_DIR/serve.bind"
-# The service's HSE_AUTH_TOKEN, written by install.sh. The page and every API
-# call except health need it, so other apps on the phone cannot run lookups.
-TOKEN_FILE="$STATE_DIR/serve.token"
 DEFAULT_BIND="127.0.0.1:8080"
 
 if [[ -t 1 ]]; then
@@ -39,16 +36,11 @@ bind() {
   printf '%s' "${b:-$DEFAULT_BIND}"
 }
 
-token() {
-  [[ -r "$TOKEN_FILE" ]] && head -n 1 "$TOKEN_FILE"
-  return 0
-}
-
 # The state `doctor serve` reports for ADDR: healthy, not_running, foreign,
 # unauthorized or degraded.
 probe() {
   local line
-  line="$(HSE_AUTH_TOKEN="$(token)" "$RECON" doctor serve --bind "$1" 2>/dev/null | head -n 1)" || true
+  line="$("$RECON" doctor serve --bind "$1" 2>/dev/null | head -n 1)" || true
   line="${line%% *}"
   printf '%s' "${line#serve=}"
 }
@@ -183,17 +175,15 @@ cmd_status() {
   [[ -n "$pid" && "$state" == healthy ]]
 }
 
-# Opens the page with the token in its #token= fragment, which the browser
-# never sends to a server; the page keeps it, so this is needed once per browser.
+# Opens the page in the phone's browser. A loopback server needs no token.
 cmd_open() {
-  local url t
+  local url
   url="http://$(bind)/"
-  t="$(token)"
   command -v termux-open-url >/dev/null 2>&1 ||
-    die "termux-open-url is missing; open $url and enter the token from $TOKEN_FILE"
-  termux-open-url "$url${t:+#token=$t}" ||
+    die "termux-open-url is missing (pkg install termux-api); open $url in the browser"
+  termux-open-url "$url" ||
     die "could not open the browser; is the Termux:API app installed? The page is at $url"
-  ok "opened $url${t:+ (signed in with the service token)}"
+  ok "opened $url"
 }
 
 cmd_logs() {
@@ -252,7 +242,7 @@ huntsman: Huntsman on Termux
 
 Web UI (a background service that restarts itself):
   huntsman start | stop | restart | status | logs
-  huntsman open                  open the page in the browser, signed in
+  huntsman open                  open the page in the browser
   huntsman clean                 remove the Rust build cache and temp files
 
 Scans:
