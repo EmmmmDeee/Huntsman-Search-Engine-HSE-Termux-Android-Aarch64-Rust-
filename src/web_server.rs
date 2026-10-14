@@ -1166,6 +1166,9 @@ small,.dim{color:var(--dim)}
 <h2>Correlations</h2>
 <table><thead><tr><th>rule</th><th>severity</th><th>finding</th><th>entities</th></tr></thead><tbody id="acorrelations"></tbody></table>
 <small id="anote" class="dim"></small>
+<h2>Saved scans</h2>
+<small id="ascan" class="dim"></small>
+<table><thead><tr><th>entity</th><th>tier</th><th>saved scans</th></tr></thead><tbody id="ascans"></tbody></table>
 <h2>Gaps</h2>
 <table><thead><tr><th>seed</th><th>isolation</th><th>next step</th></tr></thead><tbody id="agaps"></tbody></table>
 <h2>Planned sources</h2>
@@ -1243,7 +1246,8 @@ $('analyze').onsubmit=async ev=>{
   const seeds=$('seeds').value.trim(); if(!seeds) return;
   $('arun').disabled=true; $('aresult').hidden=false; $('asummary').textContent=''; $('anote').textContent='';
   $('astatus').textContent='analyzing…'; alast=null;
-  for(const id of ['aentities','arelations','apivots','acorrelations','agaps','aplanned','arejected']) $(id).replaceChildren();
+  for(const id of ['aentities','arelations','apivots','acorrelations','ascans','agaps','aplanned','arejected']) $(id).replaceChildren();
+  $('ascan').textContent='';
   try{
     const res=await call('/api/analyze?'+new URLSearchParams({seeds})),body=res.body;
     if(!res.r.ok||!body){refused(res);$('astatus').textContent='HTTP '+res.r.status+' · '+reason(res);return}
@@ -1257,6 +1261,10 @@ $('analyze').onsubmit=async ev=>{
     fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,p.articulation?'yes':'']);
     fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,c.entity_uids.map(who).join(', ')]);
     $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';
+    const cross=body.cross_scan;
+    $('ascan').textContent=cross==null?'No saved scans were given to this server.':cross==='None'?'No saved scan shares an entity with these seeds.':'';
+    const bridged=cross&&cross!=='None'?(cross.Transitive?cross.Transitive.links.map(l=>[who(l.via_entity_uid),show(l.tier),l.origin_scan_id+' -> '+l.target_scan_id]):(cross.Historical||cross.Relation).matches.map(b=>[who(b.entity.uid),show(b.tier),b.overlapping_scans.join(', ')])):[];
+    fill('ascans',bridged,r=>r);
     fill('agaps',body.gaps.orphans,o=>[who(o.uid),show(o.isolation),o.action]);
     fill('aplanned',body.planned,p=>[show(p.kind)+': '+p.value,p.source,p.url||'',p.utility==null?'':Number(p.utility).toFixed(2)]);
     fill('arejected',body.rejected,x=>[x.seed,x.reason]);
@@ -2304,6 +2312,21 @@ mod tests {
             ),
             "{row}"
         );
+    }
+
+    /// The bridges to saved scans reach a reader as a table, not only in the JSON. The page had no
+    /// place for `cross_scan`, so `serve --history` had no visible effect.
+    #[test]
+    fn the_page_draws_the_bridges_to_saved_scans() {
+        let table = &INDEX_HTML[..INDEX_HTML.find(r#"<tbody id="ascans">"#).unwrap()];
+        let header = &table[table.rfind("<thead>").unwrap()..];
+        assert_eq!(
+            header,
+            "<thead><tr><th>entity</th><th>tier</th><th>saved scans</th></tr></thead>"
+        );
+        let script = inline_block(INDEX_HTML, "script");
+        assert!(script.contains("const cross=body.cross_scan"), "{script}");
+        assert!(script.contains("fill('ascans',bridged,r=>r)"), "{script}");
     }
 
     /// The page drives the analysis through the same route, refused cross-site, with no lookup
