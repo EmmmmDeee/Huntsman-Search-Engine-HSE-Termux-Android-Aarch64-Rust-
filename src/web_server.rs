@@ -1141,7 +1141,7 @@ small,.dim{color:var(--dim)}
 <h2>Next pivots</h2>
 <table><thead><tr><th>entity</th><th>links</th><th>reach</th><th>cut point</th></tr></thead><tbody id="apivots"></tbody></table>
 <h2>Correlations</h2>
-<table><thead><tr><th>rule</th><th>severity</th><th>entities</th></tr></thead><tbody id="acorrelations"></tbody></table>
+<table><thead><tr><th>rule</th><th>severity</th><th>finding</th><th>entities</th></tr></thead><tbody id="acorrelations"></tbody></table>
 <small id="anote" class="dim"></small>
 <h2>Gaps</h2>
 <table><thead><tr><th>seed</th><th>isolation</th><th>next step</th></tr></thead><tbody id="agaps"></tbody></table>
@@ -1214,7 +1214,7 @@ $('analyze').onsubmit=async ev=>{
     fill('aentities',body.entities,e=>[show(e.kind),e.value,Number(e.confidence).toFixed(2)]);
     fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind),who(x.to_uid)]);
     fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,p.articulation?'yes':'']);
-    fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.entity_uids.map(who).join(', ')]);
+    fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,c.entity_uids.map(who).join(', ')]);
     $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';
     fill('agaps',body.gaps.orphans,o=>[who(o.uid),show(o.isolation),o.action]);
     fill('aplanned',body.planned,p=>[show(p.kind)+': '+p.value,p.source,p.url||'',p.utility==null?'':Number(p.utility).toFixed(2)]);
@@ -2167,6 +2167,29 @@ mod tests {
             .unwrap();
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert!(response.contains(r#"{"sum":1025}"#), "{response}");
+    }
+
+    /// Each correlation row says what the rule found, such as how many independent pathways
+    /// corroborate a link or how many pairs only a shared handle connects, beside the rule and
+    /// the entities it names. The page showed only the rule, its severity and the entities.
+    #[test]
+    fn the_page_shows_what_each_correlation_found() {
+        let table = &INDEX_HTML[..INDEX_HTML.find(r#"<tbody id="acorrelations">"#).unwrap()];
+        let header = &table[table.rfind("<thead>").unwrap()..];
+        assert_eq!(
+            header,
+            "<thead><tr><th>rule</th><th>severity</th><th>finding</th><th>entities</th></tr></thead>"
+        );
+        let script = inline_block(INDEX_HTML, "script");
+        let row = &script[script.find("fill('acorrelations'").unwrap()..];
+        let row = &row[..row.find(';').unwrap()];
+        assert!(
+            row.ends_with(
+                "c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,\
+                 c.entity_uids.map(who).join(', ')])"
+            ),
+            "{row}"
+        );
     }
 
     /// The page drives the analysis through the same route, refused cross-site, with no lookup
