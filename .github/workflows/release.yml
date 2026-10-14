@@ -1013,6 +1013,26 @@ jobs:
             exit "$rc"
           }
           trap cleanup_on_exit EXIT
+          # Sets `ref` to the tag's object type and sha. GitHub can answer 404
+          # for a ref for a moment after creating it (main-d325921's publish
+          # failed that way), so a 404 is retried, bounded; any other error
+          # fails at once.
+          read_tag() {
+            local err="$RUNNER_TEMP/tag-ref.err" attempt
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if ref="$(gh api "$api/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha' 2>"$err")"; then
+                return 0
+              fi
+              if ! grep -qF '(HTTP 404)' "$err"; then
+                cat "$err" >&2
+                return 1
+              fi
+              [ "$attempt" -eq 10 ] || sleep 3
+            done
+            cat "$err" >&2
+            echo "::error::tag ${TAG} was still not readable after bounded retry"
+            return 1
+          }
 
           # Re-check the live head immediately before creating any persistent
           # ref. The earlier gate runs before attestation and artifact handoff;
@@ -1032,7 +1052,7 @@ jobs:
             -f ref="refs/tags/${TAG}" \
             -f sha="$GITHUB_SHA" >/dev/null
           candidate_tag=true
-          ref="$(gh api "$api/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')"
+          read_tag
           read -r type actual <<<"$ref"
           [ "$type" = "commit" ] && [ "$actual" = "$GITHUB_SHA" ] || {
             echo "::error::created tag ${TAG} resolved to ${type} ${actual}, expected commit ${GITHUB_SHA}"
@@ -1049,7 +1069,7 @@ jobs:
           # Re-check both the immutable tag and live main after draft creation.
           # If main advanced, remove only this unpublished candidate and retain
           # the already-verified Actions artifact.
-          ref="$(gh api "$api/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')"
+          read_tag
           read -r type actual <<<"$ref"
           current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)"
           if [ "$type" != "commit" ] || [ "$actual" != "$GITHUB_SHA" ] || [ "$current" != "$GITHUB_SHA" ]; then

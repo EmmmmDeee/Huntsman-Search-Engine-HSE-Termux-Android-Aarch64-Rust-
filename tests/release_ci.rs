@@ -380,7 +380,19 @@ fn per_commit_publish_anchors_the_tag_before_creating_the_draft() {
         "draft creation must require the pre-created tag"
     );
     assert!(
-        step.matches("git/ref/tags/${TAG}").count() >= 2,
+        step.contains("ref=\"$(gh api \"$api/git/ref/tags/${TAG}\"")
+            && step.contains("grep -qF '(HTTP 404)'"),
+        "read_tag must read the tag itself, and retry only a 404"
+    );
+    let reads: Vec<usize> = step
+        .match_indices("          read_tag\n")
+        .map(|(at, _)| at)
+        .collect();
+    assert!(
+        reads.len() == 2
+            && create_ref < reads[0]
+            && reads[0] < create_release
+            && create_release < reads[1],
         "the tag must be verified before and after draft creation"
     );
     assert!(
@@ -2674,22 +2686,47 @@ fn step_script(prefix: &str) -> String {
 }
 
 const FAKE_GH: &str = r#"#!/usr/bin/env bash
-# Fake `gh api PATH [--jq EXPR]`: answers from $FAKE_GH/<key>.json, where key
-# is PATH without repos/<repo>/ and with / as _. <key>.status overrides the
-# HTTP status; a missing fixture is a 404.
+# Fake `gh api [-X METHOD] PATH [--jq EXPR] [-f K=V]...` and `gh release ...`.
+# Every call is appended to $FAKE_GH/calls. A GET answers from
+# $FAKE_GH/<key>.json, where key is PATH without repos/<repo>/ and with / as _;
+# <key>.status overrides the HTTP status, a missing fixture is a 404, and
+# <key>.lag holding N answers the first N GETs with a 404, as GitHub does for a
+# moment after a ref is created. Any other method, and `gh release`, succeeds
+# unless <METHOD>_<key>.status or release_<SUBCOMMAND>.status says otherwise.
+fail() { printf '%s' '{"message":"Fake"}'; echo "gh: Fake (HTTP $1)" >&2; exit 1; }
+if [ "${1:-}" = release ]; then
+  echo "$*" >> "$FAKE_GH/calls"
+  status=0
+  if [ -f "$FAKE_GH/release_${2:-}.status" ]; then status="$(cat "$FAKE_GH/release_${2:-}.status")"; fi
+  [ "$status" = 0 ] || fail "$status"
+  exit 0
+fi
 [ "${1:-}" = api ] || { echo "fake gh: unexpected: $*" >&2; exit 99; }
 shift
-path="" jq=""
+method=GET path="" jq=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --jq) jq="$2"; shift 2 ;;
+    -X) method="$2"; shift 2 ;;
+    -f|-F) shift 2 ;;
     -*) echo "fake gh: unexpected flag $1" >&2; exit 99 ;;
     *) path="$1"; shift ;;
   esac
 done
 key="${path#repos/"$GITHUB_REPOSITORY"/}"
 key="${key//\//_}"
-echo "$path" >> "$FAKE_GH/calls"
+echo "$method $path" >> "$FAKE_GH/calls"
+if [ "$method" != GET ]; then
+  status=200
+  if [ -f "$FAKE_GH/${method}_$key.status" ]; then status="$(cat "$FAKE_GH/${method}_$key.status")"; fi
+  [ "$status" = 200 ] || fail "$status"
+  printf '%s\n' '{}'
+  exit 0
+fi
+if [ -f "$FAKE_GH/$key.lag" ]; then
+  lag="$(cat "$FAKE_GH/$key.lag")"
+  if [ "$lag" -gt 0 ]; then echo "$((lag - 1))" > "$FAKE_GH/$key.lag"; fail 404; fi
+fi
 status=404
 body='{"message":"Not Found"}'
 if [ -f "$FAKE_GH/$key.json" ]; then status=200; body="$(cat "$FAKE_GH/$key.json")"; fi
@@ -2697,6 +2734,9 @@ if [ -f "$FAKE_GH/$key.status" ]; then status="$(cat "$FAKE_GH/$key.status")"; f
 if [ "$status" != 200 ]; then printf '%s' "$body"; echo "gh: Fake (HTTP $status)" >&2; exit 1; fi
 if [ -n "$jq" ]; then jq -r "$jq" <<<"$body"; else printf '%s\n' "$body"; fi
 "#;
+
+/// A `sleep` that only records how long it was asked to wait, so a bounded retry runs at once.
+const FAKE_SLEEP: &str = "#!/usr/bin/env bash\necho \"sleep $*\" >> \"$FAKE_GH/calls\"\n";
 
 const STEP_TAG: &str = "main-0a1b2c3";
 const STEP_ASSET: &str = "huntsman-recon-aarch64-linux-android";
@@ -2741,6 +2781,8 @@ struct StepRun {
     code: Option<i32>,
     text: String,
     output: String,
+    /// The fake `gh` and `sleep` calls, one per line, in order.
+    calls: String,
 }
 
 /// A fake `gh api` answer: (fixture key, HTTP status, body).
@@ -2748,17 +2790,33 @@ type Answer = (String, u16, String);
 
 /// Runs `script` with the fake `gh`.
 fn run_step(name: &str, script: &str, fixtures: &[Answer], envs: &[(&str, &str)]) -> StepRun {
+    run_step_with(name, script, fixtures, &[], envs)
+}
+
+/// Runs `script` with the fake `gh` and `sleep`, in a scratch working directory. Each `files`
+/// entry is written into the fake's data directory as is, such as a `<key>.lag`.
+fn run_step_with(
+    name: &str,
+    script: &str,
+    fixtures: &[Answer],
+    files: &[(&str, &str)],
+    envs: &[(&str, &str)],
+) -> StepRun {
     let root = scratch(&format!("step-{name}"));
     let (fakes, data, tmp) = (root.join("fakes"), root.join("gh"), root.join("tmp"));
     for d in [&fakes, &data, &tmp] {
         fs::create_dir_all(d).unwrap();
     }
     write_exec(&fakes.join("gh"), FAKE_GH);
+    write_exec(&fakes.join("sleep"), FAKE_SLEEP);
     for (key, status, body) in fixtures {
         fs::write(data.join(format!("{key}.json")), body).unwrap();
         if *status != 200 {
             fs::write(data.join(format!("{key}.status")), status.to_string()).unwrap();
         }
+    }
+    for (file, body) in files {
+        fs::write(data.join(file), body).unwrap();
     }
     let file = root.join("step.sh");
     fs::write(&file, script).unwrap();
@@ -2766,6 +2824,7 @@ fn run_step(name: &str, script: &str, fixtures: &[Answer], envs: &[(&str, &str)]
     fs::write(&out_file, "").unwrap();
     let mut cmd = Command::new(tool("bash").expect("bash must be available"));
     cmd.arg(&file)
+        .current_dir(&root)
         .env("PATH", path_with(&fakes))
         .env("FAKE_GH", &data)
         .env("GITHUB_REPOSITORY", "owner/repo")
@@ -2784,6 +2843,7 @@ fn run_step(name: &str, script: &str, fixtures: &[Answer], envs: &[(&str, &str)]
         text: String::from_utf8_lossy(&out.stdout).into_owned()
             + &String::from_utf8_lossy(&out.stderr),
         output: fs::read_to_string(&out_file).unwrap(),
+        calls: fs::read_to_string(data.join("calls")).unwrap_or_default(),
     };
     let _ = fs::remove_dir_all(&root);
     run
@@ -3031,6 +3091,124 @@ fn attestation_requirement_refuses_each_case_by_exit_code_and_marker() {
             );
         }
     }
+}
+
+/// The publish step run with main still at this commit. The new tag answers its first `lag`
+/// reads with a 404, then with `tag_status`.
+fn publish_run(case: &str, lag: &str, tag_status: u16) -> StepRun {
+    let main = (
+        "git_ref_heads_main".to_owned(),
+        200,
+        format!("{{\"object\":{{\"sha\":\"{}\"}}}}", step_sha()),
+    );
+    let tag = (
+        format!("git_ref_tags_{STEP_TAG}"),
+        tag_status,
+        format!(
+            "{{\"object\":{{\"type\":\"commit\",\"sha\":\"{}\"}}}}",
+            step_sha()
+        ),
+    );
+    let lag_file = format!("git_ref_tags_{STEP_TAG}.lag");
+    run_step_with(
+        &format!("publish-{case}"),
+        &step_script("Publish pre-release "),
+        &[main, tag],
+        &[(lag_file.as_str(), lag)],
+        &[
+            ("GITHUB_SERVER_URL", "https://github.com"),
+            ("GITHUB_RUN_ID", "1"),
+        ],
+    )
+}
+
+fn count_calls(run: &StepRun, call: &str) -> usize {
+    run.calls.lines().filter(|line| *line == call).count()
+}
+
+/// GitHub can answer 404 for a tag for a moment after creating it. That failed the publish of
+/// main-d325921 and left the commit with no pre-release. The step waits it out, bounded, and
+/// publishes.
+#[test]
+fn publish_waits_for_a_new_tag_to_become_readable() {
+    if !jq_present() {
+        return;
+    }
+    let run = publish_run("lagging-tag", "2", 200);
+    assert_eq!(run.code, Some(0), "{}\n{}", run.text, run.calls);
+    assert_eq!(run.output, "published=true\n", "{}", run.text);
+    let calls: Vec<&str> = run.calls.lines().collect();
+    let create = calls
+        .iter()
+        .position(|call| call.starts_with("release create "))
+        .unwrap_or_else(|| panic!("the draft must be created:\n{}", run.calls));
+    let tag_read = format!("GET repos/owner/repo/git/ref/tags/{STEP_TAG}");
+    assert_eq!(
+        calls[..create]
+            .iter()
+            .filter(|call| **call == tag_read)
+            .count(),
+        3,
+        "two lagging reads and the one that answers, before the draft:\n{}",
+        run.calls
+    );
+    assert_eq!(count_calls(&run, "sleep 3"), 2, "{}", run.calls);
+    assert!(
+        calls.iter().any(|call| call.starts_with("release edit ")),
+        "{}",
+        run.calls
+    );
+    assert!(!run.calls.contains("DELETE"), "{}", run.calls);
+}
+
+/// A tag that never becomes readable is retried a bounded number of times, then the step fails
+/// and removes the tag it created, so no orphan tag outlives the run.
+#[test]
+fn publish_gives_up_on_a_tag_that_never_reads_and_removes_it() {
+    if !jq_present() {
+        return;
+    }
+    let run = publish_run("unreadable-tag", "99", 200);
+    assert_eq!(run.code, Some(1), "{}\n{}", run.text, run.calls);
+    assert!(
+        run.text.contains(&format!(
+            "::error::tag {STEP_TAG} was still not readable after bounded retry"
+        )),
+        "{}",
+        run.text
+    );
+    let tag_read = format!("GET repos/owner/repo/git/ref/tags/{STEP_TAG}");
+    assert_eq!(count_calls(&run, &tag_read), 10, "{}", run.calls);
+    assert_eq!(count_calls(&run, "sleep 3"), 9, "{}", run.calls);
+    assert!(!run.calls.contains("release create"), "{}", run.calls);
+    assert_eq!(
+        run.calls.lines().last(),
+        Some(format!("DELETE repos/owner/repo/git/refs/tags/{STEP_TAG}").as_str()),
+        "{}",
+        run.calls
+    );
+    assert_eq!(run.output, "", "a failed publish must not report published");
+}
+
+/// Only a 404 is the lag of a new ref. Any other error reading the tag fails at once, and the
+/// tag is removed.
+#[test]
+fn publish_fails_at_once_on_any_other_tag_read_error() {
+    if !jq_present() {
+        return;
+    }
+    let run = publish_run("tag-502", "0", 502);
+    assert_eq!(run.code, Some(1), "{}\n{}", run.text, run.calls);
+    let tag_read = format!("GET repos/owner/repo/git/ref/tags/{STEP_TAG}");
+    assert_eq!(count_calls(&run, &tag_read), 1, "{}", run.calls);
+    assert_eq!(count_calls(&run, "sleep 3"), 0, "{}", run.calls);
+    assert!(!run.calls.contains("release create"), "{}", run.calls);
+    assert!(
+        run.calls
+            .contains(&format!("DELETE repos/owner/repo/git/refs/tags/{STEP_TAG}")),
+        "{}",
+        run.calls
+    );
 }
 
 /// FTBB N4: every step that writes a release, a tag or an attestation runs
