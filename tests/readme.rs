@@ -88,7 +88,8 @@ fn usage_subcommands() -> BTreeSet<String> {
         .collect()
 }
 
-/// Internet examples: a URL argument, any `email`/`exposure`/`username`/`query`/`domain`/`ip` lookup, `serve`,
+/// Internet examples: a URL argument, any `email`/`exposure`/`username`/`query`/`domain`/`ip`/`network`
+/// lookup (`network` queries `WiGLE` when its credentials are set), `serve`,
 /// or any `hibp` lookup (`hibp help` is offline). Provider-specific tests cover these separately.
 fn is_network(args: &[String]) -> bool {
     args.iter()
@@ -99,6 +100,7 @@ fn is_network(args: &[String]) -> bool {
         || args.first().is_some_and(|a| a == "query")
         || args.first().is_some_and(|a| a == "domain")
         || args.first().is_some_and(|a| a == "ip")
+        || args.first().is_some_and(|a| a == "network")
         || args.first().is_some_and(|a| a == "serve")
         || (args.first().is_some_and(|a| a == "hibp") && args.get(1).is_some_and(|a| a != "help"))
 }
@@ -225,6 +227,24 @@ fn observed_exit_code(documented: u8) -> Option<u8> {
             out
         }
         77 => bin().args(["fetch", "http://127.0.0.1:1/"]).output(),
+        78 => {
+            // A keys file others can read is a failing check: huntsman-recon refuses to use it.
+            let home = scratch("config");
+            let keys = home.join(".huntsman.env");
+            fs::write(&keys, "").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&keys, fs::Permissions::from_mode(0o644)).unwrap();
+            }
+            let out = bin()
+                .args(["doctor", "--bind", "127.0.0.1:1"])
+                .env("HOME", &home)
+                .current_dir(&home)
+                .output();
+            let _ = fs::remove_dir_all(&home);
+            out
+        }
         141 => {
             let (reader, writer) = std::io::pipe().unwrap();
             drop(reader);
