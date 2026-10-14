@@ -30,6 +30,7 @@ pub struct RuleContext<'a> {
     by_uid: RefCell<Option<BTreeMap<&'a str, &'a Entity>>>,
     by_canonical_handle: RefCell<Option<BTreeMap<String, Vec<&'a Entity>>>>,
     pathways: RefCell<Option<Vec<PairPathways<'a>>>>,
+    clusters: RefCell<Option<Vec<Vec<String>>>>,
 }
 
 impl<'a> RuleContext<'a> {
@@ -41,6 +42,7 @@ impl<'a> RuleContext<'a> {
             by_uid: RefCell::new(None),
             by_canonical_handle: RefCell::new(None),
             pathways: RefCell::new(None),
+            clusters: RefCell::new(None),
         }
     }
 
@@ -94,6 +96,18 @@ impl<'a> RuleContext<'a> {
         }
         Ref::map(self.pathways.borrow(), |pathways| {
             pathways.as_ref().expect("cache initialised")
+        })
+    }
+
+    /// The identity clusters (see [`relation::resolve_identity_clusters`]), found once: AU-060
+    /// and AU-071 both read them.
+    pub fn identity_clusters(&self) -> Ref<'_, Vec<Vec<String>>> {
+        if self.clusters.borrow().is_none() {
+            let clusters = relation::resolve_identity_clusters(self.relations);
+            *self.clusters.borrow_mut() = Some(clusters);
+        }
+        Ref::map(self.clusters.borrow(), |clusters| {
+            clusters.as_ref().expect("cache initialised")
         })
     }
 }
@@ -525,6 +539,29 @@ mod tests {
         ];
         let findings = rule_au_002_identity_cluster(&RuleContext::new(&weak, &[]), "scan", 0);
         assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn au002_does_not_count_a_username_inferred_from_the_email() {
+        // The email's local part, derived as a username (inferred), plus a public profile found
+        // under that name. The profile is observed, but the name still adds no identity.
+        let email = ent(EntityKind::Email, "me@x.com", 0.99, "seed", false);
+        let mut username = Entity::new(EntityKind::Username, "me", 0.65, "scan");
+        username.add_evidence(evidence("email_parse", "derived from me@x.com").inferred());
+        username.add_evidence(evidence("gravatar", "public profile"));
+        let entities = vec![email, username];
+        let findings = rule_au_002_identity_cluster(&RuleContext::new(&entities, &[]), "scan", 0);
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn au002_still_counts_an_observed_username_beside_the_email() {
+        let email = ent(EntityKind::Email, "me@x.com", 0.99, "seed", false);
+        let username = ent(EntityKind::Username, "me", 0.65, "gravatar", false);
+        let entities = vec![email, username];
+        let findings = rule_au_002_identity_cluster(&RuleContext::new(&entities, &[]), "scan", 0);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].description.contains("1 username(s)"));
     }
 
     #[test]
