@@ -34,6 +34,11 @@ pub enum AuthStyle {
     Bearer,
     /// `<name>: <secret>`, e.g. `X-Api-Key`.
     Header(String),
+    /// `?<name>=<secret>` appended to the URL, for providers that take the key only as a query
+    /// parameter (Shodan, Whoxy). The URL the caller passes never holds the key: it is added to
+    /// the request as it is sent, removed from anything the caller set under that name, and every
+    /// recorded URL is [`redact_url`]ed.
+    Query(String),
 }
 
 /// An operator-approved secret bound to the origin it may be sent to.
@@ -54,14 +59,14 @@ impl Credential {
         secret: Secret,
         style: AuthStyle,
     ) -> Result<Self, Error> {
-        if let AuthStyle::Header(name) = &style {
+        if let AuthStyle::Header(name) | AuthStyle::Query(name) = &style {
             let ok = !name.is_empty()
                 && name
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
             if !ok {
                 return Err(Error::Invalid(
-                    "credential header name must be a token".into(),
+                    "credential header or parameter name must be a token".into(),
                 ));
             }
         }
@@ -97,8 +102,10 @@ impl Credential {
     /// marked sensitive): stripped, not merely not added.
     fn strip(&self, request: &Request) -> Request {
         let mut r = without_credentials(request);
-        if let AuthStyle::Header(name) = &self.style {
-            r.headers.retain(|(k, _)| !k.eq_ignore_ascii_case(name));
+        match &self.style {
+            AuthStyle::Header(name) => r.headers.retain(|(k, _)| !k.eq_ignore_ascii_case(name)),
+            AuthStyle::Query(name) => r.url = without_query_param(&r.url, name),
+            AuthStyle::Bearer => {}
         }
         r
     }
@@ -109,6 +116,12 @@ impl Credential {
                 request.header("Authorization", format!("Bearer {}", self.secret.expose()))
             }
             AuthStyle::Header(name) => request.header(name.clone(), self.secret.expose()),
+            AuthStyle::Query(name) => {
+                let mut request = request;
+                request.url =
+                    crate::http::append_query_param(&request.url, name, self.secret.expose());
+                request
+            }
         }
     }
 }
@@ -349,10 +362,14 @@ fn fetch_hops_inner<T: Transport + ?Sized>(
     // Once a hop leaves the credential's origin the credential is never re-attached,
     // even if a later hop comes back.
     let mut left_origin = false;
-    let secret_text = credential.map(|c| c.secret.expose());
-    let scrub = |text: &str| match secret_text {
-        Some(s) => scrub_secrets(text, &[s]),
-        None => text.to_owned(),
+    let secret_forms = secret_forms(credential);
+    let scrub = |text: &str| {
+        if secret_forms.is_empty() {
+            text.to_owned()
+        } else {
+            let forms: Vec<&str> = secret_forms.iter().map(String::as_str).collect();
+            scrub_secrets(text, &forms)
+        }
     };
 
     let mut current = request;
@@ -612,6 +629,46 @@ fn without_userinfo(url: &str) -> String {
     }
 }
 
+/// The forms `credential`'s secret can take in diagnostic text: as given, and percent-encoded,
+/// because a query-parameter key is quoted that way in any text that quotes the URL. **Pure.**
+fn secret_forms(credential: Option<&Credential>) -> Vec<String> {
+    let Some(credential) = credential else {
+        return Vec::new();
+    };
+    let raw = credential.secret.expose();
+    let encoded = crate::http::percent_encode_component(raw);
+    if encoded == raw {
+        vec![raw.to_owned()]
+    } else {
+        vec![raw.to_owned(), encoded]
+    }
+}
+
+/// `url` without any `name=` query parameter. **Pure.**
+fn without_query_param(url: &str, name: &str) -> String {
+    let (no_fragment, fragment) = match url.split_once('#') {
+        Some((u, f)) => (u, Some(f)),
+        None => (url, None),
+    };
+    let Some((base, query)) = no_fragment.split_once('?') else {
+        return url.to_owned();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| pair.split_once('=').map_or(*pair, |(k, _)| k) != name)
+        .collect();
+    let mut out = base.to_owned();
+    if !kept.is_empty() {
+        out.push('?');
+        out.push_str(&kept.join("&"));
+    }
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
+}
+
 fn without_credentials(request: &Request) -> Request {
     let mut r = request.clone();
     r.headers
@@ -822,6 +879,81 @@ mod tests {
         );
         assert_eq!(r.credential_sent, Some(c.fingerprint()));
         assert!(!format!("{r:?}").contains("tok-abcdef"));
+    }
+
+    #[test]
+    fn a_query_key_is_added_on_send_and_never_follows_a_redirect_off_origin() {
+        let c = cred("tok/abc+def 123", AuthStyle::Query("key".into()));
+        let f = Fake::new(vec![
+            Ok(resp(
+                302,
+                &[("location", "https://evil.example/steal?x=1")],
+                "",
+            )),
+            Ok(resp(200, &[], "")),
+        ]);
+        // A caller-set `key=` is replaced, never sent alongside the operator's key.
+        let r = run(
+            &f,
+            "https://a.example/q?ip=1.2.3.4&key=planted",
+            Some(&c),
+            1,
+        )
+        .expect("fetch");
+        let seen = f.seen.borrow();
+        assert_eq!(
+            seen[0].url,
+            "https://a.example/q?ip=1.2.3.4&key=tok%2Fabc%2Bdef+123"
+        );
+        assert_eq!(seen[1].url, "https://evil.example/steal?x=1");
+        assert!(!r.final_url.contains("tok"), "{}", r.final_url);
+        assert!(
+            Credential::new(
+                AuthenticationAuthority::operator_approved(OperatorCredentialRef {
+                    provider_id: "p".into(),
+                    credential_slot: "P_KEY".into(),
+                    approved_at_unix: 1,
+                    approval_provenance: "t".into(),
+                })
+                .expect("authority"),
+                Secret::new("tok-abcdef-123456").expect("s"),
+                AuthStyle::Query("k&x=".into()),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_query_key_is_scrubbed_from_transport_diagnostics_in_both_forms() {
+        let c = cred("tok/abc+def 123", AuthStyle::Query("key".into()));
+        let f = Fake::new(vec![Err(TransportFailure {
+            kind: SourceOutcomeKind::ConnectFailure,
+            detail: "failed https://a.example/q?key=tok%2Fabc%2Bdef+123 (tok/abc+def 123)".into(),
+            blocked: false,
+        })]);
+        let r = run(&f, "https://a.example/q", Some(&c), 0).expect("fetch");
+        let detail = r.outcome.detail.unwrap_or_default();
+        assert!(
+            !detail.contains("tok%2Fabc") && !detail.contains("tok/abc"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn without_query_param_keeps_every_other_parameter() {
+        assert_eq!(
+            without_query_param("https://h/p?a=1&key=s&b=2#f", "key"),
+            "https://h/p?a=1&b=2#f"
+        );
+        assert_eq!(
+            without_query_param("https://h/p?key=s", "key"),
+            "https://h/p"
+        );
+        assert_eq!(
+            without_query_param("https://h/p?keys=1", "key"),
+            "https://h/p?keys=1"
+        );
+        assert_eq!(without_query_param("https://h/p", "key"), "https://h/p");
     }
 
     #[test]

@@ -80,13 +80,17 @@ http	leaf	single socket-opening transport boundary
 hunter	adapter	Hunter domain-search leg reached through domain_cli from domain, scan -k domain and /api/lookup when its key is set
 identity	leaf	legacy/simple person record resolution helper
 identity_resolution	leaf	conservative merge decision policy
+indicator_legs	runtime	indicator-source runner reached through ip_cli and domain_cli from ip, domain, scan and /api/lookup
+indicator_sources	adapter	indicator-source registry run by indicator_legs for ip and domain lookups
 intelligence	runtime	aggregated intelligence report
 internetdb	adapter	Shodan InternetDB leg reached through ip_cli from ip, scan -k ip and /api/lookup
 ip_cli	runtime	ip lookup front-end reached from ip, scan -k ip and /api/lookup
+ipqs	adapter	IPQualityScore IP leg reached through indicator_legs from ip, scan -k ip and /api/lookup when its key is set
 json	exporter	canonical JSON support
 key_health	diagnostic	provider key diagnostics
 keys	leaf	credential file handling
 leads	runtime	lead ranking through intelligence report
+leakix	adapter	LeakIX leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
 ledger	exporter	hash-chained verified-claim ledger
 lineage	leaf	lineage-aware candidate resolution helper
 lookup_args	leaf	lookup option grammar shared by the front-ends
@@ -120,6 +124,7 @@ postcode_au	leaf	Australian postcode lookup/model
 profiles	runtime	entity profiles through intelligence report
 proof	leaf	bounded proof-environment bookkeeping
 provider_credentials	leaf	provider credential completeness manifest
+pulsedive	adapter	Pulsedive leg reached through indicator_legs from ip, domain, scan and /api/lookup
 radar	leaf	radar model utility
 recon	leaf	host reconnaissance helpers
 redact	leaf	secret and location redaction
@@ -145,6 +150,7 @@ session	exporter	auditable execution session
 sf_compat	diagnostic	SpiderFoot-compatible front end over rebuilt lookup paths
 sha256	leaf	SHA-256 primitive
 shadow_assessment	leaf	shadow-mode claim assessment reporting
+shodan	adapter	Shodan host and DNS leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
 signals	leaf	signal primitive
 snake_graph	exporter	compact graph rendering
 source_outcome	runtime	causal provider outcome model
@@ -158,6 +164,7 @@ store	exporter	bounded atomic session persistence
 tags	leaf	entity tag constants
 termination	runtime	explicit bounded termination semantics
 textnorm	leaf	text normalization
+threatfox	adapter	ThreatFox IOC leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
 timefmt	leaf	timestamp parsing
 timeline	runtime	timeline reconstruction through intelligence report
 tlsrpt	leaf	TLS-RPT parser
@@ -171,3 +178,4 @@ virustotal	adapter	VirusTotal leg reached through ip_cli and domain_cli when its
 wayback	adapter	Internet Archive Wayback CDX client
 web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
+whoxy	adapter	Whoxy WHOIS leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set

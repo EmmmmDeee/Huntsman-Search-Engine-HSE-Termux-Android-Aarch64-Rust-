@@ -10,7 +10,7 @@
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-use crate::api_leg::{self, Answer, Api, KeyUse, LegError};
+use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::{Transport, percent_encode_component};
 use crate::keys::Keys;
 
@@ -22,7 +22,7 @@ pub const API: Api = Api {
     origin: "https://www.virustotal.com:443",
     key: Some(KeyUse {
         slot: KEY_SLOT,
-        header: "x-apikey",
+        place: KeyPlace::Header("x-apikey"),
         required: true,
     }),
 };

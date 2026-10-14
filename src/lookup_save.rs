@@ -110,7 +110,7 @@ fn domain_provenance(source: &str) -> (&str, &'static str) {
         "dns" => ("dns", "src/dns.rs"),
         "virustotal" => ("virustotal", "src/virustotal.rs"),
         "hunter" => ("hunter", "src/hunter.rs"),
-        _ => (source, "src/domain_cli.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/domain_cli.rs")),
     }
 }
 
@@ -128,8 +128,21 @@ fn ip_provenance(source: &str) -> (&str, &'static str) {
         "greynoise" => ("greynoise", "src/greynoise.rs"),
         "abuseipdb" => ("abuseipdb", "src/abuseipdb.rs"),
         "virustotal" => ("virustotal", "src/virustotal.rs"),
-        _ => (source, "src/ip_cli.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/ip_cli.rs")),
     }
+}
+
+/// The provider module of an indicator source, for both the `ip` and `domain` policies.
+fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
+    Some(match source {
+        "shodan" => ("shodan", "src/shodan.rs"),
+        "pulsedive" => ("pulsedive", "src/pulsedive.rs"),
+        "leakix" => ("leakix", "src/leakix.rs"),
+        "threatfox" => ("threatfox", "src/threatfox.rs"),
+        "ipqs" => ("ipqs", "src/ipqs.rs"),
+        "whoxy" => ("whoxy", "src/whoxy.rs"),
+        _ => return None,
+    })
 }
 
 pub const IP_POLICY: SavePolicy = SavePolicy {

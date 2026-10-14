@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyUse, LegError};
+use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::{Transport, percent_encode_component};
 use crate::keys::Keys;
 
@@ -19,7 +19,7 @@ pub const API: Api = Api {
     origin: "https://api.abuseipdb.com:443",
     key: Some(KeyUse {
         slot: KEY_SLOT,
-        header: "Key",
+        place: KeyPlace::Header("Key"),
         required: true,
     }),
 };

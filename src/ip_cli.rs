@@ -3,8 +3,11 @@
 //! Runs the IP legs in order for one public address: Shodan `InternetDB` (open ports, hostnames,
 //! CPEs, known CVEs), `RIPEstat` (covering prefix and origin AS), `GreyNoise` Community (internet
 //! scanner or benign service), then the keyed legs whose key is configured: `AbuseIPDB` (abuse
-//! reports) and `VirusTotal` (engine verdicts). Each leg adds evidence to the one address entity;
-//! hostnames, origin AS numbers, their holders and the network's domain become pivots.
+//! reports) and `VirusTotal` (engine verdicts), then every IP source in
+//! [`crate::indicator_legs::SOURCES`] (Shodan, Pulsedive, `LeakIX`, `ThreatFox`,
+//! `IPQualityScore`). Each leg adds evidence to the one address entity; hostnames, origin AS
+//! numbers, their holders and the network's domain become pivots. A configured key always runs
+//! its leg.
 //!
 //! A private, loopback, documentation or otherwise non-public address is refused before any
 //! request: nothing public is known about it, and asking would only disclose it.
@@ -18,6 +21,8 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_u
 use crate::error::Error;
 use crate::greynoise;
 use crate::http::Transport;
+use crate::indicator_legs;
+use crate::indicator_sources::Indicator;
 use crate::internetdb;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
@@ -30,7 +35,7 @@ use crate::virustotal;
 pub const IP_USAGE: &str = "usage: huntsman-recon ip ADDRESS [--save FILE]";
 pub const IP_HELP: &str = "\
 ip ADDRESS [--save FILE]
-Look up one public IPv4 or IPv6 address: open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat, and internet-scanner status from GreyNoise Community, all keyless. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY set VirusTotal engine verdicts, and HUNTSMAN_GREYNOISE_KEY raises the GreyNoise limit; a leg whose key is not set makes no request. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
+Look up one public IPv4 or IPv6 address: open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat, internet-scanner status from GreyNoise Community and threat risk from Pulsedive, all keyless. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY and HUNTSMAN_PULSEDIVE_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
 
 /// Confidence of the queried address itself.
 const SEED_CONFIDENCE: f64 = 0.90;
@@ -186,11 +191,15 @@ pub fn run<T: Transport + ?Sized>(transport: &T, keys: &Keys, ip: &str, now_unix
         }
     }
 
+    let legs = indicator_legs::run(transport, keys, Indicator::Ip(&ip), &scan_id, now_unix);
     let Lookup {
         mut report,
-        network,
+        mut network,
         ..
     } = lookup;
+    report.entities.extend(legs.entities);
+    report.outcomes.extend(legs.outcomes);
+    network = network.or(legs.network);
     merge_by_uid(&mut report.entities);
     let collected = report.outcomes.iter().any(|o| o.kind.is_accepted());
     if !collected {

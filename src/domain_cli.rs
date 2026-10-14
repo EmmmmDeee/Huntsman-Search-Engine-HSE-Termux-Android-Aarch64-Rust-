@@ -2,9 +2,11 @@
 //!
 //! Runs crt.sh certificate transparency and DNS record lookups in sequence for a
 //! single domain, then the keyed legs whose key is configured: `VirusTotal` reputation
-//! (`HUNTSMAN_VIRUSTOTAL_KEY`) and Hunter.io published addresses (`HUNTSMAN_HUNTER_KEY`). A
-//! keyed leg without its key makes no request and reports nothing. Every result set is combined
-//! into one entity list and rendered report.
+//! (`HUNTSMAN_VIRUSTOTAL_KEY`) and Hunter.io published addresses (`HUNTSMAN_HUNTER_KEY`), then
+//! every domain source in [`crate::indicator_legs::SOURCES`] (Shodan DNS, Pulsedive, `LeakIX`,
+//! `ThreatFox`, Whoxy WHOIS). A keyed leg without its key makes no request and reports nothing;
+//! a configured key always runs its leg. Every result set is combined into one entity list and
+//! rendered report.
 
 use std::path::PathBuf;
 
@@ -16,6 +18,8 @@ use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push
 use crate::error::Error;
 use crate::http::{Transport, UreqTransport};
 use crate::hunter;
+use crate::indicator_legs;
+use crate::indicator_sources::Indicator;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
@@ -160,7 +164,8 @@ pub fn run<T: Transport + ?Sized>(
     }
 }
 
-/// The legs that run only when their key is configured: `VirusTotal`, then Hunter.io.
+/// The provider legs: `VirusTotal` and Hunter.io when their keys are configured, then the
+/// indicator sources that apply.
 fn keyed_legs<T: Transport + ?Sized>(
     transport: &T,
     keys: &Keys,
@@ -192,6 +197,15 @@ fn keyed_legs<T: Transport + ?Sized>(
             transport, keys, domain, &scan_id, now_unix, entities,
         ));
     }
+    let legs = indicator_legs::run(
+        transport,
+        keys,
+        Indicator::Domain(domain),
+        &scan_id,
+        now_unix,
+    );
+    entities.extend(legs.entities);
+    outcomes.extend(legs.outcomes);
 }
 
 fn virustotal_entity(domain: &str, scan_id: &str, report: &virustotal::Report) -> Entity {

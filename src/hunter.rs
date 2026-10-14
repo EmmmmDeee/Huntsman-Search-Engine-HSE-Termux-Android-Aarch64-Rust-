@@ -10,7 +10,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyUse, LegError};
+use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::canonical::canonical_email;
 use crate::http::{Transport, percent_encode_component};
 use crate::keys::Keys;
@@ -23,7 +23,7 @@ pub const API: Api = Api {
     origin: "https://api.hunter.io:443",
     key: Some(KeyUse {
         slot: KEY_SLOT,
-        header: "X-API-KEY",
+        place: KeyPlace::Header("X-API-KEY"),
         required: true,
     }),
 };

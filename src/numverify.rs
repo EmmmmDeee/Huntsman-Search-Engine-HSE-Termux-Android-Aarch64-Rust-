@@ -8,7 +8,7 @@
 
 use serde::Deserialize;
 
-use crate::api_leg::{self, Answer, Api, KeyUse, LegError};
+use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
 use crate::keys::Keys;
 
@@ -20,7 +20,7 @@ pub const API: Api = Api {
     origin: "https://api.apilayer.com:443",
     key: Some(KeyUse {
         slot: KEY_SLOT,
-        header: "apikey",
+        place: KeyPlace::Header("apikey"),
         required: true,
     }),
 };

@@ -66,7 +66,7 @@ pub(super) fn print_command_help(command: &str) {
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
         "domain" => {
-            "domain DOMAIN [--save FILE]\nLook up one domain: certificate-transparency names from crt.sh and DNS records over DNS-over-HTTPS. With HUNTSMAN_VIRUSTOTAL_KEY set it adds VirusTotal engine verdicts, and with HUNTSMAN_HUNTER_KEY set the addresses Hunter.io found published for the domain; a leg whose key is not set makes no request. --save writes an unverified ledger that verify can reload. Makes network requests."
+            "domain DOMAIN [--save FILE]\nLook up one domain: certificate-transparency names from crt.sh and DNS records over DNS-over-HTTPS. Pulsedive threat risk is asked without a key. With HUNTSMAN_VIRUSTOTAL_KEY set it adds VirusTotal engine verdicts, with HUNTSMAN_HUNTER_KEY the addresses Hunter.io found published for the domain, with HUNTSMAN_SHODAN_KEY Shodan DNS records (one query credit), with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, and with HUNTSMAN_WHOXY_KEY the live WHOIS record (one Whoxy credit); a leg whose key is not set makes no request, and a key that is set always runs its leg. --save writes an unverified ledger that verify can reload. Makes network requests."
         }
         "ip" => huntsman_recon::ip_cli::IP_HELP,
         "scan" => {
