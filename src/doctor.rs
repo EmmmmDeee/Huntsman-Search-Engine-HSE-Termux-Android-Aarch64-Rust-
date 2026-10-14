@@ -832,12 +832,12 @@ fn serve(ctx: &Context<'_>) -> Check {
                 ),
             ),
         },
+        // A loopback serve needs no token, so only a public bind, or a build from before that,
+        // still asks for one.
         ServeState::Unauthorized => Check::warn(
             ID,
-            format!(
-                "running on {addr} with a token, and this shell has no matching HSE_AUTH_TOKEN"
-            ),
-            "export HSE_AUTH_TOKEN=<the token serve was started with>",
+            format!("running on {addr}, and it asks for a token this shell does not send"),
+            "on the phone: huntsman restart (a current build needs no token on loopback); on a public bind: export HSE_AUTH_TOKEN=<the token serve was started with>",
         ),
         ServeState::Foreign => Check::fail(
             ID,
