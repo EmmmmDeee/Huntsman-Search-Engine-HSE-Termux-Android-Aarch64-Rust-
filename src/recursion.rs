@@ -153,25 +153,57 @@ fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
     targets
 }
 
+/// A de-duplicated queue of targets: at most one lookup per `(kind, selector)`. Centralises the
+/// crawl's dedup invariant, so the seed frontier, each generation's next frontier, and the
+/// expansion queue share one definition of "the same lookup" and cannot drift apart.
+#[derive(Default)]
+struct Frontier {
+    seen: BTreeSet<(String, String)>,
+    queue: Vec<Target>,
+}
+
+impl Frontier {
+    /// Queue `target` unless an equal `(kind, selector)` is already queued. Returns whether it was
+    /// newly queued.
+    fn push(&mut self, target: Target) -> bool {
+        if self.seen.insert(target.owned_key()) {
+            self.queue.push(target);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether this de-duplication key is already queued.
+    fn contains_key(&self, key: &(String, String)) -> bool {
+        self.seen.contains(key)
+    }
+
+    fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    fn into_queue(self) -> Vec<Target> {
+        self.queue
+    }
+}
+
 /// Build the initial frontier: each routable seed becomes a de-duplicated target; an empty or
 /// non-routable seed is rejected. Returns (accepted seeds, rejected seeds, frontier).
 fn seed_frontier(seeds: &[String]) -> (Vec<Target>, Vec<String>, Vec<Target>) {
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
-    let mut frontier = Vec::new();
-    let mut queued: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut frontier = Frontier::default();
     for seed in seeds {
         match target_for_seed(seed) {
             Some(target) => {
                 accepted.push(target.clone());
-                if queued.insert(target.owned_key()) {
-                    frontier.push(target);
-                }
+                frontier.push(target);
             }
             None => rejected.push(seed.clone()),
         }
     }
-    (accepted, rejected, frontier)
+    (accepted, rejected, frontier.into_queue())
 }
 
 /// The accumulating state of one crawl, threaded across generations.
@@ -197,8 +229,7 @@ impl CrawlState {
         policy: &RecursionPolicy,
         collector: &mut C,
     ) -> (Vec<Target>, bool) {
-        let mut next: Vec<Target> = Vec::new();
-        let mut next_keys: BTreeSet<(String, String)> = BTreeSet::new();
+        let mut next = Frontier::default();
         let mut dispatched = 0usize;
         let mut stopped = false;
 
@@ -212,9 +243,7 @@ impl CrawlState {
             {
                 self.resource_limited = true;
                 stopped = true;
-                if next_keys.insert(target.owned_key()) {
-                    next.push(target);
-                }
+                next.push(target);
                 break;
             }
             let step = collector.collect(&target);
@@ -223,14 +252,12 @@ impl CrawlState {
             self.outcomes.extend(step.outcomes);
             for mut entity in step.entities {
                 entity.generation = generation;
-                self.queue_expansions(&entity, policy, &mut next, &mut next_keys);
+                self.queue_expansions(&entity, policy, &mut next);
                 self.entities.push(entity);
             }
         }
         for target in remaining {
-            if next_keys.insert(target.owned_key()) {
-                next.push(target);
-            }
+            next.push(target);
         }
         merge_by_uid(&mut self.entities);
         self.generations.push(GenerationStat {
@@ -238,28 +265,23 @@ impl CrawlState {
             dispatched,
             entities_after: self.entities.len(),
         });
-        (next, stopped)
+        (next.into_queue(), stopped)
     }
 
     /// Queue the next-generation targets an entity contributes, honouring the per-generation
     /// frontier cap. An overflow is a resource limit, not silently lost work.
-    fn queue_expansions(
-        &mut self,
-        entity: &Entity,
-        policy: &RecursionPolicy,
-        next: &mut Vec<Target>,
-        next_keys: &mut BTreeSet<(String, String)>,
-    ) {
+    fn queue_expansions(&mut self, entity: &Entity, policy: &RecursionPolicy, next: &mut Frontier) {
         for candidate in expansions(entity, policy) {
             let key = candidate.owned_key();
-            if self.visited.contains(&key) || next_keys.contains(&key) {
+            // Already dispatched, or already queued for the next generation: skip before the cap
+            // check so a duplicate never counts as overflow.
+            if self.visited.contains(&key) || next.contains_key(&key) {
                 continue;
             }
             if next.len() >= policy.max_frontier_per_generation {
                 self.resource_limited = true;
                 continue;
             }
-            next_keys.insert(key);
             next.push(candidate);
         }
     }
