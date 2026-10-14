@@ -430,6 +430,8 @@ fn modules_lists_only_reachable_catalog_entries() {
         "phone_intl",
         "github_user",
         "gravatar",
+        "duolingo",
+        "openpgp_keys",
         "classify_module",
         "sf_compat",
         "web_server",
