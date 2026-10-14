@@ -1,6 +1,6 @@
 //! Minimal embedded Web UI and HTTP API for Huntsman Recon.
 //!
-//! The default bind is loopback-only. Explicit non-loopback binds require a
+//! The default bind is loopback-only and needs no token. Explicit non-loopback binds require a
 //! non-empty bearer token supplied by the caller. The server is dependency-free,
 //! blocking and bounded per request. It exposes read-only metadata endpoints and, when the
 //! binary installs a [`LookupHandler`], `GET /api/lookup`, which runs one lookup through the
@@ -155,40 +155,51 @@ struct Routes {
     analyze: Option<AnalyzeHandler>,
 }
 
+/// Where `serve` listens and the token its API needs. Only [`ServeConfig::parse`] builds one, so a
+/// loopback bind can never carry a token.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ServeConfig {
     pub bind: SocketAddr,
-    pub bearer_token: Option<String>,
+    bearer_token: Option<String>,
 }
 
 impl ServeConfig {
     /// Build and validate server configuration.
     ///
+    /// A loopback bind never needs the token: the operator chose a page that asks for none on
+    /// the phone (2026-10-14), so a token supplied for a loopback bind is not used. The `Host`
+    /// guard and the lookup header still keep other websites out. A non-loopback bind is public
+    /// and always needs it.
+    ///
     /// # Errors
-    /// Rejects malformed bind addresses, empty supplied tokens, and explicit
-    /// non-loopback binds without a token.
+    /// Rejects malformed bind addresses, and a non-loopback bind without a non-empty token.
     pub fn parse(bind: &str, bearer_token: Option<String>) -> Result<Self, Error> {
         let bind = normalize_bind(bind)?;
-        let bearer_token = match bearer_token {
-            Some(token) => {
-                let token = token.trim().to_owned();
-                if token.is_empty() {
-                    return Err(Error::missing_credential(
-                        "HSE_AUTH_TOKEN must not be empty",
-                    ));
-                }
-                Some(token)
-            }
-            None => None,
-        };
-
-        if !bind.ip().is_loopback() && bearer_token.is_none() {
-            return Err(Error::missing_credential(
-                "non-loopback serve bind requires HSE_AUTH_TOKEN",
-            ));
+        if bind.ip().is_loopback() {
+            return Ok(Self {
+                bind,
+                bearer_token: None,
+            });
         }
+        match bearer_token.map(|token| token.trim().to_owned()) {
+            Some(token) if !token.is_empty() => Ok(Self {
+                bind,
+                bearer_token: Some(token),
+            }),
+            Some(_) => Err(Error::missing_credential(
+                "HSE_AUTH_TOKEN must not be empty",
+            )),
+            None => Err(Error::missing_credential(
+                "non-loopback serve bind requires HSE_AUTH_TOKEN",
+            )),
+        }
+    }
 
-        Ok(Self { bind, bearer_token })
+    /// Whether every endpoint but the page and health needs the bearer token: only on a public
+    /// bind.
+    #[must_use]
+    pub fn needs_token(&self) -> bool {
+        self.bearer_token.is_some()
     }
 }
 
@@ -517,12 +528,7 @@ fn handle_stream_with(
     let request = read_request(&mut stream, deadline)?;
     // A whole request: the connection is busy now, not idle, and is no longer closed early.
     drop(waiting);
-    let response = respond(
-        &request,
-        config.bearer_token.as_deref(),
-        config.bind,
-        routes,
-    );
+    let response = respond(&request, config, routes);
     stream
         .write_all(response.as_bytes())
         .map_err(|error| Error::Store(format!("serve write: {error}")))?;
@@ -692,12 +698,24 @@ struct Health<'a> {
     auth: &'a str,
 }
 
+/// The router for a server started with this bind and token, built the way `serve` builds it.
 #[cfg(test)]
 fn response_for_request(request: &str, bearer_token: Option<&str>, bind: SocketAddr) -> String {
-    respond(request, bearer_token, bind, &Routes::default())
+    respond(
+        request,
+        &test_config(bind, bearer_token),
+        &Routes::default(),
+    )
 }
 
-fn respond(request: &str, bearer_token: Option<&str>, bind: SocketAddr, routes: &Routes) -> String {
+#[cfg(test)]
+fn test_config(bind: SocketAddr, bearer_token: Option<&str>) -> ServeConfig {
+    ServeConfig::parse(&bind.to_string(), bearer_token.map(str::to_owned))
+        .unwrap_or_else(|error| panic!("{bind} with {bearer_token:?}: {error}"))
+}
+
+fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
+    let (bind, bearer_token) = (config.bind, config.bearer_token.as_deref());
     if request == "REQUEST_TOO_LARGE" {
         return response(
             413,
@@ -799,6 +817,7 @@ fn respond(request: &str, bearer_token: Option<&str>, bind: SocketAddr, routes: 
         },
         "/api/lookup" => lookup_response(&parsed, routes.lookups.as_ref()),
         "/api/analyze" => analyze_response(&parsed, routes.analyze.as_ref()),
+        "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
     }
@@ -1101,177 +1120,13 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
     )
 }
 
-const INDEX_HTML: &str = r#"<!doctype html>
-<html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="color-scheme" content="dark light">
-<meta name="referrer" content="no-referrer">
-<title>Huntsman Recon</title>
-<style>
-:root{--bg:#111;--fg:#eee;--dim:#aaa;--line:#444;--acc:#7cc4ff;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color-scheme:dark}
-@media (prefers-color-scheme:light){:root{--bg:#fafafa;--fg:#111;--dim:#555;--line:#ccc;--acc:#0b62a8;color-scheme:light}}
-*{box-sizing:border-box}
-body{max-width:960px;margin:0 auto;padding:max(12px,env(safe-area-inset-top)) 12px 24px;background:var(--bg);color:var(--fg);font-size:15px}
-h1{font-size:18px;margin:0 0 12px}
-button,input,select,textarea{font:inherit;min-height:44px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit}
-button{cursor:pointer;border-color:var(--acc);color:var(--acc)}
-button:disabled{opacity:.5}
-form{display:grid;grid-template-columns:1fr;gap:8px}
-@media (min-width:640px){form{grid-template-columns:9em 1fr auto}#analyze{grid-template-columns:1fr auto}}
-textarea{width:100%;resize:vertical}
-h2{font-size:15px;margin:12px 0 4px}
-section,details{border:1px solid var(--line);border-radius:6px;padding:10px;margin:10px 0}
-summary{cursor:pointer;min-height:32px}
-pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 0}
-table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid var(--line);padding:4px;text-align:left;vertical-align:top;overflow-wrap:anywhere}
-small,.dim{color:var(--dim)}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-#authnote{border:1px solid var(--acc);border-radius:6px;padding:8px 10px;margin:0 0 10px}
-</style>
-<h1>Huntsman Recon</h1>
-<p id="authnote" role="alert" hidden></p>
-<section>
-<form id="lookup">
-<select id="kind" aria-label="kind">
-<option value="auto">auto</option><option value="people">people</option><option value="email">email</option>
-<option value="exposure">exposure</option><option value="username">username</option><option value="phone">phone</option>
-<option value="domain">domain</option><option value="network">network</option>
-</select>
-<input id="q" required maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="name, email, @handle, phone, domain or BSSID" aria-label="selector">
-<button id="run" type="submit">Look up</button>
-</form>
-<small>Runs one lookup through the same front-ends as the CLI. It makes network requests; exposure and network spend operator keys.</small>
-</section>
-<section id="result" hidden>
-<div class="row"><b id="route"></b><span id="status" class="dim"></span><button id="download" type="button">Download JSON</button></div>
-<table><thead><tr><th>source</th><th>outcome</th><th>found</th></tr></thead><tbody id="outcomes"></tbody></table>
-<pre id="text"></pre>
-</section>
-<section>
-<form id="analyze">
-<textarea id="seeds" required rows="4" maxlength="2048" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="a seed per line: name, email, @handle, phone or domain" aria-label="seeds"></textarea>
-<button id="arun" type="submit">Analyze</button>
-</form>
-<small>Multi-hop analysis, offline: links the seeds, ranks the next pivots, names the gaps and plans the sources, with no network request and no key.</small>
-</section>
-<section id="aresult" hidden>
-<div class="row"><b id="asummary"></b><span id="astatus" class="dim"></span><button id="adownload" type="button">Download JSON</button></div>
-<h2>Entities</h2>
-<table><thead><tr><th>kind</th><th>value</th><th>confidence</th></tr></thead><tbody id="aentities"></tbody></table>
-<h2>Links</h2>
-<table><thead><tr><th>from</th><th>relation</th><th>to</th></tr></thead><tbody id="arelations"></tbody></table>
-<h2>Next pivots</h2>
-<table><thead><tr><th>entity</th><th>links</th><th>reach</th><th>cut point</th></tr></thead><tbody id="apivots"></tbody></table>
-<h2>Correlations</h2>
-<table><thead><tr><th>rule</th><th>severity</th><th>finding</th><th>entities</th></tr></thead><tbody id="acorrelations"></tbody></table>
-<small id="anote" class="dim"></small>
-<h2>Gaps</h2>
-<table><thead><tr><th>seed</th><th>isolation</th><th>next step</th></tr></thead><tbody id="agaps"></tbody></table>
-<h2>Planned sources</h2>
-<table><thead><tr><th>target</th><th>source</th><th>route</th><th>utility</th></tr></thead><tbody id="aplanned"></tbody></table>
-<h2>Rejected seeds</h2>
-<table><thead><tr><th>seed</th><th>reason</th></tr></thead><tbody id="arejected"></tbody></table>
-</section>
-<details id="server"><summary>Server status and token</summary>
-<div class="row"><input id="token" type="password" autocomplete="off" placeholder="token (only if configured)" aria-label="token"><button id="refresh" type="button">Refresh</button></div>
-<b>Health</b><pre id="health">…</pre>
-<b>Reachable modules</b><pre id="modules">…</pre>
-<b>Command contract</b><pre id="command">…</pre>
-</details>
-<script>
-const $=id=>document.getElementById(id);
-let last=null;
-const token=()=>$('token').value.trim();
-function keep(t){try{if(t)localStorage.setItem('hse-token',t);else localStorage.removeItem('hse-token')}catch(_){}}
-{
-  let t='';try{t=localStorage.getItem('hse-token')||sessionStorage.getItem('hse-token')||''}catch(_){}
-  const m=/(?:^#|&)token=([^&]*)/.exec(location.hash);
-  if(m){try{t=decodeURIComponent(m[1])}catch(_){t=m[1]}keep(t.trim());history.replaceState(null,'',location.pathname+location.search)}
-  $('token').value=t;
-}
-$('token').oninput=()=>keep(token());
-$('token').onchange=()=>refresh();
-function headers(extra){const h=Object.assign({},extra);const t=token();if(t)h.Authorization='Bearer '+t;return h}
-async function call(path,extra){const r=await fetch(path,{headers:headers(extra),cache:'no-store'});const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}return {r,text,body}}
-const reason=({text,body})=>(body&&body.error)||text.trim();
-function askToken(){
-  $('server').open=true;$('authnote').hidden=false;
-  $('authnote').textContent=token()?'The server refused this token. Enter the exact value of HSE_AUTH_TOKEN under Server status and token.':'This server needs its token. Enter the value of HSE_AUTH_TOKEN under Server status and token.';
-}
-const refused=res=>{if(res.r.status===401){askToken();return true}return false};
-async function refresh(){
-  let open=true;
-  for(const [id,path] of [['health','/api/health'],['modules','/api/modules'],['command','/api/command']]){
-    try{
-      const res=await call(path);$(id).textContent=res.text;
-      if(refused(res)) open=false;
-      else if(id==='health'&&res.body&&res.body.auth==='token'&&!token()){askToken();open=false}
-    }catch(e){$(id).textContent=String(e);open=false}
-  }
-  if(open) $('authnote').hidden=true;
-}
-function cell(row,text){const td=document.createElement('td');td.textContent=text==null?'':String(text);row.appendChild(td)}
-$('lookup').onsubmit=async ev=>{
-  ev.preventDefault();
-  const q=$('q').value.trim(); if(!q) return;
-  const params=new URLSearchParams({kind:$('kind').value,q});
-  $('run').disabled=true; $('result').hidden=false; $('route').textContent='';
-  $('status').textContent='running…'; $('text').textContent=''; $('outcomes').replaceChildren(); last=null;
-  const started=Date.now();
-  try{
-    const res=await call('/api/lookup?'+params,{'X-Huntsman-Lookup':'1'}),body=res.body;
-    const secs=((Date.now()-started)/1000).toFixed(1)+'s';
-    if(!res.r.ok||!body){refused(res);$('status').textContent='HTTP '+res.r.status+' · '+secs;$('text').textContent=reason(res);return}
-    last=body; $('route').textContent=body.route;
-    $('status').textContent=body.entities.length+' entities · '+secs;
-    for(const o of body.outcomes){const tr=document.createElement('tr');cell(tr,o.module);cell(tr,o.kind);cell(tr,o.found);$('outcomes').appendChild(tr)}
-    $('text').textContent=body.text;
-  }catch(e){$('status').textContent=String(e)}finally{$('run').disabled=false}
-};
-$('download').onclick=()=>{
-  if(!last) return;
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([JSON.stringify(last,null,2)],{type:'application/json'}));
-  a.download='huntsman-'+last.route+'-'+Date.now()+'.json'; a.click(); URL.revokeObjectURL(a.href);
-};
-let alast=null;
-const show=v=>v==null?'':typeof v==='object'?JSON.stringify(v):String(v);
-function fill(id,items,cols){const tb=$(id);tb.replaceChildren();for(const it of items){const tr=document.createElement('tr');for(const c of cols(it))cell(tr,c);tb.appendChild(tr)}}
-$('analyze').onsubmit=async ev=>{
-  ev.preventDefault();
-  const seeds=$('seeds').value.trim(); if(!seeds) return;
-  $('arun').disabled=true; $('aresult').hidden=false; $('asummary').textContent=''; $('anote').textContent='';
-  $('astatus').textContent='analyzing…'; alast=null;
-  for(const id of ['aentities','arelations','apivots','acorrelations','agaps','aplanned','arejected']) $(id).replaceChildren();
-  try{
-    const res=await call('/api/analyze?'+new URLSearchParams({seeds})),body=res.body;
-    if(!res.r.ok||!body){refused(res);$('astatus').textContent='HTTP '+res.r.status+' · '+reason(res);return}
-    alast=body;
-    const names=new Map(body.entities.map(e=>[e.uid,show(e.kind)+': '+e.value]));
-    const who=uid=>names.get(uid)||uid;
-    $('asummary').textContent=body.accepted.length+' seeds · '+body.entities.length+' entities · '+body.relations.length+' links';
-    $('astatus').textContent=body.gaps.linked_seeds+' of '+body.gaps.total_seeds+' seeds linked · '+show(body.termination);
-    fill('aentities',body.entities,e=>[show(e.kind),e.value,Number(e.confidence).toFixed(2)]);
-    fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind),who(x.to_uid)]);
-    fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,p.articulation?'yes':'']);
-    fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,c.entity_uids.map(who).join(', ')]);
-    $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';
-    fill('agaps',body.gaps.orphans,o=>[who(o.uid),show(o.isolation),o.action]);
-    fill('aplanned',body.planned,p=>[show(p.kind)+': '+p.value,p.source,p.url||'',p.utility==null?'':Number(p.utility).toFixed(2)]);
-    fill('arejected',body.rejected,x=>[x.seed,x.reason]);
-  }catch(e){$('astatus').textContent=String(e)}finally{$('arun').disabled=false}
-};
-$('adownload').onclick=()=>{
-  if(!alast) return;
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([JSON.stringify(alast,null,2)],{type:'application/json'}));
-  a.download='huntsman-analysis-'+Date.now()+'.json'; a.click(); URL.revokeObjectURL(a.href);
-};
-$('refresh').onclick=refresh; refresh();
-</script>
-</html>
-"#;
+/// The page: one inline style and one inline script, so the policy can pin both by hash. It is
+/// the HSE console's look (app bar, bottom tabs on a phone, panels), over this server's routes.
+const INDEX_HTML: &str = include_str!("web_ui.html");
+
+/// The console's locator mark, as the tab icon. It is a file of its own because the page policy
+/// loads images only from this server.
+const FAVICON_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"6\" fill=\"#0a0d11\"/><circle cx=\"16\" cy=\"16\" r=\"8\" fill=\"none\" stroke=\"#1cb8f5\" stroke-width=\"2\"/><circle cx=\"16\" cy=\"16\" r=\"2.4\" fill=\"#1cb8f5\"/><path d=\"M16 2v6M16 24v6M2 16h6M24 16h6\" stroke=\"#1cb8f5\" stroke-width=\"2\"/></svg>\n";
 
 #[cfg(test)]
 mod tests {
@@ -1282,6 +1137,20 @@ mod tests {
     /// for loopback binds, so requests here carry a loopback `Host` or none at all.
     fn loopback_bind() -> SocketAddr {
         "127.0.0.1:8080".parse().unwrap()
+    }
+
+    /// A public bind, the only kind whose API needs the token.
+    fn public_bind() -> SocketAddr {
+        "0.0.0.0:8080".parse().unwrap()
+    }
+
+    /// The bind of a server started with `token`: a token is used only on a public bind.
+    fn bind_for(token: Option<&str>) -> SocketAddr {
+        if token.is_some() {
+            public_bind()
+        } else {
+            loopback_bind()
+        }
     }
 
     /// Running out of descriptors or memory, or losing the pending connection, must not end
@@ -1366,13 +1235,58 @@ mod tests {
     fn config_defaults_and_public_token_requirement_are_explicit() {
         let local = ServeConfig::parse(DEFAULT_BIND, None).unwrap();
         assert!(local.bind.ip().is_loopback());
+        assert!(!local.needs_token());
         assert!(ServeConfig::parse("0.0.0.0:8080", None).is_err());
-        assert!(ServeConfig::parse(DEFAULT_BIND, Some("   ".into())).is_err());
-        assert!(ServeConfig::parse("0.0.0.0:8080", Some("token".into())).is_ok());
+        assert!(ServeConfig::parse("0.0.0.0:8080", Some("   ".into())).is_err());
+        assert!(
+            ServeConfig::parse("0.0.0.0:8080", Some("token".into()))
+                .unwrap()
+                .needs_token()
+        );
         assert_eq!(
             ServeConfig::parse("localhost:9000", None).unwrap().bind,
             "127.0.0.1:9000".parse::<SocketAddr>().unwrap()
         );
+    }
+
+    /// The phone's web UI asked for a token on every load once the installer gave the service
+    /// one (seen 2026-10-14, "remove these weird token requirements"). A loopback server now
+    /// needs none, whatever `HSE_AUTH_TOKEN` holds: every endpoint answers without
+    /// `Authorization`, and health tells the page not to ask.
+    #[test]
+    fn a_loopback_server_needs_no_token_even_when_one_is_supplied() {
+        let lookups = echo_lookups();
+        for bind in ["127.0.0.1:8080", "localhost:8080", "[::1]:8080"] {
+            for token in [None, Some("phone-service-token"), Some("   ")] {
+                let config = ServeConfig::parse(bind, token.map(str::to_owned)).unwrap();
+                assert!(!config.needs_token(), "{bind} {token:?}");
+                let routes = Routes {
+                    lookups: Some(lookups.clone()),
+                    analyze: echo_seeds().analyze,
+                };
+                let ask = |path: &str| {
+                    respond(
+                        &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n{HEADER}\r\n"),
+                        &config,
+                        &routes,
+                    )
+                };
+                for path in [
+                    "/",
+                    "/api/modules",
+                    "/api/command",
+                    "/api/analyze?seeds=a",
+                    "/api/lookup?q=a",
+                ] {
+                    let answer = ask(path);
+                    assert!(
+                        answer.starts_with("HTTP/1.1 200"),
+                        "{bind} {token:?} {path}: {answer}"
+                    );
+                }
+                assert!(ask("/api/health").contains("\"auth\": \"none\""));
+            }
+        }
     }
 
     #[test]
@@ -1380,7 +1294,7 @@ mod tests {
         let health = response_for_request(
             "GET /api/health HTTP/1.1\r\n\r\n",
             Some("secret"),
-            loopback_bind(),
+            public_bind(),
         );
         assert!(health.starts_with("HTTP/1.1 200"));
         assert!(health.contains("\"status\": \"ok\""));
@@ -1388,14 +1302,14 @@ mod tests {
         let denied = response_for_request(
             "GET /api/modules HTTP/1.1\r\n\r\n",
             Some("secret"),
-            loopback_bind(),
+            public_bind(),
         );
         assert!(denied.starts_with("HTTP/1.1 401"));
 
         let allowed = response_for_request(
             "GET /api/modules HTTP/1.1\r\nAuthorization: bearer secret\r\n\r\n",
             Some("secret"),
-            loopback_bind(),
+            public_bind(),
         );
         assert!(allowed.starts_with("HTTP/1.1 200"));
         assert!(allowed.contains("\"modules\""));
@@ -1408,7 +1322,7 @@ mod tests {
     #[test]
     fn health_says_whether_a_token_is_needed_and_a_refusal_names_the_remedy() {
         let health = |token| {
-            response_for_request("GET /api/health HTTP/1.1\r\n\r\n", token, loopback_bind())
+            response_for_request("GET /api/health HTTP/1.1\r\n\r\n", token, bind_for(token))
         };
         assert!(health(Some("secret")).contains("\"auth\": \"token\""));
         assert!(health(None).contains("\"auth\": \"none\""));
@@ -1417,7 +1331,7 @@ mod tests {
             let denied = response_for_request(
                 &format!("GET {path} HTTP/1.1\r\nAuthorization: Bearer wrong\r\n\r\n"),
                 Some("secret"),
-                loopback_bind(),
+                public_bind(),
             );
             assert!(denied.starts_with("HTTP/1.1 401"), "{path}: {denied}");
             assert_eq!(
@@ -1434,25 +1348,64 @@ mod tests {
         }
     }
 
-    /// The page asks for the token when health says one is needed or a call is refused, sends it
-    /// on every call (health, modules, the contract, lookup and analysis alike), keeps it across
-    /// reloads, and takes it from a `#token=` fragment, which the browser never sends to a server.
+    /// The phone's page asked for a token on every load (2026-10-14). It now asks only when health
+    /// says the server needs one, which only a public bind does: the token panel and the notice
+    /// start hidden, a call carries `Authorization` only then, and a loopback answer clears a token
+    /// an earlier page stored. A public bind still gets the field, the `#token=` fragment and the
+    /// prompt on a refusal.
     #[test]
-    fn the_page_asks_for_the_token_and_sends_it_on_every_call() {
+    fn the_page_asks_for_a_token_only_when_the_server_needs_one() {
         let script = inline_block(INDEX_HTML, "script");
-        assert!(INDEX_HTML.contains("<p id=\"authnote\" role=\"alert\" hidden></p>"));
-        assert!(INDEX_HTML.contains("<details id=\"server\">"));
-        assert!(script.contains("res.body.auth==='token'&&!token()"));
+        assert!(
+            INDEX_HTML.contains(r#"<p class="alert warn" id="authnote" role="alert" hidden></p>"#)
+        );
+        assert!(INDEX_HTML.contains(r#"<div class="panel" id="tokenpanel" hidden>"#));
+        assert!(script.contains("if(needsToken&&token)h.Authorization='Bearer '+token"));
+        assert!(script.contains("if(res.body.auth==='token'){needsToken=true;"));
+        assert!(script.contains("else{needsToken=false;token='';store.set('hse-token','');"));
         assert!(
             script.contains("const refused=res=>{if(res.r.status===401){askToken();return true}")
         );
         assert_eq!(script.matches("refused(res)").count(), 3);
-        assert!(script.contains("h.Authorization='Bearer '+t"));
         // Every request goes through `call`, which adds the header: no bare `fetch` elsewhere.
         assert_eq!(script.matches("fetch(").count(), 1);
-        assert!(script.contains("localStorage.setItem('hse-token',t)"));
         assert!(script.contains("/(?:^#|&)token=([^&]*)/.exec(location.hash)"));
         assert!(script.contains("history.replaceState("));
+    }
+
+    /// The page is the HSE console again: an app bar with the locator mark, one tab per view
+    /// (a bottom tab bar on a phone, a top nav on a wider screen), and a view for each tab.
+    #[test]
+    fn the_page_is_the_console_shell_with_a_tab_per_view() {
+        assert!(INDEX_HTML.contains(r#"<header class="appbar">"#));
+        assert!(INDEX_HTML.contains(r#"<nav class="navbar" aria-label="Primary">"#));
+        let script = inline_block(INDEX_HTML, "script");
+        assert!(script.contains("const views=['lookup','analyze','status'];"));
+        for view in ["lookup", "analyze", "status"] {
+            assert!(
+                INDEX_HTML.contains(&format!(
+                    r##"<a class="navlink" id="nav-{view}" href="#/{view}">"##
+                )),
+                "{view}"
+            );
+            assert!(
+                INDEX_HTML.contains(&format!(r#"<section id="view-{view}""#)),
+                "{view}"
+            );
+        }
+        let style = inline_block(INDEX_HTML, "style");
+        assert!(style.contains(".navbar{position:fixed;left:0;right:0;bottom:0;"));
+        assert!(style.contains("@media (min-width:768px){\n.navbar{top:"));
+        let icon = response_for_request(
+            "GET /favicon.svg HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            None,
+            loopback_bind(),
+        );
+        assert!(icon.starts_with("HTTP/1.1 200"), "{icon}");
+        assert_eq!(header(&icon, "Content-Type"), Some("image/svg+xml"));
+        assert!(
+            INDEX_HTML.contains(r#"<link rel="icon" href="/favicon.svg" type="image/svg+xml">"#)
+        );
     }
 
     #[test]
@@ -1823,10 +1776,9 @@ mod tests {
     }
 
     #[test]
-    fn the_host_guard_runs_before_authentication() {
-        // A rebound request to a protected endpoint is refused for its Host even with a
-        // valid token, so the guard never reveals the 200/401 distinction to a
-        // disallowed origin.
+    fn the_host_guard_refuses_a_rebound_host_whatever_it_carries() {
+        // A loopback server needs no token, so the Host guard is what keeps a rebound page
+        // out: a request with a disallowed Host is refused even when it carries a token.
         let served = response_for_request(
             "GET /api/command HTTP/1.1\r\nHost: evil.example\r\nAuthorization: Bearer secret\r\n\r\n",
             Some("secret"),
@@ -1875,7 +1827,7 @@ mod tests {
             lookups: lookups.cloned(),
             analyze: None,
         };
-        respond(request, token, loopback_bind(), &routes)
+        respond(request, &test_config(bind_for(token), token), &routes)
     }
 
     const HEADER: &str = "X-Huntsman-Lookup: 1\r\n";
@@ -2159,8 +2111,7 @@ mod tests {
     fn analyze(query: &str, extra: &str, token: Option<&str>, routes: &Routes) -> String {
         respond(
             &format!("GET /api/analyze?{query} HTTP/1.1\r\nHost: localhost\r\n{extra}\r\n"),
-            token,
-            loopback_bind(),
+            &test_config(bind_for(token), token),
             routes,
         )
     }
@@ -2227,8 +2178,7 @@ mod tests {
         }
         let post = respond(
             "POST /api/analyze?seeds=a HTTP/1.1\r\nHost: localhost\r\n\r\n",
-            None,
-            loopback_bind(),
+            &test_config(loopback_bind(), None),
             &echo_seeds(),
         );
         assert!(post.starts_with("HTTP/1.1 405"), "{post}");
@@ -2304,6 +2254,21 @@ mod tests {
             ),
             "{row}"
         );
+    }
+
+    /// The bridges to saved scans reach a reader as a table, not only in the JSON. The page had no
+    /// place for `cross_scan`, so `serve --history` had no visible effect.
+    #[test]
+    fn the_page_draws_the_bridges_to_saved_scans() {
+        let table = &INDEX_HTML[..INDEX_HTML.find(r#"<tbody id="ascans">"#).unwrap()];
+        let header = &table[table.rfind("<thead>").unwrap()..];
+        assert_eq!(
+            header,
+            "<thead><tr><th>entity</th><th>tier</th><th>saved scans</th></tr></thead>"
+        );
+        let script = inline_block(INDEX_HTML, "script");
+        assert!(script.contains("const cross=body.cross_scan"), "{script}");
+        assert!(script.contains("fill('ascans',bridged,r=>r)"), "{script}");
     }
 
     /// The page drives the analysis through the same route, refused cross-site, with no lookup

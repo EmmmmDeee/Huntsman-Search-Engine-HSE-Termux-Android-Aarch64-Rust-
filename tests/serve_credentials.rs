@@ -30,8 +30,8 @@ fn a_non_loopback_bind_without_a_token_exits_66() {
 }
 
 #[test]
-fn a_blank_token_exits_66() {
-    let (code, stderr) = serve("127.0.0.1:18099", Some("   "));
+fn a_blank_token_on_a_public_bind_exits_66() {
+    let (code, stderr) = serve("0.0.0.0:18099", Some("   "));
     assert_eq!(code, Some(66), "{stderr}");
     assert!(
         stderr.contains("HSE_AUTH_TOKEN must not be empty"),
