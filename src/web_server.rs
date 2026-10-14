@@ -62,7 +62,16 @@ pub fn resolve_serve_bind(
         .ok_or_else(|| Error::Invalid(format!("invalid Railway PORT {raw:?}")))?;
     Ok(format!("0.0.0.0:{port}"))
 }
-const MAX_REQUEST_BYTES: usize = 16 * 1024;
+/// The seeds of the largest analysis the server admits, as they arrive: percent-encoded, three bytes
+/// for each byte that is not ASCII, with `%0A` between them (24 KiB).
+const LARGEST_ANALYSIS_SEEDS: usize =
+    MAX_ANALYZE_SEEDS * MAX_SELECTOR_BYTES * 3 + (MAX_ANALYZE_SEEDS - 1) * 3;
+/// What a request carries besides its analysis seeds: the rest of the request line, a browser's
+/// headers and a bearer token.
+const HEADER_ALLOWANCE: usize = 8 * 1024;
+/// Request line and headers of one request (33 KiB). It is derived from the analysis limits, so the
+/// largest analysis the server admits always fits, with the header allowance.
+const MAX_REQUEST_BYTES: usize = (LARGEST_ANALYSIS_SEEDS + HEADER_ALLOWANCE).next_multiple_of(1024);
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// Whole-request wall-clock budget. The per-read `IO_TIMEOUT` restarts on every successful
 /// read, so it alone cannot bound a client that dribbles a byte at a time; this absolute
@@ -385,8 +394,14 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
         if read == 0 {
             break;
         }
+        // Only the new bytes, and the three before them, can complete the blank line that ends
+        // the head: scanning the whole buffer after every read was quadratic in its length.
+        let scan_from = bytes.len().saturating_sub(3);
         bytes.extend_from_slice(&chunk[..read]);
-        if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+        if bytes[scan_from..]
+            .windows(4)
+            .any(|window| window == b"\r\n\r\n")
+        {
             break;
         }
     }
@@ -992,6 +1007,8 @@ try{$('token').value=sessionStorage.getItem('hse-token')||''}catch(_){}
 $('token').onchange=()=>{try{sessionStorage.setItem('hse-token',$('token').value)}catch(_){}};
 function headers(extra){const h=Object.assign({},extra);const t=$('token').value;if(t)h.Authorization='Bearer '+t;return h}
 async function get(path){const r=await fetch(path,{headers:headers(),cache:'no-store'});return await r.text()}
+async function call(path,extra){const r=await fetch(path,{headers:headers(extra),cache:'no-store'});const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}return {r,text,body}}
+const reason=({text,body})=>(body&&body.error)||text.trim();
 async function refresh(){
   for(const [id,path] of [['health','/api/health'],['modules','/api/modules'],['command','/api/command']]){
     try{$(id).textContent=await get(path)}catch(e){$(id).textContent=String(e)}
@@ -1006,10 +1023,9 @@ $('lookup').onsubmit=async ev=>{
   $('status').textContent='running…'; $('text').textContent=''; $('outcomes').replaceChildren(); last=null;
   const started=Date.now();
   try{
-    const r=await fetch('/api/lookup?'+params,{headers:headers({'X-Huntsman-Lookup':'1'}),cache:'no-store'});
-    const body=await r.json();
+    const res=await call('/api/lookup?'+params,{'X-Huntsman-Lookup':'1'}),body=res.body;
     const secs=((Date.now()-started)/1000).toFixed(1)+'s';
-    if(!r.ok){$('status').textContent='HTTP '+r.status+' · '+secs;$('text').textContent=body.error||'';return}
+    if(!res.r.ok||!body){$('status').textContent='HTTP '+res.r.status+' · '+secs;$('text').textContent=reason(res);return}
     last=body; $('route').textContent=body.route;
     $('status').textContent=body.entities.length+' entities · '+secs;
     for(const o of body.outcomes){const tr=document.createElement('tr');cell(tr,o.module);cell(tr,o.kind);cell(tr,o.found);$('outcomes').appendChild(tr)}
@@ -1032,9 +1048,8 @@ $('analyze').onsubmit=async ev=>{
   $('astatus').textContent='analyzing…'; alast=null;
   for(const id of ['aentities','arelations','apivots','acorrelations','agaps','aplanned','arejected']) $(id).replaceChildren();
   try{
-    const r=await fetch('/api/analyze?'+new URLSearchParams({seeds}),{headers:headers(),cache:'no-store'});
-    const body=await r.json();
-    if(!r.ok){$('astatus').textContent='HTTP '+r.status+' · '+(body.error||'');return}
+    const res=await call('/api/analyze?'+new URLSearchParams({seeds})),body=res.body;
+    if(!res.r.ok||!body){$('astatus').textContent='HTTP '+res.r.status+' · '+reason(res);return}
     alast=body;
     const names=new Map(body.entities.map(e=>[e.uid,show(e.kind)+': '+e.value]));
     const who=uid=>names.get(uid)||uid;
@@ -1169,6 +1184,50 @@ mod tests {
             let _ = server.run();
         });
         addr
+    }
+
+    /// The largest analysis the server admits, every seed byte percent-encoded, sent with headers
+    /// that fill the allowance: the whole request is read and answered. With the 16 KiB request
+    /// cap it was refused `413`, and so was the page's own longest input (2,048 CJK characters).
+    #[test]
+    fn the_largest_admitted_analysis_is_read_whole() {
+        use std::fmt::Write as _;
+
+        let mut server = Server::bind(ServeConfig::parse("127.0.0.1:0", None).unwrap()).unwrap();
+        server.routes = echo_seeds();
+        let addr = server.local_addr().unwrap();
+        thread::spawn(move || {
+            let _ = server.run();
+        });
+        let seed = "é".repeat(MAX_SELECTOR_BYTES / 2);
+        assert_eq!(seed.len(), MAX_SELECTOR_BYTES);
+        let encoded = seed.bytes().fold(String::new(), |mut encoded, byte| {
+            write!(encoded, "%{byte:02X}").unwrap();
+            encoded
+        });
+        let head = format!(
+            "GET /api/analyze?seeds={} HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: same-origin\r\nX-Pad: ",
+            vec![encoded; MAX_ANALYZE_SEEDS].join("%0A")
+        );
+        let bound = LARGEST_ANALYSIS_SEEDS + HEADER_ALLOWANCE;
+        let request = format!("{head}{}\r\n\r\n", "p".repeat(bound - head.len() - 4));
+        assert_eq!(request.len(), bound);
+        assert!(request.len() > 16 * 1024);
+
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        client.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{}", &response[..80]);
+        let body: serde_json::Value =
+            serde_json::from_str(&response[response.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(
+            body["seeds"],
+            serde_json::json!(vec![seed; MAX_ANALYZE_SEEDS])
+        );
     }
 
     fn get_within(addr: SocketAddr, path: &str, wait: Duration) -> std::io::Result<String> {
@@ -1705,6 +1764,21 @@ mod tests {
         assert!(INDEX_HTML.contains("'X-Huntsman-Lookup':'1'"));
     }
 
+    /// Some refusals are plain text, not JSON: `503 busy` at the connection cap, `413` for an
+    /// oversized request, `408`. The page parsed every answer as JSON before reading its status,
+    /// so it showed a parser error instead of the refusal. It now reads each answer as text and
+    /// parses JSON only when it can (checked in Chromium: a `413` reads `HTTP 413 · request too
+    /// large`, where it read `SyntaxError: Unexpected token 'r'`).
+    #[test]
+    fn the_page_reads_a_plain_text_refusal() {
+        let script = inline_block(INDEX_HTML, "script");
+        assert!(
+            !script.contains(".json()"),
+            "an answer parsed as JSON before its status was read"
+        );
+        assert!(script.contains("try{body=JSON.parse(text)}catch(_){}"));
+    }
+
     fn analyses(
         handler: impl Fn(&[String]) -> Result<serde_json::Value, LookupError> + Send + Sync + 'static,
     ) -> Routes {
@@ -1851,9 +1925,9 @@ mod tests {
     #[test]
     fn the_page_runs_the_offline_analysis() {
         assert!(INDEX_HTML.contains(r#"<form id="analyze">"#));
-        assert!(INDEX_HTML.contains("fetch('/api/analyze?'"));
+        assert!(INDEX_HTML.contains("call('/api/analyze?'"));
         let script = inline_block(INDEX_HTML, "script");
-        let analyze_call = &script[script.find("fetch('/api/analyze?'").unwrap()..];
+        let analyze_call = &script[script.find("call('/api/analyze?'").unwrap()..];
         let analyze_call = &analyze_call[..analyze_call.find(';').unwrap()];
         assert!(
             !analyze_call.contains("X-Huntsman-Lookup"),
