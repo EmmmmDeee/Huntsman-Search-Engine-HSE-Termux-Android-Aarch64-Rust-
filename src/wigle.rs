@@ -28,9 +28,9 @@ use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
 use crate::http::{Request, Response, Transport, TransportConfig, percent_encode_component};
 use crate::keys::{Keys, Secret};
-use crate::network_cli::NetworkSelector;
 use crate::redact::scrub_secrets;
 use crate::rf::{RadioKind, RfSighting, RfSource, canonical_network_id, is_mac};
+use crate::scan_route::NetworkSelector;
 use crate::source_outcome::SourceOutcomeKind;
 
 /// Source label of this leg in outcomes, evidence and saved ledgers.

@@ -2,7 +2,6 @@ use std::sync::Mutex;
 
 use super::*;
 use crate::http::{Request, Response, TransportFailure};
-use crate::lookup_save::{self, NETWORK_POLICY};
 
 const USER: &str = "AIDtest0123456789abcdef";
 const TOKEN: &str = "wigle-test-token-0123456789abcdef";
@@ -227,18 +226,6 @@ fn wigle_networks_become_bssid_entities_with_ssid_and_position_pivots() {
     );
     for leak in [USER, TOKEN] {
         assert!(!text.contains(leak), "{leak} in {text}");
-    }
-
-    // The report saves as a ledger with WiGLE provenance.
-    let entries = match lookup_save::chain(&report.entities, &report.outcomes, NETWORK_POLICY) {
-        Ok(entries) => entries,
-        Err(error) => panic!("chain failed: {error}"),
-    };
-    assert!(!entries.is_empty());
-    let saved = serde_json::to_string(&entries).unwrap_or_default();
-    assert!(saved.contains("src/wigle.rs"), "{saved}");
-    for leak in [USER, TOKEN] {
-        assert!(!saved.contains(leak), "{leak} in ledger");
     }
 }
 

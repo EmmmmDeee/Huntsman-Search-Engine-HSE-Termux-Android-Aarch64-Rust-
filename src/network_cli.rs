@@ -12,16 +12,14 @@
 
 use std::path::PathBuf;
 
-use crate::canonical::canonical_coordinates;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
-use crate::geo::is_valid_coords;
 use crate::http::Transport;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::oui;
-use crate::rf::is_mac;
+use crate::scan_route::{NetworkSelector, network_selector};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::tags;
 use crate::textnorm::escape_controls;
@@ -35,79 +33,6 @@ Look up a WiFi network. A BSSID (aa:bb:cc:dd:ee:ff) is classified offline first:
 
 /// Source label for the offline OUI classification of a BSSID selector.
 pub const OUI_SOURCE: &str = "oui";
-/// The longest SSID, in bytes (IEEE 802.11).
-pub const MAX_SSID_BYTES: usize = 32;
-/// Written before an SSID that would otherwise read as a BSSID or a coordinate pair.
-pub const SSID_PREFIX: &str = "ssid:";
-
-/// What a network lookup searches for.
-#[derive(Debug, Clone, PartialEq)]
-pub enum NetworkSelector {
-    /// A BSSID, lower case with `:` separators.
-    Bssid(String),
-    /// An exact SSID.
-    Ssid(String),
-    /// A point, rounded to six decimal places.
-    Area { lat: f64, lon: f64 },
-}
-
-impl NetworkSelector {
-    /// `raw` as a selector: `ssid:NAME` is always an SSID; otherwise a BSSID (`:` or `-`
-    /// separated), then a valid coordinate pair, then an SSID. `None` for an empty or
-    /// over-long SSID, or one with control characters. **Pure.**
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        let trimmed = raw.trim();
-        if let Some(name) = trimmed.strip_prefix(SSID_PREFIX) {
-            return ssid(name);
-        }
-        Self::parse_identifier(trimmed).or_else(|| ssid(trimmed))
-    }
-
-    /// `raw` as a BSSID or a coordinate pair, never an SSID: the selectors `scan` may infer
-    /// without being told the kind. **Pure.**
-    #[must_use]
-    pub fn parse_identifier(raw: &str) -> Option<Self> {
-        let trimmed = raw.trim();
-        let mac = trimmed.replace('-', ":").to_ascii_lowercase();
-        if is_mac(&mac) {
-            return Some(Self::Bssid(mac));
-        }
-        let canonical = canonical_coordinates(trimmed)?;
-        let (lat, lon) = canonical.split_once(',')?;
-        let (lat, lon) = (lat.parse::<f64>().ok()?, lon.parse::<f64>().ok()?);
-        is_valid_coords(lat, lon).then_some(Self::Area { lat, lon })
-    }
-
-    /// The selector as one string that [`Self::parse`] reads back to the same selector. **Pure.**
-    #[must_use]
-    pub fn canonical(&self) -> String {
-        match self {
-            Self::Bssid(bssid) => bssid.clone(),
-            Self::Area { lat, lon } => format!("{lat:.6},{lon:.6}"),
-            Self::Ssid(name) => {
-                if Self::parse(name).as_ref() == Some(self) {
-                    name.clone()
-                } else {
-                    format!("{SSID_PREFIX}{name}")
-                }
-            }
-        }
-    }
-}
-
-fn ssid(name: &str) -> Option<NetworkSelector> {
-    let name = name.trim();
-    let ok =
-        !name.is_empty() && name.len() <= MAX_SSID_BYTES && !name.chars().any(char::is_control);
-    ok.then(|| NetworkSelector::Ssid(name.to_owned()))
-}
-
-/// The canonical selector string for `raw`, or `None` when it is not a network selector.
-#[must_use]
-pub fn canonical_selector(raw: &str) -> Option<String> {
-    NetworkSelector::parse(raw).map(|selector| selector.canonical())
-}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -134,7 +59,7 @@ impl NetworkArgs {
                 "network needs exactly one BSSID, LAT,LON or ssid:NAME".into(),
             ));
         }
-        let selector = canonical_selector(&positional[0])
+        let selector = network_selector(&positional[0])
             .ok_or_else(|| Error::invalid_value("invalid network selector"))?;
         Ok(Self { selector, save })
     }

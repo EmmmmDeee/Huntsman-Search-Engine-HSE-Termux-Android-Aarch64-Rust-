@@ -73,6 +73,9 @@ fn a_saved_network_report_verifies() {
     let out = run(&["network", BSSID, "--save", ledger.to_str().unwrap()]);
     assert!(out.status.success(), "{out:?}");
     assert!(stdout(&out).contains("saved="), "{out:?}");
+    let saved = fs::read_to_string(&ledger).unwrap();
+    assert!(saved.contains("src/wigle.rs"), "WiGLE provenance: {saved}");
+    assert!(saved.contains("src/oui.rs"), "OUI provenance: {saved}");
     let verify = run(&["verify", ledger.to_str().unwrap()]);
     assert!(verify.status.success(), "{verify:?}");
 }
