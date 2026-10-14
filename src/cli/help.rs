@@ -24,6 +24,17 @@ pub(super) fn no_command() -> ExitCode {
     fail(EX_USAGE, &format!("{HELP}\n{USAGE}"))
 }
 
+/// Usage error for an argument that is not UTF-8. The bytes are not echoed: an argument can
+/// be a selector, and the CLI never prints one back.
+pub(super) fn argument_not_utf8(position: usize, bytes: usize) -> ExitCode {
+    fail(
+        EX_USAGE,
+        &format!(
+            "argument {position} is not valid UTF-8 ({bytes} bytes); arguments must be UTF-8 text\n{USAGE}"
+        ),
+    )
+}
+
 /// The help text of a dispatched command, or `None` for a word that is not one.
 pub(super) fn command_help(command: &str) -> Option<&'static str> {
     let help = match command {

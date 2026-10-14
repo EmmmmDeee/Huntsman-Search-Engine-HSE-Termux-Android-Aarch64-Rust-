@@ -4,8 +4,8 @@
 //! constructs transports/configuration, and delegates to the library. Domain
 //! behavior belongs in `huntsman_recon`, not in the binary front controller.
 
-use huntsman_recon::exit::EX_USAGE;
 use std::env;
+use std::ffi::OsString;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
@@ -73,20 +73,16 @@ mod utility;
 
 use report::{exit_on_output_failure, fail};
 
-/// Usage error for an argument that is not UTF-8. The bytes are not echoed: an argument can
-/// be a selector, and the CLI never prints one back.
-pub(crate) fn argument_not_utf8(position: usize, bytes: usize) -> ExitCode {
+/// Runs the command named by the process arguments (without the program name).
+pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
     exit_on_output_failure();
-    fail(
-        EX_USAGE,
-        &format!(
-            "argument {position} is not valid UTF-8 ({bytes} bytes); arguments must be UTF-8 text\n{USAGE}"
-        ),
-    )
-}
-
-pub(crate) fn run(argv: Vec<String>) -> ExitCode {
-    exit_on_output_failure();
+    let mut argv = Vec::with_capacity(args.len());
+    for (index, arg) in args.into_iter().enumerate() {
+        match arg.into_string() {
+            Ok(arg) => argv.push(arg),
+            Err(raw) => return help::argument_not_utf8(index + 1, raw.len()),
+        }
+    }
     let first = argv.first().map(String::as_str);
     if matches!(first, Some("help" | "-h" | "--help")) {
         println!("{HELP}\n{USAGE}");
