@@ -8,6 +8,7 @@ use huntsman_recon::email_cli::EMAIL_HELP;
 use huntsman_recon::exit::EX_USAGE;
 use huntsman_recon::exposure_cli::EXPOSURE_HELP;
 use huntsman_recon::hibp::cli::HIBP_USAGE;
+use huntsman_recon::network_cli::NETWORK_HELP;
 use huntsman_recon::people_cli::PEOPLE_HELP;
 use huntsman_recon::phone_cli::PHONE_HELP;
 use huntsman_recon::seeknow_cli::SEEKNOW_HELP;
@@ -65,11 +66,12 @@ pub(super) fn print_command_help(command: &str) {
         "exposure" => EXPOSURE_HELP,
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
+        "network" => NETWORK_HELP,
         "domain" => {
             "domain DOMAIN [--save FILE]\nLook up one domain: certificate-transparency names from crt.sh and DNS records over DNS-over-HTTPS. --save writes an unverified ledger that verify can reload. Makes network requests."
         }
         "scan" => {
-            "scan SELECTOR [-k people|email|exposure|username|phone|domain] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain] [--save-dir DIR]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends; a domain routes to domain. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only; --save-dir DIR writes one ledger per batch seed, numbered by its position."
+            "scan SELECTOR [-k people|email|exposure|username|phone|domain|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|network] [--save-dir DIR]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends; a domain routes to domain, and a BSSID or LAT,LON to network. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only; --save-dir DIR writes one ledger per batch seed, numbered by its position."
         }
         "investigate" => {
             "investigate TEXT... | investigate --file FILE\nExtract actionable entities from local text. --file refuses symlinks and files over 1 MiB."

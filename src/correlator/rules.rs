@@ -39,6 +39,7 @@ pub fn source_family(source: &str) -> &'static str {
         | "leakix" | "niamonx" | "osintcat" | "psbdmp" | "pwned_passwords" | "xposed_or_not"
         | "oathnet" | "oathnet_pro" | "seeknow" | "see_know" | "stolen_tax" => "breach",
         "github_user" | "npm_author" | "crates_io" => "code",
+        "wigle" | "oui" => "rf",
         "reddit_user" | "hacker_news" => "forum",
         "social_probe" | "gravatar" => "social",
         "username_search" | "epieos" => "presence",
