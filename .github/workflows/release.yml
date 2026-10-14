@@ -321,6 +321,11 @@ jobs:
           grep -Eq 'Machine:[[:space:]]+AArch64' "$RUNNER_TEMP/elf-header.txt"
           "$TOOLCHAIN/llvm-readelf" -l "dist/$ASSET" > "$RUNNER_TEMP/elf-program.txt"
           grep -F '/system/bin/linker64' "$RUNNER_TEMP/elf-program.txt"
+          # Devices with 16 KiB pages refuse an ELF whose LOAD segments are aligned to less.
+          grep -q '^ *LOAD' "$RUNNER_TEMP/elf-program.txt"
+          for align in $(awk '$1 == "LOAD" { print $NF }' "$RUNNER_TEMP/elf-program.txt"); do
+            [ $((align)) -ge 16384 ] || { echo "::error::a LOAD segment is aligned to $align; devices with 16 KiB pages need 0x4000 or more"; exit 1; }
+          done
           ndk="$(sed -n 's/^Pkg.Revision *= *//p' "$ANDROID_NDK_LATEST_HOME/source.properties" | head -n1)"
           cat > "dist/$ASSET.provenance.json" <<JSON
           {
@@ -334,6 +339,7 @@ jobs:
             "target": "aarch64-linux-android",
             "android_api": 24,
             "ndk": "${ndk}",
+            "max_page_size": 16384,
             "hse_release": "${HSE_RELEASE}",
             "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
