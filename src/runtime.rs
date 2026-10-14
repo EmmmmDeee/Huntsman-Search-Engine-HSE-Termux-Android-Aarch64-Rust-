@@ -3,22 +3,30 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde::Serialize;
+
 use crate::analysis::{InvestigationReport, analyze_snapshot};
 use crate::artifacts::{PipelineArtifacts, render_artifacts};
 use crate::collection::{CollectionEvent, ObservationBatch, RawObservation, UpstreamOrigin};
+use crate::correlator::Correlation;
 use crate::dependency::{Module, Target, TargetKind};
+use crate::entity::Entity;
 use crate::error::Error;
+use crate::gap::GapReport;
+use crate::graph::EntityRelation;
 use crate::ledger::LedgerEntry;
 use crate::meta_plan::{MetaPlan, PlanReject};
 use crate::pipeline::{
-    AnalysisSnapshot, InvestigationInput, PipelineLimits, SeedNormalization,
-    normalize_observations, normalize_seeds,
+    AnalysisSnapshot, InvestigationInput, InvestigationMode, NormalizedSeed, PipelineLimits,
+    SeedNormalization, SeedRejection, normalize_observations, normalize_seeds,
 };
-use crate::planner::{DispatchPlan, PlannerPolicy, build_dispatch_plan};
+use crate::pivot::PivotScore;
+use crate::planner::{DispatchAction, DispatchPlan, PlannerPolicy, build_dispatch_plan};
 use crate::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
 use crate::source_outcome::SourceOutcomeKind;
 use crate::stage::{EvidenceLevel, Status};
 use crate::store::Store;
+use crate::termination::TerminationReason;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineOutcome {
@@ -204,9 +212,193 @@ pub fn persist_session(root: &Path, session: &Session) -> Result<PathBuf, Error>
     Store::new(root).save(session)
 }
 
+/// The multi-hop result of an offline investigation, as `GET /api/analyze` returns it: the
+/// entities, the links between them, the next pivots, the correlations, the gaps and the planned
+/// sources. `plan` prints these only as counts.
+#[derive(Debug, Serialize)]
+pub struct AnalysisView<'a> {
+    pub accepted: &'a [NormalizedSeed],
+    pub rejected: Vec<RejectedSeed<'a>>,
+    pub entities: &'a [Entity],
+    pub relations: &'a [EntityRelation],
+    pub pivots: &'a [PivotScore],
+    pub correlations: &'a [Correlation],
+    pub gaps: &'a GapReport,
+    pub planned: Vec<PlannedSource<'a>>,
+    pub termination: TerminationReason,
+    pub truncated: bool,
+}
+
+/// A seed the spine refused, and why.
+#[derive(Debug, Serialize)]
+pub struct RejectedSeed<'a> {
+    pub seed: &'a str,
+    pub reason: String,
+}
+
+/// A source the planner would query next for one target. Offline it is planned, never fetched.
+#[derive(Debug, Serialize)]
+pub struct PlannedSource<'a> {
+    pub kind: TargetKind,
+    pub value: &'a str,
+    pub source: String,
+    pub url: Option<&'a str>,
+    pub utility: Option<f64>,
+}
+
+impl PipelineOutcome {
+    /// The multi-hop view of this outcome.
+    #[must_use]
+    pub fn analysis_view(&self) -> AnalysisView<'_> {
+        AnalysisView {
+            accepted: &self.normalization.accepted,
+            rejected: self
+                .normalization
+                .rejected
+                .iter()
+                .map(|(seed, rejection)| RejectedSeed {
+                    seed,
+                    reason: match rejection {
+                        SeedRejection::Empty => "empty".to_owned(),
+                        SeedRejection::Unsupported => {
+                            "not a kind of seed the spine takes".to_owned()
+                        }
+                        SeedRejection::Invalid(message) => message.clone(),
+                    },
+                })
+                .collect(),
+            entities: &self.snapshot.entities,
+            relations: &self.snapshot.relations,
+            pivots: &self.report.pivots,
+            correlations: &self.report.correlations,
+            gaps: &self.report.gaps,
+            planned: self
+                .plan
+                .selected
+                .iter()
+                .map(|dispatch| {
+                    let (source, url) = match &dispatch.action {
+                        DispatchAction::Module { module_index } => {
+                            (format!("module {module_index}"), None)
+                        }
+                        DispatchAction::Route { source_id, url } => {
+                            ((*source_id).to_owned(), Some(url.as_str()))
+                        }
+                        DispatchAction::ServiceProbe { service } => ((*service).to_owned(), None),
+                    };
+                    PlannedSource {
+                        kind: dispatch.target.kind,
+                        value: &dispatch.target.value,
+                        source,
+                        url,
+                        utility: dispatch
+                            .utility
+                            .as_ref()
+                            .map(|utility| utility.final_utility),
+                    }
+                })
+                .collect(),
+            termination: self.report.termination,
+            truncated: self.report.truncated || self.artifacts.truncated,
+        }
+    }
+}
+
+/// Run the offline spine on `seeds`, as `plan` does, and return its multi-hop view as JSON.
+/// Planned sources are not fetched: nothing here makes a network request.
+///
+/// # Errors
+/// Returns the spine's error, or a failure to encode the view.
+pub fn analyze_offline(seeds: &[String]) -> Result<serde_json::Value, Error> {
+    let input = InvestigationInput {
+        scan_id: "analyze".to_owned(),
+        seeds: seeds.to_vec(),
+        mode: InvestigationMode::Offline,
+    };
+    let outcome = investigate_offline(
+        &[],
+        &input,
+        &PipelineLimits::default(),
+        &PlannerPolicy::default(),
+        &[],
+    )?;
+    serde_json::to_value(outcome.analysis_view())
+        .map_err(|error| Error::Invalid(format!("analysis view: {error}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_offline_analysis_links_the_seeds_ranks_the_pivot_and_names_the_orphan() {
+        let seeds = [
+            "alex.demo@example.org",
+            "@alexdemo",
+            "example.org",
+            "+15555550123",
+        ]
+        .map(str::to_owned);
+        let view = analyze_offline(&seeds).unwrap();
+        assert_eq!(view["accepted"].as_array().unwrap().len(), 4);
+        assert_eq!(view["rejected"], serde_json::json!([]));
+        let uid_of = |kind: &str| {
+            let entity = view["entities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entity| entity["kind"] == kind)
+                .unwrap_or_else(|| panic!("no {kind} entity in {view}"));
+            entity["uid"].clone()
+        };
+        let linked = |left: &serde_json::Value, right: &serde_json::Value| {
+            view["relations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|relation| {
+                    (relation["from_uid"] == *left && relation["to_uid"] == *right)
+                        || (relation["from_uid"] == *right && relation["to_uid"] == *left)
+                })
+        };
+        let email = uid_of("email");
+        // Two hops from one seed: the email reaches its local part's username and its domain.
+        assert!(linked(&email, &uid_of("username")), "{view}");
+        assert!(linked(&email, &uid_of("domain")), "{view}");
+        // So the email is the pivot that holds the cluster together.
+        assert_eq!(view["pivots"][0]["uid"], email);
+        assert_eq!(view["pivots"][0]["articulation"], true);
+        // The phone links to nothing, and the gaps name it.
+        assert_eq!(view["gaps"]["linked_seeds"], 3);
+        assert_eq!(view["gaps"]["total_seeds"], 4);
+        assert_eq!(view["gaps"]["orphans"][0]["kind"], "phone");
+        assert!(!view["planned"].as_array().unwrap().is_empty(), "{view}");
+        assert_eq!(view["termination"], "fixed_point");
+        // The linked seeds form one identity cluster (AU-060), and each link is single-path,
+        // so the linked pairs also carry a corroboration gap (AU-063).
+        let fired: Vec<&str> = view["correlations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|correlation| correlation["rule_id"].as_str())
+            .collect();
+        assert!(fired.contains(&"AU-060"), "{fired:?}");
+        assert!(fired.contains(&"AU-063"), "{fired:?}");
+    }
+
+    #[test]
+    fn the_offline_analysis_names_each_rejected_seed() {
+        let seeds = ["example.org", "alexdemo"].map(str::to_owned);
+        let view = analyze_offline(&seeds).unwrap();
+        let rejected = view["rejected"].as_array().unwrap();
+        assert_eq!(rejected.len(), 1, "{rejected:?}");
+        assert_eq!(rejected[0]["seed"], "alexdemo");
+        assert!(
+            rejected[0]["reason"]
+                .as_str()
+                .is_some_and(|reason| !reason.is_empty())
+        );
+    }
 
     #[test]
     fn caller_refuses_inherited_plan() {

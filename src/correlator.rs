@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,11 +20,15 @@ pub use rules::{
     tagged_matching_sources, text_mentions_ip,
 };
 
+/// The entities and relations one rule pass reads, with indexes built on first use. The indexes
+/// are ordered by key, so a rule that walks them (pairing every entity with every other, say)
+/// emits the same result in the same order on every run: a hash map's order is seeded per map,
+/// and the same scan correlated twice used to disagree.
 pub struct RuleContext<'a> {
     entities: &'a [Entity],
     relations: &'a [Relation],
-    by_uid: RefCell<Option<HashMap<&'a str, &'a Entity>>>,
-    by_canonical_handle: RefCell<Option<HashMap<String, Vec<&'a Entity>>>>,
+    by_uid: RefCell<Option<BTreeMap<&'a str, &'a Entity>>>,
+    by_canonical_handle: RefCell<Option<BTreeMap<String, Vec<&'a Entity>>>>,
 }
 
 impl<'a> RuleContext<'a> {
@@ -48,7 +52,7 @@ impl<'a> RuleContext<'a> {
         self.relations
     }
 
-    pub fn by_uid(&self) -> std::cell::Ref<'_, HashMap<&'a str, &'a Entity>> {
+    pub fn by_uid(&self) -> std::cell::Ref<'_, BTreeMap<&'a str, &'a Entity>> {
         if self.by_uid.borrow().is_none() {
             *self.by_uid.borrow_mut() = Some(
                 self.entities
@@ -62,9 +66,9 @@ impl<'a> RuleContext<'a> {
         })
     }
 
-    pub fn by_canonical_handle(&self) -> std::cell::Ref<'_, HashMap<String, Vec<&'a Entity>>> {
+    pub fn by_canonical_handle(&self) -> std::cell::Ref<'_, BTreeMap<String, Vec<&'a Entity>>> {
         if self.by_canonical_handle.borrow().is_none() {
-            let mut map = HashMap::<String, Vec<&Entity>>::new();
+            let mut map = BTreeMap::<String, Vec<&Entity>>::new();
             for entity in self.entities {
                 if let Some(handle) = canonical_handle(&entity.value) {
                     map.entry(handle).or_default().push(entity);
@@ -340,11 +344,6 @@ pub fn evaluate_rules(
     }
     rank_and_sort(&mut out, &confirmed);
     out
-}
-
-#[must_use]
-pub fn correlate_entities(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
-    evaluate_rules(entities, &[], scan_id)
 }
 
 #[cfg(test)]
@@ -625,5 +624,54 @@ mod tests {
                 .iter()
                 .any(|correlation| correlation.rule_id == "AU-110")
         );
+    }
+
+    /// The rule context walks its entities in uid order, so a rule that pairs them emits the same
+    /// pairs, in the same order, every time. Six aliases in a chain give AU-063 all fifteen pairs:
+    /// over a hash map every pair came out ascending only one run in 720, and the same entities
+    /// correlated twice disagreed.
+    #[test]
+    fn correlating_the_same_entities_twice_gives_the_same_ordered_pairs() {
+        let entities: Vec<Entity> = (0..6)
+            .map(|n| {
+                ent(
+                    EntityKind::Username,
+                    &format!("member{n}"),
+                    0.9,
+                    "src",
+                    false,
+                )
+            })
+            .collect();
+        let relations: Vec<Relation> = entities
+            .windows(2)
+            .map(|pair| {
+                Relation::new(
+                    &pair[0].uid,
+                    &pair[1].uid,
+                    RelationKind::AliasOf,
+                    0.8,
+                    "scan",
+                )
+            })
+            .collect();
+        let first = evaluate_rules(&entities, &relations, "scan");
+        let pairs: Vec<&Correlation> = first
+            .iter()
+            .filter(|correlation| correlation.rule_id == "AU-063")
+            .collect();
+        assert_eq!(pairs.len(), 15, "{first:?}");
+        for correlation in &pairs {
+            assert!(
+                correlation
+                    .entity_uids
+                    .windows(2)
+                    .all(|uids| uids[0] < uids[1]),
+                "{correlation:?}"
+            );
+        }
+        for _ in 0..8 {
+            assert_eq!(evaluate_rules(&entities, &relations, "scan"), first);
+        }
     }
 }

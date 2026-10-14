@@ -17,6 +17,7 @@ use crate::intelligence::{self, IntelligenceReport};
 use crate::metrics::{self, ScanMetrics};
 use crate::pipeline::{AnalysisSnapshot, PipelineLimits};
 use crate::pivot::{self, PivotScore};
+use crate::relation;
 use crate::termination::{
     FrontierState, TerminationReason, TerminationSignals, decide_termination,
 };
@@ -55,7 +56,13 @@ fn correlate_entities_at(
     now_unix: u64,
 ) -> Vec<Correlation> {
     let confirmed = confirmed_only(entities);
-    let context = RuleContext::new(&confirmed, &[]);
+    // The rules read domain relations (`relation::Relation`): identity closure, multipath
+    // corroboration, connection brokers, shared registrant and shared hosting. The snapshot
+    // carries only their graph projection (`EntityRelation`), which the rules cannot read, so
+    // they are derived here by the same authority the pipeline uses, over the entities the
+    // rules see. Passing none left every relation rule silent on this path.
+    let relations = relation::derive_all(&confirmed, scan_id);
+    let context = RuleContext::new(&confirmed, &relations);
     let mut correlations = Vec::new();
     for rule in registry() {
         correlations.extend(rule.run(&context, scan_id, now_unix));
@@ -121,4 +128,71 @@ pub fn analyze_snapshot_with_cross_scan<S: CrossScanStore>(
         },
     )?);
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+    use crate::evidence_ancestry::EvidenceAncestryGraph;
+
+    /// A confirmed domain whose DNS evidence names the address it resolves to.
+    fn hosted_on(domain: &str, ip: &str) -> Entity {
+        let mut entity = Entity::new(EntityKind::Domain, domain, 0.9, "analysis-test");
+        entity.add_evidence(
+            Evidence::new(EvidenceProvenance::new("dns"), format!("{domain} A record"))
+                .with_attr("ip", ip),
+        );
+        entity
+    }
+
+    /// Two confirmed domains on one address (RFC 5737 documentation range) share hosting.
+    /// AU-110 reads `ResolvesTo` relations, so the analysis reports it only when the rules are
+    /// given the relations these entities imply. Given none, as before, it stayed silent.
+    #[test]
+    fn analysis_correlates_over_the_relations_its_entities_imply() {
+        let snapshot = AnalysisSnapshot {
+            entities: vec![
+                hosted_on("alpha.example", "192.0.2.10"),
+                hosted_on("beta.example", "192.0.2.10"),
+                Entity::new(EntityKind::IpAddress, "192.0.2.10", 0.9, "analysis-test"),
+            ],
+            relations: Vec::new(),
+            coverage: Vec::new(),
+            ancestry: EvidenceAncestryGraph::default(),
+            truncated: false,
+        };
+        let report = analyze_snapshot(&snapshot);
+        let fired: Vec<&str> = report
+            .correlations
+            .iter()
+            .map(|correlation| correlation.rule_id.as_str())
+            .collect();
+        assert!(fired.contains(&"AU-110"), "rules that fired: {fired:?}");
+    }
+
+    /// An entity demoted to candidate is excluded before the rules run, so deriving relations
+    /// cannot make it assert a link: the same domains and address, demoted, fire nothing.
+    #[test]
+    fn entities_demoted_to_candidate_assert_no_correlation() {
+        let mut entities = vec![
+            hosted_on("alpha.example", "192.0.2.10"),
+            hosted_on("beta.example", "192.0.2.10"),
+            Entity::new(EntityKind::IpAddress, "192.0.2.10", 0.9, "analysis-test"),
+        ];
+        for entity in &mut entities {
+            entity.demote_to_candidate();
+        }
+        let snapshot = AnalysisSnapshot {
+            entities,
+            relations: Vec::new(),
+            coverage: Vec::new(),
+            ancestry: EvidenceAncestryGraph::default(),
+            truncated: false,
+        };
+        assert_eq!(
+            analyze_snapshot(&snapshot).correlations,
+            Vec::<Correlation>::new()
+        );
+    }
 }
