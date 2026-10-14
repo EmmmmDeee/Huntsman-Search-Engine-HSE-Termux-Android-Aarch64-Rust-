@@ -14,7 +14,8 @@ use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Sour
 use crate::keys::Keys;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::{
-    hunter, ipqs, leakix, netlas, pulsedive, securitytrails, shodan, threatfox, urlhaus, whoxy,
+    hunter, ipinfo, ipqs, kickbox, leakix, netlas, otx, pulsedive, securitytrails, shodan,
+    threatfox, urlhaus, urlscan, whoxy,
 };
 
 /// Every indicator source, in the order a lookup runs them.
@@ -22,6 +23,10 @@ pub const SOURCES: &[Source] = &[
     shodan::INTEL,
     pulsedive::INTEL,
     netlas::INTEL,
+    otx::INTEL,
+    urlscan::INTEL,
+    ipinfo::INTEL,
+    kickbox::INTEL,
     leakix::INTEL,
     threatfox::INTEL,
     urlhaus::INTEL,
@@ -212,9 +217,9 @@ mod tests {
             1,
         );
         let ran: Vec<&str> = legs.outcomes.iter().map(|o| o.module.as_str()).collect();
-        assert_eq!(ran, ["pulsedive", "netlas"]);
+        assert_eq!(ran, ["pulsedive", "netlas", "otx", "urlscan", "ipinfo"]);
         assert!(legs.network.is_some());
-        assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 2);
+        assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 5);
     }
 
     #[test]

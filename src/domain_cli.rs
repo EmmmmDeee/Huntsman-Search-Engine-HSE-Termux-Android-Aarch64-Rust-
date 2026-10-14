@@ -3,7 +3,7 @@
 //! Runs crt.sh certificate transparency and DNS record lookups in sequence for a
 //! single domain, then the keyed legs whose key is configured: `VirusTotal` reputation
 //! (`HUNTSMAN_VIRUSTOTAL_KEY`) and Hunter.io published addresses (`HUNTSMAN_HUNTER_KEY`), then
-//! every domain source in [`crate::indicator_legs::SOURCES`] (Shodan DNS, Pulsedive, Netlas, `LeakIX`, `URLhaus`, `SecurityTrails`,
+//! every domain source in [`crate::indicator_legs::SOURCES`] (Shodan DNS, Pulsedive, Netlas, OTX, urlscan.io, `LeakIX`, `URLhaus`, `SecurityTrails`,
 //! `ThreatFox`, Whoxy WHOIS). A keyed leg without its key makes no request and reports nothing;
 //! a configured key always runs its leg. Every result set is combined into one entity list and
 //! rendered report.

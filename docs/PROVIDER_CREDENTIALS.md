@@ -34,6 +34,9 @@ these slots without printing their values.
 | Netlas | `HUNTSMAN_NETLAS_KEY` | optional for `ip` and `domain`: Netlas answers without a key at a lower limit; a free Community key raises it |
 | SecurityTrails | `HUNTSMAN_SECTRAILS_KEY` | used by `domain` when set in the environment; free: 50 queries/month |
 | URLhaus (abuse.ch) | `HUNTSMAN_ABUSECH_KEY` | used by `ip` and `domain` when set in the environment; the same free abuse.ch Auth-Key as `HUNTSMAN_THREATFOX_KEY` |
+| AlienVault OTX | `HUNTSMAN_OTX_KEY` | optional for `ip` and `domain`: OTX answers without a key at a lower limit; a free key raises it |
+| urlscan.io | `HUNTSMAN_URLSCAN_KEY` | optional for `ip` and `domain`: searches work without a key at a lower quota; a free key raises it |
+| IPinfo | `HUNTSMAN_IPINFO_KEY` | optional for `ip`: IPinfo answers without a token at a lower limit; a free token gives 50,000 lookups/month |
 | Censys | `HUNTSMAN_CENSYS_ID`, `HUNTSMAN_CENSYS_SECRET` | do not assume usable; provider access must be revalidated |
 
 ## Private runtime template
@@ -66,6 +69,9 @@ HUNTSMAN_THREATFOX_KEY=
 HUNTSMAN_NETLAS_KEY=
 HUNTSMAN_SECTRAILS_KEY=
 HUNTSMAN_ABUSECH_KEY=
+HUNTSMAN_OTX_KEY=
+HUNTSMAN_URLSCAN_KEY=
+HUNTSMAN_IPINFO_KEY=
 HUNTSMAN_CENSYS_ID=
 HUNTSMAN_CENSYS_SECRET=
 ```

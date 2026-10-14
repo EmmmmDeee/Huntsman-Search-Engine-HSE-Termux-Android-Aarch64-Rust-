@@ -145,6 +145,10 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         "securitytrails" => ("securitytrails", "src/securitytrails.rs"),
         "urlhaus" => ("urlhaus", "src/urlhaus.rs"),
         "hunter" => ("hunter", "src/hunter.rs"),
+        "otx" => ("otx", "src/otx.rs"),
+        "urlscan" => ("urlscan", "src/urlscan.rs"),
+        "ipinfo" => ("ipinfo", "src/ipinfo.rs"),
+        "kickbox" => ("kickbox", "src/kickbox.rs"),
         _ => return None,
     })
 }

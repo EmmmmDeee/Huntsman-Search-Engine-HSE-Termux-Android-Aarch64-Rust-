@@ -437,6 +437,10 @@ fn modules_lists_only_reachable_catalog_entries() {
         "web_server",
         "crtsh",
         "netlas",
+        "otx",
+        "urlscan",
+        "ipinfo",
+        "kickbox",
     ] {
         assert!(stdout.contains(name), "missing reachable module {name}");
     }

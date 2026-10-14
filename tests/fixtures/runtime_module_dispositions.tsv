@@ -85,10 +85,12 @@ indicator_sources	adapter	indicator-source registry run by indicator_legs for ip
 intelligence	runtime	aggregated intelligence report
 internetdb	adapter	Shodan InternetDB leg reached through ip_cli from ip, scan -k ip and /api/lookup
 ip_cli	runtime	ip lookup front-end reached from ip, scan -k ip and /api/lookup
+ipinfo	adapter	IPinfo leg reached through indicator_legs from ip, scan and /api/lookup
 ipqs	adapter	IPQualityScore IP leg reached through indicator_legs from ip, scan -k ip and /api/lookup when its key is set
 json	exporter	canonical JSON support
 key_health	diagnostic	provider key diagnostics
 keys	leaf	credential file handling
+kickbox	adapter	Kickbox disposable-domain leg reached through indicator_legs from email, scan -k email and /api/lookup
 leads	runtime	lead ranking through intelligence report
 leakix	adapter	LeakIX leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
 ledger	exporter	hash-chained verified-claim ledger
@@ -110,6 +112,7 @@ netlas	adapter	Netlas host leg reached through indicator_legs from ip, domain, s
 numverify	adapter	Numverify leg reached through phone_cli from phone, scan -k phone and /api/lookup when its key is set
 oathnet	adapter	OathNet breach-search leg reached through exposure_cli from exposure, scan -k exposure and /api/lookup
 openpgp_keys	adapter	keys.openpgp.org verified key-identity source reached through email_cli from email, scan -k email and /api/lookup
+otx	adapter	AlienVault OTX leg reached through indicator_legs from ip, domain, scan and /api/lookup
 oui	leaf	OUI lookup
 oui_ieee	leaf	IEEE OUI data
 path	leaf	path analysis utility
@@ -173,6 +176,7 @@ tlsrpt	leaf	TLS-RPT parser
 trust	leaf	trust analysis utility
 union_find	leaf	deterministic clustering primitive
 urlhaus	adapter	URLhaus host leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
+urlscan	adapter	urlscan.io search leg reached through indicator_legs from ip, domain, scan and /api/lookup
 username_cli	diagnostic	username enrichment command front-end
 username_variants	leaf	deterministic handle normalization variants
 validation	runtime	seed/entity validation
