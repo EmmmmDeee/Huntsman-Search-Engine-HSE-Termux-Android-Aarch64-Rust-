@@ -424,6 +424,8 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 `huntsman-recon serve` starts a dependency-free embedded UI on `127.0.0.1:8080` by default. `HSE_BIND` or `serve --bind ADDR` selects another socket address. Explicit non-loopback binds require a non-empty `HSE_AUTH_TOKEN`.
 
+When `HSE_AUTH_TOKEN` is set, on any bind, every endpoint except `/` and `/api/health` needs it as `Authorization: Bearer TOKEN`; a call without it is answered `401` with `WWW-Authenticate: Bearer` and an error that names the variable. `serve` says so on stderr when it starts, without printing the value. `/api/health` reports `"auth": "token"` or `"auth": "none"`, and the page uses it: when a token is needed and none is entered, or a call is refused, it opens "Server status and token" and asks for it. The page sends the entered token on every call, keeps it in the browser's local storage for this address, and also takes it once from the address as `http://127.0.0.1:8080/#token=VALUE` (a fragment never reaches the server or its logs), then removes it from the address bar. To run a loopback server without a token, `unset HSE_AUTH_TOKEN` before `serve`.
+
 The API surface:
 
 - `GET /api/health` — process name/version and status;
