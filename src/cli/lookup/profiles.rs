@@ -6,9 +6,11 @@
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::fail;
+use huntsman_recon::dehashed::{self, client::DehashedClient};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::Entity;
 use huntsman_recon::error::Error;
@@ -115,6 +117,12 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
             let keys = Keys::from_env();
             let transport = UreqTransport::new(&stolen_tax::transport_config());
             let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
+            // DeHashed reuses the opt-in client; its key, like stolen.tax and OathNet, is read
+            // from the environment only, never the default keys file.
+            let dehashed_client = keys.get(dehashed::client::API_KEY_ENV).map(|secret| {
+                let transport = Arc::new(UreqTransport::new(&TransportConfig::default()));
+                DehashedClient::new(transport, secret)
+            });
             let sources = Sources {
                 hibp: client.as_ref(),
                 stolen_tax: keys
@@ -125,6 +133,7 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
                     .get(oathnet::KEY_SLOT)
                     .is_some()
                     .then_some((&oathnet_transport as &dyn Transport, &keys)),
+                dehashed: dehashed_client.as_ref(),
             };
             match huntsman_recon::exposure_cli::run(sources, selector, now) {
                 ExposureRun::Printed { text, report } => Ok(done(
