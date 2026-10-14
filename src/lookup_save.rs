@@ -25,6 +25,8 @@ pub struct SavePolicy {
 fn email_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "gravatar" => ("gravatar", "src/gravatar.rs"),
+        "duolingo" => ("duolingo", "src/duolingo.rs"),
+        "openpgp_keys" => ("openpgp_keys", "src/openpgp_keys.rs"),
         _ => (source, "src/email_cli.rs"),
     }
 }

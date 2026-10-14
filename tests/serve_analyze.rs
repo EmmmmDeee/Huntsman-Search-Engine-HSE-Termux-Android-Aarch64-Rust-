@@ -85,7 +85,7 @@ fn serve_runs_the_offline_multi_hop_analysis_its_page_offers() {
         .iter()
         .filter_map(|correlation| correlation["rule_id"].as_str())
         .collect();
-    assert!(rules.contains(&"AU-060"), "{rules:?}");
+    assert!(rules.contains(&"AU-063"), "{rules:?}");
     assert_eq!(view["gaps"]["orphans"][0]["kind"], "phone", "{view}");
     assert!(!view["planned"].as_array().unwrap().is_empty(), "{view}");
 }

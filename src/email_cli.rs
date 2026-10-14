@@ -1,8 +1,9 @@
 //! End-to-end front-end for `huntsman-recon email`.
 //!
 //! The selector is canonicalised once, legacy-compatible deterministic email
-//! derivations are produced locally, then the public Gravatar profile is queried
-//! through the shared transport. Evidence is rendered with lineage. Saving is handled by
+//! derivations are produced locally, then the public Gravatar profile, Duolingo's
+//! account-by-email lookup and the keys.openpgp.org key index are queried through the
+//! shared transport. Evidence is rendered with lineage. Saving is handled by
 //! the L7 `lookup_save` module, and `lookup_args` reads the `--save` option.
 
 use std::collections::BTreeSet;
@@ -21,11 +22,12 @@ use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::textnorm::upper_first;
+use crate::{duolingo, openpgp_keys};
 
 pub const EMAIL_USAGE: &str = "usage: huntsman-recon email ADDR [--save FILE]";
 pub const EMAIL_HELP: &str = "\
 email ADDR [--save FILE]
-Canonicalise ADDR, derive deterministic email pivots, and query its public Gravatar profile. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise ADDR, derive deterministic email pivots, and query its public Gravatar profile, any Duolingo account registered to it, and any OpenPGP key published for it on keys.openpgp.org. --save FILE writes an unverified ledger that verify can reload.";
 
 const CONF_DOMAIN: f64 = 0.80;
 const CONF_USERNAME_CORPORATE: f64 = 0.70;
@@ -66,7 +68,25 @@ pub enum EmailRun {
     Failed(String),
 }
 
-/// Run one deterministic email enrichment plus one public-profile lookup.
+type Collected = Result<(Vec<Entity>, SourceExecutionOutcome), Error>;
+type Source<T> = fn(&T, &str, &str, u64) -> Collected;
+
+/// The keyless public lookups `email` runs, in order. Each is one request.
+fn sources<T: Transport + ?Sized>() -> [Source<T>; 3] {
+    [
+        |t, email, scan, now| {
+            gravatar::lookup(t, email, scan, now).map(|r| (r.entities, r.outcome))
+        },
+        |t, email, scan, now| {
+            duolingo::lookup(t, email, scan, now).map(|r| (r.entities, r.outcome))
+        },
+        |t, email, scan, now| {
+            openpgp_keys::lookup(t, email, scan, now).map(|r| (r.entities, r.outcome))
+        },
+    ]
+}
+
+/// Run one deterministic email enrichment plus the keyless public lookups.
 #[must_use]
 pub fn run<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> EmailRun {
     let Some(email) = canonical_email(email) else {
@@ -78,13 +98,15 @@ pub fn run<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> 
         outcomes: Vec::new(),
     };
 
-    match gravatar::lookup(transport, &email, &scan_id, now_unix) {
-        Ok(got) => {
-            report.entities.extend(got.entities);
-            report.outcomes.push(got.outcome);
+    for source in sources::<T>() {
+        match source(transport, &email, &scan_id, now_unix) {
+            Ok((entities, outcome)) => {
+                report.entities.extend(entities);
+                report.outcomes.push(outcome);
+            }
+            Err(Error::Network(msg)) => return EmailRun::Network(msg),
+            Err(err) => return EmailRun::Failed(err.to_string()),
         }
-        Err(Error::Network(msg)) => return EmailRun::Network(msg),
-        Err(err) => return EmailRun::Failed(err.to_string()),
     }
     merge_by_uid(&mut report.entities);
 
@@ -265,7 +287,8 @@ fn derive_person(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::OneResponse;
+    use crate::http::Response;
+    use crate::test_support::ScriptedTransport;
 
     use crate::source_outcome::SourceOutcomeKind;
 
@@ -357,10 +380,37 @@ mod tests {
         );
     }
 
+    fn reply(status: u16, body: &str) -> Response {
+        Response {
+            status,
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: body.as_bytes().to_vec(),
+            truncated: false,
+        }
+    }
+
+    /// Gravatar, Duolingo and keys.openpgp.org, in the order `run` asks them.
+    fn three(gravatar: Response, duolingo: Response, openpgp: Response) -> ScriptedTransport {
+        ScriptedTransport::new(vec![Ok(gravatar), Ok(duolingo), Ok(openpgp)])
+    }
+
+    fn nothing_found() -> ScriptedTransport {
+        three(
+            reply(404, ""),
+            reply(200, r#"{"users":[]}"#),
+            reply(404, "No key found"),
+        )
+    }
+
     #[test]
     fn run_combines_derivation_and_public_profile() {
         let body = r#"{"entry":[{"displayName":"Jane Doe","preferredUsername":"janed"}]}"#;
-        match run(&OneResponse::json(200, body), "jane.doe@acme.example", 1) {
+        let transport = three(
+            reply(200, body),
+            reply(200, r#"{"users":[]}"#),
+            reply(404, ""),
+        );
+        match run(&transport, "jane.doe@acme.example", 1) {
             EmailRun::Printed { text, report } => {
                 assert!(text.contains("gravatar\tsuccess"), "{text}");
                 assert!(text.contains("lineage="), "{text}");
@@ -379,7 +429,7 @@ mod tests {
     fn guesses_made_from_the_address_are_never_more_than_one_source() {
         // jane.doe@acme.example yields janedoe, jane_doe and jane-doe, which merge. None of them has
         // a source that corroborates: they are guesses from the address the operator typed.
-        match run(&OneResponse::json(404, ""), "jane.doe@acme.example", 1) {
+        match run(&nothing_found(), "jane.doe@acme.example", 1) {
             EmailRun::Printed { report, .. } => {
                 let guesses: Vec<_> = report
                     .entities
@@ -404,12 +454,92 @@ mod tests {
 
     #[test]
     fn missing_public_profile_keeps_offline_derivations() {
-        match run(&OneResponse::json(404, ""), "jane.doe@gmail.com", 1) {
+        match run(&nothing_found(), "jane.doe@gmail.com", 1) {
             EmailRun::Printed { report, .. } => {
-                assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
+                assert_eq!(report.outcomes.len(), 3);
+                assert!(
+                    report
+                        .outcomes
+                        .iter()
+                        .all(|outcome| outcome.kind == SourceOutcomeKind::ValidZero),
+                    "{:?}",
+                    report.outcomes
+                );
                 assert!(!report.entities.is_empty());
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn every_public_lookup_runs_and_reports_its_own_outcome() {
+        let duolingo = r#"{"users":[{"id":7,"username":"janedoe_learns","name":"Jane Doe","creationDate":1500000000}]}"#;
+        let key = "info:1:1\npub:ABCDEF0123456789:1:255:1600000000::\nuid:Jane%20Doe%20%3Cjane@work.example%3E:1600000000::\n";
+        let transport = three(reply(404, ""), reply(200, duolingo), reply(200, key));
+        let EmailRun::Printed { text, report } = run(&transport, "jane.doe@acme.example", 1) else {
+            panic!("email run did not print");
+        };
+        let seen: Vec<String> = transport
+            .seen
+            .borrow()
+            .iter()
+            .map(|r| r.url.clone())
+            .collect();
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(seen[1].starts_with("https://www.duolingo.com/"), "{seen:?}");
+        assert!(seen[2].starts_with("https://keys.openpgp.org/"), "{seen:?}");
+        for line in [
+            "gravatar\tvalid_zero",
+            "duolingo\tsuccess",
+            "openpgp_keys\tsuccess",
+        ] {
+            assert!(text.contains(line), "missing {line:?} in {text}");
+        }
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.raw_value == "janedoe_learns")
+        );
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "jane@work.example")
+        );
+        // The address's own guess and the two sources' "Jane Doe" are one person.
+        let person = report
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Person && e.value == "jane doe")
+            .expect("person");
+        assert!(person.source_count() >= 2, "{person:?}");
+    }
+
+    #[test]
+    fn a_failing_source_does_not_hide_the_others() {
+        // A drifted answer, not a 429: a rate limit would open the real host's shared pacing
+        // circuit and suppress that host in every other test in this binary.
+        let transport = three(
+            reply(404, ""),
+            reply(200, r#"{"errors":[]}"#),
+            reply(404, ""),
+        );
+        let EmailRun::Printed { report, .. } = run(&transport, "jane.doe@acme.example", 1) else {
+            panic!("email run did not print");
+        };
+        let kinds: Vec<_> = report
+            .outcomes
+            .iter()
+            .map(|o| (o.module.as_str(), o.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("gravatar", SourceOutcomeKind::ValidZero),
+                ("duolingo", SourceOutcomeKind::SchemaDrift),
+                ("openpgp_keys", SourceOutcomeKind::ValidZero),
+            ]
+        );
     }
 }

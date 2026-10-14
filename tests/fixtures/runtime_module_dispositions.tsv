@@ -47,6 +47,7 @@ dns	adapter	DNS source client
 domain_cli	diagnostic	domain recon command front-end over crtsh and dns
 domain_lifecycle	diagnostic	offline imported domain-observation comparison
 domains	leaf	domain normalization and classification
+duolingo	adapter	Duolingo account-by-email source reached through email_cli from email, scan -k email and /api/lookup
 egress	leaf	network egress policy
 email_cli	diagnostic	email enrichment command front-end
 engineering_command	diagnostic	executable engineering command hierarchy and capability ownership
@@ -91,6 +92,7 @@ module	runtime	provider economics metadata
 navigator	exporter	ATT&CK Navigator output from admitted claims
 network_cli	adapter	network lookup front-end reached from network, scan -k network and /api/lookup
 oathnet	adapter	OathNet breach-search leg reached through exposure_cli from exposure, scan -k exposure and /api/lookup
+openpgp_keys	adapter	keys.openpgp.org verified key-identity source reached through email_cli from email, scan -k email and /api/lookup
 oui	leaf	OUI lookup
 oui_ieee	leaf	IEEE OUI data
 path	leaf	path analysis utility

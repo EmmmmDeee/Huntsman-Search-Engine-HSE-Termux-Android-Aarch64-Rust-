@@ -55,19 +55,38 @@ impl RelationKind {
         }
     }
 
+    /// Whether the relation says its two ends are one identity, so that identity resolution may
+    /// merge them and the identity-path rules may walk it.
+    ///
+    /// An alias, a same-identity assertion, an identifier of a person and a shared secret do. A
+    /// shared domain, subdomain, host, address, registrant or location relates different people,
+    /// as a shared employer does, and a handle guessed from a name may belong to anyone with
+    /// that name, so none of these merges identities. Every kind is named, so a new kind does
+    /// not build until it is classified here.
     #[must_use]
     pub const fn binds_identity(self) -> bool {
-        !matches!(
-            self,
-            Self::AssociatedWith
-                | Self::EmployedBy
-                | Self::OfficerOf
-                | Self::MemberOf
-                | Self::LocatedAt
-                | Self::ControlledBy
-                | Self::OperatedBy
-                | Self::SameOperator
-        )
+        match self {
+            Self::IdentifiedBy
+            | Self::AliasOf
+            | Self::SameAs
+            | Self::SameIdentity
+            | Self::SharesSecretWith => true,
+            Self::SubdomainOf
+            | Self::BelongsToDomain
+            | Self::HostedOn
+            | Self::ResolvesTo
+            | Self::RegisteredBy
+            | Self::CoLocatedWith
+            | Self::DerivedFrom
+            | Self::LocatedAt
+            | Self::AssociatedWith
+            | Self::SameOperator
+            | Self::EmployedBy
+            | Self::OfficerOf
+            | Self::MemberOf
+            | Self::ControlledBy
+            | Self::OperatedBy => false,
+        }
     }
 }
 
@@ -86,6 +105,13 @@ pub struct Relation {
     pub confidence: f64,
     pub scan_id: String,
     pub observed_at: u64,
+    /// The one piece of evidence this relation rests on with others, named `kind:value`, such as
+    /// `handle:jsmith` for a handle that many addresses share: every two of them are aliases, and
+    /// each of those relations rests on the handle. Pathway counting counts a basis once, however
+    /// many relations rest on it. `None` means the relation rests on the link between its own two
+    /// entities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<String>,
 }
 
 impl Relation {
@@ -113,7 +139,15 @@ impl Relation {
             },
             scan_id,
             observed_at: unix_now(),
+            basis: None,
         }
+    }
+
+    /// This relation, resting on `basis` (see [`Relation::basis`]).
+    #[must_use]
+    pub fn with_basis(mut self, basis: impl Into<String>) -> Self {
+        self.basis = Some(basis.into());
+        self
     }
 }
 
