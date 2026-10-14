@@ -167,25 +167,33 @@ fn coreference_key(entity: &Entity) -> Option<String> {
     }
 }
 
-pub(crate) fn collapse_duplicates_max_confidence(relations: Vec<Relation>) -> Vec<Relation> {
-    let mut out: Vec<Relation> = Vec::new();
-    let mut seen = BTreeMap::<(String, String, RelationKind), usize>::new();
-    for relation in relations {
+/// Keeps the first relation of each `(from, to, kind)`, in order, raised to the highest
+/// confidence any of them has. It runs over every relation a scan derives, half a million when
+/// a thousand addresses share a handle, so it works in place and borrows its keys.
+pub(crate) fn collapse_duplicates_max_confidence(mut relations: Vec<Relation>) -> Vec<Relation> {
+    let mut first = Vec::with_capacity(relations.len());
+    let mut seen = HashMap::<(&str, &str, RelationKind), usize>::with_capacity(relations.len());
+    for (position, relation) in relations.iter().enumerate() {
         let key = (
-            relation.from_uid.clone(),
-            relation.to_uid.clone(),
+            relation.from_uid.as_str(),
+            relation.to_uid.as_str(),
             relation.kind,
         );
-        if let Some(index) = seen.get(&key).copied() {
-            if relation.confidence > out[index].confidence {
-                out[index].confidence = relation.confidence;
-            }
-        } else {
-            seen.insert(key, out.len());
-            out.push(relation);
+        first.push(*seen.entry(key).or_insert(position));
+    }
+    drop(seen);
+    for (position, &kept) in first.iter().enumerate() {
+        if kept != position && relations[position].confidence > relations[kept].confidence {
+            relations[kept].confidence = relations[position].confidence;
         }
     }
-    out
+    let mut position = 0;
+    relations.retain(|_| {
+        let keep = first[position] == position;
+        position += 1;
+        keep
+    });
+    relations
 }
 
 #[must_use]
@@ -664,8 +672,8 @@ pub fn derive_coreferences(
         .iter()
         .map(|relation| {
             (
-                relation.from_uid.clone(),
-                relation.to_uid.clone(),
+                relation.from_uid.as_str(),
+                relation.to_uid.as_str(),
                 relation.kind,
             )
         })
@@ -686,23 +694,22 @@ pub fn derive_coreferences(
                     (EntityKind::Person, _) | (_, EntityKind::Person) => RelationKind::IdentifiedBy,
                     _ => RelationKind::AliasOf,
                 };
-                let (from_uid, to_uid) = if kind == RelationKind::IdentifiedBy {
+                let (from, to) = if kind == RelationKind::IdentifiedBy {
                     if group[left].kind == EntityKind::Person {
-                        (group[left].uid.clone(), group[right].uid.clone())
+                        (group[left], group[right])
                     } else {
-                        (group[right].uid.clone(), group[left].uid.clone())
+                        (group[right], group[left])
                     }
                 } else {
-                    let (from, to) = canonical_pair(group[left], group[right]);
-                    (from.uid.clone(), to.uid.clone())
+                    canonical_pair(group[left], group[right])
                 };
-                if existing_keys.contains(&(from_uid.clone(), to_uid.clone(), kind)) {
+                if existing_keys.contains(&(from.uid.as_str(), to.uid.as_str(), kind)) {
                     continue;
                 }
                 if let Some(edge) = push_edge(
                     &mut edges,
-                    &from_uid,
-                    &to_uid,
+                    &from.uid,
+                    &to.uid,
                     kind,
                     endpoint_confidence(group[left], group[right]) * 0.85,
                     scan_id,
@@ -761,7 +768,6 @@ pub fn derive_all_within_budget(
         derive_org_identity,
     ];
     let mut out = Vec::new();
-    let mut existing = Vec::new();
     for pass in passes {
         if deadline.is_some_and(|limit| Instant::now() >= limit) {
             break;
@@ -771,9 +777,8 @@ pub fn derive_all_within_budget(
             *pass,
             derive_canonical_identities as fn(&[Entity], &str) -> Vec<Relation>,
         ) {
-            relations.extend(derive_coreferences(entities, &existing, scan_id));
+            relations.extend(derive_coreferences(entities, &out, scan_id));
         }
-        existing.extend(relations.clone());
         out.extend(relations);
     }
     collapse_duplicates_max_confidence(out)
@@ -1025,5 +1030,35 @@ mod tests {
         let collapsed = collapse_duplicates_max_confidence(relations);
         assert_eq!(collapsed.len(), 1);
         assert!((collapsed[0].confidence - 0.9).abs() < f64::EPSILON);
+    }
+
+    /// Each `(from, to, kind)` is kept once, where it first appears, with the highest confidence
+    /// any copy has and the basis of its first copy. A kind on the same pair of uids is another
+    /// relation, and a reversed pair is not a duplicate.
+    #[test]
+    fn collapse_keeps_first_occurrences_in_order_at_their_highest_confidence() {
+        let relations = vec![
+            Relation::new("a", "b", RelationKind::AliasOf, 0.2, "s").with_basis("handle:x"),
+            Relation::new("c", "d", RelationKind::SameAs, 0.5, "s"),
+            Relation::new("a", "b", RelationKind::AliasOf, 0.9, "s"),
+            Relation::new("a", "b", RelationKind::SameAs, 0.3, "s"),
+            Relation::new("b", "a", RelationKind::AliasOf, 0.6, "s"),
+            Relation::new("a", "b", RelationKind::AliasOf, 0.7, "s"),
+        ];
+        let collapsed = collapse_duplicates_max_confidence(relations);
+        let kept = collapsed
+            .iter()
+            .map(|r| (r.from_uid.as_str(), r.to_uid.as_str(), r.kind, r.confidence))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kept,
+            [
+                ("a", "b", RelationKind::AliasOf, 0.9),
+                ("c", "d", RelationKind::SameAs, 0.5),
+                ("a", "b", RelationKind::SameAs, 0.3),
+                ("b", "a", RelationKind::AliasOf, 0.6),
+            ]
+        );
+        assert_eq!(collapsed[0].basis.as_deref(), Some("handle:x"));
     }
 }
