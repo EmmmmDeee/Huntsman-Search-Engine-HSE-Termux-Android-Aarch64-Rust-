@@ -374,16 +374,31 @@ mod tests {
         assert_eq!(view["gaps"]["orphans"][0]["kind"], "phone");
         assert!(!view["planned"].as_array().unwrap().is_empty(), "{view}");
         assert_eq!(view["termination"], "fixed_point");
-        // The linked seeds form one identity cluster (AU-060), and each link is single-path,
-        // so the linked pairs also carry a corroboration gap (AU-063).
-        let fired: Vec<&str> = view["correlations"]
-            .as_array()
-            .unwrap()
+        // The email and the username are one identity joined by a single path, so that pair
+        // carries a corroboration gap (AU-063). The domain only hosts the address: it is not part
+        // of the identity, so no identity rule names it and no three-entity cluster (AU-060)
+        // forms.
+        let correlations = view["correlations"].as_array().unwrap();
+        let fired: Vec<&str> = correlations
             .iter()
             .filter_map(|correlation| correlation["rule_id"].as_str())
             .collect();
-        assert!(fired.contains(&"AU-060"), "{fired:?}");
-        assert!(fired.contains(&"AU-063"), "{fired:?}");
+        assert!(!fired.contains(&"AU-060"), "{fired:?}");
+        let gap = correlations
+            .iter()
+            .find(|correlation| correlation["rule_id"] == "AU-063")
+            .unwrap_or_else(|| panic!("no AU-063 in {fired:?}"));
+        let mut pair = [email.clone(), uid_of("username")];
+        pair.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+        assert_eq!(gap["entity_uids"], serde_json::json!(pair), "{gap}");
+        let domain = uid_of("domain");
+        for correlation in correlations.iter().filter(|correlation| {
+            ["AU-060", "AU-062", "AU-063", "AU-070", "AU-071"]
+                .contains(&correlation["rule_id"].as_str().unwrap_or_default())
+        }) {
+            let named = correlation["entity_uids"].as_array().unwrap();
+            assert!(!named.contains(&domain), "{correlation}");
+        }
     }
 
     #[test]
