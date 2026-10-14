@@ -15,6 +15,9 @@ pub enum BreachLeg {
     StolenTax,
     /// `OathNet` breach search. Operator key required. Only field names leave a record.
     OathNet,
+    /// `DeHashed` exact-match search. Operator key required. Only database names and the
+    /// presence of a password or hash leave a record.
+    DeHashed,
 }
 
 /// Free legs always. Keyed legs only when an operator key is present.
@@ -25,6 +28,7 @@ pub fn exposure_order(has_operator_key: bool) -> Vec<BreachLeg> {
         order.push(BreachLeg::HibpAccount);
         order.push(BreachLeg::StolenTax);
         order.push(BreachLeg::OathNet);
+        order.push(BreachLeg::DeHashed);
     }
     order
 }
@@ -70,7 +74,8 @@ mod tests {
             &[
                 BreachLeg::HibpAccount,
                 BreachLeg::StolenTax,
-                BreachLeg::OathNet
+                BreachLeg::OathNet,
+                BreachLeg::DeHashed
             ]
         );
     }

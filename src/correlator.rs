@@ -1,11 +1,11 @@
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::canonical_handle;
 use crate::entity::Entity;
-use crate::relation::{self, Relation};
+use crate::relation::{self, PairPathways, Relation};
 use crate::tags;
 
 mod rules;
@@ -29,6 +29,7 @@ pub struct RuleContext<'a> {
     relations: &'a [Relation],
     by_uid: RefCell<Option<BTreeMap<&'a str, &'a Entity>>>,
     by_canonical_handle: RefCell<Option<BTreeMap<String, Vec<&'a Entity>>>>,
+    pathways: RefCell<Option<Vec<PairPathways<'a>>>>,
 }
 
 impl<'a> RuleContext<'a> {
@@ -39,6 +40,7 @@ impl<'a> RuleContext<'a> {
             relations,
             by_uid: RefCell::new(None),
             by_canonical_handle: RefCell::new(None),
+            pathways: RefCell::new(None),
         }
     }
 
@@ -52,7 +54,7 @@ impl<'a> RuleContext<'a> {
         self.relations
     }
 
-    pub fn by_uid(&self) -> std::cell::Ref<'_, BTreeMap<&'a str, &'a Entity>> {
+    pub fn by_uid(&self) -> Ref<'_, BTreeMap<&'a str, &'a Entity>> {
         if self.by_uid.borrow().is_none() {
             *self.by_uid.borrow_mut() = Some(
                 self.entities
@@ -61,12 +63,12 @@ impl<'a> RuleContext<'a> {
                     .collect(),
             );
         }
-        std::cell::Ref::map(self.by_uid.borrow(), |map| {
+        Ref::map(self.by_uid.borrow(), |map| {
             map.as_ref().expect("cache initialised")
         })
     }
 
-    pub fn by_canonical_handle(&self) -> std::cell::Ref<'_, BTreeMap<String, Vec<&'a Entity>>> {
+    pub fn by_canonical_handle(&self) -> Ref<'_, BTreeMap<String, Vec<&'a Entity>>> {
         if self.by_canonical_handle.borrow().is_none() {
             let mut map = BTreeMap::<String, Vec<&Entity>>::new();
             for entity in self.entities {
@@ -76,8 +78,22 @@ impl<'a> RuleContext<'a> {
             }
             *self.by_canonical_handle.borrow_mut() = Some(map);
         }
-        std::cell::Ref::map(self.by_canonical_handle.borrow(), |map| {
+        Ref::map(self.by_canonical_handle.borrow(), |map| {
             map.as_ref().expect("cache initialised")
+        })
+    }
+
+    /// The identity pathways between every two entities, each pair counted in full (see
+    /// [`relation::pairwise_disjoint_pathways`]), with the positions of [`Self::by_uid`]'s
+    /// keys. AU-062 and AU-063 both read them, so a pass counts them once.
+    pub fn pathways(&self) -> Ref<'_, Vec<PairPathways<'a>>> {
+        if self.pathways.borrow().is_none() {
+            let uids = self.by_uid().keys().copied().collect::<Vec<_>>();
+            let pathways = relation::pairwise_disjoint_pathways(&uids, self.relations, usize::MAX);
+            *self.pathways.borrow_mut() = Some(pathways);
+        }
+        Ref::map(self.pathways.borrow(), |pathways| {
+            pathways.as_ref().expect("cache initialised")
         })
     }
 }
@@ -742,6 +758,237 @@ mod tests {
                 .iter()
                 .all(|correlation| !identity_rules.contains(&correlation.rule_id.as_str())),
             "no two confirmed entities are linked: {correlations:?}"
+        );
+    }
+
+    /// Six addresses with one handle are aliases of each other, every link resting on that
+    /// handle. They form one cluster (AU-060) with one gap (AU-063): only the handle connects
+    /// them. Before, each other address counted as an independent pathway, so all fifteen pairs
+    /// raised a High AU-062 alert claiming five independent pathways, and none had a gap.
+    #[test]
+    fn a_handle_shared_by_many_addresses_is_one_pathway_and_one_gap() {
+        let entities = (0..6)
+            .map(|n| {
+                ent(
+                    EntityKind::Email,
+                    &format!("jsmith.alpha@site{n}.example"),
+                    0.9,
+                    "dehashed",
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut uids = entities
+            .iter()
+            .map(|entity| entity.uid.clone())
+            .collect::<Vec<_>>();
+        uids.sort();
+        let correlations = evaluate_rules(&entities, &[], "scan");
+        let fired = |rule: &str| {
+            correlations
+                .iter()
+                .filter(|correlation| correlation.rule_id == rule)
+                .collect::<Vec<_>>()
+        };
+        assert!(fired("AU-062").is_empty(), "{correlations:?}");
+        let clusters = fired("AU-060");
+        assert_eq!(clusters.len(), 1, "{correlations:?}");
+        assert_eq!(clusters[0].entity_uids, uids);
+        let gaps = fired("AU-063");
+        assert_eq!(gaps.len(), 1, "{correlations:?}");
+        assert_eq!(gaps[0].entity_uids, uids);
+        assert_eq!(
+            gaps[0].description,
+            "only a shared handle connects 15 pairs among these 6 entities"
+        );
+    }
+
+    /// Evidence that rests on something other than the shared handle still corroborates. A
+    /// breach record naming one owner for two of four addresses with one handle gives the owner
+    /// with each of the two a second pathway (AU-062), and the two addresses also share a
+    /// password hash, so they have three: the handle, the owner and the secret. The other five
+    /// pairs of addresses remain one gap; the owner's single pathways to the other two addresses
+    /// run through the record as well as the handle, so each is a gap of its own.
+    #[test]
+    fn evidence_beside_a_shared_handle_still_corroborates() {
+        let address = |site: usize, owner: bool| {
+            let mut entity = ent(
+                EntityKind::Email,
+                &format!("jsmith.alpha@site{site}.example"),
+                0.9,
+                "dehashed",
+                false,
+            );
+            if owner {
+                entity.add_evidence(
+                    evidence("dehashed", "row")
+                        .with_attr("owner", "Jane Roe")
+                        .with_attr("password_hash", "5f4dcc3b5aa765d61d8327deb882cf99"),
+                );
+            }
+            entity
+        };
+        let owner = ent(EntityKind::Person, "Jane Roe", 0.9, "dehashed", false);
+        let entities = vec![
+            address(0, true),
+            address(1, true),
+            address(2, false),
+            address(3, false),
+            owner.clone(),
+        ];
+        let pair = |left: &Entity, right: &Entity| {
+            let mut uids = vec![left.uid.clone(), right.uid.clone()];
+            uids.sort();
+            uids
+        };
+        let correlations = evaluate_rules(&entities, &[], "scan");
+        let mut corroborated = correlations
+            .iter()
+            .filter(|correlation| correlation.rule_id == "AU-062")
+            .map(|correlation| {
+                (
+                    correlation.entity_uids.clone(),
+                    correlation.description.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        corroborated.sort();
+        let two = "2 independent pathways corroborate the link";
+        let mut expected = vec![
+            (
+                pair(&entities[0], &entities[1]),
+                "3 independent pathways corroborate the link",
+            ),
+            (pair(&owner, &entities[0]), two),
+            (pair(&owner, &entities[1]), two),
+        ];
+        expected.sort();
+        assert_eq!(corroborated, expected, "{correlations:?}");
+
+        let mut gaps = correlations
+            .iter()
+            .filter(|correlation| correlation.rule_id == "AU-063")
+            .map(|correlation| {
+                (
+                    correlation.entity_uids.clone(),
+                    correlation.description.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        gaps.sort();
+        let mut addresses = entities[..4]
+            .iter()
+            .map(|entity| entity.uid.clone())
+            .collect::<Vec<_>>();
+        addresses.sort();
+        let single = "only one identity pathway currently connects the pair";
+        let mut expected = vec![
+            (
+                addresses,
+                "only a shared handle connects 5 pairs among these 4 entities",
+            ),
+            (pair(&owner, &entities[2]), single),
+            (pair(&owner, &entities[3]), single),
+        ];
+        expected.sort();
+        assert_eq!(gaps, expected, "{correlations:?}");
+    }
+
+    /// Four addresses with one handle and a person whose name is that handle are one identity
+    /// cluster, joined by aliases and by identifiers: two kinds of relation that both rest on
+    /// the handle. That is one piece of evidence, so the cluster is not robust (AU-071), and its
+    /// one corroboration gap (AU-063) stands. An owner that a breach record names for one of the
+    /// addresses is evidence of its own, and with it the cluster is robust.
+    #[test]
+    fn a_cluster_only_a_shared_handle_holds_is_not_robust() {
+        let mut entities = (0..4)
+            .map(|site| {
+                ent(
+                    EntityKind::Email,
+                    &format!("jsmith.alpha@site{site}.example"),
+                    0.9,
+                    "dehashed",
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+        entities.push(ent(
+            EntityKind::Person,
+            "Jsmith Alpha",
+            0.9,
+            "dehashed",
+            false,
+        ));
+        let fired = |entities: &[Entity], rule: &str| {
+            evaluate_rules(entities, &[], "scan")
+                .into_iter()
+                .filter(|correlation| correlation.rule_id == rule)
+                .map(|correlation| (correlation.entity_uids.len(), correlation.description))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fired(&entities, "AU-071"), []);
+        assert_eq!(fired(&entities, "AU-060").len(), 1);
+        assert_eq!(
+            fired(&entities, "AU-063"),
+            [(
+                5,
+                "only a shared handle connects 10 pairs among these 5 entities".to_owned()
+            )]
+        );
+
+        entities[0].add_evidence(evidence("dehashed", "row").with_attr("owner", "Jane Roe"));
+        entities.push(ent(EntityKind::Person, "Jane Roe", 0.9, "dehashed", false));
+        assert_eq!(
+            fired(&entities, "AU-071"),
+            [(
+                6,
+                "6 entities connected by 2 kinds of identity relation resting on 2 independent \
+                 pieces of evidence"
+                    .to_owned()
+            )]
+        );
+    }
+
+    /// Four addresses that three same-as assertions join are one identity, by one kind of
+    /// identity relation. An association between two of them says nothing about whether they are
+    /// one identity, so it does not make the cluster robust (AU-071); an alias does.
+    #[test]
+    fn only_identity_relations_make_a_cluster_robust() {
+        let entities = [
+            "ann@a.example",
+            "bob@b.example",
+            "cat@c.example",
+            "dan@d.example",
+        ]
+        .map(|value| ent(EntityKind::Email, value, 0.9, "dehashed", false));
+        let uid = |n: usize| entities[n].uid.as_str();
+        let mut relations = vec![
+            Relation::new(uid(0), uid(1), RelationKind::SameAs, 0.8, "scan"),
+            Relation::new(uid(1), uid(2), RelationKind::SameAs, 0.8, "scan"),
+            Relation::new(uid(2), uid(3), RelationKind::SameAs, 0.8, "scan"),
+            Relation::new(uid(0), uid(3), RelationKind::AssociatedWith, 0.8, "scan"),
+        ];
+        let robust = |relations: &[Relation]| {
+            evaluate_rules(&entities, relations, "scan")
+                .into_iter()
+                .filter(|correlation| correlation.rule_id == "AU-071")
+                .map(|correlation| correlation.description)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(robust(&relations), Vec::<String>::new());
+        relations.push(Relation::new(
+            uid(0),
+            uid(2),
+            RelationKind::AliasOf,
+            0.8,
+            "scan",
+        ));
+        assert_eq!(
+            robust(&relations),
+            [
+                "4 entities connected by 2 kinds of identity relation resting on 4 independent \
+              pieces of evidence"
+            ]
         );
     }
 
