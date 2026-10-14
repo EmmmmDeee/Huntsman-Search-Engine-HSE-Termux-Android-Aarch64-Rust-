@@ -763,12 +763,7 @@ fn respond(request: &str, bearer_token: Option<&str>, bind: SocketAddr, routes: 
                 },
             })
             .unwrap_or_else(|_| "{\"status\":\"error\"}".into());
-            response(
-                200,
-                "application/json; charset=utf-8",
-                &format!("{body}\n"),
-                head,
-            )
+            json_ok(&body, head)
         }
         "/api/modules" => {
             let body = serde_json::to_string_pretty(&serde_json::json!({
@@ -776,20 +771,10 @@ fn respond(request: &str, bearer_token: Option<&str>, bind: SocketAddr, routes: 
                 "modules": reachable_modules(),
             }))
             .unwrap_or_else(|_| "{\"count\":0,\"modules\":[]}".into());
-            response(
-                200,
-                "application/json; charset=utf-8",
-                &format!("{body}\n"),
-                head,
-            )
+            json_ok(&body, head)
         }
         "/api/command" => match engineering_command::render_json() {
-            Ok(body) => response(
-                200,
-                "application/json; charset=utf-8",
-                &format!("{body}\n"),
-                head,
-            ),
+            Ok(body) => json_ok(&body, head),
             Err(_) => response(
                 500,
                 "application/json; charset=utf-8",
@@ -815,6 +800,19 @@ fn json_error(status: u16, message: &str) -> String {
         "application/json; charset=utf-8",
         &format!("{body}\n"),
         false,
+    )
+}
+
+/// A `200 OK` answer carrying an already-rendered JSON `body`. It owns the one JSON success
+/// contract the route handlers share, as [`json_error`] owns the failure one: the
+/// `application/json; charset=utf-8` content type and the single trailing newline every answer
+/// ends with. `head` drops the body for a `HEAD` request while keeping its `Content-Length`.
+fn json_ok(body: &str, head: bool) -> String {
+    response(
+        200,
+        "application/json; charset=utf-8",
+        &format!("{body}\n"),
+        head,
     )
 }
 
@@ -857,12 +855,7 @@ fn lookup_response(parsed: &ParsedRequest<'_>, lookups: Option<&Lookups>) -> Str
     };
     match outcome {
         Ok(Ok(report)) => match serde_json::to_string(&report) {
-            Ok(body) => response(
-                200,
-                "application/json; charset=utf-8",
-                &format!("{body}\n"),
-                false,
-            ),
+            Ok(body) => json_ok(&body, false),
             Err(_) => json_error(500, "report could not be encoded"),
         },
         Ok(Err(error)) => json_error(error.status, &error.message),
@@ -927,12 +920,7 @@ fn analyze_response(parsed: &ParsedRequest<'_>, analyze: Option<&AnalyzeHandler>
         Err(_) => return json_error(503, "could not start an analysis worker"),
     };
     match outcome {
-        Ok(Ok(report)) => response(
-            200,
-            "application/json; charset=utf-8",
-            &format!("{report}\n"),
-            false,
-        ),
+        Ok(Ok(report)) => json_ok(&report.to_string(), false),
         Ok(Err(error)) => json_error(error.status, &error.message),
         Err(_) => json_error(500, "analysis failed unexpectedly"),
     }
@@ -1399,6 +1387,36 @@ mod tests {
         );
         assert!(allowed.starts_with("HTTP/1.1 200"));
         assert!(allowed.contains("\"modules\""));
+    }
+
+    /// Every `200 OK` JSON answer shares one content type and ends in exactly one newline,
+    /// the contract [`json_ok`] now owns in one place (as [`json_error`] owns the failure one).
+    /// Each route handler builds its own body, so a handler reverting to a hand-rolled
+    /// `response(200, …)` could drift the content type or newline; this pins all three
+    /// JSON success routes to the shared shape.
+    #[test]
+    fn every_json_ok_route_shares_one_content_type_and_a_single_trailing_newline() {
+        for path in ["/api/health", "/api/modules", "/api/command"] {
+            let answer = response_for_request(
+                &format!("GET {path} HTTP/1.1\r\nAuthorization: Bearer secret\r\n\r\n"),
+                Some("secret"),
+                loopback_bind(),
+            );
+            assert!(answer.starts_with("HTTP/1.1 200"), "{path}: {answer}");
+            assert_eq!(
+                header(&answer, "Content-Type"),
+                Some("application/json; charset=utf-8"),
+                "{path} content type"
+            );
+            let body = answer.split("\r\n\r\n").nth(1).unwrap_or_default();
+            assert!(
+                body.ends_with('\n') && !body.ends_with("\n\n"),
+                "{path} body must end in exactly one newline: {body:?}"
+            );
+            // The body before that newline is valid JSON.
+            serde_json::from_str::<serde_json::Value>(body.trim_end_matches('\n'))
+                .unwrap_or_else(|e| panic!("{path} body is not JSON: {e}"));
+        }
     }
 
     /// A token-protected server said only `{"error":"unauthorized"}`, and health gave no sign a
