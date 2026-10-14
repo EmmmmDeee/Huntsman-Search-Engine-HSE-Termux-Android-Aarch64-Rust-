@@ -72,19 +72,19 @@ jobs:
       # Bump the pin deliberately, with the one in tests/ci_toolchains.rs, after the gate
       # passes on the new release.
       matrix:
-        include:
-          - toolchain: "1.87"
-            gate: msrv
-          - toolchain: "1.99"
-            gate: full
+        toolchain: ["1.87", "1.99"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
-      - name: Run deterministic repair gate (${{ matrix.gate }})
-        run: cargo run --locked -p xtask -- gate ${{ matrix.gate }}
+      - name: Run deterministic repair gate (1.99)
+        if: matrix.toolchain == '1.99'
+        run: cargo run --locked -p xtask -- gate full
+      - name: Run deterministic repair gate (MSRV)
+        if: matrix.toolchain == '1.87'
+        run: cargo run --locked -p xtask -- gate msrv
 
 
   railway-container:

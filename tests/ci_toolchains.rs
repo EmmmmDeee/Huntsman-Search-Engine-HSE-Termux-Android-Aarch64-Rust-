@@ -59,18 +59,26 @@ fn the_gated_workflows_name_only_the_msrv_and_the_pinned_stable_release() {
 #[test]
 fn ci_gates_the_msrv_leg_with_msrv_and_the_pinned_stable_leg_with_full() {
     let ci = workflow(".github/workflows/ci.yml");
-    let matrix = format!(
-        "        include:\n          - toolchain: \"{MSRV}\"\n            gate: msrv\n          - \
-         toolchain: \"{PINNED_STABLE}\"\n            gate: full\n"
-    );
+    let matrix = format!("        toolchain: [\"{MSRV}\", \"{PINNED_STABLE}\"]\n");
     assert!(
         ci.contains(&matrix),
-        "ci.yml must pair the MSRV with `gate msrv` and the pinned stable release with `gate \
-         full`:\n{matrix}"
+        "ci.yml must test the MSRV and the pinned stable release, and nothing else:\n{matrix}"
+    );
+    let full = format!(
+        "        if: matrix.toolchain == '{PINNED_STABLE}'\n        run: cargo run --locked -p \
+         xtask -- gate full\n"
     );
     assert!(
-        ci.contains("run: cargo run --locked -p xtask -- gate ${{ matrix.gate }}"),
-        "ci.yml must run the gate mode its matrix names"
+        ci.contains(&full),
+        "ci.yml must run `gate full` on the pinned stable release:\n{full}"
+    );
+    let msrv = format!(
+        "        if: matrix.toolchain == '{MSRV}'\n        run: cargo run --locked -p xtask -- \
+         gate msrv\n"
+    );
+    assert!(
+        ci.contains(&msrv),
+        "ci.yml must run `gate msrv` on the MSRV:\n{msrv}"
     );
 }
 
