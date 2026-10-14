@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
-use crate::indicator_sources::{Finding, Indicator, Source};
+use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
 use crate::tags;
 
@@ -28,8 +28,7 @@ pub const API: Api = Api {
 };
 pub const INTEL: Source = Source {
     api: &API,
-    ip: true,
-    domain: true,
+    kinds: &[IndicatorKind::Ip, IndicatorKind::Domain],
     lookup,
 };
 /// Most threat and tag names kept in one attribute.

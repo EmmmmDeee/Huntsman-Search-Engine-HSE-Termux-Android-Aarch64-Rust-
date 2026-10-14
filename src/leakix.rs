@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
-use crate::indicator_sources::{Finding, Indicator, PivotKind, Source};
+use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
 use crate::tags;
 
@@ -29,8 +29,7 @@ pub const API: Api = Api {
 };
 pub const INTEL: Source = Source {
     api: &API,
-    ip: true,
-    domain: true,
+    kinds: &[IndicatorKind::Ip, IndicatorKind::Domain],
     lookup,
 };
 /// Most distinct names kept in one attribute.
@@ -95,12 +94,13 @@ struct Dataset {
     infected: bool,
 }
 
-/// The request URL for `indicator`. **Pure.**
+/// The request URL for `indicator`, `None` for a kind this source does not answer. **Pure.**
 #[must_use]
-pub fn url(indicator: Indicator<'_>) -> String {
+pub fn url(indicator: Indicator<'_>) -> Option<String> {
     match indicator {
-        Indicator::Ip(ip) => format!("https://leakix.net/host/{ip}"),
-        Indicator::Domain(domain) => format!("https://leakix.net/domain/{domain}"),
+        Indicator::Ip(ip) => Some(format!("https://leakix.net/host/{ip}")),
+        Indicator::Domain(domain) => Some(format!("https://leakix.net/domain/{domain}")),
+        Indicator::Email(_) | Indicator::Phone(_) => None,
     }
 }
 
@@ -114,8 +114,11 @@ pub fn lookup(
     indicator: Indicator<'_>,
     now_unix: u64,
 ) -> Result<Option<Finding>, LegError> {
+    let Some(url) = url(indicator) else {
+        return Ok(None);
+    };
     decode(
-        api_leg::get(transport, &API, keys, &url(indicator), now_unix)?,
+        api_leg::get(transport, &API, keys, &url, now_unix)?,
         indicator,
     )
 }

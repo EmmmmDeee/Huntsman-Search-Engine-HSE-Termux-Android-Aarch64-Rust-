@@ -16,18 +16,40 @@ use crate::keys::Keys;
 /// Most pivots one finding keeps; the rest are counted in the summary attributes only.
 pub const MAX_PIVOTS: usize = 50;
 
-/// The indicator a source is asked about. Both values are already canonical.
+/// The indicator a source is asked about. Every value is already canonical (a public address, a
+/// lower-case domain, a canonical email, an E.164 number).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Indicator<'a> {
     Ip(&'a str),
     Domain(&'a str),
+    Email(&'a str),
+    Phone(&'a str),
+}
+
+/// The kind of an [`Indicator`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndicatorKind {
+    Ip,
+    Domain,
+    Email,
+    Phone,
 }
 
 impl Indicator<'_> {
     #[must_use]
     pub const fn value(&self) -> &str {
         match self {
-            Self::Ip(v) | Self::Domain(v) => v,
+            Self::Ip(v) | Self::Domain(v) | Self::Email(v) | Self::Phone(v) => v,
+        }
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> IndicatorKind {
+        match self {
+            Self::Ip(_) => IndicatorKind::Ip,
+            Self::Domain(_) => IndicatorKind::Domain,
+            Self::Email(_) => IndicatorKind::Email,
+            Self::Phone(_) => IndicatorKind::Phone,
         }
     }
 }
@@ -135,8 +157,8 @@ pub type Lookup =
 #[derive(Clone, Copy)]
 pub struct Source {
     pub api: &'static Api,
-    pub ip: bool,
-    pub domain: bool,
+    /// The indicator kinds the source answers for.
+    pub kinds: &'static [IndicatorKind],
     pub lookup: Lookup,
 }
 
@@ -144,11 +166,7 @@ impl Source {
     /// Whether this source answers for `indicator` and runs with `keys`. **Pure.**
     #[must_use]
     pub fn applies(&self, indicator: Indicator<'_>, keys: &Keys) -> bool {
-        let kind = match indicator {
-            Indicator::Ip(_) => self.ip,
-            Indicator::Domain(_) => self.domain,
-        };
-        kind && self.api.wanted(keys)
+        self.kinds.contains(&indicator.kind()) && self.api.wanted(keys)
     }
 }
 
@@ -156,8 +174,7 @@ impl std::fmt::Debug for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Source")
             .field("api", &self.api.source)
-            .field("ip", &self.ip)
-            .field("domain", &self.domain)
+            .field("kinds", &self.kinds)
             .finish_non_exhaustive()
     }
 }

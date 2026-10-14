@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::{Transport, percent_encode_component};
-use crate::indicator_sources::{Finding, Indicator, PivotKind, Source};
+use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
 use crate::tags;
 
@@ -29,8 +29,7 @@ pub const API: Api = Api {
 };
 pub const INTEL: Source = Source {
     api: &API,
-    ip: true,
-    domain: true,
+    kinds: &[IndicatorKind::Ip, IndicatorKind::Domain],
     lookup,
 };
 /// Most threat, feed and risk-factor names kept in one attribute.

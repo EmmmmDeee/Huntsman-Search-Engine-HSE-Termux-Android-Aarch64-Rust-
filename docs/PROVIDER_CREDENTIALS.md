@@ -14,7 +14,7 @@ these slots without printing their values.
 | WiGLE | `HUNTSMAN_WIGLE_USER`, `HUNTSMAN_WIGLE_TOKEN` | used by `network` (CLI, `scan -k network`, web UI) when both are set in the environment: the API Name and API Token from https://wigle.net/account (not the encoded value); one daily WiGLE query per search (a BSSID or LAT,LON searches WiFi and Bluetooth, so two); `credential-status --probe` checks the pair without spending a query |
 | Brave Search | `HUNTSMAN_BRAVE_KEY` | owned credential material located; validate/reissue before production use if historical exposure applies |
 | Shodan | `HUNTSMAN_SHODAN_KEY` | used by `ip` (host, no query credits) and `domain` (DNS, one query credit) whenever set; private stored credential located; validity unverified |
-| Whoxy | `HUNTSMAN_WHOXY_KEY` | used by `domain` (live WHOIS, one credit each) whenever set; an empty balance is reported as a plan refusal; private stored credential located; validity unverified |
+| Whoxy | `HUNTSMAN_WHOXY_KEY` | used by `domain` (live WHOIS, one credit each) and `email` (reverse WHOIS, one reverse credit a page) whenever set; an empty balance is reported as a plan refusal; private stored credential located; validity unverified |
 | HIBP | `HUNTSMAN_HIBP_KEY` | owned subscription/key history; clean current credential required |
 | SeekNow | `HUNTSMAN_SEEKNOW_KEY` | historical credential only; clean current credential required |
 | OathNet | `HUNTSMAN_OATHNET_KEY` | used by `exposure` (CLI, `scan -k exposure`, web UI) when set in the environment; one daily lookup per search; validity unverified until a live search |
@@ -25,11 +25,11 @@ these slots without printing their values.
 | VirusTotal | `HUNTSMAN_VIRUSTOTAL_KEY` | used by `domain` and `ip` (CLI, `scan`, web UI) when set in the environment; free: 4 lookups/min, 500/day |
 | AbuseIPDB | `HUNTSMAN_ABUSEIPDB_KEY` | used by `ip` when set in the environment; free: 1,000 checks/day |
 | GreyNoise | `HUNTSMAN_GREYNOISE_KEY` | optional for `ip`: the Community API answers without a key at a lower limit; a free Community key raises it |
-| Hunter.io | `HUNTSMAN_HUNTER_KEY` | used by `domain` when set in the environment; free: 25 searches/month, 10 addresses each |
+| Hunter.io | `HUNTSMAN_HUNTER_KEY` | used by `domain` (domain search) and `email` (verifier) when set in the environment; free: 25 searches and 50 verifications/month |
 | Numverify (APILayer) | `HUNTSMAN_NUMVERIFY_KEY` | used by `phone` when set in the environment; APILayer marketplace key (`api.apilayer.com`), free: 100 lookups/month |
 | LeakIX | `HUNTSMAN_LEAKIX_KEY` | used by `ip` and `domain` when set in the environment; free account key |
 | Pulsedive | `HUNTSMAN_PULSEDIVE_KEY` | optional for `ip` and `domain`: Pulsedive answers without a key at a lower limit; a free key raises it |
-| IPQualityScore | `HUNTSMAN_IPQS_KEY` | used by `ip` when set in the environment; free: 1,000 lookups/month |
+| IPQualityScore | `HUNTSMAN_IPQS_KEY` | used by `ip`, `email` and `phone` when set in the environment; free: 1,000 lookups/month |
 | ThreatFox (abuse.ch) | `HUNTSMAN_THREATFOX_KEY` | used by `ip` and `domain` when set in the environment; free abuse.ch Auth-Key |
 | Netlas | `HUNTSMAN_NETLAS_KEY` | optional for `ip` and `domain`: Netlas answers without a key at a lower limit; a free Community key raises it |
 | SecurityTrails | `HUNTSMAN_SECTRAILS_KEY` | used by `domain` when set in the environment; free: 50 queries/month |

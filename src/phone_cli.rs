@@ -4,15 +4,18 @@
 //! numbers, resolves country metadata, and enriches Australian numbers with the
 //! numbering-plan line type and coarse allocation region, all offline ([`run`]). With
 //! `HUNTSMAN_NUMVERIFY_KEY` set, [`run_keyed`] then asks Numverify for the carrier, line type
-//! and location; without the key it makes no request and is exactly [`run`].
+//! and location, and every indicator source for a number whose key is set (`IPQualityScore` with
+//! `HUNTSMAN_IPQS_KEY`); without a key it makes no request and is exactly [`run`].
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use crate::address_au::{self, AuLineType};
-use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::http::Transport;
+use crate::indicator_legs;
+use crate::indicator_sources::Indicator;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report::{entity_row, evidence_row, outcome_row};
@@ -23,7 +26,7 @@ use crate::source_outcome::SourceExecutionOutcome;
 pub const PHONE_USAGE: &str = "usage: huntsman-recon phone NUMBER [--save FILE]";
 pub const PHONE_HELP: &str = "\
 phone NUMBER [--save FILE]
-Canonicalise a phone number offline, resolve its international dialling prefix, and enrich Australian numbers with numbering-plan line type and coarse region. With HUNTSMAN_NUMVERIFY_KEY set it also asks Numverify (APILayer) for the carrier, line type and location; without it no request is made. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise a phone number offline, resolve its international dialling prefix, and enrich Australian numbers with numbering-plan line type and coarse region. With HUNTSMAN_NUMVERIFY_KEY set it also asks Numverify (APILayer) for the carrier, line type and location, and with HUNTSMAN_IPQS_KEY set IPQualityScore for line type, carrier and fraud score; without a key no request is made. --save FILE writes an unverified ledger that verify can reload.";
 
 const PHONE_CONFIDENCE: f64 = 0.90;
 
@@ -114,7 +117,7 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
     }
 }
 
-/// [`run`], then the Numverify leg when `keys` holds its key.
+/// [`run`], then the Numverify leg and every indicator source for the number that `keys` enables.
 #[must_use]
 pub fn run_keyed<T: Transport + ?Sized>(
     transport: &T,
@@ -123,9 +126,6 @@ pub fn run_keyed<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> PhoneRun {
     let offline = run(phone, now_unix);
-    if !numverify::API.wanted(keys) {
-        return offline;
-    }
     let mut report = match offline {
         PhoneRun::Printed { report, .. } => report,
         failed @ PhoneRun::Failed(_) => return failed,
@@ -133,16 +133,30 @@ pub fn run_keyed<T: Transport + ?Sized>(
     let Some(entity) = report.entities.first_mut() else {
         return PhoneRun::Failed("phone lookup produced no entity".into());
     };
-    let canonical = entity.raw_value.clone();
-    let api = &numverify::API;
-    let outcome = match numverify::verify(transport, keys, &canonical, now_unix) {
-        Ok(v) => {
-            numverify_evidence(entity, &v);
-            SourceExecutionOutcome::success(api.source, now_unix, 1).with_http_status(200)
-        }
-        Err(err) => err.outcome(api, now_unix),
-    };
-    report.outcomes.push(outcome);
+    let (canonical, scan_id) = (entity.raw_value.clone(), entity.scan_id.clone());
+    let indicator = Indicator::Phone(&canonical);
+    let numverify_wanted = numverify::API.wanted(keys);
+    if !numverify_wanted && indicator_legs::planned(indicator, keys).is_empty() {
+        return match render(&report) {
+            Ok(text) => PhoneRun::Printed { text, report },
+            Err(message) => PhoneRun::Failed(message),
+        };
+    }
+    if numverify_wanted {
+        let api = &numverify::API;
+        let outcome = match numverify::verify(transport, keys, &canonical, now_unix) {
+            Ok(v) => {
+                numverify_evidence(entity, &v);
+                SourceExecutionOutcome::success(api.source, now_unix, 1).with_http_status(200)
+            }
+            Err(err) => err.outcome(api, now_unix),
+        };
+        report.outcomes.push(outcome);
+    }
+    let legs = indicator_legs::run(transport, keys, indicator, &scan_id, now_unix);
+    report.entities.extend(legs.entities);
+    report.outcomes.extend(legs.outcomes);
+    merge_by_uid(&mut report.entities);
     match render(&report) {
         Ok(text) => PhoneRun::Printed { text, report },
         Err(message) => PhoneRun::Failed(message),
@@ -347,5 +361,38 @@ mod tests {
             }
             PhoneRun::Failed(message) => panic!("{message}"),
         }
+    }
+
+    #[test]
+    fn ipqs_runs_for_a_number_with_its_key_alone() {
+        use crate::test_support::OneResponse;
+        let transport = OneResponse::json(
+            200,
+            r#"{"success":true,"valid":true,"fraud_score":90,"VOIP":true,"carrier":"Example Mobile","line_type":"VOIP","country":"AU"}"#,
+        );
+        let keys = Keys::parse(&format!(
+            "{}=ipqs-test-key-0123456789\n",
+            crate::ipqs::KEY_SLOT
+        ))
+        .unwrap();
+        match run_keyed(&transport, &keys, "0412 345 678", 1) {
+            PhoneRun::Printed { text, report } => {
+                assert!(text.contains("ipqs\tsuccess"), "{text}");
+                assert!(!text.contains("numverify"), "{text}");
+                assert!(!text.contains("ipqs-test-key"));
+                assert_eq!(
+                    report
+                        .entities
+                        .iter()
+                        .filter(|e| e.kind == EntityKind::Phone)
+                        .count(),
+                    1,
+                    "the IPQS evidence lands on the one phone entity"
+                );
+                assert!(report.entities[0].evidence_sources().contains("ipqs"));
+            }
+            PhoneRun::Failed(message) => panic!("{message}"),
+        }
+        assert!(transport.response.borrow().is_none(), "one request made");
     }
 }

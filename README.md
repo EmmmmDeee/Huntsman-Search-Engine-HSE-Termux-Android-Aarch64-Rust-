@@ -385,7 +385,7 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 ### Email lookup
 
-`email ADDR [--save FILE]` canonicalises the selector, derives deterministic non-network email pivots, queries the public Gravatar profile, renders lineage, and optionally writes an unverified ledger that `verify` can reload. A missing Gravatar profile is a validated zero result; malformed or incomplete responses are not treated as absence.
+`email ADDR [--save FILE]` canonicalises the selector, derives deterministic non-network email pivots, queries the public Gravatar profile, renders lineage, and optionally writes an unverified ledger that `verify` can reload. A missing Gravatar profile is a validated zero result; malformed or incomplete responses are not treated as absence. With keys set in the environment it also runs IPQualityScore email validation (`HUNTSMAN_IPQS_KEY`), the Hunter.io verifier (`HUNTSMAN_HUNTER_KEY`) and Whoxy reverse WHOIS (`HUNTSMAN_WHOXY_KEY`, each registered domain becomes a pivot); a source whose key is not set makes no request.
 
 ### Username lookup
 
@@ -393,7 +393,7 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 ### Phone lookup
 
-`phone NUMBER [--save FILE]` is offline unless `HUNTSMAN_NUMVERIFY_KEY` is set in the environment; then it also asks Numverify (APILayer, free 100 lookups a month) for the carrier, line type and location, and reports a refused key or exhausted quota as such. It canonicalises explicit international syntax and recognised Australian local numbers to E.164, resolves the international dialling prefix from the embedded legacy-compatible table, and enriches Australian numbers with numbering-plan line type plus coarse fixed-line allocation region. It does not guess the country of an ambiguous bare foreign national number and does not infer a mobile carrier. `--save` writes an unverified ledger that `verify` can reload.
+`phone NUMBER [--save FILE]` is offline unless `HUNTSMAN_NUMVERIFY_KEY` is set in the environment; then it also asks Numverify (APILayer, free 100 lookups a month) for the carrier, line type and location, and reports a refused key or exhausted quota as such. With `HUNTSMAN_IPQS_KEY` set it also asks IPQualityScore for the line type, carrier, VOIP and prepaid flags and a fraud score. It canonicalises explicit international syntax and recognised Australian local numbers to E.164, resolves the international dialling prefix from the embedded legacy-compatible table, and enriches Australian numbers with numbering-plan line type plus coarse fixed-line allocation region. It does not guess the country of an ambiguous bare foreign national number and does not infer a mobile carrier. `--save` writes an unverified ledger that `verify` can reload.
 
 
 ### IP lookup

@@ -27,7 +27,7 @@ fn email_provenance(source: &str) -> (&str, &'static str) {
         "gravatar" => ("gravatar", "src/gravatar.rs"),
         "duolingo" => ("duolingo", "src/duolingo.rs"),
         "openpgp_keys" => ("openpgp_keys", "src/openpgp_keys.rs"),
-        _ => (source, "src/email_cli.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/email_cli.rs")),
     }
 }
 
@@ -44,7 +44,7 @@ fn phone_provenance(source: &str) -> (&str, &'static str) {
         "phone_intl" => ("phone_intl", "src/phone_intl.rs"),
         "phone_au" => ("phone_au", "src/phone_cli.rs"),
         "numverify" => ("numverify", "src/numverify.rs"),
-        _ => (source, "src/phone_cli.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/phone_cli.rs")),
     }
 }
 
@@ -132,7 +132,7 @@ fn ip_provenance(source: &str) -> (&str, &'static str) {
     }
 }
 
-/// The provider module of an indicator source, for both the `ip` and `domain` policies.
+/// The provider module of an indicator source, for every policy whose lookup runs them.
 fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
     Some(match source {
         "shodan" => ("shodan", "src/shodan.rs"),
@@ -144,6 +144,7 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         "netlas" => ("netlas", "src/netlas.rs"),
         "securitytrails" => ("securitytrails", "src/securitytrails.rs"),
         "urlhaus" => ("urlhaus", "src/urlhaus.rs"),
+        "hunter" => ("hunter", "src/hunter.rs"),
         _ => return None,
     })
 }
