@@ -111,6 +111,7 @@ proof	leaf	bounded proof-environment bookkeeping
 provider_credentials	leaf	provider credential completeness manifest
 radar	leaf	radar model utility
 recon	leaf	host reconnaissance helpers
+recursion	runtime	bounded fetch-expand-fetch crawl orchestration and termination
 redact	leaf	secret and location redaction
 relation	runtime	structural relation derivation
 resolve	leaf	conservative automatic merge application for supplied decisions
