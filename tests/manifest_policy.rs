@@ -4,6 +4,7 @@
 //! `allow`, where a `deny` can. A dependency without a stated purpose is one nobody can judge
 //! for removal.
 
+use std::collections::BTreeMap;
 use std::fs;
 
 /// The lines of the section headed `[NAME]` in MANIFEST, up to the next section header.
@@ -96,21 +97,25 @@ fn crate_roots_set_no_lint_level_outside_the_manifests() {
 #[test]
 fn the_release_profile_optimises_across_crates_strips_and_unwinds() {
     let manifest = fs::read_to_string("Cargo.toml").expect("root manifest");
-    let profile: Vec<&str> = section(&manifest, "profile.release")
+    // Settings by key, so a spelling that means the same thing passes and nothing else does.
+    let profile: BTreeMap<&str, &str> = section(&manifest, "profile.release")
         .into_iter()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.trim(), value.trim().trim_matches('"')))
         .collect();
-    assert!(
-        profile.contains(&"lto = \"thin\""),
+    assert_eq!(
+        profile.get("lto"),
+        Some(&"thin"),
         "release profile must use thin LTO: {profile:?}"
     );
     assert!(
-        profile.contains(&"strip = \"symbols\""),
+        matches!(profile.get("strip"), Some(&"symbols" | &"true")),
         "release profile must strip symbols: {profile:?}"
     );
     assert!(
-        !profile.iter().any(|line| line.starts_with("panic")),
-        "release profile must keep the default unwinding panic strategy: {profile:?}"
+        matches!(profile.get("panic"), None | Some(&"unwind")),
+        "release profile must keep the unwinding panic strategy: {profile:?}"
     );
 }

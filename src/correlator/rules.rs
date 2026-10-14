@@ -1,9 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::entity::{Entity, EntityKind};
-use crate::relation::{
-    PairPathways, RelationKind, basis_kind, connection_brokers, resolve_identity_clusters,
-};
+use crate::relation::{PairPathways, RelationKind, basis_kind, connection_brokers};
 use crate::tags;
 use crate::timefmt::parse_timestamp;
 
@@ -112,6 +110,13 @@ fn identity_entities(entities: &[Entity]) -> Vec<&Entity> {
         .collect()
 }
 
+/// A username the analysis inferred, such as one derived from an email's local part. It adds no
+/// identity beyond the address it came from, so the identity-cluster rule does not count it.
+fn is_inferred_username(entity: &Entity) -> bool {
+    entity.kind == EntityKind::Username
+        && entity.evidence.iter().any(|evidence| evidence.is_inferred)
+}
+
 fn dates_for_breach(entity: &Entity) -> Vec<i64> {
     entity
         .evidence
@@ -168,6 +173,7 @@ pub fn rule_au_002_identity_cluster(
     let identities = identity_entities(context.entities())
         .into_iter()
         .filter(|entity| entity.confidence >= 0.5)
+        .filter(|entity| !is_inferred_username(entity))
         .collect::<Vec<_>>();
     let emails = identities
         .iter()
@@ -317,8 +323,9 @@ pub fn rule_au_060_transitive_identity_closure(
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    resolve_identity_clusters(context.relations())
-        .into_iter()
+    context
+        .identity_clusters()
+        .iter()
         .filter(|cluster| cluster.len() >= 3)
         .map(|cluster| {
             Correlation::new(
@@ -329,7 +336,7 @@ pub fn rule_au_060_transitive_identity_closure(
                     "{} entities joined by identity-binding relations",
                     cluster.len()
                 ),
-                cluster,
+                cluster.clone(),
                 scan_id,
                 now,
             )
@@ -462,7 +469,7 @@ pub fn rule_au_071_robust_identity_cluster(
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    let clusters = resolve_identity_clusters(context.relations());
+    let clusters = context.identity_clusters();
     let mut cluster_of = HashMap::<&str, usize>::new();
     for (number, cluster) in clusters.iter().enumerate() {
         if cluster.len() >= 4 {
@@ -482,7 +489,7 @@ pub fn rule_au_071_robust_identity_cluster(
         }
     }
     clusters
-        .into_iter()
+        .iter()
         .zip(kinds.iter().zip(&bases))
         .filter(|(_, (kinds, bases))| kinds.len() >= 2 && bases.len() >= 2)
         .map(|(cluster, (kinds, bases))| {
@@ -497,7 +504,7 @@ pub fn rule_au_071_robust_identity_cluster(
                     kinds.len(),
                     bases.len()
                 ),
-                cluster,
+                cluster.clone(),
                 scan_id,
                 now,
             )
