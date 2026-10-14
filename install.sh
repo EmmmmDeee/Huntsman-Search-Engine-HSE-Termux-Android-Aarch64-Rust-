@@ -105,9 +105,10 @@ if is_hse_update; then
 fi
 
 # Refresh repository metadata, then install what every path needs: git resolves
-# main, curl and coreutils fetch and verify a prebuilt build.
+# main, curl and coreutils fetch and verify a prebuilt build, and termux-services
+# (runit) keeps the web UI running.
 pkg update -y
-pkg install -y git curl coreutils
+pkg install -y git curl coreutils termux-services
 
 installed="$INSTALL_ROOT/bin/huntsman-recon"
 
@@ -335,6 +336,90 @@ if [[ -z "$install_source" ]]; then
   build_from_source
 fi
 
+# --- Web UI service: `serve` under runit, restarted whenever it stops --------
+#
+# termux-services runs every directory under $SVDIR with runsv. The service is
+# on unless HUNTSMAN_SERVE_SERVICE=off, or unless a reinstall finds it switched
+# off with `sv-disable huntsman-serve`; a reinstall keeps that choice.
+
+write_service_file() { # PATH MODE CONTENT: replaced atomically
+  printf '%s' "$3" > "$1.tmp.$$"
+  chmod "$2" "$1.tmp.$$"
+  mv -f "$1.tmp.$$" "$1"
+}
+
+serve_service_up() { # DIR: 0 = runsv supervises DIR and reports it running
+  local status
+  status="$(sv status "$1" 2>/dev/null)" || return 1
+  [[ "$status" == run:* ]]
+}
+
+serve_health=""
+setup_serve_service() {
+  local svdir="${SVDIR:-$TERMUX_PREFIX/var/service}" dir want sh="$TERMUX_PREFIX/bin/sh" i
+  dir="$svdir/huntsman-serve"
+  if ! command -v sv >/dev/null 2>&1; then
+    serve_health="not set up: termux-services is not installed"
+    return 0
+  fi
+  case "${HUNTSMAN_SERVE_SERVICE:-}" in
+    on|off) want="$HUNTSMAN_SERVE_SERVICE" ;;
+    '') if [[ -e "$dir/down" ]]; then want=off; else want=on; fi ;;
+    *) die "HUNTSMAN_SERVE_SERVICE must be on or off" ;;
+  esac
+
+  mkdir -p "$dir/log" && chmod 0700 "$dir" "$dir/log" || die "could not create $dir"
+  write_service_file "$dir/run" 0700 "#!$sh
+# Written by install.sh. Keeps the CPU awake for Termux, then serves the web UI.
+command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock >/dev/null 2>&1
+exec \"$installed\" serve 2>&1
+"
+  # runsv runs finish after every exit and waits for it. Exit 69 means the port
+  # is taken: wait instead of retrying every second.
+  write_service_file "$dir/finish" 0700 "#!$sh
+[ \"\$1\" = 69 ] && exec sleep 60
+exit 0
+"
+  ln -sfn "$TERMUX_PREFIX/share/termux-services/svlogger" "$dir/log/run"
+
+  if [[ "$want" == off ]]; then
+    : > "$dir/down"
+    sv down "$dir" >/dev/null 2>&1 || true
+    serve_health="off; start it with: sv-enable huntsman-serve"
+    return 0
+  fi
+  rm -f "$dir/down"
+
+  # runsvdir picks up a new service directory within five seconds of starting.
+  if ! sv status "$dir" >/dev/null 2>&1; then
+    SVDIR="$svdir" service-daemon start >/dev/null 2>&1 || true
+  fi
+  for ((i = 0; i < 20; i++)); do
+    sv status "$dir" >/dev/null 2>&1 && break
+    sleep 0.5
+  done
+  # Restart, so a running service picks up the binary installed above, then ask
+  # the binary's own probe whether the page loads and its analysis answers.
+  sv restart "$dir" >/dev/null 2>&1 || true
+  local probe=69 deadline=$((SECONDS + 15))
+  while ((SECONDS < deadline)); do
+    if serve_service_up "$dir"; then
+      probe=0
+      timeout 10 "$installed" doctor serve >/dev/null 2>&1 || probe=$?
+      ((probe == 0 || probe == 64)) && break
+    fi
+    sleep 0.5
+  done
+  case "$probe" in
+    0) serve_health="running at http://127.0.0.1:8080/ (restarts automatically)" ;;
+    64) serve_health="started at http://127.0.0.1:8080/; this build has no \`doctor serve\` to check the page" ;;
+    *)
+      serve_health="enabled but not answering yet; huntsman-recon doctor serve says why, and $TERMUX_PREFIX/var/log/sv/huntsman-serve/current has the server's log"
+      printf 'warning: web UI service %s\n' "${serve_health#enabled but }" >&2
+      ;;
+  esac
+}
+
 STATE_DIR="${HUNTSMAN_HOME:-$HOME/.huntsman}"
 mkdir -p "$STATE_DIR"
 chmod 0700 "$STATE_DIR"
@@ -365,9 +450,12 @@ mv -f "$PROVENANCE_TMP" "$PROVENANCE_FILE"
 grep -qx "revision=$install_rev" "$PROVENANCE_FILE" ||
   die "installed revision provenance check failed"
 
+setup_serve_service
+
 printf 'Huntsman installed and accepted: %s\n' "$installed"
 printf 'Revision: %s (%s)\n' "$install_rev" "$install_source"
 printf 'State directory: %s\n' "$STATE_DIR"
 printf 'Runtime variables file: %s\n' "$ENV_FILE"
 printf 'Install provenance: %s\n' "$PROVENANCE_FILE"
+printf 'Web UI: %s\n' "$serve_health"
 printf 'Next: huntsman-recon --help\n'

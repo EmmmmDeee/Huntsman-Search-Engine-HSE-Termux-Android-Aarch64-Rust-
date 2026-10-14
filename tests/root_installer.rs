@@ -41,6 +41,7 @@ fn install_fake_termux_toolchain(fake_bin: &Path, fake_target_libdir: &Path) {
 printf 'timeout %s\n' "$*" >> "$INSTALL_LOG"
 case "$*" in
   *' build-sha') cat "$INSTALL_LOG.build-sha" 2>/dev/null || printf '%s\n' unknown ;;
+  *' doctor serve') exit "${FAKE_DOCTOR_SERVE:-0}" ;;
 esac
 exit 0
 "#,
@@ -669,6 +670,12 @@ fn install_doc_uninstall_removes_every_path_the_installer_creates() {
         uninstall.contains("cargo uninstall --root \"$PREFIX\" huntsman-recon"),
         "install.sh installs with `cargo install --root \"$PREFIX\"`, so Cargo must uninstall it"
     );
+    assert!(
+        installer.contains("dir=\"$svdir/huntsman-serve\"")
+            && uninstall.contains("sv-disable huntsman-serve")
+            && uninstall.contains("rm -rf \"$PREFIX/var/service/huntsman-serve\""),
+        "the uninstall steps must stop and remove the web UI service install.sh creates"
+    );
     for var in ["HUNTSMAN_HOME", "HUNTSMAN_ENV_FILE", "CARGO_TARGET_DIR"] {
         let marker = format!("${{{var}:-$HOME/");
         let start = installer
@@ -761,6 +768,8 @@ impl Prebuilt {
             .env_remove("HUNTSMAN_BUILD_SHA")
             .env_remove("HUNTSMAN_REV")
             .env_remove("HUNTSMAN_FROM_SOURCE")
+            .env_remove("HUNTSMAN_SERVE_SERVICE")
+            .env("SVDIR", self.temp.join("service"))
             .envs(env.iter().copied())
             .output()
             .expect("installer must execute")
@@ -776,6 +785,33 @@ impl Prebuilt {
 
     fn provenance(&self) -> String {
         fs::read_to_string(self.temp.join(".huntsman/installed-revision")).unwrap_or_default()
+    }
+
+    /// Adds termux-services: `sv` and `service-daemon` log their calls; `sv status` answers
+    /// `FAKE_SV_STATUS` (default `run: …`; `unsupervised` until `service-daemon start`).
+    fn with_runit(self) -> Self {
+        write_executable(
+            &self.fake_bin.join("sv"),
+            r#"#!/bin/sh
+printf 'sv %s\n' "$*" >> "$INSTALL_LOG"
+[ "$1" = status ] || exit 0
+# FAKE_SV_STATUS=unsupervised: no runsv answers until service-daemon has started.
+if [ "${FAKE_SV_STATUS:-}" = unsupervised ]; then
+  grep -q '^service-daemon start' "$INSTALL_LOG" || exit 1
+  FAKE_SV_STATUS=''
+fi
+printf '%s\n' "${FAKE_SV_STATUS:-run: $2: (pid 42) 3s}"
+"#,
+        );
+        write_executable(
+            &self.fake_bin.join("service-daemon"),
+            "#!/bin/sh\nprintf 'service-daemon %s SVDIR=%s\\n' \"$*\" \"$SVDIR\" >> \"$INSTALL_LOG\"\n",
+        );
+        self
+    }
+
+    fn service(&self) -> PathBuf {
+        self.temp.join("service/huntsman-serve")
     }
 
     fn tmp_is_clean(&self) -> bool {
@@ -941,4 +977,168 @@ fn a_source_build_runs_only_without_a_published_build_or_on_request() {
     let calls = t.calls();
     assert!(calls.contains(&format!("--rev {BUILT_REV}")), "{calls}");
     assert!(!calls.contains("releases/download"), "{calls}");
+}
+
+fn stdout(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn the_web_ui_runs_as_a_service_that_restarts_with_each_install() {
+    let t = Prebuilt::new().with_runit();
+    publish_release(&t.releases, BUILT_REV, b"bin", b"bin");
+    let out = t.run(&[("HUNTSMAN_REV", BUILT_REV)], BUILT_REV);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        t.calls()
+            .contains("pkg install -y git curl coreutils termux-services"),
+        "{}",
+        t.calls()
+    );
+
+    let dir = t.service();
+    let run = fs::read_to_string(dir.join("run")).unwrap();
+    assert!(
+        run.starts_with("#!/data/data/com.termux/files/usr/bin/sh\n"),
+        "{run}"
+    );
+    assert!(run.contains("termux-wake-lock"), "{run}");
+    assert!(
+        run.contains(&format!("exec \"{}\" serve 2>&1", t.installed().display())),
+        "the service runs the binary this install placed: {run}"
+    );
+    let finish = fs::read_to_string(dir.join("finish")).unwrap();
+    assert!(
+        finish.contains("[ \"$1\" = 69 ] && exec sleep 60"),
+        "a taken port backs off instead of restarting every second: {finish}"
+    );
+    for path in ["run", "finish", ""] {
+        assert_eq!(
+            fs::metadata(dir.join(path)).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "{path}"
+        );
+    }
+    assert_eq!(
+        fs::read_link(dir.join("log/run")).unwrap(),
+        Path::new("/data/data/com.termux/files/usr/share/termux-services/svlogger")
+    );
+    assert!(!dir.join("down").exists(), "on by default");
+    let calls = t.calls();
+    assert!(
+        calls.contains(&format!("sv restart {}", dir.display())),
+        "a running service is restarted onto the new binary: {calls}"
+    );
+    assert!(
+        calls.contains(&format!(
+            "timeout 10 {} doctor serve",
+            t.installed().display()
+        )),
+        "the installed binary's own probe decides whether the page works: {calls}"
+    );
+    assert!(
+        stdout(&out).contains("Web UI: running at http://127.0.0.1:8080/ (restarts automatically)"),
+        "{}",
+        stdout(&out)
+    );
+
+    // Not yet supervised: the installer starts runit's daemon for this SVDIR.
+    let out = t.run(
+        &[
+            ("HUNTSMAN_REV", BUILT_REV),
+            ("FAKE_SV_STATUS", "unsupervised"),
+        ],
+        BUILT_REV,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        t.calls().contains(&format!(
+            "service-daemon start SVDIR={}",
+            t.temp.join("service").display()
+        )),
+        "{}",
+        t.calls()
+    );
+}
+
+#[test]
+fn switching_the_web_ui_service_off_survives_a_reinstall() {
+    let t = Prebuilt::new().with_runit();
+    publish_release(&t.releases, BUILT_REV, b"bin", b"bin");
+    let rev = ("HUNTSMAN_REV", BUILT_REV);
+
+    let out = t.run(&[rev, ("HUNTSMAN_SERVE_SERVICE", "off")], BUILT_REV);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(t.service().join("down").exists());
+    assert!(
+        stdout(&out).contains("Web UI: off; start it with: sv-enable huntsman-serve"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(!t.calls().contains("sv restart"), "{}", t.calls());
+
+    // `sv-disable` leaves a down file; reinstalling keeps the service off.
+    let out = t.run(&[rev], BUILT_REV);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(t.service().join("down").exists());
+    assert!(!t.calls().contains("sv restart"), "{}", t.calls());
+
+    let out = t.run(&[rev, ("HUNTSMAN_SERVE_SERVICE", "on")], BUILT_REV);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!t.service().join("down").exists());
+    assert!(t.calls().contains("sv restart"), "{}", t.calls());
+
+    let out = t.run(&[rev, ("HUNTSMAN_SERVE_SERVICE", "yes")], BUILT_REV);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("HUNTSMAN_SERVE_SERVICE must be on or off"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_web_ui_that_does_not_answer_is_reported_without_failing_the_install() {
+    let t = Prebuilt::new().with_runit();
+    publish_release(&t.releases, BUILT_REV, b"bin", b"bin");
+    // `doctor serve` finds the page broken, or another program on port 8080.
+    let out = t.run(
+        &[("HUNTSMAN_REV", BUILT_REV), ("FAKE_DOCTOR_SERVE", "69")],
+        BUILT_REV,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(
+            "warning: web UI service not answering yet; huntsman-recon doctor serve says why"
+        ),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        t.installed().is_file(),
+        "the accepted binary stays installed"
+    );
+
+    // A pinned build from before `doctor serve` cannot check the page; say so.
+    let out = t.run(
+        &[("HUNTSMAN_REV", BUILT_REV), ("FAKE_DOCTOR_SERVE", "64")],
+        BUILT_REV,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("this build has no `doctor serve` to check the page"),
+        "{}",
+        stdout(&out)
+    );
+
+    // Without termux-services there is nothing to supervise the server; say so.
+    let t = Prebuilt::new();
+    publish_release(&t.releases, BUILT_REV, b"bin", b"bin");
+    let out = t.run(&[("HUNTSMAN_REV", BUILT_REV)], BUILT_REV);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Web UI: not set up: termux-services is not installed"),
+        "{}",
+        stdout(&out)
+    );
 }
