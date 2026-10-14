@@ -89,6 +89,7 @@ mediawiki	adapter	MediaWiki source adapter
 metrics	runtime	shared scan metrics
 module	runtime	provider economics metadata
 navigator	exporter	ATT&CK Navigator output from admitted claims
+oathnet	adapter	OathNet breach-search leg reached through exposure_cli from exposure, scan -k exposure and /api/lookup
 oui	leaf	OUI lookup
 oui_ieee	leaf	IEEE OUI data
 path	leaf	path analysis utility
