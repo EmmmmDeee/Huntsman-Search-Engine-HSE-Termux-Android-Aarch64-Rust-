@@ -29,12 +29,17 @@ pub(super) fn hibp_cmd(args: &[String]) -> ExitCode {
     // The HIBP command checks the arguments first, so bad arguments are a usage error (64). A
     // keyed subcommand with well-formed arguments and no key is refused by its keyed leg, before
     // any request, as a missing key (66).
-    ExitCode::from(HibpCommand::production().run(
-        args,
-        &mut std::io::stdin().lock(),
-        &mut std::io::stdout().lock(),
-        &mut std::io::stderr().lock(),
-    ))
+    ExitCode::from(
+        HibpCommand::production(crate::cli::credentials::hibp_key_loader(
+            &crate::cli::credentials::lookup_keys(),
+        ))
+        .run(
+            args,
+            &mut std::io::stdin().lock(),
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        ),
+    )
 }
 
 pub(super) fn dehashed_cmd(args: &[String]) -> ExitCode {
@@ -150,16 +155,15 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
     if query.trim().is_empty() {
         return fail(EX_USAGE, RECON_USAGE);
     }
-    // The key comes from the --keys file when one is given, and from the environment
-    // otherwise. A slot the file lacks falls back to the environment, as the README documents.
-    // The default file $HOME/.huntsman.env is not read here: this lookup combines breach and
-    // tax records, so its key has to be named where the caller names it, as on main.
+    // The key comes from the --keys file when one is given, and otherwise from the places every
+    // lookup reads: $HOME/.huntsman.env, then the environment. A slot the file lacks falls back
+    // to the environment, as the README documents.
     let keys = match keys_file {
         Some(path) => match Keys::resolve(Some(Path::new(path.as_str())), None) {
             Ok(resolved) => resolved.keys,
             Err(e) => return fail(EX_NOINPUT, &e.to_string()),
         },
-        None => Keys::from_env(),
+        None => crate::cli::credentials::lookup_keys(),
     };
     if !huntsman_recon::breach_hybrid::stolen_tax_allowed(keys.get(stolen_tax::KEY_SLOT).is_some())
     {

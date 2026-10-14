@@ -275,6 +275,22 @@ impl Keys {
         }
     }
 
+    /// The keys a lookup uses: the ones `credential-status` reports, read by
+    /// [`Keys::resolve`] from `$HOME/.huntsman.env` (when it passes the default-file gate)
+    /// and the process environment. A configured key is never left unused because it sits in
+    /// the file instead of the environment. A file that cannot be read or parsed does not stop
+    /// the lookup: the result is then [`Keys::from_env`] and a warning that names the error,
+    /// never a value.
+    #[must_use]
+    pub fn for_lookup(home: Option<&OsStr>) -> ResolvedKeys {
+        Self::resolve(None, home).unwrap_or_else(|error| ResolvedKeys {
+            keys: Self::from_env(),
+            warning: Some(format!(
+                "warning: not loading ~/{DEFAULT_KEYS_FILE}: {error}"
+            )),
+        })
+    }
+
     /// File entry first, then the environment. Blank or placeholder values read as
     /// absent, so "not configured" is a single state.
     #[must_use]
@@ -731,6 +747,50 @@ mod tests {
                 .expose(),
             "TEST_ONLY_VALUE_DEFAULT"
         );
+        assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lookup_uses_a_key_set_only_in_the_default_file() {
+        let home = fake_home("lookup");
+        write_mode(
+            &home.join(DEFAULT_KEYS_FILE),
+            "HSE_TEST_LOOKUP_KEY=TEST_ONLY_VALUE_LOOKUP\n",
+            0o600,
+        );
+        let resolved = Keys::for_lookup(Some(home.as_os_str()));
+        assert!(resolved.warning.is_none());
+        assert_eq!(
+            resolved
+                .keys
+                .get("HSE_TEST_LOOKUP_KEY")
+                .expect("a key in the default file reaches the lookup")
+                .expose(),
+            "TEST_ONLY_VALUE_LOOKUP"
+        );
+        assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_malformed_default_file_leaves_a_lookup_its_environment_keys() {
+        let home = fake_home("lookup-bad");
+        write_mode(
+            &home.join(DEFAULT_KEYS_FILE),
+            "HSE_TEST_BAD=TEST_ONLY_VALUE_BAD\nnot a line\n",
+            0o600,
+        );
+        let resolved = Keys::for_lookup(Some(home.as_os_str()));
+        let warning = resolved.warning.expect("the skipped file is named");
+        assert!(
+            warning.starts_with("warning: not loading ~/.huntsman.env:"),
+            "{warning}"
+        );
+        assert!(!warning.contains("TEST_ONLY_VALUE_BAD"), "{warning}");
+        assert_eq!(resolved.keys.slots(), [] as [&str; 0]);
         assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
         std::fs::remove_dir_all(&home).expect("cleanup");
     }

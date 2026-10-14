@@ -15,9 +15,7 @@ use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::exposure_cli::{EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
 use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
-use huntsman_recon::hibp::key::KeyLoader;
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
-use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
     self, DOMAIN_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, PEOPLE_POLICY, PHONE_POLICY, SavePolicy,
     USERNAME_POLICY,
@@ -105,12 +103,10 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
             }
         }
         ScanKind::Exposure => {
-            let client = KeyLoader::default_chain(None)
+            let keys = crate::cli::credentials::lookup_keys();
+            let client = crate::cli::credentials::hibp_key_loader(&keys)
                 .load()
                 .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
-            // Same rule as `recon stolen-tax`: the stolen.tax and OathNet keys are read from the
-            // environment, never the default file.
-            let keys = Keys::from_env();
             let transport = UreqTransport::new(&stolen_tax::transport_config());
             let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
             let sources = Sources {
@@ -137,7 +133,7 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
         }
         ScanKind::Username => {
             let transport = UreqTransport::new(&TransportConfig::default());
-            let keys = Keys::from_env();
+            let keys = crate::cli::credentials::lookup_keys();
             match huntsman_recon::username_cli::run(&transport, &keys, selector, now) {
                 UsernameRun::Printed { text, report } => Ok(done(
                     text,

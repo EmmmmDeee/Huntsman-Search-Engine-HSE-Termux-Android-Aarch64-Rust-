@@ -189,6 +189,27 @@ fn only_the_environment_module_reads_the_environment_outside_the_process_boundar
     );
 }
 
+/// Whether the tokens read keys from the environment alone (`Keys::from_env`) or load the HIBP key
+/// without the lookup keys' slot (`default_chain(None)`). Either leaves a key set only in
+/// `~/.huntsman.env` unused, though `credential-status` reports it as set.
+fn reads_keys_without_the_default_file(toks: &[String]) -> bool {
+    toks.windows(3)
+        .any(|w| w[0] == "Keys" && w[1] == "::" && w[2] == "from_env")
+        || toks
+            .windows(3)
+            .any(|w| w[0] == "default_chain" && w[1] == "(" && w[2] == "None")
+}
+
+#[test]
+fn every_lookup_reads_keys_from_the_default_file_too() {
+    let found = offenders(&["src/keys.rs"], reads_keys_without_the_default_file);
+    assert!(
+        found.is_empty(),
+        "production code reads keys from the environment only; use `Keys::for_lookup` \
+         (the binary's `lookup_keys`) so a key in ~/.huntsman.env is used: {found:?}"
+    );
+}
+
 #[test]
 fn only_the_transport_and_the_listener_own_a_socket() {
     let found = offenders(&SOCKET_OWNERS, opens_socket);

@@ -61,6 +61,7 @@ Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
 `seeknow`, `people`, `email`, `exposure`, `username`, `domain`, `query`, `dehashed`, and networked `sf -s` lookups make HTTP requests; `serve` accepts inbound HTTP connections; their default
 egress policy is public-only.";
 const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
+mod credentials;
 mod help;
 mod lookup;
 mod meta;
