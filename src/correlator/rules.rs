@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::entity::{Entity, EntityKind};
 use crate::relation::{
-    RelationKind, connection_brokers, pairwise_disjoint_pathways, resolve_identity_clusters,
+    PairPathways, RelationKind, basis_kind, connection_brokers, resolve_identity_clusters,
 };
 use crate::tags;
 use crate::timefmt::parse_timestamp;
@@ -336,7 +336,8 @@ pub fn rule_au_060_transitive_identity_closure(
 }
 
 /// The uids of the entities a rule pass reads, in the context's ascending uid order, so that the
-/// pairwise rules pair them the same way round, and in the same order, on every run.
+/// pairwise rules pair them the same way round, and in the same order, on every run. The
+/// positions in [`RuleContext::pathways`] index this list.
 fn ordered_uids<'a>(context: &RuleContext<'a>) -> Vec<&'a str> {
     context.by_uid().keys().copied().collect()
 }
@@ -347,16 +348,17 @@ pub fn rule_au_062_multipath_corroboration(
     now: u64,
 ) -> Vec<Correlation> {
     let ids = ordered_uids(context);
-    pairwise_disjoint_pathways(&ids, context.relations(), usize::MAX)
-        .into_iter()
-        .filter(|&(_, _, pathways)| pathways >= 2)
-        .map(|(left, right, pathways)| {
+    context
+        .pathways()
+        .iter()
+        .filter(|pair| pair.count >= 2)
+        .map(|pair| {
             Correlation::new(
                 "AU-062",
                 "multipath_corroboration",
                 Severity::High,
-                format!("{pathways} independent pathways corroborate the link"),
-                vec![ids[left].to_owned(), ids[right].to_owned()],
+                format!("{} independent pathways corroborate the link", pair.count),
+                vec![ids[pair.left].to_owned(), ids[pair.right].to_owned()],
                 scan_id,
                 now,
             )
@@ -364,28 +366,64 @@ pub fn rule_au_062_multipath_corroboration(
         .collect()
 }
 
+/// A gap for each pair that one identity pathway alone connects. When that pathway rests
+/// entirely on one shared basis, such as a handle that many addresses share, the pairs it alone
+/// connects are one gap, reported once for every entity in them: one handle on 96 sites leaves
+/// 4,560 such pairs, and closing the gap means corroborating the handle, not each pair.
 pub fn rule_au_063_corroboration_gap(
     context: &RuleContext<'_>,
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
     let ids = ordered_uids(context);
-    // Two pathways settle that a pair has more than one, so no pair is counted past two.
-    pairwise_disjoint_pathways(&ids, context.relations(), 2)
-        .into_iter()
-        .filter(|&(_, _, pathways)| pathways == 1)
-        .map(|(left, right, _)| {
-            Correlation::new(
-                "AU-063",
-                "corroboration_gap",
-                Severity::Low,
-                "only one identity pathway currently connects the pair",
-                vec![ids[left].to_owned(), ids[right].to_owned()],
-                scan_id,
-                now,
-            )
-        })
-        .collect()
+    let gap = |description: String, uids: Vec<String>| {
+        Correlation::new(
+            "AU-063",
+            "corroboration_gap",
+            Severity::Low,
+            description,
+            uids,
+            scan_id,
+            now,
+        )
+    };
+    let pair_gap = |pair: &PairPathways<'_>| {
+        gap(
+            "only one identity pathway currently connects the pair".to_owned(),
+            vec![ids[pair.left].to_owned(), ids[pair.right].to_owned()],
+        )
+    };
+    let mut out = Vec::new();
+    let mut shared = BTreeMap::<&str, Vec<PairPathways<'_>>>::new();
+    for pair in context.pathways().iter().filter(|pair| pair.count == 1) {
+        match pair.basis {
+            Some(basis) => shared.entry(basis).or_default().push(*pair),
+            None => out.push(pair_gap(pair)),
+        }
+    }
+    for (basis, pairs) in shared {
+        if let [pair] = pairs.as_slice() {
+            out.push(pair_gap(pair));
+            continue;
+        }
+        let members = pairs
+            .iter()
+            .flat_map(|pair| [pair.left, pair.right])
+            .collect::<BTreeSet<_>>();
+        out.push(gap(
+            format!(
+                "only a shared {} connects {} pairs among these {} entities",
+                basis_kind(basis),
+                pairs.len(),
+                members.len()
+            ),
+            members
+                .into_iter()
+                .map(|position| ids[position].to_owned())
+                .collect(),
+        ));
+    }
+    out
 }
 
 pub fn rule_au_070_connection_broker(
