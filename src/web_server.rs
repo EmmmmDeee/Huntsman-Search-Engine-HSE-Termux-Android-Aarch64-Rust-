@@ -15,10 +15,11 @@
 //! A loopback bind answers only requests whose `Host` is a loopback authority,
 //! which blocks a browser DNS-rebinding attack from reaching the local API.
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -79,8 +80,13 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 /// Connections served at once. A phone browser opens several for one page, and some are speculative
 /// and idle, so each connection gets its own thread: one that sends nothing holds up only itself.
-/// A connection past the cap is answered `503` at once.
+/// A connection past the cap first closes the connection that has waited longest without a whole
+/// request, if it has waited [`IDLE_GRACE`]; when none has, it is answered `503` at once.
 const MAX_CONNECTIONS: usize = 32;
+/// How long a connection may wait without a whole request before a connection that finds every
+/// place taken may close it. A browser sends its request as soon as it connects, except on a
+/// speculative connection, which it replaces when it needs one.
+const IDLE_GRACE: Duration = Duration::from_secs(1);
 /// The handler formats short strings, so a small stack is enough, and it keeps a full set of
 /// connection threads cheap on a phone.
 const HANDLER_STACK_BYTES: usize = 256 * 1024;
@@ -254,12 +260,13 @@ impl Server {
     pub fn run(&self) -> Result<(), Error> {
         let shared = Arc::new((self.config.clone(), self.routes.clone()));
         let live = Arc::new(AtomicUsize::new(0));
+        let idle = Arc::new(Idle::default());
         loop {
             let (stream, _) = self
                 .listener
                 .accept()
                 .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            serve_on_a_thread(&shared, &live, stream);
+            serve_on_a_thread(&shared, &live, &idle, stream);
         }
     }
 
@@ -270,7 +277,7 @@ impl Server {
                 .listener
                 .accept()
                 .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            handle_stream_with(&self.config, &self.routes, stream)?;
+            handle_stream_with(&self.config, &self.routes, stream, None)?;
         }
         Ok(())
     }
@@ -299,22 +306,97 @@ impl Drop for Slot {
     }
 }
 
+/// The connections still waiting for a whole request, in the order they arrived, each with a
+/// handle that can close it. Connections that send nothing, a browser's speculative ones or a
+/// local app's on purpose, would otherwise keep every request out for the whole read budget.
+#[derive(Default)]
+struct Idle {
+    next: AtomicU64,
+    waiting: Mutex<VecDeque<(u64, Instant, TcpStream)>>,
+}
+
+impl Idle {
+    fn waiting(&self) -> MutexGuard<'_, VecDeque<(u64, Instant, TcpStream)>> {
+        self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Note a connection that is about to read its request; it is forgotten when the returned
+    /// guard drops. A connection whose socket cannot be duplicated is never closed early.
+    fn wait(self: &Arc<Self>, stream: &TcpStream) -> Option<Waiting> {
+        let handle = stream.try_clone().ok()?;
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        self.waiting().push_back((id, Instant::now(), handle));
+        Some(Waiting {
+            idle: Arc::clone(self),
+            id,
+        })
+    }
+
+    /// Close the connection that has waited longest, if it has waited `grace`. Its read ends at
+    /// once, and its thread lets its place go.
+    fn close_longest_waiting(&self, grace: Duration) -> bool {
+        let mut waiting = self.waiting();
+        if waiting
+            .front()
+            .is_none_or(|(_, since, _)| since.elapsed() < grace)
+        {
+            return false;
+        }
+        waiting
+            .pop_front()
+            .is_some_and(|(_, _, handle)| handle.shutdown(Shutdown::Both).is_ok())
+    }
+}
+
+/// A connection noted in [`Idle`]; dropping it, once the request is read, forgets the connection.
+struct Waiting {
+    idle: Arc<Idle>,
+    id: u64,
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        self.idle.waiting().retain(|(id, _, _)| *id != self.id);
+    }
+}
+
+/// The place a closed connection gives back, once its thread has let it go: at once, as a rule.
+fn place_freed_by_closing(live: &Arc<AtomicUsize>) -> Option<Slot> {
+    for _ in 0..50 {
+        if let Some(slot) = Slot::take(live) {
+            return Some(slot);
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    None
+}
+
 type Shared = (ServeConfig, Routes);
 
-fn serve_on_a_thread(shared: &Arc<Shared>, live: &Arc<AtomicUsize>, stream: TcpStream) {
-    let Some(slot) = Slot::take(live) else {
-        refuse_busy(stream);
-        return;
+fn serve_on_a_thread(
+    shared: &Arc<Shared>,
+    live: &Arc<AtomicUsize>,
+    idle: &Arc<Idle>,
+    stream: TcpStream,
+) {
+    let slot = match Slot::take(live) {
+        Some(slot) => slot,
+        None if idle.close_longest_waiting(IDLE_GRACE) => match place_freed_by_closing(live) {
+            Some(slot) => slot,
+            None => return refuse_busy(stream),
+        },
+        None => return refuse_busy(stream),
     };
     // The thread owns the stream; this copy lets a failed spawn still answer the client.
     let fallback = stream.try_clone().ok();
+    let waiting = idle.wait(&stream);
     let shared = Arc::clone(shared);
     let spawned = thread::Builder::new()
         .name("serve-connection".into())
         .stack_size(HANDLER_STACK_BYTES)
         .spawn(move || {
             let _slot = slot;
-            let _handled = handle_stream_with(&shared.0, &shared.1, stream);
+            let _handled = handle_stream_with(&shared.0, &shared.1, stream, waiting);
         });
     if spawned.is_err() {
         if let Some(stream) = fallback {
@@ -331,13 +413,14 @@ fn refuse_busy(mut stream: TcpStream) {
 
 #[cfg(test)]
 fn handle_stream(config: &ServeConfig, stream: TcpStream) -> Result<(), Error> {
-    handle_stream_with(config, &Routes::default(), stream)
+    handle_stream_with(config, &Routes::default(), stream, None)
 }
 
 fn handle_stream_with(
     config: &ServeConfig,
     routes: &Routes,
     mut stream: TcpStream,
+    waiting: Option<Waiting>,
 ) -> Result<(), Error> {
     stream
         .set_read_timeout(Some(IO_TIMEOUT))
@@ -348,6 +431,8 @@ fn handle_stream_with(
 
     let deadline = Instant::now() + REQUEST_DEADLINE;
     let request = read_request(&mut stream, deadline)?;
+    // A whole request: the connection is busy now, not idle, and is no longer closed early.
+    drop(waiting);
     let response = respond(
         &request,
         config.bearer_token.as_deref(),
@@ -1292,6 +1377,46 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Connections that send nothing, in every place for longer than `IDLE_GRACE`, kept every
+    /// request out for the whole read budget: `503` for 5 s, and for as long as someone renews
+    /// them (any app on the phone can open loopback connections). A request that finds every
+    /// place taken now closes the connection that has waited longest, and is served; the other
+    /// idle connections keep their places.
+    #[test]
+    fn a_request_at_the_cap_closes_the_longest_waiting_connection() {
+        let addr = serve_in_background();
+        let mut idle: Vec<TcpStream> = (0..MAX_CONNECTIONS)
+            .map(|_| TcpStream::connect(addr).unwrap())
+            .collect();
+        thread::sleep(IDLE_GRACE + Duration::from_millis(200));
+
+        let started = Instant::now();
+        let response = get_within(addr, "/api/health", Duration::from_secs(3)).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(started.elapsed() < IDLE_GRACE, "{:?}", started.elapsed());
+
+        let mut byte = [0_u8; 1];
+        idle[0]
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        assert_eq!(
+            idle[0].read(&mut byte).unwrap(),
+            0,
+            "the longest waiting connection is closed"
+        );
+        idle[1]
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let next = idle[1].read(&mut byte).unwrap_err().kind();
+        assert!(
+            matches!(
+                next,
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+            "the next one still waits: {next:?}"
+        );
     }
 
     #[test]
