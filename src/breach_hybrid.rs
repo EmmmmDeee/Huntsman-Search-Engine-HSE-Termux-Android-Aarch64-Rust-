@@ -13,6 +13,8 @@ pub enum BreachLeg {
     HibpAccount,
     /// `recon stolen-tax`. Operator key required. Cleartext is not a field.
     StolenTax,
+    /// `OathNet` breach search. Operator key required. Only field names leave a record.
+    OathNet,
 }
 
 /// Free legs always. Keyed legs only when an operator key is present.
@@ -22,6 +24,7 @@ pub fn exposure_order(has_operator_key: bool) -> Vec<BreachLeg> {
     if has_operator_key {
         order.push(BreachLeg::HibpAccount);
         order.push(BreachLeg::StolenTax);
+        order.push(BreachLeg::OathNet);
     }
     order
 }
@@ -62,7 +65,14 @@ mod tests {
         let order = exposure_order(true);
         assert_eq!(order[0], BreachLeg::PwnedPasswords);
         assert_eq!(order[1], BreachLeg::HibpCatalog);
-        assert_eq!(&order[2..], &[BreachLeg::HibpAccount, BreachLeg::StolenTax]);
+        assert_eq!(
+            &order[2..],
+            &[
+                BreachLeg::HibpAccount,
+                BreachLeg::StolenTax,
+                BreachLeg::OathNet
+            ]
+        );
     }
 
     #[test]

@@ -428,41 +428,96 @@ pub(super) fn run_history_cmd(args: &[String]) -> ExitCode {
 }
 
 pub(super) fn correlate_cmd(args: &[String]) -> ExitCode {
-    let [path] = args else {
-        return fail(EX_USAGE, "usage: huntsman-recon correlate ARTIFACT");
+    const USAGE: &str = "usage: huntsman-recon correlate ARTIFACT [--history DIR]";
+    let (path, history_dir) = match args {
+        [path] => (path, None),
+        [path, flag, dir] if flag == "--history" => (path, Some(dir)),
+        _ => return fail(EX_USAGE, USAGE),
     };
-    match huntsman_recon::scan_artifact::read(Path::new(path)) {
-        Ok(artifact) => {
-            println!(
-                "scan_id={} entities={} relations={}",
-                huntsman_recon::textnorm::escape_controls(&artifact.scan_id),
-                artifact.entities.len(),
-                artifact.relations.len()
-            );
-            let correlations = artifact.correlate();
-            println!("correlations={}", correlations.len());
-            for c in &correlations {
-                println!(
-                    "rule={} severity={:?} entities={}",
-                    c.rule_id,
-                    c.severity,
-                    c.entity_uids.len()
-                );
-            }
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            use huntsman_recon::scan_artifact::ArtifactError;
-            // Match the crate's exit-code contract (see ledger_error_code):
-            // unreadable input (missing file, IO, a directory) is 66; a file
-            // that is read but does not parse or has the wrong version is 65.
-            let code = match &e {
-                ArtifactError::Io(_) => EX_NOINPUT,
-                ArtifactError::Malformed(_)
-                | ArtifactError::UnsupportedVersion { .. }
-                | ArtifactError::Unsupported(_) => EX_DATAERR,
-            };
-            fail(code, &format!("correlate: {e}"))
+    let artifact = match huntsman_recon::scan_artifact::read(Path::new(path)) {
+        Ok(artifact) => artifact,
+        Err(e) => return artifact_fail(&e),
+    };
+    // Load the history before printing anything, so a bad history fails the
+    // command without a half-written report on stdout.
+    let history = match history_dir {
+        Some(dir) => match huntsman_recon::scan_artifact::ArtifactHistory::open(Path::new(dir)) {
+            Ok(history) => Some(history),
+            Err(e) => return artifact_fail(&e),
+        },
+        None => None,
+    };
+    println!(
+        "scan_id={} entities={} relations={}",
+        huntsman_recon::textnorm::escape_controls(&artifact.scan_id),
+        artifact.entities.len(),
+        artifact.relations.len()
+    );
+    let correlations = artifact.correlate();
+    println!("correlations={}", correlations.len());
+    for c in &correlations {
+        println!(
+            "rule={} severity={:?} entities={}",
+            c.rule_id,
+            c.severity,
+            c.entity_uids.len()
+        );
+    }
+    if let Some(history) = history {
+        match artifact.cross_scan(
+            &history,
+            huntsman_recon::cross_scan::CrossScanOptions::default(),
+        ) {
+            Ok(category) => print_cross_scan(history.scan_count(), &category),
+            Err(e) => return fail(EX_DATAERR, &format!("correlate: {e}")),
         }
     }
+    ExitCode::SUCCESS
+}
+
+fn print_cross_scan(
+    history_scans: usize,
+    category: &huntsman_recon::cross_scan::CrossScanCategory,
+) {
+    use huntsman_recon::cross_scan::CrossScanCategory;
+    use huntsman_recon::textnorm::escape_controls;
+    let (label, bridges, links) = match category {
+        CrossScanCategory::None => ("none", &[][..], &[][..]),
+        CrossScanCategory::Historical { matches } => ("historical", &matches[..], &[][..]),
+        CrossScanCategory::Relation { matches } => ("relation", &matches[..], &[][..]),
+        CrossScanCategory::Transitive { links } => ("transitive", &[][..], &links[..]),
+    };
+    println!("history_scans={history_scans} cross_scan={label}");
+    for bridge in bridges {
+        println!(
+            "bridge tier={:?} kind={} uid={} scans={}",
+            bridge.tier,
+            bridge.entity.kind,
+            escape_controls(&bridge.entity.uid),
+            escape_controls(&bridge.overlapping_scans.join(","))
+        );
+    }
+    for link in links {
+        println!(
+            "link depth={} tier={:?} via={} scan={}",
+            link.depth,
+            link.tier,
+            escape_controls(&link.via_entity_uid),
+            escape_controls(&link.target_scan_id)
+        );
+    }
+}
+
+fn artifact_fail(e: &huntsman_recon::scan_artifact::ArtifactError) -> ExitCode {
+    use huntsman_recon::scan_artifact::ArtifactError;
+    // Match the crate's exit-code contract (see ledger_error_code):
+    // unreadable input (missing file, IO, a directory) is 66; a file
+    // that is read but does not parse or has the wrong version is 65.
+    let code = match e {
+        ArtifactError::Io(_) => EX_NOINPUT,
+        ArtifactError::Malformed(_)
+        | ArtifactError::UnsupportedVersion { .. }
+        | ArtifactError::Unsupported(_) => EX_DATAERR,
+    };
+    fail(code, &format!("correlate: {e}"))
 }

@@ -106,7 +106,7 @@ pub(super) fn print_command_help(command: &str) {
             "credential-status [--probe] [FILE]\nShow provider slot completeness without printing credential values. --probe performs canonical live health checks for configured providers that have a registered probe. FILE uses the existing private keys-file loader; otherwise the normal ~/.huntsman.env/environment resolution is used."
         }
         "correlate" => {
-            "correlate ARTIFACT\nRead a scan artifact written by dehashed --save-artifact and print its entity and relation counts and each correlation rule that fires. Offline."
+            "correlate ARTIFACT [--history DIR]\nRead a scan artifact written by dehashed --save-artifact and print its entity and relation counts and each correlation rule that fires. With --history, also pivot it across every saved artifact in DIR: print cross_scan=none|historical|relation|transitive, one bridge line per entity this scan shares with an earlier scan, and one link line per scan reached through those entities. Offline."
         }
         "verify" => {
             "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."

@@ -126,7 +126,7 @@ cargo run -- build-sha                 # exact embedded commit for provenance bu
 cargo run -- command                   # validate + print engineering command contract
 cargo run -- directive --help          # repository directive verifier/self-repair usage
 cargo run -- verify var/ledger.json    # entries, admitted count, tip; non-zero if broken
-cargo run -- correlate --help          # correlation rules over a dehashed --save-artifact scan; offline
+cargo run -- correlate --help          # correlation rules over a dehashed --save-artifact scan, --history DIR pivots it across saved scans; offline
 cargo run -- run-history --help        # record test-run results and compare each with the earlier runs
 cargo run -- search "brisbane port"    # built-in fixture
 cargo run -- search "brisbane port" docs/
@@ -147,7 +147,7 @@ cargo run -- seeknow --help              # SeekNow subcommands; offline
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens of at least two letters, no network
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
 cargo run -- email nobody@example.com     # deterministic pivots + public Gravatar lookup
-cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax evidence, then each breach's summary, flags and source links (keyed; no key = no request)
+cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax + OathNet evidence, then each breach's summary, flags and source links (keyed; no key = no request)
 cargo run -- username octocat             # variants + public GitHub/Bluesky lookups
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- domain example.com             # crt.sh certificate names + DNS records over DoH; network
