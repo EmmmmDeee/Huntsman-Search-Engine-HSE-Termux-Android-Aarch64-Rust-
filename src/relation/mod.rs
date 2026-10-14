@@ -16,8 +16,8 @@ pub use builders::{
     derive_reused_secret_link, derive_shared_selector, derive_structural, is_generic_handle,
 };
 pub use graph::{
-    connection_brokers, connection_templates, disjoint_pathways, provenance_chain, reachable_count,
-    resolve_identity_clusters, strongest_path,
+    connection_brokers, connection_templates, disjoint_pathways, pairwise_disjoint_pathways,
+    provenance_chain, reachable_count, resolve_identity_clusters, strongest_path,
 };
 pub use social_extract::derive_profile_links;
 pub use types::{Relation, RelationKind, domain_key, is_identity_kind};
