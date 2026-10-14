@@ -78,6 +78,15 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
     }
 }
 
+/// Printed by `serve` when `HSE_AUTH_TOKEN` is set. The page and every API call except health
+/// then need the token, and nothing else tells the operator so: the page only showed
+/// `unauthorized`. The value is never printed, so it stays out of terminal scrollback and logs.
+fn token_hint(addr: std::net::SocketAddr) -> String {
+    format!(
+        "serve: {SERVE_TOKEN_ENV} is set, so the API needs it: enter its value (echo \"${SERVE_TOKEN_ENV}\") in the page's token field, or open http://{addr}/#token=VALUE once; unset {SERVE_TOKEN_ENV} before serve to run a loopback server without a token"
+    )
+}
+
 pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     let hse_bind = env::var("HSE_BIND").ok();
     let railway_port = env::var("PORT").ok();
@@ -122,6 +131,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         Err(Error::Invalid(message)) => return fail(EX_DATAERR, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };
+    let config_needs_token = config.bearer_token.is_some();
     let server = match Server::bind(config) {
         Ok(server) => server
             .with_lookup(std::sync::Arc::new(web_lookup))
@@ -132,6 +142,9 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     match server.local_addr() {
         Ok(addr) => {
             println!("serving=http://{addr}/");
+            if config_needs_token {
+                eprintln!("{}", token_hint(addr));
+            }
             if TermuxState::current() == TermuxState::Detected {
                 eprintln!("{TERMUX_BACKGROUND_HINT}");
             }
