@@ -27,7 +27,7 @@ fn email_provenance(source: &str) -> (&str, &'static str) {
         "gravatar" => ("gravatar", "src/gravatar.rs"),
         "duolingo" => ("duolingo", "src/duolingo.rs"),
         "openpgp_keys" => ("openpgp_keys", "src/openpgp_keys.rs"),
-        _ => (source, "src/email_cli.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/email_cli.rs")),
     }
 }
 
@@ -43,7 +43,8 @@ fn phone_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "phone_intl" => ("phone_intl", "src/phone_intl.rs"),
         "phone_au" => ("phone_au", "src/phone_cli.rs"),
-        _ => (source, "src/phone_cli.rs"),
+        "numverify" => ("numverify", "src/numverify.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/phone_cli.rs")),
     }
 }
 
@@ -107,7 +108,9 @@ fn domain_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "crtsh" => ("crtsh", "src/crtsh.rs"),
         "dns" => ("dns", "src/dns.rs"),
-        _ => (source, "src/domain_cli.rs"),
+        "virustotal" => ("virustotal", "src/virustotal.rs"),
+        "hunter" => ("hunter", "src/hunter.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/domain_cli.rs")),
     }
 }
 
@@ -116,6 +119,49 @@ pub const DOMAIN_POLICY: SavePolicy = SavePolicy {
     does_not_show: "a domain-recon lead is not an identity-resolution verdict",
     outcome_provenance: domain_provenance,
     entity_provenance: domain_provenance,
+};
+
+fn ip_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        "internetdb" => ("internetdb", "src/internetdb.rs"),
+        "ripestat" => ("ripestat", "src/ripestat.rs"),
+        "greynoise" => ("greynoise", "src/greynoise.rs"),
+        "abuseipdb" => ("abuseipdb", "src/abuseipdb.rs"),
+        "virustotal" => ("virustotal", "src/virustotal.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/ip_cli.rs")),
+    }
+}
+
+/// The provider module of an indicator source, for every policy whose lookup runs them.
+fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
+    Some(match source {
+        "shodan" => ("shodan", "src/shodan.rs"),
+        "pulsedive" => ("pulsedive", "src/pulsedive.rs"),
+        "leakix" => ("leakix", "src/leakix.rs"),
+        "threatfox" => ("threatfox", "src/threatfox.rs"),
+        "ipqs" => ("ipqs", "src/ipqs.rs"),
+        "whoxy" => ("whoxy", "src/whoxy.rs"),
+        "netlas" => ("netlas", "src/netlas.rs"),
+        "securitytrails" => ("securitytrails", "src/securitytrails.rs"),
+        "urlhaus" => ("urlhaus", "src/urlhaus.rs"),
+        "hunter" => ("hunter", "src/hunter.rs"),
+        "otx" => ("otx", "src/otx.rs"),
+        "urlscan" => ("urlscan", "src/urlscan.rs"),
+        "ipinfo" => ("ipinfo", "src/ipinfo.rs"),
+        "kickbox" => ("kickbox", "src/kickbox.rs"),
+        "robtex" => ("robtex", "src/robtex.rs"),
+        "hackertarget" => ("hackertarget", "src/hackertarget.rs"),
+        "stopforumspam" => ("stopforumspam", "src/stopforumspam.rs"),
+        "xposed_or_not" => ("xposed_or_not", "src/xposedornot.rs"),
+        _ => return None,
+    })
+}
+
+pub const IP_POLICY: SavePolicy = SavePolicy {
+    default_source: "internetdb",
+    does_not_show: "an address-reputation lead is not an identity-resolution verdict",
+    outcome_provenance: ip_provenance,
+    entity_provenance: ip_provenance,
 };
 
 fn network_provenance(source: &str) -> (&str, &'static str) {

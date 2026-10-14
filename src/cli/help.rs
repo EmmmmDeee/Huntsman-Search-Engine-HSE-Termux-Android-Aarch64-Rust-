@@ -85,10 +85,11 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "phone" => PHONE_HELP,
         "network" => NETWORK_HELP,
         "domain" => {
-            "domain DOMAIN [--save FILE]\nLook up one domain: certificate-transparency names from crt.sh and DNS records over DNS-over-HTTPS. --save writes an unverified ledger that verify can reload. Makes network requests."
+            "domain DOMAIN [--save FILE]\nLook up one domain: certificate-transparency names from crt.sh and DNS records over DNS-over-HTTPS. Pulsedive threat risk, Netlas scan data, AlienVault OTX threat pulses, urlscan.io public page scans, Robtex passive DNS and HackerTarget hosts under the domain are asked without a key (HUNTSMAN_PULSEDIVE_KEY, HUNTSMAN_NETLAS_KEY, HUNTSMAN_OTX_KEY, HUNTSMAN_URLSCAN_KEY and HUNTSMAN_HACKERTARGET_KEY raise their limits). With HUNTSMAN_VIRUSTOTAL_KEY set it adds VirusTotal engine verdicts, with HUNTSMAN_HUNTER_KEY the addresses Hunter.io found published for the domain, with HUNTSMAN_SHODAN_KEY Shodan DNS records (one query credit), with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs, with HUNTSMAN_SECTRAILS_KEY SecurityTrails subdomains, and with HUNTSMAN_WHOXY_KEY the live WHOIS record (one Whoxy credit); a leg whose key is not set makes no request, and a key that is set always runs its leg. --save writes an unverified ledger that verify can reload. Makes network requests."
         }
+        "ip" => huntsman_recon::ip_cli::IP_HELP,
         "scan" => {
-            "scan SELECTOR [-k people|email|exposure|username|phone|domain|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|network] [--save-dir DIR]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends; a domain routes to domain, and a BSSID or LAT,LON to network. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only; --save-dir DIR writes one ledger per batch seed, numbered by its position."
+            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|network] [--save-dir DIR]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends; a domain routes to domain, and a BSSID or LAT,LON to network. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only; --save-dir DIR writes one ledger per batch seed, numbered by its position."
         }
         "investigate" => {
             "investigate TEXT... | investigate --file FILE\nExtract actionable entities from local text. --file refuses symlinks and files over 1 MiB."
@@ -101,7 +102,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         }
         "sf" => SF_USAGE,
         "serve" => {
-            "serve [--bind ADDR]\nStart the embedded Web UI and JSON API, including GET /api/lookup (needs the X-Huntsman-Lookup: 1 header) and GET /api/analyze?seeds=... (offline multi-hop analysis, one seed per line, no network request). Default: 127.0.0.1:8080. HSE_BIND supplies the default bind; an explicit non-loopback bind requires HSE_AUTH_TOKEN."
+            "serve [--bind ADDR] [--history DIR]\nStart the embedded Web UI and JSON API, including GET /api/lookup (needs the X-Huntsman-Lookup: 1 header) and GET /api/analyze?seeds=... (offline multi-hop analysis, one seed per line, no network request). With --history DIR, each analysis also bridges its seeds to the saved scan artifacts in DIR, as correlate --history does, and reports the bridges as cross_scan; a directory that cannot be read, or holds a malformed artifact, stops serve at startup. Default: 127.0.0.1:8080. HSE_BIND supplies the default bind; an explicit non-loopback bind requires HSE_AUTH_TOKEN."
         }
         "modules" => {
             "modules [--json]\nList only rebuilt modules that are currently reachable through a huntsman-recon command."

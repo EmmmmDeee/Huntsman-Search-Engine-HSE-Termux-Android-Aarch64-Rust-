@@ -119,3 +119,22 @@ fn the_release_profile_optimises_across_crates_strips_and_unwinds() {
         "release profile must keep the unwinding panic strategy: {profile:?}"
     );
 }
+
+/// The CI and release workflows must pin the stable Rust toolchain to a specific version,
+/// never using floating `stable`, to prevent unexpected failures from new stable releases
+/// introducing stricter clippy lints.
+#[test]
+fn ci_workflows_pin_stable_toolchain() {
+    for path in [".github/workflows/ci.yml", ".github/workflows/release.yml"] {
+        let content = fs::read_to_string(path).expect(path);
+        assert!(
+            !content.contains("toolchain: stable"),
+            "{path} must pin stable toolchain to a specific version, not use floating 'stable'"
+        );
+        // Verify that at least one pinned version is present (e.g., toolchain: "1.99")
+        assert!(
+            content.contains("toolchain: \"1.") || content.contains("toolchain: '1."),
+            "{path} must pin stable toolchain to a specific version like \"1.99\""
+        );
+    }
+}

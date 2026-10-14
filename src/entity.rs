@@ -34,6 +34,9 @@ pub fn scan_id(kind: &str, value: &str) -> String {
 }
 
 pub const CANDIDATE_CONF: f64 = 0.25;
+/// The `evidence_role` an operator's seed carries: the query the scan was given, not a source's
+/// finding about it.
+pub const SEED_EVIDENCE_ROLE: &str = "seed_not_external_verification";
 pub const RECALL_SOURCE: &str = "recall";
 pub const CROSS_SCAN_SOURCE: &str = "cross_scan_history";
 pub const CONSENSUS_SOURCE: &str = "breach_consensus";
@@ -241,6 +244,15 @@ impl Evidence {
             .flat_map(|value| value.split("; "))
             .map(str::trim)
             .filter(|value| !value.is_empty())
+    }
+
+    /// Whether this evidence is the operator's own seed rather than a source's finding.
+    #[must_use]
+    pub fn is_operator_seed(&self) -> bool {
+        matches!(self.provenance.source.as_str(), "operator_input" | "seed")
+            || self
+                .attr_values("evidence_role")
+                .any(|value| value == SEED_EVIDENCE_ROLE)
     }
 
     #[must_use]
