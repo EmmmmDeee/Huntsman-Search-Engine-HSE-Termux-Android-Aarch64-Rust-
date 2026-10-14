@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::entity::{Entity, EntityKind};
 use crate::relation::{
-    RelationKind, connection_brokers, disjoint_pathways, resolve_identity_clusters,
+    RelationKind, connection_brokers, pairwise_disjoint_pathways, resolve_identity_clusters,
 };
 use crate::tags;
 use crate::timefmt::parse_timestamp;
@@ -335,30 +335,35 @@ pub fn rule_au_060_transitive_identity_closure(
         .collect()
 }
 
+/// The uids of the entities a rule pass reads, in order, so that the pairwise rules pair them
+/// the same way round, and in the same order, on every run.
+fn sorted_uids<'a>(context: &RuleContext<'a>) -> Vec<&'a str> {
+    let mut uids = context.by_uid().keys().copied().collect::<Vec<_>>();
+    uids.sort_unstable();
+    uids
+}
+
 pub fn rule_au_062_multipath_corroboration(
     context: &RuleContext<'_>,
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    let mut out = Vec::new();
-    let ids = context.by_uid().keys().copied().collect::<Vec<_>>();
-    for left in 0..ids.len() {
-        for right in left + 1..ids.len() {
-            let pathways = disjoint_pathways(ids[left], ids[right], context.relations());
-            if pathways >= 2 {
-                out.push(Correlation::new(
-                    "AU-062",
-                    "multipath_corroboration",
-                    Severity::High,
-                    format!("{pathways} independent pathways corroborate the link"),
-                    vec![ids[left].to_owned(), ids[right].to_owned()],
-                    scan_id,
-                    now,
-                ));
-            }
-        }
-    }
-    out
+    let ids = sorted_uids(context);
+    pairwise_disjoint_pathways(&ids, context.relations(), usize::MAX)
+        .into_iter()
+        .filter(|&(_, _, pathways)| pathways >= 2)
+        .map(|(left, right, pathways)| {
+            Correlation::new(
+                "AU-062",
+                "multipath_corroboration",
+                Severity::High,
+                format!("{pathways} independent pathways corroborate the link"),
+                vec![ids[left].to_owned(), ids[right].to_owned()],
+                scan_id,
+                now,
+            )
+        })
+        .collect()
 }
 
 pub fn rule_au_063_corroboration_gap(
@@ -366,24 +371,23 @@ pub fn rule_au_063_corroboration_gap(
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    let mut out = Vec::new();
-    let ids = context.by_uid().keys().copied().collect::<Vec<_>>();
-    for left in 0..ids.len() {
-        for right in left + 1..ids.len() {
-            if disjoint_pathways(ids[left], ids[right], context.relations()) == 1 {
-                out.push(Correlation::new(
-                    "AU-063",
-                    "corroboration_gap",
-                    Severity::Low,
-                    "only one identity pathway currently connects the pair",
-                    vec![ids[left].to_owned(), ids[right].to_owned()],
-                    scan_id,
-                    now,
-                ));
-            }
-        }
-    }
-    out
+    let ids = sorted_uids(context);
+    // Two pathways settle that a pair has more than one, so no pair is counted past two.
+    pairwise_disjoint_pathways(&ids, context.relations(), 2)
+        .into_iter()
+        .filter(|&(_, _, pathways)| pathways == 1)
+        .map(|(left, right, _)| {
+            Correlation::new(
+                "AU-063",
+                "corroboration_gap",
+                Severity::Low,
+                "only one identity pathway currently connects the pair",
+                vec![ids[left].to_owned(), ids[right].to_owned()],
+                scan_id,
+                now,
+            )
+        })
+        .collect()
 }
 
 pub fn rule_au_070_connection_broker(

@@ -266,31 +266,53 @@ impl Graph {
         components
     }
 
+    /// The core number of each node: the largest `k` such that the node lies in a subgraph
+    /// whose every node has at least `k` neighbours in it. Computed by Batagelj and Zaversnik's
+    /// bucket peeling in O(V + E): nodes sit in one array sorted by remaining degree, and peeling
+    /// a node moves each neighbour of higher degree down one bucket with a swap.
     #[must_use]
     pub fn coreness(&self) -> Vec<usize> {
         let n = self.node_count();
-        let mut remaining = vec![true; n];
         let mut degree: Vec<usize> = (0..n).map(|index| self.degree(index)).collect();
-        let mut out = vec![0; n];
-        let mut current_core = 0;
-        for _ in 0..n {
-            let Some((node, min_degree)) = (0..n)
-                .filter(|&index| remaining[index])
-                .map(|index| (index, degree[index]))
-                .min_by_key(|&(index, deg)| (deg, index))
-            else {
-                break;
-            };
-            remaining[node] = false;
-            current_core = current_core.max(min_degree);
-            out[node] = current_core;
+        let max_degree = degree.iter().copied().max().unwrap_or(0);
+        // `bucket[d]` is the position in `order` of the first node of remaining degree `d`.
+        let mut bucket = vec![0_usize; max_degree + 1];
+        for &d in &degree {
+            bucket[d] += 1;
+        }
+        let mut first = 0;
+        for slot in &mut bucket {
+            let size = *slot;
+            *slot = first;
+            first += size;
+        }
+        let mut order = vec![0_usize; n];
+        let mut position = vec![0_usize; n];
+        let mut fill = bucket.clone();
+        for node in 0..n {
+            position[node] = fill[degree[node]];
+            order[position[node]] = node;
+            fill[degree[node]] += 1;
+        }
+        for peel in 0..n {
+            let node = order[peel];
             for &neighbour in &self.adj[node] {
-                if remaining[neighbour] && degree[neighbour] > 0 {
+                if degree[neighbour] > degree[node] {
+                    let d = degree[neighbour];
+                    let head = order[bucket[d]];
+                    if head != neighbour {
+                        let at = position[neighbour];
+                        order[at] = head;
+                        position[head] = at;
+                        order[bucket[d]] = neighbour;
+                        position[neighbour] = bucket[d];
+                    }
+                    bucket[d] += 1;
                     degree[neighbour] -= 1;
                 }
             }
         }
-        out
+        degree
     }
 
     #[must_use]
@@ -420,5 +442,77 @@ mod tests {
         let (cuts, bridges) = graph.cut_vertices_and_bridges();
         assert_eq!(cuts.len(), 2);
         assert_eq!(bridges.len(), 3);
+    }
+
+    /// The min-degree peeling `coreness` used to run, kept as its oracle: each round scanned
+    /// every node left for the one of least remaining degree, so it was quadratic.
+    fn peeled_coreness(graph: &Graph) -> Vec<usize> {
+        let n = graph.node_count();
+        let mut remaining = vec![true; n];
+        let mut degree: Vec<usize> = (0..n).map(|index| graph.degree(index)).collect();
+        let mut out = vec![0; n];
+        let mut current_core = 0;
+        for _ in 0..n {
+            let Some((node, min_degree)) = (0..n)
+                .filter(|&index| remaining[index])
+                .map(|index| (index, degree[index]))
+                .min_by_key(|&(index, deg)| (deg, index))
+            else {
+                break;
+            };
+            remaining[node] = false;
+            current_core = current_core.max(min_degree);
+            out[node] = current_core;
+            for &neighbour in graph.neighbours(node) {
+                if remaining[neighbour] && degree[neighbour] > 0 {
+                    degree[neighbour] -= 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Bucket peeling finds every core number the quadratic peeling found.
+    #[test]
+    fn coreness_matches_min_degree_peeling_on_random_graphs() {
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        for round in 0..300 {
+            let graph = crate::test_support::random_graph(&mut state, 40);
+            assert_eq!(
+                graph.coreness(),
+                peeled_coreness(&graph),
+                "round {round}: {:?}",
+                graph.edge_pairs()
+            );
+        }
+    }
+
+    /// A 4-clique with a tail: the clique is the 3-core, the tail the 1-core, and the isolated
+    /// node the 0-core.
+    #[test]
+    fn coreness_of_a_clique_with_a_tail() {
+        let nodes = ["a", "b", "c", "d", "e", "f"].map(entity);
+        let link = |left: usize, right: usize| {
+            EntityRelation::new(
+                nodes[left].uid.clone(),
+                nodes[right].uid.clone(),
+                RelationKind::AssociatedWith,
+                0.5,
+            )
+        };
+        let graph = Graph::build(
+            &nodes,
+            &[
+                link(0, 1),
+                link(0, 2),
+                link(0, 3),
+                link(1, 2),
+                link(1, 3),
+                link(2, 3),
+                link(3, 4),
+            ],
+        );
+        let core = |name: usize| graph.coreness()[graph.index_of(&nodes[name].uid).unwrap()];
+        assert_eq!((0..6).map(core).collect::<Vec<_>>(), [3, 3, 3, 3, 1, 0]);
     }
 }

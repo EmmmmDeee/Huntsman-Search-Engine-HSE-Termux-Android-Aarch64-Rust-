@@ -1,4 +1,4 @@
-//! Test doubles shared by the source-client tests. Compiled only for `cargo test`.
+//! Test doubles and fixtures shared across the crate's tests. Compiled only for `cargo test`.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -102,6 +102,37 @@ impl Transport for OneResponse {
             .take()
             .expect("one request expected")
     }
+}
+
+/// A random entity graph of 1 to `max_nodes` nodes from the xorshift sequence in `state`:
+/// sparse or dense, built from duplicate, reversed and self-loop relations for `Graph::build` to
+/// fold away. A fixed seed gives the same graphs on every run.
+#[must_use]
+pub fn random_graph(state: &mut u64, max_nodes: usize) -> crate::graph::Graph {
+    use crate::entity::{Entity, EntityKind};
+    use crate::graph::{EntityRelation, Graph, RelationKind};
+
+    let mut draw = |bound: usize| -> usize {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        usize::try_from(*state % u64::try_from(bound).unwrap_or(1)).unwrap_or(0)
+    };
+    let nodes = (0..=draw(max_nodes))
+        .map(|n| Entity::new(EntityKind::Email, format!("n{n}@example.com"), 0.6, "scan"))
+        .collect::<Vec<_>>();
+    let density = 1 + draw(6);
+    let relations = (0..draw(nodes.len() * density))
+        .map(|_| {
+            EntityRelation::new(
+                nodes[draw(nodes.len())].uid.clone(),
+                nodes[draw(nodes.len())].uid.clone(),
+                RelationKind::AssociatedWith,
+                0.5,
+            )
+        })
+        .collect::<Vec<_>>();
+    Graph::build(&nodes, &relations)
 }
 
 mod tests {
