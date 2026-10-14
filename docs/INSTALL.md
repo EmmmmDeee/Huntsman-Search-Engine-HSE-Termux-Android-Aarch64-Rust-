@@ -51,6 +51,9 @@ installed (`installed_from=prebuilt main-<sha7>` or `installed_from=source
 rustc …`). It reports success only after runtime acceptance and provenance
 verification pass.
 
+Last, it sets up the web UI as a background service that restarts on its own;
+see [Keep serve running on Android](#keep-serve-running-on-android).
+
 The crate MSRV remains Rust 1.87. For a source build, `HUNTSMAN_HIBP_NO_EMBED=1`
 is exported by the installer so build-time key embedding stays disabled; runtime key use remains
 available.
@@ -149,6 +152,13 @@ provenance and attestation if you need to verify publisher/build identity.
 
 ## Uninstall from Termux
 
+Stop and remove the web UI service first:
+
+```sh
+sv-disable huntsman-serve
+rm -rf "$PREFIX/var/service/huntsman-serve" "$PREFIX/var/log/sv/huntsman-serve"
+```
+
 Remove the binary the way it was installed. `~/.huntsman/installed-revision`
 says which: `installed_from=source …` is registered with Cargo:
 
@@ -177,10 +187,11 @@ installing, remove those locations instead.
 
 ## Keep serve running on Android
 
-Start the web UI and open it in the phone's browser:
+The installer runs the web UI as a
+[termux-services](https://wiki.termux.com/wiki/Termux-services) service named
+`huntsman-serve`. Open it in the phone's browser:
 
 ```sh
-huntsman-recon serve
 termux-open-url http://127.0.0.1:8080/
 ```
 
@@ -189,27 +200,43 @@ enter, ranks the next pivots, names the seeds left unlinked and plans the
 sources to query, with no network request and no API key, so it works with
 mobile data off.
 
-`serve` prints the address it listens on as `serving=http://…/`. Port 8080 is
-also the default of other servers people run in Termux, such as code-server
-and File Browser. When it is taken, `serve` exits 69 and says so. Pass another
-port with `--bind 127.0.0.1:8081`, or `--bind 127.0.0.1:0` to have the system
-pick a free one and read it from the `serving=` line. A port below 1024 needs
-root, which Termux does not have.
+The service takes a wake lock for Termux, restarts the server within a second
+whenever it stops, starts again the next time Termux opens after a reboot, and
+is restarted onto the new binary by every install or upgrade. The installer's
+last lines say whether the page answers. Its log is
+`$PREFIX/var/log/sv/huntsman-serve/current`. Turn it off, or back on, with:
 
-Android may stop processes that Termux started while Termux is in the
-background or the screen is off, and the page then stops answering. `serve`
-prints a reminder when it starts in Termux. Before a long session, run:
+```sh
+sv-disable huntsman-serve     # stays off across reinstalls
+sv-enable huntsman-serve
+```
+
+`HUNTSMAN_SERVE_SERVICE=off` or `on` when running the installer does the same.
+`huntsman-recon doctor serve` checks the page at any time, and
+`sv status huntsman-serve` shows whether the service runs.
+
+Port 8080 is also the default of other servers people run in Termux, such as
+code-server and File Browser. When it is taken, `serve` exits 69 and says so in
+the log, and the service waits a minute before trying again instead of
+retrying every second. To run the server by hand on another port instead, turn
+the service off and pass `--bind`:
 
 ```sh
 termux-wake-lock
+huntsman-recon serve --bind 127.0.0.1:8081
 ```
 
-The wake lock keeps the CPU awake for Termux until `termux-wake-unlock`
-releases it. On Android 12 or later, the system's limit on processes started
-by apps (the "phantom process killer") can still stop the server. On Android 14
-or later, turn on "Disable child process restrictions" in Developer options and
-leave Developer options on; turning them off restores the limit. On Android 12
-and 13 the limit can only be changed over `adb`; Termux's
+`serve` prints the address it listens on as `serving=http://…/`;
+`--bind 127.0.0.1:0` has the system pick a free port. A port below 1024 needs
+root, which Termux does not have.
+
+Android may still stop Termux's processes. The wake lock keeps the CPU awake
+for Termux until `termux-wake-unlock` releases it. On Android 12 or later, the
+system's limit on processes started by apps (the "phantom process killer") can
+still stop the server. On Android 14 or later, turn on
+"Disable child process restrictions" in Developer options and leave Developer
+options on; turning them off restores the limit. On Android 12 and 13 the limit can only be changed
+over `adb`; Termux's
 [issue 2366](https://github.com/termux/termux-app/issues/2366) describes how.
 
 ## Railway deployment
