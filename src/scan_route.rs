@@ -5,7 +5,8 @@
 //! exact same classifier.
 
 use crate::canonical::{
-    canonical_domain, canonical_email, canonical_handle, canonical_name, canonical_phone,
+    canonical_coordinates, canonical_domain, canonical_email, canonical_handle, canonical_mac,
+    canonical_name, canonical_phone,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,9 +20,23 @@ pub enum ScanKind {
     Phone,
     /// Domain recon: crt.sh certificate transparency and DNS record lookups.
     Domain,
+    /// A `WiFi` network: a BSSID, a coordinate pair or an SSID, classified offline and searched
+    /// on `WiGLE` when its credentials are configured.
+    Network,
 }
 
 impl ScanKind {
+    /// Every kind, in the order the CLI usage and the Web UI list them.
+    pub const ALL: [Self; 7] = [
+        Self::People,
+        Self::Email,
+        Self::Exposure,
+        Self::Username,
+        Self::Phone,
+        Self::Domain,
+        Self::Network,
+    ];
+
     #[must_use]
     pub const fn command(self) -> &'static str {
         match self {
@@ -31,8 +46,81 @@ impl ScanKind {
             Self::Username => "username",
             Self::Phone => "phone",
             Self::Domain => "domain",
+            Self::Network => "network",
         }
     }
+}
+
+/// The longest SSID, in bytes (IEEE 802.11).
+pub const MAX_SSID_BYTES: usize = 32;
+/// Written before an SSID that would otherwise read as a BSSID or a coordinate pair.
+pub const SSID_PREFIX: &str = "ssid:";
+
+/// What a network lookup searches for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NetworkSelector {
+    /// A BSSID, lower case with `:` separators.
+    Bssid(String),
+    /// An exact SSID.
+    Ssid(String),
+    /// A point, rounded to six decimal places.
+    Area { lat: f64, lon: f64 },
+}
+
+impl NetworkSelector {
+    /// `raw` as a selector: `ssid:NAME` is always an SSID; otherwise a BSSID (`:` or `-`
+    /// separated), then a coordinate pair, then an SSID. `None` for an empty or over-long SSID,
+    /// or one with control characters. **Pure.**
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let trimmed = raw.trim();
+        if let Some(name) = trimmed.strip_prefix(SSID_PREFIX) {
+            return ssid(name);
+        }
+        Self::parse_identifier(trimmed).or_else(|| ssid(trimmed))
+    }
+
+    /// `raw` as a BSSID or a coordinate pair, never an SSID: the selectors `scan` may infer
+    /// without being told the kind. `0,0` is no position. **Pure.**
+    #[must_use]
+    pub fn parse_identifier(raw: &str) -> Option<Self> {
+        if let Some(mac) = canonical_mac(raw) {
+            return Some(Self::Bssid(mac));
+        }
+        let canonical = canonical_coordinates(raw.trim())?;
+        let (lat, lon) = canonical.split_once(',')?;
+        let (lat, lon) = (lat.parse::<f64>().ok()?, lon.parse::<f64>().ok()?);
+        (lat != 0.0 || lon != 0.0).then_some(Self::Area { lat, lon })
+    }
+
+    /// The selector as one string that [`Self::parse`] reads back to the same selector. **Pure.**
+    #[must_use]
+    pub fn canonical(&self) -> String {
+        match self {
+            Self::Bssid(bssid) => bssid.clone(),
+            Self::Area { lat, lon } => format!("{lat:.6},{lon:.6}"),
+            Self::Ssid(name) => {
+                if Self::parse(name).as_ref() == Some(self) {
+                    name.clone()
+                } else {
+                    format!("{SSID_PREFIX}{name}")
+                }
+            }
+        }
+    }
+}
+
+fn ssid(name: &str) -> Option<NetworkSelector> {
+    let name = name.trim();
+    let ok =
+        !name.is_empty() && name.len() <= MAX_SSID_BYTES && !name.chars().any(char::is_control);
+    ok.then(|| NetworkSelector::Ssid(name.to_owned()))
+}
+
+/// The canonical network selector string for `raw`, or `None` when it is not one.
+#[must_use]
+pub fn network_selector(raw: &str) -> Option<String> {
+    NetworkSelector::parse(raw).map(|selector| selector.canonical())
 }
 
 /// Parse an explicit scan kind using the aliases accepted by the CLI.
@@ -47,6 +135,7 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
         "username" | "handle" => Ok(ScanKind::Username),
         "phone" => Ok(ScanKind::Phone),
         "domain" => Ok(ScanKind::Domain),
+        "network" | "wifi" | "bssid" | "ssid" | "wigle" => Ok(ScanKind::Network),
         other => Err(other),
     }
 }
@@ -59,6 +148,7 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
         ScanKind::Username => canonical_handle(raw),
         ScanKind::Phone => canonical_phone(raw),
         ScanKind::Domain => canonical_domain(raw),
+        ScanKind::Network => network_selector(raw),
         // The people command owns the two-token rule and its offline skip path;
         // here only an empty name is non-canonical.
         ScanKind::People => {
@@ -70,15 +160,18 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
 
 /// Infer the rebuilt lookup front-end for one selector.
 ///
-/// Precedence is intentional: canonical email, explicit `@handle`, recognised
-/// phone syntax, then a person/name fallback. This preserves the existing CLI
-/// behavior while making it independently testable.
+/// Precedence is intentional: canonical email, explicit `@handle`, a BSSID or coordinate
+/// pair, recognised phone syntax, then a person/name fallback. A BSSID or coordinate pair is
+/// judged before phone syntax because its digits could otherwise read as a number. An SSID is
+/// free text, so it is never inferred.
 #[must_use]
 pub fn infer_kind(selector: &str) -> ScanKind {
     if canonical_email(selector).is_some() {
         ScanKind::Email
     } else if selector.starts_with('@') {
         ScanKind::Username
+    } else if NetworkSelector::parse_identifier(selector).is_some() {
+        ScanKind::Network
     } else if crate::phone_intl::canonicalize(selector).is_some() {
         ScanKind::Phone
     } else if canonical_domain(selector).is_some() {
@@ -154,6 +247,12 @@ mod tests {
         assert_eq!(parse_kind("handle"), Ok(ScanKind::Username));
         assert_eq!(parse_kind("phone"), Ok(ScanKind::Phone));
         assert_eq!(parse_kind("domain"), Ok(ScanKind::Domain));
+        for alias in ["network", "wifi", "bssid", "ssid", "wigle"] {
+            assert_eq!(parse_kind(alias), Ok(ScanKind::Network), "{alias}");
+        }
+        for kind in ScanKind::ALL {
+            assert_eq!(parse_kind(kind.command()), Ok(kind));
+        }
     }
 
     #[test]
@@ -163,6 +262,11 @@ mod tests {
         assert_eq!(infer_kind("+61412345678"), ScanKind::Phone);
         assert_eq!(infer_kind("example.com"), ScanKind::Domain);
         assert_eq!(infer_kind("Ada Lovelace"), ScanKind::People);
+        assert_eq!(infer_kind("00:1A:2B:3C:4D:5E"), ScanKind::Network);
+        assert_eq!(infer_kind("00-1a-2b-3c-4d-5e"), ScanKind::Network);
+        assert_eq!(infer_kind("-27.4698,153.0251"), ScanKind::Network);
+        // An SSID is free text: inferring it would turn every word into a WiGLE query.
+        assert_eq!(infer_kind("HomeWiFi"), ScanKind::People);
     }
 
     #[test]
@@ -184,5 +288,13 @@ mod tests {
             Some("ada".into())
         );
         assert_eq!(canonical_selector(ScanKind::People, "   "), None);
+        assert_eq!(
+            canonical_selector(ScanKind::Network, "00-1A-2B-3C-4D-5E"),
+            Some("00:1a:2b:3c:4d:5e".into())
+        );
+        assert_eq!(
+            canonical_selector(ScanKind::Network, " Cafe Guest "),
+            Some("Cafe Guest".into())
+        );
     }
 }
