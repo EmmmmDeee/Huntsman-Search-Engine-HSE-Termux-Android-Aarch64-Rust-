@@ -542,6 +542,29 @@ mod tests {
     }
 
     #[test]
+    fn au002_does_not_count_a_username_inferred_from_the_email() {
+        // The email's local part, derived as a username (inferred), plus a public profile found
+        // under that name. The profile is observed, but the name still adds no identity.
+        let email = ent(EntityKind::Email, "me@x.com", 0.99, "seed", false);
+        let mut username = Entity::new(EntityKind::Username, "me", 0.65, "scan");
+        username.add_evidence(evidence("email_parse", "derived from me@x.com").inferred());
+        username.add_evidence(evidence("gravatar", "public profile"));
+        let entities = vec![email, username];
+        let findings = rule_au_002_identity_cluster(&RuleContext::new(&entities, &[]), "scan", 0);
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn au002_still_counts_an_observed_username_beside_the_email() {
+        let email = ent(EntityKind::Email, "me@x.com", 0.99, "seed", false);
+        let username = ent(EntityKind::Username, "me", 0.65, "gravatar", false);
+        let entities = vec![email, username];
+        let findings = rule_au_002_identity_cluster(&RuleContext::new(&entities, &[]), "scan", 0);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].description.contains("1 username(s)"));
+    }
+
+    #[test]
     fn every_breach_module_is_a_breach_source() {
         // The module catalogue's `Breach` category and the correlator's breach family must agree,
         // or a breach module's hits never count toward `multi_breach`.
