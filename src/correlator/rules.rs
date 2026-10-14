@@ -40,10 +40,10 @@ pub fn source_family(source: &str) -> &'static str {
         | "oathnet" | "oathnet_pro" | "seeknow" | "see_know" | "stolen_tax" => "breach",
         "github_user" | "npm_author" | "crates_io" => "code",
         "reddit_user" | "hacker_news" => "forum",
-        "social_probe" | "gravatar" => "social",
+        "social_probe" | "gravatar" | "duolingo" => "social",
         "username_search" | "epieos" => "presence",
         "search_engines" | "google" | "exa_search" => "search",
-        "smtp_vrfy" | "emailrep" => "email_intel",
+        "smtp_vrfy" | "emailrep" | "openpgp_keys" => "email_intel",
         "proxycurl" | "name_intel" | "fullcontact" | "contact_enrich" | "gleif_lei"
         | "asic_director" | "au_electoral" | "au_people" | "ahpra" | "acnc_charities" => {
             "identity_registry"
