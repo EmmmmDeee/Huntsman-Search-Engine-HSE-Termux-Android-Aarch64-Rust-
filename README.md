@@ -146,10 +146,10 @@ cargo run -- dehashed help               # DeHashed subcommands; offline (search
 cargo run -- seeknow --help              # SeekNow subcommands; offline
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens of at least two letters, no network
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
-cargo run -- email nobody@example.com     # deterministic pivots + public Gravatar lookup
+cargo run -- email nobody@example.com     # deterministic pivots + public Gravatar lookup, plus every configured keyed breach leg
 cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax + OathNet evidence, then each breach's summary, flags and source links (keyed; no key = no request)
 cargo run -- exposure @some_handle  # the same for a username: stolen.tax + OathNet (HIBP searches addresses only)
-cargo run -- username octocat             # variants + public GitHub/Bluesky lookups
+cargo run -- username octocat             # variants + public GitHub/Bluesky lookups, plus stolen.tax/OathNet when keyed
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- domain example.com             # crt.sh certificate names + DNS records over DoH; network
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
@@ -354,7 +354,7 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 ### Email lookup
 
-`email ADDR [--save FILE]` canonicalises the selector, derives deterministic non-network email pivots, queries the public Gravatar profile, renders lineage, and optionally writes an unverified ledger that `verify` can reload. A missing Gravatar profile is a validated zero result; malformed or incomplete responses are not treated as absence.
+`email ADDR [--save FILE]` canonicalises the selector, derives deterministic non-network email pivots, queries the public Gravatar profile, runs every keyed breach leg that has its key (HIBP, stolen.tax, OathNet, as `exposure` does) with its incidents and `OathNet` sections after the report, renders lineage, and optionally writes an unverified ledger that `verify` can reload. With no breach key set, no breach request is made and the report is unchanged. A `username` lookup does the same with stolen.tax and OathNet. A missing Gravatar profile is a validated zero result; malformed or incomplete responses are not treated as absence.
 
 ### Username lookup
 
@@ -399,7 +399,7 @@ The API surface:
 - `GET /api/health` — process name/version and status;
 - `GET /api/modules` — the same truthful reachable-module catalogue as `modules --json`;
 - `GET /api/command` — the same validated engineering command contract as `command --json`;
-- `GET /api/lookup?kind=auto|people|email|exposure|username|phone|domain&q=SELECTOR` — one lookup through the same routing and front-ends as `scan`, returning `{route, text, entities, outcomes}` as JSON. `auto` infers the kind exactly as `scan` does; `exposure` is never inferred because it spends operator keys. Errors are JSON `{"error": …}`: 400 bad selector, 422 unusable selector, 502 every source failed, 503 lookup capacity in use;
+- `GET /api/lookup?kind=auto|people|email|exposure|username|phone|domain&q=SELECTOR` — one lookup through the same routing and front-ends as `scan`, returning `{route, text, entities, outcomes}` as JSON. `auto` infers the kind exactly as `scan` does. `exposure` is not inferred as a kind, but an `email` or `username` lookup runs every exposure leg whose key is configured, so a paid source is never skipped. Errors are JSON `{"error": …}`: 400 bad selector, 422 unusable selector, 502 every source failed, 503 lookup capacity in use;
 - `GET /api/analyze?seeds=SEEDS` — the offline multi-hop analysis of up to 16 seeds, one per line (the same spine `plan` runs), returning `{accepted, rejected, entities, relations, pivots, correlations, gaps, planned, termination, truncated}` as JSON: the links derived between the seeds, the next pivots ranked by how much of the graph each holds together, the correlations over those links, the seeds left unlinked with what would expand them, and the sources the planner would query next. Errors are JSON `{"error": …}`: 400 for no seeds, more than 16, or one over 512 bytes;
 - `GET /` — a mobile-first page with a lookup form, the outcome table, the rendered report, a "Download JSON" button, an analysis form that shows the entities, links, next pivots, correlations, gaps, planned sources and rejected seeds, and a collapsible status panel.
 

@@ -12,8 +12,8 @@ use crate::canonical::{
 pub enum ScanKind {
     People,
     Email,
-    /// Keyed breach exposure for an email. Never inferred: it spends operator keys, so it runs
-    /// only when asked for by name.
+    /// Keyed breach exposure for an email or username. Not inferred as a kind of its own: an
+    /// `email` or `username` lookup already runs every exposure leg whose key is configured.
     Exposure,
     Username,
     Phone,

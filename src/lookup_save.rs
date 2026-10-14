@@ -101,6 +101,42 @@ pub const EXPOSURE_POLICY: SavePolicy = SavePolicy {
     entity_provenance: exposure_provenance,
 };
 
+/// The exposure legs' provenance for a source they own, else `other`'s: the rule for a lookup
+/// that ran exposure alongside, so each saved claim still names the module that made it.
+fn with_exposure<'a>(
+    source: &'a str,
+    other: fn(&'a str) -> (&'a str, &'static str),
+) -> (&'a str, &'static str) {
+    match source {
+        "hibp_account" | "stolen_tax" | "oathnet" => exposure_provenance(source),
+        _ => other(source),
+    }
+}
+
+fn email_exposure_provenance(source: &str) -> (&str, &'static str) {
+    with_exposure(source, email_provenance)
+}
+
+fn username_exposure_provenance(source: &str) -> (&str, &'static str) {
+    with_exposure(source, username_provenance)
+}
+
+/// An email lookup that also ran the keyed exposure legs.
+pub const EMAIL_EXPOSURE_POLICY: SavePolicy = SavePolicy {
+    default_source: "email_parse",
+    does_not_show: "an email-derived or breach exposure lead is not an identity-resolution verdict",
+    outcome_provenance: email_exposure_provenance,
+    entity_provenance: email_exposure_provenance,
+};
+
+/// A username lookup that also ran the keyed exposure legs.
+pub const USERNAME_EXPOSURE_POLICY: SavePolicy = SavePolicy {
+    default_source: "username_variants",
+    does_not_show: "a public username-profile or breach exposure lead is not an identity-resolution verdict",
+    outcome_provenance: username_exposure_provenance,
+    entity_provenance: username_exposure_provenance,
+};
+
 fn domain_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "crtsh" => ("crtsh", "src/crtsh.rs"),

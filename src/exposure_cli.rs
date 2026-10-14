@@ -310,6 +310,56 @@ pub struct Sources<'a> {
     pub oathnet: Option<(&'a dyn Transport, &'a Keys)>,
 }
 
+impl Sources<'_> {
+    /// Whether a lookup of `selector` would reach at least one keyed leg: HIBP for an address,
+    /// stolen.tax or `OathNet` for either. Another lookup of the same selector runs exposure when
+    /// this holds, so a configured paid source is never left out of it.
+    #[must_use]
+    pub fn reach(&self, selector: &str) -> bool {
+        let hibp = self.hibp.is_some() && canonical_email(selector).is_some();
+        canonical_selector(selector).is_some()
+            && (hibp || self.stolen_tax.is_some() || self.oathnet.is_some())
+    }
+}
+
+/// Fold an exposure `report` into another lookup's `entities` and `outcomes` for the same
+/// selector, and render the combined report: one entity and outcome table, then the incidents
+/// and `OathNet` sections. The seed entity both lookups emit is merged by uid. On an error,
+/// `entities` and `outcomes` are left as they were.
+///
+/// # Errors
+/// The report renderer's error.
+pub fn fold_into(
+    entities: &mut Vec<Entity>,
+    outcomes: &mut Vec<SourceExecutionOutcome>,
+    report: Report,
+) -> Result<String, String> {
+    let Report {
+        entities: found,
+        outcomes: ran,
+        incidents,
+        oathnet,
+    } = report;
+    let mut all_entities = entities.clone();
+    all_entities.extend(found);
+    merge_by_uid(&mut all_entities);
+    let mut all_outcomes = outcomes.clone();
+    all_outcomes.extend(ran);
+    let mut text = lookup_report::render(&all_entities, &all_outcomes)?;
+    text.push_str(&render_incidents(incidents.as_deref()));
+    text.push_str(&render_oathnet(oathnet.as_deref()));
+    *entities = all_entities;
+    *outcomes = all_outcomes;
+    Ok(text)
+}
+
+/// The line that stands for an exposure run that gave no report, so the lookup it rode along
+/// with still says the keyed legs were tried: `exposure=unavailable reason=...`.
+#[must_use]
+pub fn unavailable_line(reason: &str) -> String {
+    format!("exposure=unavailable reason={}\n", escape_controls(reason))
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
     pub entities: Vec<Entity>,
@@ -1247,6 +1297,93 @@ mod tests {
             Some("ada@example.com")
         );
         assert_eq!(canonical_selector("@Ada_99").as_deref(), Some("ada_99"));
+    }
+
+    fn oathnet_only<'a>(transport: &'a dyn Transport, keys: &'a Keys) -> Sources<'a> {
+        Sources {
+            oathnet: Some((transport, keys)),
+            ..Sources::default()
+        }
+    }
+
+    fn oathnet_keys() -> Keys {
+        Keys::parse(&format!(
+            "{}=on-test-key-0123456789abcdef\n",
+            oathnet::KEY_SLOT
+        ))
+        .unwrap_or_else(|e| panic!("fixture keys: {e}"))
+    }
+
+    #[test]
+    fn a_configured_keyed_leg_reaches_every_selector_it_can_search() {
+        let transport = crate::test_support::OneResponse::json(404, "");
+        let keys = oathnet_keys();
+        assert!(
+            !Sources::default().reach("ada@example.com"),
+            "no key, no leg"
+        );
+        let sources = oathnet_only(&transport, &keys);
+        assert!(sources.reach("ada@example.com"));
+        assert!(sources.reach("@Ada_99"), "OathNet searches a username too");
+        assert!(!sources.reach("two words"), "not a selector");
+    }
+
+    #[test]
+    fn an_email_lookup_folds_in_the_keyed_legs_under_one_report() {
+        let gravatar = crate::test_support::OneResponse::json(404, "");
+        let crate::email_cli::EmailRun::Printed { report: email, .. } =
+            crate::email_cli::run(&gravatar, "ada@example.com", 7)
+        else {
+            panic!("expected an email report");
+        };
+        let body = serde_json::json!({"success": true, "data": {
+            "items": [{"email": "ada@example.com", "password": "hunter2", "dbname": "acme_forum"}],
+            "meta": {"total": 1, "has_more": false}
+        }});
+        let transport = FakeHibp {
+            body: body.to_string(),
+            urls: std::sync::Mutex::default(),
+        };
+        let keys = oathnet_keys();
+        let ExposureRun::Printed { report, .. } =
+            run(oathnet_only(&transport, &keys), "ada@example.com", 7)
+        else {
+            panic!("expected an exposure report");
+        };
+        let (mut entities, mut outcomes) = (email.entities, email.outcomes);
+        let before = outcomes.len();
+        let text = match fold_into(&mut entities, &mut outcomes, report) {
+            Ok(text) => text,
+            Err(m) => panic!("fold failed: {m}"),
+        };
+        let legs: Vec<&str> = outcomes[before..]
+            .iter()
+            .map(|o| o.module.as_str())
+            .collect();
+        assert_eq!(legs, [SOURCE, STOLEN_TAX_SOURCE, OATHNET_SOURCE]);
+        assert_eq!(text.matches("entities=").count(), 1, "{text}");
+        assert!(text.contains("oathnet_breaches=1"), "{text}");
+        assert!(!text.contains("hunter2"), "{text}");
+        let seeds = entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email && e.raw_value == "ada@example.com")
+            .count();
+        assert_eq!(seeds, 1, "the seed both lookups emit is merged");
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.raw_value == "ada@example.com"
+                    && e.tags.iter().any(|t| t == tags::BREACH)),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn an_unavailable_exposure_line_cannot_forge_a_row() {
+        assert_eq!(
+            unavailable_line("refused\nentities=9"),
+            "exposure=unavailable reason=refused\\nentities=9\n"
+        );
     }
 
     #[test]

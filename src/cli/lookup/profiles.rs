@@ -13,14 +13,14 @@ use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::Entity;
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
-use huntsman_recon::exposure_cli::{EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
+use huntsman_recon::exposure_cli::{self, EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
 use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
 use huntsman_recon::hibp::key::KeyLoader;
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
-    self, DOMAIN_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, PEOPLE_POLICY, PHONE_POLICY, SavePolicy,
-    USERNAME_POLICY,
+    self, DOMAIN_POLICY, EMAIL_EXPOSURE_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, PEOPLE_POLICY,
+    PHONE_POLICY, SavePolicy, USERNAME_EXPOSURE_POLICY, USERNAME_POLICY,
 };
 use huntsman_recon::oathnet;
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
@@ -97,53 +97,36 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
         ScanKind::Email => {
             let transport = UreqTransport::new(&TransportConfig::default());
             match huntsman_recon::email_cli::run(&transport, selector, now) {
-                EmailRun::Printed { text, report } => {
-                    Ok(done(text, report.entities, report.outcomes, EMAIL_POLICY))
-                }
+                EmailRun::Printed { text, report } => Ok(with_exposure(
+                    selector,
+                    now,
+                    done(text, report.entities, report.outcomes, EMAIL_POLICY),
+                    EMAIL_EXPOSURE_POLICY,
+                )),
                 EmailRun::Network(m) => Err(Refused::Network(m)),
                 EmailRun::Failed(m) => Err(Refused::Unavailable(m)),
             }
         }
-        ScanKind::Exposure => {
-            let client = KeyLoader::default_chain(None)
-                .load()
-                .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
-            // Same rule as `recon stolen-tax`: the stolen.tax and OathNet keys are read from the
-            // environment, never the default file.
-            let keys = Keys::from_env();
-            let transport = UreqTransport::new(&stolen_tax::transport_config());
-            let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
-            let sources = Sources {
-                hibp: client.as_ref(),
-                stolen_tax: keys
-                    .get(stolen_tax::KEY_SLOT)
-                    .is_some()
-                    .then_some((&transport as &dyn Transport, &keys)),
-                oathnet: keys
-                    .get(oathnet::KEY_SLOT)
-                    .is_some()
-                    .then_some((&oathnet_transport as &dyn Transport, &keys)),
-            };
-            match huntsman_recon::exposure_cli::run(sources, selector, now) {
-                ExposureRun::Printed { text, report } => Ok(done(
-                    text,
-                    report.entities,
-                    report.outcomes,
-                    EXPOSURE_POLICY,
-                )),
-                ExposureRun::Network(m) => Err(Refused::Network(m)),
-                ExposureRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
-        }
+        ScanKind::Exposure => match exposure(selector, now, false) {
+            Some(ExposureRun::Printed { text, report }) => Ok(done(
+                text,
+                report.entities,
+                report.outcomes,
+                EXPOSURE_POLICY,
+            )),
+            Some(ExposureRun::Network(m)) => Err(Refused::Network(m)),
+            Some(ExposureRun::Failed(m)) => Err(Refused::Unavailable(m)),
+            None => Err(Refused::Unavailable("no exposure leg ran".into())),
+        },
         ScanKind::Username => {
             let transport = UreqTransport::new(&TransportConfig::default());
             let keys = Keys::from_env();
             match huntsman_recon::username_cli::run(&transport, &keys, selector, now) {
-                UsernameRun::Printed { text, report } => Ok(done(
-                    text,
-                    report.entities,
-                    report.outcomes,
-                    USERNAME_POLICY,
+                UsernameRun::Printed { text, report } => Ok(with_exposure(
+                    selector,
+                    now,
+                    done(text, report.entities, report.outcomes, USERNAME_POLICY),
+                    USERNAME_EXPOSURE_POLICY,
                 )),
                 UsernameRun::Failed(m) => Err(Refused::Unavailable(m)),
             }
@@ -165,6 +148,60 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
             }
         }
     }
+}
+
+/// Run the keyed exposure legs for `selector`, each built only when its key is configured. With
+/// `only_if_reachable`, `None` when no configured leg can search `selector`, so a lookup with no
+/// keys set sends nothing more and prints what it did before.
+fn exposure(selector: &str, now: u64, only_if_reachable: bool) -> Option<ExposureRun> {
+    let client = KeyLoader::default_chain(None)
+        .load()
+        .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
+    // Same rule as `recon stolen-tax`: the stolen.tax and OathNet keys are read from the
+    // environment, never the default file.
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&stolen_tax::transport_config());
+    let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
+    let sources = Sources {
+        hibp: client.as_ref(),
+        stolen_tax: keys
+            .get(stolen_tax::KEY_SLOT)
+            .is_some()
+            .then_some((&transport as &dyn Transport, &keys)),
+        oathnet: keys
+            .get(oathnet::KEY_SLOT)
+            .is_some()
+            .then_some((&oathnet_transport as &dyn Transport, &keys)),
+    };
+    if only_if_reachable && !sources.reach(selector) {
+        return None;
+    }
+    Some(exposure_cli::run(sources, selector, now))
+}
+
+/// An email or username lookup with every configured paid breach leg folded in: a keyed source
+/// that can search the selector always runs, never only when `exposure` is asked for by name.
+/// The report then saves under `policy`, which names each leg's own module. An exposure run that
+/// gave no report leaves the lookup as it was, plus one `exposure=unavailable` line.
+fn with_exposure(selector: &str, now: u64, mut found: Collected, policy: SavePolicy) -> Collected {
+    let reason = match exposure(selector, now, true) {
+        None => return found,
+        Some(ExposureRun::Printed { report, .. }) => {
+            match exposure_cli::fold_into(&mut found.entities, &mut found.outcomes, report) {
+                Ok(text) => {
+                    found.text = text;
+                    found.policy = policy;
+                    return found;
+                }
+                Err(m) => m,
+            }
+        }
+        Some(ExposureRun::Network(m) | ExposureRun::Failed(m)) => m,
+    };
+    found
+        .text
+        .push_str(&exposure_cli::unavailable_line(&reason));
+    found
 }
 
 /// The exit status for a rejected lookup argument. A value the operator supplied that cannot be
