@@ -1,9 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::entity::{Entity, EntityKind};
-use crate::relation::{
-    PairPathways, RelationKind, basis_kind, connection_brokers, resolve_identity_clusters,
-};
+use crate::relation::{PairPathways, RelationKind, basis_kind, connection_brokers};
 use crate::tags;
 use crate::timefmt::parse_timestamp;
 
@@ -315,8 +313,9 @@ pub fn rule_au_060_transitive_identity_closure(
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    resolve_identity_clusters(context.relations())
-        .into_iter()
+    context
+        .identity_clusters()
+        .iter()
         .filter(|cluster| cluster.len() >= 3)
         .map(|cluster| {
             Correlation::new(
@@ -327,7 +326,7 @@ pub fn rule_au_060_transitive_identity_closure(
                     "{} entities joined by identity-binding relations",
                     cluster.len()
                 ),
-                cluster,
+                cluster.clone(),
                 scan_id,
                 now,
             )
@@ -460,7 +459,7 @@ pub fn rule_au_071_robust_identity_cluster(
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    let clusters = resolve_identity_clusters(context.relations());
+    let clusters = context.identity_clusters();
     let mut cluster_of = HashMap::<&str, usize>::new();
     for (number, cluster) in clusters.iter().enumerate() {
         if cluster.len() >= 4 {
@@ -480,7 +479,7 @@ pub fn rule_au_071_robust_identity_cluster(
         }
     }
     clusters
-        .into_iter()
+        .iter()
         .zip(kinds.iter().zip(&bases))
         .filter(|(_, (kinds, bases))| kinds.len() >= 2 && bases.len() >= 2)
         .map(|(cluster, (kinds, bases))| {
@@ -495,7 +494,7 @@ pub fn rule_au_071_robust_identity_cluster(
                     kinds.len(),
                     bases.len()
                 ),
-                cluster,
+                cluster.clone(),
                 scan_id,
                 now,
             )
