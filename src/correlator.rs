@@ -1,11 +1,11 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::canonical_handle;
 use crate::entity::Entity;
-use crate::relation::Relation;
+use crate::relation::{self, Relation};
 use crate::tags;
 
 mod rules;
@@ -266,34 +266,10 @@ static REGISTRY: [&dyn Rule; 12] = [
     &AU_109, &AU_110,
 ];
 
-#[must_use]
-pub fn registry() -> &'static [&'static dyn Rule] {
+/// Every rule, in the order a pass runs them. [`evaluate_rules`] is the only caller, so every
+/// correlation comes from one pass over one rule input.
+fn registry() -> &'static [&'static dyn Rule] {
     &REGISTRY
-}
-
-pub struct Correlator;
-
-impl Correlator {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
-
-    #[must_use]
-    pub fn run_on(
-        &self,
-        entities: &[Entity],
-        relations: &[Relation],
-        scan_id: &str,
-    ) -> Vec<Correlation> {
-        evaluate_rules(entities, relations, scan_id)
-    }
-}
-
-impl Default for Correlator {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 pub fn rank_and_sort(correlations: &mut [Correlation], entities: &[Entity]) {
@@ -329,15 +305,55 @@ pub fn confirmed_only(entities: &[Entity]) -> Vec<Entity> {
         .collect()
 }
 
+/// The relations a rule pass reads: those [`relation::derive_all`] infers from the confirmed
+/// entities and those `observed`, kept only where both ends are confirmed entities, each
+/// `(from, to, kind)` once at its highest confidence.
+///
+/// A relation through a candidate, or to a uid the scan holds no entity for, is not read: a rule
+/// would name that entity, or link two confirmed entities through it, and neither was confirmed.
+fn rule_relations(confirmed: &[Entity], observed: &[Relation], scan_id: &str) -> Vec<Relation> {
+    let members = confirmed
+        .iter()
+        .map(|entity| entity.uid.as_str())
+        .collect::<HashSet<_>>();
+    let joins_members = |relation: &Relation| {
+        members.contains(relation.from_uid.as_str()) && members.contains(relation.to_uid.as_str())
+    };
+    let relations = relation::derive_all(confirmed, scan_id)
+        .into_iter()
+        .filter(|relation| joins_members(relation))
+        .chain(
+            observed
+                .iter()
+                .filter(|relation| joins_members(relation))
+                .cloned(),
+        )
+        .collect();
+    relation::collapse_duplicates_max_confidence(relations)
+}
+
+/// Run every rule once over one scan's entities. The analysis behind `plan` and the web UI, and
+/// `correlate` on a saved scan, all correlate here, so the same entities give the same
+/// correlations whichever path they take.
+///
+/// Candidates are dropped first. The rules then read the confirmed entities and the relations
+/// between them (see [`rule_relations`]); `observed` carries relations a collector recorded,
+/// such as those stored with a saved scan. Every correlation is stamped with the scan's latest
+/// observation, not the wall clock, so correlating the same scan again gives identical output.
 #[must_use]
 pub fn evaluate_rules(
     entities: &[Entity],
-    relations: &[Relation],
+    observed: &[Relation],
     scan_id: &str,
 ) -> Vec<Correlation> {
     let confirmed = confirmed_only(entities);
-    let context = RuleContext::new(&confirmed, relations);
-    let now = crate::entity::unix_now();
+    let relations = rule_relations(&confirmed, observed, scan_id);
+    let context = RuleContext::new(&confirmed, &relations);
+    let now = entities
+        .iter()
+        .map(|entity| entity.observed_at_unix)
+        .max()
+        .unwrap_or(0);
     let mut out = Vec::new();
     for rule in registry() {
         out.extend(rule.run(&context, scan_id, now));
@@ -672,6 +688,78 @@ mod tests {
         }
         for _ in 0..8 {
             assert_eq!(evaluate_rules(&entities, &relations, "scan"), first);
+        }
+    }
+
+    /// The rules read only relations between confirmed entities. A candidate is an unconfirmed
+    /// guess, dropped before the rules run, and a uid the scan holds no entity for is unknown, so
+    /// a link through either asserts nothing. Here three confirmed entities that share nothing
+    /// are each linked to a candidate handle and to an unknown uid. Before, both joined the
+    /// confirmed entities' identity cluster (AU-060, AU-071), brokered their strongest paths
+    /// (AU-070), and gave every two of them two independent pathways (AU-062).
+    #[test]
+    fn identity_links_run_only_through_confirmed_entities() {
+        let confirmed = [
+            ent(EntityKind::Email, "ann@mail.example", 0.9, "hibp", false),
+            ent(EntityKind::Username, "bob", 0.9, "github_user", false),
+            ent(EntityKind::Phone, "15551112222", 0.9, "name_intel", false),
+        ];
+        let candidate = ent(EntityKind::Username, "guess", 0.9, "username_cli", true);
+        let unknown = "uid-of-no-entity";
+        let mut relations = Vec::new();
+        for entity in &confirmed {
+            relations.push(Relation::new(
+                &entity.uid,
+                &candidate.uid,
+                RelationKind::AliasOf,
+                0.9,
+                "scan",
+            ));
+            relations.push(Relation::new(
+                unknown,
+                &entity.uid,
+                RelationKind::IdentifiedBy,
+                0.8,
+                "scan",
+            ));
+        }
+        let mut entities = confirmed.to_vec();
+        entities.push(candidate.clone());
+
+        let correlations = evaluate_rules(&entities, &relations, "scan");
+        for correlation in &correlations {
+            for uid in &correlation.entity_uids {
+                assert!(
+                    confirmed.iter().any(|entity| &entity.uid == uid),
+                    "{} names {uid}, which is not a confirmed entity: {correlation:?}",
+                    correlation.rule_id
+                );
+            }
+        }
+        let identity_rules = ["AU-060", "AU-062", "AU-063", "AU-070", "AU-071"];
+        assert!(
+            correlations
+                .iter()
+                .all(|correlation| !identity_rules.contains(&correlation.rule_id.as_str())),
+            "no two confirmed entities are linked: {correlations:?}"
+        );
+    }
+
+    /// A correlation is stamped with the scan's latest observation, not the wall clock, so
+    /// correlating the same scan again, now or a year later, gives identical output.
+    #[test]
+    fn correlations_are_stamped_with_the_scans_latest_observation() {
+        let mut early = ent(EntityKind::Email, "a@example.com", 0.95, "hibp", false);
+        for source in ["dehashed", "search_engines"] {
+            early.add_evidence(evidence(source, "seen"));
+        }
+        early.observed_at_unix = 1_000;
+        let mut late = ent(EntityKind::Username, "zed", 0.9, "github_user", false);
+        late.observed_at_unix = 2_000;
+        let correlations = evaluate_rules(&[early, late], &[], "scan");
+        assert!(!correlations.is_empty(), "AU-003 fires on the email");
+        for correlation in &correlations {
+            assert_eq!(correlation.ts, 2_000, "{correlation:?}");
         }
     }
 }
