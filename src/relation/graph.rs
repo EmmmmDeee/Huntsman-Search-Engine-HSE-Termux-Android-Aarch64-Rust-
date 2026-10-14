@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 
 use crate::union_find::UnionFind;
 
-use super::types::{Relation, RelationKind};
+use super::types::{Basis, Relation, RelationKind};
 
 /// How deep a pathway that `disjoint_pathways` counts may run.
 const PATHWAY_MAX_DEPTH: usize = 8;
@@ -21,12 +21,12 @@ struct IdentityIndex<'a> {
     nodes: HashMap<&'a str, usize>,
     /// The endpoints and confidence of each identity-binding relation, in input order.
     edges: Vec<(usize, usize, f64)>,
-    /// The number of the basis each edge rests on: its relation's `basis`, or, for a relation
-    /// with none, the link between its two nodes, shared by every such relation joining them
-    /// either way round.
+    /// The number of what each edge rests on (see [`Relation::rests_on`]): its relation's named
+    /// basis, or the link between its two nodes, shared by every relation without a named basis
+    /// that joins them, either way round.
     basis: Vec<usize>,
-    /// Each basis by number: the name a relation gave it, or `None` for the link between two nodes.
-    bases: Vec<Option<&'a str>>,
+    /// What each basis number stands for.
+    bases: Vec<Basis<'a>>,
     /// The edges at each node, in input order. A self-loop is listed twice and never followed.
     incident: Vec<Vec<usize>>,
 }
@@ -41,8 +41,7 @@ impl<'a> IdentityIndex<'a> {
             bases: Vec::new(),
             incident: Vec::new(),
         };
-        let mut named = HashMap::<&'a str, usize>::new();
-        let mut links = HashMap::<(usize, usize), usize>::new();
+        let mut numbers = HashMap::<Basis<'a>, usize>::new();
         for relation in relations
             .iter()
             .filter(|relation| relation.kind.binds_identity())
@@ -50,13 +49,11 @@ impl<'a> IdentityIndex<'a> {
             let from = index.intern(&relation.from_uid);
             let to = index.intern(&relation.to_uid);
             let edge = index.edges.len();
+            let rests_on = relation.rests_on();
             let fresh = index.bases.len();
-            let basis = match relation.basis.as_deref() {
-                Some(name) => *named.entry(name).or_insert(fresh),
-                None => *links.entry((from.min(to), from.max(to))).or_insert(fresh),
-            };
+            let basis = *numbers.entry(rests_on).or_insert(fresh);
             if basis == fresh {
-                index.bases.push(relation.basis.as_deref());
+                index.bases.push(rests_on);
             }
             index.edges.push((from, to, relation.confidence));
             index.basis.push(basis);
@@ -127,10 +124,9 @@ impl<'a> IdentityIndex<'a> {
     fn sole_basis(&self, search: &Search, step: usize) -> Option<&'a str> {
         let mut edges = search.edges(step).map(|edge| self.basis[edge]);
         let first = edges.next()?;
-        if edges.all(|basis| basis == first) {
-            self.bases[first]
-        } else {
-            None
+        match self.bases[first] {
+            Basis::Named(name) if edges.all(|basis| basis == first) => Some(name),
+            _ => None,
         }
     }
 

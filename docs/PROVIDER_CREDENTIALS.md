@@ -11,7 +11,7 @@ these slots without printing their values.
 
 | Provider | Runtime slot(s) | Integration state |
 | --- | --- | --- |
-| WiGLE | `HUNTSMAN_WIGLE_USER`, `HUNTSMAN_WIGLE_TOKEN` | credential material recovered; validate/reissue before production use if historical exposure applies |
+| WiGLE | `HUNTSMAN_WIGLE_USER`, `HUNTSMAN_WIGLE_TOKEN` | used by `network` (CLI, `scan -k network`, web UI) when both are set in the environment: the API Name and API Token from https://wigle.net/account (not the encoded value); one daily WiGLE query per search (a BSSID or LAT,LON searches WiFi and Bluetooth, so two); `credential-status --probe` checks the pair without spending a query |
 | Brave Search | `HUNTSMAN_BRAVE_KEY` | owned credential material located; validate/reissue before production use if historical exposure applies |
 | Shodan | `HUNTSMAN_SHODAN_KEY` | private stored credential located; validity unverified |
 | Whoxy | `HUNTSMAN_WHOXY_KEY` | private stored credential located; validity unverified |

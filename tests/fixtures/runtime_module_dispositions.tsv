@@ -102,6 +102,7 @@ method_actors_osint	leaf	indicator triage method actors composed over classifier
 metrics	runtime	shared scan metrics
 module	runtime	provider economics metadata
 navigator	exporter	ATT&CK Navigator output from admitted claims
+network_cli	adapter	network lookup front-end reached from network, scan -k network and /api/lookup
 numverify	adapter	Numverify leg reached through phone_cli from phone, scan -k phone and /api/lookup when its key is set
 oathnet	adapter	OathNet breach-search leg reached through exposure_cli from exposure, scan -k exposure and /api/lookup
 openpgp_keys	adapter	keys.openpgp.org verified key-identity source reached through email_cli from email, scan -k email and /api/lookup
@@ -171,3 +172,4 @@ virustotal	adapter	VirusTotal leg reached through ip_cli and domain_cli when its
 wayback	adapter	Internet Archive Wayback CDX client
 web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
+wigle	adapter	WiGLE network-search leg reached through network_cli from network, scan -k network and /api/lookup
