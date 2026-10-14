@@ -26,6 +26,9 @@ fn termux_runtime_harness_targets_current_binary_and_api_contract() {
         "/api/modules",
         "/api/command",
         "verify_idle_connections",
+        "verify_web_ui",
+        r#""$HSE_BIN" doctor serve --bind "$bind""#,
+        "serve=healthy",
         "idle connections do not delay a request",
         "TERMUX_RUNTIME_ACCEPTANCE",
         "server lifecycle pass=2 (restart)",
@@ -43,6 +46,9 @@ fn termux_runtime_harness_targets_current_binary_and_api_contract() {
         "/api/v1/modules",
         "command -v hse || true",
         "  cd \"$WORK_DIR\"\n  timeout",
+        // The web UI probe lives in `doctor serve`; the harness must not keep a second copy.
+        "/api/analyze?seeds=",
+        "content-security-policy",
     ] {
         assert!(
             !text.contains(stale),
@@ -141,6 +147,7 @@ fn the_harness_passes_against_the_built_binary_in_host_mode() {
         "PASS  huntsman-recon --version executes",
         "PASS  offline check and ledger verification execute in a disposable directory",
         "PASS  module and command APIs return current structured state",
+        "PASS  web UI page loads under its policy and its offline analysis answers",
         "PASS  idle connections do not delay a request",
         "PASS  server lifecycle pass=2 (restart)",
         "PASS  HOST_RUNTIME_ACCEPTANCE (not a handset pass)",

@@ -295,7 +295,8 @@ pub fn run_scan<T: Transport + ?Sized>(
     // refusal, a `Failed` run of a networked front-end is unavailable, and a failed phone
     // lookup, which is offline, is bad data.
     let entities = match scan.target_type {
-        "EMAILADDR" => match email_cli::run(transport, &scan.target, now_unix) {
+        // Every keyed source for the address runs when its key is set.
+        "EMAILADDR" => match email_cli::run_keyed(transport, keys, &scan.target, now_unix) {
             EmailRun::Printed { report, .. } => report.entities,
             EmailRun::Network(message) => return Err(SfRefused::Network(message)),
             EmailRun::Failed(message) => return Err(SfRefused::Unavailable(message)),
@@ -304,7 +305,12 @@ pub fn run_scan<T: Transport + ?Sized>(
             UsernameRun::Printed { report, .. } => report.entities,
             UsernameRun::Failed(message) => return Err(SfRefused::Unavailable(message)),
         },
-        "PHONE_NUMBER" => match phone_cli::run(&scan.target, now_unix) {
+        // Passive mode stays offline; otherwise the Numverify leg runs when its key is set.
+        "PHONE_NUMBER" => match if scan.use_case == "passive" {
+            phone_cli::run(&scan.target, now_unix)
+        } else {
+            phone_cli::run_keyed(transport, keys, &scan.target, now_unix)
+        } {
             PhoneRun::Printed { report, .. } => report.entities,
             PhoneRun::Failed(message) => return Err(SfRefused::Data(message)),
         },

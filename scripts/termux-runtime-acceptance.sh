@@ -197,6 +197,22 @@ verify_api() {
   [ "$(curl --silent --max-time 5 -o /dev/null -w '%{http_code}' "$base/api/lookup?kind=phone&q=%2B61412345678")" = 403 ] || return 1
 }
 
+# The page the phone's browser opens. It must arrive whole with the policy that lets its own
+# inline script run, and that script must call the endpoints this harness proves, so a page
+# that no longer loads or no longer reaches the server cannot pass.
+# The web UI as the phone's browser sees it, through the same probe `doctor` runs: the page
+# loads under its policy with its script's hash, calls its APIs, and the offline analysis
+# answers. `doctor serve` exits 0 only when all of that holds.
+verify_web_ui() {
+  local bind="$1"
+  "$HSE_BIN" doctor serve --bind "$bind" >"$WORK_DIR/doctor-serve.txt" 2>&1 || {
+    cat "$WORK_DIR/doctor-serve.txt" >&2
+    return 1
+  }
+  kill -0 "$SERVER_PID" 2>/dev/null || return 1
+  grep -qx "serve=healthy .*" "$WORK_DIR/doctor-serve.txt"
+}
+
 # A browser opens speculative connections and sends nothing on them. A server that serves one
 # connection at a time makes the next request wait for each of them, so the web UI stalls for
 # seconds. Hold two such connections open and ask for the health page with a short limit.
@@ -231,6 +247,9 @@ start_and_verify_server() {
 
   verify_api "$base" || fail 'module/command APIs did not pass functional checks'
   pass 'module and command APIs return current structured state'
+
+  verify_web_ui "$bind" || fail 'the web UI page or its offline analysis did not load'
+  pass 'web UI page loads under its policy and its offline analysis answers'
 
   verify_idle_connections "$bind" ||
     fail 'a request waited for idle connections, as a browser with speculative sockets would'
