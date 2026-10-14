@@ -44,6 +44,10 @@ report. A stable release needs its own version heading in this file, cut when th
 
 - rustls 0.23.45 → 0.23.46 (lockfile only). The `cargo audit` workflow, run because #933 touched the manifest, flagged the locked version with four advisories published 2026-10-14 and all fixed in 0.23.46: RUSTSEC-2026-0346 (`Debug` impls for client session values expose TLS secrets), -0347 (buffered application data sent to the outer server after ECH rejection), -0348 (Brotli certificate decompression can allocate up to 1 GiB before authentication) and -0349 (an unauthenticated ServerHello can downgrade later connections to classical key exchange). Every HTTPS request the binary makes, DNS over HTTPS included, goes through this crate.
 
+### Removed
+
+- The four async engine crates under `crates/` (`huntsman-core`, `huntsman-storage`, `huntsman-collectors`, `huntsman-pipeline`; about 6,500 lines) and the ten library modules with no caller (`assurance`, `breach`, `diamond`, `diff`, `key_health`, `mediawiki`, `method_actor_stateful`, `method_actors_osint`, `repository_identity`, `trust`; about 3,100 lines) were removed. The root package never depended on the crates, which brought 21 lockfile packages, among them `tokio`, `redb`, `blake3` and `tracing`, that the shipped binary never used, and nothing imported the modules. The shipped `huntsman-recon` binary is unchanged, because nothing it builds depended on them, and the acceptance gate no longer compiles or tests them.
+
 ### Fixed
 
 - `serve` keeps running when `accept` fails for a reason that passes. Every open connection holds a few file descriptors, so a burst of connections under Termux's descriptor limit (or Android memory pressure, or a client resetting before its connection was taken) made `accept` fail, and `serve` exited 69 on the first such failure, leaving the web UI dead until it was restarted by hand. It now notes the failure once on stderr and pauses (10 ms, doubling to 500 ms) until connections finish; only a listener that can never accept again (EBADF, EINVAL, an unsupported socket) ends it. `tests/serve_resilience.rs` runs the binary under `ulimit -n 12` and fails on the old loop.

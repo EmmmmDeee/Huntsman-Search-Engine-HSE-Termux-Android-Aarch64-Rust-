@@ -6,9 +6,9 @@ Label an issue `dual-pass`, or dispatch the workflow with an issue number. The i
 
 ```json
 {
-  "targets": [{"path": "src/repository_identity.rs", "signatures": ["pub const CANONICAL_REPOSITORY"]}],
-  "new_tests": [{"path": "tests/generated_1.rs", "signatures": ["generated_identity_is_nonempty"], "source": "..."}],
-  "patches": [{"diff": "", "ops": [{"path": "src/repository_identity.rs", "kind": "replace_fn", "name": "canonical", "body": "fn canonical() {}"}]}]
+  "targets": [{"path": "src/canonical.rs", "signatures": ["pub fn canonical_name"]}],
+  "new_tests": [{"path": "tests/generated_1.rs", "signatures": ["generated_name_is_nonempty"], "source": "..."}],
+  "patches": [{"diff": "", "ops": [{"path": "src/canonical.rs", "kind": "replace_fn", "name": "canonical_name", "body": "fn canonical_name() {}"}]}]
 }
 ```
 
