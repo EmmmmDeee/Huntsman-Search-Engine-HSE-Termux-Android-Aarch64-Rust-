@@ -209,9 +209,49 @@ pub fn host_of(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
+/// A cache of at most `cap` entries. When it is full, a new key evicts the entry used least
+/// recently (`get` and `put` both count as use), so a long-running process keeps caching what it
+/// is asked now rather than the first `cap` things it ever saw.
 pub struct ResponseCache<T: Clone + Send + 'static> {
-    inner: OnceLock<Mutex<HashMap<String, T>>>,
+    inner: OnceLock<Mutex<Shelf<T>>>,
     cap: usize,
+}
+
+struct Shelf<T> {
+    entries: HashMap<String, Entry<T>>,
+    /// Counts uses. An entry carries the count at its last use, so the smallest is the least
+    /// recently used.
+    uses: u64,
+}
+
+struct Entry<T> {
+    used: u64,
+    value: T,
+}
+
+impl<T> Shelf<T> {
+    fn next_use(&mut self) -> u64 {
+        self.uses = self.uses.wrapping_add(1);
+        self.uses
+    }
+
+    fn touch(&mut self, key: &str) -> Option<&T> {
+        let used = self.next_use();
+        let entry = self.entries.get_mut(key)?;
+        entry.used = used;
+        Some(&entry.value)
+    }
+
+    fn evict_least_recently_used(&mut self) {
+        let oldest = self
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.used)
+            .map(|(key, _)| key.clone());
+        if let Some(key) = oldest {
+            self.entries.remove(&key);
+        }
+    }
 }
 
 impl<T: Clone + Send + 'static> ResponseCache<T> {
@@ -223,26 +263,38 @@ impl<T: Clone + Send + 'static> ResponseCache<T> {
         }
     }
 
-    fn lock(&self) -> &Mutex<HashMap<String, T>> {
-        self.inner
-            .get_or_init(|| Mutex::new(HashMap::with_capacity(256.min(self.cap))))
+    fn lock(&self) -> &Mutex<Shelf<T>> {
+        self.inner.get_or_init(|| {
+            Mutex::new(Shelf {
+                entries: HashMap::with_capacity(256.min(self.cap)),
+                uses: 0,
+            })
+        })
     }
 
     pub fn get(&self, key: &str) -> Option<T> {
         self.lock()
             .lock()
-            .ok()
-            .and_then(|cache| cache.get(key).cloned())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .touch(key)
+            .cloned()
     }
 
+    /// Stores `value` under `key`. A new key in a full cache evicts the least recently used entry
+    /// first; a cache of capacity zero stores nothing.
     pub fn put(&self, key: String, value: T) {
+        if self.cap == 0 {
+            return;
+        }
         let mut cache = self
             .lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cache.len() < self.cap || cache.contains_key(&key) {
-            cache.insert(key, value);
+        if !cache.entries.contains_key(&key) && cache.entries.len() >= self.cap {
+            cache.evict_least_recently_used();
         }
+        let used = cache.next_use();
+        cache.entries.insert(key, Entry { used, value });
     }
 
     #[must_use]
@@ -250,6 +302,7 @@ impl<T: Clone + Send + 'static> ResponseCache<T> {
         self.lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
             .len()
     }
 
@@ -267,6 +320,7 @@ impl<T: Clone + Send + 'static> ResponseCache<T> {
         self.lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
             .retain(|key, _| !key.starts_with(prefix));
     }
 
@@ -274,6 +328,7 @@ impl<T: Clone + Send + 'static> ResponseCache<T> {
         self.lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
             .clear();
     }
 }
@@ -319,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn host_parser_and_response_cache_are_stable() {
+    fn host_parser_is_stable() {
         assert_eq!(
             host_of("https://Example.COM/path?q=1"),
             Some("example.com".to_string())
@@ -329,16 +384,38 @@ mod tests {
             Some("[2001:db8::1]".to_string())
         );
         assert_eq!(host_of("not a url"), None);
+    }
 
+    /// Before this test, a full cache refused every new key, so once a long-running process had
+    /// seen `cap` distinct keys nothing it was asked afterwards was ever cached.
+    #[test]
+    fn a_full_response_cache_evicts_the_least_recently_used_entry() {
         let cache: ResponseCache<u32> = ResponseCache::new(2);
         cache.put("a".into(), 1);
         cache.put("b".into(), 2);
+        assert_eq!(cache.get("a"), Some(1), "a is now more recent than b");
+
         cache.put("c".into(), 3);
         assert_eq!(cache.len(), 2);
-        assert_eq!(cache.get("c"), None);
+        assert_eq!(cache.get("b"), None, "the new key evicted b");
+        assert_eq!(cache.get("a"), Some(1));
+        assert_eq!(cache.get("c"), Some(3));
+
         cache.put("a".into(), 9);
+        assert_eq!(cache.len(), 2, "overwriting a key evicts nothing");
+        cache.put("d".into(), 4);
+        assert_eq!(cache.get("c"), None, "a was just written, so c went");
         assert_eq!(cache.get("a"), Some(9));
+        assert_eq!(cache.get("d"), Some(4));
+
         cache.clear_prefix("a");
         assert_eq!(cache.get("a"), None);
+        assert_eq!(cache.len(), 1);
+        cache.clear();
+        assert!(cache.is_empty());
+
+        let none: ResponseCache<u32> = ResponseCache::new(0);
+        none.put("x".into(), 1);
+        assert!(none.is_empty(), "a capacity of zero caches nothing");
     }
 }
