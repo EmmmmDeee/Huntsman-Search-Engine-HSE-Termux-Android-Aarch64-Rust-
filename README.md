@@ -139,7 +139,7 @@ before using credentials or network access.
 
 Local search, recorder and ledger, with a guarded fetch layer (egress policy, credential-origin rules, `fetch` and `keys` commands; `check` exercises egress, origin, placeholder and URL-redaction rules as gate 11, without a socket). A challenge page is not a hit. No paid source is called automatically; HIBP is explicit opt-in via the CLI or library. The ledger is a hash chain. A full terminate must name the tip. A verified claim is not an ATT&CK score.
 
-For contributors: one Rust package (`huntsman-recon`), Rust 1.87+, in a workspace with the `xtask` automation crate and the four engine crates under `crates/`.
+For contributors: one Rust package (`huntsman-recon`), Rust 1.87+, in a workspace with the `xtask` automation crate.
 The binary's full command list is available with `huntsman-recon --help`;
 run `huntsman-recon COMMAND --help` for command-specific usage. `diagnostics [--json]`
 is fully offline, backed by the reusable `diagnostics` library module, and reports only non-secret build/runtime/module/provider state; `build-sha`
@@ -283,7 +283,7 @@ mailboxes, and public-CA issuers are filtered; subdomains of the target apex
 carry the `subdomain` tag. Output is
 `kind<TAB>value<TAB>confidence<TAB>tags`, with control characters escaped.
 
-`recon dns TARGET` accepts a domain, URL or email and queries Cloudflare, Quad9
+`recon dns TARGET` accepts a domain, URL or email and queries Cloudflare, DNS.SB
 and Google DNS-over-HTTPS (JSON) for apex A, AAAA, MX, NS and TXT, plus
 `_dmarc` and `_smtp._tls` TXT, through `fetch` with redirects off. One
 record-type failure does not abort the others. A challenge page is `bot_waf`,
@@ -428,6 +428,8 @@ live receipt. Live ASIC Connect is WAF-blocked.
 ### Embedded Web UI and HTTP API
 
 `huntsman-recon serve` starts a dependency-free embedded UI on `127.0.0.1:8080` by default. `HSE_BIND` or `serve --bind ADDR` selects another socket address. Explicit non-loopback binds require a non-empty `HSE_AUTH_TOKEN`.
+
+When `HSE_AUTH_TOKEN` is set, on any bind, every endpoint except `/` and `/api/health` needs it as `Authorization: Bearer TOKEN`; a call without it is answered `401` with `WWW-Authenticate: Bearer` and an error that names the variable. `serve` says so on stderr when it starts, without printing the value. `/api/health` reports `"auth": "token"` or `"auth": "none"`, and the page uses it: when a token is needed and none is entered, or a call is refused, it opens "Server status and token" and asks for it. The page sends the entered token on every call, keeps it in the browser's local storage for this address, and also takes it once from the address as `http://127.0.0.1:8080/#token=VALUE` (a fragment never reaches the server or its logs), then removes it from the address bar. To run a loopback server without a token, `unset HSE_AUTH_TOKEN` before `serve`.
 
 The API surface:
 

@@ -21,7 +21,11 @@ fn serve_with_descriptor_limit(limit: u32) -> (Child, String) {
         .env_remove("HSE_BIND")
         .env_remove("HSE_AUTH_TOKEN")
         .env_remove("PORT")
+        // Every name `serve` reads to decide it is on Railway, where it binds 0.0.0.0:$PORT.
         .env_remove("RAILWAY_ENVIRONMENT")
+        .env_remove("RAILWAY_ENVIRONMENT_ID")
+        .env_remove("RAILWAY_PROJECT_ID")
+        .env_remove("RAILWAY_SERVICE_ID")
         .env_remove("TERMUX_VERSION")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
