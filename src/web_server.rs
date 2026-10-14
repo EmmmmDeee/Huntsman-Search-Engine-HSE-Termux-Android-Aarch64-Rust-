@@ -2256,6 +2256,21 @@ mod tests {
         );
     }
 
+    /// The bridges to saved scans reach a reader as a table, not only in the JSON. The page had no
+    /// place for `cross_scan`, so `serve --history` had no visible effect.
+    #[test]
+    fn the_page_draws_the_bridges_to_saved_scans() {
+        let table = &INDEX_HTML[..INDEX_HTML.find(r#"<tbody id="ascans">"#).unwrap()];
+        let header = &table[table.rfind("<thead>").unwrap()..];
+        assert_eq!(
+            header,
+            "<thead><tr><th>entity</th><th>tier</th><th>saved scans</th></tr></thead>"
+        );
+        let script = inline_block(INDEX_HTML, "script");
+        assert!(script.contains("const cross=body.cross_scan"), "{script}");
+        assert!(script.contains("fill('ascans',bridged,r=>r)"), "{script}");
+    }
+
     /// The page drives the analysis through the same route, refused cross-site, with no lookup
     /// header: it makes no network request and spends no key.
     #[test]

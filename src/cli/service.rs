@@ -85,21 +85,22 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
     }
 }
 
-/// Printed by `serve` on a public bind, where the page and every API call except health need
-/// the token, and nothing else tells the operator so. The value is never printed, so it stays
-/// out of terminal scrollback and logs.
-fn token_hint(addr: std::net::SocketAddr) -> String {
-    format!(
-        "serve: this public bind needs {SERVE_TOKEN_ENV}: enter its value (echo \"${SERVE_TOKEN_ENV}\") in the page's token field, or open http://{addr}/#token=VALUE once"
-    )
-}
-
-/// Printed when `HSE_AUTH_TOKEN` is set for a loopback bind, which needs no token, so the
-/// operator is not left wondering whether the value guards anything.
-fn loopback_token_unused() -> String {
-    format!(
-        "serve: a loopback bind needs no token, so the page and API answer without {SERVE_TOKEN_ENV}"
-    )
+/// What `serve` says about `HSE_AUTH_TOKEN` when it starts. On a public bind the page and every
+/// API call except health need the token, and nothing else tells the operator so; on loopback a
+/// token that was set is not used, and the operator should not wonder whether it guards anything.
+/// The value is never printed, so it stays out of terminal scrollback and logs.
+fn token_note(addr: std::net::SocketAddr, needs_token: bool, supplied: bool) -> Option<String> {
+    if needs_token {
+        Some(format!(
+            "serve: this public bind needs {SERVE_TOKEN_ENV}: enter its value (echo \"${SERVE_TOKEN_ENV}\") in the page's token field, or open http://{addr}/#token=VALUE once"
+        ))
+    } else if supplied {
+        Some(format!(
+            "serve: a loopback bind needs no token, so the page and API answer without {SERVE_TOKEN_ENV}"
+        ))
+    } else {
+        None
+    }
 }
 
 pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
@@ -188,10 +189,8 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     match server.local_addr() {
         Ok(addr) => {
             println!("serving=http://{addr}/");
-            if config_needs_token {
-                eprintln!("{}", token_hint(addr));
-            } else if token_supplied {
-                eprintln!("{}", loopback_token_unused());
+            if let Some(note) = token_note(addr, config_needs_token, token_supplied) {
+                eprintln!("{note}");
             }
             if TermuxState::current() == TermuxState::Detected {
                 eprintln!("{TERMUX_BACKGROUND_HINT}");

@@ -162,6 +162,8 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="table-wrap"><table><thead><tr><th>entity</th><th>links</th><th>reach</th><th>cut point</th></tr></thead><tbody id="apivots"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Correlations <span class="badge" id="acorrelations-n"></span></div>
 <div class="table-wrap"><table><thead><tr><th>rule</th><th>severity</th><th>finding</th><th>entities</th></tr></thead><tbody id="acorrelations"></tbody></table></div><p class="note" id="anote"></p></div>
+<div class="panel"><div class="panel-heading">Saved scans <span class="badge" id="ascans-n"></span></div>
+<div class="table-wrap"><table><thead><tr><th>entity</th><th>tier</th><th>saved scans</th></tr></thead><tbody id="ascans"></tbody></table></div><p class="note" id="ascan"></p></div>
 <div class="panel"><div class="panel-heading">Gaps <span class="badge" id="agaps-n"></span></div>
 <div class="table-wrap"><table><thead><tr><th>seed</th><th>isolation</th><th>next step</th></tr></thead><tbody id="agaps"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Planned sources <span class="badge" id="aplanned-n"></span></div>
@@ -294,6 +296,10 @@ $('analyze').onsubmit=async ev=>{
     fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,p.articulation?'yes':'']);
     fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,c.entity_uids.map(who).join(', ')]);
     $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';
+    const cross=body.cross_scan;
+    $('ascan').textContent=cross==null?'No saved scans were given to this server.':cross==='None'?'No saved scan shares an entity with these seeds.':'';
+    const bridged=cross&&cross!=='None'?(cross.Transitive?cross.Transitive.links.map(l=>[who(l.via_entity_uid),show(l.tier),l.origin_scan_id+' -> '+l.target_scan_id]):(cross.Historical||cross.Relation).matches.map(b=>[who(b.entity.uid),show(b.tier),b.overlapping_scans.join(', ')])):[];
+    fill('ascans',bridged,r=>r);
     fill('agaps',body.gaps.orphans,o=>[who(o.uid),show(o.isolation),o.action]);
     fill('aplanned',body.planned,p=>[show(p.kind)+': '+p.value,p.source,p.url||'',p.utility==null?'':Number(p.utility).toFixed(2)]);
     fill('arejected',body.rejected,x=>[x.seed,x.reason]);
