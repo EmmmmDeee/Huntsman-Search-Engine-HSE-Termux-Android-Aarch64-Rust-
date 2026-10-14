@@ -76,14 +76,14 @@ use report::{exit_on_output_failure, fail};
 /// Runs the command named by the process arguments (without the program name).
 pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
     exit_on_output_failure();
-    let mut argv = Vec::with_capacity(args.len());
+    let mut words = Vec::with_capacity(args.len());
     for (index, arg) in args.into_iter().enumerate() {
         match arg.into_string() {
-            Ok(arg) => argv.push(arg),
+            Ok(arg) => words.push(arg),
             Err(raw) => return help::argument_not_utf8(index + 1, raw.len()),
         }
     }
-    let first = argv.first().map(String::as_str);
+    let first = words.first().map(String::as_str);
     if matches!(first, Some("help" | "-h" | "--help")) {
         println!("{HELP}\n{USAGE}");
         return ExitCode::SUCCESS;
@@ -92,18 +92,18 @@ pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
         println!("huntsman-recon {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    if argv.len() == 2 && matches!(argv[1].as_str(), "-h" | "--help") {
+    if words.len() == 2 && matches!(words[1].as_str(), "-h" | "--help") {
         // A word that is not a command gets the usage error, not the general help: a typo
         // answered with help and exit 0 hides itself.
-        return match help::command_help(&argv[0]) {
+        return match help::command_help(&words[0]) {
             Some(text) => {
                 println!("{text}\n  -h, --help  Show this help");
                 ExitCode::SUCCESS
             }
-            None => help::unknown_command(&argv[0]),
+            None => help::unknown_command(&words[0]),
         };
     }
-    let mut remaining = argv.into_iter();
+    let mut remaining = words.into_iter();
     match remaining.next().as_deref() {
         Some("diagnostics") => meta::diagnostics_cmd(&remaining.collect::<Vec<_>>()),
         Some("build-sha") => meta::build_sha_cmd(&remaining.collect::<Vec<_>>()),
