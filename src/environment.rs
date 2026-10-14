@@ -26,6 +26,13 @@ pub const HUNTSMAN_HIBP_KEY_ENV: &str = "HUNTSMAN_HIBP_KEY";
 pub const HIBP_RATE_LIMIT_ENV: &str = "HIBP_RATE_LIMIT_PER_MINUTE";
 /// The prefix of the per-provider cost variables. The provider id, upper-cased, follows it.
 pub const PROVIDER_COST_ENV_PREFIX: &str = "HSE_PROVIDER_COST_";
+/// The state directory `install.sh` uses instead of `~/.huntsman` when this is set.
+pub const HUNTSMAN_HOME_ENV: &str = "HUNTSMAN_HOME";
+/// The runtime variables file `install.sh` creates instead of `~/.huntsman.env` when this is set.
+/// `huntsman-recon` reads only `~/.huntsman.env`; `doctor` reports the difference.
+pub const HUNTSMAN_ENV_FILE_ENV: &str = "HUNTSMAN_ENV_FILE";
+/// The address `serve` binds when no `--bind` is given.
+pub const SERVE_BIND_ENV: &str = "HSE_BIND";
 /// A PEM bundle of root certificates that replaces the bundled Mozilla roots for every
 /// outbound TLS connection, for networks that intercept TLS with their own CA.
 pub const CA_BUNDLE_ENV: &str = "HUNTSMAN_CA_BUNDLE";

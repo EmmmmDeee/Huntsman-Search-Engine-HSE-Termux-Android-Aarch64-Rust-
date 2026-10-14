@@ -110,44 +110,7 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
                 EmailRun::Failed(m) => Err(Refused::Unavailable(m)),
             }
         }
-        ScanKind::Exposure => {
-            let client = KeyLoader::default_chain(None)
-                .load()
-                .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
-            // Same rule as `recon stolen-tax`: the stolen.tax and OathNet keys are read from the
-            // environment, never the default file.
-            let keys = Keys::from_env();
-            let transport = UreqTransport::new(&stolen_tax::transport_config());
-            let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
-            // DeHashed reuses the opt-in client; its key, like stolen.tax and OathNet, is read
-            // from the environment only, never the default keys file.
-            let dehashed_client = keys.get(dehashed::client::API_KEY_ENV).map(|secret| {
-                let transport = Arc::new(UreqTransport::new(&TransportConfig::default()));
-                DehashedClient::new(transport, secret)
-            });
-            let sources = Sources {
-                hibp: client.as_ref(),
-                stolen_tax: keys
-                    .get(stolen_tax::KEY_SLOT)
-                    .is_some()
-                    .then_some((&transport as &dyn Transport, &keys)),
-                oathnet: keys
-                    .get(oathnet::KEY_SLOT)
-                    .is_some()
-                    .then_some((&oathnet_transport as &dyn Transport, &keys)),
-                dehashed: dehashed_client.as_ref(),
-            };
-            match huntsman_recon::exposure_cli::run(sources, selector, now) {
-                ExposureRun::Printed { text, report } => Ok(done(
-                    text,
-                    report.entities,
-                    report.outcomes,
-                    EXPOSURE_POLICY,
-                )),
-                ExposureRun::Network(m) => Err(Refused::Network(m)),
-                ExposureRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
-        }
+        ScanKind::Exposure => collect_exposure(selector, now),
         ScanKind::Username => {
             let transport = UreqTransport::new(&TransportConfig::default());
             let keys = Keys::from_env();
@@ -219,6 +182,46 @@ fn free_tier(kind: ScanKind, selector: &str, now: u64) -> Result<Collected, Refu
                 huntsman_recon::domain_cli::DomainRun::Failed(m) => Err(Refused::Unavailable(m)),
             }
         }
+    }
+}
+
+/// The `exposure` leg of [`collect`]: every configured breach source.
+fn collect_exposure(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let client = KeyLoader::default_chain(None)
+        .load()
+        .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
+    // Same rule as `recon stolen-tax`: the stolen.tax and OathNet keys are read from the
+    // environment, never the default file.
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&stolen_tax::transport_config());
+    let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
+    // DeHashed reuses the opt-in client; its key, like stolen.tax and OathNet, is read
+    // from the environment only, never the default keys file.
+    let dehashed_client = keys.get(dehashed::client::API_KEY_ENV).map(|secret| {
+        let transport = Arc::new(UreqTransport::new(&TransportConfig::default()));
+        DehashedClient::new(transport, secret)
+    });
+    let sources = Sources {
+        hibp: client.as_ref(),
+        stolen_tax: keys
+            .get(stolen_tax::KEY_SLOT)
+            .is_some()
+            .then_some((&transport as &dyn Transport, &keys)),
+        oathnet: keys
+            .get(oathnet::KEY_SLOT)
+            .is_some()
+            .then_some((&oathnet_transport as &dyn Transport, &keys)),
+        dehashed: dehashed_client.as_ref(),
+    };
+    match huntsman_recon::exposure_cli::run(sources, selector, now) {
+        ExposureRun::Printed { text, report } => Ok(Collected {
+            text,
+            entities: report.entities,
+            outcomes: report.outcomes,
+            policy: EXPOSURE_POLICY,
+        }),
+        ExposureRun::Network(m) => Err(Refused::Network(m)),
+        ExposureRun::Failed(m) => Err(Refused::Unavailable(m)),
     }
 }
 
