@@ -470,6 +470,36 @@ fn hash_vectors_cover_sha1_padding_ntlm_unicode_and_rfc_md4() {
     }
 }
 
+/// The NTLM path wipes its UTF-16LE copy of the password and MD4's padded message. A buffer that
+/// grew while being filled would have left its old allocation, holding the password, unwiped, so
+/// each is sized once and never reallocates.
+#[test]
+fn ntlm_password_buffers_never_reallocate_so_the_wipe_reaches_every_copy() {
+    for password in [
+        String::new(),
+        "p".into(),
+        "pässwörd 🔑".into(),
+        "x".repeat(27),
+        "x".repeat(28),
+        "x".repeat(32),
+        "x".repeat(500),
+        "ü".repeat(2048),
+    ] {
+        let utf16 = super::passwords::utf16le(&password);
+        assert_eq!(utf16.len(), password.encode_utf16().count() * 2);
+        assert_eq!(utf16.capacity(), utf16.len(), "{} chars", password.len());
+        let padded = super::md4::padded(&utf16);
+        assert_eq!(padded.len() % 64, 56);
+        assert_eq!(
+            padded.capacity(),
+            utf16.len() + 72,
+            "{} chars: the padded copy reallocated",
+            password.len()
+        );
+        assert!(padded.capacity() >= padded.len() + 8, "room for the length");
+    }
+}
+
 #[test]
 fn status_errors_and_decode_errors_never_echo_secrets_or_body() {
     let (client, fake) = keyed();
