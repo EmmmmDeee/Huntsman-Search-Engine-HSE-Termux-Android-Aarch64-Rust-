@@ -687,6 +687,9 @@ struct Health<'a> {
     status: &'a str,
     name: &'a str,
     version: &'a str,
+    /// `token` when every endpoint other than health and the page needs the bearer token, `none`
+    /// otherwise. The page reads it to ask for the token before a call is refused.
+    auth: &'a str,
 }
 
 #[cfg(test)]
@@ -743,12 +746,7 @@ fn respond(request: &str, bearer_token: Option<&str>, bind: SocketAddr, routes: 
     if protected
         && bearer_token.is_some_and(|expected| !bearer_matches(parsed.authorization, expected))
     {
-        return response(
-            401,
-            "application/json; charset=utf-8",
-            "{\"error\":\"unauthorized\"}\n",
-            head,
-        );
+        return response(401, "application/json; charset=utf-8", UNAUTHORIZED, head);
     }
 
     match parsed.path {
@@ -758,6 +756,11 @@ fn respond(request: &str, bearer_token: Option<&str>, bind: SocketAddr, routes: 
                 status: "ok",
                 name: "huntsman-recon",
                 version: env!("CARGO_PKG_VERSION"),
+                auth: if bearer_token.is_some() {
+                    "token"
+                } else {
+                    "none"
+                },
             })
             .unwrap_or_else(|_| "{\"status\":\"error\"}".into());
             response(
@@ -800,6 +803,10 @@ fn respond(request: &str, bearer_token: Option<&str>, bind: SocketAddr, routes: 
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
     }
 }
+
+/// The answer to a protected request without the server's token. It names the remedy, because the
+/// page shows it as it is and a bare `unauthorized` left the operator nowhere to go.
+const UNAUTHORIZED: &str = "{\"error\":\"unauthorized: this server was started with HSE_AUTH_TOKEN set; enter that value in the token field under Server status and token\"}\n";
 
 fn json_error(status: u16, message: &str) -> String {
     let body = serde_json::json!({ "error": message }).to_string();
@@ -1077,10 +1084,10 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
         503 => "Service Unavailable",
         _ => "Error",
     };
-    let retry_after = if status == 503 {
-        "Retry-After: 1\r\n"
-    } else {
-        ""
+    let status_header = match status {
+        503 => "Retry-After: 1\r\n",
+        401 => "WWW-Authenticate: Bearer realm=\"huntsman-recon\"\r\n",
+        _ => "",
     };
     let content_length = body.len();
     let rendered_body = if head { "" } else { body };
@@ -1090,7 +1097,7 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
         OTHER_POLICY
     };
     format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{retry_after}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: {policy}\r\n\r\n{rendered_body}"
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{status_header}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: {policy}\r\n\r\n{rendered_body}"
     )
 }
 
@@ -1120,8 +1127,10 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 0}
 table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid var(--line);padding:4px;text-align:left;vertical-align:top;overflow-wrap:anywhere}
 small,.dim{color:var(--dim)}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+#authnote{border:1px solid var(--acc);border-radius:6px;padding:8px 10px;margin:0 0 10px}
 </style>
 <h1>Huntsman Recon</h1>
+<p id="authnote" role="alert" hidden></p>
 <section>
 <form id="lookup">
 <select id="kind" aria-label="kind">
@@ -1164,7 +1173,7 @@ small,.dim{color:var(--dim)}
 <h2>Rejected seeds</h2>
 <table><thead><tr><th>seed</th><th>reason</th></tr></thead><tbody id="arejected"></tbody></table>
 </section>
-<details><summary>Server status and token</summary>
+<details id="server"><summary>Server status and token</summary>
 <div class="row"><input id="token" type="password" autocomplete="off" placeholder="token (only if configured)" aria-label="token"><button id="refresh" type="button">Refresh</button></div>
 <b>Health</b><pre id="health">…</pre>
 <b>Reachable modules</b><pre id="modules">…</pre>
@@ -1173,16 +1182,34 @@ small,.dim{color:var(--dim)}
 <script>
 const $=id=>document.getElementById(id);
 let last=null;
-try{$('token').value=sessionStorage.getItem('hse-token')||''}catch(_){}
-$('token').onchange=()=>{try{sessionStorage.setItem('hse-token',$('token').value)}catch(_){}};
-function headers(extra){const h=Object.assign({},extra);const t=$('token').value;if(t)h.Authorization='Bearer '+t;return h}
-async function get(path){const r=await fetch(path,{headers:headers(),cache:'no-store'});return await r.text()}
+const token=()=>$('token').value.trim();
+function keep(t){try{if(t)localStorage.setItem('hse-token',t);else localStorage.removeItem('hse-token')}catch(_){}}
+{
+  let t='';try{t=localStorage.getItem('hse-token')||sessionStorage.getItem('hse-token')||''}catch(_){}
+  const m=/(?:^#|&)token=([^&]*)/.exec(location.hash);
+  if(m){try{t=decodeURIComponent(m[1])}catch(_){t=m[1]}keep(t.trim());history.replaceState(null,'',location.pathname+location.search)}
+  $('token').value=t;
+}
+$('token').oninput=()=>keep(token());
+$('token').onchange=()=>refresh();
+function headers(extra){const h=Object.assign({},extra);const t=token();if(t)h.Authorization='Bearer '+t;return h}
 async function call(path,extra){const r=await fetch(path,{headers:headers(extra),cache:'no-store'});const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}return {r,text,body}}
 const reason=({text,body})=>(body&&body.error)||text.trim();
+function askToken(){
+  $('server').open=true;$('authnote').hidden=false;
+  $('authnote').textContent=token()?'The server refused this token. Enter the exact value of HSE_AUTH_TOKEN under Server status and token.':'This server needs its token. Enter the value of HSE_AUTH_TOKEN under Server status and token.';
+}
+const refused=res=>{if(res.r.status===401){askToken();return true}return false};
 async function refresh(){
+  let open=true;
   for(const [id,path] of [['health','/api/health'],['modules','/api/modules'],['command','/api/command']]){
-    try{$(id).textContent=await get(path)}catch(e){$(id).textContent=String(e)}
+    try{
+      const res=await call(path);$(id).textContent=res.text;
+      if(refused(res)) open=false;
+      else if(id==='health'&&res.body&&res.body.auth==='token'&&!token()){askToken();open=false}
+    }catch(e){$(id).textContent=String(e);open=false}
   }
+  if(open) $('authnote').hidden=true;
 }
 function cell(row,text){const td=document.createElement('td');td.textContent=text==null?'':String(text);row.appendChild(td)}
 $('lookup').onsubmit=async ev=>{
@@ -1195,7 +1222,7 @@ $('lookup').onsubmit=async ev=>{
   try{
     const res=await call('/api/lookup?'+params,{'X-Huntsman-Lookup':'1'}),body=res.body;
     const secs=((Date.now()-started)/1000).toFixed(1)+'s';
-    if(!res.r.ok||!body){$('status').textContent='HTTP '+res.r.status+' · '+secs;$('text').textContent=reason(res);return}
+    if(!res.r.ok||!body){refused(res);$('status').textContent='HTTP '+res.r.status+' · '+secs;$('text').textContent=reason(res);return}
     last=body; $('route').textContent=body.route;
     $('status').textContent=body.entities.length+' entities · '+secs;
     for(const o of body.outcomes){const tr=document.createElement('tr');cell(tr,o.module);cell(tr,o.kind);cell(tr,o.found);$('outcomes').appendChild(tr)}
@@ -1219,7 +1246,7 @@ $('analyze').onsubmit=async ev=>{
   for(const id of ['aentities','arelations','apivots','acorrelations','agaps','aplanned','arejected']) $(id).replaceChildren();
   try{
     const res=await call('/api/analyze?'+new URLSearchParams({seeds})),body=res.body;
-    if(!res.r.ok||!body){$('astatus').textContent='HTTP '+res.r.status+' · '+reason(res);return}
+    if(!res.r.ok||!body){refused(res);$('astatus').textContent='HTTP '+res.r.status+' · '+reason(res);return}
     alast=body;
     const names=new Map(body.entities.map(e=>[e.uid,show(e.kind)+': '+e.value]));
     const who=uid=>names.get(uid)||uid;
@@ -1372,6 +1399,60 @@ mod tests {
         );
         assert!(allowed.starts_with("HTTP/1.1 200"));
         assert!(allowed.contains("\"modules\""));
+    }
+
+    /// A token-protected server said only `{"error":"unauthorized"}`, and health gave no sign a
+    /// token was needed, so the page could not tell the operator what to do (seen on a phone,
+    /// 2026-10-14). Health now says whether the token is needed, and a refusal names the remedy
+    /// and carries the standard challenge.
+    #[test]
+    fn health_says_whether_a_token_is_needed_and_a_refusal_names_the_remedy() {
+        let health = |token| {
+            response_for_request("GET /api/health HTTP/1.1\r\n\r\n", token, loopback_bind())
+        };
+        assert!(health(Some("secret")).contains("\"auth\": \"token\""));
+        assert!(health(None).contains("\"auth\": \"none\""));
+
+        for path in ["/api/modules", "/api/command", "/api/analyze?seeds=a"] {
+            let denied = response_for_request(
+                &format!("GET {path} HTTP/1.1\r\nAuthorization: Bearer wrong\r\n\r\n"),
+                Some("secret"),
+                loopback_bind(),
+            );
+            assert!(denied.starts_with("HTTP/1.1 401"), "{path}: {denied}");
+            assert_eq!(
+                header(&denied, "WWW-Authenticate"),
+                Some("Bearer realm=\"huntsman-recon\"")
+            );
+            let body = denied.split("\r\n\r\n").nth(1).unwrap_or_default();
+            let error: serde_json::Value = serde_json::from_str(body).unwrap();
+            let error = error["error"].as_str().unwrap_or_default();
+            assert!(
+                error.starts_with("unauthorized") && error.contains("HSE_AUTH_TOKEN"),
+                "{error}"
+            );
+        }
+    }
+
+    /// The page asks for the token when health says one is needed or a call is refused, sends it
+    /// on every call (health, modules, the contract, lookup and analysis alike), keeps it across
+    /// reloads, and takes it from a `#token=` fragment, which the browser never sends to a server.
+    #[test]
+    fn the_page_asks_for_the_token_and_sends_it_on_every_call() {
+        let script = inline_block(INDEX_HTML, "script");
+        assert!(INDEX_HTML.contains("<p id=\"authnote\" role=\"alert\" hidden></p>"));
+        assert!(INDEX_HTML.contains("<details id=\"server\">"));
+        assert!(script.contains("res.body.auth==='token'&&!token()"));
+        assert!(
+            script.contains("const refused=res=>{if(res.r.status===401){askToken();return true}")
+        );
+        assert_eq!(script.matches("refused(res)").count(), 3);
+        assert!(script.contains("h.Authorization='Bearer '+t"));
+        // Every request goes through `call`, which adds the header: no bare `fetch` elsewhere.
+        assert_eq!(script.matches("fetch(").count(), 1);
+        assert!(script.contains("localStorage.setItem('hse-token',t)"));
+        assert!(script.contains("/(?:^#|&)token=([^&]*)/.exec(location.hash)"));
+        assert!(script.contains("history.replaceState("));
     }
 
     #[test]
