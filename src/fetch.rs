@@ -739,6 +739,22 @@ mod tests {
         assert_eq!(r.outcome.kind, SourceOutcomeKind::BotWaf);
     }
 
+    /// A profile site that embeds a CAPTCHA widget, or a bot-management sensor, on every page
+    /// answers 200 with content. Counting those as walls dropped every result and, after five,
+    /// opened the host's circuit for a minute.
+    #[test]
+    fn served_pages_with_a_widget_are_content_and_keep_the_host_circuit_closed() {
+        use crate::circuit::{BreakerState, FAILURE_THRESHOLD, host_state};
+        let page = "<html><script src=\"https://www.google.com/recaptcha/api.js\"></script><div class=\"g-recaptcha\"></div><h1>Jane Doe</h1></html>";
+        let host = "widget-on-every-page.example";
+        for _ in 0..FAILURE_THRESHOLD {
+            let f = Fake::new(vec![Ok(resp(200, &[], page))]);
+            let r = run(&f, &format!("https://{host}/profile"), None, 0).expect("fetch");
+            assert_eq!(r.outcome.kind, SourceOutcomeKind::Inconclusive);
+        }
+        assert_ne!(host_state(host), Some(BreakerState::Open));
+    }
+
     #[test]
     fn rate_limit_carries_a_bounded_retry_after() {
         let f = Fake::new(vec![Ok(resp(429, &[("retry-after", "120")], ""))]);

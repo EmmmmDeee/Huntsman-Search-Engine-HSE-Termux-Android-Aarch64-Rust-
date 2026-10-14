@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crate::error::Error;
-use crate::fsio::{read_bounded, write_atomic};
+use crate::fsio::{read_bounded, write_atomic_private};
 use crate::session::{Session, valid_session_id};
 
 const MAX_BYTES: u64 = 1_048_576;
@@ -18,7 +18,8 @@ impl Store {
         Self { root: root.into() }
     }
 
-    /// Save a session and mark it current.
+    /// Save a session and mark it current. Both files are mode 600 on Unix: a session holds the
+    /// seeds and findings of an investigation.
     ///
     /// # Errors
     /// `Error::Invalid` for an unsafe id; `Error::Store` for IO, size, or symlink refusal.
@@ -31,8 +32,8 @@ impl Store {
             .join("sessions")
             .join(format!("{}.json", session.id));
         let body = serde_json::to_vec_pretty(session).map_err(|e| Error::Store(e.to_string()))?;
-        write_atomic(&path, &body, MAX_BYTES)?;
-        write_atomic(
+        write_atomic_private(&path, &body, MAX_BYTES)?;
+        write_atomic_private(
             &self.root.join("current.txt"),
             session.id.as_bytes(),
             MAX_BYTES,

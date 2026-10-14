@@ -81,7 +81,15 @@ fn build_marker_is_always_empty_and_never_leaks_runtime_sources() {
         let output = String::from_utf8(result.stdout).unwrap();
         assert!(!output.contains("fake-env-key") && !output.contains("fake-file-key"));
         assert!(output.contains("rerun-if-env-changed=HIBP_API_KEY"));
-        assert!(output.contains("rerun-if-changed="));
+        // Cargo reruns the script, and rebuilds the crate, whenever a watched path is missing
+        // or newer, so the script watches only itself: never a file under HOME.
+        let watched: Vec<&str> = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("cargo:rerun-if-changed="))
+            .collect();
+        assert_eq!(watched, ["build.rs"], "{output}");
+        assert!(!output.contains("rerun-if-env-changed=HOME"), "{output}");
+        assert!(!output.contains("rerun-if-env-changed=CI\n"), "{output}");
     }
 
     fs::remove_dir_all(scratch).unwrap();
