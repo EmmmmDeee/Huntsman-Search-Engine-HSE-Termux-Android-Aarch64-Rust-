@@ -4,6 +4,7 @@
 //! constructs transports/configuration, and delegates to the library. Domain
 //! behavior belongs in `huntsman_recon`, not in the binary front controller.
 
+use huntsman_recon::exit::EX_USAGE;
 use std::env;
 use std::process::ExitCode;
 
@@ -72,6 +73,18 @@ mod utility;
 
 use report::{exit_on_output_failure, fail};
 
+/// Usage error for an argument that is not UTF-8. The bytes are not echoed: an argument can
+/// be a selector, and the CLI never prints one back.
+pub(crate) fn argument_not_utf8(position: usize, bytes: usize) -> ExitCode {
+    exit_on_output_failure();
+    fail(
+        EX_USAGE,
+        &format!(
+            "argument {position} is not valid UTF-8 ({bytes} bytes); arguments must be UTF-8 text\n{USAGE}"
+        ),
+    )
+}
+
 pub(crate) fn run(argv: Vec<String>) -> ExitCode {
     exit_on_output_failure();
     let first = argv.first().map(String::as_str);
@@ -84,8 +97,15 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if argv.len() == 2 && matches!(argv[1].as_str(), "-h" | "--help") {
-        help::print_command_help(&argv[0]);
-        return ExitCode::SUCCESS;
+        // A word that is not a command gets the usage error, not the general help: a typo
+        // answered with help and exit 0 hides itself.
+        return match help::command_help(&argv[0]) {
+            Some(text) => {
+                println!("{text}\n  -h, --help  Show this help");
+                ExitCode::SUCCESS
+            }
+            None => help::unknown_command(&argv[0]),
+        };
     }
     let mut remaining = argv.into_iter();
     match remaining.next().as_deref() {

@@ -24,7 +24,8 @@ pub(super) fn no_command() -> ExitCode {
     fail(EX_USAGE, &format!("{HELP}\n{USAGE}"))
 }
 
-pub(super) fn print_command_help(command: &str) {
+/// The help text of a dispatched command, or `None` for a word that is not one.
+pub(super) fn command_help(command: &str) -> Option<&'static str> {
     let help = match command {
         "check" => {
             "check\nRun offline self-acceptance and regenerate var/ledger.json, var/navigator.json, and var/stix-bundle.json in the current directory, creating var/ if needed. Run it in an empty directory or a checkout."
@@ -111,10 +112,7 @@ pub(super) fn print_command_help(command: &str) {
         "verify" => {
             "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
         }
-        _ => {
-            println!("{HELP}\n{USAGE}");
-            return;
-        }
+        _ => return None,
     };
-    println!("{help}\n  -h, --help  Show this help");
+    Some(help)
 }
