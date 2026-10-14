@@ -1,12 +1,15 @@
 //! Multi-hop analysis benchmark. Run with `cargo run --release --locked --example multihop_bench`.
 //!
-//! Three fixed workloads, each at a few sizes:
+//! Four fixed workloads, each at a few sizes:
 //! - `domain`: one domain and N addresses on it, the shape of a breach dump. Relation derivation
 //!   ties every address to the domain, and the correlation rules then read the relations.
 //! - `aliases`: one handle at N domains. Relation derivation makes every two addresses aliases,
 //!   the densest identity cluster a scan produces.
 //! - `graph`: N entities and 3N/2 random relations through the whole snapshot analysis: pivots,
 //!   core numbers, metrics, gaps, intelligence and the correlation rules.
+//! - `plan`: `huntsman-recon plan corp.example user1@corp.example ...` with N seeds, through the
+//!   offline spine that `plan` and the web UI's analyze view run: seed normalisation, the
+//!   dispatch plan, relation derivation and the snapshot analysis.
 //!
 //! Each line prints the relations derived, the median time over up to `RUNS` runs (fewer once a
 //! workload has run for `BUDGET`), and a checksum of the result. The workloads are fixed, so a
@@ -16,13 +19,17 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use huntsman_recon::analysis::analyze_snapshot;
+use huntsman_recon::analysis::{InvestigationReport, analyze_snapshot};
 use huntsman_recon::correlator::{Correlation, evaluate_rules};
 use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use huntsman_recon::evidence_ancestry::EvidenceAncestryGraph;
 use huntsman_recon::graph::{EntityRelation, RelationKind};
-use huntsman_recon::pipeline::AnalysisSnapshot;
+use huntsman_recon::pipeline::{
+    AnalysisSnapshot, InvestigationInput, InvestigationMode, PipelineLimits,
+};
+use huntsman_recon::planner::PlannerPolicy;
 use huntsman_recon::relation::derive_all;
+use huntsman_recon::runtime::investigate_offline;
 
 const RUNS: usize = 5;
 const BUDGET: Duration = Duration::from_secs(30);
@@ -44,6 +51,17 @@ fn domain_dump(size: usize) -> Vec<Entity> {
     let mut entities = vec![entity(EntityKind::Domain, "corp.example".into())];
     entities.extend((0..size).map(|n| entity(EntityKind::Email, format!("user{n}@corp.example"))));
     entities
+}
+
+/// The seeds of `plan corp.example user1@corp.example ...`, N in all.
+fn plan_seeds(size: usize) -> InvestigationInput {
+    let mut seeds = vec!["corp.example".to_owned()];
+    seeds.extend((1..size).map(|n| format!("user{n}@corp.example")));
+    InvestigationInput {
+        scan_id: SCAN.into(),
+        seeds,
+        mode: InvestigationMode::Offline,
+    }
 }
 
 fn one_handle(size: usize) -> Vec<Entity> {
@@ -116,6 +134,21 @@ fn correlations_checksum(correlations: &[Correlation]) -> u64 {
     fnv(lines)
 }
 
+/// A checksum of what an analysis reports: its pivots, its metrics and its correlations.
+fn report_checksum(report: &InvestigationReport) -> u64 {
+    let pivots = report.pivots.iter().map(|pivot| {
+        format!(
+            "{}|{}|{}|{}",
+            pivot.uid,
+            pivot.reachable,
+            pivot.closeness.to_bits(),
+            pivot.articulation
+        )
+    });
+    let metrics = serde_json::to_string(&report.metrics).unwrap_or_default();
+    fnv(pivots.chain([metrics])) ^ correlations_checksum(&report.correlations)
+}
+
 fn by_rule(correlations: &[Correlation]) -> String {
     let mut counts = BTreeMap::<&str, usize>::new();
     for correlation in correlations {
@@ -184,24 +217,36 @@ fn main() {
         let detail = format!("relations={}", snapshot.relations.len());
         measure("graph", size, &detail, || {
             let report = analyze_snapshot(&snapshot);
-            let pivots = report.pivots.iter().map(|pivot| {
-                format!(
-                    "{}|{}|{}|{}",
-                    pivot.uid,
-                    pivot.reachable,
-                    pivot.closeness.to_bits(),
-                    pivot.articulation
-                )
-            });
-            let metrics = serde_json::to_string(&report.metrics).unwrap_or_default();
             (
-                fnv(pivots.chain([metrics])) ^ correlations_checksum(&report.correlations),
+                report_checksum(&report),
                 format!(
                     "degeneracy={} pivots={}",
                     report.metrics.graph_degeneracy,
                     report.pivots.len()
                 ),
             )
+        });
+    }
+    for size in sizes(&args, "plan", &[64, 256]) {
+        let input = plan_seeds(size);
+        measure("plan", size, "seeds", || {
+            match investigate_offline(
+                &[],
+                &input,
+                &PipelineLimits::default(),
+                &PlannerPolicy::default(),
+                &[],
+            ) {
+                Ok(outcome) => (
+                    report_checksum(&outcome.report),
+                    format!(
+                        "entities={} {}",
+                        outcome.snapshot.entities.len(),
+                        by_rule(&outcome.report.correlations)
+                    ),
+                ),
+                Err(error) => (0, format!("failed: {error}")),
+            }
         });
     }
 }

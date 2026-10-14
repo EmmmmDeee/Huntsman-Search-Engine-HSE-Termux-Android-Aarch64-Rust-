@@ -335,12 +335,10 @@ pub fn rule_au_060_transitive_identity_closure(
         .collect()
 }
 
-/// The uids of the entities a rule pass reads, in order, so that the pairwise rules pair them
-/// the same way round, and in the same order, on every run.
-fn sorted_uids<'a>(context: &RuleContext<'a>) -> Vec<&'a str> {
-    let mut uids = context.by_uid().keys().copied().collect::<Vec<_>>();
-    uids.sort_unstable();
-    uids
+/// The uids of the entities a rule pass reads, in the context's ascending uid order, so that the
+/// pairwise rules pair them the same way round, and in the same order, on every run.
+fn ordered_uids<'a>(context: &RuleContext<'a>) -> Vec<&'a str> {
+    context.by_uid().keys().copied().collect()
 }
 
 pub fn rule_au_062_multipath_corroboration(
@@ -348,7 +346,7 @@ pub fn rule_au_062_multipath_corroboration(
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    let ids = sorted_uids(context);
+    let ids = ordered_uids(context);
     pairwise_disjoint_pathways(&ids, context.relations(), usize::MAX)
         .into_iter()
         .filter(|&(_, _, pathways)| pathways >= 2)
@@ -371,7 +369,7 @@ pub fn rule_au_063_corroboration_gap(
     scan_id: &str,
     now: u64,
 ) -> Vec<Correlation> {
-    let ids = sorted_uids(context);
+    let ids = ordered_uids(context);
     // Two pathways settle that a pair has more than one, so no pair is counted past two.
     pairwise_disjoint_pathways(&ids, context.relations(), 2)
         .into_iter()
