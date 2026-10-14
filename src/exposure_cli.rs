@@ -1330,9 +1330,22 @@ mod tests {
 
     #[test]
     fn an_email_lookup_folds_in_the_keyed_legs_under_one_report() {
-        let gravatar = crate::test_support::OneResponse::json(404, "");
+        // Gravatar, Duolingo and keys.openpgp.org each find nothing.
+        let reply = |status: u16, body: &str| {
+            Ok(crate::http::Response {
+                status,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: body.as_bytes().to_vec(),
+                truncated: false,
+            })
+        };
+        let email_sources = crate::test_support::ScriptedTransport::new(vec![
+            reply(404, ""),
+            reply(200, r#"{"users":[]}"#),
+            reply(404, "No key found"),
+        ]);
         let crate::email_cli::EmailRun::Printed { report: email, .. } =
-            crate::email_cli::run(&gravatar, "ada@example.com", 7)
+            crate::email_cli::run(&email_sources, "ada@example.com", 7)
         else {
             panic!("expected an email report");
         };
