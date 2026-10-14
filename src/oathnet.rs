@@ -1,6 +1,7 @@
 //! `OathNet` breach search: one keyed leg of `exposure`.
 //!
-//! One lookup is one `GET https://oathnet.org/api/service/v2/breach/search?email[]=ADDR` with
+//! One lookup is one `GET https://oathnet.org/api/service/v2/breach/search` filtered on one
+//! field, `email[]=ADDR` or `username[]=HANDLE` ([`Query`]), with
 //! the key in the `x-api-key` header, bound to [`KEY_ORIGIN`] by [`crate::fetch`]. Redirects are
 //! not followed, so the key cannot be sent anywhere else. The endpoint, envelope and field names
 //! are those of `OathNet`'s published `OpenAPI` document (`https://docs.oathnet.org/openapi.yaml`,
@@ -42,8 +43,9 @@ pub const API_URL: &str = "https://oathnet.org/api/service/v2/breach/search";
 pub const KEY_ORIGIN: &str = "https://oathnet.org:443";
 /// `OathNet` requires this header name in lower case.
 const KEY_HEADER: &str = "x-api-key";
-/// Records read per lookup. `OathNet` accepts 1 to 200.
-pub const PAGE_SIZE: u32 = 100;
+/// Records read per lookup: the most `OathNet` returns in one request, so one lookup (one
+/// daily lookup spent) reads as much as it can.
+pub const PAGE_SIZE: u32 = 200;
 /// Ceiling for the one request.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 /// Most field names kept for one breach database.
@@ -229,29 +231,55 @@ pub fn transport_config() -> TransportConfig {
     }
 }
 
-/// The request URL for `email`. **Pure.**
+/// What one search matches: one exact value on one record field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Query<'a> {
+    Email(&'a str),
+    Username(&'a str),
+}
+
+impl Query<'_> {
+    /// The `OathNet` flat filter this query uses.
+    #[must_use]
+    pub const fn field(self) -> &'static str {
+        match self {
+            Self::Email(_) => "email",
+            Self::Username(_) => "username",
+        }
+    }
+
+    #[must_use]
+    pub const fn value(&self) -> &str {
+        match self {
+            Self::Email(value) | Self::Username(value) => value,
+        }
+    }
+}
+
+/// The request URL for `query`. **Pure.**
 #[must_use]
-pub fn search_url(email: &str) -> String {
+pub fn search_url(query: Query<'_>) -> String {
     format!(
-        "{API_URL}?email%5B%5D={}&page_size={PAGE_SIZE}",
-        percent_encode_component(email)
+        "{API_URL}?{}%5B%5D={}&page_size={PAGE_SIZE}",
+        query.field(),
+        percent_encode_component(query.value())
     )
 }
 
-/// Search `OathNet`'s breach records for `email` with the key in `keys`.
+/// Search `OathNet`'s breach records for `query` with the key in `keys`.
 ///
 /// # Errors
 /// [`OathnetError::MissingKey`] before any request when no key is configured; otherwise the
 /// refusal, status, envelope or decode failure that stopped the lookup.
-pub fn search_email<T: Transport + ?Sized>(
+pub fn search<T: Transport + ?Sized>(
     transport: &T,
     keys: &Keys,
-    email: &str,
+    query: Query<'_>,
     now_unix: u64,
 ) -> Result<Search, OathnetError> {
     let secret = keys.get(KEY_SLOT).ok_or(OathnetError::MissingKey)?;
     let credential = credential(secret.clone(), now_unix)?;
-    let request = Request::get(search_url(email))
+    let request = Request::get(search_url(query))
         .header("Accept", "application/json")
         .with_timeout(TIMEOUT);
     let fetched = fetch(

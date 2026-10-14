@@ -148,6 +148,7 @@ cargo run -- people Madonna              # skip path: fewer than two alphabetic 
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
 cargo run -- email nobody@example.com     # deterministic pivots + public Gravatar lookup
 cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax + OathNet evidence, then each breach's summary, flags and source links (keyed; no key = no request)
+cargo run -- exposure @some_handle  # the same for a username: stolen.tax + OathNet (HIBP searches addresses only)
 cargo run -- username octocat             # variants + public GitHub/Bluesky lookups
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- domain example.com             # crt.sh certificate names + DNS records over DoH; network

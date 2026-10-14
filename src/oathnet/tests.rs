@@ -242,7 +242,7 @@ fn status(code: u16, body: &str) -> Response {
 #[test]
 fn the_search_sends_one_get_with_the_key_header_to_the_fixed_origin() {
     let transport = Recorder::new(vec![crate::test_support::json_ok(&sample().to_string())]);
-    let search = match search_email(&transport, &keys(), "user+tag@example.com", 7) {
+    let search = match search(&transport, &keys(), Query::Email("user+tag@example.com"), 7) {
         Ok(search) => search,
         Err(error) => panic!("search failed: {error}"),
     };
@@ -253,9 +253,21 @@ fn the_search_sends_one_get_with_the_key_header_to_the_fixed_origin() {
     assert_eq!(request.method, Method::Get);
     assert_eq!(
         request.url,
-        "https://oathnet.org/api/service/v2/breach/search?email%5B%5D=user%2Btag%40example.com&page_size=100"
+        "https://oathnet.org/api/service/v2/breach/search?email%5B%5D=user%2Btag%40example.com&page_size=200"
     );
     assert_eq!(request.header_value("x-api-key"), Some(KEY));
+}
+
+#[test]
+fn a_username_query_filters_on_the_username_field() {
+    let transport = Recorder::new(vec![crate::test_support::json_ok(&sample().to_string())]);
+    if let Err(error) = search(&transport, &keys(), Query::Username("ada_99"), 7) {
+        panic!("search failed: {error}");
+    }
+    assert_eq!(
+        transport.sent()[0].url,
+        "https://oathnet.org/api/service/v2/breach/search?username%5B%5D=ada_99&page_size=200"
+    );
 }
 
 #[test]
@@ -266,7 +278,7 @@ fn no_key_sends_nothing() {
         Err(error) => panic!("empty keys parse: {error}"),
     };
     assert_eq!(
-        search_email(&transport, &empty, "user@example.com", 7),
+        search(&transport, &empty, Query::Email("user@example.com"), 7),
         Err(OathnetError::MissingKey)
     );
     assert!(transport.sent().is_empty());
@@ -302,7 +314,7 @@ fn statuses_map_to_outcomes_and_never_quote_the_body() {
     for (response, kind, http) in cases {
         let code = response.status;
         let transport = Recorder::new(vec![response]);
-        let error = match search_email(&transport, &keys(), "user@example.com", 7) {
+        let error = match search(&transport, &keys(), Query::Email("user@example.com"), 7) {
             Err(error) => error,
             Ok(search) => panic!("HTTP {code} gave {search:?}"),
         };
@@ -331,7 +343,7 @@ fn a_redirect_is_not_followed_so_the_key_goes_nowhere_else() {
         .headers
         .push(("location".into(), "https://elsewhere.example/steal".into()));
     let transport = Recorder::new(vec![moved]);
-    let result = search_email(&transport, &keys(), "user@example.com", 7);
+    let result = search(&transport, &keys(), Query::Email("user@example.com"), 7);
     assert_eq!(result, Err(OathnetError::Unexpected(302)));
     let sent = transport.sent();
     assert_eq!(sent.len(), 1, "only the first request is sent");

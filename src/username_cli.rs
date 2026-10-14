@@ -40,7 +40,7 @@ impl UsernameArgs {
         if positional.len() != 1 {
             return Err(Error::Invalid("username needs exactly one HANDLE".into()));
         }
-        let username = selector(&positional[0])?;
+        let username = canonical_username(&positional[0])?;
         Ok(Self { username, save })
     }
 }
@@ -59,7 +59,7 @@ pub fn run<T: Transport + ?Sized>(
     username: &str,
     now_unix: u64,
 ) -> UsernameRun {
-    let username = match selector(username) {
+    let username = match canonical_username(username) {
         Ok(username) => username,
         Err(error) => return UsernameRun::Failed(error.to_string()),
     };
@@ -79,7 +79,12 @@ pub fn run<T: Transport + ?Sized>(
     }
 }
 
-fn selector(raw: &str) -> Result<String, Error> {
+/// `raw` as the username lookups key on: `@` and surrounding space removed, lower-cased, ASCII
+/// letters, digits, `.`, `_` and `-` only, and not a placeholder. `exposure` uses the same rule.
+///
+/// # Errors
+/// [`Error::InvalidValue`] for a value that breaks the rule.
+pub fn canonical_username(raw: &str) -> Result<String, Error> {
     let value = raw.trim().trim_start_matches('@').to_ascii_lowercase();
     if value.is_empty()
         || value.len() > 253

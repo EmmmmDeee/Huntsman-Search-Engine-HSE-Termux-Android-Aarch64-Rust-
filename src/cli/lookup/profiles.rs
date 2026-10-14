@@ -235,7 +235,7 @@ pub(in crate::cli) fn email_cmd(args: &[String]) -> ExitCode {
 
 pub(in crate::cli) fn exposure_cmd(args: &[String]) -> ExitCode {
     match ExposureArgs::parse(args) {
-        Ok(p) => finish(ScanKind::Exposure, &p.email, p.save.as_deref()),
+        Ok(p) => finish(ScanKind::Exposure, &p.selector, p.save.as_deref()),
         Err(e) => usage_failure(&e, EXPOSURE_USAGE),
     }
 }

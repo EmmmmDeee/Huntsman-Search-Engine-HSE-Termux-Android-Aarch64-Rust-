@@ -55,7 +55,8 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
 #[must_use]
 pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
     match kind {
-        ScanKind::Email | ScanKind::Exposure => canonical_email(raw),
+        ScanKind::Email => canonical_email(raw),
+        ScanKind::Exposure => crate::exposure_cli::canonical_selector(raw),
         ScanKind::Username => canonical_handle(raw),
         ScanKind::Phone => canonical_phone(raw),
         ScanKind::Domain => canonical_domain(raw),
