@@ -41,7 +41,6 @@ fn install_fake_termux_toolchain(fake_bin: &Path, fake_target_libdir: &Path) {
 printf 'timeout %s\n' "$*" >> "$INSTALL_LOG"
 case "$*" in
   *' build-sha') cat "$INSTALL_LOG.build-sha" 2>/dev/null || printf '%s\n' unknown ;;
-  *' doctor serve') exit "${FAKE_DOCTOR_SERVE:-0}" ;;
 esac
 exit 0
 "#,
@@ -134,6 +133,10 @@ case "$url" in
     src="${FAKE_RELEASE_DIR:-/nonexistent}/${url#*/releases/download/}"
     [ -f "$src" ] || exit 22
     cp "$src" "$out"
+    ;;
+  https://raw.githubusercontent.com/*/scripts/termux/*)
+    [ -n "${FAKE_SCRIPTS_DIR:-}" ] || exit 22
+    cp "$FAKE_SCRIPTS_DIR/scripts/termux/${url##*/scripts/termux/}" "$out" || exit 22
     ;;
   https://api.github.com/*/commits/main~*)
     sha="$(sed -n "${url##*main~}p" "${FAKE_MAIN_HISTORY:-/nonexistent}" 2>/dev/null)"
@@ -676,6 +679,16 @@ fn install_doc_uninstall_removes_every_path_the_installer_creates() {
             && uninstall.contains("rm -rf \"$PREFIX/var/service/huntsman-serve\""),
         "the uninstall steps must stop and remove the web UI service install.sh creates"
     );
+    for path in [
+        "\"$PREFIX/bin/huntsman\"",
+        "\"$PREFIX/bin/huntsmanctl\"",
+        "\"$PREFIX/etc/profile.d/huntsman.sh\"",
+    ] {
+        assert!(
+            uninstall.contains(path),
+            "the uninstall steps must remove {path}, which install.sh creates"
+        );
+    }
     for var in ["HUNTSMAN_HOME", "HUNTSMAN_ENV_FILE", "CARGO_TARGET_DIR"] {
         let marker = format!("${{{var}:-$HOME/");
         let start = installer
@@ -770,6 +783,8 @@ impl Prebuilt {
             .env_remove("HUNTSMAN_FROM_SOURCE")
             .env_remove("HUNTSMAN_SERVE_SERVICE")
             .env("SVDIR", self.temp.join("service"))
+            .env("FAKE_SCRIPTS_DIR", env!("CARGO_MANIFEST_DIR"))
+            .env("HUNTSMAN_START_TIMEOUT", "2")
             .envs(env.iter().copied())
             .output()
             .expect("installer must execute")
@@ -873,7 +888,11 @@ fn a_published_build_is_installed_without_a_compiler() {
     );
     assert!(t.tmp_is_clean(), "the download directory is removed");
     assert!(
-        fs::read_dir(t.root.join("bin")).unwrap().count() == 1,
+        fs::read_dir(t.root.join("bin")).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with('.')),
         "no staging file is left next to the binary"
     );
 }
@@ -983,15 +1002,25 @@ fn stdout(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// A release "binary" that logs its arguments and answers `doctor serve` as
+/// `FAKE_DOCTOR_SERVE` says: 0 healthy, anything else not running.
+const FAKE_RECON: &[u8] = br#"#!/bin/sh
+printf 'recon %s\n' "$*" >> "$INSTALL_LOG"
+if [ "$1 $2" = 'doctor serve' ]; then
+  if [ "${FAKE_DOCTOR_SERVE:-0}" = 0 ]; then echo "serve=healthy addr=$4"; exit 0; fi
+  echo "serve=not_running addr=$4"; exit 69
+fi
+"#;
+
 #[test]
 fn the_web_ui_runs_as_a_service_that_restarts_with_each_install() {
     let t = Prebuilt::new().with_runit();
-    publish_release(&t.releases, BUILT_REV, b"bin", b"bin");
+    publish_release(&t.releases, BUILT_REV, FAKE_RECON, FAKE_RECON);
     let out = t.run(&[("HUNTSMAN_REV", BUILT_REV)], BUILT_REV);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
         t.calls()
-            .contains("pkg install -y git curl coreutils termux-services"),
+            .contains("pkg install -y git curl coreutils termux-services jq"),
         "{}",
         t.calls()
     );
@@ -1004,7 +1033,17 @@ fn the_web_ui_runs_as_a_service_that_restarts_with_each_install() {
     );
     assert!(run.contains("termux-wake-lock"), "{run}");
     assert!(
-        run.contains(&format!("exec \"{}\" serve 2>&1", t.installed().display())),
+        run.contains(&format!(
+            "bind=\"$(head -n 1 '{}' 2>/dev/null)\"",
+            t.temp.join(".huntsman/serve.bind").display()
+        )),
+        "the service binds the address `huntsman start` chose: {run}"
+    );
+    assert!(
+        run.contains(&format!(
+            "exec \"{}\" serve ${{bind:+--bind \"$bind\"}} 2>&1",
+            t.installed().display()
+        )),
         "the service runs the binary this install placed: {run}"
     );
     let finish = fs::read_to_string(dir.join("finish")).unwrap();
@@ -1030,10 +1069,7 @@ fn the_web_ui_runs_as_a_service_that_restarts_with_each_install() {
         "a running service is restarted onto the new binary: {calls}"
     );
     assert!(
-        calls.contains(&format!(
-            "timeout 10 {} doctor serve",
-            t.installed().display()
-        )),
+        calls.contains("recon doctor serve --bind 127.0.0.1:8080"),
         "the installed binary's own probe decides whether the page works: {calls}"
     );
     assert!(
@@ -1042,7 +1078,7 @@ fn the_web_ui_runs_as_a_service_that_restarts_with_each_install() {
         stdout(&out)
     );
 
-    // Not yet supervised: the installer starts runit's daemon for this SVDIR.
+    // Not yet supervised: the controller starts runit's daemon for this SVDIR.
     let out = t.run(
         &[
             ("HUNTSMAN_REV", BUILT_REV),
@@ -1062,22 +1098,72 @@ fn the_web_ui_runs_as_a_service_that_restarts_with_each_install() {
 }
 
 #[test]
+fn the_huntsman_command_and_its_shortcuts_come_from_the_same_commit() {
+    let t = Prebuilt::new().with_runit();
+    publish_release(&t.releases, BUILT_REV, FAKE_RECON, FAKE_RECON);
+    let out = t.run(&[("HUNTSMAN_REV", BUILT_REV)], BUILT_REV);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let controller = t.root.join("bin/huntsman");
+    assert_eq!(
+        fs::read(&controller).unwrap(),
+        fs::read(repo.join("scripts/termux/huntsman")).unwrap()
+    );
+    assert_eq!(
+        fs::metadata(&controller).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    assert_eq!(
+        fs::read_link(t.root.join("bin/huntsmanctl")).unwrap(),
+        Path::new("huntsman")
+    );
+    assert_eq!(
+        fs::read(t.root.join("etc/profile.d/huntsman.sh")).unwrap(),
+        fs::read(repo.join("scripts/termux/huntsman-profile.sh")).unwrap(),
+        "the shortcuts load from profile.d, so ~/.bashrc is never rewritten"
+    );
+    assert!(!t.temp.join(".bashrc").exists());
+    assert!(
+        t.calls().contains(&format!(
+            "curl https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/{BUILT_REV}/scripts/termux/huntsman"
+        )),
+        "{}",
+        t.calls()
+    );
+    assert!(stdout(&out).contains("Command: huntsman (try: huntsman help)"));
+
+    // A commit without the scripts still installs the binary and the service, and says so.
+    let out = t.run(
+        &[("HUNTSMAN_REV", BUILT_REV), ("FAKE_SCRIPTS_DIR", "")],
+        BUILT_REV,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(
+            "warning: huntsman command could not fetch scripts/termux/huntsman at b2731d1"
+        ),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn switching_the_web_ui_service_off_survives_a_reinstall() {
     let t = Prebuilt::new().with_runit();
-    publish_release(&t.releases, BUILT_REV, b"bin", b"bin");
+    publish_release(&t.releases, BUILT_REV, FAKE_RECON, FAKE_RECON);
     let rev = ("HUNTSMAN_REV", BUILT_REV);
 
     let out = t.run(&[rev, ("HUNTSMAN_SERVE_SERVICE", "off")], BUILT_REV);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(t.service().join("down").exists());
     assert!(
-        stdout(&out).contains("Web UI: off; start it with: sv-enable huntsman-serve"),
+        stdout(&out).contains("Web UI: off; start it with: huntsman start"),
         "{}",
         stdout(&out)
     );
     assert!(!t.calls().contains("sv restart"), "{}", t.calls());
 
-    // `sv-disable` leaves a down file; reinstalling keeps the service off.
+    // `huntsman stop` leaves a down file; reinstalling keeps the service off.
     let out = t.run(&[rev], BUILT_REV);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(t.service().join("down").exists());
@@ -1100,8 +1186,7 @@ fn switching_the_web_ui_service_off_survives_a_reinstall() {
 #[test]
 fn a_web_ui_that_does_not_answer_is_reported_without_failing_the_install() {
     let t = Prebuilt::new().with_runit();
-    publish_release(&t.releases, BUILT_REV, b"bin", b"bin");
-    // `doctor serve` finds the page broken, or another program on port 8080.
+    publish_release(&t.releases, BUILT_REV, FAKE_RECON, FAKE_RECON);
     let out = t.run(
         &[("HUNTSMAN_REV", BUILT_REV), ("FAKE_DOCTOR_SERVE", "69")],
         BUILT_REV,
@@ -1109,7 +1194,7 @@ fn a_web_ui_that_does_not_answer_is_reported_without_failing_the_install() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
         stderr(&out).contains(
-            "warning: web UI service not answering yet; huntsman-recon doctor serve says why"
+            "warning: web UI service not answering yet; huntsman status and huntsman logs say why"
         ),
         "{}",
         stderr(&out)
@@ -1119,21 +1204,9 @@ fn a_web_ui_that_does_not_answer_is_reported_without_failing_the_install() {
         "the accepted binary stays installed"
     );
 
-    // A pinned build from before `doctor serve` cannot check the page; say so.
-    let out = t.run(
-        &[("HUNTSMAN_REV", BUILT_REV), ("FAKE_DOCTOR_SERVE", "64")],
-        BUILT_REV,
-    );
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert!(
-        stdout(&out).contains("this build has no `doctor serve` to check the page"),
-        "{}",
-        stdout(&out)
-    );
-
     // Without termux-services there is nothing to supervise the server; say so.
     let t = Prebuilt::new();
-    publish_release(&t.releases, BUILT_REV, b"bin", b"bin");
+    publish_release(&t.releases, BUILT_REV, FAKE_RECON, FAKE_RECON);
     let out = t.run(&[("HUNTSMAN_REV", BUILT_REV)], BUILT_REV);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
