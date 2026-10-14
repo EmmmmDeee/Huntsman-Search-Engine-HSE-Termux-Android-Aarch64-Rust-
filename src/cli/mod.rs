@@ -5,6 +5,7 @@
 //! behavior belongs in `huntsman_recon`, not in the binary front controller.
 
 use std::env;
+use std::ffi::OsString;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | network BSSID|LAT,LON|ssid:NAME [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|network] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
@@ -77,9 +78,17 @@ mod utility;
 
 use report::{exit_on_output_failure, fail};
 
-pub(crate) fn run(argv: Vec<String>) -> ExitCode {
+/// Runs the command named by the process arguments (without the program name).
+pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
     exit_on_output_failure();
-    let first = argv.first().map(String::as_str);
+    let mut words = Vec::with_capacity(args.len());
+    for (index, arg) in args.into_iter().enumerate() {
+        match arg.into_string() {
+            Ok(arg) => words.push(arg),
+            Err(raw) => return help::argument_not_utf8(index + 1, raw.len()),
+        }
+    }
+    let first = words.first().map(String::as_str);
     if matches!(first, Some("help" | "-h" | "--help")) {
         println!("{HELP}\n{USAGE}");
         return ExitCode::SUCCESS;
@@ -88,11 +97,18 @@ pub(crate) fn run(argv: Vec<String>) -> ExitCode {
         println!("huntsman-recon {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    if argv.len() == 2 && matches!(argv[1].as_str(), "-h" | "--help") {
-        help::print_command_help(&argv[0]);
-        return ExitCode::SUCCESS;
+    if words.len() == 2 && matches!(words[1].as_str(), "-h" | "--help") {
+        // A word that is not a command gets the usage error, not the general help: a typo
+        // answered with help and exit 0 hides itself.
+        return match help::command_help(&words[0]) {
+            Some(text) => {
+                println!("{text}\n  -h, --help  Show this help");
+                ExitCode::SUCCESS
+            }
+            None => help::unknown_command(&words[0]),
+        };
     }
-    let mut remaining = argv.into_iter();
+    let mut remaining = words.into_iter();
     match remaining.next().as_deref() {
         Some("doctor") => doctor::doctor_cmd(&remaining.collect::<Vec<_>>()),
         Some("fix") => doctor::fix_cmd(&remaining.collect::<Vec<_>>()),
