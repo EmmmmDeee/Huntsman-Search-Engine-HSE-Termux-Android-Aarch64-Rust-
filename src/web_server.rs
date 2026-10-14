@@ -15,10 +15,11 @@
 //! A loopback bind answers only requests whose `Host` is a loopback authority,
 //! which blocks a browser DNS-rebinding attack from reaching the local API.
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -62,7 +63,16 @@ pub fn resolve_serve_bind(
         .ok_or_else(|| Error::Invalid(format!("invalid Railway PORT {raw:?}")))?;
     Ok(format!("0.0.0.0:{port}"))
 }
-const MAX_REQUEST_BYTES: usize = 16 * 1024;
+/// The seeds of the largest analysis the server admits, as they arrive: percent-encoded, three bytes
+/// for each byte that is not ASCII, with `%0A` between them (24 KiB).
+const LARGEST_ANALYSIS_SEEDS: usize =
+    MAX_ANALYZE_SEEDS * MAX_SELECTOR_BYTES * 3 + (MAX_ANALYZE_SEEDS - 1) * 3;
+/// What a request carries besides its analysis seeds: the rest of the request line, a browser's
+/// headers and a bearer token.
+const HEADER_ALLOWANCE: usize = 8 * 1024;
+/// Request line and headers of one request (33 KiB). It is derived from the analysis limits, so the
+/// largest analysis the server admits always fits, with the header allowance.
+const MAX_REQUEST_BYTES: usize = (LARGEST_ANALYSIS_SEEDS + HEADER_ALLOWANCE).next_multiple_of(1024);
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// Whole-request wall-clock budget. The per-read `IO_TIMEOUT` restarts on every successful
 /// read, so it alone cannot bound a client that dribbles a byte at a time; this absolute
@@ -70,8 +80,13 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 /// Connections served at once. A phone browser opens several for one page, and some are speculative
 /// and idle, so each connection gets its own thread: one that sends nothing holds up only itself.
-/// A connection past the cap is answered `503` at once.
+/// A connection past the cap first closes the connection that has waited longest without a whole
+/// request, if it has waited [`IDLE_GRACE`]; when none has, it is answered `503` at once.
 const MAX_CONNECTIONS: usize = 32;
+/// How long a connection may wait without a whole request before a connection that finds every
+/// place taken may close it. A browser sends its request as soon as it connects, except on a
+/// speculative connection, which it replaces when it needs one.
+const IDLE_GRACE: Duration = Duration::from_secs(1);
 /// The handler formats short strings, so a small stack is enough, and it keeps a full set of
 /// connection threads cheap on a phone.
 const HANDLER_STACK_BYTES: usize = 256 * 1024;
@@ -245,12 +260,13 @@ impl Server {
     pub fn run(&self) -> Result<(), Error> {
         let shared = Arc::new((self.config.clone(), self.routes.clone()));
         let live = Arc::new(AtomicUsize::new(0));
+        let idle = Arc::new(Idle::default());
         loop {
             let (stream, _) = self
                 .listener
                 .accept()
                 .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            serve_on_a_thread(&shared, &live, stream);
+            serve_on_a_thread(&shared, &live, &idle, stream);
         }
     }
 
@@ -261,7 +277,7 @@ impl Server {
                 .listener
                 .accept()
                 .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            handle_stream_with(&self.config, &self.routes, stream)?;
+            handle_stream_with(&self.config, &self.routes, stream, None)?;
         }
         Ok(())
     }
@@ -290,22 +306,97 @@ impl Drop for Slot {
     }
 }
 
+/// The connections still waiting for a whole request, in the order they arrived, each with a
+/// handle that can close it. Connections that send nothing, a browser's speculative ones or a
+/// local app's on purpose, would otherwise keep every request out for the whole read budget.
+#[derive(Default)]
+struct Idle {
+    next: AtomicU64,
+    waiting: Mutex<VecDeque<(u64, Instant, TcpStream)>>,
+}
+
+impl Idle {
+    fn waiting(&self) -> MutexGuard<'_, VecDeque<(u64, Instant, TcpStream)>> {
+        self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Note a connection that is about to read its request; it is forgotten when the returned
+    /// guard drops. A connection whose socket cannot be duplicated is never closed early.
+    fn wait(self: &Arc<Self>, stream: &TcpStream) -> Option<Waiting> {
+        let handle = stream.try_clone().ok()?;
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        self.waiting().push_back((id, Instant::now(), handle));
+        Some(Waiting {
+            idle: Arc::clone(self),
+            id,
+        })
+    }
+
+    /// Close the connection that has waited longest, if it has waited `grace`. Its read ends at
+    /// once, and its thread lets its place go.
+    fn close_longest_waiting(&self, grace: Duration) -> bool {
+        let mut waiting = self.waiting();
+        if waiting
+            .front()
+            .is_none_or(|(_, since, _)| since.elapsed() < grace)
+        {
+            return false;
+        }
+        waiting
+            .pop_front()
+            .is_some_and(|(_, _, handle)| handle.shutdown(Shutdown::Both).is_ok())
+    }
+}
+
+/// A connection noted in [`Idle`]; dropping it, once the request is read, forgets the connection.
+struct Waiting {
+    idle: Arc<Idle>,
+    id: u64,
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        self.idle.waiting().retain(|(id, _, _)| *id != self.id);
+    }
+}
+
+/// The place a closed connection gives back, once its thread has let it go: at once, as a rule.
+fn place_freed_by_closing(live: &Arc<AtomicUsize>) -> Option<Slot> {
+    for _ in 0..50 {
+        if let Some(slot) = Slot::take(live) {
+            return Some(slot);
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    None
+}
+
 type Shared = (ServeConfig, Routes);
 
-fn serve_on_a_thread(shared: &Arc<Shared>, live: &Arc<AtomicUsize>, stream: TcpStream) {
-    let Some(slot) = Slot::take(live) else {
-        refuse_busy(stream);
-        return;
+fn serve_on_a_thread(
+    shared: &Arc<Shared>,
+    live: &Arc<AtomicUsize>,
+    idle: &Arc<Idle>,
+    stream: TcpStream,
+) {
+    let slot = match Slot::take(live) {
+        Some(slot) => slot,
+        None if idle.close_longest_waiting(IDLE_GRACE) => match place_freed_by_closing(live) {
+            Some(slot) => slot,
+            None => return refuse_busy(stream),
+        },
+        None => return refuse_busy(stream),
     };
     // The thread owns the stream; this copy lets a failed spawn still answer the client.
     let fallback = stream.try_clone().ok();
+    let waiting = idle.wait(&stream);
     let shared = Arc::clone(shared);
     let spawned = thread::Builder::new()
         .name("serve-connection".into())
         .stack_size(HANDLER_STACK_BYTES)
         .spawn(move || {
             let _slot = slot;
-            let _handled = handle_stream_with(&shared.0, &shared.1, stream);
+            let _handled = handle_stream_with(&shared.0, &shared.1, stream, waiting);
         });
     if spawned.is_err() {
         if let Some(stream) = fallback {
@@ -322,13 +413,14 @@ fn refuse_busy(mut stream: TcpStream) {
 
 #[cfg(test)]
 fn handle_stream(config: &ServeConfig, stream: TcpStream) -> Result<(), Error> {
-    handle_stream_with(config, &Routes::default(), stream)
+    handle_stream_with(config, &Routes::default(), stream, None)
 }
 
 fn handle_stream_with(
     config: &ServeConfig,
     routes: &Routes,
     mut stream: TcpStream,
+    waiting: Option<Waiting>,
 ) -> Result<(), Error> {
     stream
         .set_read_timeout(Some(IO_TIMEOUT))
@@ -339,6 +431,8 @@ fn handle_stream_with(
 
     let deadline = Instant::now() + REQUEST_DEADLINE;
     let request = read_request(&mut stream, deadline)?;
+    // A whole request: the connection is busy now, not idle, and is no longer closed early.
+    drop(waiting);
     let response = respond(
         &request,
         config.bearer_token.as_deref(),
@@ -385,8 +479,14 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
         if read == 0 {
             break;
         }
+        // Only the new bytes, and the three before them, can complete the blank line that ends
+        // the head: scanning the whole buffer after every read was quadratic in its length.
+        let scan_from = bytes.len().saturating_sub(3);
         bytes.extend_from_slice(&chunk[..read]);
-        if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+        if bytes[scan_from..]
+            .windows(4)
+            .any(|window| window == b"\r\n\r\n")
+        {
             break;
         }
     }
@@ -992,6 +1092,8 @@ try{$('token').value=sessionStorage.getItem('hse-token')||''}catch(_){}
 $('token').onchange=()=>{try{sessionStorage.setItem('hse-token',$('token').value)}catch(_){}};
 function headers(extra){const h=Object.assign({},extra);const t=$('token').value;if(t)h.Authorization='Bearer '+t;return h}
 async function get(path){const r=await fetch(path,{headers:headers(),cache:'no-store'});return await r.text()}
+async function call(path,extra){const r=await fetch(path,{headers:headers(extra),cache:'no-store'});const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}return {r,text,body}}
+const reason=({text,body})=>(body&&body.error)||text.trim();
 async function refresh(){
   for(const [id,path] of [['health','/api/health'],['modules','/api/modules'],['command','/api/command']]){
     try{$(id).textContent=await get(path)}catch(e){$(id).textContent=String(e)}
@@ -1006,10 +1108,9 @@ $('lookup').onsubmit=async ev=>{
   $('status').textContent='running…'; $('text').textContent=''; $('outcomes').replaceChildren(); last=null;
   const started=Date.now();
   try{
-    const r=await fetch('/api/lookup?'+params,{headers:headers({'X-Huntsman-Lookup':'1'}),cache:'no-store'});
-    const body=await r.json();
+    const res=await call('/api/lookup?'+params,{'X-Huntsman-Lookup':'1'}),body=res.body;
     const secs=((Date.now()-started)/1000).toFixed(1)+'s';
-    if(!r.ok){$('status').textContent='HTTP '+r.status+' · '+secs;$('text').textContent=body.error||'';return}
+    if(!res.r.ok||!body){$('status').textContent='HTTP '+res.r.status+' · '+secs;$('text').textContent=reason(res);return}
     last=body; $('route').textContent=body.route;
     $('status').textContent=body.entities.length+' entities · '+secs;
     for(const o of body.outcomes){const tr=document.createElement('tr');cell(tr,o.module);cell(tr,o.kind);cell(tr,o.found);$('outcomes').appendChild(tr)}
@@ -1032,9 +1133,8 @@ $('analyze').onsubmit=async ev=>{
   $('astatus').textContent='analyzing…'; alast=null;
   for(const id of ['aentities','arelations','apivots','acorrelations','agaps','aplanned','arejected']) $(id).replaceChildren();
   try{
-    const r=await fetch('/api/analyze?'+new URLSearchParams({seeds}),{headers:headers(),cache:'no-store'});
-    const body=await r.json();
-    if(!r.ok){$('astatus').textContent='HTTP '+r.status+' · '+(body.error||'');return}
+    const res=await call('/api/analyze?'+new URLSearchParams({seeds})),body=res.body;
+    if(!res.r.ok||!body){$('astatus').textContent='HTTP '+res.r.status+' · '+reason(res);return}
     alast=body;
     const names=new Map(body.entities.map(e=>[e.uid,show(e.kind)+': '+e.value]));
     const who=uid=>names.get(uid)||uid;
@@ -1171,6 +1271,50 @@ mod tests {
         addr
     }
 
+    /// The largest analysis the server admits, every seed byte percent-encoded, sent with headers
+    /// that fill the allowance: the whole request is read and answered. With the 16 KiB request
+    /// cap it was refused `413`, and so was the page's own longest input (2,048 CJK characters).
+    #[test]
+    fn the_largest_admitted_analysis_is_read_whole() {
+        use std::fmt::Write as _;
+
+        let mut server = Server::bind(ServeConfig::parse("127.0.0.1:0", None).unwrap()).unwrap();
+        server.routes = echo_seeds();
+        let addr = server.local_addr().unwrap();
+        thread::spawn(move || {
+            let _ = server.run();
+        });
+        let seed = "é".repeat(MAX_SELECTOR_BYTES / 2);
+        assert_eq!(seed.len(), MAX_SELECTOR_BYTES);
+        let encoded = seed.bytes().fold(String::new(), |mut encoded, byte| {
+            write!(encoded, "%{byte:02X}").unwrap();
+            encoded
+        });
+        let head = format!(
+            "GET /api/analyze?seeds={} HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: same-origin\r\nX-Pad: ",
+            vec![encoded; MAX_ANALYZE_SEEDS].join("%0A")
+        );
+        let bound = LARGEST_ANALYSIS_SEEDS + HEADER_ALLOWANCE;
+        let request = format!("{head}{}\r\n\r\n", "p".repeat(bound - head.len() - 4));
+        assert_eq!(request.len(), bound);
+        assert!(request.len() > 16 * 1024);
+
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        client.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{}", &response[..80]);
+        let body: serde_json::Value =
+            serde_json::from_str(&response[response.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(
+            body["seeds"],
+            serde_json::json!(vec![seed; MAX_ANALYZE_SEEDS])
+        );
+    }
+
     fn get_within(addr: SocketAddr, path: &str, wait: Duration) -> std::io::Result<String> {
         let mut client = TcpStream::connect(addr)?;
         client.set_read_timeout(Some(wait))?;
@@ -1233,6 +1377,46 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Connections that send nothing, in every place for longer than `IDLE_GRACE`, kept every
+    /// request out for the whole read budget: `503` for 5 s, and for as long as someone renews
+    /// them (any app on the phone can open loopback connections). A request that finds every
+    /// place taken now closes the connection that has waited longest, and is served; the other
+    /// idle connections keep their places.
+    #[test]
+    fn a_request_at_the_cap_closes_the_longest_waiting_connection() {
+        let addr = serve_in_background();
+        let mut idle: Vec<TcpStream> = (0..MAX_CONNECTIONS)
+            .map(|_| TcpStream::connect(addr).unwrap())
+            .collect();
+        thread::sleep(IDLE_GRACE + Duration::from_millis(200));
+
+        let started = Instant::now();
+        let response = get_within(addr, "/api/health", Duration::from_secs(3)).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(started.elapsed() < IDLE_GRACE, "{:?}", started.elapsed());
+
+        let mut byte = [0_u8; 1];
+        idle[0]
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        assert_eq!(
+            idle[0].read(&mut byte).unwrap(),
+            0,
+            "the longest waiting connection is closed"
+        );
+        idle[1]
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let next = idle[1].read(&mut byte).unwrap_err().kind();
+        assert!(
+            matches!(
+                next,
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+            "the next one still waits: {next:?}"
+        );
     }
 
     #[test]
@@ -1705,6 +1889,21 @@ mod tests {
         assert!(INDEX_HTML.contains("'X-Huntsman-Lookup':'1'"));
     }
 
+    /// Some refusals are plain text, not JSON: `503 busy` at the connection cap, `413` for an
+    /// oversized request, `408`. The page parsed every answer as JSON before reading its status,
+    /// so it showed a parser error instead of the refusal. It now reads each answer as text and
+    /// parses JSON only when it can (checked in Chromium: a `413` reads `HTTP 413 · request too
+    /// large`, where it read `SyntaxError: Unexpected token 'r'`).
+    #[test]
+    fn the_page_reads_a_plain_text_refusal() {
+        let script = inline_block(INDEX_HTML, "script");
+        assert!(
+            !script.contains(".json()"),
+            "an answer parsed as JSON before its status was read"
+        );
+        assert!(script.contains("try{body=JSON.parse(text)}catch(_){}"));
+    }
+
     fn analyses(
         handler: impl Fn(&[String]) -> Result<serde_json::Value, LookupError> + Send + Sync + 'static,
     ) -> Routes {
@@ -1851,9 +2050,9 @@ mod tests {
     #[test]
     fn the_page_runs_the_offline_analysis() {
         assert!(INDEX_HTML.contains(r#"<form id="analyze">"#));
-        assert!(INDEX_HTML.contains("fetch('/api/analyze?'"));
+        assert!(INDEX_HTML.contains("call('/api/analyze?'"));
         let script = inline_block(INDEX_HTML, "script");
-        let analyze_call = &script[script.find("fetch('/api/analyze?'").unwrap()..];
+        let analyze_call = &script[script.find("call('/api/analyze?'").unwrap()..];
         let analyze_call = &analyze_call[..analyze_call.find(';').unwrap()];
         assert!(
             !analyze_call.contains("X-Huntsman-Lookup"),
