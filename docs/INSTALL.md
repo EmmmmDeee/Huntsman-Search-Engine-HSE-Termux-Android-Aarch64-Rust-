@@ -63,6 +63,18 @@ into `~/.cargo/bin`, and Termux keeps running the old
 override that cache path. To build a specific revision, run the installer with a
 full 40-character SHA in `HUNTSMAN_REV`.
 
+### Check and repair an install
+
+After an install or an upgrade, and whenever something stops working:
+
+```sh
+huntsman-recon doctor   # what is wrong, and the command that fixes each problem
+huntsman-recon fix      # make every repair that can be undone, then check again
+```
+
+`fix` never deletes a ledger or scan data and never writes a key. When the
+binary itself is missing or stale, it prints the installer command above.
+
 ## Prebuilt Termux release
 
 Installing the newest verified build needs no compiler. It downloads one
