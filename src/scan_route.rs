@@ -167,6 +167,20 @@ mod tests {
     }
 
     #[test]
+    fn an_exposure_route_takes_an_address_or_a_username() {
+        assert_eq!(
+            canonical_selector(ScanKind::Exposure, "Ada@Example.com").as_deref(),
+            Some("ada@example.com")
+        );
+        assert_eq!(
+            canonical_selector(ScanKind::Exposure, "@Ada_99").as_deref(),
+            Some("ada_99")
+        );
+        assert_eq!(canonical_selector(ScanKind::Exposure, "two words"), None);
+        assert_eq!(canonical_selector(ScanKind::Email, "@Ada_99"), None);
+    }
+
+    #[test]
     fn route_selector_is_canonical() {
         assert_eq!(
             canonical_selector(ScanKind::Email, " Ada@Example.ORG "),
