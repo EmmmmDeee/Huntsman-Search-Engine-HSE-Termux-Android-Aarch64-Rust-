@@ -23,4 +23,4 @@ pub use graph::{
     strongest_path,
 };
 pub use social_extract::derive_profile_links;
-pub use types::{Relation, RelationKind, domain_key, is_identity_kind};
+pub use types::{Basis, Relation, RelationKind, domain_key, is_identity_kind};

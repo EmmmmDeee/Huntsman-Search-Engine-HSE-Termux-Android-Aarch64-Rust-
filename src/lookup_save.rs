@@ -118,6 +118,22 @@ pub const DOMAIN_POLICY: SavePolicy = SavePolicy {
     entity_provenance: domain_provenance,
 };
 
+fn network_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        "wigle" => ("wigle", "src/wigle.rs"),
+        "wigle_bluetooth" => ("wigle_bluetooth", "src/wigle.rs"),
+        "oui" => ("oui", "src/oui.rs"),
+        _ => (source, "src/network_cli.rs"),
+    }
+}
+
+pub const NETWORK_POLICY: SavePolicy = SavePolicy {
+    default_source: "wigle",
+    does_not_show: "a WiFi network record is not an identity-resolution verdict or a device's current location",
+    outcome_provenance: network_provenance,
+    entity_provenance: network_provenance,
+};
+
 /// Persist one lookup report as a fresh unverified hash chain.
 ///
 /// # Errors

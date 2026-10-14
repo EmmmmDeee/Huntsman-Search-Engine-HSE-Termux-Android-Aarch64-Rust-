@@ -440,8 +440,11 @@ mod tests {
             database_name: Some("Example\nBreach".into()),
             email: vec!["a@example.com".into()],
             username: vec!["ada".into()],
-            password: Some("hunter2-secret".into()),
-            hashed_password: None,
+            // The Entry type carries presence flags, not the secret: the
+            // cleartext is discarded when decoded (see types::present_flag and
+            // its test), so render can only ever observe a boolean here.
+            password: true,
+            hashed_password: false,
         };
         let outcome = SearchOutcome {
             query: "email:\"a@example.com\"".into(),
@@ -458,6 +461,6 @@ mod tests {
         assert!(text.contains("email=a@example.com\n"), "{text}");
         assert!(text.contains("database=Example\\nBreach\n"), "{text}");
         assert!(text.contains("has_password=true\n"), "{text}");
-        assert!(!text.contains("hunter2"), "{text}");
+        assert!(text.contains("has_hashed_password=false\n"), "{text}");
     }
 }
