@@ -30,6 +30,7 @@ pub struct RuleContext<'a> {
     by_uid: RefCell<Option<BTreeMap<&'a str, &'a Entity>>>,
     by_canonical_handle: RefCell<Option<BTreeMap<String, Vec<&'a Entity>>>>,
     pathways: RefCell<Option<Vec<PairPathways<'a>>>>,
+    clusters: RefCell<Option<Vec<Vec<String>>>>,
 }
 
 impl<'a> RuleContext<'a> {
@@ -41,6 +42,7 @@ impl<'a> RuleContext<'a> {
             by_uid: RefCell::new(None),
             by_canonical_handle: RefCell::new(None),
             pathways: RefCell::new(None),
+            clusters: RefCell::new(None),
         }
     }
 
@@ -94,6 +96,18 @@ impl<'a> RuleContext<'a> {
         }
         Ref::map(self.pathways.borrow(), |pathways| {
             pathways.as_ref().expect("cache initialised")
+        })
+    }
+
+    /// The identity clusters (see [`relation::resolve_identity_clusters`]), found once: AU-060
+    /// and AU-071 both read them.
+    pub fn identity_clusters(&self) -> Ref<'_, Vec<Vec<String>>> {
+        if self.clusters.borrow().is_none() {
+            let clusters = relation::resolve_identity_clusters(self.relations);
+            *self.clusters.borrow_mut() = Some(clusters);
+        }
+        Ref::map(self.clusters.borrow(), |clusters| {
+            clusters.as_ref().expect("cache initialised")
         })
     }
 }
@@ -892,6 +906,104 @@ mod tests {
         ];
         expected.sort();
         assert_eq!(gaps, expected, "{correlations:?}");
+    }
+
+    /// Four addresses with one handle and a person whose name is that handle are one identity
+    /// cluster, joined by aliases and by identifiers: two kinds of relation that both rest on
+    /// the handle. That is one piece of evidence, so the cluster is not robust (AU-071), and its
+    /// one corroboration gap (AU-063) stands. An owner that a breach record names for one of the
+    /// addresses is evidence of its own, and with it the cluster is robust.
+    #[test]
+    fn a_cluster_only_a_shared_handle_holds_is_not_robust() {
+        let mut entities = (0..4)
+            .map(|site| {
+                ent(
+                    EntityKind::Email,
+                    &format!("jsmith.alpha@site{site}.example"),
+                    0.9,
+                    "dehashed",
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+        entities.push(ent(
+            EntityKind::Person,
+            "Jsmith Alpha",
+            0.9,
+            "dehashed",
+            false,
+        ));
+        let fired = |entities: &[Entity], rule: &str| {
+            evaluate_rules(entities, &[], "scan")
+                .into_iter()
+                .filter(|correlation| correlation.rule_id == rule)
+                .map(|correlation| (correlation.entity_uids.len(), correlation.description))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fired(&entities, "AU-071"), []);
+        assert_eq!(fired(&entities, "AU-060").len(), 1);
+        assert_eq!(
+            fired(&entities, "AU-063"),
+            [(
+                5,
+                "only a shared handle connects 10 pairs among these 5 entities".to_owned()
+            )]
+        );
+
+        entities[0].add_evidence(evidence("dehashed", "row").with_attr("owner", "Jane Roe"));
+        entities.push(ent(EntityKind::Person, "Jane Roe", 0.9, "dehashed", false));
+        assert_eq!(
+            fired(&entities, "AU-071"),
+            [(
+                6,
+                "6 entities connected by 2 kinds of identity relation resting on 2 independent \
+                 pieces of evidence"
+                    .to_owned()
+            )]
+        );
+    }
+
+    /// Four addresses that three same-as assertions join are one identity, by one kind of
+    /// identity relation. An association between two of them says nothing about whether they are
+    /// one identity, so it does not make the cluster robust (AU-071); an alias does.
+    #[test]
+    fn only_identity_relations_make_a_cluster_robust() {
+        let entities = [
+            "ann@a.example",
+            "bob@b.example",
+            "cat@c.example",
+            "dan@d.example",
+        ]
+        .map(|value| ent(EntityKind::Email, value, 0.9, "dehashed", false));
+        let uid = |n: usize| entities[n].uid.as_str();
+        let mut relations = vec![
+            Relation::new(uid(0), uid(1), RelationKind::SameAs, 0.8, "scan"),
+            Relation::new(uid(1), uid(2), RelationKind::SameAs, 0.8, "scan"),
+            Relation::new(uid(2), uid(3), RelationKind::SameAs, 0.8, "scan"),
+            Relation::new(uid(0), uid(3), RelationKind::AssociatedWith, 0.8, "scan"),
+        ];
+        let robust = |relations: &[Relation]| {
+            evaluate_rules(&entities, relations, "scan")
+                .into_iter()
+                .filter(|correlation| correlation.rule_id == "AU-071")
+                .map(|correlation| correlation.description)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(robust(&relations), Vec::<String>::new());
+        relations.push(Relation::new(
+            uid(0),
+            uid(2),
+            RelationKind::AliasOf,
+            0.8,
+            "scan",
+        ));
+        assert_eq!(
+            robust(&relations),
+            [
+                "4 entities connected by 2 kinds of identity relation resting on 4 independent \
+              pieces of evidence"
+            ]
+        );
     }
 
     /// A correlation is stamped with the scan's latest observation, not the wall clock, so

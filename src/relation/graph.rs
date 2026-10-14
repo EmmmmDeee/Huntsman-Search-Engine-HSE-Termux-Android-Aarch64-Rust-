@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 
 use crate::union_find::UnionFind;
 
-use super::types::{Relation, RelationKind};
+use super::types::{Basis, Relation, RelationKind};
 
 /// How deep a pathway that `disjoint_pathways` counts may run.
 const PATHWAY_MAX_DEPTH: usize = 8;
@@ -21,12 +21,12 @@ struct IdentityIndex<'a> {
     nodes: HashMap<&'a str, usize>,
     /// The endpoints and confidence of each identity-binding relation, in input order.
     edges: Vec<(usize, usize, f64)>,
-    /// The number of the basis each edge rests on: its relation's `basis`, or, for a relation
-    /// with none, the link between its two nodes, shared by every such relation joining them
-    /// either way round.
+    /// The number of what each edge rests on (see [`Relation::rests_on`]): its relation's named
+    /// basis, or the link between its two nodes, shared by every relation without a named basis
+    /// that joins them, either way round.
     basis: Vec<usize>,
-    /// Each basis by number: the name a relation gave it, or `None` for the link between two nodes.
-    bases: Vec<Option<&'a str>>,
+    /// What each basis number stands for.
+    bases: Vec<Basis<'a>>,
     /// The edges at each node, in input order. A self-loop is listed twice and never followed.
     incident: Vec<Vec<usize>>,
 }
@@ -41,8 +41,7 @@ impl<'a> IdentityIndex<'a> {
             bases: Vec::new(),
             incident: Vec::new(),
         };
-        let mut named = HashMap::<&'a str, usize>::new();
-        let mut links = HashMap::<(usize, usize), usize>::new();
+        let mut numbers = HashMap::<Basis<'a>, usize>::new();
         for relation in relations
             .iter()
             .filter(|relation| relation.kind.binds_identity())
@@ -50,13 +49,11 @@ impl<'a> IdentityIndex<'a> {
             let from = index.intern(&relation.from_uid);
             let to = index.intern(&relation.to_uid);
             let edge = index.edges.len();
+            let rests_on = relation.rests_on();
             let fresh = index.bases.len();
-            let basis = match relation.basis.as_deref() {
-                Some(name) => *named.entry(name).or_insert(fresh),
-                None => *links.entry((from.min(to), from.max(to))).or_insert(fresh),
-            };
+            let basis = *numbers.entry(rests_on).or_insert(fresh);
             if basis == fresh {
-                index.bases.push(relation.basis.as_deref());
+                index.bases.push(rests_on);
             }
             index.edges.push((from, to, relation.confidence));
             index.basis.push(basis);
@@ -106,6 +103,78 @@ impl<'a> IdentityIndex<'a> {
         (0..self.len()).map(|node| sets.find(node)).collect()
     }
 
+    /// The shape of the component each node falls in, given each node's component. A self-loop
+    /// joins no two nodes and is never followed, so it counts for none of it.
+    fn shapes(&self, component: &[usize]) -> Vec<Shape> {
+        let nodes = self.len();
+        let mut size = vec![0_usize; nodes];
+        for &root in component {
+            size[root] += 1;
+        }
+        let mut widest = vec![f64::NEG_INFINITY; nodes];
+        let mut neighbours = vec![0_usize; nodes];
+        let mut counted = vec![ROOT; nodes];
+        for (node, edges) in self.incident.iter().enumerate() {
+            for &edge in edges {
+                let other = self.across(edge, node);
+                if other == node {
+                    continue;
+                }
+                widest[node] = widest[node].max(width(self.edges[edge].2));
+                if counted[other] != node {
+                    counted[other] = node;
+                    neighbours[node] += 1;
+                }
+            }
+        }
+        let mut shapes = vec![
+            Shape {
+                complete: true,
+                bounded: true,
+                basis: None,
+            };
+            nodes
+        ];
+        for (node, &root) in component.iter().enumerate() {
+            shapes[root].complete &= neighbours[node] + 1 == size[root];
+        }
+        let mut mixed = vec![false; nodes];
+        for (edge, &(from, to, confidence)) in self.edges.iter().enumerate() {
+            if from == to {
+                continue;
+            }
+            let root = component[from];
+            let shape = &mut shapes[root];
+            // An edge is never wider than the widest edge at either end, so it is as wide as the
+            // narrower of those two only when it is at least that narrow.
+            shape.bounded &= width(confidence) >= widest[from].min(widest[to]);
+            match shape.basis {
+                None if !mixed[root] => shape.basis = Some(self.basis[edge]),
+                Some(basis) if basis != self.basis[edge] => {
+                    shape.basis = None;
+                    mixed[root] = true;
+                }
+                _ => {}
+            }
+        }
+        component.iter().map(|&root| shapes[root]).collect()
+    }
+
+    /// The name of the basis that carries every pathway in a component of this `shape`: one
+    /// named basis that every edge rests on, in a component where every two nodes are joined.
+    /// A search from any of its nodes then reaches every other in one step, and the first
+    /// pathway it counts to each uses that basis up, so each pair has that one pathway.
+    fn sole_carrier(&self, shape: Shape) -> Option<&'a str> {
+        match shape
+            .basis
+            .filter(|_| shape.complete)
+            .map(|basis| self.bases[basis])
+        {
+            Some(Basis::Named(name)) => Some(name),
+            _ => None,
+        }
+    }
+
     /// Retires the basis of every edge on the path that ends at `step` of `search`, and records
     /// each in `retired`: a counted pathway uses up what it rests on, so no later pathway may take
     /// a relation resting on the same basis. For a relation without a basis that is the link
@@ -127,10 +196,9 @@ impl<'a> IdentityIndex<'a> {
     fn sole_basis(&self, search: &Search, step: usize) -> Option<&'a str> {
         let mut edges = search.edges(step).map(|edge| self.basis[edge]);
         let first = edges.next()?;
-        if edges.all(|basis| basis == first) {
-            self.bases[first]
-        } else {
-            None
+        match self.bases[first] {
+            Basis::Named(name) if edges.all(|basis| basis == first) => Some(name),
+            _ => None,
         }
     }
 
@@ -138,6 +206,11 @@ impl<'a> IdentityIndex<'a> {
     /// to each node after it in uid order. One search from each node finds all of them: a search
     /// pops paths in the same order whichever node it is looking for, so the first path it pops
     /// to a node is the one a search that stops there returns.
+    ///
+    /// A node in a complete, bounded component (see [`Shape`]) needs no search: no path is wider
+    /// than the edge joining its ends, because its first and last edges are no wider than the
+    /// widest at those ends, and a path as wide is deeper, so it pops after that edge, which the
+    /// search queues first. So the first path to each other node is the edge to it.
     fn each_strongest_path(&self, max_depth: usize, mut visit: impl FnMut(&[usize])) {
         let mut order = (0..self.len()).collect::<Vec<_>>();
         order.sort_unstable_by_key(|&node| self.uids[node]);
@@ -145,11 +218,24 @@ impl<'a> IdentityIndex<'a> {
         for (position, &node) in order.iter().enumerate() {
             rank[node] = position;
         }
+        let component = self.components();
+        let shapes = self.shapes(&component);
+        let mut members = vec![Vec::new(); self.len()];
+        for &node in &order {
+            members[component[node]].push(node);
+        }
         let removed = vec![false; self.bases.len()];
         let mut search = Search::new(self.len());
         let mut first = vec![None; self.len()];
         let mut reached = Vec::new();
         for (position, &start) in order.iter().enumerate() {
+            if max_depth > 0 && shapes[start].complete && shapes[start].bounded {
+                let group = &members[component[start]];
+                for &node in &group[group.partition_point(|&node| rank[node] <= position)..] {
+                    visit(&[start, node]);
+                }
+                continue;
+            }
             search.run(self, start, &removed, max_depth, |node, step| {
                 if rank[node] > position && first[node].is_none() {
                     first[node] = Some(step);
@@ -166,6 +252,28 @@ impl<'a> IdentityIndex<'a> {
             reached.clear();
         }
     }
+}
+
+/// What one component of the identity relations looks like, where that lets a search be skipped
+/// (see [`IdentityIndex::shapes`]).
+#[derive(Clone, Copy)]
+struct Shape {
+    /// Every two of the component's nodes are joined by an edge.
+    complete: bool,
+    /// Every edge is as wide as the narrower of the widest edges at its two ends, as when each
+    /// relation is as strong as the weaker of the two entities it joins. A path is then no wider
+    /// than the edge joining its ends, since its first and last edges are no wider than the
+    /// widest edges at those ends.
+    bounded: bool,
+    /// The number of the basis every edge rests on, when one basis carries them all.
+    basis: Option<usize>,
+}
+
+/// How far an edge of `confidence` narrows the paths that take it. A search's paths start out
+/// 1.0 wide, and the narrower of two widths that are not both numbers is the one that is, so an
+/// edge whose confidence is not a number narrows none.
+fn width(confidence: f64) -> f64 {
+    1.0_f64.min(confidence)
 }
 
 /// One step of a search: the node it reached, the step it was taken from and the edge it took.
@@ -477,7 +585,8 @@ pub struct PairPathways<'r> {
 /// with `left < right` that a pathway connects, in order of `left` and then `right`. One search
 /// from each uid finds its first pathway to every other uid, so only the pathways after the
 /// first take a search per pair, and a pair in different components of the identity relations
-/// takes none.
+/// takes none. A component that one named basis carries, such as the addresses one handle
+/// joins, takes no search at all (see [`IdentityIndex::sole_carrier`]).
 #[must_use]
 pub fn pairwise_disjoint_pathways<'r>(
     uids: &[&str],
@@ -486,6 +595,7 @@ pub fn pairwise_disjoint_pathways<'r>(
 ) -> Vec<PairPathways<'r>> {
     let index = IdentityIndex::new(relations);
     let component = index.components();
+    let shapes = index.shapes(&component);
     let mut members = HashMap::<usize, Vec<(usize, usize)>>::new();
     for (position, uid) in uids.iter().enumerate() {
         if let Some(node) = index.node(uid) {
@@ -508,6 +618,20 @@ pub fn pairwise_disjoint_pathways<'r>(
         let group = &members[&component[start]];
         let later = &group[group.partition_point(|&(position, _)| position <= left)..];
         if cap == 0 || later.iter().all(|&(_, node)| node == start) {
+            continue;
+        }
+        if let Some(basis) = index.sole_carrier(shapes[start]) {
+            out.extend(
+                later
+                    .iter()
+                    .filter(|&&(_, end)| end != start)
+                    .map(|&(right, _)| PairPathways {
+                        left,
+                        right,
+                        count: 1,
+                        basis: Some(basis),
+                    }),
+            );
             continue;
         }
         search.run(&index, start, &removed, PATHWAY_MAX_DEPTH, |node, step| {
@@ -537,24 +661,27 @@ pub fn pairwise_disjoint_pathways<'r>(
 
 #[must_use]
 pub fn resolve_identity_clusters(relations: &[Relation]) -> Vec<Vec<String>> {
-    let mut ids = relations
+    let identity = relations
         .iter()
         .filter(|relation| relation.kind.binds_identity())
-        .flat_map(|relation| [relation.from_uid.clone(), relation.to_uid.clone()])
         .collect::<Vec<_>>();
-    ids.sort();
+    let mut ids = identity
+        .iter()
+        .flat_map(|relation| [relation.from_uid.as_str(), relation.to_uid.as_str()])
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
     ids.dedup();
     let index = ids
         .iter()
         .enumerate()
-        .map(|(i, id)| (id.clone(), i))
-        .collect::<HashMap<_, _>>();
+        .map(|(i, &id)| (id, i))
+        .collect::<HashMap<&str, usize>>();
     let mut uf = UnionFind::new(ids.len());
-    for relation in relations
-        .iter()
-        .filter(|relation| relation.kind.binds_identity())
-    {
-        uf.union(index[&relation.from_uid], index[&relation.to_uid]);
+    for relation in &identity {
+        uf.union(
+            index[relation.from_uid.as_str()],
+            index[relation.to_uid.as_str()],
+        );
     }
     let mut groups = uf
         .groups()
@@ -562,7 +689,7 @@ pub fn resolve_identity_clusters(relations: &[Relation]) -> Vec<Vec<String>> {
         .map(|group| {
             group
                 .into_iter()
-                .map(|idx| ids[idx].clone())
+                .map(|idx| ids[idx].to_owned())
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
@@ -1337,31 +1464,177 @@ mod tests {
                 }
             }
             for cap in [1, 2, usize::MAX] {
-                let expected = (0..uids.len())
-                    .flat_map(|left| (left + 1..uids.len()).map(move |right| (left, right)))
-                    .filter_map(|(left, right)| {
-                        let (count, basis) =
-                            by_basis::disjoint_pathways(uids[left], uids[right], &relations);
-                        (count > 0).then(|| (left, right, count.min(cap), basis))
-                    })
-                    .collect::<Vec<_>>();
-                let found = pairwise_disjoint_pathways(&uids, &relations, cap)
-                    .into_iter()
-                    .map(|pair| {
-                        (
-                            pair.left,
-                            pair.right,
-                            pair.count,
-                            pair.basis.map(str::to_owned),
-                        )
-                    })
-                    .collect::<Vec<_>>();
                 assert_eq!(
-                    found, expected,
+                    found_pairs(&uids, &relations, cap),
+                    oracle_pairs(&uids, &relations, cap),
                     "round {round}: {uids:?} capped at {cap}: {relations:?}"
                 );
             }
         }
+    }
+
+    /// A pair of uids, by position, with its pathway count and the named basis that carries its
+    /// first pathway alone.
+    type Pair = (usize, usize, usize, Option<String>);
+
+    /// The pairs `pairwise_disjoint_pathways` finds.
+    fn found_pairs(uids: &[&str], relations: &[Relation], cap: usize) -> Vec<Pair> {
+        pairwise_disjoint_pathways(uids, relations, cap)
+            .into_iter()
+            .map(|pair| {
+                (
+                    pair.left,
+                    pair.right,
+                    pair.count,
+                    pair.basis.map(str::to_owned),
+                )
+            })
+            .collect()
+    }
+
+    /// The pairs the plain oracle finds, counted pair by pair.
+    fn oracle_pairs(uids: &[&str], relations: &[Relation], cap: usize) -> Vec<Pair> {
+        (0..uids.len())
+            .flat_map(|left| (left + 1..uids.len()).map(move |right| (left, right)))
+            .filter_map(|(left, right)| {
+                let (count, basis) =
+                    by_basis::disjoint_pathways(uids[left], uids[right], relations);
+                (count > 0).then(|| (left, right, count.min(cap), basis))
+            })
+            .collect()
+    }
+
+    const IDENTITY_KINDS: [RelationKind; 5] = [
+        RelationKind::AliasOf,
+        RelationKind::SameAs,
+        RelationKind::IdentifiedBy,
+        RelationKind::SameIdentity,
+        RelationKind::SharesSecretWith,
+    ];
+
+    /// A random component in which every two of a few nodes are joined, by one to three
+    /// relations each way round: either each as strong as the weaker of the two nodes it joins,
+    /// as derived relations are, or of any strength; and either all resting on one handle, as the
+    /// aliases one shared handle implies do, or on several bases. Some rounds leave two nodes
+    /// unjoined or add a node joined to only one, so that the component is not complete, and
+    /// some add a self-loop or a relation that binds no identity.
+    fn random_clique(rng: &mut XorShift) -> (Vec<&'static str>, Vec<Relation>) {
+        let size = 2 + rng.below(NODES.len() - 2);
+        let strength = (0..size)
+            .map(|_| CONFIDENCES[rng.below(CONFIDENCES.len())])
+            .collect::<Vec<_>>();
+        let bounded = rng.below(3) != 0;
+        let one_handle = rng.below(3) != 0;
+        let basis = |rng: &mut XorShift| match rng.below(if one_handle { 1 } else { 3 }) {
+            0 => Some("handle:one".to_owned()),
+            1 => Some("handle:two".to_owned()),
+            _ => None,
+        };
+        let unjoined = (rng.below(4) == 0).then(|| (rng.below(size), rng.below(size)));
+        let mut relations = Vec::new();
+        for left in 0..size {
+            for right in left + 1..size {
+                if unjoined == Some((left, right)) || unjoined == Some((right, left)) {
+                    continue;
+                }
+                for _ in 0..=rng.below(3) {
+                    let (from, to) = if rng.below(2) == 0 {
+                        (left, right)
+                    } else {
+                        (right, left)
+                    };
+                    let kind = IDENTITY_KINDS[rng.below(IDENTITY_KINDS.len())];
+                    let mut relation = Relation::new(NODES[from], NODES[to], kind, 0.5, "s");
+                    relation.confidence = if bounded {
+                        strength[left].min(strength[right])
+                    } else {
+                        CONFIDENCES[rng.below(CONFIDENCES.len())]
+                    };
+                    relation.basis = basis(rng);
+                    relations.push(relation);
+                }
+            }
+        }
+        let mut nodes = NODES[..size].to_vec();
+        if rng.below(4) == 0 {
+            nodes.push(NODES[size]);
+            let mut relation = Relation::new(
+                NODES[size],
+                NODES[rng.below(size)],
+                RelationKind::AliasOf,
+                0.5,
+                "s",
+            );
+            relation.confidence = CONFIDENCES[rng.below(CONFIDENCES.len())];
+            relation.basis = basis(rng);
+            relations.push(relation);
+        }
+        if rng.below(3) == 0 {
+            let node = NODES[rng.below(size)];
+            let mut relation = Relation::new(node, node, RelationKind::SameAs, 0.5, "s");
+            relation.confidence = CONFIDENCES[rng.below(CONFIDENCES.len())];
+            relation.basis = basis(rng);
+            relations.push(relation);
+        }
+        if rng.below(3) == 0 {
+            let (from, to) = (NODES[rng.below(size)], NODES[rng.below(size)]);
+            relations.push(Relation::new(
+                from,
+                to,
+                RelationKind::AssociatedWith,
+                0.9,
+                "s",
+            ));
+        }
+        for at in (1..relations.len()).rev() {
+            relations.swap(at, rng.below(at + 1));
+        }
+        (nodes, relations)
+    }
+
+    /// Components in which every two nodes are joined, which the searches skip when one named
+    /// basis carries them or every relation is as strong as its weaker end, answer exactly as
+    /// the per-pair searches do, whatever else the component holds. Both shortcuts are taken in
+    /// many rounds.
+    #[test]
+    fn complete_components_answer_exactly_as_the_per_pair_searches_do() {
+        let mut rng = XorShift(0x3C6E_F372_FE94_F82B);
+        let (mut carried, mut bounded) = (0, 0);
+        for round in 0..600 {
+            let (nodes, relations) = random_clique(&mut rng);
+            let index = IdentityIndex::new(&relations);
+            let shapes = index.shapes(&index.components());
+            carried += usize::from(
+                shapes
+                    .iter()
+                    .any(|&shape| index.sole_carrier(shape).is_some()),
+            );
+            bounded += usize::from(shapes.iter().any(|shape| shape.complete && shape.bounded));
+            assert_eq!(
+                connection_brokers(&relations),
+                reference::connection_brokers(&relations),
+                "round {round}: {relations:?}"
+            );
+            assert_eq!(
+                connection_templates(&relations),
+                reference::connection_templates(&relations),
+                "round {round}: {relations:?}"
+            );
+            let mut uids = nodes.clone();
+            uids.extend((0..rng.below(3)).map(|_| nodes[rng.below(nodes.len())]));
+            uids.push("ghost");
+            for at in (1..uids.len()).rev() {
+                uids.swap(at, rng.below(at + 1));
+            }
+            for cap in [1, 2, usize::MAX] {
+                assert_eq!(
+                    found_pairs(&uids, &relations, cap),
+                    oracle_pairs(&uids, &relations, cap),
+                    "round {round}: {uids:?} capped at {cap}: {relations:?}"
+                );
+            }
+        }
+        assert!(carried >= 150 && bounded >= 150, "{carried} {bounded}");
     }
 
     /// A person identified by a thousand handles joins every pair of them through itself. Each
@@ -1389,35 +1662,44 @@ mod tests {
         assert_eq!(brokers, [("person".to_owned(), 1000 * 999 / 2)]);
     }
 
-    /// A handle shared by 160 addresses makes them a clique of aliases. Counted through each
-    /// other address, each of its 12,720 pairs had 159 pathways, and counting them grew as the
-    /// fifth power of the group: 96 addresses took 35 s in a release build. Resting on the
-    /// handle, each pair has one, and the count grows as the cube.
+    /// A handle shared by a thousand addresses, a full page of breach records, makes them a
+    /// clique of 499,500 aliases, each resting on the handle and as strong as the weaker of its
+    /// two addresses. A search from each address queued a path through every alias, so the
+    /// pathways and the brokers grew as the cube of the group and took minutes. One handle
+    /// carries every pathway, and no path between two addresses is stronger than the alias
+    /// joining them, so neither takes a search and both are quadratic.
     #[test]
-    fn a_shared_handle_is_counted_once_in_cubic_time() {
-        let sites = (0..160).map(|n| format!("site{n}")).collect::<Vec<_>>();
+    fn a_shared_handle_is_counted_in_quadratic_time() {
+        let sites = (0..1000)
+            .map(|n| (format!("site{n}"), [0.9_f64, 0.8, 0.7][n % 3]))
+            .collect::<Vec<_>>();
         let mut relations = Vec::new();
-        for (left, from) in sites.iter().enumerate() {
-            for to in &sites[left + 1..] {
+        for (left, (from, weak)) in sites.iter().enumerate() {
+            for (to, strong) in &sites[left + 1..] {
                 relations.push(
-                    Relation::new(from, to, RelationKind::AliasOf, 0.9, "s")
+                    Relation::new(from, to, RelationKind::AliasOf, weak.min(*strong), "s")
                         .with_basis("handle:jsmith"),
                 );
             }
         }
-        let uids = sites.iter().map(String::as_str).collect::<Vec<_>>();
+        let uids = sites
+            .iter()
+            .map(|(site, _)| site.as_str())
+            .collect::<Vec<_>>();
         let started = std::time::Instant::now();
         let pairs = pairwise_disjoint_pathways(&uids, &relations, usize::MAX);
+        let brokers = connection_brokers(&relations);
         assert!(
             started.elapsed() < std::time::Duration::from_secs(20),
             "{:?}",
             started.elapsed()
         );
-        assert_eq!(pairs.len(), 160 * 159 / 2);
+        assert_eq!(pairs.len(), 1000 * 999 / 2);
         assert!(
             pairs
                 .iter()
                 .all(|pair| pair.count == 1 && pair.basis == Some("handle:jsmith"))
         );
+        assert!(brokers.is_empty(), "{brokers:?}");
     }
 }
