@@ -1,77 +1,51 @@
-//! Classifier extraction benchmark. Run with `cargo run --release --locked --example classify_bench`.
+//! Times the fetch classifier on served pages: a large content page that embeds a CAPTCHA
+//! widget, the same page cut to interstitial size, and a real interstitial. Prints the median
+//! of seven runs and the kind each body is classified as, so a change to the classifier can be
+//! compared before and after on the same machine:
 //!
-//! A seeded prose text of fixed size is run through `extract`. The median time over a fixed number
-//! of runs is printed with the entity count and a checksum of the extracted values.
+//! ```text
+//! cargo run --release --locked --example classify_bench
+//! ```
 
+use std::hint::black_box;
 use std::time::Instant;
 
-use huntsman_recon::classifier::extract;
+use huntsman_recon::source_outcome::classify_fetch;
 
-const WORDS: [&str; 24] = [
-    "the",
-    "report",
-    "since",
-    "province",
-    "Vincent",
-    "Smith",
-    "Brisbane",
-    "2026",
-    "10:30",
-    "ada@example.com",
-    "https://example.com/path",
-    "192.168.0.1",
-    "-27.4698,153.0251",
-    "example.com",
-    "@handle",
-    "COVID-19",
-    "Acme",
-    "Pty",
-    "Ltd",
-    "harbour",
-    "radar",
-    "note",
-    "Lincoln",
-    "street",
-];
-const RUNS: usize = 9;
+const RUNS: usize = 7;
 
-fn prose(words: usize) -> String {
-    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
-    let vocabulary_len = u64::try_from(WORDS.len()).unwrap_or(1);
-    let mut text = String::new();
-    for _ in 0..words {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        let pick = usize::try_from(state % vocabulary_len).unwrap_or(0);
-        text.push_str(WORDS[pick]);
-        text.push(' ');
-    }
-    text
+fn median_micros(body: &str) -> u128 {
+    let mut times: Vec<u128> = (0..RUNS)
+        .map(|_| {
+            let started = Instant::now();
+            black_box(classify_fetch(200, black_box(body)));
+            started.elapsed().as_micros()
+        })
+        .collect();
+    times.sort_unstable();
+    times[RUNS / 2]
 }
 
 fn main() {
-    let text = prose(150_000);
-    println!("text_bytes={}", text.len());
-    let mut times = Vec::with_capacity(RUNS);
-    let mut entities = 0usize;
-    let mut checksum = 0u64;
-    for _ in 0..RUNS {
-        let start = Instant::now();
-        let found = extract(&text);
-        times.push(start.elapsed().as_nanos());
-        entities = found.len();
-        checksum = found.iter().fold(0u64, |acc, item| {
-            item.value
-                .bytes()
-                .fold(acc.wrapping_mul(131), |state, byte| {
-                    state.wrapping_mul(31).wrapping_add(u64::from(byte))
-                })
-        });
-    }
-    times.sort_unstable();
-    println!(
-        "median_ns={} entities={entities} checksum={checksum}",
-        times[RUNS / 2]
+    let widget_page = format!(
+        "<!doctype html><html><head><script src=\"https://www.google.com/recaptcha/api.js\"></script></head><body>{}<div class=\"g-recaptcha\" data-sitekey=\"x\"></div></body></html>",
+        "<p>Jane Doe, Sydney, joined 2019</p>\n".repeat(100_000)
     );
+    let short_widget_page = format!(
+        "<!doctype html><html><head><script src=\"https://www.google.com/recaptcha/api.js\"></script></head><body>{}<div class=\"g-recaptcha\" data-sitekey=\"x\"></div></body></html>",
+        "<p>Jane Doe, Sydney, joined 2019</p>\n".repeat(400)
+    );
+    let interstitial = "<!doctype html><html><head><title>Just a moment...</title></head><body><p>Checking your browser before accessing the site.</p><p>Cloudflare</p></body></html>";
+    for (label, body) in [
+        ("widget_page", widget_page.as_str()),
+        ("short_widget_page", short_widget_page.as_str()),
+        ("interstitial", interstitial),
+    ] {
+        println!(
+            "{label}\tbytes={}\tmedian_us={}\tkind={:?}",
+            body.len(),
+            median_micros(body),
+            classify_fetch(200, body)
+        );
+    }
 }

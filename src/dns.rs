@@ -139,6 +139,9 @@ pub struct DomainDns {
     pub tlsrpt: Option<tlsrpt::TlsRptRecord>,
 }
 
+/// The DNS RCODE for a name that does not exist (RFC 1035 section 4.1.1).
+const DNS_NXDOMAIN: u32 = 3;
+
 #[derive(Debug, Deserialize, Default)]
 struct DnsJsonResponse {
     #[serde(rename = "Status", default)]
@@ -193,7 +196,9 @@ pub fn resolve_with_pool<T: Transport + ?Sized>(
 /// # Errors
 /// Returns a transport, HTTP, parse, or empty-answer error if no configured resolver
 /// yields at least one record. A challenge page is [`ResolveErrorKind::BotWaf`],
-/// never an invalid-JSON parse.
+/// never an invalid-JSON parse. A resolver that answers NXDOMAIN, or no record of the
+/// queried type, ends the search with [`ResolveErrorKind::Empty`]: that answer comes from
+/// the zone, so only a failed resolver hands the query to the next one.
 pub fn resolve_with_config<T: Transport + ?Sized>(
     transport: &T,
     query: &ResolveQuery,
@@ -223,12 +228,16 @@ pub fn resolve_with_config<T: Transport + ?Sized>(
                         records,
                     });
                 }
+                // NXDOMAIN, or a name with no record of this type, is the zone's own answer:
+                // every resolver gives it, so asking the next one only repeats the question
+                // (and tells one more provider what is being looked up).
                 Ok(_) => {
-                    last_error = Some(ResolveError {
+                    return Err(ResolveError {
                         kind: ResolveErrorKind::Empty,
                         detail: "empty DNS answer".into(),
                     });
                 }
+                Err(error) if error.kind == ResolveErrorKind::Empty => return Err(error),
                 Err(error) => last_error = Some(error),
             },
         }
@@ -333,9 +342,17 @@ fn parse_response(
             kind: ResolveErrorKind::Upstream,
             detail: "invalid DNS JSON".into(),
         })?;
-    if parsed.status != 0 {
+    // RCODE 3 (NXDOMAIN) is authoritative: the name does not exist. Any other non-zero code
+    // (SERVFAIL, REFUSED, a DNSSEC failure) is about this resolver, so the next one is asked.
+    if parsed.status == DNS_NXDOMAIN {
         return Err(ResolveError {
             kind: ResolveErrorKind::Empty,
+            detail: format!("dns status {}", parsed.status),
+        });
+    }
+    if parsed.status != 0 {
+        return Err(ResolveError {
+            kind: ResolveErrorKind::Upstream,
             detail: format!("dns status {}", parsed.status),
         });
     }
@@ -761,7 +778,7 @@ mod tests {
             Ok(Response {
                 status: 200,
                 headers: Vec::new(),
-                body: br#"{"Status":0,"Answer":[]}"#.to_vec(),
+                body: br#"{"Status":2,"Answer":[]}"#.to_vec(),
                 truncated: false,
             }),
             Err(TransportFailure {
@@ -785,6 +802,102 @@ mod tests {
         .expect_err("all fail");
         assert_eq!(error.kind, ResolveErrorKind::Upstream);
         assert_eq!(error.detail, "refused");
+    }
+
+    fn doh(body: &[u8]) -> Response {
+        Response {
+            status: 200,
+            headers: Vec::new(),
+            body: body.to_vec(),
+            truncated: false,
+        }
+    }
+
+    /// NXDOMAIN and "no record of this type" come from the zone, so the first resolver's
+    /// answer is final: asking Quad9 and Google again only costs two more round trips and
+    /// tells two more providers the name being looked up.
+    #[test]
+    fn an_authoritative_empty_answer_asks_one_resolver_only() {
+        for body in [
+            &br#"{"Status":3}"#[..],
+            br#"{"Status":0,"Answer":[]}"#,
+            br#"{"Status":0}"#,
+            br#"{"Status":0,"Answer":[{"type":5,"data":"alias.example.net."}]}"#,
+        ] {
+            let transport = FakeTransport::new(vec![
+                Ok(doh(body)),
+                Ok(doh(
+                    br#"{"Status":0,"Answer":[{"type":1,"data":"1.2.3.4"}]}"#,
+                )),
+            ]);
+            let error = resolve_with_pool(
+                &transport,
+                &ResolveQuery {
+                    name: "example.com".into(),
+                    record_type: RecordType::A,
+                },
+            )
+            .expect_err("the zone has no such record");
+            assert_eq!(error.kind, ResolveErrorKind::Empty);
+            assert_eq!(
+                transport.seen.borrow().len(),
+                1,
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
+
+    /// SERVFAIL and REFUSED are about the resolver, not the zone, so the next one is asked.
+    #[test]
+    fn a_resolver_failure_code_fails_over() {
+        for status in [2, 5] {
+            let transport = FakeTransport::new(vec![
+                Ok(doh(format!(r#"{{"Status":{status}}}"#).as_bytes())),
+                Ok(doh(
+                    br#"{"Status":0,"Answer":[{"type":1,"data":"1.2.3.4"}]}"#,
+                )),
+            ]);
+            let answer = resolve_with_pool(
+                &transport,
+                &ResolveQuery {
+                    name: "example.com".into(),
+                    record_type: RecordType::A,
+                },
+            )
+            .expect("the second resolver answers");
+            assert_eq!(answer.server.provider, "Quad9");
+            assert_eq!(transport.seen.borrow().len(), 2);
+        }
+    }
+
+    /// A domain with A and MX records but no AAAA, DMARC or TLS-RPT record: before, each of
+    /// those three empty answers went to all three resolvers.
+    #[test]
+    fn a_typical_domain_costs_one_request_per_query() {
+        let queries = planned_queries("example.com").len();
+        let mut outcomes = Vec::new();
+        for (name, record_type) in planned_queries("example.com") {
+            outcomes.push(Ok(doh(match (name.as_str(), record_type) {
+                ("example.com", RecordType::A) => {
+                    br#"{"Status":0,"Answer":[{"type":1,"data":"1.2.3.4"}]}"#.as_slice()
+                }
+                ("example.com", RecordType::Mx) => {
+                    br#"{"Status":0,"Answer":[{"type":15,"data":"10 mx.example.com."}]}"#
+                }
+                ("example.com", RecordType::Txt) => {
+                    br#"{"Status":0,"Answer":[{"type":16,"data":"\"v=spf1 -all\""}]}"#
+                }
+                ("example.com", RecordType::Ns) => {
+                    br#"{"Status":0,"Answer":[{"type":2,"data":"ns.example.com."}]}"#
+                }
+                _ => br#"{"Status":3}"#,
+            })));
+        }
+        let transport = FakeTransport::new(outcomes);
+        let dns = lookup_domain(&transport, "example.com").expect("a domain");
+        assert_eq!(transport.seen.borrow().len(), queries);
+        assert!(!dns.answers.is_empty());
     }
 
     #[test]
