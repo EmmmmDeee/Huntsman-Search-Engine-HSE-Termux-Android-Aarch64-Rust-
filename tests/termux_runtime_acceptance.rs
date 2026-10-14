@@ -27,8 +27,8 @@ fn termux_runtime_harness_targets_current_binary_and_api_contract() {
         "/api/command",
         "verify_idle_connections",
         "verify_web_ui",
-        "script-src 'sha256-",
-        "/api/analyze?seeds=",
+        r#""$HSE_BIN" doctor serve --bind "$bind""#,
+        "serve=healthy",
         "idle connections do not delay a request",
         "TERMUX_RUNTIME_ACCEPTANCE",
         "server lifecycle pass=2 (restart)",
@@ -46,6 +46,9 @@ fn termux_runtime_harness_targets_current_binary_and_api_contract() {
         "/api/v1/modules",
         "command -v hse || true",
         "  cd \"$WORK_DIR\"\n  timeout",
+        // The web UI probe lives in `doctor serve`; the harness must not keep a second copy.
+        "/api/analyze?seeds=",
+        "content-security-policy",
     ] {
         assert!(
             !text.contains(stale),
