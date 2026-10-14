@@ -1,0 +1,321 @@
+//! Robtex: routing and passive DNS for one IP address or domain.
+//!
+//! An address is one keyless `GET https://freeapi.robtex.com/ipquery/{ip}`: kept are the BGP
+//! route, the origin AS and its name, the country, and up to [`MAX_NAMES`] names passive DNS has
+//! seen pointing at the address (each also a domain pivot). A domain is one keyless
+//! `GET https://freeapi.robtex.com/pdns/forward/{domain}`, which answers one JSON record per
+//! line: kept are the record count, the newest sighting, and the addresses (A, AAAA) and names
+//! (NS, MX, CNAME) it has resolved to, each also a pivot. An address with no route or names, or
+//! a domain with no records, is a valid zero.
+
+use serde::Deserialize;
+
+use crate::api_leg::{self, Answer, Api, LegError};
+use crate::http::{Transport, percent_encode_component};
+use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
+use crate::keys::Keys;
+
+pub const SOURCE: &str = "robtex";
+pub const API: Api = Api {
+    source: SOURCE,
+    provider: "robtex.com",
+    origin: "https://freeapi.robtex.com:443",
+    key: None,
+};
+pub const INTEL: Source = Source {
+    api: &API,
+    kinds: &[IndicatorKind::Ip, IndicatorKind::Domain],
+    lookup,
+};
+
+/// Names or addresses kept per finding.
+const MAX_NAMES: usize = 10;
+
+#[derive(Deserialize)]
+struct IpBody {
+    status: String,
+    #[serde(default, rename = "as")]
+    asn: Option<u64>,
+    #[serde(default)]
+    asname: Option<String>,
+    #[serde(default)]
+    bgproute: Option<String>,
+    #[serde(default)]
+    country: Option<String>,
+    /// Passive DNS: names seen pointing at the address.
+    #[serde(default)]
+    pas: Vec<Seen>,
+}
+
+#[derive(Deserialize)]
+struct Seen {
+    o: String,
+}
+
+/// One passive DNS record line.
+#[derive(Deserialize)]
+struct Record {
+    rrdata: String,
+    rrtype: String,
+    #[serde(default)]
+    time_last: Option<u64>,
+}
+
+/// The request URL for `indicator`, or `None` when it is not an address or domain. **Pure.**
+#[must_use]
+pub fn url(indicator: Indicator<'_>) -> Option<String> {
+    match indicator {
+        Indicator::Ip(ip) => Some(format!(
+            "https://freeapi.robtex.com/ipquery/{}",
+            percent_encode_component(ip)
+        )),
+        Indicator::Domain(domain) => Some(format!(
+            "https://freeapi.robtex.com/pdns/forward/{}",
+            percent_encode_component(domain)
+        )),
+        _ => None,
+    }
+}
+
+/// Look `indicator` up; an address or domain is a Robtex lookup.
+///
+/// # Errors
+/// The [`LegError`] that stopped the lookup.
+pub fn lookup(
+    transport: &dyn Transport,
+    keys: &Keys,
+    indicator: Indicator<'_>,
+    now_unix: u64,
+) -> Result<Option<Finding>, LegError> {
+    let Some(url) = url(indicator) else {
+        return Ok(None);
+    };
+    match api_leg::get(transport, &API, keys, &url, now_unix)? {
+        Answer::Body(body) => match indicator {
+            Indicator::Domain(domain) => decode_forward(&body, domain),
+            _ => decode_ip(&body),
+        },
+        Answer::NotFound(_) => Ok(None),
+    }
+}
+
+/// One `ipquery` answer body. **Pure.**
+///
+/// # Errors
+/// [`LegError::RateLimited`] when Robtex says so; [`LegError::Decode`] for any other refusal or
+/// a body that is not the documented shape.
+pub fn decode_ip(body: &[u8]) -> Result<Option<Finding>, LegError> {
+    let body: IpBody = api_leg::decode(body)?;
+    match body.status.as_str() {
+        "ok" => {}
+        "ratelimited" => return Err(LegError::RateLimited { retry_after: None }),
+        other => {
+            let other = api_leg::clean(Some(other)).unwrap_or_default();
+            return Err(LegError::Decode(format!("Robtex status {other}")));
+        }
+    }
+    let asname = api_leg::clean(body.asname.as_deref());
+    let route = api_leg::clean(body.bgproute.as_deref());
+    let names = distinct(body.pas.iter().map(|s| s.o.as_str()));
+    if route.is_none() && body.asn.is_none() && names.is_empty() {
+        return Ok(None);
+    }
+    let asn = body.asn.map(|n| format!("AS{n}"));
+    let mut finding = Finding::new(format!(
+        "Robtex: {}{}",
+        route.as_deref().unwrap_or("no route"),
+        match (&asn, &asname) {
+            (Some(a), Some(n)) => format!(" via {a} {n}"),
+            (Some(a), None) => format!(" via {a}"),
+            _ => String::new(),
+        }
+    ))
+    .opt_attr("route", route.as_deref())
+    .opt_attr("asn", asn.as_deref())
+    .opt_attr("as_name", asname.as_deref())
+    .opt_attr("country", body.country.as_deref())
+    .list_attr("passive_names", &names);
+    if let Some(asn) = &asn {
+        finding = finding.pivot(
+            PivotKind::Asn,
+            asn,
+            "Origin AS Robtex gives for the address",
+        );
+    }
+    for name in &names {
+        finding = finding.pivot(
+            PivotKind::Domain,
+            name,
+            "Name passive DNS at Robtex saw pointing at the address",
+        );
+    }
+    Ok(Some(finding))
+}
+
+/// One `pdns/forward` answer body for `domain`: one JSON record per line. **Pure.**
+///
+/// # Errors
+/// [`LegError::Decode`] for a line that is not a record.
+pub fn decode_forward(body: &[u8], domain: &str) -> Result<Option<Finding>, LegError> {
+    let text = std::str::from_utf8(body)
+        .map_err(|_| LegError::Decode("answer is not UTF-8".into()))?
+        .trim();
+    if text.is_empty() || text == "[]" {
+        return Ok(None);
+    }
+    let mut count = 0usize;
+    let mut newest: Option<u64> = None;
+    let mut addresses: Vec<String> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let record: Record = api_leg::decode(line.as_bytes())?;
+        count += 1;
+        newest = newest.max(record.time_last);
+        let Some(data) = api_leg::clean(Some(record.rrdata.trim_end_matches('.'))) else {
+            continue;
+        };
+        let into = match record.rrtype.as_str() {
+            "A" | "AAAA" => &mut addresses,
+            "NS" | "MX" | "CNAME" if !data.eq_ignore_ascii_case(domain) => &mut names,
+            _ => continue,
+        };
+        if !into.contains(&data) && into.len() < MAX_NAMES {
+            into.push(data);
+        }
+    }
+    let mut finding = Finding::new(format!(
+        "Robtex: {count} passive DNS record{} for the domain",
+        if count == 1 { "" } else { "s" }
+    ))
+    .attr("records", count.to_string())
+    .opt_attr(
+        "last_seen",
+        newest
+            .and_then(|t| i64::try_from(t).ok())
+            .map(crate::timefmt::format_unix)
+            .as_deref(),
+    )
+    .list_attr("addresses", &addresses)
+    .list_attr("names", &names);
+    for address in &addresses {
+        finding = finding.pivot(
+            PivotKind::Ip,
+            address,
+            "Address passive DNS at Robtex saw the domain resolve to",
+        );
+    }
+    for name in &names {
+        finding = finding.pivot(
+            PivotKind::Domain,
+            name,
+            "Name server, mail exchanger or alias passive DNS at Robtex saw for the domain",
+        );
+    }
+    Ok(Some(finding))
+}
+
+/// Distinct cleaned names, at most [`MAX_NAMES`]. **Pure.**
+fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for value in values {
+        let Some(value) = api_leg::clean(Some(value.trim_end_matches('.'))) else {
+            continue;
+        };
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(&value)) && out.len() < MAX_NAMES {
+            out.push(value);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Recorded for `185.220.101.1` on 2026-10-14, shortened to three passive names.
+    const IP: &str = r#"{"status":"ok","city":"Brandenburg","country":"DE","as":60729,"bgproute":"185.220.101.0/24","asname":"TORSERVERS-NET","asdesc":"TORSERVERS-NET","routedesc":"Zwiebelfreunde","pas":[{"o":"berlin01.tor-exit.artikel10.org","t":1791993600},{"o":"proxy36.ddnsfree.com","t":1791993600},{"o":"berlin01.tor-exit.artikel10.org","t":1791993600}]}"#;
+
+    /// Recorded for `example.com` on 2026-10-14, shortened.
+    const FORWARD: &str = concat!(
+        r#"{"rrname":"example.com","rrdata":"hera.ns.cloudflare.com","rrtype":"NS","time_first":1642103570,"time_last":1791993600,"count":8}"#,
+        "\n",
+        r#"{"rrname":"example.com","rrdata":"2606:4700:10::6814:179a","rrtype":"AAAA","time_first":1775807518,"time_last":1791993600,"count":8}"#,
+        "\n",
+        r#"{"rrname":"example.com","rrdata":"104.20.23.154","rrtype":"A","time_first":1775807518,"time_last":1791993600,"count":8}"#,
+        "\n",
+        r#"{"rrname":"example.com","rrdata":"v=spf1 -all","rrtype":"TXT","time_first":1775807518,"time_last":1791993500,"count":8}"#,
+        "\n"
+    );
+
+    #[test]
+    fn an_address_keeps_route_as_and_distinct_passive_names_as_pivots() {
+        let f = decode_ip(IP.as_bytes())
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("recorded body must decode"));
+        assert_eq!(
+            f.summary,
+            "Robtex: 185.220.101.0/24 via AS60729 TORSERVERS-NET"
+        );
+        let domains: Vec<&str> = f
+            .pivots
+            .iter()
+            .filter(|p| p.kind == PivotKind::Domain)
+            .map(|p| p.value.as_str())
+            .collect();
+        assert_eq!(
+            domains,
+            ["berlin01.tor-exit.artikel10.org", "proxy36.ddnsfree.com"]
+        );
+        assert!(
+            f.pivots
+                .iter()
+                .any(|p| p.kind == PivotKind::Asn && p.value == "AS60729")
+        );
+    }
+
+    #[test]
+    fn a_rate_limit_and_an_unknown_status_are_errors() {
+        assert!(matches!(
+            decode_ip(br#"{"status":"ratelimited"}"#),
+            Err(LegError::RateLimited { .. })
+        ));
+        assert!(matches!(
+            decode_ip(br#"{"status":"nope"}"#),
+            Err(LegError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn a_domain_keeps_addresses_and_names_and_skips_text_records() {
+        let f = decode_forward(FORWARD.as_bytes(), "example.com")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("recorded body must decode"));
+        assert_eq!(f.summary, "Robtex: 4 passive DNS records for the domain");
+        let ips: Vec<&str> = f
+            .pivots
+            .iter()
+            .filter(|p| p.kind == PivotKind::Ip)
+            .map(|p| p.value.as_str())
+            .collect();
+        assert_eq!(ips, ["2606:4700:10::6814:179a", "104.20.23.154"]);
+        assert!(
+            f.pivots
+                .iter()
+                .any(|p| p.kind == PivotKind::Domain && p.value == "hera.ns.cloudflare.com")
+        );
+        assert!(!format!("{f:?}").contains("spf1"));
+    }
+
+    #[test]
+    fn an_empty_forward_answer_is_a_valid_zero_and_urls_encode_the_value() {
+        assert!(matches!(decode_forward(b"[]", "example.com"), Ok(None)));
+        assert!(matches!(decode_forward(b"\n", "example.com"), Ok(None)));
+        assert_eq!(
+            url(Indicator::Domain("example.com")).as_deref(),
+            Some("https://freeapi.robtex.com/pdns/forward/example.com")
+        );
+        assert!(url(Indicator::Email("a@example.com")).is_none());
+    }
+}
