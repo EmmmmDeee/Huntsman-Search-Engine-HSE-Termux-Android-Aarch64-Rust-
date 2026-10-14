@@ -436,11 +436,12 @@ fn modules_lists_only_reachable_catalog_entries() {
         "sf_compat",
         "web_server",
         "crtsh",
+        "netlas",
     ] {
         assert!(stdout.contains(name), "missing reachable module {name}");
     }
     assert!(
-        !stdout.contains("netlas"),
+        !stdout.contains("onyphe"),
         "registered-but-unwired services must not appear as reachable modules"
     );
 

@@ -207,6 +207,34 @@ pub fn post_json<T: Transport + ?Sized>(
     send(transport, api, keys, request, now_unix)
 }
 
+/// `POST url` with the form-encoded `fields` for `api`, with its key from `keys` when it has one.
+///
+/// # Errors
+/// As [`get`].
+pub fn post_form<T: Transport + ?Sized>(
+    transport: &T,
+    api: &Api,
+    keys: &Keys,
+    url: &str,
+    fields: &[(&str, &str)],
+    now_unix: u64,
+) -> Result<Answer, LegError> {
+    let body = fields
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "{}={}",
+                crate::http::percent_encode_component(name),
+                crate::http::percent_encode_component(value)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    let request = Request::post(url, body.into_bytes())
+        .header("Content-Type", "application/x-www-form-urlencoded");
+    send(transport, api, keys, request, now_unix)
+}
+
 fn send<T: Transport + ?Sized>(
     transport: &T,
     api: &Api,
@@ -469,6 +497,19 @@ mod tests {
         assert_eq!(sent[0].header_value("key"), Some(KEY));
         let echoed: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap_or_default();
         assert_eq!(echoed, body);
+    }
+
+    #[test]
+    fn a_form_post_encodes_its_fields() {
+        let transport = Recorder::new(200, "{}");
+        assert!(post_form(&transport, &KEYED, &keys(), URL, &[("host", "a b&c")], 1).is_ok());
+        let sent = transport.sent();
+        assert_eq!(sent[0].method, Method::Post);
+        assert_eq!(sent[0].body, b"host=a+b%26c");
+        assert_eq!(
+            sent[0].header_value("content-type"),
+            Some("application/x-www-form-urlencoded")
+        );
     }
 
     #[test]

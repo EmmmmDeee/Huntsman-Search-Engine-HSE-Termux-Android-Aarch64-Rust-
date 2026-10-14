@@ -1,0 +1,197 @@
+//! abuse.ch `URLhaus`: malware-distribution URLs hosted on one IP or domain.
+//!
+//! One lookup is one form `POST https://urlhaus-api.abuse.ch/v1/host/` with `host={indicator}` and
+//! the abuse.ch key in the `Auth-Key` header, run whenever `HUNTSMAN_ABUSECH_KEY` is set (the same
+//! free abuse.ch Auth-Key `ThreatFox` uses). `no_results` is a valid zero; any other status than
+//! `ok` is an error, never a zero.
+
+use serde::Deserialize;
+
+use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::http::Transport;
+use crate::indicator_sources::{Finding, Indicator, Source};
+use crate::keys::Keys;
+use crate::tags;
+
+pub const SOURCE: &str = "urlhaus";
+pub const KEY_SLOT: &str = crate::environment::ABUSECH_KEY_ENV;
+pub const URL: &str = "https://urlhaus-api.abuse.ch/v1/host/";
+pub const API: Api = Api {
+    source: SOURCE,
+    provider: "abuse.ch",
+    origin: "https://urlhaus-api.abuse.ch:443",
+    key: Some(KeyUse {
+        slot: KEY_SLOT,
+        place: KeyPlace::Header("Auth-Key"),
+        required: true,
+    }),
+};
+pub const INTEL: Source = Source {
+    api: &API,
+    ip: true,
+    domain: true,
+    lookup,
+};
+/// Most threat and tag names kept in one attribute.
+const MAX_NAMES: usize = 10;
+
+#[derive(Deserialize)]
+struct Body {
+    query_status: String,
+    #[serde(default)]
+    host: Option<String>,
+    #[serde(default)]
+    firstseen: Option<String>,
+    #[serde(default)]
+    url_count: Option<serde_json::Value>,
+    #[serde(default)]
+    blacklists: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default)]
+    urls: Vec<Hosted>,
+}
+
+#[derive(Deserialize)]
+struct Hosted {
+    #[serde(default)]
+    url_status: Option<String>,
+    #[serde(default)]
+    threat: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+    #[serde(default)]
+    date_added: Option<String>,
+}
+
+/// Look `indicator` up.
+///
+/// # Errors
+/// The [`LegError`] that stopped the lookup.
+pub fn lookup(
+    transport: &dyn Transport,
+    keys: &Keys,
+    indicator: Indicator<'_>,
+    now_unix: u64,
+) -> Result<Option<Finding>, LegError> {
+    match api_leg::post_form(
+        transport,
+        &API,
+        keys,
+        URL,
+        &[("host", indicator.value())],
+        now_unix,
+    )? {
+        Answer::Body(body) => decode(&body, indicator),
+        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
+    }
+}
+
+fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for value in values.filter_map(|v| api_leg::clean(Some(v))) {
+        if !out.contains(&value) && out.len() < MAX_NAMES {
+            out.push(value);
+        }
+    }
+    out
+}
+
+/// One answer body for `indicator`. **Pure.**
+///
+/// # Errors
+/// [`LegError::Decode`] for another shape, another host, or a status other than `ok` or
+/// `no_results`.
+pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, LegError> {
+    let body: Body = api_leg::decode(body)?;
+    match body.query_status.as_str() {
+        "ok" => {}
+        "no_results" => return Ok(None),
+        other => {
+            return Err(LegError::Decode(format!(
+                "query_status {}",
+                api_leg::clean(Some(other)).unwrap_or_default()
+            )));
+        }
+    }
+    if body
+        .host
+        .as_deref()
+        .is_some_and(|h| !h.eq_ignore_ascii_case(indicator.value()))
+    {
+        return Err(LegError::Decode("answer names another host".into()));
+    }
+    let count = match &body.url_count {
+        Some(serde_json::Value::String(s)) => s.parse::<u64>().ok(),
+        Some(serde_json::Value::Number(n)) => n.as_u64(),
+        _ => None,
+    }
+    .unwrap_or(body.urls.len() as u64);
+    let online = body
+        .urls
+        .iter()
+        .filter(|u| u.url_status.as_deref() == Some("online"))
+        .count();
+    let threats = distinct(body.urls.iter().filter_map(|u| u.threat.as_deref()));
+    let malware = distinct(
+        body.urls
+            .iter()
+            .flat_map(|u| u.tags.iter().flatten())
+            .map(String::as_str),
+    );
+    let last = body
+        .urls
+        .iter()
+        .filter_map(|u| u.date_added.as_deref())
+        .max();
+    let listed: Vec<String> = body
+        .blacklists
+        .iter()
+        .flatten()
+        .filter(|(_, v)| v.as_str().is_some_and(|s| s != "not listed"))
+        .map(|(k, _)| k.clone())
+        .collect();
+    Ok(Some(
+        Finding::new(format!("URLhaus: {count} malware URL(s), {online} online"))
+            .attr("url_count", count.to_string())
+            .attr("online_urls", online.to_string())
+            .list_attr("threats", &threats)
+            .list_attr("malware_tags", &malware)
+            .list_attr("blocklists", &listed)
+            .opt_attr("first_seen", body.firstseen.as_deref())
+            .opt_attr("last_added", last)
+            .tag(tags::MALICIOUS),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The documented `host` answer shape (`URLhaus` API reference), two URLs.
+    const DOCUMENTED: &str = r#"{"query_status":"ok","urlhaus_reference":"https://urlhaus.abuse.ch/host/vektorex.com/","host":"vektorex.com","firstseen":"2019-01-15 07:09:01 UTC","url_count":"2","blacklists":{"spamhaus_dbl":"abused_legit_malware","surbl":"not listed"},"urls":[{"id":"121319","urlhaus_reference":"https://urlhaus.abuse.ch/url/121319/","url":"http://vektorex.com/source/Z/Order%20specification.doc","url_status":"offline","date_added":"2019-01-22 03:29:03 UTC","threat":"malware_download","reporter":"abuse_ch","larted":"true","takedown_time_seconds":null,"tags":["doc","emotet"]},{"id":"121320","url":"http://vektorex.com/x.exe","url_status":"online","date_added":"2019-01-23 01:00:00 UTC","threat":"malware_download","tags":null}]}"#;
+
+    #[test]
+    fn the_documented_answer_counts_urls_and_listings() {
+        let f = decode(DOCUMENTED.as_bytes(), Indicator::Domain("vektorex.com"))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("documented body must decode"));
+        assert_eq!(f.summary, "URLhaus: 2 malware URL(s), 1 online");
+        assert!(f.attrs.contains(&("malware_tags", "doc,emotet".into())));
+        assert!(f.attrs.contains(&("blocklists", "spamhaus_dbl".into())));
+        assert_eq!(f.tags, [tags::MALICIOUS]);
+    }
+
+    #[test]
+    fn no_results_is_a_zero_and_other_statuses_are_errors() {
+        let none = br#"{"query_status":"no_results"}"#;
+        assert_eq!(decode(none, Indicator::Ip("1.1.1.1")), Ok(None));
+        assert!(
+            decode(
+                br#"{"query_status":"invalid_host"}"#,
+                Indicator::Ip("1.1.1.1")
+            )
+            .is_err()
+        );
+        assert!(decode(DOCUMENTED.as_bytes(), Indicator::Domain("example.com")).is_err());
+    }
+}

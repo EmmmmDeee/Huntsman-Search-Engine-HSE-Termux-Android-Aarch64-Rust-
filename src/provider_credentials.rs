@@ -192,6 +192,24 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::THREATFOX_KEY_ENV],
     },
     Provider {
+        name: "Netlas",
+        get_key_url: "https://app.netlas.io/profile/",
+        free_tier: "free Community key; works keyless at a lower limit",
+        slots: &[crate::environment::NETLAS_KEY_ENV],
+    },
+    Provider {
+        name: "SecurityTrails",
+        get_key_url: "https://securitytrails.com/app/account/credentials",
+        free_tier: "free: 50 queries/month",
+        slots: &[crate::environment::SECTRAILS_KEY_ENV],
+    },
+    Provider {
+        name: "URLhaus (abuse.ch)",
+        get_key_url: "https://auth.abuse.ch/",
+        free_tier: "free abuse.ch Auth-Key (the same key as ThreatFox)",
+        slots: &[crate::environment::ABUSECH_KEY_ENV],
+    },
+    Provider {
         name: "Censys",
         get_key_url: "https://platform.censys.io/account/api",
         free_tier: "free: 250 req/month",
