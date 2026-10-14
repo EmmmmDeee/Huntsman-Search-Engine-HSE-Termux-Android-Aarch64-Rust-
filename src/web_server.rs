@@ -253,20 +253,36 @@ impl Server {
     }
 
     /// Run until the listener returns an unrecoverable error. Each connection is served on its
-    /// own thread, up to [`MAX_CONNECTIONS`] at a time.
+    /// own thread, up to [`MAX_CONNECTIONS`] at a time. A failed `accept` that a later one can
+    /// succeed after (no free file descriptor or memory, a connection reset before it was taken)
+    /// pauses the loop instead of ending it; see [`AcceptFailure`]. `notice` hears the first
+    /// failure of each such run, so the process boundary can say why requests are waiting.
     ///
     /// # Errors
     /// Returns the listener error that stops the loop.
-    pub fn run(&self) -> Result<(), Error> {
+    pub fn run(&self, mut notice: impl FnMut(&std::io::Error)) -> Result<(), Error> {
         let shared = Arc::new((self.config.clone(), self.routes.clone()));
         let live = Arc::new(AtomicUsize::new(0));
         let idle = Arc::new(Idle::default());
+        let mut failures = AcceptFailures::default();
         loop {
-            let (stream, _) = self
-                .listener
-                .accept()
-                .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            serve_on_a_thread(&shared, &live, &idle, stream);
+            match self.listener.accept() {
+                Ok((stream, _)) => {
+                    failures.recovered();
+                    serve_on_a_thread(&shared, &live, &idle, stream);
+                }
+                Err(error) => match AcceptFailure::of(&error) {
+                    AcceptFailure::Fatal => {
+                        return Err(Error::Store(format!("serve accept: {error}")));
+                    }
+                    AcceptFailure::Transient => {
+                        if failures.is_first() {
+                            notice(&error);
+                        }
+                        thread::sleep(failures.pause());
+                    }
+                },
+            }
         }
     }
 
@@ -280,6 +296,61 @@ impl Server {
             handle_stream_with(&self.config, &self.routes, stream, None)?;
         }
         Ok(())
+    }
+}
+
+/// What a failed `accept` means for the loop.
+#[derive(Debug, PartialEq, Eq)]
+enum AcceptFailure {
+    /// The listener itself is unusable, so no later `accept` can succeed.
+    Fatal,
+    /// The process or system is short of something (file descriptors when every connection
+    /// thread holds some, memory under Android's pressure) or the one pending connection went
+    /// away. Connections finishing free what was short, so a later `accept` succeeds.
+    Transient,
+}
+
+/// `EBADF`, the same number on Linux, Android, the BSDs and macOS.
+const EBADF: i32 = 9;
+
+impl AcceptFailure {
+    fn of(error: &std::io::Error) -> Self {
+        // An invalid or non-listening socket (EINVAL, ENOTSOCK, EOPNOTSUPP map to InvalidInput
+        // or Unsupported) and a closed descriptor never recover; everything else is about the
+        // moment, not the listener.
+        match error.kind() {
+            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::Unsupported => Self::Fatal,
+            _ if error.raw_os_error() == Some(EBADF) => Self::Fatal,
+            _ => Self::Transient,
+        }
+    }
+}
+
+/// The pause after each failed `accept` in a row: it doubles from [`ACCEPT_PAUSE_FIRST`] to
+/// [`ACCEPT_PAUSE_MOST`], so a shortage is not met with a busy loop.
+#[derive(Default)]
+struct AcceptFailures {
+    in_a_row: u32,
+}
+
+const ACCEPT_PAUSE_FIRST: Duration = Duration::from_millis(10);
+const ACCEPT_PAUSE_MOST: Duration = Duration::from_millis(500);
+
+impl AcceptFailures {
+    fn is_first(&self) -> bool {
+        self.in_a_row == 0
+    }
+
+    fn pause(&mut self) -> Duration {
+        let pause = ACCEPT_PAUSE_FIRST
+            .saturating_mul(1 << self.in_a_row.min(16))
+            .min(ACCEPT_PAUSE_MOST);
+        self.in_a_row = self.in_a_row.saturating_add(1);
+        pause
+    }
+
+    fn recovered(&mut self) {
+        self.in_a_row = 0;
     }
 }
 
@@ -1043,11 +1114,12 @@ small,.dim{color:var(--dim)}
 <select id="kind" aria-label="kind">
 <option value="auto">auto</option><option value="people">people</option><option value="email">email</option>
 <option value="exposure">exposure</option><option value="username">username</option><option value="phone">phone</option>
+<option value="domain">domain</option><option value="network">network</option>
 </select>
-<input id="q" required maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="name, email, @handle or phone" aria-label="selector">
+<input id="q" required maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="name, email, @handle, phone, domain or BSSID" aria-label="selector">
 <button id="run" type="submit">Look up</button>
 </form>
-<small>Runs one lookup through the same front-ends as the CLI. It makes network requests; exposure spends operator keys.</small>
+<small>Runs one lookup through the same front-ends as the CLI. It makes network requests; exposure and network spend operator keys.</small>
 </section>
 <section id="result" hidden>
 <div class="row"><b id="route"></b><span id="status" class="dim"></span><button id="download" type="button">Download JSON</button></div>
@@ -1172,6 +1244,59 @@ mod tests {
         "127.0.0.1:8080".parse().unwrap()
     }
 
+    /// Running out of descriptors or memory, or losing the pending connection, must not end
+    /// `serve`; only a listener that can never accept again does.
+    #[test]
+    fn only_an_unusable_listener_ends_the_accept_loop() {
+        use std::io::{Error as IoError, ErrorKind};
+        // Linux and Android numbers: EMFILE, ENFILE, ENOMEM, ENOBUFS, ECONNABORTED, EPROTO, EPERM.
+        for raw in [24, 23, 12, 105, 103, 71, 1] {
+            assert_eq!(
+                AcceptFailure::of(&IoError::from_raw_os_error(raw)),
+                AcceptFailure::Transient,
+                "errno {raw}"
+            );
+        }
+        for kind in [
+            ErrorKind::Interrupted,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::WouldBlock,
+            ErrorKind::OutOfMemory,
+        ] {
+            assert_eq!(
+                AcceptFailure::of(&IoError::from(kind)),
+                AcceptFailure::Transient
+            );
+        }
+        assert_eq!(
+            AcceptFailure::of(&IoError::from_raw_os_error(EBADF)),
+            AcceptFailure::Fatal
+        );
+        // EINVAL: the socket is not listening.
+        assert_eq!(
+            AcceptFailure::of(&IoError::from_raw_os_error(22)),
+            AcceptFailure::Fatal
+        );
+        assert_eq!(
+            AcceptFailure::of(&IoError::from(ErrorKind::Unsupported)),
+            AcceptFailure::Fatal
+        );
+    }
+
+    #[test]
+    fn accept_pauses_back_off_to_a_ceiling_and_reset_on_success() {
+        let mut failures = AcceptFailures::default();
+        assert!(failures.is_first());
+        let pauses: Vec<_> = (0..12).map(|_| failures.pause()).collect();
+        assert!(!failures.is_first());
+        assert_eq!(pauses[0], ACCEPT_PAUSE_FIRST);
+        assert!(pauses.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(pauses[11], ACCEPT_PAUSE_MOST);
+        failures.recovered();
+        assert!(failures.is_first());
+        assert_eq!(failures.pause(), ACCEPT_PAUSE_FIRST);
+    }
+
     #[test]
     fn implicit_bind_is_loopback_locally_and_railway_port_on_railway() {
         assert_eq!(resolve_serve_bind(None, None, false).unwrap(), DEFAULT_BIND);
@@ -1266,7 +1391,7 @@ mod tests {
         let server = Server::bind(ServeConfig::parse("127.0.0.1:0", None).unwrap()).unwrap();
         let addr = server.local_addr().unwrap();
         thread::spawn(move || {
-            let _ = server.run();
+            let _ = server.run(|_| {});
         });
         addr
     }
@@ -1282,7 +1407,7 @@ mod tests {
         server.routes = echo_seeds();
         let addr = server.local_addr().unwrap();
         thread::spawn(move || {
-            let _ = server.run();
+            let _ = server.run(|_| {});
         });
         let seed = "é".repeat(MAX_SELECTOR_BYTES / 2);
         assert_eq!(seed.len(), MAX_SELECTOR_BYTES);
@@ -1651,6 +1776,16 @@ mod tests {
     }
 
     const HEADER: &str = "X-Huntsman-Lookup: 1\r\n";
+
+    #[test]
+    fn the_page_offers_every_lookup_kind_the_cli_routes() {
+        // The kind picker is how a phone user names a kind; a kind missing from it is reachable
+        // only by `auto` inference, and an SSID never is.
+        for kind in crate::scan_route::ScanKind::ALL {
+            let option = format!("<option value=\"{0}\">{0}</option>", kind.command());
+            assert!(INDEX_HTML.contains(&option), "missing {option}");
+        }
+    }
 
     #[test]
     fn lookup_is_absent_until_the_binary_installs_a_handler() {

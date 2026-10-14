@@ -34,6 +34,10 @@ pub enum AuthStyle {
     Bearer,
     /// `<name>: <secret>`, e.g. `X-Api-Key`.
     Header(String),
+    /// `Authorization: Basic <base64(secret)>` (RFC 7617). The secret is the joined
+    /// `user:password` pair, so the pair is one value that is fingerprinted, pinned and
+    /// scrubbed like any other credential.
+    Basic,
 }
 
 /// An operator-approved secret bound to the origin it may be sent to.
@@ -109,7 +113,22 @@ impl Credential {
                 request.header("Authorization", format!("Bearer {}", self.secret.expose()))
             }
             AuthStyle::Header(name) => request.header(name.clone(), self.secret.expose()),
+            AuthStyle::Basic => request.header("Authorization", format!("Basic {}", self.basic())),
         }
+    }
+
+    /// The base64 form a [`AuthStyle::Basic`] credential travels in.
+    fn basic(&self) -> String {
+        crate::base64::standard(self.secret.expose().as_bytes())
+    }
+
+    /// Every form of the secret that can appear on the wire, for scrubbing diagnostics.
+    fn wire_forms(&self) -> Vec<String> {
+        let mut forms = vec![self.secret.expose().to_owned()];
+        if self.style == AuthStyle::Basic {
+            forms.push(self.basic());
+        }
+        forms
     }
 }
 
@@ -349,10 +368,10 @@ fn fetch_hops_inner<T: Transport + ?Sized>(
     // Once a hop leaves the credential's origin the credential is never re-attached,
     // even if a later hop comes back.
     let mut left_origin = false;
-    let secret_text = credential.map(|c| c.secret.expose());
-    let scrub = |text: &str| match secret_text {
-        Some(s) => scrub_secrets(text, &[s]),
-        None => text.to_owned(),
+    let secret_forms = credential.map(Credential::wire_forms).unwrap_or_default();
+    let scrub = |text: &str| {
+        let forms: Vec<&str> = secret_forms.iter().map(String::as_str).collect();
+        scrub_secrets(text, &forms)
     };
 
     let mut current = request;
@@ -739,6 +758,22 @@ mod tests {
         assert_eq!(r.outcome.kind, SourceOutcomeKind::BotWaf);
     }
 
+    /// A profile site that embeds a CAPTCHA widget, or a bot-management sensor, on every page
+    /// answers 200 with content. Counting those as walls dropped every result and, after five,
+    /// opened the host's circuit for a minute.
+    #[test]
+    fn served_pages_with_a_widget_are_content_and_keep_the_host_circuit_closed() {
+        use crate::circuit::{BreakerState, FAILURE_THRESHOLD, host_state};
+        let page = "<html><script src=\"https://www.google.com/recaptcha/api.js\"></script><div class=\"g-recaptcha\"></div><h1>Jane Doe</h1></html>";
+        let host = "widget-on-every-page.example";
+        for _ in 0..FAILURE_THRESHOLD {
+            let f = Fake::new(vec![Ok(resp(200, &[], page))]);
+            let r = run(&f, &format!("https://{host}/profile"), None, 0).expect("fetch");
+            assert_eq!(r.outcome.kind, SourceOutcomeKind::Inconclusive);
+        }
+        assert_ne!(host_state(host), Some(BreakerState::Open));
+    }
+
     #[test]
     fn rate_limit_carries_a_bounded_retry_after() {
         let f = Fake::new(vec![Ok(resp(429, &[("retry-after", "120")], ""))]);
@@ -846,6 +881,23 @@ mod tests {
             AuthStyle::Header("X: y\r\nZ".into()),
         );
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn basic_style_sends_the_encoded_pair_and_strips_it_off_origin() {
+        let c = cred("wigle-user:tok-abcdef-123456", AuthStyle::Basic);
+        let f = Fake::new(vec![
+            Ok(resp(302, &[("location", "https://evil.example/steal")], "")),
+            Ok(resp(200, &[], "")),
+        ]);
+        let r = run(&f, "https://a.example/api", Some(&c), 5).expect("fetch");
+        let seen = f.seen.borrow();
+        assert_eq!(
+            seen[0].header_value("authorization"),
+            Some("Basic d2lnbGUtdXNlcjp0b2stYWJjZGVmLTEyMzQ1Ng==")
+        );
+        assert!(seen[1].header_value("authorization").is_none());
+        assert!(!format!("{r:?}").contains("d2lnbGUtdXNlcjp0b2st"));
     }
 
     #[test]

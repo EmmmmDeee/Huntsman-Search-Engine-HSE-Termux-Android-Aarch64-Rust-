@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use huntsman_recon::exit::EX_USAGE;
+use huntsman_recon::scan_route::ScanKind;
 
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
@@ -99,10 +100,8 @@ fn scan_help_and_usage_name_every_kind_and_the_batch_save_directory() {
     let out = bin().args(["scan", "--help"]).output().unwrap();
     let scan_help = String::from_utf8(out.stdout).unwrap();
     for text in [&general, &scan_help] {
-        for needed in [
-            "people|email|exposure|username|phone|domain",
-            "--save-dir DIR",
-        ] {
+        let kinds = ScanKind::ALL.map(ScanKind::command).join("|");
+        for needed in [kinds.as_str(), "--save-dir DIR"] {
             assert!(text.contains(needed), "missing {needed:?} in:\n{text}");
         }
     }
