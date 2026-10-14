@@ -93,6 +93,17 @@ fn keyless() -> Routes {
         ("https://otx.alienvault.com/", 404, ""),
         ("https://urlscan.io/", 200, URLSCAN_NONE),
         ("https://ipinfo.io/", 200, IPINFO),
+        (
+            "https://freeapi.robtex.com/",
+            200,
+            r#"{"status":"ok","pas":[]}"#,
+        ),
+        ("https://api.hackertarget.com/", 200, "No records found"),
+        (
+            "https://api.stopforumspam.org/",
+            200,
+            r#"{"success":1,"ip":{"value":"1.1.1.1","appears":0,"frequency":0}}"#,
+        ),
         ("https://api.shodan.io/", 200, SHODAN),
     ])
 }
@@ -147,7 +158,10 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "app.netlas.io",
             "otx.alienvault.com",
             "urlscan.io",
-            "ipinfo.io"
+            "ipinfo.io",
+            "freeapi.robtex.com",
+            "api.hackertarget.com",
+            "api.stopforumspam.org"
         ]
     );
     assert_eq!(outcome(&report, "internetdb"), SourceOutcomeKind::Success);
@@ -158,7 +172,10 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     assert_eq!(outcome(&report, "otx"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "urlscan"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "ipinfo"), SourceOutcomeKind::Success);
-    assert_eq!(report.outcomes.len(), 8, "an unkeyed leg reports nothing");
+    for source in ["robtex", "hackertarget", "stopforumspam"] {
+        assert_eq!(outcome(&report, source), SourceOutcomeKind::ValidZero);
+    }
+    assert_eq!(report.outcomes.len(), 11, "an unkeyed leg reports nothing");
 
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
     assert!(ip.has_tag(tags::VULNERABLE));

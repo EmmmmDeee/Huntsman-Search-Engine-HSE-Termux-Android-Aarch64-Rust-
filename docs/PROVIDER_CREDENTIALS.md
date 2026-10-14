@@ -37,6 +37,7 @@ these slots without printing their values.
 | AlienVault OTX | `HUNTSMAN_OTX_KEY` | optional for `ip` and `domain`: OTX answers without a key at a lower limit; a free key raises it |
 | urlscan.io | `HUNTSMAN_URLSCAN_KEY` | optional for `ip` and `domain`: searches work without a key at a lower quota; a free key raises it |
 | IPinfo | `HUNTSMAN_IPINFO_KEY` | optional for `ip`: IPinfo answers without a token at a lower limit; a free token gives 50,000 lookups/month |
+| HackerTarget | `HUNTSMAN_HACKERTARGET_KEY` | optional for `ip` and `domain`: HackerTarget answers without a key at 50 queries a day; a membership key raises it |
 | Censys | `HUNTSMAN_CENSYS_ID`, `HUNTSMAN_CENSYS_SECRET` | do not assume usable; provider access must be revalidated |
 
 ## Private runtime template
@@ -72,6 +73,7 @@ HUNTSMAN_ABUSECH_KEY=
 HUNTSMAN_OTX_KEY=
 HUNTSMAN_URLSCAN_KEY=
 HUNTSMAN_IPINFO_KEY=
+HUNTSMAN_HACKERTARGET_KEY=
 HUNTSMAN_CENSYS_ID=
 HUNTSMAN_CENSYS_SECRET=
 ```
