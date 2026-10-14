@@ -151,7 +151,7 @@ cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax + OathNet 
 cargo run -- username octocat             # variants + public GitHub/Bluesky lookups
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- domain example.com             # crt.sh certificate names + DNS records over DoH; network
-cargo run -- network 3c:5a:b4:01:02:03      # BSSID: offline OUI vendor, then WiGLE network search (keyed; no key = no request)
+cargo run -- network 3c:5a:b4:01:02:03      # BSSID: offline OUI vendor, then WiGLE WiFi + Bluetooth search (keyed; no key = no request)
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
 cargo run -- plan ada@example.com example.com  # offline spine: entities, relations, planned routes; nothing fetched

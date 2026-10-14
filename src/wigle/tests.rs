@@ -46,7 +46,7 @@ fn sample() -> Value {
 }
 
 fn decoded(body: &Value) -> Search {
-    match decode(body.to_string().as_bytes(), &[TOKEN]) {
+    match decode(Database::Wifi, body.to_string().as_bytes(), &[TOKEN]) {
         Ok(search) => search,
         Err(error) => panic!("decode failed: {error}"),
     }
@@ -109,6 +109,7 @@ fn an_empty_success_is_a_zero_and_a_failure_envelope_is_not() {
     assert_eq!(empty.truncation(), None);
 
     let refused = decode(
+        Database::Wifi,
         format!(r#"{{"success": false, "message": "too many queries today {TOKEN}\u0007"}}"#)
             .as_bytes(),
         &[TOKEN],
@@ -127,7 +128,7 @@ fn a_body_that_is_not_the_envelope_is_schema_drift_and_quotes_nothing() {
         r#"{"success": true, "results": "Cafe Guest"}"#,
         "<html>Cafe Guest</html>",
     ] {
-        let error = match decode(body.as_bytes(), &[TOKEN]) {
+        let error = match decode(Database::Wifi, body.as_bytes(), &[TOKEN]) {
             Err(error) => error,
             Ok(search) => panic!("{body:?} decoded as {search:?}"),
         };
@@ -154,27 +155,36 @@ fn provider_text_is_bounded_and_control_free() {
 #[test]
 fn each_selector_is_one_query_on_the_search_endpoint() {
     assert_eq!(
-        search_url(&bssid()),
+        search_url(Database::Wifi, &bssid()),
         "https://api.wigle.net/api/v2/network/search?netid=3C%3A5A%3AB4%3A01%3A02%3A03&resultsPerPage=100"
     );
     assert_eq!(
-        search_url(&NetworkSelector::Ssid("Cafe Guest&x=1".into())),
+        search_url(
+            Database::Wifi,
+            &NetworkSelector::Ssid("Cafe Guest&x=1".into())
+        ),
         "https://api.wigle.net/api/v2/network/search?ssid=Cafe+Guest%26x%3D1&resultsPerPage=100"
     );
     assert_eq!(
-        search_url(&NetworkSelector::Area {
-            lat: -27.4698,
-            lon: 153.0251
-        }),
+        search_url(
+            Database::Wifi,
+            &NetworkSelector::Area {
+                lat: -27.4698,
+                lon: 153.0251
+            }
+        ),
         "https://api.wigle.net/api/v2/network/search?latrange1=-27.471800&latrange2=-27.467800\
          &longrange1=153.023100&longrange2=153.027100&closestLat=-27.469800&closestLong=153.025100\
          &resultsPerPage=100"
     );
     // The box is clamped to the globe.
-    let edge = search_url(&NetworkSelector::Area {
-        lat: 89.9995,
-        lon: -179.9995,
-    });
+    let edge = search_url(
+        Database::Wifi,
+        &NetworkSelector::Area {
+            lat: 89.9995,
+            lon: -179.9995,
+        },
+    );
     assert!(edge.contains("latrange2=90.000000"), "{edge}");
     assert!(edge.contains("longrange1=-180.000000"), "{edge}");
 }
@@ -230,7 +240,7 @@ fn status(code: u16, body: &str) -> Response {
 #[test]
 fn the_search_sends_one_get_with_basic_credentials_to_the_fixed_origin() {
     let transport = Recorder::new(vec![crate::test_support::json_ok(&sample().to_string())]);
-    let search = match search(&transport, &keys(), &bssid(), 7) {
+    let search = match search(&transport, &keys(), Database::Wifi, &bssid(), 7) {
         Ok(search) => search,
         Err(error) => panic!("search failed: {error}"),
     };
@@ -239,7 +249,7 @@ fn the_search_sends_one_get_with_basic_credentials_to_the_fixed_origin() {
     assert_eq!(sent.len(), 1);
     let request = &sent[0];
     assert_eq!(request.method, Method::Get);
-    assert_eq!(request.url, search_url(&bssid()));
+    assert_eq!(request.url, search_url(Database::Wifi, &bssid()));
     let expected = format!(
         "Basic {}",
         crate::base64::standard(format!("{USER}:{TOKEN}").as_bytes())
@@ -264,7 +274,7 @@ fn credentials_need_both_slots_and_send_nothing_without_them() {
         assert!(!configured(&keys));
         let transport = Recorder::new(Vec::new());
         assert_eq!(
-            search(&transport, &keys, &bssid(), 7),
+            search(&transport, &keys, Database::Wifi, &bssid(), 7),
             Err(WigleError::MissingKey)
         );
         assert!(transport.sent().is_empty());
@@ -279,7 +289,7 @@ fn a_user_with_a_colon_is_refused_before_sending() {
         Err(error) => panic!("keys parse: {error}"),
     };
     let transport = Recorder::new(Vec::new());
-    let result = search(&transport, &keys, &bssid(), 7);
+    let result = search(&transport, &keys, Database::Wifi, &bssid(), 7);
     assert!(matches!(result, Err(WigleError::Refused(_))), "{result:?}");
     assert!(transport.sent().is_empty());
 }
@@ -321,7 +331,7 @@ fn statuses_map_to_outcomes_and_never_quote_the_body_or_credentials() {
     for (response, kind, http) in cases {
         let code = response.status;
         let transport = Recorder::new(vec![response]);
-        let error = match search(&transport, &keys(), &bssid(), 7) {
+        let error = match search(&transport, &keys(), Database::Wifi, &bssid(), 7) {
             Err(error) => error,
             Ok(search) => panic!("HTTP {code} gave {search:?}"),
         };
@@ -349,9 +359,92 @@ fn a_redirect_is_not_followed_so_the_credentials_go_nowhere_else() {
         .headers
         .push(("location".into(), "https://elsewhere.example/steal".into()));
     let transport = Recorder::new(vec![moved]);
-    let result = search(&transport, &keys(), &bssid(), 7);
+    let result = search(&transport, &keys(), Database::Wifi, &bssid(), 7);
     assert_eq!(result, Err(WigleError::Unexpected(302)));
     let sent = transport.sent();
     assert_eq!(sent.len(), 1, "only the first request is sent");
     assert!(sent[0].url.starts_with(API_URL));
+}
+
+#[test]
+fn a_mac_or_a_place_is_searched_in_both_databases_and_an_ssid_only_in_wifi() {
+    assert_eq!(
+        Database::for_selector(&bssid()),
+        [Database::Wifi, Database::Bluetooth]
+    );
+    let area = NetworkSelector::Area {
+        lat: -27.4698,
+        lon: 153.0251,
+    };
+    assert_eq!(
+        Database::for_selector(&area),
+        [Database::Wifi, Database::Bluetooth]
+    );
+    assert_eq!(
+        Database::for_selector(&NetworkSelector::Ssid("Cafe".into())),
+        [Database::Wifi]
+    );
+    assert_eq!(
+        search_url(Database::Bluetooth, &bssid()),
+        "https://api.wigle.net/api/v2/bluetooth/search?netid=3C%3A5A%3AB4%3A01%3A02%3A03&resultsPerPage=100"
+    );
+    assert!(
+        search_url(Database::Bluetooth, &area).starts_with(&format!("{BLUETOOTH_URL}?latrange1="))
+    );
+    assert!(
+        search_url(
+            Database::Bluetooth,
+            &NetworkSelector::Ssid("Ada Buds".into())
+        )
+        .contains("?name=Ada+Buds&")
+    );
+}
+
+#[test]
+fn bluetooth_rows_keep_their_radio_class_and_device_name() {
+    let body = serde_json::json!({"success": true, "totalResults": 3, "results": [
+        {"netid": "F4:5C:89:AA:BB:CC", "name": "Ada Buds", "type": "BLE",
+         "trilat": -27.47, "trilong": 153.02, "lasttime": "2026-09-01T10:00:00.000Z"},
+        {"netid": "00:1a:7d:da:71:13", "name": "Car Kit", "type": "BTAttributes: Car Audio;10"},
+        {"netid": "00:1a:7d:da:71:14", "ssid": "Legacy", "type": "?"}
+    ]});
+    let search = match decode(Database::Bluetooth, body.to_string().as_bytes(), &[TOKEN]) {
+        Ok(search) => search,
+        Err(error) => panic!("decode failed: {error}"),
+    };
+    let buds = &search.networks[0];
+    assert_eq!(buds.sighting.radio, RadioKind::Ble);
+    assert_eq!(buds.ssid(), Some("Ada Buds"));
+    assert_eq!(buds.sighting.source, RfSource::WigleApi);
+    assert_eq!(buds.position(), Some((-27.47, 153.02)));
+    let car = &search.networks[1];
+    assert_eq!(car.sighting.radio, RadioKind::BtClassic);
+    assert_eq!(car.sighting.device_class.as_deref(), Some("Car Audio"));
+    let legacy = &search.networks[2];
+    assert_eq!(
+        legacy.sighting.radio,
+        RadioKind::Ble,
+        "an unknown type is BLE"
+    );
+    assert_eq!(legacy.ssid(), Some("Legacy"), "name falls back to ssid");
+}
+
+#[test]
+fn a_bluetooth_search_uses_the_same_pinned_credentials() {
+    let transport = Recorder::new(vec![crate::test_support::json_ok(
+        r#"{"success":true,"totalResults":0,"results":[]}"#,
+    )]);
+    let found = search(&transport, &keys(), Database::Bluetooth, &bssid(), 7);
+    assert!(
+        matches!(&found, Ok(s) if s.networks.is_empty()),
+        "{found:?}"
+    );
+    let sent = transport.sent();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].url.starts_with(BLUETOOTH_URL), "{}", sent[0].url);
+    assert!(
+        sent[0]
+            .header_value("authorization")
+            .is_some_and(|v| v.starts_with("Basic "))
+    );
 }

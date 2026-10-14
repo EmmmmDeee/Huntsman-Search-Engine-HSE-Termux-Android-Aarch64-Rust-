@@ -36,7 +36,14 @@ fn a_bssid_is_classified_offline_and_wigle_without_credentials_makes_no_request(
         "{text}"
     );
     assert!(text.contains("HUNTSMAN_WIGLE_USER"), "{text}");
-    assert!(text.ends_with("wigle_networks=none\n"), "{text}");
+    assert!(
+        text.contains("\nwigle_bluetooth\tauth_required\tfound=none"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("wigle_networks=none\nwigle_bluetooth_devices=none\n"),
+        "{text}"
+    );
 }
 
 #[test]

@@ -119,6 +119,7 @@ pub const DOMAIN_POLICY: SavePolicy = SavePolicy {
 fn network_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "wigle" => ("wigle", "src/wigle.rs"),
+        "wigle_bluetooth" => ("wigle_bluetooth", "src/wigle.rs"),
         "oui" => ("oui", "src/oui.rs"),
         _ => (source, "src/network_cli.rs"),
     }

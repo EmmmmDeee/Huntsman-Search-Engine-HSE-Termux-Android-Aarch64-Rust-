@@ -127,7 +127,8 @@ fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_auth_requir
         legs,
         [
             (OUI_SOURCE, SourceOutcomeKind::Success),
-            (wigle::SOURCE, SourceOutcomeKind::AuthRequired)
+            (wigle::SOURCE, SourceOutcomeKind::AuthRequired),
+            (wigle::BLUETOOTH_SOURCE, SourceOutcomeKind::AuthRequired)
         ]
     );
     assert_eq!(report.wigle, None, "no answer is not a zero");
@@ -138,7 +139,10 @@ fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_auth_requir
         .find_map(|e| e.attributes.get("vendor"))
         .cloned();
     assert!(vendor.is_some_and(|v| !v.is_empty()), "{text}");
-    assert!(text.ends_with("wigle_networks=none\n"), "{text}");
+    assert!(
+        text.ends_with("wigle_networks=none\nwigle_bluetooth_devices=none\n"),
+        "{text}"
+    );
     assert!(text.contains(wigle::USER_SLOT), "{text}");
 }
 
@@ -241,7 +245,12 @@ fn a_coordinate_selector_searches_the_box_around_it() {
         report.outcomes.last().map(|o| o.kind),
         Some(SourceOutcomeKind::ValidZero)
     );
-    assert!(text.ends_with("wigle_networks=0\n"), "{text}");
+    assert_eq!(urls.len(), 2, "WiFi then Bluetooth: {urls:?}");
+    assert!(urls[1].starts_with(wigle::BLUETOOTH_URL), "{urls:?}");
+    assert!(
+        text.ends_with("wigle_networks=0\nwigle_bluetooth_devices=0\n"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -280,4 +289,52 @@ fn a_failed_request_is_reported_and_a_network_failure_with_nothing_else_is_refus
         run(Some((&offline, &keys)), "3c:5a:b4:01:02:03", 7),
         NetworkRun::Printed { .. }
     ));
+}
+
+#[test]
+fn a_mac_found_as_a_bluetooth_device_is_reported_with_its_class() {
+    let body = serde_json::json!({"success": true, "totalResults": 1, "results": [
+        {"netid": "00:1A:7D:DA:71:13", "name": "Car Kit", "type": "BTAttributes: Car Audio;10",
+         "trilat": -27.47, "trilong": 153.02, "lasttime": "2026-09-01T10:00:00.000Z"}
+    ]});
+    let transport = Canned::json(&body);
+    let keys = keys();
+    let (text, report) = printed(run(Some((&transport, &keys)), "00:1a:7d:da:71:13", 7));
+    assert_eq!(transport.urls().len(), 2, "WiFi then Bluetooth");
+    let bluetooth = report
+        .outcomes
+        .iter()
+        .find(|o| o.module == wigle::BLUETOOTH_SOURCE)
+        .unwrap_or_else(|| panic!("no bluetooth outcome: {text}"));
+    assert_eq!(bluetooth.found, Some(1));
+    let mac = report
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::MacAddress)
+        .unwrap_or_else(|| panic!("no MAC entity: {text}"));
+    let evidence = mac
+        .evidence
+        .iter()
+        .find(|e| e.provenance.source == wigle::BLUETOOTH_SOURCE)
+        .unwrap_or_else(|| panic!("no bluetooth evidence: {text}"));
+    assert_eq!(
+        evidence.attributes.get("radio").map(String::as_str),
+        Some("bt")
+    );
+    assert_eq!(
+        evidence.attributes.get("device_name").map(String::as_str),
+        Some("Car Kit")
+    );
+    assert!(
+        !report.entities.iter().any(|e| e.kind == EntityKind::Ssid),
+        "a device name is not an SSID"
+    );
+    assert!(
+        text.contains(
+            "wigle_bluetooth\t00:1a:7d:da:71:13\tname=Car Kit\tradio=bt\tclass=Car Audio\t\
+             position=-27.470000,153.020000\tfirst_seen=unknown\t\
+             last_seen=2026-09-01T10:00:00.000Z\taddress=unknown\n"
+        ),
+        "{text}"
+    );
 }

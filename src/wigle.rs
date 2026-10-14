@@ -1,6 +1,7 @@
-//! `WiGLE` network search: the keyed leg of `network`.
+//! `WiGLE` `WiFi` and Bluetooth search: the keyed legs of `network`.
 //!
-//! One lookup is one `GET https://api.wigle.net/api/v2/network/search` with the operator's
+//! One lookup is one `GET https://api.wigle.net/api/v2/network/search` (or `bluetooth/search`)
+//! with the operator's
 //! `WiGLE` API name and API token sent as HTTP Basic credentials, bound to [`KEY_ORIGIN`] by
 //! [`crate::fetch`]. Redirects are not followed, so the credentials cannot be sent anywhere else.
 //! The endpoint, parameters and field names are those of `WiGLE`'s published Swagger document
@@ -24,25 +25,69 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
-use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
+use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport, TransportConfig, percent_encode_component};
-use crate::keys::{Keys, Secret};
+use crate::keys::Keys;
+use crate::provider_credentials::{WigleCredentialError, wigle_credential};
 use crate::redact::scrub_secrets;
-use crate::rf::{RadioKind, RfSighting, RfSource, canonical_network_id, is_mac};
+use crate::rf::{
+    RadioKind, RfSighting, RfSource, canonical_network_id, classify_wigle_type, is_mac,
+};
 use crate::scan_route::NetworkSelector;
 use crate::source_outcome::SourceOutcomeKind;
 
-/// Source label of this leg in outcomes, evidence and saved ledgers.
+/// Source label of the `WiFi` search in outcomes, evidence and saved ledgers.
 pub const SOURCE: &str = "wigle";
+/// Source label of the Bluetooth search.
+pub const BLUETOOTH_SOURCE: &str = "wigle_bluetooth";
 /// The slot holding the `WiGLE` API name (the Basic-auth user).
 pub const USER_SLOT: &str = crate::environment::WIGLE_USER_ENV;
 /// The slot holding the `WiGLE` API token (the Basic-auth password).
 pub const TOKEN_SLOT: &str = crate::environment::WIGLE_TOKEN_ENV;
 /// The `WiFi` network search endpoint.
 pub const API_URL: &str = "https://api.wigle.net/api/v2/network/search";
+/// The Bluetooth (classic and BLE) device search endpoint.
+pub const BLUETOOTH_URL: &str = "https://api.wigle.net/api/v2/bluetooth/search";
 /// The only origin the credentials are ever sent to.
-pub const KEY_ORIGIN: &str = "https://api.wigle.net:443";
+pub const KEY_ORIGIN: &str = crate::provider_credentials::WIGLE_ORIGIN;
+
+/// Which `WiGLE` database a search reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Database {
+    Wifi,
+    Bluetooth,
+}
+
+impl Database {
+    /// The databases a selector is searched in, in order. A MAC address can be a `WiFi` BSSID or
+    /// a Bluetooth device, and a place holds both, so each is searched in both. An SSID names
+    /// only `WiFi` networks.
+    #[must_use]
+    pub const fn for_selector(selector: &NetworkSelector) -> &'static [Self] {
+        match selector {
+            NetworkSelector::Ssid(_) => &[Self::Wifi],
+            NetworkSelector::Bssid(_) | NetworkSelector::Area { .. } => {
+                &[Self::Wifi, Self::Bluetooth]
+            }
+        }
+    }
+
+    /// This database's source label.
+    #[must_use]
+    pub const fn source(self) -> &'static str {
+        match self {
+            Self::Wifi => SOURCE,
+            Self::Bluetooth => BLUETOOTH_SOURCE,
+        }
+    }
+
+    const fn url(self) -> &'static str {
+        match self {
+            Self::Wifi => API_URL,
+            Self::Bluetooth => BLUETOOTH_URL,
+        }
+    }
+}
 /// Networks read per lookup. `WiGLE` pages API searches at 100.
 pub const PAGE_SIZE: u32 = 100;
 /// Half the side of the box searched around a coordinate pair, in degrees (about 220 m of
@@ -128,10 +173,11 @@ impl WigleError {
     }
 }
 
-/// One `WiFi` network as `WiGLE` records it.
+/// One `WiFi` network or Bluetooth device as `WiGLE` records it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Network {
-    /// The BSSID (lower case), SSID, encryption, trilaterated position and last sighting.
+    /// The MAC address (lower case), radio, SSID or device name, encryption, device class,
+    /// trilaterated position and last sighting.
     pub sighting: RfSighting,
     pub first_seen: Option<String>,
     pub last_updated: Option<String>,
@@ -244,9 +290,9 @@ pub fn configured(keys: &Keys) -> bool {
     keys.get(USER_SLOT).is_some() && keys.get(TOKEN_SLOT).is_some()
 }
 
-/// The request URL for `selector`. **Pure.**
+/// The request URL for `selector` in `database`. **Pure.**
 #[must_use]
-pub fn search_url(selector: &NetworkSelector) -> String {
+pub fn search_url(database: Database, selector: &NetworkSelector) -> String {
     let query = match selector {
         NetworkSelector::Bssid(bssid) => {
             format!(
@@ -254,7 +300,13 @@ pub fn search_url(selector: &NetworkSelector) -> String {
                 percent_encode_component(&bssid.to_ascii_uppercase())
             )
         }
-        NetworkSelector::Ssid(ssid) => format!("ssid={}", percent_encode_component(ssid)),
+        NetworkSelector::Ssid(ssid) => {
+            let field = match database {
+                Database::Wifi => "ssid",
+                Database::Bluetooth => "name",
+            };
+            format!("{field}={}", percent_encode_component(ssid))
+        }
         NetworkSelector::Area { lat, lon } => {
             let d = AREA_DELTA_DEGREES;
             format!(
@@ -267,10 +319,10 @@ pub fn search_url(selector: &NetworkSelector) -> String {
             )
         }
     };
-    format!("{API_URL}?{query}&resultsPerPage={PAGE_SIZE}")
+    format!("{}?{query}&resultsPerPage={PAGE_SIZE}", database.url())
 }
 
-/// Search `WiGLE` for the networks `selector` names, with the credentials in `keys`.
+/// Search `database` for what `selector` names, with the credentials in `keys`.
 ///
 /// # Errors
 /// [`WigleError::MissingKey`] before any request when either slot is empty; otherwise the
@@ -278,30 +330,24 @@ pub fn search_url(selector: &NetworkSelector) -> String {
 pub fn search<T: Transport + ?Sized>(
     transport: &T,
     keys: &Keys,
+    database: Database,
     selector: &NetworkSelector,
     now_unix: u64,
 ) -> Result<Search, WigleError> {
-    let (Some(user), Some(token)) = (keys.get(USER_SLOT), keys.get(TOKEN_SLOT)) else {
-        return Err(WigleError::MissingKey);
-    };
-    if user.expose().contains(':') {
-        return Err(WigleError::Refused(format!(
-            "{USER_SLOT} must be the API Name alone; a ':' cannot be sent as a Basic-auth user"
-        )));
-    }
-    let pair = Secret::new(format!("{}:{}", user.expose(), token.expose()))
-        .map_err(|e| WigleError::Refused(e.to_string()))?;
-    let secrets = [user.expose(), token.expose(), pair.expose()];
-    let credential = credential(pair.clone(), now_unix)?;
-    let request = Request::get(search_url(selector))
+    let wigle = wigle_credential(keys, now_unix).map_err(|e| match e {
+        WigleCredentialError::Missing => WigleError::MissingKey,
+        WigleCredentialError::Refused(why) => WigleError::Refused(why),
+    })?;
+    let secrets = wigle.secrets();
+    let request = Request::get(search_url(database, selector))
         .header("Accept", "application/json")
         .with_timeout(TIMEOUT);
     let fetched = fetch(
         transport,
         request,
-        Some(&credential),
+        Some(&wigle.credential),
         &FetchOptions::no_redirects(),
-        SOURCE,
+        database.source(),
         now_unix,
     )
     .map_err(|e| WigleError::Refused(scrub_secrets(&e.to_string(), &secrets)))?;
@@ -315,20 +361,7 @@ pub fn search<T: Transport + ?Sized>(
     if response.truncated {
         return Err(WigleError::Decode("response exceeds the body limit".into()));
     }
-    decode(&response.body, &secrets)
-}
-
-fn credential(secret: Secret, now_unix: u64) -> Result<Credential, WigleError> {
-    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
-        provider_id: "wigle.net".into(),
-        credential_slot: TOKEN_SLOT.into(),
-        approved_at_unix: now_unix,
-        approval_provenance: format!("operator configured {USER_SLOT} and {TOKEN_SLOT}"),
-    })
-    .map_err(|e| WigleError::Refused(e.to_string()))?;
-    Credential::new(authority, secret, AuthStyle::Basic)
-        .map(|c| c.only_for_origin(KEY_ORIGIN))
-        .map_err(|e| WigleError::Refused(e.to_string()))
+    decode(database, &response.body, &secrets)
 }
 
 /// The error a non-2xx status means. The status decides first.
@@ -355,7 +388,7 @@ fn status_error(response: &Response) -> Result<(), WigleError> {
 /// # Errors
 /// [`WigleError::Provider`] for a `success: false` envelope, [`WigleError::Decode`] for a body
 /// that is not the envelope or has no `results` array.
-pub fn decode(body: &[u8], secrets: &[&str]) -> Result<Search, WigleError> {
+pub fn decode(database: Database, body: &[u8], secrets: &[&str]) -> Result<Search, WigleError> {
     let envelope: Envelope = serde_json::from_slice(body).map_err(|e| decode_error(&e))?;
     if envelope.success == Some(false) {
         let message = envelope.message.as_deref().unwrap_or("no message");
@@ -371,7 +404,7 @@ pub fn decode(body: &[u8], secrets: &[&str]) -> Result<Search, WigleError> {
     };
     let mut seen = BTreeSet::new();
     for row in &rows {
-        let Some(network) = network(row, secrets) else {
+        let Some(network) = network(database, row, secrets) else {
             search.unusable += 1;
             continue;
         };
@@ -382,16 +415,30 @@ pub fn decode(body: &[u8], secrets: &[&str]) -> Result<Search, WigleError> {
     Ok(search)
 }
 
-/// One result row as a [`Network`], or `None` when its `netid` is not a BSSID. **Pure.**
-fn network(row: &Map<String, Value>, secrets: &[&str]) -> Option<Network> {
+/// One result row as a [`Network`], or `None` when its `netid` is not a MAC address. A
+/// Bluetooth row's `type` says classic or BLE and may carry a device class; a type that says
+/// neither is taken as BLE, which most Bluetooth sightings are. **Pure.**
+fn network(database: Database, row: &Map<String, Value>, secrets: &[&str]) -> Option<Network> {
     let bssid = canonical_network_id(&text(row, "netid", secrets)?);
     if !is_mac(&bssid) {
         return None;
     }
-    let mut sighting = RfSighting::new(&bssid, RadioKind::Wifi, RfSource::WigleApi);
-    sighting.name = text(row, "ssid", secrets);
+    let raw_type = text(row, "type", secrets);
+    let (radio, device_class) = match database {
+        Database::Wifi => (RadioKind::Wifi, None),
+        Database::Bluetooth => match raw_type.as_deref().map(classify_wigle_type) {
+            Some((radio @ (RadioKind::Ble | RadioKind::BtClassic), class)) => (radio, class),
+            _ => (RadioKind::Ble, None),
+        },
+    };
+    let mut sighting = RfSighting::new(&bssid, radio, RfSource::WigleApi);
+    sighting.name = match database {
+        Database::Wifi => text(row, "ssid", secrets),
+        Database::Bluetooth => text(row, "name", secrets).or_else(|| text(row, "ssid", secrets)),
+    };
+    sighting.device_class = device_class;
     sighting.encryption = text(row, "encryption", secrets);
-    sighting.raw_type = text(row, "type", secrets);
+    sighting.raw_type = raw_type;
     sighting.latitude = row.get("trilat").and_then(Value::as_f64);
     sighting.longitude = row.get("trilong").and_then(Value::as_f64);
     sighting.observed_at = text(row, "lasttime", secrets);
