@@ -41,6 +41,7 @@ diamond	leaf	analysis utility
 diff	leaf	diff analysis utility
 differential	diagnostic	legacy no-regression entity comparator and oracle manifest checks
 diagnostics	diagnostic	offline non-sensitive build runtime module and provider diagnostics
+doctor	diagnostic	doctor and fix checks and reversible repairs called by src/cli/doctor.rs
 directive_lock	diagnostic	canonical repository directive verification and mirror synchronization
 dmarc	leaf	DMARC parser
 dns	adapter	DNS source client
@@ -155,6 +156,7 @@ value_syntax	leaf	dependency-free domain mailbox URL-host and E.164 syntax primi
 wayback	adapter	Internet Archive Wayback CDX client
 web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
+serve_probe	diagnostic	loopback probe of a running serve called by doctor and doctor serve
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
 meta_plan	runtime	meta-plan validation consumed by the runtime
 repository_identity	leaf	repository constants with no runtime caller

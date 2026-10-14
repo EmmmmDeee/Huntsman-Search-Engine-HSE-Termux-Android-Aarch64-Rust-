@@ -2,6 +2,7 @@
 
 use std::process::ExitCode;
 
+use super::doctor::DOCTOR_HELP;
 use super::{HELP, RECON_USAGE, USAGE, fail};
 use huntsman_recon::dehashed::cli::DEHASHED_USAGE;
 use huntsman_recon::email_cli::EMAIL_HELP;
@@ -31,6 +32,10 @@ pub(super) fn print_command_help(command: &str) {
         }
         "diagnostics" => {
             "diagnostics [--json]\nPrint offline build provenance, target/runtime context, reachable-module counts, ATT&CK-mapped collector counts, and provider credential completeness without values or network access."
+        }
+        "doctor" => DOCTOR_HELP,
+        "fix" => {
+            "fix [--json] [--probe] [--bind ADDR]\nThe same as doctor --fix: run every doctor check, make each repair that can be undone, then check again. It creates ~/.huntsman (mode 700) and an empty ~/.huntsman.env (mode 600) when they are missing, tightens loose permissions, re-runs the install acceptance before recording this binary as installed (the old record is kept as installed-revision.bak-TIME), and removes the Rust build cache only when Cargo tagged it and it is stale or the disk is nearly full. It never deletes a ledger or scan data and never writes or prints a key. Exit 0 when nothing fails afterwards, 78 when something still does."
         }
         "build-sha" => {
             "build-sha\nPrint the source commit embedded at build time, or unknown for builds without provenance metadata."
