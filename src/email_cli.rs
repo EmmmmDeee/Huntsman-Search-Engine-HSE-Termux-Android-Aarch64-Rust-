@@ -5,6 +5,9 @@
 //! account-by-email lookup and the keys.openpgp.org key index are queried through the
 //! shared transport. Evidence is rendered with lineage. Saving is handled by
 //! the L7 `lookup_save` module, and `lookup_args` reads the `--save` option.
+//! [`run_keyed`] then runs every indicator source for an address: the keyless `StopForumSpam`,
+//! Kickbox and `XposedOrNot` checks, and `IPQualityScore`, the Hunter verifier and Whoxy reverse
+//! WHOIS when their keys are configured.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -18,6 +21,9 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_u
 use crate::error::Error;
 use crate::gravatar;
 use crate::http::Transport;
+use crate::indicator_legs;
+use crate::indicator_sources::Indicator;
+use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::source_outcome::SourceExecutionOutcome;
@@ -27,7 +33,7 @@ use crate::{duolingo, openpgp_keys};
 pub const EMAIL_USAGE: &str = "usage: huntsman-recon email ADDR [--save FILE]";
 pub const EMAIL_HELP: &str = "\
 email ADDR [--save FILE]
-Canonicalise ADDR, derive deterministic email pivots, and query its public Gravatar profile, any Duolingo account registered to it, and any OpenPGP key published for it on keys.openpgp.org. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise ADDR, derive deterministic email pivots, and query its public Gravatar profile, any Duolingo account registered to it, and any OpenPGP key published for it on keys.openpgp.org. Kickbox Open says, from the domain alone, whether it is a disposable-mail provider. StopForumSpam forum-spam reports and the names of public breaches XposedOrNot lists for the address are asked without a key. Each keyed source runs when its key is set: IPQualityScore (HUNTSMAN_IPQS_KEY), the Hunter.io verifier (HUNTSMAN_HUNTER_KEY) and Whoxy reverse WHOIS (HUNTSMAN_WHOXY_KEY). --save FILE writes an unverified ledger that verify can reload.";
 
 const CONF_DOMAIN: f64 = 0.80;
 const CONF_USERNAME_CORPORATE: f64 = 0.70;
@@ -110,6 +116,44 @@ pub fn run<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> 
     }
     merge_by_uid(&mut report.entities);
 
+    match lookup_report::render(&report.entities, &report.outcomes) {
+        Ok(text) => EmailRun::Printed { text, report },
+        Err(msg) => EmailRun::Failed(msg),
+    }
+}
+
+/// [`run`], then every indicator source for the address that `keys` enables.
+#[must_use]
+pub fn run_keyed<T: Transport + ?Sized>(
+    transport: &T,
+    keys: &Keys,
+    email: &str,
+    now_unix: u64,
+) -> EmailRun {
+    let mut report = match run(transport, email, now_unix) {
+        EmailRun::Printed { report, .. } => report,
+        other => return other,
+    };
+    let Some(seed) = report.entities.first() else {
+        return EmailRun::Failed("email lookup produced no entity".into());
+    };
+    let (email, scan_id) = (seed.raw_value.clone(), seed.scan_id.clone());
+    if indicator_legs::planned(Indicator::Email(&email), keys).is_empty() {
+        return match lookup_report::render(&report.entities, &report.outcomes) {
+            Ok(text) => EmailRun::Printed { text, report },
+            Err(msg) => EmailRun::Failed(msg),
+        };
+    }
+    let legs = indicator_legs::run(
+        transport,
+        keys,
+        Indicator::Email(&email),
+        &scan_id,
+        now_unix,
+    );
+    report.entities.extend(legs.entities);
+    report.outcomes.extend(legs.outcomes);
+    merge_by_uid(&mut report.entities);
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => EmailRun::Printed { text, report },
         Err(msg) => EmailRun::Failed(msg),
@@ -540,6 +584,120 @@ mod tests {
                 ("duolingo", SourceOutcomeKind::SchemaDrift),
                 ("openpgp_keys", SourceOutcomeKind::ValidZero),
             ]
+        );
+    }
+
+    #[test]
+    fn without_keys_only_the_keyless_address_checks_are_added() {
+        let unkeyed = ScriptedTransport::new(vec![
+            Ok(reply(404, "")),
+            Ok(reply(200, r#"{"users":[]}"#)),
+            Ok(reply(404, "No key found")),
+            Ok(reply(
+                200,
+                r#"{"success":1,"email":{"value":"x","appears":0,"frequency":0}}"#,
+            )),
+            Ok(reply(200, r#"{"disposable":false}"#)),
+            Ok(reply(200, r#"{"Error":"Not found","email":null}"#)),
+        ]);
+        match run_keyed(&unkeyed, &Keys::default(), "ada@example.com", 1) {
+            EmailRun::Printed { text, .. } => {
+                for source in ["stopforumspam", "kickbox", "xposed_or_not"] {
+                    assert!(text.contains(&format!("{source}\tvalid_zero")), "{text}");
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+        let seen = unkeyed.seen.borrow();
+        assert_eq!(
+            seen.len(),
+            6,
+            "no key: only the keyless StopForumSpam, Kickbox and XposedOrNot checks are added"
+        );
+        assert_eq!(
+            seen[4].url, "https://open.kickbox.com/v1/disposable/example.com",
+            "Kickbox is sent the domain, never the address"
+        );
+    }
+
+    #[test]
+    fn configured_keys_run_their_sources_and_each_key_goes_only_to_its_provider() {
+        let keys = Keys::parse(&format!(
+            "{}=ipqs-test-key-0123456789\n{}=whoxy-test-key-0123456789\n{}=hunter-test-key-0123456789\n",
+            crate::ipqs::KEY_SLOT,
+            crate::whoxy::KEY_SLOT,
+            crate::hunter::KEY_SLOT
+        ))
+        .unwrap();
+        let transport = ScriptedTransport::new(vec![
+            Ok(reply(404, "")),
+            Ok(reply(200, r#"{"users":[]}"#)),
+            Ok(reply(404, "No key found")),
+            Ok(reply(
+                200,
+                r#"{"success":1,"email":{"value":"x","appears":1,"frequency":3}}"#,
+            )),
+            Ok(reply(200, r#"{"disposable":true}"#)),
+            Ok(reply(200, r#"{"breaches":[["Artsy"]]}"#)),
+            Ok(reply(
+                200,
+                r#"{"success":true,"valid":true,"disposable":true,"leaked":true,"fraud_score":40,"sanitized_email":"ada@example.com"}"#,
+            )),
+            Ok(reply(
+                200,
+                r#"{"status":1,"total_results":1,"search_result":[{"domain_name":"ada-lovelace.example"}]}"#,
+            )),
+            Ok(reply(
+                200,
+                r#"{"data":{"email":"ada@example.com","status":"valid","score":91,"sources":[]}}"#,
+            )),
+        ]);
+        let (text, report) = match run_keyed(&transport, &keys, "ada@example.com", 1) {
+            EmailRun::Printed { text, report } => (text, report),
+            other => panic!("{other:?}"),
+        };
+        for source in [
+            "stopforumspam",
+            "kickbox",
+            "xposed_or_not",
+            "ipqs",
+            "whoxy",
+            "hunter",
+        ] {
+            assert!(text.contains(&format!("{source}\tsuccess")), "{text}");
+        }
+        assert!(!text.contains("test-key"), "{text}");
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.raw_value == "ada-lovelace.example")
+        );
+        let seen = transport.seen.borrow();
+        let sent: Vec<(&str, bool)> = seen[6..]
+            .iter()
+            .map(|r| {
+                let in_header = r.headers.iter().any(|(_, v)| v.contains("test-key"));
+                (r.url.as_str(), in_header)
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                (
+                    "https://www.ipqualityscore.com/api/json/email?email=ada%40example.com",
+                    true
+                ),
+                (
+                    "https://api.whoxy.com/?reverse=whois&email=ada%40example.com&key=whoxy-test-key-0123456789",
+                    false
+                ),
+                (
+                    "https://api.hunter.io/v2/email-verifier?email=ada%40example.com",
+                    true
+                ),
+            ],
+            "each key goes only where its provider takes it"
         );
     }
 }
