@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::classify::is_challenge;
+use crate::classify::is_challenge_at;
 
 /// Causal outcome of one provider execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -277,13 +277,15 @@ pub const fn classify_http_status(status: u16) -> SourceOutcomeKind {
 }
 
 /// Status plus body. 429 beats a vendor string. A challenge page is `BotWaf` at any
-/// status, so a 403 or 200 challenge is never `AuthRejected` or `Inconclusive`.
-/// A 403 without a challenge signature is `AuthRejected`.
+/// status, so a 403 or 200 interstitial is never `AuthRejected` or `Inconclusive`; a 200
+/// content page that embeds a CAPTCHA widget or a bot-management sensor is content
+/// (`Inconclusive`), see [`crate::classify::is_served_challenge`]. A 403 without a challenge
+/// signature is `AuthRejected`.
 #[must_use]
 pub fn classify_fetch(status: u16, body: &str) -> SourceOutcomeKind {
     if status == 429 {
         SourceOutcomeKind::RateLimited
-    } else if is_challenge(body) {
+    } else if is_challenge_at(status, body) {
         SourceOutcomeKind::BotWaf
     } else if status == 403 {
         SourceOutcomeKind::AuthRejected
@@ -415,6 +417,14 @@ mod tests {
             classify_fetch(429, "challenges.cloudflare.com"),
             SourceOutcomeKind::RateLimited
         );
+    }
+
+    #[test]
+    fn a_served_page_with_a_captcha_widget_is_content_and_a_refused_one_is_a_wall() {
+        let login = "<html><script src=\"https://www.google.com/recaptcha/api.js\"></script><div class=\"g-recaptcha\"></div><h1>Sign in</h1></html>";
+        assert_eq!(classify_fetch(200, login), SourceOutcomeKind::Inconclusive);
+        assert_eq!(classify_fetch(403, login), SourceOutcomeKind::BotWaf);
+        assert_eq!(classify_fetch(503, login), SourceOutcomeKind::BotWaf);
     }
 
     #[test]

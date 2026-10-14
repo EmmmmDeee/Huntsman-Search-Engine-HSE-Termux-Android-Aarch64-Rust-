@@ -217,14 +217,7 @@ pub fn resolve_lac(lac: Option<i64>, tac: Option<i64>) -> i64 {
 
 #[must_use]
 pub fn is_mac(value: &str) -> bool {
-    let mut count = 0usize;
-    for part in value.split(':') {
-        if part.len() != 2 || !part.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return false;
-        }
-        count += 1;
-    }
-    count == 6
+    crate::canonical::is_colon_mac(value)
 }
 
 #[must_use]

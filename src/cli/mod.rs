@@ -8,7 +8,7 @@ use std::env;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
+const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | network BSSID|LAT,LON|ssid:NAME [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|network] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -20,6 +20,8 @@ Usage:
 
 Commands:
   check                 Run offline self-acceptance; writes var/*.json here
+  doctor                Check the whole install and name the fix for each problem
+  fix                   Run doctor and make every repair that can be undone
   diagnostics           Print offline build/runtime/module/provider diagnostics
   build-sha             Print the embedded source commit or unknown
   command               Print and validate the executable engineering hierarchy
@@ -37,6 +39,7 @@ Commands:
   username              Enrich a username through public GitHub and Bluesky profiles
   phone                 Canonicalise and classify a phone number offline
   domain                Certificate-transparency names and DNS records for one domain
+  network               WiFi network by BSSID, SSID or LAT,LON (OUI offline, WiGLE keyed)
   scan                  Route one selector or bounded seed-list into rebuilt lookup front-ends
   investigate           Extract actionable entities from local text or one bounded file
   plan                  Plan an offline investigation from seeds; save or reload it as a session
@@ -59,9 +62,10 @@ Commands:
 
 Run `huntsman-recon <COMMAND> --help` for command details.
 Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
-`seeknow`, `people`, `email`, `exposure`, `username`, `domain`, `query`, `dehashed`, and networked `sf -s` lookups make HTTP requests; `serve` accepts inbound HTTP connections; their default
+`seeknow`, `people`, `email`, `exposure`, `username`, `domain`, `network`, `query`, `dehashed`, and networked `sf -s` lookups make HTTP requests; `serve` accepts inbound HTTP connections; their default
 egress policy is public-only.";
 const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
+mod doctor;
 mod help;
 mod lookup;
 mod meta;
@@ -105,6 +109,8 @@ pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
     }
     let mut remaining = words.into_iter();
     match remaining.next().as_deref() {
+        Some("doctor") => doctor::doctor_cmd(&remaining.collect::<Vec<_>>()),
+        Some("fix") => doctor::fix_cmd(&remaining.collect::<Vec<_>>()),
         Some("diagnostics") => meta::diagnostics_cmd(&remaining.collect::<Vec<_>>()),
         Some("build-sha") => meta::build_sha_cmd(&remaining.collect::<Vec<_>>()),
         Some("command") => meta::command_cmd(&remaining.collect::<Vec<_>>()),
@@ -122,6 +128,7 @@ pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
         Some("username") => lookup::username_cmd(&remaining.collect::<Vec<_>>()),
         Some("phone") => lookup::phone_cmd(&remaining.collect::<Vec<_>>()),
         Some("domain") => lookup::domain_cmd(&remaining.collect::<Vec<_>>()),
+        Some("network") => lookup::network_cmd(&remaining.collect::<Vec<_>>()),
         Some("scan") => lookup::scan_cmd(&remaining.collect::<Vec<_>>()),
         Some("investigate") => lookup::investigate_cmd(&remaining.collect::<Vec<_>>()),
         Some("plan") => lookup::plan_cmd(&remaining.collect::<Vec<_>>()),
