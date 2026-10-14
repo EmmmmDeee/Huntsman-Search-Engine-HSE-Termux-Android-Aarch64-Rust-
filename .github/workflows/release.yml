@@ -26,9 +26,10 @@ name: Release (prebuilt Termux aarch64 binary)
 # build-time embed file must be empty, the key scan of the exact artifacts
 # must report zero findings, and the binary must get a build provenance
 # attestation (a required step, never optional). Otherwise nothing is
-# published. build.rs registers HSE_RELEASE, CI, and HUNTSMAN_HIBP_NO_EMBED
-# for rebuilds, but it reads none of them, and it writes an empty HIBP embed
-# file on every build. See docs/RELEASING.md.
+# published. build.rs registers HSE_RELEASE, HUNTSMAN_HIBP_NO_EMBED,
+# HIBP_API_KEY and HUNTSMAN_BUILD_SHA for rebuilds (not CI, not a key file),
+# reads none of them, and writes an empty HIBP embed file on every build.
+# See docs/RELEASING.md.
 #
 # Privilege split (same shape as HSE-BLE-API- release.yml):
 #   * `build` runs cargo, every dependency build script and proc-macro, and the

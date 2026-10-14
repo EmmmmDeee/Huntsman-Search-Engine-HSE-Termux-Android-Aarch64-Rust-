@@ -7,7 +7,6 @@ archive_bridge	adapter	archive records into collection observations
 artifacts	exporter	bounded shared-state artifact renderer
 asic_director	adapter	ASIC director source client
 asic_persons	adapter	ASIC people source client
-assurance	leaf	assurance analysis utility
 atproto	adapter	ATProto source adapter
 attack	leaf	ATT&CK model utility
 attack_catalog	leaf	ATT&CK catalogue
@@ -17,7 +16,6 @@ au_id	leaf	Australian identifier normalization
 base64	leaf	RFC 4648 base64 encoding for CSP hashes and PKCE values
 benchmark	diagnostic	benchmarking support
 bluesky_user	adapter	public Bluesky profile source client
-breach	leaf	breach record parsing utilities
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
 canonical	runtime	canonicalization for entities and provenance
 circuit	leaf	bounded circuit/cache state
@@ -41,8 +39,6 @@ deadline	leaf	shared per-lookup request budget
 dehashed	adapter	DeHashed exact-match source client and lineage-safe collector
 dependency	runtime	module dependency and dispatch graph
 diagnostics	diagnostic	offline non-sensitive build runtime module and provider diagnostics
-diamond	leaf	analysis utility
-diff	leaf	diff analysis utility
 differential	diagnostic	legacy no-regression entity comparator and oracle manifest checks
 directive_lock	diagnostic	canonical repository directive verification and mirror synchronization
 dmarc	leaf	DMARC parser
@@ -85,7 +81,6 @@ intelligence	runtime	aggregated intelligence report
 internetdb	adapter	Shodan InternetDB leg reached through ip_cli from ip, scan -k ip and /api/lookup
 ip_cli	runtime	ip lookup front-end reached from ip, scan -k ip and /api/lookup
 json	exporter	canonical JSON support
-key_health	diagnostic	provider key diagnostics
 keys	leaf	credential file handling
 leads	runtime	lead ranking through intelligence report
 ledger	exporter	hash-chained verified-claim ledger
@@ -94,12 +89,9 @@ lookup_args	leaf	lookup option grammar shared by the front-ends
 lookup_report	leaf	shared text report of an identifier lookup
 lookup_save	exporter	shared unverified lookup ledger persistence
 md5	leaf	MD5 primitive for protocols that require public MD5 identifiers
-mediawiki	adapter	MediaWiki source adapter
 meta_plan	runtime	meta-plan validation consumed by the runtime
 method_actor	leaf	dependency-ordered batch pipeline for composing method actors
-method_actor_stateful	leaf	method actors that own a context across batches
 method_actors	leaf	general cleaning and shape-filter method actors over shared syntax rules
-method_actors_osint	leaf	indicator triage method actors composed over classifier and the shared placeholder rules
 metrics	runtime	shared scan metrics
 module	runtime	provider economics metadata
 navigator	exporter	ATT&CK Navigator output from admitted claims
@@ -126,7 +118,6 @@ radar	leaf	radar model utility
 recon	leaf	host reconnaissance helpers
 redact	leaf	secret and location redaction
 relation	runtime	structural relation derivation
-repository_identity	leaf	repository constants with no runtime caller
 resolve	leaf	conservative automatic merge application for supplied decisions
 retrieval_artifact	leaf	stable retrieval artifact identifier for provenance evidence
 rf	leaf	radio-frequency model utility
@@ -164,7 +155,6 @@ textnorm	leaf	text normalization
 timefmt	leaf	timestamp parsing
 timeline	runtime	timeline reconstruction through intelligence report
 tlsrpt	leaf	TLS-RPT parser
-trust	leaf	trust analysis utility
 union_find	leaf	deterministic clustering primitive
 username_cli	diagnostic	username enrichment command front-end
 username_variants	leaf	deterministic handle normalization variants
