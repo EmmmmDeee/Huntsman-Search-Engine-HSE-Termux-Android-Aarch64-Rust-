@@ -48,18 +48,20 @@ fn canonical_pair<'a>(left: &'a Entity, right: &'a Entity) -> (&'a Entity, &'a E
     }
 }
 
-fn push_edge(
-    edges: &mut Vec<Relation>,
+/// Pushes the relation, unless it would join an entity to itself, and returns it.
+fn push_edge<'e>(
+    edges: &'e mut Vec<Relation>,
     from_uid: &str,
     to_uid: &str,
     kind: RelationKind,
     confidence: f64,
     scan_id: &str,
-) {
+) -> Option<&'e mut Relation> {
     if from_uid == to_uid {
-        return;
+        return None;
     }
     edges.push(Relation::new(from_uid, to_uid, kind, confidence, scan_id));
+    edges.last_mut()
 }
 
 fn extract_email_localpart(value: &str) -> Option<&str> {
@@ -93,6 +95,26 @@ pub fn is_generic_handle(value: &str) -> bool {
             | "webmaster"
     ) || canonical.is_empty()
         || is_numeric_handle(&canonical)
+}
+
+const HANDLE_BASIS: &str = "handle:";
+
+/// The basis (see [`Relation::basis`]) of every relation that holds because its entities share
+/// the handle `key`: aliases between addresses with that local part or username, and a person
+/// whose name is that handle. Each rests on the one handle, however many entities share it.
+fn handle_basis(key: &str) -> String {
+    format!("{HANDLE_BASIS}{key}")
+}
+
+/// What a basis (see [`Relation::basis`]) is, in a word: `handle` for a handle that entities
+/// share, and `attribute` for any other.
+#[must_use]
+pub fn basis_kind(basis: &str) -> &'static str {
+    if basis.starts_with(HANDLE_BASIS) {
+        "handle"
+    } else {
+        "attribute"
+    }
 }
 
 fn persona_key(entity: &Entity) -> Option<String> {
@@ -207,18 +229,21 @@ pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
         }
     }
     let mut edges = Vec::new();
-    for group in groups.into_values() {
+    for (key, group) in groups {
+        let basis = handle_basis(&key);
         for left in 0..group.len() {
             for right in left + 1..group.len() {
                 let (from, to) = canonical_pair(group[left], group[right]);
-                push_edge(
+                if let Some(edge) = push_edge(
                     &mut edges,
                     &from.uid,
                     &to.uid,
                     RelationKind::AliasOf,
                     endpoint_confidence(from, to),
                     scan_id,
-                );
+                ) {
+                    edge.basis = Some(basis.clone());
+                }
             }
         }
     }
@@ -314,14 +339,16 @@ pub fn derive_identity_ownership(entities: &[Entity], scan_id: &str) -> Vec<Rela
                     continue;
                 };
                 if person_fingerprints.contains(&key) {
-                    push_edge(
+                    if let Some(edge) = push_edge(
                         &mut edges,
                         &person.uid,
                         &identity.uid,
                         RelationKind::IdentifiedBy,
                         endpoint_confidence(person, identity) * 0.7,
                         scan_id,
-                    );
+                    ) {
+                        edge.basis = Some(handle_basis(&key));
+                    }
                 }
             }
         }
@@ -650,7 +677,8 @@ pub fn derive_coreferences(
         }
     }
     let mut edges = Vec::new();
-    for group in buckets.into_values() {
+    for (key, group) in buckets {
+        let basis = handle_basis(&key);
         for left in 0..group.len() {
             for right in left + 1..group.len() {
                 let kind = match (&group[left].kind, &group[right].kind) {
@@ -668,18 +696,19 @@ pub fn derive_coreferences(
                     let (from, to) = canonical_pair(group[left], group[right]);
                     (from.uid.clone(), to.uid.clone())
                 };
-                let key = (from_uid.clone(), to_uid.clone(), kind);
-                if existing_keys.contains(&key) {
+                if existing_keys.contains(&(from_uid.clone(), to_uid.clone(), kind)) {
                     continue;
                 }
-                push_edge(
+                if let Some(edge) = push_edge(
                     &mut edges,
                     &from_uid,
                     &to_uid,
                     kind,
                     endpoint_confidence(group[left], group[right]) * 0.85,
                     scan_id,
-                );
+                ) {
+                    edge.basis = Some(basis.clone());
+                }
             }
         }
     }
@@ -894,6 +923,56 @@ mod tests {
             "s",
         );
         assert_eq!(alias.len(), 3);
+    }
+
+    /// Every relation that holds only because its entities share a handle rests on that handle:
+    /// an alias between addresses with the same local part or username, a subject whose name
+    /// gives the handle, and a person whose name is the handle. A relation with evidence of its
+    /// own, such as an owner that a breach record names, rests on nothing shared.
+    #[test]
+    fn relations_a_shared_handle_implies_rest_on_that_handle() {
+        let mut subject = ent(EntityKind::Person, "Ada Lovelace", 0.9);
+        subject.tag("subject");
+        let mut owned = ent(EntityKind::Email, "a.l@example.com", 0.6);
+        owned.add_evidence(evidence("breach", "dump").with_attr("owner", "Ada Lovelace"));
+        let fingerprinted = ent(EntityKind::Username, "alovelace", 0.5);
+        let ownership =
+            derive_identity_ownership(&[subject, owned.clone(), fingerprinted.clone()], "s");
+        let basis_to = |uid: &str| {
+            ownership
+                .iter()
+                .find(|relation| relation.to_uid == uid)
+                .map(|relation| relation.basis.as_deref())
+        };
+        assert_eq!(basis_to(&owned.uid), Some(None));
+        assert_eq!(basis_to(&fingerprinted.uid), Some(Some("handle:alovelace")));
+
+        let aliases = derive_handles(
+            &[
+                ent(EntityKind::Email, "jsmith@gmail.com", 0.7),
+                ent(EntityKind::Email, "j.smith@outlook.com", 0.6),
+                ent(EntityKind::Username, "jsmith", 0.5),
+            ],
+            "s",
+        );
+        assert_eq!(aliases.len(), 3);
+        for alias in &aliases {
+            assert_eq!(alias.basis.as_deref(), Some("handle:jsmith"), "{alias:?}");
+        }
+
+        let named = derive_coreferences(
+            &[
+                ent(EntityKind::Person, "J Smith", 0.8),
+                ent(EntityKind::Email, "jsmith@gmail.com", 0.8),
+            ],
+            &[],
+            "s",
+        );
+        assert_eq!(named.len(), 1, "{named:?}");
+        assert_eq!(named[0].kind, RelationKind::IdentifiedBy);
+        assert_eq!(named[0].basis.as_deref(), Some("handle:jsmith"));
+        assert_eq!(basis_kind("handle:jsmith"), "handle");
+        assert_eq!(basis_kind("secret:9f86d081"), "attribute");
     }
 
     #[test]

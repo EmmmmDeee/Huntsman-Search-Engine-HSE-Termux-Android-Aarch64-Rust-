@@ -105,6 +105,13 @@ pub struct Relation {
     pub confidence: f64,
     pub scan_id: String,
     pub observed_at: u64,
+    /// The one piece of evidence this relation rests on with others, named `kind:value`, such as
+    /// `handle:jsmith` for a handle that many addresses share: every two of them are aliases, and
+    /// each of those relations rests on the handle. Pathway counting counts a basis once, however
+    /// many relations rest on it. `None` means the relation rests on the link between its own two
+    /// entities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<String>,
 }
 
 impl Relation {
@@ -132,8 +139,38 @@ impl Relation {
             },
             scan_id,
             observed_at: unix_now(),
+            basis: None,
         }
     }
+
+    /// This relation, resting on `basis` (see [`Relation::basis`]).
+    #[must_use]
+    pub fn with_basis(mut self, basis: impl Into<String>) -> Self {
+        self.basis = Some(basis.into());
+        self
+    }
+
+    /// What this relation rests on: its named basis, or else the link between its two entities,
+    /// the same whichever way round the relation runs. Relations that rest on the same thing are
+    /// one piece of evidence, however many there are and whatever their kinds.
+    #[must_use]
+    pub fn rests_on(&self) -> Basis<'_> {
+        match self.basis.as_deref() {
+            Some(name) => Basis::Named(name),
+            None if self.from_uid <= self.to_uid => Basis::Link(&self.from_uid, &self.to_uid),
+            None => Basis::Link(&self.to_uid, &self.from_uid),
+        }
+    }
+}
+
+/// What a relation rests on (see [`Relation::rests_on`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Basis<'r> {
+    /// A basis that relations name, such as `handle:jsmith`.
+    Named(&'r str),
+    /// The link between two entities, the smaller uid first, which a relation without a named
+    /// basis rests on.
+    Link(&'r str, &'r str),
 }
 
 #[must_use]
@@ -153,4 +190,22 @@ pub fn is_identity_kind(kind: &EntityKind) -> bool {
             | EntityKind::Credential
             | EntityKind::ApiKey
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A relation without a named basis rests on the link between its two entities, whichever
+    /// way round it runs and whatever its kind; one with a named basis rests on that.
+    #[test]
+    fn a_relation_rests_on_its_basis_or_else_its_link() {
+        let forward = Relation::new("a", "b", RelationKind::AliasOf, 0.9, "s");
+        let back = Relation::new("b", "a", RelationKind::SameAs, 0.9, "s");
+        assert_eq!(forward.rests_on(), Basis::Link("a", "b"));
+        assert_eq!(back.rests_on(), forward.rests_on());
+        let named = back.clone().with_basis("handle:jsmith");
+        assert_eq!(named.rests_on(), Basis::Named("handle:jsmith"));
+        assert_ne!(named.rests_on(), back.rests_on());
+    }
 }

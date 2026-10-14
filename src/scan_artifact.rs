@@ -114,9 +114,8 @@ fn fsio_err(error: &crate::error::Error) -> ArtifactError {
 /// key file. The writer refuses a symlink at the target or its parent, opens a
 /// fresh temporary file with `create_new` (never following or truncating an
 /// existing one), flushes it, renames it over the target, and removes the
-/// temporary file on error. The encoded artifact is capped at
-/// [`MAX_ARTIFACT_BYTES`]. After the rename the parent directory is flushed so
-/// the rename survives a crash on targets that need it.
+/// temporary file on error, and flushes the parent directory so the rename
+/// survives a crash. The encoded artifact is capped at [`MAX_ARTIFACT_BYTES`].
 ///
 /// # Errors
 /// [`ArtifactError::Malformed`] if the artifact cannot be encoded, and
@@ -125,19 +124,7 @@ fn fsio_err(error: &crate::error::Error) -> ArtifactError {
 pub fn write(path: &Path, artifact: &ScanArtifact) -> Result<(), ArtifactError> {
     let bytes = serde_json::to_vec_pretty(artifact)
         .map_err(|e| ArtifactError::Malformed(format!("could not encode: {e}")))?;
-    crate::fsio::write_atomic_private(path, &bytes, MAX_ARTIFACT_BYTES)
-        .map_err(|e| fsio_err(&e))?;
-    // Flush the directory entry so the rename survives a crash. Opening a
-    // directory as a file is not portable, so a failure here does not fail the
-    // already-completed write.
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    if let Ok(handle) = fs::File::open(dir) {
-        let _ = handle.sync_all();
-    }
-    Ok(())
+    crate::fsio::write_atomic_private(path, &bytes, MAX_ARTIFACT_BYTES).map_err(|e| fsio_err(&e))
 }
 
 /// Read and validate an artifact, through [`crate::fsio::read_bounded`] at

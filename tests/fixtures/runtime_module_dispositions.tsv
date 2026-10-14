@@ -90,6 +90,7 @@ mediawiki	adapter	MediaWiki source adapter
 metrics	runtime	shared scan metrics
 module	runtime	provider economics metadata
 navigator	exporter	ATT&CK Navigator output from admitted claims
+network_cli	adapter	network lookup front-end reached from network, scan -k network and /api/lookup
 oathnet	adapter	OathNet breach-search leg reached through exposure_cli from exposure, scan -k exposure and /api/lookup
 openpgp_keys	adapter	keys.openpgp.org verified key-identity source reached through email_cli from email, scan -k email and /api/lookup
 oui	leaf	OUI lookup
@@ -155,6 +156,7 @@ value_syntax	leaf	dependency-free domain mailbox URL-host and E.164 syntax primi
 wayback	adapter	Internet Archive Wayback CDX client
 web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
+wigle	adapter	WiGLE network-search leg reached through network_cli from network, scan -k network and /api/lookup
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
 meta_plan	runtime	meta-plan validation consumed by the runtime
 repository_identity	leaf	repository constants with no runtime caller
