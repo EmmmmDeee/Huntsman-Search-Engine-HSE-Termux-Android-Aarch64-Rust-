@@ -15,6 +15,9 @@ SERVICE_LOG="$PREFIX/var/log/sv/huntsman-serve/current"
 # The address the service binds. The run script reads this file, so a port
 # chosen here survives restarts and reboots.
 BIND_FILE="$STATE_DIR/serve.bind"
+# The service's HSE_AUTH_TOKEN, written by install.sh. The page and every API
+# call except health need it, so other apps on the phone cannot run lookups.
+TOKEN_FILE="$STATE_DIR/serve.token"
 DEFAULT_BIND="127.0.0.1:8080"
 
 if [[ -t 1 ]]; then
@@ -36,11 +39,16 @@ bind() {
   printf '%s' "${b:-$DEFAULT_BIND}"
 }
 
+token() {
+  [[ -r "$TOKEN_FILE" ]] && head -n 1 "$TOKEN_FILE"
+  return 0
+}
+
 # The state `doctor serve` reports for ADDR: healthy, not_running, foreign,
 # unauthorized or degraded.
 probe() {
   local line
-  line="$("$RECON" doctor serve --bind "$1" 2>/dev/null | head -n 1)" || true
+  line="$(HSE_AUTH_TOKEN="$(token)" "$RECON" doctor serve --bind "$1" 2>/dev/null | head -n 1)" || true
   line="${line%% *}"
   printf '%s' "${line#serve=}"
 }
@@ -118,7 +126,7 @@ cmd_start() {
       addr="$DEFAULT_BIND"
     fi
     state="$(probe "$addr")"
-    if [[ "$state" == foreign || "$state" == healthy ]]; then
+    if [[ -n "$state" && "$state" != not_running ]]; then
       # Another program, or a Huntsman server outside runit, holds the port.
       local next
       next="$(free_bind "$addr")" || die "no free port near $addr"
@@ -173,6 +181,18 @@ cmd_status() {
   printf '  Endpoint: http://%s/\n' "$addr"
   printf '  Log:      %s\n' "$SERVICE_LOG"
   [[ -n "$pid" && "$state" == healthy ]]
+}
+
+# Opens the page with the token in its #token= fragment, which the browser
+# never sends to a server; the page keeps it, so this is needed once per browser.
+cmd_open() {
+  local url t
+  url="http://$(bind)/"
+  t="$(token)"
+  command -v termux-open-url >/dev/null 2>&1 ||
+    die "termux-open-url is missing; open $url and enter the token from $TOKEN_FILE"
+  termux-open-url "$url${t:+#token=$t}"
+  ok "opened $url${t:+ (signed in with the service token)}"
 }
 
 cmd_logs() {
@@ -231,6 +251,7 @@ huntsman: Huntsman on Termux
 
 Web UI (a background service that restarts itself):
   huntsman start | stop | restart | status | logs
+  huntsman open                  open the page in the browser, signed in
   huntsman clean                 remove the Rust build cache and temp files
 
 Scans:
@@ -249,6 +270,7 @@ case "${1:-status}" in
   stop) cmd_stop ;;
   status) cmd_status ;;
   logs) cmd_logs ;;
+  open) cmd_open ;;
   clean) cmd_clean ;;
   scan-pipe) shift; cmd_scan_pipe "$@" ;;
   report) shift; cmd_report "$@" ;;
