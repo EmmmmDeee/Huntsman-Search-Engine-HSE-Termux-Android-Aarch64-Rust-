@@ -35,6 +35,34 @@ crate MSRV.
 For prebuilt release installation, upgrades, and troubleshooting, see
 [`docs/INSTALL.md`](docs/INSTALL.md).
 
+### Check and repair an install
+
+```sh
+huntsman-recon doctor            # check everything; each problem names the command that fixes it
+huntsman-recon fix               # make every repair that can be undone, then check again
+huntsman-recon doctor --probe    # also test each configured key live (spends provider quota)
+huntsman-recon doctor --json     # the same report as JSON
+huntsman-recon doctor serve      # only the web UI: serve=healthy|not_running|foreign|unauthorized|degraded
+```
+
+`doctor` checks that `huntsman-recon` is on `PATH` and which build it is, that
+`~/.huntsman/installed-revision` names this binary's commit, `~/.huntsman` (mode
+700), `~/.huntsman.env` (yours, mode 600, parses; values are never read out),
+which providers have a key, every ledger in `~/.huntsman` and `./var`, the
+install acceptance (`check` and `verify` in a fresh directory), a running
+`serve` (it answers as Huntsman, its page's policy matches its script, and its
+offline analysis works, or another program holds the port), free disk, the
+Rust build cache, and the Termux `PREFIX`, `PATH` and `TMPDIR`. It exits 0 when
+nothing fails and 78 when something does.
+
+`fix` (the same as `doctor --fix`) creates a missing `~/.huntsman` or empty
+`~/.huntsman.env`, tightens loose permissions, re-runs the install acceptance
+before recording this binary as installed (the old record is kept as
+`installed-revision.bak-TIME`), and removes the build cache only when Cargo
+tagged it and it is stale or the disk is nearly full. It never deletes a ledger
+or scan data and never writes or prints a key. A problem it cannot repair
+safely, such as a binary that needs rebuilding, prints the command to run.
+
 ## Deploy on Railway
 
 For a new Railway service, connect this repository's `main` branch. Railway
@@ -121,6 +149,8 @@ ad-hoc builds that did not supply one.
 ```
 cargo test
 cargo run -- check                     # self-acceptance + command invariant; regenerates var/*.json
+cargo run -- doctor --help             # checks the whole install; `huntsman-recon doctor` names the fix for each problem
+cargo run -- fix --help                # `huntsman-recon fix` makes every repair that can be undone, then checks again
 cargo run -- diagnostics --json        # offline build/runtime/module/provider status; no secret values
 cargo run -- build-sha                 # exact embedded commit for provenance builds, otherwise unknown
 cargo run -- command                   # validate + print engineering command contract
@@ -152,6 +182,7 @@ cargo run -- username octocat             # variants + public GitHub/Bluesky loo
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- domain example.com             # crt.sh certificate names + DNS records over DoH; network
 cargo run -- ip 1.1.1.1                    # InternetDB + RIPEstat + GreyNoise, keyed legs when set; network
+cargo run -- network 3c:5a:b4:01:02:03      # BSSID: offline OUI vendor, then WiGLE WiFi + Bluetooth search (keyed; no key = no request)
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
 cargo run -- plan ada@example.com example.com  # offline spine: entities, relations, planned routes; nothing fetched
@@ -187,7 +218,7 @@ Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys fi
 
 `sources` is offline routing, not collection. It classifies the input using the existing Huntsman classifier and renders only compatible, independently curated public/browser search routes from `source_registry`. Generated routes are `LeadOnly`: a URL is never corroborating evidence by itself. External catalogue code or data is not embedded.
 
-Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch`/`recon`/`seeknow`/`email` got no usable response or `people` registers were unusable, 74 artifact or output write failure, 77 `fetch`/`recon`/`seeknow`/`email` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal, 141 the reader of the output closed it before the command finished (128 + SIGPIPE as a shell reports it; a `--save` file is written before anything is printed). `check` uses 2–11 for its individual gates. Running the binary with no command prints the help and the usage line to standard error, exits 64 and writes nothing; `help`, `-h` and `--help` print them to standard output. `check` writes `var/*.json` into the current directory, so run it in a checkout or an empty directory.
+Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch`/`recon`/`seeknow`/`email` got no usable response or `people` registers were unusable, 74 artifact or output write failure, 77 `fetch`/`recon`/`seeknow`/`email` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal, 78 `doctor` or `fix` found a check that fails, 141 the reader of the output closed it before the command finished (128 + SIGPIPE as a shell reports it; a `--save` file is written before anything is printed). `check` uses 2–11 for its individual gates. Running the binary with no command prints the help and the usage line to standard error, exits 64 and writes nothing; `help`, `-h` and `--help` print them to standard output. `check` writes `var/*.json` into the current directory, so run it in a checkout or an empty directory.
 
 `tests/readme.rs` runs every offline example above, checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to the CLI composition sources under `src/cli/`. Network HIBP examples below are exercised through a fake transport by `tests/hibp_cli.rs` rather than against the internet in CI.
 
@@ -403,7 +434,7 @@ The API surface:
 - `GET /api/health` — process name/version and status;
 - `GET /api/modules` — the same truthful reachable-module catalogue as `modules --json`;
 - `GET /api/command` — the same validated engineering command contract as `command --json`;
-- `GET /api/lookup?kind=auto|people|email|exposure|username|phone|domain&q=SELECTOR` — one lookup through the same routing and front-ends as `scan`, returning `{route, text, entities, outcomes}` as JSON. `auto` infers the kind exactly as `scan` does; `exposure` is never inferred because it spends operator keys. Errors are JSON `{"error": …}`: 400 bad selector, 422 unusable selector, 502 every source failed, 503 lookup capacity in use;
+- `GET /api/lookup?kind=auto|people|email|exposure|username|phone|domain|network&q=SELECTOR` — one lookup through the same routing and front-ends as `scan`, returning `{route, text, entities, outcomes}` as JSON. `auto` infers the kind exactly as `scan` does; `exposure` is never inferred because it spends operator keys, and an SSID is never inferred because it is free text (a BSSID or `LAT,LON` routes to `network`). Errors are JSON `{"error": …}`: 400 bad selector, 422 unusable selector, 502 every source failed, 503 lookup capacity in use;
 - `GET /api/analyze?seeds=SEEDS` — the offline multi-hop analysis of up to 16 seeds, one per line (the same spine `plan` runs), returning `{accepted, rejected, entities, relations, pivots, correlations, gaps, planned, termination, truncated}` as JSON: the links derived between the seeds, the next pivots ranked by how much of the graph each holds together, the correlations over those links, the seeds left unlinked with what would expand them, and the sources the planner would query next. Errors are JSON `{"error": …}`: 400 for no seeds, more than 16, or one over 512 bytes;
 - `GET /` — a mobile-first page with a lookup form, the outcome table, the rendered report, a "Download JSON" button, an analysis form that shows the entities, links, next pivots, correlations, gaps, planned sources and rejected seeds, and a collapsible status panel.
 

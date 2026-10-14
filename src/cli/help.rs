@@ -2,12 +2,14 @@
 
 use std::process::ExitCode;
 
+use super::doctor::DOCTOR_HELP;
 use super::{HELP, RECON_USAGE, USAGE, fail};
 use huntsman_recon::dehashed::cli::DEHASHED_USAGE;
 use huntsman_recon::email_cli::EMAIL_HELP;
 use huntsman_recon::exit::EX_USAGE;
 use huntsman_recon::exposure_cli::EXPOSURE_HELP;
 use huntsman_recon::hibp::cli::HIBP_USAGE;
+use huntsman_recon::network_cli::NETWORK_HELP;
 use huntsman_recon::people_cli::PEOPLE_HELP;
 use huntsman_recon::phone_cli::PHONE_HELP;
 use huntsman_recon::seeknow_cli::SEEKNOW_HELP;
@@ -31,6 +33,10 @@ pub(super) fn print_command_help(command: &str) {
         }
         "diagnostics" => {
             "diagnostics [--json]\nPrint offline build provenance, target/runtime context, reachable-module counts, ATT&CK-mapped collector counts, and provider credential completeness without values or network access."
+        }
+        "doctor" => DOCTOR_HELP,
+        "fix" => {
+            "fix [--json] [--probe] [--bind ADDR]\nThe same as doctor --fix: run every doctor check, make each repair that can be undone, then check again. It creates ~/.huntsman (mode 700) and an empty ~/.huntsman.env (mode 600) when they are missing, tightens loose permissions, re-runs the install acceptance before recording this binary as installed (the old record is kept as installed-revision.bak-TIME), and removes the Rust build cache only when Cargo tagged it and it is stale or the disk is nearly full. It never deletes a ledger or scan data and never writes or prints a key. Exit 0 when nothing fails afterwards, 78 when something still does."
         }
         "build-sha" => {
             "build-sha\nPrint the source commit embedded at build time, or unknown for builds without provenance metadata."
@@ -65,12 +71,13 @@ pub(super) fn print_command_help(command: &str) {
         "exposure" => EXPOSURE_HELP,
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
+        "network" => NETWORK_HELP,
         "domain" => {
             "domain DOMAIN [--save FILE]\nLook up one domain: certificate-transparency names from crt.sh and DNS records over DNS-over-HTTPS. Pulsedive threat risk and Netlas scan data are asked without a key (HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise their limits). With HUNTSMAN_VIRUSTOTAL_KEY set it adds VirusTotal engine verdicts, with HUNTSMAN_HUNTER_KEY the addresses Hunter.io found published for the domain, with HUNTSMAN_SHODAN_KEY Shodan DNS records (one query credit), with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs, with HUNTSMAN_SECTRAILS_KEY SecurityTrails subdomains, and with HUNTSMAN_WHOXY_KEY the live WHOIS record (one Whoxy credit); a leg whose key is not set makes no request, and a key that is set always runs its leg. --save writes an unverified ledger that verify can reload. Makes network requests."
         }
         "ip" => huntsman_recon::ip_cli::IP_HELP,
         "scan" => {
-            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip] [--save-dir DIR]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends; a domain routes to domain and a public IP address to ip. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only; --save-dir DIR writes one ledger per batch seed, numbered by its position."
+            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|network] [--save-dir DIR]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends; a domain routes to domain, and a BSSID or LAT,LON to network. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only; --save-dir DIR writes one ledger per batch seed, numbered by its position."
         }
         "investigate" => {
             "investigate TEXT... | investigate --file FILE\nExtract actionable entities from local text. --file refuses symlinks and files over 1 MiB."

@@ -39,6 +39,10 @@ pub enum AuthStyle {
     /// the request as it is sent, removed from anything the caller set under that name, and every
     /// recorded URL is [`redact_url`]ed.
     Query(String),
+    /// `Authorization: Basic <base64(secret)>` (RFC 7617). The secret is the joined
+    /// `user:password` pair, so the pair is one value that is fingerprinted, pinned and
+    /// scrubbed like any other credential.
+    Basic,
 }
 
 /// An operator-approved secret bound to the origin it may be sent to.
@@ -105,7 +109,7 @@ impl Credential {
         match &self.style {
             AuthStyle::Header(name) => r.headers.retain(|(k, _)| !k.eq_ignore_ascii_case(name)),
             AuthStyle::Query(name) => r.url = without_query_param(&r.url, name),
-            AuthStyle::Bearer => {}
+            AuthStyle::Bearer | AuthStyle::Basic => {}
         }
         r
     }
@@ -122,7 +126,28 @@ impl Credential {
                     crate::http::append_query_param(&request.url, name, self.secret.expose());
                 request
             }
+            AuthStyle::Basic => request.header("Authorization", format!("Basic {}", self.basic())),
         }
+    }
+
+    /// The base64 form a [`AuthStyle::Basic`] credential travels in.
+    fn basic(&self) -> String {
+        crate::base64::standard(self.secret.expose().as_bytes())
+    }
+
+    /// Every form of the secret that can appear on the wire, for scrubbing diagnostics.
+    /// A query-placed key travels percent-encoded, so that form is scrubbed too.
+    fn wire_forms(&self) -> Vec<String> {
+        let raw = self.secret.expose();
+        let mut forms = vec![raw.to_owned()];
+        let encoded = crate::http::percent_encode_component(raw);
+        if encoded != raw {
+            forms.push(encoded);
+        }
+        if self.style == AuthStyle::Basic {
+            forms.push(self.basic());
+        }
+        forms
     }
 }
 
@@ -362,14 +387,10 @@ fn fetch_hops_inner<T: Transport + ?Sized>(
     // Once a hop leaves the credential's origin the credential is never re-attached,
     // even if a later hop comes back.
     let mut left_origin = false;
-    let secret_forms = secret_forms(credential);
+    let secret_forms = credential.map(Credential::wire_forms).unwrap_or_default();
     let scrub = |text: &str| {
-        if secret_forms.is_empty() {
-            text.to_owned()
-        } else {
-            let forms: Vec<&str> = secret_forms.iter().map(String::as_str).collect();
-            scrub_secrets(text, &forms)
-        }
+        let forms: Vec<&str> = secret_forms.iter().map(String::as_str).collect();
+        scrub_secrets(text, &forms)
     };
 
     let mut current = request;
@@ -629,21 +650,6 @@ fn without_userinfo(url: &str) -> String {
     }
 }
 
-/// The forms `credential`'s secret can take in diagnostic text: as given, and percent-encoded,
-/// because a query-parameter key is quoted that way in any text that quotes the URL. **Pure.**
-fn secret_forms(credential: Option<&Credential>) -> Vec<String> {
-    let Some(credential) = credential else {
-        return Vec::new();
-    };
-    let raw = credential.secret.expose();
-    let encoded = crate::http::percent_encode_component(raw);
-    if encoded == raw {
-        vec![raw.to_owned()]
-    } else {
-        vec![raw.to_owned(), encoded]
-    }
-}
-
 /// `url` without any `name=` query parameter. **Pure.**
 fn without_query_param(url: &str, name: &str) -> String {
     let (no_fragment, fragment) = match url.split_once('#') {
@@ -794,6 +800,22 @@ mod tests {
         ))]);
         let r = run(&f, "https://a.example/", None, 0).expect("fetch");
         assert_eq!(r.outcome.kind, SourceOutcomeKind::BotWaf);
+    }
+
+    /// A profile site that embeds a CAPTCHA widget, or a bot-management sensor, on every page
+    /// answers 200 with content. Counting those as walls dropped every result and, after five,
+    /// opened the host's circuit for a minute.
+    #[test]
+    fn served_pages_with_a_widget_are_content_and_keep_the_host_circuit_closed() {
+        use crate::circuit::{BreakerState, FAILURE_THRESHOLD, host_state};
+        let page = "<html><script src=\"https://www.google.com/recaptcha/api.js\"></script><div class=\"g-recaptcha\"></div><h1>Jane Doe</h1></html>";
+        let host = "widget-on-every-page.example";
+        for _ in 0..FAILURE_THRESHOLD {
+            let f = Fake::new(vec![Ok(resp(200, &[], page))]);
+            let r = run(&f, &format!("https://{host}/profile"), None, 0).expect("fetch");
+            assert_eq!(r.outcome.kind, SourceOutcomeKind::Inconclusive);
+        }
+        assert_ne!(host_state(host), Some(BreakerState::Open));
     }
 
     #[test]
@@ -978,6 +1000,23 @@ mod tests {
             AuthStyle::Header("X: y\r\nZ".into()),
         );
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn basic_style_sends_the_encoded_pair_and_strips_it_off_origin() {
+        let c = cred("wigle-user:tok-abcdef-123456", AuthStyle::Basic);
+        let f = Fake::new(vec![
+            Ok(resp(302, &[("location", "https://evil.example/steal")], "")),
+            Ok(resp(200, &[], "")),
+        ]);
+        let r = run(&f, "https://a.example/api", Some(&c), 5).expect("fetch");
+        let seen = f.seen.borrow();
+        assert_eq!(
+            seen[0].header_value("authorization"),
+            Some("Basic d2lnbGUtdXNlcjp0b2stYWJjZGVmLTEyMzQ1Ng==")
+        );
+        assert!(seen[1].header_value("authorization").is_none());
+        assert!(!format!("{r:?}").contains("d2lnbGUtdXNlcjp0b2st"));
     }
 
     #[test]

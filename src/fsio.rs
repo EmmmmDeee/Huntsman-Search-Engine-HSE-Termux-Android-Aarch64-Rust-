@@ -85,7 +85,10 @@ pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
     Ok(body)
 }
 
-/// Replace `path` atomically. A symlink at `path` or at its parent directory is refused.
+/// Replace `path` atomically and durably. A symlink at `path` or at its parent directory is
+/// refused. The bytes are flushed before the rename and the directory after it: on ext4 and
+/// f2fs (Android's data partition) a rename whose directory was not flushed can be lost to a
+/// power cut or a low-memory kill, leaving the old file or none.
 ///
 /// # Errors
 /// `Error::Store` on a symlink, a body over `max` bytes, or IO failure.
@@ -93,7 +96,9 @@ pub fn write_atomic(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
     write_atomic_mode(path, body, max, false)
 }
 
-/// Atomically write a secret file, creating it mode 600 on Unix before any bytes land.
+/// Atomically and durably write a private file, creating it mode 600 on Unix before any bytes
+/// land. Use it for anything holding credentials or the people a lookup found: ledgers,
+/// sessions, scan artifacts, tokens. Replacing an older, more open file leaves it mode 600.
 pub fn write_atomic_private(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
     write_atomic_mode(path, body, max, true)
 }
@@ -124,8 +129,19 @@ fn write_atomic_mode(path: &Path, body: &[u8], max: u64, private: bool) -> Resul
     drop(file);
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
+    } else {
+        sync_directory(&parent);
     }
     result
+}
+
+/// Flush a directory's entries so a completed rename in it survives a crash. Opening a
+/// directory as a file works on Unix and not on every other platform, and the rename has
+/// already succeeded, so a failure here does not fail the write.
+fn sync_directory(dir: &Path) {
+    if let Ok(handle) = File::open(dir) {
+        let _ = handle.sync_all();
+    }
 }
 
 fn create_temp_file(
