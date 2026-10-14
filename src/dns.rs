@@ -314,7 +314,7 @@ fn interpret_fetched(
                 .unwrap_or_else(|| "no HTTP response".into()),
         });
     };
-    if crate::classify::is_challenge(&response.text()) {
+    if crate::classify::is_challenge(&response.text_view()) {
         return Err(ResolveError {
             kind: ResolveErrorKind::BotWaf,
             detail: "challenge page".into(),

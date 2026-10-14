@@ -475,8 +475,7 @@ fn finish(
     note: Option<&str>,
     scrub: &dyn Fn(&str) -> String,
 ) -> Fetched {
-    let text = response.text();
-    let mut kind = classify_fetch(response.status, &text);
+    let mut kind = classify_fetch(response.status, &response.text_view());
     if kind == SourceOutcomeKind::AuthRequired && sent.is_some() {
         kind = SourceOutcomeKind::AuthRejected;
     }

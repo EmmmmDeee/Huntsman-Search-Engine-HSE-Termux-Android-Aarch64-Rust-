@@ -242,7 +242,7 @@ where
         // A challenge page is a wall at any status, 429/502/503 included, and is
         // never retried. The body is inspected directly: the shared classifier
         // labels every 429 `RateLimited` before it looks for a challenge.
-        if crate::classify::is_challenge(&response.text()) {
+        if crate::classify::is_challenge(&response.text_view()) {
             return Err(CrtShError::NotAnAnswer(SourceOutcomeKind::BotWaf));
         }
         if !(200..300).contains(&response.status) {
