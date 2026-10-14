@@ -81,114 +81,146 @@ fn now_unix() -> u64 {
 /// [`Refused`] when the lookup produced no report.
 pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collected, Refused> {
     let now = now_unix();
-    let done = |text, entities, outcomes, policy| Collected {
+    match kind {
+        ScanKind::People => people(selector, now),
+        ScanKind::Email => email(selector, now),
+        ScanKind::Exposure => exposure(selector, now),
+        ScanKind::Username => username(selector, now),
+        ScanKind::Phone => phone(selector, now),
+        ScanKind::Domain => domain(selector, now),
+        ScanKind::Network => network(selector, now),
+    }
+}
+
+/// A finished report of one kind, saved under `policy`.
+fn done(
+    text: String,
+    entities: Vec<Entity>,
+    outcomes: Vec<SourceExecutionOutcome>,
+    policy: SavePolicy,
+) -> Collected {
+    Collected {
         text,
         entities,
         outcomes,
         policy,
+    }
+}
+
+/// The people-search sources for a name.
+fn people(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let transport = UreqTransport::new(&TransportConfig::default());
+    match people_cli::run(&transport, selector, now) {
+        PeopleRun::Printed { text, report } => {
+            Ok(done(text, report.entities, report.outcomes, PEOPLE_POLICY))
+        }
+        PeopleRun::Network(m) => Err(Refused::Network(m)),
+        PeopleRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
+/// The email sources for an address.
+fn email(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let transport = UreqTransport::new(&TransportConfig::default());
+    match huntsman_recon::email_cli::run(&transport, selector, now) {
+        EmailRun::Printed { text, report } => {
+            Ok(done(text, report.entities, report.outcomes, EMAIL_POLICY))
+        }
+        EmailRun::Network(m) => Err(Refused::Network(m)),
+        EmailRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
+/// The breach and exposure legs for a selector, each keyed leg built only when its key is configured.
+fn exposure(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let client = KeyLoader::default_chain(None)
+        .load()
+        .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
+    // Same rule as `recon stolen-tax`: the stolen.tax and OathNet keys are read from the
+    // environment, never the default file.
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&stolen_tax::transport_config());
+    let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
+    // DeHashed reuses the opt-in client; its key, like stolen.tax and OathNet, is read
+    // from the environment only, never the default keys file.
+    let dehashed_client = keys.get(dehashed::client::API_KEY_ENV).map(|secret| {
+        let transport = Arc::new(UreqTransport::new(&TransportConfig::default()));
+        DehashedClient::new(transport, secret)
+    });
+    let sources = Sources {
+        hibp: client.as_ref(),
+        stolen_tax: keys
+            .get(stolen_tax::KEY_SLOT)
+            .is_some()
+            .then_some((&transport as &dyn Transport, &keys)),
+        oathnet: keys
+            .get(oathnet::KEY_SLOT)
+            .is_some()
+            .then_some((&oathnet_transport as &dyn Transport, &keys)),
+        dehashed: dehashed_client.as_ref(),
     };
-    match kind {
-        ScanKind::People => {
-            let transport = UreqTransport::new(&TransportConfig::default());
-            match people_cli::run(&transport, selector, now) {
-                PeopleRun::Printed { text, report } => {
-                    Ok(done(text, report.entities, report.outcomes, PEOPLE_POLICY))
-                }
-                PeopleRun::Network(m) => Err(Refused::Network(m)),
-                PeopleRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
+    match huntsman_recon::exposure_cli::run(sources, selector, now) {
+        ExposureRun::Printed { text, report } => Ok(done(
+            text,
+            report.entities,
+            report.outcomes,
+            EXPOSURE_POLICY,
+        )),
+        ExposureRun::Network(m) => Err(Refused::Network(m)),
+        ExposureRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
+/// The username sources for a handle.
+fn username(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let transport = UreqTransport::new(&TransportConfig::default());
+    let keys = Keys::from_env();
+    match huntsman_recon::username_cli::run(&transport, &keys, selector, now) {
+        UsernameRun::Printed { text, report } => Ok(done(
+            text,
+            report.entities,
+            report.outcomes,
+            USERNAME_POLICY,
+        )),
+        UsernameRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
+/// The offline phone-number analysis.
+fn phone(selector: &str, now: u64) -> Result<Collected, Refused> {
+    match huntsman_recon::phone_cli::run(selector, now) {
+        PhoneRun::Printed { text, report } => {
+            Ok(done(text, report.entities, report.outcomes, PHONE_POLICY))
         }
-        ScanKind::Email => {
-            let transport = UreqTransport::new(&TransportConfig::default());
-            match huntsman_recon::email_cli::run(&transport, selector, now) {
-                EmailRun::Printed { text, report } => {
-                    Ok(done(text, report.entities, report.outcomes, EMAIL_POLICY))
-                }
-                EmailRun::Network(m) => Err(Refused::Network(m)),
-                EmailRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
+        PhoneRun::Failed(m) => Err(Refused::Data(m)),
+    }
+}
+
+/// The domain sources for a hostname.
+fn domain(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let transport = UreqTransport::new(&TransportConfig::default());
+    match huntsman_recon::domain_cli::run(&transport, selector, now) {
+        huntsman_recon::domain_cli::DomainRun::Printed { text, report } => {
+            Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
         }
-        ScanKind::Exposure => {
-            let client = KeyLoader::default_chain(None)
-                .load()
-                .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
-            // Same rule as `recon stolen-tax`: the stolen.tax and OathNet keys are read from the
-            // environment, never the default file.
-            let keys = Keys::from_env();
-            let transport = UreqTransport::new(&stolen_tax::transport_config());
-            let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
-            // DeHashed reuses the opt-in client; its key, like stolen.tax and OathNet, is read
-            // from the environment only, never the default keys file.
-            let dehashed_client = keys.get(dehashed::client::API_KEY_ENV).map(|secret| {
-                let transport = Arc::new(UreqTransport::new(&TransportConfig::default()));
-                DehashedClient::new(transport, secret)
-            });
-            let sources = Sources {
-                hibp: client.as_ref(),
-                stolen_tax: keys
-                    .get(stolen_tax::KEY_SLOT)
-                    .is_some()
-                    .then_some((&transport as &dyn Transport, &keys)),
-                oathnet: keys
-                    .get(oathnet::KEY_SLOT)
-                    .is_some()
-                    .then_some((&oathnet_transport as &dyn Transport, &keys)),
-                dehashed: dehashed_client.as_ref(),
-            };
-            match huntsman_recon::exposure_cli::run(sources, selector, now) {
-                ExposureRun::Printed { text, report } => Ok(done(
-                    text,
-                    report.entities,
-                    report.outcomes,
-                    EXPOSURE_POLICY,
-                )),
-                ExposureRun::Network(m) => Err(Refused::Network(m)),
-                ExposureRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
+        huntsman_recon::domain_cli::DomainRun::Network(m) => Err(Refused::Network(m)),
+        huntsman_recon::domain_cli::DomainRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
+/// The `WiGLE` network lookup for a BSSID, coordinate or SSID.
+fn network(selector: &str, now: u64) -> Result<Collected, Refused> {
+    // Like the other keyed legs, the WiGLE credentials are read from the environment,
+    // never the default file. Configured, they always run.
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&wigle::transport_config());
+    let leg = wigle::configured(&keys).then_some((&transport as &dyn Transport, &keys));
+    match huntsman_recon::network_cli::run(leg, selector, now) {
+        NetworkRun::Printed { text, report } => {
+            Ok(done(text, report.entities, report.outcomes, NETWORK_POLICY))
         }
-        ScanKind::Username => {
-            let transport = UreqTransport::new(&TransportConfig::default());
-            let keys = Keys::from_env();
-            match huntsman_recon::username_cli::run(&transport, &keys, selector, now) {
-                UsernameRun::Printed { text, report } => Ok(done(
-                    text,
-                    report.entities,
-                    report.outcomes,
-                    USERNAME_POLICY,
-                )),
-                UsernameRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
-        }
-        ScanKind::Phone => match huntsman_recon::phone_cli::run(selector, now) {
-            PhoneRun::Printed { text, report } => {
-                Ok(done(text, report.entities, report.outcomes, PHONE_POLICY))
-            }
-            PhoneRun::Failed(m) => Err(Refused::Data(m)),
-        },
-        ScanKind::Domain => {
-            let transport = UreqTransport::new(&TransportConfig::default());
-            match huntsman_recon::domain_cli::run(&transport, selector, now) {
-                huntsman_recon::domain_cli::DomainRun::Printed { text, report } => {
-                    Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
-                }
-                huntsman_recon::domain_cli::DomainRun::Network(m) => Err(Refused::Network(m)),
-                huntsman_recon::domain_cli::DomainRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
-        }
-        ScanKind::Network => {
-            // Like the other keyed legs, the WiGLE credentials are read from the environment,
-            // never the default file. Configured, they always run.
-            let keys = Keys::from_env();
-            let transport = UreqTransport::new(&wigle::transport_config());
-            let leg = wigle::configured(&keys).then_some((&transport as &dyn Transport, &keys));
-            match huntsman_recon::network_cli::run(leg, selector, now) {
-                NetworkRun::Printed { text, report } => {
-                    Ok(done(text, report.entities, report.outcomes, NETWORK_POLICY))
-                }
-                NetworkRun::Network(m) => Err(Refused::Network(m)),
-                NetworkRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
-        }
+        NetworkRun::Network(m) => Err(Refused::Network(m)),
+        NetworkRun::Failed(m) => Err(Refused::Unavailable(m)),
     }
 }
 
