@@ -925,3 +925,112 @@ fn run_history_show_prints_the_text_of_a_hostile_history_file_as_text() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// `correlate --history` is the shipped entry point for the cross-scan pivot: a saved scan is
+/// bridged to every earlier saved scan that saw the same identifier, end to end through the
+/// binary and real artifact files, offline.
+#[test]
+fn correlate_history_pivots_a_saved_scan_across_earlier_saved_scans() {
+    use huntsman_recon::entity::{Entity, EntityKind};
+    use huntsman_recon::scan_artifact::{self, ScanArtifact};
+    let dir = scratch("correlate-history");
+    let history = dir.join("history");
+    fs::create_dir_all(&history).unwrap();
+    let saved = |scan_id: &str, email: &str| {
+        let entity = Entity::new(EntityKind::Email, email, 0.9, scan_id);
+        ScanArtifact::new(scan_id, vec![entity], Vec::new())
+    };
+    let current = dir.join("now.json");
+    scan_artifact::write(&current, &saved("scan-now", "ada@example.com")).unwrap();
+    scan_artifact::write(
+        &history.join("old.json"),
+        &saved("scan-old", "ada@example.com"),
+    )
+    .unwrap();
+    scan_artifact::write(
+        &history.join("other.json"),
+        &saved("scan-other", "bob@example.com"),
+    )
+    .unwrap();
+
+    let out = bin()
+        .args([
+            "correlate",
+            current.to_str().unwrap(),
+            "--history",
+            history.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.starts_with("scan_id=scan-now entities=1 relations=0\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("history_scans=2 cross_scan=historical\n"),
+        "{stdout}"
+    );
+    let bridges: Vec<_> = stdout
+        .lines()
+        .filter(|l| l.starts_with("bridge "))
+        .collect();
+    assert_eq!(bridges.len(), 1, "{stdout}");
+    assert!(
+        bridges[0].starts_with("bridge tier=Direct kind=email uid="),
+        "{stdout}"
+    );
+    assert!(bridges[0].ends_with(" scans=scan-old"), "{stdout}");
+    assert!(
+        !stdout.contains("ada@example.com"),
+        "the pivot must not echo identifiers: {stdout}"
+    );
+
+    // Without --history the output is unchanged from before the pivot existed.
+    let plain = bin()
+        .args(["correlate", current.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(plain.status.success());
+    assert!(
+        !String::from_utf8(plain.stdout)
+            .unwrap()
+            .contains("cross_scan=")
+    );
+
+    // A broken history fails before any report is printed: 65 for bad data, 66 for no dir.
+    fs::write(history.join("broken.json"), b"{ nope").unwrap();
+    let bad = bin()
+        .args([
+            "correlate",
+            current.to_str().unwrap(),
+            "--history",
+            history.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(65));
+    assert_eq!(String::from_utf8_lossy(&bad.stdout), "");
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("broken.json"));
+    let missing = dir.join("absent");
+    let absent = bin()
+        .args([
+            "correlate",
+            current.to_str().unwrap(),
+            "--history",
+            missing.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(absent.status.code(), Some(66));
+    let usage = bin()
+        .args(["correlate", current.to_str().unwrap(), "--histroy", "x"])
+        .output()
+        .unwrap();
+    assert_eq!(usage.status.code(), Some(64));
+}
