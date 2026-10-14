@@ -48,7 +48,7 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
         let kind = infer_kind(&query.selector);
         if kind == ScanKind::People && !inferred_people_is_name(&selector) {
             return Err(bad_selector(
-                "not a name, phone, email, or handle; choose a kind to look it up anyway",
+                "not a name, phone, email, handle, domain, BSSID or LAT,LON; choose a kind to look it up anyway",
             ));
         }
         kind
@@ -151,7 +151,10 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         }
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     }
-    match server.run() {
+    let notice = |error: &std::io::Error| {
+        eprintln!("serve accept: {error}; waiting for open connections to finish");
+    };
+    match server.run(notice) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
     }
