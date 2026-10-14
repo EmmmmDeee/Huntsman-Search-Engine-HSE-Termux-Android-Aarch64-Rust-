@@ -8,6 +8,7 @@ mod gate;
 mod install;
 mod issue_fix;
 mod ops;
+mod oui;
 mod proc;
 mod release;
 
@@ -22,7 +23,8 @@ commands:
   dual-pass ...           the dual-pass planner, red classifier, runner, and publisher
   release ...             the release promotion and release checks
   ops ...                 Railway, Termux acceptance, prerelease cleanup, and lifecycle
-  install ...             the Termux installer";
+  install ...             the Termux installer
+  oui ...                 pack the IEEE MA-L registry into src/oui_ieee.bin, or dump a blob";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,6 +36,7 @@ fn main() -> ExitCode {
         Some("release") => release::run(&args[1..]),
         Some("ops") => ops::run(&args[1..]),
         Some("install") => install::run(&args[1..]),
+        Some("oui") => oui::run(&args[1..]),
         Some("-h" | "--help") => {
             println!("{USAGE}");
             ExitCode::SUCCESS
