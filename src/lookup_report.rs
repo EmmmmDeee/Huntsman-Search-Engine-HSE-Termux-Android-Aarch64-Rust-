@@ -58,6 +58,28 @@ pub fn outcome_detail(outcome: &SourceExecutionOutcome) -> Option<String> {
     Some(escape_controls(&shown))
 }
 
+/// The row that names one source outcome: module, kind, found count (`none` when the source
+/// gave no count), and `detail=` when the source gave a reason.
+#[must_use]
+pub fn outcome_row(outcome: &SourceExecutionOutcome) -> String {
+    let found = outcome
+        .found
+        .map_or_else(|| "none".to_owned(), |count| count.to_string());
+    let kind = serde_json::to_value(outcome.kind)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into());
+    let mut row = format!(
+        "{}\t{kind}\tfound={found}",
+        escape_controls(&outcome.module)
+    );
+    if let Some(detail) = outcome_detail(outcome) {
+        row.push_str("\tdetail=");
+        row.push_str(&detail);
+    }
+    row
+}
+
 /// The report of one lookup. The first line is `entities=N`. Each entity follows as a
 /// tab-separated line (kind, value, confidence, tags), then each source outcome (module, kind,
 /// found count, and `detail=` when the source gave a reason), and the lineage block closes the
@@ -72,23 +94,7 @@ pub fn render(entities: &[Entity], outcomes: &[SourceExecutionOutcome]) -> Resul
             .map_err(|err| err.to_string())?;
     }
     for outcome in outcomes {
-        let found = outcome
-            .found
-            .map_or_else(|| "none".to_owned(), |count| count.to_string());
-        let kind = serde_json::to_value(outcome.kind)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "unknown".into());
-        write!(
-            out,
-            "{}\t{kind}\tfound={found}",
-            escape_controls(&outcome.module)
-        )
-        .map_err(|err| err.to_string())?;
-        if let Some(detail) = outcome_detail(outcome) {
-            write!(out, "\tdetail={detail}").map_err(|err| err.to_string())?;
-        }
-        out.push('\n');
+        writeln!(out, "{}", outcome_row(outcome)).map_err(|err| err.to_string())?;
     }
     append_lineage(entities, &mut out)?;
     Ok(out)

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::fail;
+use huntsman_recon::api_leg;
 use huntsman_recon::dehashed::{self, client::DehashedClient};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::Entity;
@@ -19,9 +20,10 @@ use huntsman_recon::exposure_cli::{EXPOSURE_USAGE, ExposureArgs, ExposureRun, So
 use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
 use huntsman_recon::hibp::key::KeyLoader;
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
+use huntsman_recon::ip_cli::{IP_USAGE, IpArgs, IpRun};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
-    self, DOMAIN_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, NETWORK_POLICY, PEOPLE_POLICY,
+    self, DOMAIN_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, IP_POLICY, NETWORK_POLICY, PEOPLE_POLICY,
     PHONE_POLICY, SavePolicy, USERNAME_POLICY,
 };
 use huntsman_recon::network_cli::{NETWORK_USAGE, NetworkArgs, NetworkRun};
@@ -99,8 +101,9 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
             }
         }
         ScanKind::Email => {
-            let transport = UreqTransport::new(&TransportConfig::default());
-            match huntsman_recon::email_cli::run(&transport, selector, now) {
+            let keys = Keys::from_env();
+            let transport = UreqTransport::new(&api_leg::transport_config());
+            match huntsman_recon::email_cli::run_keyed(&transport, &keys, selector, now) {
                 EmailRun::Printed { text, report } => {
                     Ok(done(text, report.entities, report.outcomes, EMAIL_POLICY))
                 }
@@ -122,22 +125,6 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
                 UsernameRun::Failed(m) => Err(Refused::Unavailable(m)),
             }
         }
-        ScanKind::Phone => match huntsman_recon::phone_cli::run(selector, now) {
-            PhoneRun::Printed { text, report } => {
-                Ok(done(text, report.entities, report.outcomes, PHONE_POLICY))
-            }
-            PhoneRun::Failed(m) => Err(Refused::Data(m)),
-        },
-        ScanKind::Domain => {
-            let transport = UreqTransport::new(&TransportConfig::default());
-            match huntsman_recon::domain_cli::run(&transport, selector, now) {
-                huntsman_recon::domain_cli::DomainRun::Printed { text, report } => {
-                    Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
-                }
-                huntsman_recon::domain_cli::DomainRun::Network(m) => Err(Refused::Network(m)),
-                huntsman_recon::domain_cli::DomainRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
-        }
         ScanKind::Network => {
             // Like the other keyed legs, the WiGLE credentials are read from the environment,
             // never the default file. Configured, they always run.
@@ -150,6 +137,50 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
                 }
                 NetworkRun::Network(m) => Err(Refused::Network(m)),
                 NetworkRun::Failed(m) => Err(Refused::Unavailable(m)),
+            }
+        }
+        ScanKind::Phone | ScanKind::Ip | ScanKind::Domain => free_tier(kind, selector, now),
+    }
+}
+
+/// The phone, ip and domain lookups. Their free-tier legs read keys from the environment only,
+/// as exposure does: a leg whose key is not set makes no request.
+fn free_tier(kind: ScanKind, selector: &str, now: u64) -> Result<Collected, Refused> {
+    let keys = Keys::from_env();
+    let done = |text, entities, outcomes, policy| Collected {
+        text,
+        entities,
+        outcomes,
+        policy,
+    };
+    match kind {
+        ScanKind::Phone => {
+            let transport = UreqTransport::new(&api_leg::transport_config());
+            match huntsman_recon::phone_cli::run_keyed(&transport, &keys, selector, now) {
+                PhoneRun::Printed { text, report } => {
+                    Ok(done(text, report.entities, report.outcomes, PHONE_POLICY))
+                }
+                PhoneRun::Failed(m) => Err(Refused::Data(m)),
+            }
+        }
+        ScanKind::Ip => {
+            let transport = UreqTransport::new(&api_leg::transport_config());
+            match huntsman_recon::ip_cli::run(&transport, &keys, selector, now) {
+                IpRun::Printed { text, report } => {
+                    Ok(done(text, report.entities, report.outcomes, IP_POLICY))
+                }
+                IpRun::Network(m) => Err(Refused::Network(m)),
+                IpRun::Failed(m) => Err(Refused::Unavailable(m)),
+            }
+        }
+        _ => {
+            let transport = UreqTransport::new(&TransportConfig::default());
+            match huntsman_recon::domain_cli::run(&transport, &keys, selector, now) {
+                huntsman_recon::domain_cli::DomainRun::Printed { text, report } => {
+                    Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
+                }
+                huntsman_recon::domain_cli::DomainRun::Network(m) => Err(Refused::Network(m)),
+                huntsman_recon::domain_cli::DomainRun::Failed(m) => Err(Refused::Unavailable(m)),
             }
         }
     }
@@ -287,6 +318,13 @@ pub(in crate::cli) fn domain_cmd(args: &[String]) -> ExitCode {
     match DomainArgs::parse(args) {
         Ok(p) => finish(ScanKind::Domain, &p.domain, p.save.as_deref()),
         Err(e) => usage_failure(&e, DOMAIN_USAGE),
+    }
+}
+
+pub(in crate::cli) fn ip_cmd(args: &[String]) -> ExitCode {
+    match IpArgs::parse(args) {
+        Ok(p) => finish(ScanKind::Ip, &p.ip, p.save.as_deref()),
+        Err(e) => usage_failure(&e, IP_USAGE),
     }
 }
 
