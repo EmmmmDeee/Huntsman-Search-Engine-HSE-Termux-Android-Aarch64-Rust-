@@ -25,15 +25,38 @@ fn workflow(path: &str) -> String {
 }
 
 /// Every `toolchain:` value in a workflow, with quotes and a trailing comment removed. A matrix
-/// expression counts as one value.
+/// list such as `toolchain: ["1.87", "1.99"]` contributes each of its entries, so the matrix is
+/// held to the same two releases as a plain pin; a `${{ matrix.toolchain }}` reference counts as
+/// one value.
 fn toolchain_values(text: &str) -> Vec<String> {
     text.lines()
         .filter_map(|line| line.trim_start().strip_prefix("toolchain:"))
-        .map(|value| {
-            let value = value.split(" #").next().unwrap_or(value);
-            value.trim().trim_matches('"').to_string()
+        .flat_map(|value| {
+            let value = value.split(" #").next().unwrap_or(value).trim();
+            match value
+                .strip_prefix('[')
+                .and_then(|rest| rest.strip_suffix(']'))
+            {
+                Some(list) => list.split(',').map(unquoted).collect::<Vec<_>>(),
+                None => vec![unquoted(value)],
+            }
         })
         .collect()
+}
+
+fn unquoted(value: &str) -> String {
+    value.trim().trim_matches('"').to_string()
+}
+
+#[test]
+fn a_matrix_list_contributes_each_entry_and_a_pin_contributes_one() {
+    let text = "    strategy:\n      matrix:\n        toolchain: [\"1.87\", \"1.99\"] # both\n    \
+                steps:\n      - with:\n          toolchain: ${{ matrix.toolchain }}\n      - with:\n    \
+                      toolchain: \"stable\" # a channel\n";
+    assert_eq!(
+        toolchain_values(text),
+        ["1.87", "1.99", "${{ matrix.toolchain }}", "stable"]
+    );
 }
 
 #[test]
