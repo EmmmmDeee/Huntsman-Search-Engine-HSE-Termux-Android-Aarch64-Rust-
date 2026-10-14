@@ -104,7 +104,7 @@ esac
     write_executable(
         &fake_bin.join("cargo"),
         r#"#!/bin/sh
-printf 'hibp=%s target=%s cargo %s\n' "${HUNTSMAN_HIBP_NO_EMBED:-}" "${CARGO_TARGET_DIR:-}" "$*" >> "$INSTALL_LOG"
+printf 'target=%s cargo %s\n' "${CARGO_TARGET_DIR:-}" "$*" >> "$INSTALL_LOG"
 printf '%s\n' "${HUNTSMAN_BUILD_SHA:-unknown}" > "$INSTALL_LOG.build-sha"
 "#,
     );
@@ -144,7 +144,6 @@ fn assert_first_install_contract(calls: &str, temp: &Path, prefix: &Path, rev: &
         !calls.contains("--force"),
         "repeat installs must not force a rebuild: {calls}"
     );
-    assert!(calls.contains("hibp=1"), "{calls}");
     assert!(
         calls.contains(&format!(
             "target={}/.cache/huntsman-recon-target",

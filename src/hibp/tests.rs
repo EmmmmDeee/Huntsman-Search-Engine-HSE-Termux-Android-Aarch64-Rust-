@@ -704,34 +704,31 @@ fn scratch(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn key_precedence_and_missing_embedded_fallback() {
+fn key_precedence() {
     let dir = scratch("keys");
     let path = dir.join("key");
     crate::fsio::write_atomic_private(&path, b"file-key", 4096).unwrap();
-    for (env, slot, file, embedded, expected) in [
+    for (env, slot, file, expected) in [
         (
             Some("env-key"),
             Some("slot-key"),
             Some(path.clone()),
-            "embedded-key",
             "env-key",
         ),
         (
             Some("insert_key_here"),
             Some("slot-key"),
             Some(path.clone()),
-            "embedded-key",
             "slot-key",
         ),
-        (None, None, Some(path.clone()), "embedded-key", "file-key"),
-        (None, None, None, "embedded-key", "embedded-key"),
-        (Some("runtime-key"), None, None, "", "runtime-key"),
+        (None, None, Some(path.clone()), "file-key"),
+        (Some("runtime-key"), None, None, "runtime-key"),
     ] {
-        let loader = key::KeyLoader::from_parts(env.map(str::to_owned), slot, file, embedded);
+        let loader = key::KeyLoader::from_parts(env.map(str::to_owned), slot, file);
         assert_eq!(loader.load().unwrap().0.expose(), expected);
     }
     assert!(
-        key::KeyLoader::from_parts(None, None, None, "")
+        key::KeyLoader::from_parts(None, None, None)
             .load()
             .is_none()
     );
@@ -740,7 +737,7 @@ fn key_precedence_and_missing_embedded_fallback() {
     assert!(!format!("{key:?} {key}").contains("never-print"));
     crate::fsio::write_atomic_private(&path, &vec![b'x'; 4097], 5000).unwrap();
     assert!(
-        key::KeyLoader::from_parts(None, None, Some(path), "")
+        key::KeyLoader::from_parts(None, None, Some(path))
             .load()
             .is_none()
     );
@@ -797,7 +794,7 @@ fn key_and_token_symlinks_are_refused() {
     let link = dir.join("link");
     std::os::unix::fs::symlink(&target, &link).unwrap();
     assert!(
-        key::KeyLoader::from_parts(None, None, Some(link.clone()), "")
+        key::KeyLoader::from_parts(None, None, Some(link.clone()))
             .load()
             .is_none()
     );

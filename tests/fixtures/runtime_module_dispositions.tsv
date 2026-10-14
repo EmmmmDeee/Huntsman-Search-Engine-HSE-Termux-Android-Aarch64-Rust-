@@ -90,7 +90,6 @@ oathnet	adapter	OathNet breach-search leg reached through exposure_cli from expo
 openpgp_keys	adapter	keys.openpgp.org verified key-identity source reached through email_cli from email, scan -k email and /api/lookup
 oui	leaf	OUI lookup
 oui_ieee	leaf	IEEE OUI data
-path	leaf	path analysis utility
 people_cli	diagnostic	ASIC people command front-end
 phone_cli	diagnostic	offline phone enrichment command front-end
 phone_intl	leaf	international phone canonicalization and country-prefix lookup
@@ -147,12 +146,9 @@ username_cli	diagnostic	username enrichment command front-end
 username_variants	leaf	deterministic handle normalization variants
 validation	runtime	seed/entity validation
 value_syntax	leaf	dependency-free domain mailbox URL-host and E.164 syntax primitives
-wayback	adapter	Internet Archive Wayback CDX client
 web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
 serve_probe	diagnostic	loopback probe of a running serve called by doctor and doctor serve
 wigle	adapter	WiGLE network-search leg reached through network_cli from network, scan -k network and /api/lookup
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
 meta_plan	runtime	meta-plan validation consumed by the runtime
-method_actor	leaf	dependency-ordered batch pipeline for composing method actors
-method_actors	leaf	general cleaning and shape-filter method actors over shared syntax rules

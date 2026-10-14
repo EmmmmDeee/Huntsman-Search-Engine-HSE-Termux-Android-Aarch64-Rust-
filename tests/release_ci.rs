@@ -526,8 +526,6 @@ fn publishing_requires_release_build_and_zero_finding_key_scan() {
     let wf = release();
     for required in [
         "HSE_RELEASE: \"1\"",
-        "HUNTSMAN_HIBP_NO_EMBED: \"1\"",
-        "hibp_embedded_key.txt",
         "bash .github/scripts/scan-for-keys.sh dist",
         "grep -qx \"result: PASS (0 findings)\" key-scan-report.txt",
         "dist/key-scan-report.txt",

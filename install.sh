@@ -149,8 +149,6 @@ fi
 rm -rf "$probe_dir"
 probe_dir=""
 
-export HUNTSMAN_HIBP_NO_EMBED="${HUNTSMAN_HIBP_NO_EMBED:-1}"
-
 # Keep Cargo intermediates across retries/upgrades instead of rebuilding them in
 # a disposable default target directory. Respect an explicit caller override.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/huntsman-recon-target}"
