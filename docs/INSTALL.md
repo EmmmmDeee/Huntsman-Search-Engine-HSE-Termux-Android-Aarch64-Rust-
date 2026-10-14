@@ -191,16 +191,17 @@ installing, remove those locations instead.
 The installer runs the web UI as a
 [termux-services](https://wiki.termux.com/wiki/Termux-services) service named
 `huntsman-serve` and installs the `huntsman` command, which drives it. Open
-the page in the phone's browser:
+the page in the phone's browser, signed in:
 
 ```sh
-termux-open-url http://127.0.0.1:8080/
+huntsman open
 ```
 
 | Command | What it does |
 | --- | --- |
 | `huntsman start`, `stop`, `restart` | Start, stop or restart the web UI. `stop` keeps it off across reboots and reinstalls. |
 | `huntsman status` | Whether it runs, its PID, memory, threads and address; exits 0 only when the page works. |
+| `huntsman open` | Open the page in the phone's browser, signed in with the service's token. Needs the Termux:API app and `pkg install termux-api`. |
 | `huntsman logs` | Follow the server's log. |
 | `huntsman clean` | Remove the Rust build cache and Huntsman temporary files. |
 | `huntsman scan-pipe TARGET [KIND]` | Scan, save the ledger under `~/huntsman-reports`, verify it, and write a Markdown report next to it. |
@@ -208,8 +209,8 @@ termux-open-url http://127.0.0.1:8080/
 | `huntsman` anything else | Runs `huntsman-recon` with the same arguments, for example `huntsman doctor` or `huntsman email ADDR`. |
 
 New Termux sessions also load shortcuts from `$PREFIX/etc/profile.d/huntsman.sh`.
-`h`, `start`, `stop`, `restart`, `status`, `logs`, `clean`, `doc` and `cred` are
-short for the `huntsman` commands. `domain`, `email`, `username`, `asx`
+`h`, `start`, `stop`, `restart`, `status`, `logs`, `ui` (`open`), `clean`, `doc`
+and `cred` are short for the `huntsman` commands. `domain`, `email`, `username`, `asx`
 (`id`), `query` and `pipe` (`scan-pipe`) run lookups. `claims`, `verified`,
 `did`, `dossier`, `latest_json`, `latest_md` and `clean_reports` read the saved
 scans. Your `~/.bashrc` is left alone.
@@ -225,6 +226,16 @@ is restarted onto the new binary by every install or upgrade. The installer's
 last lines say whether the page answers. `HUNTSMAN_SERVE_SERVICE=off` or `on`
 when running the installer is the same as `huntsman stop` or `huntsman start`.
 
+Other apps on the phone can reach 127.0.0.1 too, and a lookup spends your
+provider keys, so the installer gives the service a random token in
+`~/.huntsman/serve.token` (readable only by Termux). The page and every API
+call except the health check need it. `huntsman open` passes it to the browser
+in the address's `#token=` part, which the browser keeps and never sends to a
+server, so you sign in once per browser; `huntsman status` and the installer
+send it too. Reinstalls keep the token. To use a different one, delete the file
+and run the installer again; to turn it off, empty the file and run
+`huntsman restart`.
+
 Port 8080 is also the default of other servers people run in Termux, such as
 code-server and File Browser. When another program holds it, `huntsman start`
 picks the next free port, says which, and keeps using it (it is stored in
@@ -237,7 +248,12 @@ the service and pass `--bind`:
 huntsman stop
 termux-wake-lock
 huntsman-recon serve --bind 127.0.0.1:8081
+termux-open-url http://127.0.0.1:8081/
 ```
+
+A server started this way has no token unless you export `HSE_AUTH_TOKEN`
+first. The service's page is at `termux-open-url http://127.0.0.1:8080/` when
+you open it without `huntsman open`; it then asks for the token.
 
 `serve` prints the address it listens on as `serving=http://…/`;
 `--bind 127.0.0.1:0` has the system pick a free port. A port below 1024 needs

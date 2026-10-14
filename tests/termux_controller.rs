@@ -11,13 +11,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// `doctor serve --bind ADDR` answers the state `FAKE_PORTS` lists for ADDR (`not_running` if none);
+/// `doctor serve --bind ADDR` answers the state `FAKE_PORTS` lists for ADDR (`not_running` if none),
+/// or `unauthorized` when `HSE_AUTH_TOKEN` is not the service token in `serve.token`;
 /// `scan --save FILE` writes a one-entry ledger with an email in it; `verify` fails on FORGED.
 const FAKE_RECON: &str = r#"#!/bin/sh
 printf 'recon %s\n' "$*" >> "$LOG"
 case "$1" in
   doctor)
     state="$(grep "^$4 " "$FAKE_PORTS" 2>/dev/null | tail -n 1 | cut -d' ' -f2)"
+    want="$(head -n 1 "$HUNTSMAN_HOME/serve.token" 2>/dev/null)"
+    if [ "${state:-}" = healthy ] && [ "${HSE_AUTH_TOKEN:-}" != "$want" ]; then state=unauthorized; fi
     echo "serve=${state:-not_running} addr=$4 version=0.2.0 ms=1"
     [ "${state:-}" = healthy ]
     ;;
@@ -359,4 +362,82 @@ fn the_shortcuts_never_export_keys_and_only_load_in_interactive_shells() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "skipped");
+}
+
+const TOKEN: &str = "5f0c8e4a9b7d6c3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e";
+
+#[test]
+fn the_service_token_signs_in_the_health_check_and_the_page() {
+    let phone = Phone::new();
+    fs::write(
+        phone.path("home/.huntsman/serve.token"),
+        format!("{TOKEN}\n"),
+    )
+    .unwrap();
+    phone.executable(
+        "bin/termux-open-url",
+        "#!/bin/sh\nprintf 'open %s\\n' \"$1\" >> \"$LOG\"\n",
+    );
+
+    let out = phone.run(&["start"]);
+    assert!(out.status.success(), "{}", text(&out));
+    let out = phone.run(&["status"]);
+    assert!(
+        text(&out).contains("web UI: RUNNING (healthy)"),
+        "the probe sends the token, so the page answers: {}",
+        text(&out)
+    );
+
+    let out = phone.run(&["open"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        phone
+            .log()
+            .contains(&format!("open http://127.0.0.1:8080/#token={TOKEN}")),
+        "{}",
+        phone.log()
+    );
+    assert!(
+        !text(&out).contains(TOKEN),
+        "the token never reaches the terminal: {}",
+        text(&out)
+    );
+    assert!(
+        text(&out).contains("opened http://127.0.0.1:8080/ (signed in with the service token)"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[test]
+fn a_port_held_by_a_server_with_another_token_counts_as_taken() {
+    let phone = Phone::new();
+    fs::write(
+        phone.path("home/.huntsman/serve.token"),
+        format!("{TOKEN}\n"),
+    )
+    .unwrap();
+    // A Huntsman server outside runit, started with a different token.
+    phone.mark("127.0.0.1:8080", "unauthorized");
+    let out = phone.run(&["start"]);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(
+        text(&out).contains("127.0.0.1:8080 is taken by another program; using 127.0.0.1:8081"),
+        "{}",
+        text(&out)
+    );
+}
+
+#[test]
+fn open_without_termux_api_says_where_the_token_is_without_printing_it() {
+    let phone = Phone::new();
+    fs::write(
+        phone.path("home/.huntsman/serve.token"),
+        format!("{TOKEN}\n"),
+    )
+    .unwrap();
+    let out = phone.run(&["open"]);
+    assert!(!out.status.success());
+    assert!(text(&out).contains("serve.token"), "{}", text(&out));
+    assert!(!text(&out).contains(TOKEN), "{}", text(&out));
 }
