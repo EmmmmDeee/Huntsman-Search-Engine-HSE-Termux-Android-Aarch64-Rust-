@@ -11,6 +11,7 @@
 //! The central property is metamorphic: persisting an artifact and reading it
 //! back must not change what the correlator reports. The tests check that.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -20,6 +21,9 @@ use thiserror::Error;
 
 use crate::collector::CollectionBatch;
 use crate::correlator::{Correlation, evaluate_rules};
+use crate::cross_scan::{
+    CrossScanCategory, CrossScanOptions, CrossScanStore, category_from_entities,
+};
 use crate::entity::Entity;
 use crate::relation::Relation;
 
@@ -153,6 +157,123 @@ pub fn read(path: &Path) -> Result<ScanArtifact, ArtifactError> {
         });
     }
     Ok(artifact)
+}
+
+/// Most artifacts a history directory may hold. Matches the cross-scan
+/// traversal's visited-scan budget: a larger history could not be walked anyway.
+pub const MAX_HISTORY_ARTIFACTS: usize = 512;
+
+/// Total bytes of artifacts a history directory may hold, so loading the index
+/// stays bounded on the Termux/Android target.
+pub const MAX_HISTORY_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Production [`CrossScanStore`] over a directory of saved scan artifacts.
+///
+/// Every regular `*.json` file directly inside the directory is read through
+/// [`read`] and indexed by its artifact `scan_id`, so a prior scan that saw the
+/// same entity becomes a cross-scan bridge. Reads are as strict as [`read`]: a
+/// file that does not parse, or has another format version, fails the open with
+/// its path named, rather than silently shrinking the history. Symlinks and
+/// subdirectories are skipped, never followed. Artifacts that share a `scan_id`
+/// (for example two pages of one `DeHashed` query) merge into one scan.
+#[derive(Debug, Default)]
+pub struct ArtifactHistory {
+    by_scan: BTreeMap<String, Vec<Entity>>,
+    by_uid: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl ArtifactHistory {
+    /// Load and index every artifact in `dir`.
+    ///
+    /// # Errors
+    /// [`ArtifactError::Io`] when the directory cannot be listed, or holds more
+    /// than [`MAX_HISTORY_ARTIFACTS`] artifacts or [`MAX_HISTORY_BYTES`] bytes;
+    /// otherwise the first error [`read`] returns, prefixed with the file path.
+    pub fn open(dir: &Path) -> Result<Self, ArtifactError> {
+        let mut paths = Vec::new();
+        let mut total = 0u64;
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path)?;
+            if !meta.is_file() || path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            total = total.saturating_add(meta.len());
+            paths.push(path);
+            if paths.len() > MAX_HISTORY_ARTIFACTS || total > MAX_HISTORY_BYTES {
+                return Err(ArtifactError::Io(io::Error::other(format!(
+                    "{}: history exceeds {MAX_HISTORY_ARTIFACTS} artifacts or {MAX_HISTORY_BYTES} bytes",
+                    dir.display()
+                ))));
+            }
+        }
+        paths.sort();
+        let mut history = Self::default();
+        for path in paths {
+            let artifact = read(&path).map_err(|error| named(&path, error))?;
+            history.insert(artifact);
+        }
+        Ok(history)
+    }
+
+    fn insert(&mut self, artifact: ScanArtifact) {
+        let scan = self.by_scan.entry(artifact.scan_id.clone()).or_default();
+        for entity in artifact.entities {
+            self.by_uid
+                .entry(entity.uid.clone())
+                .or_default()
+                .insert(artifact.scan_id.clone());
+            scan.push(entity);
+        }
+    }
+
+    /// Number of distinct scans in the history.
+    #[must_use]
+    pub fn scan_count(&self) -> usize {
+        self.by_scan.len()
+    }
+}
+
+fn named(path: &Path, error: ArtifactError) -> ArtifactError {
+    let at = path.display();
+    match error {
+        ArtifactError::Io(e) => ArtifactError::Io(io::Error::new(e.kind(), format!("{at}: {e}"))),
+        ArtifactError::Malformed(m) => ArtifactError::Malformed(format!("{at}: {m}")),
+        ArtifactError::Unsupported(m) => ArtifactError::Unsupported(format!("{at}: {m}")),
+        other @ ArtifactError::UnsupportedVersion { .. } => {
+            ArtifactError::Malformed(format!("{at}: {other}"))
+        }
+    }
+}
+
+impl CrossScanStore for ArtifactHistory {
+    fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>, crate::error::Error> {
+        Ok(self.by_scan.get(scan_id).cloned().unwrap_or_default())
+    }
+
+    fn scan_ids_for_entity(&self, entity_uid: &str) -> Result<Vec<String>, crate::error::Error> {
+        Ok(self
+            .by_uid
+            .get(entity_uid)
+            .map(|scans| scans.iter().cloned().collect())
+            .unwrap_or_default())
+    }
+}
+
+impl ScanArtifact {
+    /// Pivot this scan across every prior scan in `history`: entities it shares
+    /// with earlier scans, and scans reachable through those shared entities.
+    ///
+    /// # Errors
+    /// Propagates history lookup failures.
+    pub fn cross_scan(
+        &self,
+        history: &ArtifactHistory,
+        options: CrossScanOptions,
+    ) -> Result<CrossScanCategory, crate::error::Error> {
+        category_from_entities(history, &self.scan_id, &self.entities, options)
+    }
 }
 
 #[cfg(test)]
@@ -319,5 +440,148 @@ mod tests {
         file.set_len(MAX_ARTIFACT_BYTES + 1).unwrap();
         drop(file);
         assert!(matches!(read(&path), Err(ArtifactError::Io(_))));
+    }
+
+    fn history_dir(name: &str, artifacts: &[ScanArtifact]) -> std::path::PathBuf {
+        let dir = scratch(name).parent().unwrap().join("history");
+        fs::create_dir_all(&dir).unwrap();
+        for (index, artifact) in artifacts.iter().enumerate() {
+            write(&dir.join(format!("{index}.json")), artifact).unwrap();
+        }
+        dir
+    }
+
+    fn scan_of(scan_id: &str, entities: &[(EntityKind, &str)]) -> ScanArtifact {
+        let entities = entities
+            .iter()
+            .map(|(kind, value)| Entity::new(kind.clone(), *value, 0.9, scan_id))
+            .collect();
+        ScanArtifact::new(scan_id, entities, Vec::new())
+    }
+
+    #[test]
+    fn history_bridges_an_email_shared_with_an_earlier_saved_scan() {
+        use crate::cross_scan::{CrossScanCategory, CrossScanOptions};
+        let current = scan_of("scan-now", &[(EntityKind::Email, "ada@example.com")]);
+        let dir = history_dir(
+            "bridge",
+            &[
+                current.clone(),
+                scan_of("scan-old", &[(EntityKind::Email, "ada@example.com")]),
+                scan_of("scan-other", &[(EntityKind::Email, "bob@example.com")]),
+            ],
+        );
+        let history = ArtifactHistory::open(&dir).unwrap();
+        assert_eq!(history.scan_count(), 3);
+        match current
+            .cross_scan(&history, CrossScanOptions::default())
+            .unwrap()
+        {
+            CrossScanCategory::Historical { matches } => {
+                assert_eq!(matches.len(), 1);
+                assert_eq!(matches[0].overlapping_scans, vec!["scan-old".to_string()]);
+            }
+            other => panic!("expected a historical bridge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn history_walks_related_entities_transitively_across_files() {
+        use crate::cross_scan::{CrossScanCategory, CrossScanOptions};
+        let current = scan_of("scan-a", &[(EntityKind::IpAddress, "192.0.2.1")]);
+        let dir = history_dir(
+            "transitive",
+            &[
+                scan_of(
+                    "scan-b",
+                    &[
+                        (EntityKind::IpAddress, "192.0.2.1"),
+                        (EntityKind::IpAddress, "192.0.2.2"),
+                    ],
+                ),
+                scan_of("scan-c", &[(EntityKind::IpAddress, "192.0.2.2")]),
+            ],
+        );
+        let history = ArtifactHistory::open(&dir).unwrap();
+        match current
+            .cross_scan(&history, CrossScanOptions::default())
+            .unwrap()
+        {
+            CrossScanCategory::Transitive { links } => {
+                assert!(
+                    links
+                        .iter()
+                        .any(|l| l.target_scan_id == "scan-b" && l.depth == 1)
+                );
+                assert!(
+                    links
+                        .iter()
+                        .any(|l| l.target_scan_id == "scan-c" && l.depth == 2)
+                );
+            }
+            other => panic!("expected a transitive walk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_scan_alone_in_its_history_has_no_bridge_to_itself() {
+        use crate::cross_scan::{CrossScanCategory, CrossScanOptions};
+        let current = scan_of("scan-1", &[(EntityKind::Email, "ada@example.com")]);
+        let dir = history_dir("self", std::slice::from_ref(&current));
+        let history = ArtifactHistory::open(&dir).unwrap();
+        assert_eq!(
+            current
+                .cross_scan(&history, CrossScanOptions::default())
+                .unwrap(),
+            CrossScanCategory::None
+        );
+    }
+
+    #[test]
+    fn pages_of_one_scan_merge_into_one_history_scan() {
+        let dir = history_dir(
+            "pages",
+            &[
+                scan_of("dehashed:q", &[(EntityKind::Email, "ada@example.com")]),
+                scan_of("dehashed:q", &[(EntityKind::Email, "bob@example.com")]),
+            ],
+        );
+        let history = ArtifactHistory::open(&dir).unwrap();
+        assert_eq!(history.scan_count(), 1);
+        assert_eq!(history.entities_for_scan("dehashed:q").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_malformed_history_file_fails_the_open_and_names_the_file() {
+        let dir = history_dir("bad-history", &[corroborated()]);
+        fs::write(dir.join("broken.json"), b"{ nope").unwrap();
+        match ArtifactHistory::open(&dir) {
+            Err(ArtifactError::Malformed(message)) => {
+                assert!(message.contains("broken.json"), "{message}");
+            }
+            other => panic!("expected Malformed naming the file, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn history_ignores_non_json_files_and_a_missing_dir_is_io() {
+        let dir = history_dir("non-json", &[corroborated()]);
+        fs::write(dir.join("notes.txt"), b"not an artifact").unwrap();
+        fs::create_dir_all(dir.join("nested.json")).unwrap();
+        assert_eq!(ArtifactHistory::open(&dir).unwrap().scan_count(), 1);
+        assert!(matches!(
+            ArtifactHistory::open(&dir.join("absent")),
+            Err(ArtifactError::Io(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn history_skips_symlinks_rather_than_following_them() {
+        let dir = history_dir("history-symlink", &[]);
+        let outside = dir.parent().unwrap().join("outside.json");
+        write(&outside, &corroborated()).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("link.json")).unwrap();
+        assert_eq!(ArtifactHistory::open(&dir).unwrap().scan_count(), 0);
     }
 }

@@ -7,7 +7,7 @@
 use std::env;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT | run-history record|show [options]]";
+const USAGE: &str = "usage: huntsman-recon [check | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -53,7 +53,7 @@ Commands:
   keys                  Validate a private keys file; print slots and fingerprints
   credential-status     Show provider credential completeness without values
   verify                Verify a saved evidence ledger
-  correlate             Run the correlation rules over a saved scan artifact (offline)
+  correlate             Run the correlation rules over a saved scan artifact, and pivot it across a history of saved scans (offline)
   run-history           Record test-run results and compare each with the earlier runs
 
 Run `huntsman-recon <COMMAND> --help` for command details.
