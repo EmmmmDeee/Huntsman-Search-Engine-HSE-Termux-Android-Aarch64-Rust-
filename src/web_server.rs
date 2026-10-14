@@ -7,13 +7,19 @@
 //! same front-ends as the CLI. A lookup spends network egress and operator keys, so it needs
 //! the `X-Huntsman-Lookup` header (a page on another origin cannot send it without a CORS
 //! preflight this server never approves) and is refused when the browser marks it cross-site.
+//! When the binary installs an [`AnalyzeHandler`], `GET /api/analyze` runs the offline
+//! investigation spine on a list of seeds and returns its multi-hop result: the entities, the
+//! links between them, the next pivots, the correlations and the planned sources. It makes no
+//! network request and spends no key, so it needs no lookup header, but it is still refused
+//! cross-site and, on a public bind, needs the token.
 //! A loopback bind answers only requests whose `Host` is a loopback authority,
 //! which blocks a browser DNS-rebinding attack from reaching the local API.
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -57,7 +63,16 @@ pub fn resolve_serve_bind(
         .ok_or_else(|| Error::Invalid(format!("invalid Railway PORT {raw:?}")))?;
     Ok(format!("0.0.0.0:{port}"))
 }
-const MAX_REQUEST_BYTES: usize = 16 * 1024;
+/// The seeds of the largest analysis the server admits, as they arrive: percent-encoded, three bytes
+/// for each byte that is not ASCII, with `%0A` between them (24 KiB).
+const LARGEST_ANALYSIS_SEEDS: usize =
+    MAX_ANALYZE_SEEDS * MAX_SELECTOR_BYTES * 3 + (MAX_ANALYZE_SEEDS - 1) * 3;
+/// What a request carries besides its analysis seeds: the rest of the request line, a browser's
+/// headers and a bearer token.
+const HEADER_ALLOWANCE: usize = 8 * 1024;
+/// Request line and headers of one request (33 KiB). It is derived from the analysis limits, so the
+/// largest analysis the server admits always fits, with the header allowance.
+const MAX_REQUEST_BYTES: usize = (LARGEST_ANALYSIS_SEEDS + HEADER_ALLOWANCE).next_multiple_of(1024);
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// Whole-request wall-clock budget. The per-read `IO_TIMEOUT` restarts on every successful
 /// read, so it alone cannot bound a client that dribbles a byte at a time; this absolute
@@ -65,8 +80,13 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 /// Connections served at once. A phone browser opens several for one page, and some are speculative
 /// and idle, so each connection gets its own thread: one that sends nothing holds up only itself.
-/// A connection past the cap is answered `503` at once.
+/// A connection past the cap first closes the connection that has waited longest without a whole
+/// request, if it has waited [`IDLE_GRACE`]; when none has, it is answered `503` at once.
 const MAX_CONNECTIONS: usize = 32;
+/// How long a connection may wait without a whole request before a connection that finds every
+/// place taken may close it. A browser sends its request as soon as it connects, except on a
+/// speculative connection, which it replaces when it needs one.
+const IDLE_GRACE: Duration = Duration::from_secs(1);
 /// The handler formats short strings, so a small stack is enough, and it keeps a full set of
 /// connection threads cheap on a phone.
 const HANDLER_STACK_BYTES: usize = 256 * 1024;
@@ -76,8 +96,16 @@ const MAX_LOOKUPS: usize = 2;
 /// A lookup does TLS and JSON decoding, which the small connection stack is not sized for, so it
 /// runs on its own thread with this stack.
 const LOOKUP_STACK_BYTES: usize = 4 * 1024 * 1024;
-/// Longest decoded `q` accepted by `/api/lookup`.
+/// Longest decoded `q` accepted by `/api/lookup`, and longest seed accepted by `/api/analyze`.
 const MAX_SELECTOR_BYTES: usize = 512;
+/// Seeds in one `/api/analyze` request. The spine is offline and bounded by its own limits; this
+/// caps what one request can ask of a phone.
+const MAX_ANALYZE_SEEDS: usize = 16;
+/// An analysis builds the entity graph, runs the correlation rules and encodes the report, which
+/// the small connection stack is not sized for, so, like a lookup, it runs on its own thread with
+/// this stack. It holds no socket and finishes in milliseconds, so the connection cap bounds how
+/// many run at once.
+const ANALYZE_STACK_BYTES: usize = 4 * 1024 * 1024;
 /// The header a lookup request must carry. Its presence forces a CORS preflight from any other
 /// origin, and this server answers no preflight.
 pub const LOOKUP_HEADER: &str = "x-huntsman-lookup";
@@ -113,6 +141,18 @@ pub type LookupHandler =
 struct Lookups {
     handler: LookupHandler,
     live: Arc<AtomicUsize>,
+}
+
+/// Runs the offline multi-hop analysis of the seeds and returns its report as JSON. Installed by
+/// the binary, which owns the investigation spine; the error carries the HTTP status to answer.
+pub type AnalyzeHandler =
+    Arc<dyn Fn(&[String]) -> Result<serde_json::Value, LookupError> + Send + Sync>;
+
+/// The routes a binary installs. A route whose handler is absent answers `404`.
+#[derive(Clone, Default)]
+struct Routes {
+    lookups: Option<Lookups>,
+    analyze: Option<AnalyzeHandler>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -167,7 +207,7 @@ fn normalize_bind(raw: &str) -> Result<SocketAddr, Error> {
 pub struct Server {
     listener: TcpListener,
     config: ServeConfig,
-    lookups: Option<Lookups>,
+    routes: Routes,
 }
 
 impl Server {
@@ -181,17 +221,24 @@ impl Server {
         Ok(Self {
             listener,
             config,
-            lookups: None,
+            routes: Routes::default(),
         })
     }
 
     /// Serve `GET /api/lookup` through `handler`. Without this the route answers `404`.
     #[must_use]
     pub fn with_lookup(mut self, handler: LookupHandler) -> Self {
-        self.lookups = Some(Lookups {
+        self.routes.lookups = Some(Lookups {
             handler,
             live: Arc::new(AtomicUsize::new(0)),
         });
+        self
+    }
+
+    /// Serve `GET /api/analyze` through `handler`. Without this the route answers `404`.
+    #[must_use]
+    pub fn with_analyze(mut self, handler: AnalyzeHandler) -> Self {
+        self.routes.analyze = Some(handler);
         self
     }
 
@@ -211,14 +258,15 @@ impl Server {
     /// # Errors
     /// Returns the listener error that stops the loop.
     pub fn run(&self) -> Result<(), Error> {
-        let shared = Arc::new((self.config.clone(), self.lookups.clone()));
+        let shared = Arc::new((self.config.clone(), self.routes.clone()));
         let live = Arc::new(AtomicUsize::new(0));
+        let idle = Arc::new(Idle::default());
         loop {
             let (stream, _) = self
                 .listener
                 .accept()
                 .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            serve_on_a_thread(&shared, &live, stream);
+            serve_on_a_thread(&shared, &live, &idle, stream);
         }
     }
 
@@ -229,7 +277,7 @@ impl Server {
                 .listener
                 .accept()
                 .map_err(|error| Error::Store(format!("serve accept: {error}")))?;
-            handle_stream_with(&self.config, self.lookups.as_ref(), stream)?;
+            handle_stream_with(&self.config, &self.routes, stream, None)?;
         }
         Ok(())
     }
@@ -258,22 +306,97 @@ impl Drop for Slot {
     }
 }
 
-type Shared = (ServeConfig, Option<Lookups>);
+/// The connections still waiting for a whole request, in the order they arrived, each with a
+/// handle that can close it. Connections that send nothing, a browser's speculative ones or a
+/// local app's on purpose, would otherwise keep every request out for the whole read budget.
+#[derive(Default)]
+struct Idle {
+    next: AtomicU64,
+    waiting: Mutex<VecDeque<(u64, Instant, TcpStream)>>,
+}
 
-fn serve_on_a_thread(shared: &Arc<Shared>, live: &Arc<AtomicUsize>, stream: TcpStream) {
-    let Some(slot) = Slot::take(live) else {
-        refuse_busy(stream);
-        return;
+impl Idle {
+    fn waiting(&self) -> MutexGuard<'_, VecDeque<(u64, Instant, TcpStream)>> {
+        self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Note a connection that is about to read its request; it is forgotten when the returned
+    /// guard drops. A connection whose socket cannot be duplicated is never closed early.
+    fn wait(self: &Arc<Self>, stream: &TcpStream) -> Option<Waiting> {
+        let handle = stream.try_clone().ok()?;
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        self.waiting().push_back((id, Instant::now(), handle));
+        Some(Waiting {
+            idle: Arc::clone(self),
+            id,
+        })
+    }
+
+    /// Close the connection that has waited longest, if it has waited `grace`. Its read ends at
+    /// once, and its thread lets its place go.
+    fn close_longest_waiting(&self, grace: Duration) -> bool {
+        let mut waiting = self.waiting();
+        if waiting
+            .front()
+            .is_none_or(|(_, since, _)| since.elapsed() < grace)
+        {
+            return false;
+        }
+        waiting
+            .pop_front()
+            .is_some_and(|(_, _, handle)| handle.shutdown(Shutdown::Both).is_ok())
+    }
+}
+
+/// A connection noted in [`Idle`]; dropping it, once the request is read, forgets the connection.
+struct Waiting {
+    idle: Arc<Idle>,
+    id: u64,
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        self.idle.waiting().retain(|(id, _, _)| *id != self.id);
+    }
+}
+
+/// The place a closed connection gives back, once its thread has let it go: at once, as a rule.
+fn place_freed_by_closing(live: &Arc<AtomicUsize>) -> Option<Slot> {
+    for _ in 0..50 {
+        if let Some(slot) = Slot::take(live) {
+            return Some(slot);
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    None
+}
+
+type Shared = (ServeConfig, Routes);
+
+fn serve_on_a_thread(
+    shared: &Arc<Shared>,
+    live: &Arc<AtomicUsize>,
+    idle: &Arc<Idle>,
+    stream: TcpStream,
+) {
+    let slot = match Slot::take(live) {
+        Some(slot) => slot,
+        None if idle.close_longest_waiting(IDLE_GRACE) => match place_freed_by_closing(live) {
+            Some(slot) => slot,
+            None => return refuse_busy(stream),
+        },
+        None => return refuse_busy(stream),
     };
     // The thread owns the stream; this copy lets a failed spawn still answer the client.
     let fallback = stream.try_clone().ok();
+    let waiting = idle.wait(&stream);
     let shared = Arc::clone(shared);
     let spawned = thread::Builder::new()
         .name("serve-connection".into())
         .stack_size(HANDLER_STACK_BYTES)
         .spawn(move || {
             let _slot = slot;
-            let _handled = handle_stream_with(&shared.0, shared.1.as_ref(), stream);
+            let _handled = handle_stream_with(&shared.0, &shared.1, stream, waiting);
         });
     if spawned.is_err() {
         if let Some(stream) = fallback {
@@ -290,13 +413,14 @@ fn refuse_busy(mut stream: TcpStream) {
 
 #[cfg(test)]
 fn handle_stream(config: &ServeConfig, stream: TcpStream) -> Result<(), Error> {
-    handle_stream_with(config, None, stream)
+    handle_stream_with(config, &Routes::default(), stream, None)
 }
 
 fn handle_stream_with(
     config: &ServeConfig,
-    lookups: Option<&Lookups>,
+    routes: &Routes,
     mut stream: TcpStream,
+    waiting: Option<Waiting>,
 ) -> Result<(), Error> {
     stream
         .set_read_timeout(Some(IO_TIMEOUT))
@@ -307,11 +431,13 @@ fn handle_stream_with(
 
     let deadline = Instant::now() + REQUEST_DEADLINE;
     let request = read_request(&mut stream, deadline)?;
+    // A whole request: the connection is busy now, not idle, and is no longer closed early.
+    drop(waiting);
     let response = respond(
         &request,
         config.bearer_token.as_deref(),
         config.bind,
-        lookups,
+        routes,
     );
     stream
         .write_all(response.as_bytes())
@@ -353,8 +479,14 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
         if read == 0 {
             break;
         }
+        // Only the new bytes, and the three before them, can complete the blank line that ends
+        // the head: scanning the whole buffer after every read was quadratic in its length.
+        let scan_from = bytes.len().saturating_sub(3);
         bytes.extend_from_slice(&chunk[..read]);
-        if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+        if bytes[scan_from..]
+            .windows(4)
+            .any(|window| window == b"\r\n\r\n")
+        {
             break;
         }
     }
@@ -475,15 +607,10 @@ struct Health<'a> {
 
 #[cfg(test)]
 fn response_for_request(request: &str, bearer_token: Option<&str>, bind: SocketAddr) -> String {
-    respond(request, bearer_token, bind, None)
+    respond(request, bearer_token, bind, &Routes::default())
 }
 
-fn respond(
-    request: &str,
-    bearer_token: Option<&str>,
-    bind: SocketAddr,
-    lookups: Option<&Lookups>,
-) -> String {
+fn respond(request: &str, bearer_token: Option<&str>, bind: SocketAddr, routes: &Routes) -> String {
     if request == "REQUEST_TOO_LARGE" {
         return response(
             413,
@@ -525,7 +652,10 @@ fn respond(
     }
 
     let head = parsed.method == Method::Head;
-    let protected = matches!(parsed.path, "/api/modules" | "/api/command" | "/api/lookup");
+    let protected = matches!(
+        parsed.path,
+        "/api/modules" | "/api/command" | "/api/lookup" | "/api/analyze"
+    );
     if protected
         && bearer_token.is_some_and(|expected| !bearer_matches(parsed.authorization, expected))
     {
@@ -580,7 +710,8 @@ fn respond(
                 head,
             ),
         },
-        "/api/lookup" => lookup_response(&parsed, lookups),
+        "/api/lookup" => lookup_response(&parsed, routes.lookups.as_ref()),
+        "/api/analyze" => analyze_response(&parsed, routes.analyze.as_ref()),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
     }
@@ -673,6 +804,76 @@ fn parse_lookup_query(raw: &str) -> Result<LookupQuery, &'static str> {
         .filter(|k| !k.is_empty())
         .unwrap_or_else(|| "auto".into());
     Ok(LookupQuery { kind, selector })
+}
+
+/// `GET /api/analyze?seeds=…`: the offline multi-hop analysis of up to [`MAX_ANALYZE_SEEDS`]
+/// seeds, one per line. It is refused cross-site like a lookup, but needs no lookup header: it
+/// makes no network request and spends no key.
+fn analyze_response(parsed: &ParsedRequest<'_>, analyze: Option<&AnalyzeHandler>) -> String {
+    let Some(analyze) = analyze else {
+        return json_error(404, "analysis is not enabled on this server");
+    };
+    if parsed.method != Method::Get {
+        return json_error(405, "analysis needs GET");
+    }
+    if parsed
+        .sec_fetch_site
+        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
+    {
+        return json_error(403, "cross-site analysis refused");
+    }
+    let seeds = match parse_analyze_seeds(parsed.query) {
+        Ok(seeds) => seeds,
+        Err(message) => return json_error(400, &message),
+    };
+    let handler = Arc::clone(analyze);
+    let worker = thread::Builder::new()
+        .name("serve-analyze".into())
+        .stack_size(ANALYZE_STACK_BYTES)
+        .spawn(move || handler(&seeds));
+    let outcome = match worker {
+        Ok(worker) => worker.join(),
+        Err(_) => return json_error(503, "could not start an analysis worker"),
+    };
+    match outcome {
+        Ok(Ok(report)) => response(
+            200,
+            "application/json; charset=utf-8",
+            &format!("{report}\n"),
+            false,
+        ),
+        Ok(Err(error)) => json_error(error.status, &error.message),
+        Err(_) => json_error(500, "analysis failed unexpectedly"),
+    }
+}
+
+/// The seeds in a query's `seeds` value, one per line: each is trimmed and blank lines are
+/// dropped. Unknown keys are ignored.
+fn parse_analyze_seeds(raw: &str) -> Result<Vec<String>, String> {
+    let mut text = String::new();
+    for pair in raw.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == "seeds" {
+            text = percent_decode(value)
+                .ok_or_else(|| "query is not valid percent-encoded UTF-8".to_owned())?;
+        }
+    }
+    let seeds: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|seed| !seed.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if seeds.is_empty() {
+        return Err("analysis needs seeds, one per line".to_owned());
+    }
+    if seeds.len() > MAX_ANALYZE_SEEDS {
+        return Err(format!("analysis takes at most {MAX_ANALYZE_SEEDS} seeds"));
+    }
+    if seeds.iter().any(|seed| seed.len() > MAX_SELECTOR_BYTES) {
+        return Err(format!("a seed is longer than {MAX_SELECTOR_BYTES} bytes"));
+    }
+    Ok(seeds)
 }
 
 /// `application/x-www-form-urlencoded` value decoding: `+` is a space and `%XX` a byte.
@@ -822,11 +1023,13 @@ const INDEX_HTML: &str = r#"<!doctype html>
 *{box-sizing:border-box}
 body{max-width:960px;margin:0 auto;padding:max(12px,env(safe-area-inset-top)) 12px 24px;background:var(--bg);color:var(--fg);font-size:15px}
 h1{font-size:18px;margin:0 0 12px}
-button,input,select{font:inherit;min-height:44px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit}
+button,input,select,textarea{font:inherit;min-height:44px;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit}
 button{cursor:pointer;border-color:var(--acc);color:var(--acc)}
 button:disabled{opacity:.5}
 form{display:grid;grid-template-columns:1fr;gap:8px}
-@media (min-width:640px){form{grid-template-columns:9em 1fr auto}}
+@media (min-width:640px){form{grid-template-columns:9em 1fr auto}#analyze{grid-template-columns:1fr auto}}
+textarea{width:100%;resize:vertical}
+h2{font-size:15px;margin:12px 0 4px}
 section,details{border:1px solid var(--line);border-radius:6px;padding:10px;margin:10px 0}
 summary{cursor:pointer;min-height:32px}
 pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 0}
@@ -851,6 +1054,31 @@ small,.dim{color:var(--dim)}
 <table><thead><tr><th>source</th><th>outcome</th><th>found</th></tr></thead><tbody id="outcomes"></tbody></table>
 <pre id="text"></pre>
 </section>
+<section>
+<form id="analyze">
+<textarea id="seeds" required rows="4" maxlength="2048" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="a seed per line: name, email, @handle, phone or domain" aria-label="seeds"></textarea>
+<button id="arun" type="submit">Analyze</button>
+</form>
+<small>Multi-hop analysis, offline: links the seeds, ranks the next pivots, names the gaps and plans the sources, with no network request and no key.</small>
+</section>
+<section id="aresult" hidden>
+<div class="row"><b id="asummary"></b><span id="astatus" class="dim"></span><button id="adownload" type="button">Download JSON</button></div>
+<h2>Entities</h2>
+<table><thead><tr><th>kind</th><th>value</th><th>confidence</th></tr></thead><tbody id="aentities"></tbody></table>
+<h2>Links</h2>
+<table><thead><tr><th>from</th><th>relation</th><th>to</th></tr></thead><tbody id="arelations"></tbody></table>
+<h2>Next pivots</h2>
+<table><thead><tr><th>entity</th><th>links</th><th>reach</th><th>cut point</th></tr></thead><tbody id="apivots"></tbody></table>
+<h2>Correlations</h2>
+<table><thead><tr><th>rule</th><th>severity</th><th>entities</th></tr></thead><tbody id="acorrelations"></tbody></table>
+<small id="anote" class="dim"></small>
+<h2>Gaps</h2>
+<table><thead><tr><th>seed</th><th>isolation</th><th>next step</th></tr></thead><tbody id="agaps"></tbody></table>
+<h2>Planned sources</h2>
+<table><thead><tr><th>target</th><th>source</th><th>route</th><th>utility</th></tr></thead><tbody id="aplanned"></tbody></table>
+<h2>Rejected seeds</h2>
+<table><thead><tr><th>seed</th><th>reason</th></tr></thead><tbody id="arejected"></tbody></table>
+</section>
 <details><summary>Server status and token</summary>
 <div class="row"><input id="token" type="password" autocomplete="off" placeholder="token (only if configured)" aria-label="token"><button id="refresh" type="button">Refresh</button></div>
 <b>Health</b><pre id="health">…</pre>
@@ -864,6 +1092,8 @@ try{$('token').value=sessionStorage.getItem('hse-token')||''}catch(_){}
 $('token').onchange=()=>{try{sessionStorage.setItem('hse-token',$('token').value)}catch(_){}};
 function headers(extra){const h=Object.assign({},extra);const t=$('token').value;if(t)h.Authorization='Bearer '+t;return h}
 async function get(path){const r=await fetch(path,{headers:headers(),cache:'no-store'});return await r.text()}
+async function call(path,extra){const r=await fetch(path,{headers:headers(extra),cache:'no-store'});const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}return {r,text,body}}
+const reason=({text,body})=>(body&&body.error)||text.trim();
 async function refresh(){
   for(const [id,path] of [['health','/api/health'],['modules','/api/modules'],['command','/api/command']]){
     try{$(id).textContent=await get(path)}catch(e){$(id).textContent=String(e)}
@@ -878,10 +1108,9 @@ $('lookup').onsubmit=async ev=>{
   $('status').textContent='running…'; $('text').textContent=''; $('outcomes').replaceChildren(); last=null;
   const started=Date.now();
   try{
-    const r=await fetch('/api/lookup?'+params,{headers:headers({'X-Huntsman-Lookup':'1'}),cache:'no-store'});
-    const body=await r.json();
+    const res=await call('/api/lookup?'+params,{'X-Huntsman-Lookup':'1'}),body=res.body;
     const secs=((Date.now()-started)/1000).toFixed(1)+'s';
-    if(!r.ok){$('status').textContent='HTTP '+r.status+' · '+secs;$('text').textContent=body.error||'';return}
+    if(!res.r.ok||!body){$('status').textContent='HTTP '+res.r.status+' · '+secs;$('text').textContent=reason(res);return}
     last=body; $('route').textContent=body.route;
     $('status').textContent=body.entities.length+' entities · '+secs;
     for(const o of body.outcomes){const tr=document.createElement('tr');cell(tr,o.module);cell(tr,o.kind);cell(tr,o.found);$('outcomes').appendChild(tr)}
@@ -893,6 +1122,39 @@ $('download').onclick=()=>{
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([JSON.stringify(last,null,2)],{type:'application/json'}));
   a.download='huntsman-'+last.route+'-'+Date.now()+'.json'; a.click(); URL.revokeObjectURL(a.href);
+};
+let alast=null;
+const show=v=>v==null?'':typeof v==='object'?JSON.stringify(v):String(v);
+function fill(id,items,cols){const tb=$(id);tb.replaceChildren();for(const it of items){const tr=document.createElement('tr');for(const c of cols(it))cell(tr,c);tb.appendChild(tr)}}
+$('analyze').onsubmit=async ev=>{
+  ev.preventDefault();
+  const seeds=$('seeds').value.trim(); if(!seeds) return;
+  $('arun').disabled=true; $('aresult').hidden=false; $('asummary').textContent=''; $('anote').textContent='';
+  $('astatus').textContent='analyzing…'; alast=null;
+  for(const id of ['aentities','arelations','apivots','acorrelations','agaps','aplanned','arejected']) $(id).replaceChildren();
+  try{
+    const res=await call('/api/analyze?'+new URLSearchParams({seeds})),body=res.body;
+    if(!res.r.ok||!body){$('astatus').textContent='HTTP '+res.r.status+' · '+reason(res);return}
+    alast=body;
+    const names=new Map(body.entities.map(e=>[e.uid,show(e.kind)+': '+e.value]));
+    const who=uid=>names.get(uid)||uid;
+    $('asummary').textContent=body.accepted.length+' seeds · '+body.entities.length+' entities · '+body.relations.length+' links';
+    $('astatus').textContent=body.gaps.linked_seeds+' of '+body.gaps.total_seeds+' seeds linked · '+show(body.termination);
+    fill('aentities',body.entities,e=>[show(e.kind),e.value,Number(e.confidence).toFixed(2)]);
+    fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind),who(x.to_uid)]);
+    fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,p.articulation?'yes':'']);
+    fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.entity_uids.map(who).join(', ')]);
+    $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';
+    fill('agaps',body.gaps.orphans,o=>[who(o.uid),show(o.isolation),o.action]);
+    fill('aplanned',body.planned,p=>[show(p.kind)+': '+p.value,p.source,p.url||'',p.utility==null?'':Number(p.utility).toFixed(2)]);
+    fill('arejected',body.rejected,x=>[x.seed,x.reason]);
+  }catch(e){$('astatus').textContent=String(e)}finally{$('arun').disabled=false}
+};
+$('adownload').onclick=()=>{
+  if(!alast) return;
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(alast,null,2)],{type:'application/json'}));
+  a.download='huntsman-analysis-'+Date.now()+'.json'; a.click(); URL.revokeObjectURL(a.href);
 };
 $('refresh').onclick=refresh; refresh();
 </script>
@@ -1009,6 +1271,50 @@ mod tests {
         addr
     }
 
+    /// The largest analysis the server admits, every seed byte percent-encoded, sent with headers
+    /// that fill the allowance: the whole request is read and answered. With the 16 KiB request
+    /// cap it was refused `413`, and so was the page's own longest input (2,048 CJK characters).
+    #[test]
+    fn the_largest_admitted_analysis_is_read_whole() {
+        use std::fmt::Write as _;
+
+        let mut server = Server::bind(ServeConfig::parse("127.0.0.1:0", None).unwrap()).unwrap();
+        server.routes = echo_seeds();
+        let addr = server.local_addr().unwrap();
+        thread::spawn(move || {
+            let _ = server.run();
+        });
+        let seed = "é".repeat(MAX_SELECTOR_BYTES / 2);
+        assert_eq!(seed.len(), MAX_SELECTOR_BYTES);
+        let encoded = seed.bytes().fold(String::new(), |mut encoded, byte| {
+            write!(encoded, "%{byte:02X}").unwrap();
+            encoded
+        });
+        let head = format!(
+            "GET /api/analyze?seeds={} HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: same-origin\r\nX-Pad: ",
+            vec![encoded; MAX_ANALYZE_SEEDS].join("%0A")
+        );
+        let bound = LARGEST_ANALYSIS_SEEDS + HEADER_ALLOWANCE;
+        let request = format!("{head}{}\r\n\r\n", "p".repeat(bound - head.len() - 4));
+        assert_eq!(request.len(), bound);
+        assert!(request.len() > 16 * 1024);
+
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        client.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{}", &response[..80]);
+        let body: serde_json::Value =
+            serde_json::from_str(&response[response.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(
+            body["seeds"],
+            serde_json::json!(vec![seed; MAX_ANALYZE_SEEDS])
+        );
+    }
+
     fn get_within(addr: SocketAddr, path: &str, wait: Duration) -> std::io::Result<String> {
         let mut client = TcpStream::connect(addr)?;
         client.set_read_timeout(Some(wait))?;
@@ -1071,6 +1377,46 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Connections that send nothing, in every place for longer than `IDLE_GRACE`, kept every
+    /// request out for the whole read budget: `503` for 5 s, and for as long as someone renews
+    /// them (any app on the phone can open loopback connections). A request that finds every
+    /// place taken now closes the connection that has waited longest, and is served; the other
+    /// idle connections keep their places.
+    #[test]
+    fn a_request_at_the_cap_closes_the_longest_waiting_connection() {
+        let addr = serve_in_background();
+        let mut idle: Vec<TcpStream> = (0..MAX_CONNECTIONS)
+            .map(|_| TcpStream::connect(addr).unwrap())
+            .collect();
+        thread::sleep(IDLE_GRACE + Duration::from_millis(200));
+
+        let started = Instant::now();
+        let response = get_within(addr, "/api/health", Duration::from_secs(3)).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(started.elapsed() < IDLE_GRACE, "{:?}", started.elapsed());
+
+        let mut byte = [0_u8; 1];
+        idle[0]
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        assert_eq!(
+            idle[0].read(&mut byte).unwrap(),
+            0,
+            "the longest waiting connection is closed"
+        );
+        idle[1]
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let next = idle[1].read(&mut byte).unwrap_err().kind();
+        assert!(
+            matches!(
+                next,
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+            "the next one still waits: {next:?}"
+        );
     }
 
     #[test]
@@ -1297,7 +1643,11 @@ mod tests {
     }
 
     fn lookup(request: &str, token: Option<&str>, lookups: Option<&Lookups>) -> String {
-        respond(request, token, loopback_bind(), lookups)
+        let routes = Routes {
+            lookups: lookups.cloned(),
+            analyze: None,
+        };
+        respond(request, token, loopback_bind(), &routes)
     }
 
     const HEADER: &str = "X-Huntsman-Lookup: 1\r\n";
@@ -1537,5 +1887,176 @@ mod tests {
         assert!(!INDEX_HTML.contains("innerHTML"));
         assert!(!INDEX_HTML.contains("insertAdjacentHTML"));
         assert!(INDEX_HTML.contains("'X-Huntsman-Lookup':'1'"));
+    }
+
+    /// Some refusals are plain text, not JSON: `503 busy` at the connection cap, `413` for an
+    /// oversized request, `408`. The page parsed every answer as JSON before reading its status,
+    /// so it showed a parser error instead of the refusal. It now reads each answer as text and
+    /// parses JSON only when it can (checked in Chromium: a `413` reads `HTTP 413 · request too
+    /// large`, where it read `SyntaxError: Unexpected token 'r'`).
+    #[test]
+    fn the_page_reads_a_plain_text_refusal() {
+        let script = inline_block(INDEX_HTML, "script");
+        assert!(
+            !script.contains(".json()"),
+            "an answer parsed as JSON before its status was read"
+        );
+        assert!(script.contains("try{body=JSON.parse(text)}catch(_){}"));
+    }
+
+    fn analyses(
+        handler: impl Fn(&[String]) -> Result<serde_json::Value, LookupError> + Send + Sync + 'static,
+    ) -> Routes {
+        Routes {
+            lookups: None,
+            analyze: Some(Arc::new(handler)),
+        }
+    }
+
+    /// Answers with the seeds it was given, so a test can see exactly what reached the spine.
+    fn echo_seeds() -> Routes {
+        analyses(|seeds| Ok(serde_json::json!({ "seeds": seeds })))
+    }
+
+    fn analyze(query: &str, extra: &str, token: Option<&str>, routes: &Routes) -> String {
+        respond(
+            &format!("GET /api/analyze?{query} HTTP/1.1\r\nHost: localhost\r\n{extra}\r\n"),
+            token,
+            loopback_bind(),
+            routes,
+        )
+    }
+
+    #[test]
+    fn analysis_answers_404_until_the_binary_installs_it() {
+        let response = analyze("seeds=a", "", None, &Routes::default());
+        assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+    }
+
+    #[test]
+    fn analysis_takes_one_seed_per_line_trimmed_and_without_blank_lines() {
+        let response = analyze(
+            "seeds=+alex.demo%40example.org+%0A%0A%40alexdemo%0D%0Aexample.org",
+            "Sec-Fetch-Site: same-origin\r\n",
+            None,
+            &echo_seeds(),
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(
+            response.contains(r#"{"seeds":["alex.demo@example.org","@alexdemo","example.org"]}"#),
+            "{response}"
+        );
+    }
+
+    /// A request the analysis cannot honour is refused before the spine runs.
+    #[test]
+    fn analysis_refuses_what_it_cannot_honour_before_it_runs() {
+        let too_many = format!(
+            "seeds={}",
+            (0..=MAX_ANALYZE_SEEDS)
+                .map(|n| format!("seed{n}.example"))
+                .collect::<Vec<_>>()
+                .join("%0A")
+        );
+        let too_long = format!("seeds={}", "a".repeat(MAX_SELECTOR_BYTES + 1));
+        for (query, extra, status, fragment) in [
+            ("seeds=", "", "400", "needs seeds"),
+            ("seeds=+%0A+", "", "400", "needs seeds"),
+            ("other=x", "", "400", "needs seeds"),
+            (too_many.as_str(), "", "400", "at most 16 seeds"),
+            (too_long.as_str(), "", "400", "longer than 512 bytes"),
+            ("seeds=%ZZ", "", "400", "percent-encoded"),
+            (
+                "seeds=a",
+                "Sec-Fetch-Site: cross-site\r\n",
+                "403",
+                "cross-site",
+            ),
+            (
+                "seeds=a",
+                "Sec-Fetch-Site: same-site\r\n",
+                "403",
+                "cross-site",
+            ),
+        ] {
+            let response = analyze(query, extra, None, &echo_seeds());
+            assert!(
+                response.starts_with(&format!("HTTP/1.1 {status}")),
+                "{query}: {response}"
+            );
+            assert!(response.contains(fragment), "{query}: {response}");
+            assert!(!response.contains("\"seeds\":["), "{query} ran the spine");
+        }
+        let post = respond(
+            "POST /api/analyze?seeds=a HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            None,
+            loopback_bind(),
+            &echo_seeds(),
+        );
+        assert!(post.starts_with("HTTP/1.1 405"), "{post}");
+    }
+
+    #[test]
+    fn analysis_needs_the_token_when_one_is_configured() {
+        let refused = analyze("seeds=a", "", Some("secret"), &echo_seeds());
+        assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+        let allowed = analyze(
+            "seeds=a",
+            "Authorization: Bearer secret\r\n",
+            Some("secret"),
+            &echo_seeds(),
+        );
+        assert!(allowed.starts_with("HTTP/1.1 200"), "{allowed}");
+    }
+
+    #[test]
+    fn analysis_answers_with_the_status_the_spine_reports() {
+        let refusing = analyses(|_| {
+            Err(LookupError {
+                status: 422,
+                message: "no actionable seeds".into(),
+            })
+        });
+        let response = analyze("seeds=a", "", None, &refusing);
+        assert!(response.starts_with("HTTP/1.1 422"), "{response}");
+        assert!(response.contains("no actionable seeds"), "{response}");
+    }
+
+    /// About `depth` KiB of stack: a 1 KiB frame per call, kept live across the call below it.
+    fn deep_stack(depth: usize) -> u64 {
+        let frame = std::hint::black_box([1_u8; 1024]);
+        let below = if depth == 0 { 0 } else { deep_stack(depth - 1) };
+        below + u64::from(frame[depth % frame.len()])
+    }
+
+    /// The spine needs more stack than a connection thread has. Served from a thread with the
+    /// connection stack, a handler that uses about 1 MiB of stack must still answer, because the
+    /// analysis runs on its own thread. Run inline, it would overflow and abort the server.
+    #[test]
+    fn an_analysis_runs_off_the_small_connection_stack() {
+        let deep = analyses(|_| Ok(serde_json::json!({ "sum": deep_stack(1024) })));
+        let response = thread::Builder::new()
+            .stack_size(HANDLER_STACK_BYTES)
+            .spawn(move || analyze("seeds=a", "", None, &deep))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains(r#"{"sum":1025}"#), "{response}");
+    }
+
+    /// The page drives the analysis through the same route, refused cross-site, with no lookup
+    /// header: it makes no network request and spends no key.
+    #[test]
+    fn the_page_runs_the_offline_analysis() {
+        assert!(INDEX_HTML.contains(r#"<form id="analyze">"#));
+        assert!(INDEX_HTML.contains("call('/api/analyze?'"));
+        let script = inline_block(INDEX_HTML, "script");
+        let analyze_call = &script[script.find("call('/api/analyze?'").unwrap()..];
+        let analyze_call = &analyze_call[..analyze_call.find(';').unwrap()];
+        assert!(
+            !analyze_call.contains("X-Huntsman-Lookup"),
+            "{analyze_call}"
+        );
     }
 }

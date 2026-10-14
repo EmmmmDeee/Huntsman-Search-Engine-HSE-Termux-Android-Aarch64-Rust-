@@ -147,6 +147,11 @@ huntsman-recon serve
 termux-open-url http://127.0.0.1:8080/
 ```
 
+The page's analysis form runs entirely on the phone: it links the seeds you
+enter, ranks the next pivots, names the seeds left unlinked and plans the
+sources to query, with no network request and no API key, so it works with
+mobile data off.
+
 `serve` prints the address it listens on as `serving=http://…/`. Port 8080 is
 also the default of other servers people run in Termux, such as code-server
 and File Browser. When it is taken, `serve` exits 69 and says so. Pass another

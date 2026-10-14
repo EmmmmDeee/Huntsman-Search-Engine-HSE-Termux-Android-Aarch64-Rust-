@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::attack_reporting::{HierarchyCoverage, coverage_from_observations};
 use crate::coref::{self, CorefCluster};
-use crate::correlator::{Correlation, RuleContext, confirmed_only, rank_and_sort, registry};
+use crate::correlator::{Correlation, evaluate_rules};
 use crate::coverage::{CoverageVerdict, coverage_verdict};
 use crate::cross_scan::{
     CrossScanCategory, CrossScanOptions, CrossScanRecord, CrossScanStore, build_cross_scan_history,
@@ -49,33 +49,12 @@ fn termination_for(snapshot: &AnalysisSnapshot) -> TerminationReason {
     decide_termination(frontier, signals).unwrap_or(TerminationReason::FixedPoint)
 }
 
-fn correlate_entities_at(
-    entities: &[crate::entity::Entity],
-    scan_id: &str,
-    now_unix: u64,
-) -> Vec<Correlation> {
-    let confirmed = confirmed_only(entities);
-    let context = RuleContext::new(&confirmed, &[]);
-    let mut correlations = Vec::new();
-    for rule in registry() {
-        correlations.extend(rule.run(&context, scan_id, now_unix));
-    }
-    rank_and_sort(&mut correlations, &confirmed);
-    correlations
-}
-
 fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
     let graph = Graph::build(&snapshot.entities, &snapshot.relations);
     let scan_id = snapshot
         .entities
         .first()
         .map_or("analysis", |entity| entity.scan_id.as_str());
-    let now_unix = snapshot
-        .entities
-        .iter()
-        .map(|entity| entity.observed_at_unix)
-        .max()
-        .unwrap_or(0);
     InvestigationReport {
         attack: coverage_from_observations(&snapshot.entities, &snapshot.relations),
         intelligence: intelligence::build_intelligence_report(
@@ -86,7 +65,9 @@ fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
         gaps: gap::analyze(&snapshot.entities, &snapshot.relations),
         pivots: pivot::rank_pivots(&graph),
         coreference: coref::cluster_entities(&snapshot.entities),
-        correlations: correlate_entities_at(&snapshot.entities, scan_id, now_unix),
+        // The rules read domain relations, which they derive from the entities. The snapshot's
+        // relations are only their graph projection (`EntityRelation`), so none are passed.
+        correlations: evaluate_rules(&snapshot.entities, &[], scan_id),
         cross_scan: None,
         cross_scan_history: build_cross_scan_history(&snapshot.entities),
         coverage: coverage_verdict(&snapshot.coverage),
@@ -121,4 +102,71 @@ pub fn analyze_snapshot_with_cross_scan<S: CrossScanStore>(
         },
     )?);
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+    use crate::evidence_ancestry::EvidenceAncestryGraph;
+
+    /// A confirmed domain whose DNS evidence names the address it resolves to.
+    fn hosted_on(domain: &str, ip: &str) -> Entity {
+        let mut entity = Entity::new(EntityKind::Domain, domain, 0.9, "analysis-test");
+        entity.add_evidence(
+            Evidence::new(EvidenceProvenance::new("dns"), format!("{domain} A record"))
+                .with_attr("ip", ip),
+        );
+        entity
+    }
+
+    /// Two confirmed domains on one address (RFC 5737 documentation range) share hosting.
+    /// AU-110 reads `ResolvesTo` relations, so the analysis reports it only when the rules are
+    /// given the relations these entities imply. Given none, as before, it stayed silent.
+    #[test]
+    fn analysis_correlates_over_the_relations_its_entities_imply() {
+        let snapshot = AnalysisSnapshot {
+            entities: vec![
+                hosted_on("alpha.example", "192.0.2.10"),
+                hosted_on("beta.example", "192.0.2.10"),
+                Entity::new(EntityKind::IpAddress, "192.0.2.10", 0.9, "analysis-test"),
+            ],
+            relations: Vec::new(),
+            coverage: Vec::new(),
+            ancestry: EvidenceAncestryGraph::default(),
+            truncated: false,
+        };
+        let report = analyze_snapshot(&snapshot);
+        let fired: Vec<&str> = report
+            .correlations
+            .iter()
+            .map(|correlation| correlation.rule_id.as_str())
+            .collect();
+        assert!(fired.contains(&"AU-110"), "rules that fired: {fired:?}");
+    }
+
+    /// An entity demoted to candidate is excluded before the rules run, so deriving relations
+    /// cannot make it assert a link: the same domains and address, demoted, fire nothing.
+    #[test]
+    fn entities_demoted_to_candidate_assert_no_correlation() {
+        let mut entities = vec![
+            hosted_on("alpha.example", "192.0.2.10"),
+            hosted_on("beta.example", "192.0.2.10"),
+            Entity::new(EntityKind::IpAddress, "192.0.2.10", 0.9, "analysis-test"),
+        ];
+        for entity in &mut entities {
+            entity.demote_to_candidate();
+        }
+        let snapshot = AnalysisSnapshot {
+            entities,
+            relations: Vec::new(),
+            coverage: Vec::new(),
+            ancestry: EvidenceAncestryGraph::default(),
+            truncated: false,
+        };
+        assert_eq!(
+            analyze_snapshot(&snapshot).correlations,
+            Vec::<Correlation>::new()
+        );
+    }
 }

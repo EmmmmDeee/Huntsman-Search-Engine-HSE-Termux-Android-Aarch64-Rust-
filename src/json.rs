@@ -1,31 +1,38 @@
 //! Stable JSON helpers for deterministic exports.
 
-use serde_json::{Map, Value};
+use serde::ser::{Serialize, SerializeMap, Serializer};
+use serde_json::Value;
 
-#[must_use]
-pub fn sorted_value(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut keys = map.keys().cloned().collect::<Vec<_>>();
-            keys.sort_unstable();
-            let mut sorted = Map::with_capacity(map.len());
-            for key in keys {
-                sorted.insert(key.clone(), sorted_value(&map[&key]));
+/// A value that serializes with every object's members in ascending key order, written as the
+/// tree is walked: nothing is copied. `serde_json`'s map already iterates in key order unless its
+/// `preserve_order` feature is on, which any crate in a build can switch on, so the members are
+/// sorted here regardless (an ordered run sorts in one pass).
+struct Canonical<'a>(&'a Value);
+
+impl Serialize for Canonical<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Object(map) => {
+                let mut members = map.iter().collect::<Vec<_>>();
+                members.sort_unstable_by(|left, right| left.0.cmp(right.0));
+                let mut out = serializer.serialize_map(Some(members.len()))?;
+                for (key, value) in members {
+                    out.serialize_entry(key, &Canonical(value))?;
+                }
+                out.end()
             }
-            Value::Object(sorted)
+            Value::Array(items) => serializer.collect_seq(items.iter().map(Canonical)),
+            scalar => scalar.serialize(serializer),
         }
-        Value::Array(items) => Value::Array(items.iter().map(sorted_value).collect()),
-        other => other.clone(),
     }
 }
 
+/// `value` as compact JSON with every object's keys in ascending order.
+///
+/// # Errors
+/// Returns `serde_json`'s serialization failure.
 pub fn to_canonical_string(value: &Value) -> serde_json::Result<String> {
-    serde_json::to_string(&sorted_value(value))
-}
-
-pub fn from_str_sorted(raw: &str) -> serde_json::Result<Value> {
-    let value: Value = serde_json::from_str(raw)?;
-    Ok(sorted_value(&value))
+    serde_json::to_string(&Canonical(value))
 }
 
 #[cfg(test)]

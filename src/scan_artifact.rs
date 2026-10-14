@@ -72,7 +72,9 @@ impl ScanArtifact {
         Ok(Self::new(scan_id, batch.entities.clone(), Vec::new()))
     }
 
-    /// Rerun the correlation rules over this stored scan.
+    /// Rerun the correlation rules over this stored scan, exactly as the analysis behind `plan`
+    /// correlates the same entities: the rules read the relations the entities imply, and the
+    /// stored relations between confirmed entities.
     #[must_use]
     pub fn correlate(&self) -> Vec<Correlation> {
         evaluate_rules(&self.entities, &self.relations, &self.scan_id)
@@ -319,17 +321,9 @@ mod tests {
         );
         write(&path, &original).unwrap();
         let reloaded = read(&path).unwrap();
-        // `ts` is a wall-clock stamp of when correlate() ran, not part of the
-        // stored scan's identity; the two calls can straddle a second boundary.
-        // The metamorphic property is that the correlations are otherwise
-        // identical, so normalise `ts` before comparing.
-        let strip_ts = |mut correlations: Vec<Correlation>| {
-            for correlation in &mut correlations {
-                correlation.ts = 0;
-            }
-            correlations
-        };
-        assert_eq!(strip_ts(reloaded.correlate()), strip_ts(in_memory));
+        // Correlations are stamped with the scan's latest observation, which the artifact
+        // stores, so the two runs agree exactly, `ts` included.
+        assert_eq!(reloaded.correlate(), in_memory);
     }
 
     #[test]
@@ -391,6 +385,53 @@ mod tests {
         let artifact = ScanArtifact::from_batch("scan-1", &batch).unwrap();
         assert_eq!(artifact.entities, batch.entities);
         assert_eq!(artifact.correlate(), corroborated().correlate());
+    }
+
+    /// A saved scan correlates exactly as the analysis behind `plan` and the web UI correlates the
+    /// same entities. An email, its local part as a handle and that handle's profile form an
+    /// identity cluster (AU-060) of single-pathway links (AU-063), and two domains share a hosting
+    /// address (AU-110). Before, `correlate` gave the rules only the relations stored in the
+    /// artifact, and `dehashed --save-artifact`, the only writer, stores none, so no relation rule
+    /// ever fired on a saved scan.
+    #[test]
+    fn a_saved_scan_correlates_as_the_analysis_of_its_entities() {
+        use crate::analysis::analyze_snapshot;
+        use crate::evidence_ancestry::EvidenceAncestryGraph;
+        use crate::pipeline::AnalysisSnapshot;
+
+        let hosted_on = |domain: &str| {
+            let mut entity = Entity::new(EntityKind::Domain, domain, 0.9, "scan-1");
+            entity.add_evidence(
+                Evidence::new(EvidenceProvenance::for_scan("dns", "scan-1"), "A record")
+                    .with_attr("ip", "192.0.2.10"),
+            );
+            entity
+        };
+        let entities = vec![
+            Entity::new(EntityKind::Email, "ann@mail.example", 0.9, "scan-1"),
+            Entity::new(EntityKind::Username, "ann", 0.9, "scan-1"),
+            Entity::new(EntityKind::Url, "https://github.com/ann", 0.9, "scan-1"),
+            hosted_on("alpha.example"),
+            hosted_on("beta.example"),
+            Entity::new(EntityKind::IpAddress, "192.0.2.10", 0.9, "scan-1"),
+        ];
+        let analysed = analyze_snapshot(&AnalysisSnapshot {
+            entities: entities.clone(),
+            relations: Vec::new(),
+            coverage: Vec::new(),
+            ancestry: EvidenceAncestryGraph::default(),
+            truncated: false,
+        })
+        .correlations;
+        let fired = analysed
+            .iter()
+            .map(|correlation| correlation.rule_id.as_str())
+            .collect::<Vec<_>>();
+        for rule in ["AU-060", "AU-063", "AU-110"] {
+            assert!(fired.contains(&rule), "{rule} is missing from {fired:?}");
+        }
+        let saved = ScanArtifact::new("scan-1", entities, Vec::new());
+        assert_eq!(saved.correlate(), analysed);
     }
 
     #[test]

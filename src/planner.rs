@@ -233,19 +233,20 @@ fn action_id(action: &DispatchAction, modules: &[Arc<dyn Module>]) -> String {
     }
 }
 
+/// Scored dispatches first, highest utility first, then by action id. The ids are passed in,
+/// formatted once per dispatch: formatting them in here cost two allocations per comparison.
 fn utility_cmp(
-    left: &PlannedDispatch,
-    right: &PlannedDispatch,
-    modules: &[Arc<dyn Module>],
+    (left_id, left): &(String, PlannedDispatch),
+    (right_id, right): &(String, PlannedDispatch),
 ) -> Ordering {
     match (&left.utility, &right.utility) {
         (Some(left_utility), Some(right_utility)) => right_utility
             .final_utility
             .total_cmp(&left_utility.final_utility)
-            .then_with(|| action_id(&left.action, modules).cmp(&action_id(&right.action, modules))),
+            .then_with(|| left_id.cmp(right_id)),
         (Some(_), None) => Ordering::Less,
         (None, Some(_)) => Ordering::Greater,
-        (None, None) => action_id(&left.action, modules).cmp(&action_id(&right.action, modules)),
+        (None, None) => left_id.cmp(right_id),
     }
 }
 
@@ -298,7 +299,12 @@ pub fn build_dispatch_plan(
         }
     }
 
-    selected.sort_by(|left, right| utility_cmp(left, right, modules));
+    let mut keyed = selected
+        .into_iter()
+        .map(|item| (action_id(&item.action, modules), item))
+        .collect::<Vec<_>>();
+    keyed.sort_by(utility_cmp);
+    let mut selected = keyed.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
     excluded.sort_by(|left, right| {
         left.provider_id
             .cmp(&right.provider_id)
