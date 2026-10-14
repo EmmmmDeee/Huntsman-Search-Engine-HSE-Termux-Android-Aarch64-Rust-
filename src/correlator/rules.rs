@@ -109,6 +109,13 @@ fn identity_entities(entities: &[Entity]) -> Vec<&Entity> {
         .collect()
 }
 
+/// A username the analysis inferred, such as one derived from an email's local part. It adds no
+/// identity beyond the address it came from, so the identity-cluster rule does not count it.
+fn is_inferred_username(entity: &Entity) -> bool {
+    entity.kind == EntityKind::Username
+        && entity.evidence.iter().any(|evidence| evidence.is_inferred)
+}
+
 fn dates_for_breach(entity: &Entity) -> Vec<i64> {
     entity
         .evidence
@@ -165,6 +172,7 @@ pub fn rule_au_002_identity_cluster(
     let identities = identity_entities(context.entities())
         .into_iter()
         .filter(|entity| entity.confidence >= 0.5)
+        .filter(|entity| !is_inferred_username(entity))
         .collect::<Vec<_>>();
     let emails = identities
         .iter()
