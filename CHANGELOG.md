@@ -14,6 +14,7 @@ commit, which `build-sha` and `diagnostics` print, and by its `main-<sha7>` pre-
 report. A stable release needs its own version heading in this file, cut when the owner approves it.
 
 ## [Unreleased]
+- Add `huntsman-recon doctor` and `huntsman-recon fix`. `doctor` checks the binary on PATH, its build SHA against `~/.huntsman/installed-revision`, the state directory, `~/.huntsman.env` (never its values), configured keys (`--probe` tests them live), ledgers, the install acceptance, a running `serve` (`doctor serve` probes the page, its CSP script hash and offline analysis), free disk, the build cache and the Termux paths, and names the fix for each problem; it exits 78 when a check fails. `fix` makes the repairs that can be undone and checks again.
 - Fix the main-channel release race where a queued build could become historical before `gh release create --target <sha>` and fail with GitHub's built-in workflow token. Publication now uses a draft created from the live main head, verifies its tag exactly, and discards a raced draft rather than failing or publishing the wrong commit.
 
 ### Added
