@@ -50,9 +50,8 @@ pub fn source_family(source: &str) -> &'static str {
         "shodan" | "dns_intel" | "ip_geo" | "geocode" | "ip_whois_geo" | "ip2location"
         | "mylnikov" | "abuseipdb" | "bgpview" | "criminal_ip" | "ipqs" | "netblock" | "netlas"
         | "onyphe" | "portscan" | "ripestat" | "securitytrails" | "zoomeye" | "domainsdb"
-        | "internetdb" | "greynoise" | "virustotal" | "pulsedive" | "threatfox" | "whoxy" => {
-            "infra"
-        }
+        | "internetdb" | "greynoise" | "virustotal" | "pulsedive" | "threatfox" | "urlhaus"
+        | "whoxy" => "infra",
         _ if source.contains("github") || source.contains("npm") => "code",
         _ if source.contains("forum") || source.contains("reddit") => "forum",
         _ if source.contains("search") => "search",

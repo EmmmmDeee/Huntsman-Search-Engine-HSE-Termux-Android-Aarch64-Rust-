@@ -87,6 +87,7 @@ fn keyless() -> Routes {
         ("https://api.abuseipdb.com/", 200, ABUSEIPDB),
         ("https://www.virustotal.com/", 200, VIRUSTOTAL),
         ("https://pulsedive.com/", 404, PULSEDIVE_UNKNOWN),
+        ("https://app.netlas.io/", 404, ""),
         ("https://api.shodan.io/", 200, SHODAN),
     ])
 }
@@ -137,14 +138,16 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "internetdb.shodan.io",
             "stat.ripe.net",
             "api.greynoise.io",
-            "pulsedive.com"
+            "pulsedive.com",
+            "app.netlas.io"
         ]
     );
     assert_eq!(outcome(&report, "internetdb"), SourceOutcomeKind::Success);
     assert_eq!(outcome(&report, "ripestat"), SourceOutcomeKind::Success);
     assert_eq!(outcome(&report, "greynoise"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "pulsedive"), SourceOutcomeKind::ValidZero);
-    assert_eq!(report.outcomes.len(), 4, "an unkeyed leg reports nothing");
+    assert_eq!(outcome(&report, "netlas"), SourceOutcomeKind::ValidZero);
+    assert_eq!(report.outcomes.len(), 5, "an unkeyed leg reports nothing");
 
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
     assert!(ip.has_tag(tags::VULNERABLE));

@@ -141,6 +141,9 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         "threatfox" => ("threatfox", "src/threatfox.rs"),
         "ipqs" => ("ipqs", "src/ipqs.rs"),
         "whoxy" => ("whoxy", "src/whoxy.rs"),
+        "netlas" => ("netlas", "src/netlas.rs"),
+        "securitytrails" => ("securitytrails", "src/securitytrails.rs"),
+        "urlhaus" => ("urlhaus", "src/urlhaus.rs"),
         _ => return None,
     })
 }

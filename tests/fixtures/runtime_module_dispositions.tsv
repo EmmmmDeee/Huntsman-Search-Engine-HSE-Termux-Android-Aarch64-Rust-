@@ -99,6 +99,7 @@ method_actors	leaf	general cleaning and shape-filter method actors over shared s
 metrics	runtime	shared scan metrics
 module	runtime	provider economics metadata
 navigator	exporter	ATT&CK Navigator output from admitted claims
+netlas	adapter	Netlas host leg reached through indicator_legs from ip, domain, scan and /api/lookup
 network_cli	adapter	network lookup front-end reached from network, scan -k network and /api/lookup
 numverify	adapter	Numverify leg reached through phone_cli from phone, scan -k phone and /api/lookup when its key is set
 oathnet	adapter	OathNet breach-search leg reached through exposure_cli from exposure, scan -k exposure and /api/lookup
@@ -135,6 +136,7 @@ scan_batch	leaf	bounded ordered scan seed-list parsing
 scan_route	runtime	deterministic lookup-front-end selector routing
 scraper_health	diagnostic	source drift diagnostics
 search	diagnostic	local search utility
+securitytrails	adapter	SecurityTrails subdomain leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set
 seeknow	adapter	SeekNow/See-Know source client
 seeknow_cli	diagnostic	SeekNow command front-end
 seeknow_collector	adapter	SeekNow lineage-safe collector
@@ -163,6 +165,7 @@ timefmt	leaf	timestamp parsing
 timeline	runtime	timeline reconstruction through intelligence report
 tlsrpt	leaf	TLS-RPT parser
 union_find	leaf	deterministic clustering primitive
+urlhaus	adapter	URLhaus host leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
 username_cli	diagnostic	username enrichment command front-end
 username_variants	leaf	deterministic handle normalization variants
 validation	runtime	seed/entity validation

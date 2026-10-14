@@ -31,6 +31,9 @@ these slots without printing their values.
 | Pulsedive | `HUNTSMAN_PULSEDIVE_KEY` | optional for `ip` and `domain`: Pulsedive answers without a key at a lower limit; a free key raises it |
 | IPQualityScore | `HUNTSMAN_IPQS_KEY` | used by `ip` when set in the environment; free: 1,000 lookups/month |
 | ThreatFox (abuse.ch) | `HUNTSMAN_THREATFOX_KEY` | used by `ip` and `domain` when set in the environment; free abuse.ch Auth-Key |
+| Netlas | `HUNTSMAN_NETLAS_KEY` | optional for `ip` and `domain`: Netlas answers without a key at a lower limit; a free Community key raises it |
+| SecurityTrails | `HUNTSMAN_SECTRAILS_KEY` | used by `domain` when set in the environment; free: 50 queries/month |
+| URLhaus (abuse.ch) | `HUNTSMAN_ABUSECH_KEY` | used by `ip` and `domain` when set in the environment; the same free abuse.ch Auth-Key as `HUNTSMAN_THREATFOX_KEY` |
 | Censys | `HUNTSMAN_CENSYS_ID`, `HUNTSMAN_CENSYS_SECRET` | do not assume usable; provider access must be revalidated |
 
 ## Private runtime template
@@ -60,6 +63,9 @@ HUNTSMAN_LEAKIX_KEY=
 HUNTSMAN_PULSEDIVE_KEY=
 HUNTSMAN_IPQS_KEY=
 HUNTSMAN_THREATFOX_KEY=
+HUNTSMAN_NETLAS_KEY=
+HUNTSMAN_SECTRAILS_KEY=
+HUNTSMAN_ABUSECH_KEY=
 HUNTSMAN_CENSYS_ID=
 HUNTSMAN_CENSYS_SECRET=
 ```

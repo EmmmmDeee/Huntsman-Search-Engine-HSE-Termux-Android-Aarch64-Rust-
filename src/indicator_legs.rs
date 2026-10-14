@@ -13,16 +13,19 @@ use crate::http::Transport;
 use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Source};
 use crate::keys::Keys;
 use crate::source_outcome::SourceExecutionOutcome;
-use crate::{ipqs, leakix, pulsedive, shodan, threatfox, whoxy};
+use crate::{ipqs, leakix, netlas, pulsedive, securitytrails, shodan, threatfox, urlhaus, whoxy};
 
 /// Every indicator source, in the order a lookup runs them.
 pub const SOURCES: &[Source] = &[
     shodan::INTEL,
     pulsedive::INTEL,
+    netlas::INTEL,
     leakix::INTEL,
     threatfox::INTEL,
+    urlhaus::INTEL,
     ipqs::INTEL,
     whoxy::INTEL,
+    securitytrails::INTEL,
 ];
 
 /// Confidence of the queried indicator.
@@ -204,9 +207,9 @@ mod tests {
             1,
         );
         let ran: Vec<&str> = legs.outcomes.iter().map(|o| o.module.as_str()).collect();
-        assert_eq!(ran, ["pulsedive"]);
+        assert_eq!(ran, ["pulsedive", "netlas"]);
         assert!(legs.network.is_some());
-        assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 1);
+        assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 2);
     }
 
     #[test]
