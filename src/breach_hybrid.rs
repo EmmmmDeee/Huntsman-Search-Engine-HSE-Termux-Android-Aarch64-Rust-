@@ -13,7 +13,7 @@ pub enum BreachLeg {
     HibpAccount,
     /// `recon stolen-tax`. Operator key required. Cleartext is not a field.
     StolenTax,
-    /// OathNet breach search. Operator key required. Only field names leave a record.
+    /// `OathNet` breach search. Operator key required. Only field names leave a record.
     OathNet,
 }
 

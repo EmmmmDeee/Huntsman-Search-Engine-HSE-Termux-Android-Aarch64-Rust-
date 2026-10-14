@@ -1,20 +1,20 @@
-//! OathNet breach search: one keyed leg of `exposure`.
+//! `OathNet` breach search: one keyed leg of `exposure`.
 //!
 //! One lookup is one `GET https://oathnet.org/api/service/v2/breach/search?email[]=ADDR` with
 //! the key in the `x-api-key` header, bound to [`KEY_ORIGIN`] by [`crate::fetch`]. Redirects are
 //! not followed, so the key cannot be sent anywhere else. The endpoint, envelope and field names
-//! are those of OathNet's published OpenAPI document (`https://docs.oathnet.org/openapi.yaml`,
+//! are those of `OathNet`'s published `OpenAPI` document (`https://docs.oathnet.org/openapi.yaml`,
 //! `V2BreachSearchResponse`); they are not verified against a live key here.
 //!
 //! What is kept is exposure metadata: per breach database (`dbname`), how many records hold the
 //! address, which field types those records expose, whether a password or hash is among them,
-//! the breach's public date, title, domain and size from `dbname_info`, and when OathNet
+//! the breach's public date, title, domain and size from `dbname_info`, and when `OathNet`
 //! indexed the records. Usernames and other addresses in the records become pivots. No other
 //! value of a record is kept: a password, hash, salt, phone number, street address or any other
 //! field is reduced to its field name before decoding returns, so it cannot reach an entity, a
 //! report or a saved ledger.
 //!
-//! The lookup reads one page of [`PAGE_SIZE`] records. When OathNet says there are more, the
+//! The lookup reads one page of [`PAGE_SIZE`] records. When `OathNet` says there are more, the
 //! answer is marked partial, never complete. A key, plan or quota refusal, a `success: false`
 //! envelope, and a body that is not the envelope are errors, never a zero: a zero is only a
 //! successful envelope with no items. Each lookup spends one of the key's daily lookups.
@@ -40,9 +40,9 @@ pub const KEY_SLOT: &str = crate::environment::OATHNET_KEY_ENV;
 pub const API_URL: &str = "https://oathnet.org/api/service/v2/breach/search";
 /// The only origin the key is ever sent to.
 pub const KEY_ORIGIN: &str = "https://oathnet.org:443";
-/// OathNet requires this header name in lower case.
+/// `OathNet` requires this header name in lower case.
 const KEY_HEADER: &str = "x-api-key";
-/// Records read per lookup. OathNet accepts 1 to 200.
+/// Records read per lookup. `OathNet` accepts 1 to 200.
 pub const PAGE_SIZE: u32 = 100;
 /// Ceiling for the one request.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
@@ -126,7 +126,7 @@ impl OathnetError {
 /// metadata about the breach, never a value from a record.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Breach {
-    /// The breach database name as OathNet gives it.
+    /// The breach database name as `OathNet` gives it.
     pub dbname: String,
     /// Records on this page that hold the address.
     pub records: usize,
@@ -156,9 +156,9 @@ pub struct Search {
     pub usernames: BTreeSet<String>,
     /// Distinct addresses in the records, sorted, as written.
     pub emails: BTreeSet<String>,
-    /// Matching records OathNet reports in all.
+    /// Matching records `OathNet` reports in all.
     pub total: Option<u64>,
-    /// OathNet says more records exist than this page holds.
+    /// `OathNet` says more records exist than this page holds.
     pub has_more: bool,
 }
 
@@ -220,7 +220,7 @@ struct LeakMetadata {
     pwn_count: Option<u64>,
 }
 
-/// Transport settings for OathNet: the [`TIMEOUT`] ceiling.
+/// Transport settings for `OathNet`: the [`TIMEOUT`] ceiling.
 #[must_use]
 pub fn transport_config() -> TransportConfig {
     TransportConfig {
@@ -238,7 +238,7 @@ pub fn search_url(email: &str) -> String {
     )
 }
 
-/// Search OathNet's breach records for `email` with the key in `keys`.
+/// Search `OathNet`'s breach records for `email` with the key in `keys`.
 ///
 /// # Errors
 /// [`OathnetError::MissingKey`] before any request when no key is configured; otherwise the
@@ -291,7 +291,7 @@ fn credential(secret: Secret, now_unix: u64) -> Result<Credential, OathnetError>
         .map_err(|e| OathnetError::Refused(e.to_string()))
 }
 
-/// The error a non-2xx status means. The status decides first, as OathNet's error guide says.
+/// The error a non-2xx status means. The status decides first, as `OathNet`'s error guide says.
 fn status_error(response: &Response) -> Result<(), OathnetError> {
     match response.status {
         200..=299 => Ok(()),

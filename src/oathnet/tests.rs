@@ -13,7 +13,7 @@ fn keys() -> Keys {
 }
 
 /// The breach-search guide's response, with a second database, a record that names no database,
-/// and the `dbname_info` block of the OpenAPI schema.
+/// and the `dbname_info` block of the `OpenAPI` schema.
 fn sample() -> Value {
     serde_json::json!({
         "success": true,

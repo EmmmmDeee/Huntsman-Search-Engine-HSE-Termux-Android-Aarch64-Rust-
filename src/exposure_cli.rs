@@ -2,10 +2,10 @@
 //!
 //! The address is canonicalised once, then the account-keyed legs of
 //! [`breach_hybrid::exposure_order`] run in that order: HIBP `breachedaccount`,
-//! then the stolen.tax cascade, then OathNet breach search. The keyless legs (Pwned Passwords, the HIBP
+//! then the stolen.tax cascade, then `OathNet` breach search. The keyless legs (Pwned Passwords, the HIBP
 //! catalogue) are not keyed on an address and are not run here. Each HIBP breach
 //! becomes evidence on the seed email entity, tagged `breach` or `stealer-log`;
-//! stolen.tax entities are taken as that module builds them. Each OathNet breach
+//! stolen.tax entities are taken as that module builds them. Each `OathNet` breach
 //! database becomes evidence on the seed email entity carrying exposure metadata
 //! only (dataset, record count, exposed field types, dates), and the usernames and
 //! other addresses in its records become pivots. Everything flows
@@ -49,7 +49,7 @@ Canonicalise ADDR and run the keyed breach legs in order: HIBP breached-account,
 pub const SOURCE: &str = "hibp_account";
 /// Source label for the stolen.tax leg.
 pub const STOLEN_TAX_SOURCE: &str = "stolen_tax";
-/// Source label for the OathNet leg.
+/// Source label for the `OathNet` leg.
 pub const OATHNET_SOURCE: &str = oathnet::SOURCE;
 
 /// The longest incident summary or attribution, in characters. Longer text is cut on a character
@@ -319,7 +319,7 @@ pub struct Report {
     /// built from these same incidents. `None` when HIBP gave no answer (no key, or a failed
     /// request), which is not a zero.
     pub incidents: Option<Vec<Incident>>,
-    /// The breach databases OathNet lists the address in, sorted by name. `None` when OathNet
+    /// The breach databases `OathNet` lists the address in, sorted by name. `None` when `OathNet`
     /// gave no answer (no key, or a failed request), which is not a zero.
     pub oathnet: Option<Vec<oathnet::Breach>>,
 }
@@ -488,7 +488,7 @@ fn render_incidents(incidents: Option<&[Incident]>) -> String {
     out
 }
 
-/// The OathNet section that follows the incidents: `oathnet_breaches=N`, or `none` when OathNet
+/// The `OathNet` section that follows the incidents: `oathnet_breaches=N`, or `none` when `OathNet`
 /// gave no answer, then one tab-separated `oathnet_breach` row per breach database, in name order:
 /// records, breach date, indexed range, whether a password or hash is exposed, and the exposed
 /// field types. Every value is written through [`escape_controls`].
@@ -693,7 +693,7 @@ fn oathnet_leg(
     }
 }
 
-/// One email entity per OathNet breach database, carrying that breach's exposure metadata, then
+/// One email entity per `OathNet` breach database, carrying that breach's exposure metadata, then
 /// one pivot per distinct username and per other address in the records. A record value other
 /// than a username or address never reaches an entity: [`oathnet::decode`] keeps none.
 fn oathnet_entities(email: &str, scan_id: &str, search: &oathnet::Search) -> Vec<Entity> {
@@ -1453,7 +1453,7 @@ mod tests {
         );
     }
 
-    /// The incidents section: from `incidents=` up to the OathNet section that follows it.
+    /// The incidents section: from `incidents=` up to the `OathNet` section that follows it.
     fn incidents_section(text: &str) -> &str {
         let Some(start) = text.find("\nincidents=") else {
             panic!("no incidents section: {text}");
