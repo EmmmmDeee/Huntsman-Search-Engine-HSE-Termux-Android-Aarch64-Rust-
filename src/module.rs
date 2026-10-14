@@ -326,7 +326,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
     },
     ReachableModule {
         name: "web_server",
-        command: "serve [--bind ADDR]",
+        command: "serve [--bind ADDR] [--history DIR]",
         access: "local",
         network: true,
         category: ModuleCategory::Other,

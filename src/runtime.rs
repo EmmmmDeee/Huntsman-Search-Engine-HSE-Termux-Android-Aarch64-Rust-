@@ -5,12 +5,13 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use crate::analysis::{InvestigationReport, analyze_snapshot};
+use crate::analysis::{InvestigationReport, analyze_snapshot, analyze_snapshot_with_cross_scan};
 use crate::artifacts::{PipelineArtifacts, render_artifacts};
 use crate::collection::{CollectionEvent, ObservationBatch, RawObservation, UpstreamOrigin};
 use crate::correlator::Correlation;
+use crate::cross_scan::CrossScanCategory;
 use crate::dependency::{Module, Target, TargetKind};
-use crate::entity::Entity;
+use crate::entity::{Entity, SEED_EVIDENCE_ROLE};
 use crate::error::Error;
 use crate::gap::GapReport;
 use crate::graph::EntityRelation;
@@ -22,6 +23,7 @@ use crate::pipeline::{
 };
 use crate::pivot::PivotScore;
 use crate::planner::{DispatchAction, DispatchPlan, PlannerPolicy, build_dispatch_plan};
+use crate::scan_artifact::ArtifactHistory;
 use crate::session::{Candidate, ExecuteRecord, FalsifyRecord, Session, VerifyRecord};
 use crate::source_outcome::SourceOutcomeKind;
 use crate::stage::{EvidenceLevel, Status};
@@ -71,7 +73,7 @@ fn seed_batch(normalization: &SeedNormalization, scan_id: &str) -> ObservationBa
             summary: "operator-supplied investigation seed".to_string(),
             attributes: std::collections::BTreeMap::from([(
                 "evidence_role".to_string(),
-                "seed_not_external_verification".to_string(),
+                SEED_EVIDENCE_ROLE.to_string(),
             )]),
             observed_at_unix: Some(0),
         });
@@ -133,11 +135,32 @@ pub fn investigate_offline(
     policy: &PlannerPolicy,
     ledger: &[LedgerEntry],
 ) -> Result<PipelineOutcome, Error> {
+    investigate_offline_with_history(modules, input, limits, policy, ledger, None)
+}
+
+/// As [`investigate_offline`], and when `history` is given, bridges the snapshot's entities to the
+/// saved scans in it, which the report then carries as `cross_scan`.
+///
+/// # Errors
+/// Returns cross-scan storage failures, ancestry or artifact serialization failures.
+pub fn investigate_offline_with_history(
+    modules: &[Arc<dyn Module>],
+    input: &InvestigationInput,
+    limits: &PipelineLimits,
+    policy: &PlannerPolicy,
+    ledger: &[LedgerEntry],
+    history: Option<&ArtifactHistory>,
+) -> Result<PipelineOutcome, Error> {
     let normalization = normalize_seeds(input, limits);
     let plan = build_dispatch_plan(modules, &normalization.accepted, limits, policy);
     let snapshot = normalize_observations(seed_batch(&normalization, &input.scan_id), limits)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    let report = analyze_snapshot(&snapshot);
+    let report = match history {
+        Some(history) => {
+            analyze_snapshot_with_cross_scan(&snapshot, &input.scan_id, history, limits)?
+        }
+        None => analyze_snapshot(&snapshot),
+    };
     let artifacts = render_artifacts(&snapshot, &report, ledger, limits)?;
     Ok(PipelineOutcome {
         normalization,
@@ -223,6 +246,8 @@ pub struct AnalysisView<'a> {
     pub relations: &'a [EntityRelation],
     pub pivots: &'a [PivotScore],
     pub correlations: &'a [Correlation],
+    /// Bridges to the saved scans of a history. `null` when no history was given.
+    pub cross_scan: Option<&'a CrossScanCategory>,
     pub gaps: &'a GapReport,
     pub planned: Vec<PlannedSource<'a>>,
     pub termination: TerminationReason,
@@ -271,6 +296,7 @@ impl PipelineOutcome {
             relations: &self.snapshot.relations,
             pivots: &self.report.pivots,
             correlations: &self.report.correlations,
+            cross_scan: self.report.cross_scan.as_ref(),
             gaps: &self.report.gaps,
             planned: self
                 .plan
@@ -310,17 +336,29 @@ impl PipelineOutcome {
 /// # Errors
 /// Returns the spine's error, or a failure to encode the view.
 pub fn analyze_offline(seeds: &[String]) -> Result<serde_json::Value, Error> {
+    analyze_offline_with_history(seeds, None)
+}
+
+/// As [`analyze_offline`], and when `history` is given, bridges the seeds to the saved scans in it.
+///
+/// # Errors
+/// Returns cross-scan storage failures, or the spine's own errors.
+pub fn analyze_offline_with_history(
+    seeds: &[String],
+    history: Option<&ArtifactHistory>,
+) -> Result<serde_json::Value, Error> {
     let input = InvestigationInput {
         scan_id: "analyze".to_owned(),
         seeds: seeds.to_vec(),
         mode: InvestigationMode::Offline,
     };
-    let outcome = investigate_offline(
+    let outcome = investigate_offline_with_history(
         &[],
         &input,
         &PipelineLimits::default(),
         &PlannerPolicy::default(),
         &[],
+        history,
     )?;
     serde_json::to_value(outcome.analysis_view())
         .map_err(|error| Error::Invalid(format!("analysis view: {error}")))
