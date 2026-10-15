@@ -83,131 +83,74 @@ fn now_unix() -> u64 {
 /// [`Refused`] when the lookup produced no report.
 pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collected, Refused> {
     let now = now_unix();
-    let done = |text, entities, outcomes, policy| Collected {
-        text,
-        entities,
-        outcomes,
-        policy,
-    };
     match kind {
-        ScanKind::People => {
-            let transport = UreqTransport::new(&TransportConfig::default());
-            let keys = Keys::from_env();
-            match people_cli::run(&transport, selector, now) {
-                PeopleRun::Printed { text, report } => {
-                    let (text, entities, outcomes) = with_seeknow_leg(
-                        EntityKind::Person,
-                        selector,
-                        &keys,
-                        now,
-                        text,
-                        report.entities,
-                        report.outcomes,
-                    )?;
-                    Ok(done(text, entities, outcomes, PEOPLE_POLICY))
-                }
-                PeopleRun::Network(m) => Err(Refused::Network(m)),
-                PeopleRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
-        }
-        ScanKind::Email => {
-            let keys = Keys::from_env();
-            let transport = UreqTransport::new(&api_leg::transport_config());
-            match huntsman_recon::email_cli::run_keyed(&transport, &keys, selector, now) {
-                EmailRun::Printed { text, report } => {
-                    let (text, entities, outcomes) = with_seeknow_leg(
-                        EntityKind::Email,
-                        selector,
-                        &keys,
-                        now,
-                        text,
-                        report.entities,
-                        report.outcomes,
-                    )?;
-                    Ok(done(text, entities, outcomes, EMAIL_POLICY))
-                }
-                EmailRun::Network(m) => Err(Refused::Network(m)),
-                EmailRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
-        }
-        ScanKind::Exposure => collect_exposure(selector, now),
-        ScanKind::Username => {
-            let transport = UreqTransport::new(&TransportConfig::default());
-            let keys = Keys::from_env();
-            match huntsman_recon::username_cli::run(&transport, &keys, selector, now) {
-                UsernameRun::Printed { text, report } => {
-                    let (text, entities, outcomes) = with_seeknow_leg(
-                        EntityKind::Username,
-                        selector,
-                        &keys,
-                        now,
-                        text,
-                        report.entities,
-                        report.outcomes,
-                    )?;
-                    Ok(done(text, entities, outcomes, USERNAME_POLICY))
-                }
-                UsernameRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
-        }
-        ScanKind::Network => {
-            // Like the other keyed legs, the WiGLE credentials are read from the environment,
-            // never the default file. Configured, they always run.
-            let keys = Keys::from_env();
-            let transport = UreqTransport::new(&wigle::transport_config());
-            let leg = wigle::configured(&keys).then_some((&transport as &dyn Transport, &keys));
-            match huntsman_recon::network_cli::run(leg, selector, now) {
-                NetworkRun::Printed { text, report } => {
-                    Ok(done(text, report.entities, report.outcomes, NETWORK_POLICY))
-                }
-                NetworkRun::Network(m) => Err(Refused::Network(m)),
-                NetworkRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
-        }
-        ScanKind::Phone | ScanKind::Ip | ScanKind::Domain => free_tier(kind, selector, now),
+        ScanKind::People => people(selector, now),
+        ScanKind::Email => email(selector, now),
+        ScanKind::Exposure => exposure(selector, now),
+        ScanKind::Username => username(selector, now),
+        ScanKind::Phone => phone(selector, now),
+        ScanKind::Ip => ip(selector, now),
+        ScanKind::Domain => domain(selector, now),
+        ScanKind::Network => network(selector, now),
     }
 }
 
-/// The phone, ip and domain lookups. Their free-tier legs read keys from the environment only,
-/// as exposure does: a leg whose key is not set makes no request.
-fn free_tier(kind: ScanKind, selector: &str, now: u64) -> Result<Collected, Refused> {
-    let keys = Keys::from_env();
-    let done = |text, entities, outcomes, policy| Collected {
+/// A finished report of one kind, saved under `policy`.
+fn done(
+    text: String,
+    entities: Vec<Entity>,
+    outcomes: Vec<SourceExecutionOutcome>,
+    policy: SavePolicy,
+) -> Collected {
+    Collected {
         text,
         entities,
         outcomes,
         policy,
-    };
-    match kind {
-        ScanKind::Phone => {
-            let transport = UreqTransport::new(&api_leg::transport_config());
-            match huntsman_recon::phone_cli::run_keyed(&transport, &keys, selector, now) {
-                PhoneRun::Printed { text, report } => {
-                    Ok(done(text, report.entities, report.outcomes, PHONE_POLICY))
-                }
-                PhoneRun::Failed(m) => Err(Refused::Data(m)),
-            }
+    }
+}
+
+/// The people-search sources for a name, with the `SeekNow` leg when its key is configured.
+fn people(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let transport = UreqTransport::new(&TransportConfig::default());
+    let keys = Keys::from_env();
+    match people_cli::run(&transport, selector, now) {
+        PeopleRun::Printed { text, report } => {
+            let (text, entities, outcomes) = with_seeknow_leg(
+                EntityKind::Person,
+                selector,
+                &keys,
+                now,
+                text,
+                report.entities,
+                report.outcomes,
+            )?;
+            Ok(done(text, entities, outcomes, PEOPLE_POLICY))
         }
-        ScanKind::Ip => {
-            let transport = UreqTransport::new(&api_leg::transport_config());
-            match huntsman_recon::ip_cli::run(&transport, &keys, selector, now) {
-                IpRun::Printed { text, report } => {
-                    Ok(done(text, report.entities, report.outcomes, IP_POLICY))
-                }
-                IpRun::Network(m) => Err(Refused::Network(m)),
-                IpRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
+        PeopleRun::Network(m) => Err(Refused::Network(m)),
+        PeopleRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
+/// The email sources for an address, with the `SeekNow` leg when its key is configured.
+fn email(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&api_leg::transport_config());
+    match huntsman_recon::email_cli::run_keyed(&transport, &keys, selector, now) {
+        EmailRun::Printed { text, report } => {
+            let (text, entities, outcomes) = with_seeknow_leg(
+                EntityKind::Email,
+                selector,
+                &keys,
+                now,
+                text,
+                report.entities,
+                report.outcomes,
+            )?;
+            Ok(done(text, entities, outcomes, EMAIL_POLICY))
         }
-        _ => {
-            let transport = UreqTransport::new(&TransportConfig::default());
-            match huntsman_recon::domain_cli::run(&transport, &keys, selector, now) {
-                huntsman_recon::domain_cli::DomainRun::Printed { text, report } => {
-                    Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
-                }
-                huntsman_recon::domain_cli::DomainRun::Network(m) => Err(Refused::Network(m)),
-                huntsman_recon::domain_cli::DomainRun::Failed(m) => Err(Refused::Unavailable(m)),
-            }
-        }
+        EmailRun::Network(m) => Err(Refused::Network(m)),
+        EmailRun::Failed(m) => Err(Refused::Unavailable(m)),
     }
 }
 
@@ -242,8 +185,8 @@ fn with_seeknow_leg(
     Ok((text, entities, outcomes))
 }
 
-/// The `exposure` leg of [`collect`]: every configured breach source.
-fn collect_exposure(selector: &str, now: u64) -> Result<Collected, Refused> {
+/// The breach and exposure legs for a selector, each keyed leg built only when its key is configured.
+fn exposure(selector: &str, now: u64) -> Result<Collected, Refused> {
     let client = KeyLoader::default_chain(None)
         .load()
         .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
@@ -271,14 +214,91 @@ fn collect_exposure(selector: &str, now: u64) -> Result<Collected, Refused> {
         dehashed: dehashed_client.as_ref(),
     };
     match huntsman_recon::exposure_cli::run(sources, selector, now) {
-        ExposureRun::Printed { text, report } => Ok(Collected {
+        ExposureRun::Printed { text, report } => Ok(done(
             text,
-            entities: report.entities,
-            outcomes: report.outcomes,
-            policy: EXPOSURE_POLICY,
-        }),
+            report.entities,
+            report.outcomes,
+            EXPOSURE_POLICY,
+        )),
         ExposureRun::Network(m) => Err(Refused::Network(m)),
         ExposureRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
+/// The username sources for a handle, with the `SeekNow` leg when its key is configured.
+fn username(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let transport = UreqTransport::new(&TransportConfig::default());
+    let keys = Keys::from_env();
+    match huntsman_recon::username_cli::run(&transport, &keys, selector, now) {
+        UsernameRun::Printed { text, report } => {
+            let (text, entities, outcomes) = with_seeknow_leg(
+                EntityKind::Username,
+                selector,
+                &keys,
+                now,
+                text,
+                report.entities,
+                report.outcomes,
+            )?;
+            Ok(done(text, entities, outcomes, USERNAME_POLICY))
+        }
+        UsernameRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
+/// The phone sources for a number. Its keyed legs read keys from the environment only; a leg
+/// whose key is not set makes no request.
+fn phone(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&api_leg::transport_config());
+    match huntsman_recon::phone_cli::run_keyed(&transport, &keys, selector, now) {
+        PhoneRun::Printed { text, report } => {
+            Ok(done(text, report.entities, report.outcomes, PHONE_POLICY))
+        }
+        PhoneRun::Failed(m) => Err(Refused::Data(m)),
+    }
+}
+
+/// The ip sources for an address. Its keyed legs read keys from the environment only, as the
+/// other free-tier legs do.
+fn ip(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&api_leg::transport_config());
+    match huntsman_recon::ip_cli::run(&transport, &keys, selector, now) {
+        IpRun::Printed { text, report } => {
+            Ok(done(text, report.entities, report.outcomes, IP_POLICY))
+        }
+        IpRun::Network(m) => Err(Refused::Network(m)),
+        IpRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
+/// The domain sources for a hostname.
+fn domain(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&TransportConfig::default());
+    match huntsman_recon::domain_cli::run(&transport, &keys, selector, now) {
+        huntsman_recon::domain_cli::DomainRun::Printed { text, report } => {
+            Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
+        }
+        huntsman_recon::domain_cli::DomainRun::Network(m) => Err(Refused::Network(m)),
+        huntsman_recon::domain_cli::DomainRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
+/// The `WiGLE` network lookup for a BSSID, coordinate or SSID.
+fn network(selector: &str, now: u64) -> Result<Collected, Refused> {
+    // Like the other keyed legs, the WiGLE credentials are read from the environment,
+    // never the default file. Configured, they always run.
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&wigle::transport_config());
+    let leg = wigle::configured(&keys).then_some((&transport as &dyn Transport, &keys));
+    match huntsman_recon::network_cli::run(leg, selector, now) {
+        NetworkRun::Printed { text, report } => {
+            Ok(done(text, report.entities, report.outcomes, NETWORK_POLICY))
+        }
+        NetworkRun::Network(m) => Err(Refused::Network(m)),
+        NetworkRun::Failed(m) => Err(Refused::Unavailable(m)),
     }
 }
 
