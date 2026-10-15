@@ -8,16 +8,22 @@
 //! `ThreatFox`, Whoxy WHOIS). A keyed leg without its key makes no request and reports nothing;
 //! a configured key always runs its leg. Every result set is combined into one entity list and
 //! rendered report.
+//!
+//! Every leg, DNS included, sends through the one transport the caller hands in. The DNS leg's
+//! records are entities like any other leg's findings: each address, mail exchanger, name
+//! server, delegated SPF domain and report mailbox the domain publishes is one, tied to the
+//! domain, and the domain's own DNS evidence lists its addresses under `ip`, the attribute the
+//! resolution relation (and so the shared-hosting rule) reads.
 
 use std::path::PathBuf;
 
-use crate::canonical::canonical_domain;
+use crate::canonical::{canonical_domain, canonical_email, canonical_ip};
 use crate::crtsh::{self, CrtShError};
-use crate::dns;
+use crate::dns::{self, DomainDns, RecordType, ResolveErrorKind};
 use crate::entity::Entity;
 use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::http::{Transport, UreqTransport};
+use crate::http::Transport;
 use crate::hunter;
 use crate::indicator_legs;
 use crate::indicator_sources::Indicator;
@@ -26,9 +32,18 @@ use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::recon::ReconTargetKind;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::spf::Mechanism;
+use crate::tags;
 use crate::virustotal;
 
 pub const DOMAIN_USAGE: &str = "usage: huntsman-recon domain DOMAIN [--save FILE]";
+
+/// The DNS leg's module name, on its outcome row and its evidence.
+const DNS_SOURCE: &str = "dns";
+/// The queried domain, as the keyed legs hold it.
+const DOMAIN_CONFIDENCE: f64 = 0.90;
+/// An address, host or mailbox the domain's own records name: its zone published it.
+const RECORD_CONFIDENCE: f64 = 0.85;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -73,19 +88,22 @@ pub fn run<T: Transport + ?Sized>(
         return DomainRun::Failed("invalid domain".into());
     };
 
-    let mut entities = Vec::new();
-    let mut outcomes = Vec::new();
+    let scan_id = crate::entity::scan_id("domain", &domain);
+    let mut found = Found::default();
     let mut sections = Vec::new();
 
-    match crtsh::lookup(transport, ReconTargetKind::Domain, &domain, "domain_cli") {
+    match crtsh::lookup(transport, ReconTargetKind::Domain, &domain, &scan_id) {
         Ok(report) => {
             let count = report.entities.len();
-            entities.extend(report.entities);
-            outcomes.push(SourceExecutionOutcome::success("crtsh", now_unix, count));
+            found.entities.extend(report.entities);
+            found
+                .outcomes
+                .push(SourceExecutionOutcome::success("crtsh", now_unix, count));
             sections.push(format!("crtsh: {count} certificate-transparency entities"));
         }
         Err(CrtShError::Refused(reason)) => {
-            outcomes.push(SourceExecutionOutcome::failed(
+            found.no_response(format!("crtsh: request refused: {reason}"));
+            found.outcomes.push(SourceExecutionOutcome::failed(
                 "crtsh",
                 now_unix,
                 SourceOutcomeKind::EntitlementDenied,
@@ -96,32 +114,35 @@ pub fn run<T: Transport + ?Sized>(
         }
         Err(error) => {
             let message = error.to_string();
-            outcomes.push(SourceExecutionOutcome::failed(
-                "crtsh",
-                now_unix,
-                SourceOutcomeKind::Inconclusive,
-                None,
-                &message,
+            let kind = match error {
+                CrtShError::NoResponse(kind) => {
+                    found.no_response(message.clone());
+                    kind
+                }
+                _ => SourceOutcomeKind::Inconclusive,
+            };
+            found.outcomes.push(SourceExecutionOutcome::failed(
+                "crtsh", now_unix, kind, None, &message,
             ));
             sections.push(format!("crtsh: unavailable ({message})"));
         }
     }
 
-    let dns_transport = UreqTransport::new(&dns::transport_config());
-    match dns::lookup_domain(&dns_transport, &domain) {
-        Some(report) => {
-            let rendered = report.render();
-            let answer_count = report.answers.len();
-            outcomes.push(SourceExecutionOutcome::success(
-                "dns",
-                now_unix,
-                answer_count,
-            ));
-            sections.push(rendered);
+    match dns::lookup_domain(transport, &domain) {
+        Some(records) => {
+            if let Some(failure) = resolver_failure(&records) {
+                found.no_response(format!(
+                    "dns: no resolver answered ({})",
+                    failure.error.detail
+                ));
+            }
+            found.outcomes.push(dns_outcome(&records, now_unix));
+            found.entities.extend(dns_entities(&records, &scan_id));
+            sections.push(records.render());
         }
         None => {
-            outcomes.push(SourceExecutionOutcome::failed(
-                "dns",
+            found.outcomes.push(SourceExecutionOutcome::failed(
+                DNS_SOURCE,
                 now_unix,
                 SourceOutcomeKind::Inconclusive,
                 None,
@@ -130,14 +151,12 @@ pub fn run<T: Transport + ?Sized>(
         }
     }
 
-    keyed_legs(
-        transport,
-        keys,
-        &domain,
-        now_unix,
-        &mut entities,
-        &mut outcomes,
-    );
+    keyed_legs(transport, keys, &domain, &scan_id, now_unix, &mut found);
+    let Found {
+        mut entities,
+        outcomes,
+        network,
+    } = found;
     merge_by_uid(&mut entities);
 
     let any_results = !entities.is_empty()
@@ -145,7 +164,11 @@ pub fn run<T: Transport + ?Sized>(
             .iter()
             .any(|o| o.kind.is_accepted() && o.found.unwrap_or(0) > 0);
     if !any_results {
-        return DomainRun::Failed(format!("no results for domain {domain}"));
+        let answered = outcomes.iter().any(|o| o.kind.is_accepted());
+        return match network {
+            Some(message) if !answered => DomainRun::Network(message),
+            _ => DomainRun::Failed(format!("no results for domain {domain}")),
+        };
     }
 
     let mut text = match lookup_report::render(&entities, &outcomes) {
@@ -165,17 +188,40 @@ pub fn run<T: Transport + ?Sized>(
     }
 }
 
+/// What the legs have found so far: their entities, one outcome per leg, and the first leg that
+/// got no response at all, which a lookup where no leg answered reports as a network failure.
+#[derive(Default)]
+struct Found {
+    entities: Vec<Entity>,
+    outcomes: Vec<SourceExecutionOutcome>,
+    network: Option<String>,
+}
+
+impl Found {
+    fn no_response(&mut self, message: String) {
+        self.network.get_or_insert(message);
+    }
+
+    /// Record a keyed leg's outcome; one that got no response is also the network signal.
+    fn leg(&mut self, outcome: SourceExecutionOutcome) {
+        if outcome.kind.is_transport_failure() {
+            let detail = outcome.detail.as_deref().unwrap_or("no response");
+            self.no_response(format!("{}: {detail}", outcome.module));
+        }
+        self.outcomes.push(outcome);
+    }
+}
+
 /// The provider legs: `VirusTotal` and Hunter.io when their keys are configured, then the
 /// indicator sources that apply.
 fn keyed_legs<T: Transport + ?Sized>(
     transport: &T,
     keys: &Keys,
     domain: &str,
+    scan_id: &str,
     now_unix: u64,
-    entities: &mut Vec<Entity>,
-    outcomes: &mut Vec<SourceExecutionOutcome>,
+    found: &mut Found,
 ) {
-    let scan_id = crate::entity::scan_id("domain", domain);
     if virustotal::API.wanted(keys) {
         let api = &virustotal::API;
         match virustotal::lookup(
@@ -186,27 +232,334 @@ fn keyed_legs<T: Transport + ?Sized>(
             now_unix,
         ) {
             Ok(Some(report)) => {
-                entities.push(virustotal_entity(domain, &scan_id, &report));
-                outcomes.push(SourceExecutionOutcome::success(api.source, now_unix, 1));
+                found
+                    .entities
+                    .push(virustotal_entity(domain, scan_id, &report));
+                found.leg(SourceExecutionOutcome::success(api.source, now_unix, 1));
             }
-            Ok(None) => outcomes.push(SourceExecutionOutcome::valid_zero(api.source, now_unix)),
-            Err(err) => outcomes.push(err.outcome(api, now_unix)),
+            Ok(None) => found.leg(SourceExecutionOutcome::valid_zero(api.source, now_unix)),
+            Err(err) => found.leg(err.outcome(api, now_unix)),
         }
     }
     if hunter::API.wanted(keys) {
-        outcomes.push(hunter_leg(
-            transport, keys, domain, &scan_id, now_unix, entities,
-        ));
+        let outcome = hunter_leg(
+            transport,
+            keys,
+            domain,
+            scan_id,
+            now_unix,
+            &mut found.entities,
+        );
+        found.leg(outcome);
     }
     let legs = indicator_legs::run(
         transport,
         keys,
         Indicator::Domain(domain),
-        &scan_id,
+        scan_id,
         now_unix,
     );
-    entities.extend(legs.entities);
-    outcomes.extend(legs.outcomes);
+    found.entities.extend(legs.entities);
+    found.outcomes.extend(legs.outcomes);
+    if let Some(message) = legs.network {
+        found.no_response(message);
+    }
+}
+
+/// The first query that no resolver answered, when the zone answered none of them: neither a
+/// record nor its own "no such name" or "no such record". `None` once one query was answered.
+/// **Pure.**
+fn resolver_failure(records: &DomainDns) -> Option<&dns::QueryFailure> {
+    if !records.answers.is_empty() {
+        return None;
+    }
+    records
+        .failures
+        .iter()
+        .find(|failure| failure.error.kind != ResolveErrorKind::Empty)
+}
+
+/// The DNS leg's outcome. `found` counts the records the zone returned. A zone that answered
+/// every query with "no such name" or "no such record" is a validated zero; when no resolver
+/// answered at all the outcome says why, never a zero. Queries that failed beside answered ones
+/// are named in `detail`. **Pure.**
+fn dns_outcome(records: &DomainDns, now_unix: u64) -> SourceExecutionOutcome {
+    if let Some(failure) = resolver_failure(records) {
+        let kind = match failure.error.kind {
+            ResolveErrorKind::Timeout => SourceOutcomeKind::TtfbTimeout,
+            ResolveErrorKind::RateLimited => SourceOutcomeKind::RateLimited,
+            ResolveErrorKind::BotWaf => SourceOutcomeKind::BotWaf,
+            ResolveErrorKind::Upstream | ResolveErrorKind::Truncated | ResolveErrorKind::Empty => {
+                SourceOutcomeKind::Inconclusive
+            }
+        };
+        let detail = format!(
+            "no resolver answered: {} queries failed, the first {} {}: {}",
+            records.failures.len(),
+            failure.record_type.as_str(),
+            failure.error.kind.as_str(),
+            failure.error.detail
+        );
+        return SourceExecutionOutcome::failed(DNS_SOURCE, now_unix, kind, None, detail);
+    }
+    let count: usize = records
+        .answers
+        .iter()
+        .map(|answer| answer.answer.records.len())
+        .sum();
+    if count == 0 {
+        return SourceExecutionOutcome::valid_zero(DNS_SOURCE, now_unix);
+    }
+    let outcome = SourceExecutionOutcome::success(DNS_SOURCE, now_unix, count);
+    let unanswered: Vec<String> = records
+        .failures
+        .iter()
+        .filter(|failure| failure.error.kind != ResolveErrorKind::Empty)
+        .map(|failure| {
+            format!(
+                "{} {} {}",
+                failure.record_type.as_str(),
+                failure.name,
+                failure.error.kind.as_str()
+            )
+        })
+        .collect();
+    if unanswered.is_empty() {
+        outcome
+    } else {
+        outcome.with_detail(format!("unanswered: {}", unanswered.join(", ")))
+    }
+}
+
+/// The entities the domain's DNS records name, the domain first; none when no record came back.
+/// The domain's evidence lists every address it resolves to under `ip` (a non-public one too, as
+/// published), its mail exchangers under `mx`, its name servers under `ns` and the domains its
+/// SPF policy delegates to under `spf_include`, and each TXT, DMARC and TLS-RPT record is
+/// evidence of its own; its SPF and DMARC posture are tags. Each public address, host, report
+/// mailbox and report URL is an entity whose evidence names the domain and the record type, so
+/// the resolution relation links the domain to its addresses. **Pure.**
+fn dns_entities(records: &DomainDns, scan_id: &str) -> Vec<Entity> {
+    if records.answers.is_empty() {
+        return Vec::new();
+    }
+    let mut zone = ZoneFindings::new(&records.domain, scan_id);
+    for answer in &records.answers {
+        for record in &answer.answer.records {
+            zone.record(answer, record);
+        }
+    }
+    if let Some(spf) = &records.spf {
+        zone.spf(spf);
+    }
+    if let Some(dmarc) = &records.dmarc {
+        zone.dmarc(dmarc);
+    }
+    if let Some(tlsrpt) = &records.tlsrpt {
+        zone.tlsrpt(tlsrpt);
+    }
+    zone.finish()
+}
+
+/// One domain's DNS records as entities, built by [`dns_entities`].
+struct ZoneFindings<'a> {
+    domain: &'a str,
+    scan_id: &'a str,
+    apex: Entity,
+    /// What the domain's own DNS evidence lists, in record order: (attribute, value).
+    listed: Vec<(&'static str, String)>,
+    found: Vec<Entity>,
+}
+
+impl<'a> ZoneFindings<'a> {
+    fn new(domain: &'a str, scan_id: &'a str) -> Self {
+        Self {
+            domain,
+            scan_id,
+            apex: Entity::new(EntityKind::Domain, domain, DOMAIN_CONFIDENCE, scan_id),
+            listed: Vec::new(),
+            found: Vec::new(),
+        }
+    }
+
+    fn evidence(&self, summary: String) -> Evidence {
+        Evidence::new(
+            EvidenceProvenance::for_scan(DNS_SOURCE, self.scan_id),
+            summary,
+        )
+    }
+
+    /// Evidence for an entity a record of the domain names.
+    fn named(&self, record_type: &str, summary: String) -> Evidence {
+        self.evidence(summary)
+            .with_attr("domain", self.domain)
+            .with_attr("record_type", record_type)
+    }
+
+    fn push(&mut self, kind: EntityKind, value: &str, evidence: Evidence, tags: &[&str]) {
+        push_entity(
+            &mut self.found,
+            kind,
+            value,
+            RECORD_CONFIDENCE,
+            self.scan_id,
+            evidence,
+            tags,
+        );
+    }
+
+    /// The host a record names, listed under `attr` as published (lower case, no root dot); an
+    /// empty name such as a null MX is skipped. It is a domain entity only in canonical form, so
+    /// a service name such as `_spf.example.net` is listed without becoming a pivot.
+    fn host(&mut self, attr: &'static str, raw: &str, evidence: Evidence) {
+        let (name, is_sub) = crate::domains::classify_domain_candidate(raw, self.domain);
+        if name.is_empty() {
+            return;
+        }
+        if canonical_domain(&name).is_some() {
+            let subdomain: &[&str] = if is_sub { &[tags::SUBDOMAIN] } else { &[] };
+            self.push(EntityKind::Domain, &name, evidence, subdomain);
+        }
+        self.listed.push((attr, name));
+    }
+
+    fn record(&mut self, answer: &dns::QueryAnswer, record: &str) {
+        let record_type = answer.record_type.as_str();
+        let domain = self.domain;
+        match answer.record_type {
+            RecordType::A | RecordType::Aaaa => {
+                let raw = record.trim();
+                let public = canonical_ip(raw);
+                self.listed
+                    .push(("ip", public.clone().unwrap_or_else(|| raw.to_owned())));
+                if let Some(ip) = public {
+                    let evidence = self
+                        .named(record_type, format!("{record_type} record of {domain}"))
+                        .with_attr("resolver", answer.answer.server.provider);
+                    self.push(EntityKind::IpAddress, &ip, evidence, &[]);
+                }
+            }
+            RecordType::Mx => {
+                let (preference, exchanger) = mx_parts(record);
+                let evidence = self
+                    .named(record_type, format!("Mail exchanger of {domain}"))
+                    .with_optional_attrs([("mx_preference", preference)]);
+                self.host("mx", exchanger, evidence);
+            }
+            RecordType::Ns => {
+                let evidence = self.named(record_type, format!("Name server of {domain}"));
+                self.host("ns", record, evidence);
+            }
+            RecordType::Txt => {
+                let label = if answer.name == domain {
+                    "TXT"
+                } else if answer.name.starts_with("_dmarc.") {
+                    "DMARC"
+                } else {
+                    "TLS-RPT"
+                };
+                let evidence = self
+                    .evidence(format!("{label} record: {record}"))
+                    .with_attr("record_type", label);
+                self.apex.add_evidence(evidence);
+            }
+            RecordType::Soa => {}
+        }
+    }
+
+    /// The SPF posture as tags, and each domain the policy includes or redirects to.
+    fn spf(&mut self, spf: &crate::spf::SpfRecord) {
+        self.apex.tag(spf.all_policy().tag());
+        for issue in spf.issues() {
+            self.apex.tag(issue.tag());
+        }
+        let delegated = spf
+            .directives
+            .iter()
+            .filter_map(|(_, mechanism)| match mechanism {
+                Mechanism::Include(target) => Some(target.as_str()),
+                _ => None,
+            })
+            .chain(spf.redirect.as_deref());
+        for target in delegated {
+            let summary = format!("Domain the SPF policy of {} delegates to", self.domain);
+            let evidence = self.named("SPF", summary);
+            self.host("spf_include", target, evidence);
+        }
+    }
+
+    /// The DMARC posture as tags, and the mailboxes that receive its reports.
+    fn dmarc(&mut self, dmarc: &crate::dmarc::DmarcRecord) {
+        self.apex
+            .tag(dmarc.policy.map_or("dmarc:missing", |policy| policy.tag()));
+        for issue in dmarc.issues() {
+            self.apex.tag(issue.tag());
+        }
+        for mailbox in &dmarc.rua {
+            self.mailbox("DMARC", "aggregate", mailbox);
+        }
+        for mailbox in &dmarc.ruf {
+            self.mailbox("DMARC", "failure", mailbox);
+        }
+    }
+
+    /// The mailboxes and URLs that receive the domain's TLS reports.
+    fn tlsrpt(&mut self, tlsrpt: &crate::tlsrpt::TlsRptRecord) {
+        for mailbox in &tlsrpt.emails {
+            self.mailbox("TLS-RPT", "TLS", mailbox);
+        }
+        for url in &tlsrpt.urls {
+            let summary = format!("TLS report endpoint of {}", self.domain);
+            let evidence = self.named("TLS-RPT", summary);
+            self.push(EntityKind::Url, url, evidence, &[]);
+        }
+    }
+
+    fn mailbox(&mut self, record_type: &str, reports: &str, mailbox: &str) {
+        let Some(email) = canonical_email(mailbox) else {
+            return;
+        };
+        let summary = format!(
+            "Mailbox that receives {reports} reports for {}",
+            self.domain
+        );
+        let evidence = self.named(record_type, summary);
+        self.push(EntityKind::Email, &email, evidence, &[]);
+    }
+
+    fn finish(self) -> Vec<Entity> {
+        let Self {
+            domain,
+            scan_id,
+            mut apex,
+            listed,
+            found,
+        } = self;
+        if !listed.is_empty() {
+            let summary = format!("DNS records of {domain}");
+            let mut evidence =
+                Evidence::new(EvidenceProvenance::for_scan(DNS_SOURCE, scan_id), summary);
+            for (attr, value) in listed {
+                evidence = evidence.with_attr(attr, value);
+            }
+            apex.add_evidence(evidence);
+        }
+        let mut out = Vec::with_capacity(found.len() + 1);
+        out.push(apex);
+        out.extend(found);
+        out
+    }
+}
+
+/// An MX record's preference and exchanger: `10 mx.example.com.` gives
+/// `(Some("10"), "mx.example.com.")`. **Pure.**
+fn mx_parts(record: &str) -> (Option<&str>, &str) {
+    let record = record.trim();
+    match record.split_once(char::is_whitespace) {
+        Some((preference, exchanger)) if preference.parse::<u16>().is_ok() => {
+            (Some(preference), exchanger.trim())
+        }
+        _ => (None, record),
+    }
 }
 
 fn virustotal_entity(domain: &str, scan_id: &str, report: &virustotal::Report) -> Entity {
@@ -379,5 +732,311 @@ mod tests {
             entity.evidence[0].summary,
             "VirusTotal: 3 of 53 engines flag the domain"
         );
+    }
+
+    use std::cell::RefCell;
+
+    use crate::http::{Request, Response, TransportFailure};
+    use crate::relation::RelationKind;
+
+    /// `example.com`'s documented IANA addresses: public, so they are real address entities.
+    const IPV4: &str = "93.184.215.14";
+    const IPV6: &str = "2606:2800:21f:cb07:6820:80da:af6b:8b2c";
+
+    /// One zone served the way the DNS JSON API answers (`Status` 0 with the records of the
+    /// queried type, 0 with none when the name has other records, 3 when it has none at all), and
+    /// crt.sh's answer. Every request is recorded. Any other host, and the resolvers when
+    /// `resolvers_down`, fail with no response, as an unreachable source would.
+    struct Zone {
+        records: Vec<(String, &'static str, String)>,
+        crtsh: Option<&'static str>,
+        resolvers_down: bool,
+        seen: RefCell<Vec<String>>,
+    }
+
+    impl Zone {
+        fn new(records: &[(&str, &'static str, &str)]) -> Self {
+            Self {
+                records: records
+                    .iter()
+                    .map(|(name, kind, data)| ((*name).to_owned(), *kind, (*data).to_owned()))
+                    .collect(),
+                crtsh: Some("[]"),
+                resolvers_down: false,
+                seen: RefCell::new(Vec::new()),
+            }
+        }
+
+        /// The documented zone of `domain`: two addresses, a mail exchanger in the zone, an
+        /// outside name server, an SPF policy that delegates, and DMARC and TLS-RPT policies.
+        fn published(domain: &str) -> Self {
+            let dmarc = format!("_dmarc.{domain}");
+            let tls = format!("_smtp._tls.{domain}");
+            let mx = format!("10 mx.{domain}.");
+            Self::new(&[
+                (domain, "A", IPV4),
+                (domain, "AAAA", IPV6),
+                (domain, "MX", &mx),
+                (domain, "NS", "ns1.dns-host.net."),
+                (
+                    domain,
+                    "TXT",
+                    r#""v=spf1 include:_spf.mail-host.net include:spf.mail-host.net -all""#,
+                ),
+                (domain, "TXT", r#""site-verification=abc123""#),
+                (
+                    &dmarc,
+                    "TXT",
+                    r#""v=DMARC1; p=reject; rua=mailto:dmarc@reports.example.net""#,
+                ),
+                (
+                    &tls,
+                    "TXT",
+                    r#""v=TLSRPTv1; rua=mailto:tlsrpt@reports.example.net""#,
+                ),
+            ])
+        }
+
+        fn requests(&self, prefix: &str) -> usize {
+            self.seen
+                .borrow()
+                .iter()
+                .filter(|url| url.starts_with(prefix))
+                .count()
+        }
+
+        fn doh(&self, url: &str) -> Response {
+            let query = url.split_once('?').map_or("", |(_, query)| query);
+            let param = |key: &str| {
+                query
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
+                    .unwrap_or("")
+            };
+            let (name, kind) = (param("name"), param("type"));
+            let code = match kind {
+                "A" => 1,
+                "NS" => 2,
+                "MX" => 15,
+                "TXT" => 16,
+                "AAAA" => 28,
+                _ => 0,
+            };
+            let answers: Vec<String> = self
+                .records
+                .iter()
+                .filter(|(n, k, _)| n == name && *k == kind)
+                .map(|(_, _, data)| {
+                    serde_json::json!({ "name": name, "type": code, "data": data }).to_string()
+                })
+                .collect();
+            let status = if self.records.iter().any(|(n, _, _)| n == name) {
+                0
+            } else {
+                3
+            };
+            json_ok(&format!(
+                r#"{{"Status":{status},"Answer":[{}]}}"#,
+                answers.join(",")
+            ))
+        }
+    }
+
+    impl Transport for Zone {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            self.seen.borrow_mut().push(request.url.clone());
+            let resolver = dns::resolver_config()
+                .name_servers
+                .iter()
+                .any(|server| request.url.starts_with(server.doh_url));
+            if request.url.starts_with("https://crt.sh/") {
+                if let Some(body) = self.crtsh {
+                    return Ok(json_ok(body));
+                }
+            } else if resolver && !self.resolvers_down {
+                return Ok(self.doh(&request.url));
+            }
+            Err(TransportFailure {
+                kind: SourceOutcomeKind::DnsFailure,
+                detail: "offline".into(),
+                blocked: false,
+            })
+        }
+    }
+
+    fn json_ok(body: &str) -> Response {
+        crate::test_support::json_ok(body)
+    }
+
+    fn printed(zone: &Zone, domain: &str) -> Report {
+        match run(zone, &Keys::default(), domain, 1) {
+            DomainRun::Printed { report, .. } => report,
+            DomainRun::Network(message) => panic!("network: {message}"),
+            DomainRun::Failed(message) => panic!("failed: {message}"),
+        }
+    }
+
+    fn entity<'a>(report: &'a Report, kind: &EntityKind, value: &str) -> Option<&'a Entity> {
+        report
+            .entities
+            .iter()
+            .find(|entity| entity.kind == *kind && entity.value == value)
+    }
+
+    fn dns_row(report: &Report) -> &SourceExecutionOutcome {
+        report
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == "dns")
+            .expect("a dns outcome row")
+    }
+
+    /// Every address, host and mailbox the zone publishes is an entity tied to the domain, and
+    /// the DNS leg asked the resolvers through the transport the lookup was handed. Before, the
+    /// records were printed only, and the leg opened its own connection to the real resolvers.
+    #[test]
+    fn the_records_a_domain_publishes_are_entities_of_the_lookup() {
+        let zone = Zone::published("example.com");
+        let report = printed(&zone, "example.com");
+
+        assert_eq!(zone.requests("https://cloudflare-dns.com/dns-query?"), 7);
+        for ip in [IPV4, IPV6] {
+            let address = entity(&report, &EntityKind::IpAddress, ip).expect("address entity");
+            let evidence = &address.evidence[0];
+            assert_eq!(evidence.provenance.source, "dns");
+            assert_eq!(
+                evidence.attr_values("domain").collect::<Vec<_>>(),
+                ["example.com"]
+            );
+        }
+        let mx = entity(&report, &EntityKind::Domain, "mx.example.com").expect("mail exchanger");
+        assert!(mx.has_tag(crate::tags::SUBDOMAIN));
+        assert_eq!(
+            mx.evidence[0]
+                .attr_values("mx_preference")
+                .collect::<Vec<_>>(),
+            ["10"]
+        );
+        for host in ["ns1.dns-host.net", "spf.mail-host.net"] {
+            assert!(
+                entity(&report, &EntityKind::Domain, host).is_some(),
+                "{host}"
+            );
+        }
+        // A service name is listed as published, but it is not a domain pivot.
+        assert!(entity(&report, &EntityKind::Domain, "_spf.mail-host.net").is_none());
+        for mailbox in ["dmarc@reports.example.net", "tlsrpt@reports.example.net"] {
+            assert!(
+                entity(&report, &EntityKind::Email, mailbox).is_some(),
+                "{mailbox}"
+            );
+        }
+
+        let apex = entity(&report, &EntityKind::Domain, "example.com").expect("the domain");
+        let records = apex
+            .evidence
+            .iter()
+            .find(|evidence| {
+                evidence.provenance.source == "dns" && evidence.attributes.contains_key("ip")
+            })
+            .expect("the domain's DNS evidence");
+        assert_eq!(records.attr_values("ip").collect::<Vec<_>>(), [IPV4, IPV6]);
+        assert_eq!(
+            records.attr_values("mx").collect::<Vec<_>>(),
+            ["mx.example.com"]
+        );
+        assert_eq!(
+            records.attr_values("ns").collect::<Vec<_>>(),
+            ["ns1.dns-host.net"]
+        );
+        assert_eq!(
+            records.attr_values("spf_include").collect::<Vec<_>>(),
+            ["_spf.mail-host.net", "spf.mail-host.net"]
+        );
+        assert!(apex.has_tag("spf:hardfail"));
+        assert!(apex.has_tag("dmarc:reject"));
+        assert!(
+            apex.evidence
+                .iter()
+                .any(|evidence| evidence.summary == "TXT record: site-verification=abc123")
+        );
+
+        let row = dns_row(&report);
+        assert_eq!(row.kind, SourceOutcomeKind::Success);
+        assert_eq!(row.found, Some(8));
+    }
+
+    /// Two live lookups whose domains share an address give the relation builder a `resolves_to`
+    /// link for each and fire the shared-hosting rule (AU-110), as a saved scan with that DNS
+    /// evidence already did. Before, a live lookup carried no address, so neither ever fired.
+    #[test]
+    fn two_lookups_on_one_address_fire_the_shared_hosting_rule() {
+        let mut entities = Vec::new();
+        for domain in ["alpha-shop.com", "beta-shop.org"] {
+            let zone = Zone::new(&[(domain, "A", IPV4)]);
+            entities.extend(printed(&zone, domain).entities);
+        }
+        merge_by_uid(&mut entities);
+
+        let relations = crate::relation::derive_all(&entities, "two-lookups");
+        let resolves = relations
+            .iter()
+            .filter(|relation| relation.kind == RelationKind::ResolvesTo)
+            .count();
+        assert_eq!(resolves, 2, "{relations:?}");
+
+        let report = crate::analysis::analyze_snapshot(&crate::pipeline::AnalysisSnapshot {
+            entities,
+            relations: Vec::new(),
+            coverage: Vec::new(),
+            ancestry: crate::evidence_ancestry::EvidenceAncestryGraph::default(),
+            truncated: false,
+        });
+        let fired: Vec<&str> = report
+            .correlations
+            .iter()
+            .map(|correlation| correlation.rule_id.as_str())
+            .collect();
+        assert!(fired.contains(&"AU-110"), "rules that fired: {fired:?}");
+    }
+
+    /// A zone that answers "no such name" to every query is a validated zero; resolvers that all
+    /// fail are a failure that says why, with no count. Before, both were the same empty row.
+    #[test]
+    fn a_name_with_no_records_is_a_zero_and_a_resolver_outage_is_not() {
+        let crtsh = r#"[{"name_value":"mail.gone-shop.com"}]"#;
+        let mut nxdomain = Zone::new(&[]);
+        nxdomain.crtsh = Some(crtsh);
+        let row = dns_row(&printed(&nxdomain, "gone-shop.com")).clone();
+        assert_eq!(row.kind, SourceOutcomeKind::ValidZero);
+
+        let mut outage = Zone::published("gone-shop.com");
+        outage.crtsh = Some(crtsh);
+        outage.resolvers_down = true;
+        let report = printed(&outage, "gone-shop.com");
+        let row = dns_row(&report);
+        assert!(!row.kind.is_accepted(), "{row:?}");
+        assert_eq!(row.found, None);
+        assert!(
+            row.detail
+                .as_deref()
+                .is_some_and(|detail| detail.starts_with("no resolver answered")),
+            "{row:?}"
+        );
+        assert!(entity(&report, &EntityKind::IpAddress, IPV4).is_none());
+    }
+
+    /// When no source gets a response, the lookup is a network failure (exit 77 at the CLI), as
+    /// for `ip` and `email`. Before, it was "no results" (exit 69) whatever the cause.
+    #[test]
+    fn a_lookup_no_source_could_reach_is_a_network_failure() {
+        let mut zone = Zone::published("example.com");
+        zone.crtsh = None;
+        zone.resolvers_down = true;
+        match run(&zone, &Keys::default(), "example.com", 1) {
+            DomainRun::Network(message) => assert!(message.starts_with("crtsh"), "{message}"),
+            DomainRun::Printed { text, .. } => panic!("printed: {text}"),
+            DomainRun::Failed(message) => panic!("failed: {message}"),
+        }
     }
 }
