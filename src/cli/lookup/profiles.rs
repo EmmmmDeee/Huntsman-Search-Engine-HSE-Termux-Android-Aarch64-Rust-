@@ -31,6 +31,7 @@ use huntsman_recon::oathnet;
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
 use huntsman_recon::scan_route::ScanKind;
+use huntsman_recon::sf_compat::SfRefused;
 use huntsman_recon::source_outcome::SourceExecutionOutcome;
 use huntsman_recon::stolen_tax;
 use huntsman_recon::username_cli::{USERNAME_USAGE, UsernameArgs, UsernameRun};
@@ -67,6 +68,18 @@ impl Refused {
     pub(in crate::cli) fn message(&self) -> &str {
         match self {
             Self::Network(m) | Self::Unavailable(m) | Self::Data(m) => m,
+        }
+    }
+}
+
+/// `sf -s` runs the same front-ends, so its refusal takes the same status: each arm becomes the
+/// arm of the same name, and [`Refused::exit_status`] stays the one status table.
+impl From<SfRefused> for Refused {
+    fn from(refused: SfRefused) -> Self {
+        match refused {
+            SfRefused::Network(m) => Self::Network(m),
+            SfRefused::Unavailable(m) => Self::Unavailable(m),
+            SfRefused::Data(m) => Self::Data(m),
         }
     }
 }
@@ -425,6 +438,23 @@ mod tests {
             argument_status(&Error::invalid("only one --save")),
             EX_USAGE
         );
+    }
+
+    #[test]
+    fn an_sf_refusal_exits_as_the_plain_lookup_would() {
+        for (refused, status) in [
+            (SfRefused::Network("egress-policy".into()), EX_NOPERM),
+            (
+                SfRefused::Unavailable("registers down".into()),
+                EX_UNAVAILABLE,
+            ),
+            (SfRefused::Data("bad target".into()), EX_DATAERR),
+        ] {
+            let message = refused.message().to_owned();
+            let mapped = Refused::from(refused);
+            assert_eq!(mapped.exit_status(), status, "{message}");
+            assert_eq!(mapped.message(), message);
+        }
     }
 
     #[test]

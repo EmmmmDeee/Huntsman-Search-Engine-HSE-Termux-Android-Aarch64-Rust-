@@ -258,30 +258,60 @@ pub fn type_listing(quiet: bool) -> String {
     out
 }
 
+/// Why a scan produced no rows. The three arms are those of the plain lookups' refusal in the
+/// CLI (`Refused` in `src/cli/lookup/profiles.rs`), and each run outcome lands in the arm the
+/// plain `email`, `people`, `username` or `phone` command puts it in, so `sf -s` exits with the
+/// status of the plain command for the same outcome. The CLI maps the arms through that one
+/// status table; nothing here chooses a status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SfRefused {
+    /// The egress policy or the network stopped every source.
+    Network(String),
+    /// The sources ran and gave nothing usable.
+    Unavailable(String),
+    /// The target, the scan options or the output format could not be used.
+    Data(String),
+}
+
+impl SfRefused {
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Network(m) | Self::Unavailable(m) | Self::Data(m) => m,
+        }
+    }
+}
+
 /// Execute one supported sf target over the already-rebuilt lookup front-ends.
+///
+/// # Errors
+/// [`SfRefused`] when the scan produced no rows, in the arm the plain front-end reports.
 pub fn run_scan<T: Transport + ?Sized>(
     transport: &T,
     keys: &Keys,
     scan: &SfScan,
     now_unix: u64,
-) -> Result<String, Error> {
+) -> Result<String, SfRefused> {
     if scan.use_case == "passive" && scan.target_type != "PHONE_NUMBER" {
-        return Err(Error::Invalid(format!(
+        return Err(SfRefused::Data(format!(
             "sf passive mode has no rebuilt offline collector for {} yet",
             scan.target_type
         )));
     }
 
+    // Each arm mirrors `collect` in `src/cli/lookup/profiles.rs`: a `Network` run is a network
+    // refusal, a `Failed` run of a networked front-end is unavailable, and a failed phone
+    // lookup, which is offline, is bad data.
     let entities = match scan.target_type {
         // Every keyed source for the address runs when its key is set.
         "EMAILADDR" => match email_cli::run_keyed(transport, keys, &scan.target, now_unix) {
             EmailRun::Printed { report, .. } => report.entities,
-            EmailRun::Network(message) => return Err(Error::Network(message)),
-            EmailRun::Failed(message) => return Err(Error::Invalid(message)),
+            EmailRun::Network(message) => return Err(SfRefused::Network(message)),
+            EmailRun::Failed(message) => return Err(SfRefused::Unavailable(message)),
         },
         "USERNAME" => match username_cli::run(transport, keys, &scan.target, now_unix) {
             UsernameRun::Printed { report, .. } => report.entities,
-            UsernameRun::Failed(message) => return Err(Error::Invalid(message)),
+            UsernameRun::Failed(message) => return Err(SfRefused::Unavailable(message)),
         },
         // Passive mode stays offline; otherwise the Numverify leg runs when its key is set.
         "PHONE_NUMBER" => match if scan.use_case == "passive" {
@@ -290,15 +320,15 @@ pub fn run_scan<T: Transport + ?Sized>(
             phone_cli::run_keyed(transport, keys, &scan.target, now_unix)
         } {
             PhoneRun::Printed { report, .. } => report.entities,
-            PhoneRun::Failed(message) => return Err(Error::Invalid(message)),
+            PhoneRun::Failed(message) => return Err(SfRefused::Data(message)),
         },
         "HUMAN_NAME" => match people_cli::run(transport, &scan.target, now_unix) {
             PeopleRun::Printed { report, .. } => report.entities,
-            PeopleRun::Network(message) => return Err(Error::Network(message)),
-            PeopleRun::Failed(message) => return Err(Error::Invalid(message)),
+            PeopleRun::Network(message) => return Err(SfRefused::Network(message)),
+            PeopleRun::Failed(message) => return Err(SfRefused::Unavailable(message)),
         },
         other => {
-            return Err(Error::Invalid(format!(
+            return Err(SfRefused::Data(format!(
                 "sf target type {other} is detected but its rebuilt scan path is not available yet"
             )));
         }
@@ -351,14 +381,14 @@ impl Row {
     }
 }
 
-fn render_rows(rows: &[Row], format: &str, include_source: bool) -> Result<String, Error> {
+fn render_rows(rows: &[Row], format: &str, include_source: bool) -> Result<String, SfRefused> {
     match format {
         "tab" => Ok(render_tab(rows, include_source)),
         "csv" => Ok(render_csv(rows, include_source)),
         "json" => serde_json::to_string_pretty(rows)
             .map(|body| format!("{}\n", escape_unsafe_in_json(&body)))
-            .map_err(|error| Error::Invalid(format!("sf json: {error}"))),
-        _ => Err(Error::Invalid("invalid sf output format".into())),
+            .map_err(|error| SfRefused::Data(format!("sf json: {error}"))),
+        _ => Err(SfRefused::Data("invalid sf output format".into())),
     }
 }
 
@@ -554,6 +584,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use crate::http::{Request, Response, TransportFailure};
+    use crate::source_outcome::SourceOutcomeKind;
 
     struct Fake {
         responses: RefCell<VecDeque<Result<Response, TransportFailure>>>,
@@ -675,7 +706,73 @@ mod tests {
             include_source: false,
         };
         let error = run_scan(&fake, &Keys::default(), &scan, 1).unwrap_err();
-        assert!(error.to_string().contains("passive"));
+        assert!(error.message().contains("passive"), "{error:?}");
+    }
+
+    /// Every request refused by the egress policy, as `people_cli`'s own test has it.
+    struct BlockAll;
+
+    impl Transport for BlockAll {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            Err(TransportFailure {
+                kind: SourceOutcomeKind::ConnectFailure,
+                detail: format!("egress-policy: {}", request.url),
+                blocked: true,
+            })
+        }
+    }
+
+    /// Every request fails before it is sent, as an unusable `HUNTSMAN_CA_BUNDLE` makes it.
+    struct FailAll;
+
+    impl Transport for FailAll {
+        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
+            Err(TransportFailure {
+                kind: SourceOutcomeKind::TlsFailure,
+                detail: "HUNTSMAN_CA_BUNDLE=/nowhere.pem: no certificates".into(),
+                blocked: false,
+            })
+        }
+    }
+
+    fn scan(target: &str, target_type: &'static str) -> SfScan {
+        SfScan {
+            target: target.into(),
+            target_type,
+            use_case: "all".into(),
+            format: "tab".into(),
+            types: Vec::new(),
+            include_source: false,
+        }
+    }
+
+    /// The arms are the plain lookups', so the CLI gives `sf -s` the status of `email` or
+    /// `people` for the same outcome. Both networked front-ends used to come back as `Error`
+    /// variants the CLI mapped the other way round: a refusal to 69 and an outage to 65.
+    #[test]
+    fn a_refused_or_unusable_scan_lands_in_the_plain_lookups_arm() {
+        for (target, target_type) in [
+            ("jane@example.org", "EMAILADDR"),
+            ("Jane Citizen", "HUMAN_NAME"),
+        ] {
+            match run_scan(&BlockAll, &Keys::default(), &scan(target, target_type), 1) {
+                Err(SfRefused::Network(message)) => {
+                    assert!(message.contains("egress-policy"), "{message}");
+                }
+                other => panic!("{target_type}: {other:?}"),
+            }
+        }
+        match run_scan(
+            &FailAll,
+            &Keys::default(),
+            &scan("Jane Citizen", "HUMAN_NAME"),
+            1,
+        ) {
+            Err(SfRefused::Unavailable(message)) => {
+                assert!(message.contains("HUNTSMAN_CA_BUNDLE"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

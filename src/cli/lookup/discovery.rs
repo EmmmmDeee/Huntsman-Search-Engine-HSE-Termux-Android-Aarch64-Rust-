@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::profiles::Refused;
 use crate::cli::{MAX_ARTIFACT_BYTES, fail};
 use huntsman_recon::classifier::{self, classify as classify_indicator};
 use huntsman_recon::entity;
@@ -109,9 +110,12 @@ pub(in crate::cli) fn sf_cmd(args: &[String]) -> ExitCode {
                     print!("{body}");
                     ExitCode::SUCCESS
                 }
-                Err(Error::Network(message)) => fail(EX_UNAVAILABLE, &message),
-                Err(Error::Invalid(message)) => fail(EX_DATAERR, &message),
-                Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
+                // The plain lookups' one status table (`Refused::exit_status`): `sf -s` exits as
+                // `email`, `people`, `username` or `phone` would for the same outcome.
+                Err(refused) => {
+                    let refused = Refused::from(refused);
+                    fail(refused.exit_status(), refused.message())
+                }
             }
         }
     }
