@@ -231,6 +231,16 @@ fn malicious_type(kind: &EntityKind) -> Option<&'static str> {
     }
 }
 
+/// The descriptor type saying a blocklist lists an entity of this kind.
+fn blacklisted_type(kind: &EntityKind) -> Option<&'static str> {
+    match kind {
+        EntityKind::IpAddress => Some("BLACKLISTED_IPADDR"),
+        EntityKind::Domain => Some("BLACKLISTED_INTERNET_NAME"),
+        EntityKind::Netblock => Some("BLACKLISTED_NETBLOCK"),
+        _ => None,
+    }
+}
+
 /// The descriptor type saying an entity of this kind was in a breach.
 fn compromised_type(kind: &EntityKind) -> Option<&'static str> {
     match kind {
@@ -453,7 +463,17 @@ fn identity_descriptors(
         let kind = attr("hash_type").map_or(String::new(), |kind| format!(" ({kind})"));
         out.push(("HASH_COMPROMISED", format!("{host}{kind} [{source}]")));
     }
-    if says_malicious(evidence) {
+    // A blocklist's listing names the list and its reason, as Spiderfoot's DNSBL modules write
+    // both the blacklisted and the malicious element.
+    if let Some(listing) = attr("dnsbl") {
+        let data = format!("{listing} [{host}]");
+        if let Some(kind) = blacklisted_type(&entity.kind) {
+            out.push((kind, data.clone()));
+        }
+        if let Some(kind) = malicious_type(&entity.kind) {
+            out.push((kind, data));
+        }
+    } else if says_malicious(evidence) {
         if let Some(kind) = malicious_type(&entity.kind) {
             out.push((kind, format!("{} [{host}]", evidence.provenance.source)));
         }

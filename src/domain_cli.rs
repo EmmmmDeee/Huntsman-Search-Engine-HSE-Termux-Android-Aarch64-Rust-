@@ -2,7 +2,8 @@
 //!
 //! Runs crt.sh and Cert Spotter certificate transparency (see [`crate::certspotter`]: every
 //! certificate logged for the domain and its subdomains, each in full), DNS record and RDAP
-//! registration lookups (see [`crate::rdap_legs`]) in sequence for a single domain, then the
+//! registration lookups (see [`crate::rdap_legs`]) and the domain blocklists Spiderfoot asks
+//! over the system resolver (see [`crate::dnsbl`]) in sequence for a single domain, then the
 //! keyed legs whose key is configured: `VirusTotal` reputation
 //! (`HUNTSMAN_VIRUSTOTAL_KEY`) and Hunter.io published addresses (`HUNTSMAN_HUNTER_KEY`), then
 //! every domain source in [`crate::indicator_legs::SOURCES`] (Shodan DNS, Pulsedive, Netlas, OTX, urlscan.io, Robtex,
@@ -24,6 +25,7 @@ use crate::canonical::{canonical_domain, canonical_email, canonical_ip};
 use crate::certspotter;
 use crate::crtsh::{self, CrtShError};
 use crate::dns::{self, DomainDns, RecordType, ResolveErrorKind};
+use crate::dnsbl::{self, Subject};
 use crate::entity::Entity;
 use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
@@ -147,6 +149,9 @@ pub fn run<T: Transport + ?Sized + Sync>(
     if let Some(outcome) = registration.outcome {
         found.leg(outcome);
     }
+    let (listed, rows) = dnsbl::check(transport, Subject::Domain(&domain), &scan_id, now_unix);
+    found.entities.extend(listed);
+    found.outcomes.extend(rows);
     keyed_legs(transport, keys, &domain, &scan_id, now_unix, &mut found);
     let hosts = resolve::hosts(&found.entities, &domain);
     if resolvers_up && !hosts.is_empty() {

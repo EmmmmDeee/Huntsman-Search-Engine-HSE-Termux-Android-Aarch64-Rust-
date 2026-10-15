@@ -195,6 +195,9 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         "xposed_or_not" => ("xposed_or_not", "src/xposedornot.rs"),
         "rdap" => ("rdap", "src/rdap.rs"),
         "dnsresolve" => ("dnsresolve", "src/dns.rs"),
+        list @ ("spamhaus" | "spamcop" | "uceprotect" | "dronebl" | "sorbs" | "surbl") => {
+            (list, "src/dnsbl.rs")
+        }
         _ => return None,
     })
 }

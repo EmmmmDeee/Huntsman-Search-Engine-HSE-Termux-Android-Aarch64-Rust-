@@ -10,7 +10,7 @@
 
 use std::fmt;
 use std::io::{self, Read};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -247,6 +247,77 @@ pub trait Transport {
     /// # Errors
     /// `TransportFailure` when no HTTP response was obtained.
     fn send(&self, request: &Request) -> Result<Response, TransportFailure>;
+
+    /// The addresses `name` resolves to through the system resolver, as a DNS blocklist is asked:
+    /// on a phone that is the network's own resolver, which lists such as Spamhaus answer and
+    /// public `DoH` resolvers are refused by. A name that does not exist resolves to no address.
+    /// A transport without a resolver fails every name.
+    ///
+    /// # Errors
+    /// `TransportFailure` when the resolver gave no answer.
+    fn resolve(&self, name: &str) -> Result<Vec<IpAddr>, TransportFailure> {
+        Err(TransportFailure {
+            kind: SourceOutcomeKind::DnsFailure,
+            detail: format!("no system resolver to ask for {name}"),
+            blocked: false,
+        })
+    }
+}
+
+/// The longest one system-resolver question may take: a blocklist that does not answer is
+/// reported as such instead of holding up the lookup.
+pub const RESOLVE_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Ask the system resolver for `name` on a worker thread, waiting at most `timeout`. A name the
+/// resolver says does not exist, or has no address, resolves to none. **Opens no socket itself:**
+/// the C library's resolver does.
+fn system_resolve(name: &str, timeout: Duration) -> Result<Vec<IpAddr>, TransportFailure> {
+    use std::net::ToSocketAddrs as _;
+    let failure = |detail: String| TransportFailure {
+        kind: SourceOutcomeKind::DnsFailure,
+        detail,
+        blocked: false,
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let asked = name.to_owned();
+    std::thread::Builder::new()
+        .name("resolve".into())
+        .spawn(move || {
+            let answer = (asked.as_str(), 0).to_socket_addrs().map(|addresses| {
+                let mut ips: Vec<IpAddr> = addresses.map(|address| address.ip()).collect();
+                ips.sort_unstable();
+                ips.dedup();
+                ips
+            });
+            let _ = sender.send(answer);
+        })
+        .map_err(|e| failure(format!("resolver thread: {e}")))?;
+    match receiver.recv_timeout(timeout) {
+        Ok(Ok(addresses)) => Ok(addresses),
+        Ok(Err(error)) if names_no_address(&error.to_string()) => Ok(Vec::new()),
+        Ok(Err(error)) => Err(failure(format!("{name}: {error}"))),
+        Err(_) => Err(failure(format!(
+            "{name}: no answer within {}s",
+            timeout.as_secs()
+        ))),
+    }
+}
+
+/// Whether a resolver error says the name has no address, in the words glibc, musl, bionic and
+/// the BSDs use, rather than that no server answered. **Pure.**
+pub(crate) fn names_no_address(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    !message.contains("temporary")
+        && [
+            "not known",
+            "no address associated",
+            "does not resolve",
+            "nodename nor servname",
+            "no such host",
+            "non-recoverable failure in name resolution",
+        ]
+        .iter()
+        .any(|phrase| message.contains(phrase))
 }
 
 /// Strip userinfo and query string: both routinely carry secrets (`user:pass@`,
@@ -521,6 +592,10 @@ impl Default for UreqTransport {
 }
 
 impl Transport for UreqTransport {
+    fn resolve(&self, name: &str) -> Result<Vec<IpAddr>, TransportFailure> {
+        system_resolve(name, RESOLVE_TIMEOUT.min(self.timeout))
+    }
+
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
         if let Some(reason) = &self.trust_failure {
             return Err(TransportFailure {
