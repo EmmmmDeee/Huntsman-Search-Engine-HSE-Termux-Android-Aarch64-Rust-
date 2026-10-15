@@ -2,13 +2,15 @@
 //!
 //! One lookup is one `GET https://ipinfo.io/{ip}/json`. `IPinfo` answers without a key at a low
 //! limit; with `HUNTSMAN_IPINFO_KEY` set the token goes in the `token` query parameter (added as
-//! the request is sent) and the account's limit applies. Kept: the reverse hostname, the origin
-//! AS and its holder, city, region and country, and whether the address is anycast. The postcode
-//! and coordinates are not kept. A bogon address is a valid zero.
+//! the request is sent) and the account's limit applies. Kept: everything the answer gives about
+//! the address: the reverse hostname, the origin AS and its holder, city, region, country,
+//! postcode, time zone, whether the address is anycast, and the position (`loc`), which is also a
+//! coordinates pivot. A bogon address is a valid zero.
 
 use serde::Deserialize;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::canonical::canonical_coordinates;
 use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
@@ -31,7 +33,7 @@ pub const INTEL: Source = Source {
     lookup,
 };
 
-/// The fields kept; `loc` and `postal` are not decoded.
+/// The fields kept.
 #[derive(Deserialize)]
 struct Body {
     ip: String,
@@ -47,6 +49,12 @@ struct Body {
     country: Option<String>,
     #[serde(default)]
     org: Option<String>,
+    #[serde(default)]
+    loc: Option<String>,
+    #[serde(default)]
+    postal: Option<String>,
+    #[serde(default)]
+    timezone: Option<String>,
     #[serde(default)]
     anycast: bool,
 }
@@ -106,7 +114,16 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Option<Finding>, LegError> {
     .opt_attr("city", body.city.as_deref())
     .opt_attr("region", body.region.as_deref())
     .opt_attr("country", body.country.as_deref())
+    .opt_attr("postal_code", body.postal.as_deref())
+    .opt_attr("timezone", body.timezone.as_deref())
     .tag_if(body.anycast, "anycast");
+    if let Some(position) = body.loc.as_deref().and_then(canonical_coordinates) {
+        finding = finding.attr("coordinates", &position).pivot(
+            PivotKind::Coordinates,
+            position,
+            "Position IPinfo gives for the address",
+        );
+    }
     if let Some(host) = body.hostname.as_deref() {
         finding = finding.pivot(PivotKind::Domain, host, "Reverse hostname IPinfo gives");
     }
@@ -134,7 +151,7 @@ mod tests {
     const RECORDED: &str = r#"{"ip":"8.8.8.8","hostname":"dns.google","city":"Mountain View","region":"California","country":"US","loc":"38.0088,-122.1175","org":"AS15169 Google LLC","postal":"94043","timezone":"America/Los_Angeles","readme":"https://ipinfo.io/missingauth","anycast":true}"#;
 
     #[test]
-    fn a_recorded_answer_keeps_host_network_and_place_but_no_coordinates() {
+    fn a_recorded_answer_keeps_everything_it_gives_including_the_position() {
         let f = decode(RECORDED.as_bytes(), "8.8.8.8")
             .ok()
             .flatten()
@@ -144,13 +161,40 @@ mod tests {
             "IPinfo: AS15169 Google LLC, Mountain View, California, US"
         );
         assert_eq!(f.tags, ["anycast"]);
-        let text = format!("{f:?}");
-        assert!(
-            !text.contains("38.0088") && !text.contains("94043"),
-            "{text}"
+        let attr = |key: &str| {
+            f.attrs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(attr("postal_code"), Some("94043"));
+        assert_eq!(attr("timezone"), Some("America/Los_Angeles"));
+        assert_eq!(attr("coordinates"), Some("38.008800,-122.117500"));
+        let pivots: Vec<(PivotKind, &str)> = f
+            .pivots
+            .iter()
+            .map(|p| (p.kind, p.value.as_str()))
+            .collect();
+        assert_eq!(
+            pivots,
+            [
+                (PivotKind::Coordinates, "38.008800,-122.117500"),
+                (PivotKind::Domain, "dns.google"),
+                (PivotKind::Asn, "AS15169"),
+                (PivotKind::Organisation, "Google LLC"),
+            ]
         );
-        let pivots: Vec<&str> = f.pivots.iter().map(|p| p.value.as_str()).collect();
-        assert_eq!(pivots, ["dns.google", "AS15169", "Google LLC"]);
+    }
+
+    #[test]
+    fn a_position_that_is_not_a_place_is_not_kept() {
+        let body = br#"{"ip":"8.8.8.8","loc":"91.0,200.0","org":"AS15169 Google LLC"}"#;
+        let f = decode(body, "8.8.8.8")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("body must decode"));
+        assert!(f.attrs.iter().all(|(k, _)| *k != "coordinates"));
+        assert!(f.pivots.iter().all(|p| p.kind != PivotKind::Coordinates));
     }
 
     #[test]
