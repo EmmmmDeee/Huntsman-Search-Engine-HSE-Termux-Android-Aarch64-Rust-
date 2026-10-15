@@ -76,6 +76,8 @@ const PUBLIC_CA_ORG_PREFIXES: &[&str] = &[
     "buypass",
     "zerossl",
     "ssl.com",
+    // SSL.com issues under its legal name.
+    "ssl corporation",
     "actalis",
     "certum",
     "swisssign",
@@ -242,7 +244,7 @@ where
         // A challenge page is a wall at any status, 429/502/503 included, and is
         // never retried. The body is inspected directly: the shared classifier
         // labels every 429 `RateLimited` before it looks for a challenge.
-        if crate::classify::is_challenge(&response.text()) {
+        if crate::classify::is_challenge(&response.text_view()) {
             return Err(CrtShError::NotAnAnswer(SourceOutcomeKind::BotWaf));
         }
         if !(200..300).contains(&response.status) {
@@ -315,11 +317,55 @@ fn cert_evidence(entry: &CrtEntry, summary: &str, scan_id: &str) -> Evidence {
 }
 
 /// First non-empty `O=` value of an X.509 distinguished name. **Pure.**
-fn parse_dn_org(dn: &str) -> Option<&str> {
-    dn.split(',')
-        .filter_map(|segment| segment.trim().strip_prefix("O="))
-        .map(str::trim)
-        .find(|org| !org.is_empty())
+fn parse_dn_org(dn: &str) -> Option<String> {
+    dn_attributes(dn)
+        .into_iter()
+        .find(|(key, value)| key == "O" && !value.is_empty())
+        .map(|(_, value)| value)
+}
+
+/// The `KEY=value` pairs of a distinguished name in its one-line form, as crt.sh prints it
+/// (`C=US, O="CLOUDFLARE, INC.", CN=…`), each value unquoted and unescaped. A comma or `+`
+/// separates attributes only outside double quotes and when not escaped with a backslash, so
+/// an organisation such as `"Example, Inc."` stays whole. **Pure.**
+fn dn_attributes(dn: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    let (mut key, mut value) = (String::new(), String::new());
+    let (mut in_value, mut quoted) = (false, false);
+    let mut chars = dn.chars();
+    while let Some(c) = chars.next() {
+        let literal = match c {
+            '\\' => chars.next(),
+            '"' => {
+                quoted = !quoted;
+                None
+            }
+            ',' | '+' if !quoted => {
+                push_attribute(&mut pairs, &mut key, &mut value);
+                in_value = false;
+                None
+            }
+            '=' if !in_value => {
+                in_value = true;
+                None
+            }
+            c => Some(c),
+        };
+        if let Some(c) = literal {
+            if in_value { &mut value } else { &mut key }.push(c);
+        }
+    }
+    push_attribute(&mut pairs, &mut key, &mut value);
+    pairs
+}
+
+fn push_attribute(pairs: &mut Vec<(String, String)>, key: &mut String, value: &mut String) {
+    let name = key.trim();
+    if !name.is_empty() {
+        pairs.push((name.to_owned(), value.trim().to_owned()));
+    }
+    key.clear();
+    value.clear();
 }
 
 /// A well-known public CA, matched case-insensitively by prefix. **Pure.**
@@ -399,10 +445,10 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
         let Some(org) = parse_dn_org(dn) else {
             continue;
         };
-        if is_public_ca(org) || !seen_issuers.insert(org.to_lowercase()) {
+        if is_public_ca(&org) || !seen_issuers.insert(org.to_lowercase()) {
             continue;
         }
-        let mut o = Entity::new(EntityKind::Organisation, org, MEDIUM_HIGH, scan_id);
+        let mut o = Entity::new(EntityKind::Organisation, org.as_str(), MEDIUM_HIGH, scan_id);
         o.tag(tags::CT_LOG);
         o.tag("certificate-issuer");
         o.tag(tags::DERIVED);

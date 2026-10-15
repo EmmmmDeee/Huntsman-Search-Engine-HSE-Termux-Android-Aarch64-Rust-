@@ -6,11 +6,11 @@
 //! run against the one before it and reports a regression only on measured
 //! evidence: a new failure, or a suite that ran fewer tests than before.
 
-use std::fs::OpenOptions;
+use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
-use crate::fsio::{REFUSED_SYMLINK, SymlinkRefusal};
+use crate::fsio::{CHANGED_WHILE_OPENING, NOT_REGULAR_FILE, REFUSED_SYMLINK};
 
 /// Upper bound on a history file, in bytes, for every read of it.
 ///
@@ -34,16 +34,56 @@ fn read_history(path: &Path) -> Result<Option<Vec<u8>>, HistoryError> {
         .map_err(|e| HistoryError::Io(io::Error::other(e.to_string())))
 }
 
-/// Refuse to open a symlink for writing, matching `fsio`: appending through a
-/// planted link would write into whatever file it points at.
-fn refuse_symlink(path: &Path) -> Result<(), HistoryError> {
-    crate::fsio::check_not_symlink(path).map_err(|refusal| match refusal {
-        SymlinkRefusal::Linked => HistoryError::Io(io::Error::other(format!(
-            "{}: {REFUSED_SYMLINK}",
-            path.display()
-        ))),
-        SymlinkRefusal::Unreadable(e) => HistoryError::Io(e),
-    })
+fn refusal(path: &Path, reason: &str) -> HistoryError {
+    HistoryError::Io(io::Error::other(format!("{}: {reason}", path.display())))
+}
+
+/// `lstat` the history before a write, matching `fsio`: a symlink is refused, since
+/// writing through a planted link would land in whatever file it points at. `None`
+/// when the path does not exist yet.
+fn lstat_for_write(path: &Path) -> Result<Option<Metadata>, HistoryError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(refusal(path, REFUSED_SYMLINK)),
+        Ok(meta) => Ok(Some(meta)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(HistoryError::Io(e)),
+    }
+}
+
+/// Open the history for an in-place write through a descriptor that is the file
+/// `lstat` saw. The path is checked, opened with `options`, and the descriptor
+/// compared with the check (same inode, regular file), so a link or a replacement
+/// planted between the check and the open is refused rather than written through.
+/// With `create`, a history that does not exist yet is created exclusively, which
+/// never follows a link planted after the check.
+fn open_checked(
+    path: &Path,
+    options: &mut OpenOptions,
+    create: bool,
+) -> Result<File, HistoryError> {
+    let linked = lstat_for_write(path)?;
+    if create && linked.is_none() {
+        options.create_new(true);
+    }
+    let file = options.open(path)?;
+    require_opened(path, linked.as_ref(), &file.metadata()?)?;
+    Ok(file)
+}
+
+/// The descriptor half of [`open_checked`]: `opened` must be the inode `linked`
+/// describes, when the path existed at the check, and a regular file.
+fn require_opened(
+    path: &Path,
+    linked: Option<&Metadata>,
+    opened: &Metadata,
+) -> Result<(), HistoryError> {
+    if linked.is_some_and(|linked| !crate::fsio::same_inode(linked, opened)) {
+        return Err(refusal(path, CHANGED_WHILE_OPENING));
+    }
+    if !opened.is_file() {
+        return Err(refusal(path, NOT_REGULAR_FILE));
+    }
+    Ok(())
 }
 
 use serde::{Deserialize, Serialize};
@@ -101,8 +141,9 @@ pub fn append(path: &Path, record: &RunRecord) -> Result<(), HistoryError> {
         std::fs::create_dir_all(parent)?;
     }
     heal_torn_tail(path)?;
-    refuse_symlink(path)?;
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    let mut options = OpenOptions::new();
+    options.append(true);
+    let mut file = open_checked(path, &mut options, true)?;
     file.write_all(line.as_bytes())?;
     file.sync_data()?;
     Ok(())
@@ -122,8 +163,9 @@ fn heal_torn_tail(path: &Path) -> Result<(), HistoryError> {
         .iter()
         .rposition(|b| *b == b'\n')
         .map_or(0, |index| index + 1);
-    refuse_symlink(path)?;
-    let file = OpenOptions::new().write(true).open(path)?;
+    let mut options = OpenOptions::new();
+    options.write(true);
+    let file = open_checked(path, &mut options, false)?;
     file.set_len(keep as u64)?;
     file.sync_data()?;
     Ok(())
@@ -302,7 +344,7 @@ mod tests {
     fn append_refuses_a_symlink_and_does_not_write_through_it() {
         // A history path that is a symlink must be refused, so an append cannot land in whatever
         // file the link points at. The refusal is enforced in append's read step (heal_torn_tail,
-        // through fsio::read_bounded); refuse_symlink guards the writes behind it as a second layer.
+        // through fsio::read_bounded); open_checked guards the writes behind it as a second layer.
         let link = scratch("symlink");
         let target = link.with_file_name("target.jsonl");
         std::fs::write(&target, b"").unwrap();
@@ -316,6 +358,40 @@ mod tests {
             b"",
             "the append followed the link and wrote through it"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_descriptor_that_is_not_the_checked_inode_is_refused_before_a_write() {
+        // The write path checks the history with lstat, opens it, then compares the descriptor
+        // with the check. A swap between the two cannot be scheduled from a test, so the
+        // comparison is given, by construction, the lstat result of the history and a descriptor
+        // on another file: what a link or a replacement planted in that window produces.
+        let path = scratch("descriptor");
+        let planted = path.with_file_name("planted.jsonl");
+        std::fs::write(&path, b"").unwrap();
+        std::fs::write(&planted, b"").unwrap();
+        let linked = std::fs::symlink_metadata(&path).unwrap();
+        require_opened(&path, Some(&linked), &std::fs::metadata(&path).unwrap()).unwrap();
+        require_opened(&path, None, &std::fs::metadata(&path).unwrap()).unwrap();
+        match require_opened(&path, Some(&linked), &std::fs::metadata(&planted).unwrap()) {
+            Err(HistoryError::Io(e)) => {
+                let shown = e.to_string();
+                assert!(
+                    shown.contains("changed between the check and the open"),
+                    "{shown}"
+                );
+                assert!(shown.contains(&path.display().to_string()), "{shown}");
+            }
+            other => panic!("a descriptor on another inode must be refused, got {other:?}"),
+        }
+        let dir = std::fs::metadata(path.parent().unwrap()).unwrap();
+        match require_opened(&path, None, &dir) {
+            Err(HistoryError::Io(e)) => {
+                assert!(e.to_string().contains("not a regular file"), "{e}");
+            }
+            other => panic!("a descriptor on a directory must be refused, got {other:?}"),
+        }
     }
 
     #[test]
