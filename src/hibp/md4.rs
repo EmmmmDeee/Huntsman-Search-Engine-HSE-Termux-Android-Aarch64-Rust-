@@ -6,16 +6,25 @@
 //! small local implementation avoids a new dependency; it is tested against
 //! the RFC 1320 appendix A.5 vectors.
 
+/// `data` followed by MD4's `0x80` and zero padding, in a buffer with room for the 8-byte
+/// length too. It is sized up front, so building it never reallocates and leaves an unwiped
+/// copy of `data` behind.
+pub(super) fn padded(data: &[u8]) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(data.len() + 72);
+    msg.extend_from_slice(data);
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg
+}
+
 /// MD4 digest of `data`.
 #[allow(clippy::many_single_char_names)] // RFC 1320's register and round names.
 pub(super) fn md4(data: &[u8]) -> [u8; 16] {
     let mut st: [u32; 4] = [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
     let bit_len = (data.len() as u64).wrapping_mul(8);
-    let mut msg = data.to_vec();
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
+    let mut msg = padded(data);
     msg.extend_from_slice(&bit_len.to_le_bytes());
 
     for block in msg.chunks_exact(64) {
@@ -98,7 +107,12 @@ pub(super) fn md4(data: &[u8]) -> [u8; 16] {
         st[1] = st[1].wrapping_add(b);
         st[2] = st[2].wrapping_add(c);
         st[3] = st[3].wrapping_add(d);
+        // The block's words are the password's bytes.
+        x.fill(0);
+        std::hint::black_box(&x);
     }
+    // The padded copy holds the password itself.
+    super::passwords::wipe(msg);
 
     let mut out = [0u8; 16];
     for (i, w) in st.iter().enumerate() {
