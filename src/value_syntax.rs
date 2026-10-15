@@ -328,6 +328,68 @@ pub fn is_whois_privacy_placeholder(value: &str) -> bool {
         .any(|marker| contains_ascii_case_insensitive(value, marker))
 }
 
+/// `application/x-www-form-urlencoded` value decoding: `+` is a space and `%XX` a byte. `None`
+/// for a malformed escape or bytes that are not UTF-8.
+#[must_use]
+pub fn form_decode(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => out.push(b' '),
+            b'%' => {
+                let hex = bytes.get(index + 1..index + 3)?;
+                if !hex.iter().all(u8::is_ascii_hexdigit) {
+                    return None;
+                }
+                out.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
+                index += 2;
+            }
+            byte => out.push(byte),
+        }
+        index += 1;
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The `key=value` pairs of a query string, each side form-decoded, empty pairs skipped.
+/// `None` when any pair does not decode.
+#[must_use]
+pub fn form_pairs(query: &str) -> Option<Vec<(String, String)>> {
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            Some((form_decode(key)?, form_decode(value)?))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod form_tests {
+    use super::*;
+
+    #[test]
+    fn form_values_decode_plus_and_escapes_and_refuse_bad_ones() {
+        assert_eq!(form_decode("a+b%40c.d").as_deref(), Some("a b@c.d"));
+        assert_eq!(form_decode("%e2%9c%93").as_deref(), Some("\u{2713}"));
+        assert_eq!(form_decode("%zz"), None);
+        assert_eq!(form_decode("%4"), None);
+        assert_eq!(form_decode("%ff"), None);
+        assert_eq!(
+            form_pairs("target=example.com&&name=my+scan&flag"),
+            Some(vec![
+                ("target".into(), "example.com".into()),
+                ("name".into(), "my scan".into()),
+                ("flag".into(), String::new()),
+            ])
+        );
+        assert_eq!(form_pairs("a=%zz"), None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

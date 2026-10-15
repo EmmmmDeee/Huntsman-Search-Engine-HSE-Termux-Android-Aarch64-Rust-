@@ -1,5 +1,7 @@
-//! Bounded, symlink-refusing file IO shared by the session store and the ledger.
-//! A read never exceeds its bound, even if the file grows after `stat`.
+//! Bounded, symlink-refusing file IO shared by the session store, the ledger, the keys file,
+//! the directive files and every other file the crate reads whole.
+//! A read never exceeds its bound, even if the file grows after `stat`, and it reads the inode
+//! `lstat` checked: a link or a replacement planted between the check and the open is refused.
 //! A write lands whole or not at all: temp file in the same directory, then rename.
 
 use std::fs::{self, File, OpenOptions};
@@ -17,6 +19,12 @@ fn store_err(path: &Path, e: &std::io::Error) -> Error {
 
 /// The text a refused symbolic link is reported with.
 pub(crate) const REFUSED_SYMLINK: &str = "refusing symlink";
+
+/// The text a path that is not a regular file is reported with.
+pub(crate) const NOT_REGULAR_FILE: &str = "not a regular file";
+
+/// The text a path whose opened descriptor is not the inode `lstat` checked is reported with.
+pub(crate) const CHANGED_WHILE_OPENING: &str = "changed between the check and the open";
 
 /// Why a path may not be written through: it is a symbolic link, or it could not be inspected.
 pub(crate) enum SymlinkRefusal {
@@ -45,33 +53,66 @@ fn refuse_symlink(path: &Path) -> Result<(), Error> {
 fn require_regular_file(path: &Path, meta: &fs::Metadata) -> Result<(), Error> {
     if meta.file_type().is_symlink() {
         return Err(Error::Store(format!(
-            "{}: refusing symlink",
+            "{}: {REFUSED_SYMLINK}",
             path.display()
         )));
     }
     if !meta.is_file() {
         return Err(Error::Store(format!(
-            "{}: not a regular file",
+            "{}: {NOT_REGULAR_FILE}",
             path.display()
         )));
     }
     Ok(())
 }
 
+/// Did `open` reach the inode `lstat` described (`linked`), and not a link or a replacement
+/// swapped in between the two calls? Device and inode number together name a file. The one
+/// comparison behind every checked read and in-place write in the crate: the keys file, the
+/// run history and [`read_bounded`]. Off Unix the metadata carries no inode, so the two are
+/// taken to agree, as every read did before this check.
+#[cfg(unix)]
+pub(crate) fn same_inode(linked: &fs::Metadata, opened: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (linked.dev(), linked.ino()) == (opened.dev(), opened.ino())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn same_inode(_linked: &fs::Metadata, _opened: &fs::Metadata) -> bool {
+    true
+}
+
 /// Read at most `max` bytes. Larger files, symlinks, and non-files are refused.
 ///
 /// The path is checked before opening so FIFOs/devices are rejected instead of
 /// potentially blocking or triggering device behavior. The opened handle is
-/// checked again before reading.
+/// checked again before reading: it must be the inode `lstat` saw and a regular
+/// file, so a link or a replacement planted between the check and the open is
+/// refused rather than followed. `O_NOFOLLOW` is not set, because its value
+/// differs per architecture and would need the `libc` crate; comparing the
+/// descriptor with the `lstat` result closes the same window.
 ///
 /// # Errors
-/// `Error::Store` on a symlink, non-file, IO failure, or a file over `max` bytes.
+/// `Error::Store` on a symlink, non-file, IO failure, a file over `max` bytes, or
+/// a path that changed between the check and the open.
 pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
     let path_meta = fs::symlink_metadata(path).map_err(|e| store_err(path, &e))?;
     require_regular_file(path, &path_meta)?;
     let file = File::open(path).map_err(|e| store_err(path, &e))?;
-    let file_meta = file.metadata().map_err(|e| store_err(path, &e))?;
-    require_regular_file(path, &file_meta)?;
+    read_opened(path, &path_meta, file, max)
+}
+
+/// The descriptor half of [`read_bounded`]: `file` must be the inode `linked` (the `lstat`
+/// result for `path`) describes and a regular file; then at most `max` bytes are read from it.
+fn read_opened(path: &Path, linked: &fs::Metadata, file: File, max: u64) -> Result<Vec<u8>, Error> {
+    let opened = file.metadata().map_err(|e| store_err(path, &e))?;
+    if !same_inode(linked, &opened) {
+        return Err(Error::Store(format!(
+            "{}: {CHANGED_WHILE_OPENING}",
+            path.display()
+        )));
+    }
+    require_regular_file(path, &opened)?;
     let mut body = Vec::new();
     file.take(max.saturating_add(1))
         .read_to_end(&mut body)
@@ -88,7 +129,8 @@ pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
 /// Replace `path` atomically and durably. A symlink at `path` or at its parent directory is
 /// refused. The bytes are flushed before the rename and the directory after it: on ext4 and
 /// f2fs (Android's data partition) a rename whose directory was not flushed can be lost to a
-/// power cut or a low-memory kill, leaving the old file or none.
+/// power cut or a kernel crash, leaving the old file or none. (A killed process, such as one
+/// Android's low-memory killer ends, loses nothing: the kernel still writes the rename back.)
 ///
 /// # Errors
 /// `Error::Store` on a symlink, a body over `max` bytes, or IO failure.
@@ -248,6 +290,55 @@ mod tests {
         assert!(path.is_dir());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_inode_tells_a_file_from_another() {
+        let dir = scratch("inode");
+        let one = dir.join("one.json");
+        let two = dir.join("two.json");
+        fs::write(&one, b"1").unwrap();
+        fs::write(&two, b"2").unwrap();
+        let linked = fs::symlink_metadata(&one).unwrap();
+        assert!(
+            same_inode(&linked, &fs::metadata(&one).unwrap()),
+            "a file is its own inode"
+        );
+        assert!(
+            same_inode(&linked, &File::open(&one).unwrap().metadata().unwrap()),
+            "a descriptor opened on the file is its inode"
+        );
+        assert!(
+            !same_inode(&linked, &fs::metadata(&two).unwrap()),
+            "two files are two inodes"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_descriptor_that_is_not_the_checked_inode_is_refused() {
+        // `read_bounded` checks the path with `lstat`, opens it, then reads through the
+        // descriptor. A swap between the check and the open cannot be scheduled from a test, so
+        // the descriptor half is given, by construction, the `lstat` result of one file and a
+        // descriptor on another: what a link or a replacement planted in that window produces.
+        let dir = scratch("swap");
+        let checked = dir.join("checked.json");
+        let planted = dir.join("planted.json");
+        fs::write(&checked, b"checked").unwrap();
+        fs::write(&planted, b"planted").unwrap();
+        let linked = fs::symlink_metadata(&checked).unwrap();
+        assert_eq!(
+            read_opened(&checked, &linked, File::open(&checked).unwrap(), 10).unwrap(),
+            b"checked"
+        );
+        let error = read_opened(&checked, &linked, File::open(&planted).unwrap(), 10)
+            .expect_err("a descriptor on another inode must be refused")
+            .to_string();
+        assert!(error.contains(CHANGED_WHILE_OPENING), "{error}");
+        assert!(error.contains(&checked.display().to_string()), "{error}");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]

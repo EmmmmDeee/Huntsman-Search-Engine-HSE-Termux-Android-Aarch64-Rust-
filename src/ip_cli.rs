@@ -1,6 +1,7 @@
 //! End-to-end front-end for `huntsman-recon ip` and the ip arm of `scan`.
 //!
-//! Runs the IP legs in order for one public address: Shodan `InternetDB` (open ports, hostnames,
+//! Runs the IP legs in order for one public address: reverse DNS (the PTR records of the address,
+//! as Spiderfoot's `sfp_dnsresolve` asks), Shodan `InternetDB` (open ports, hostnames,
 //! CPEs, known CVEs), `RIPEstat` (covering prefix and origin AS), `GreyNoise` Community (internet
 //! scanner or benign service), then the keyed legs whose key is configured: `AbuseIPDB` (abuse
 //! reports) and `VirusTotal` (engine verdicts), then every IP source in
@@ -13,11 +14,13 @@
 //! A private, loopback, documentation or otherwise non-public address is refused before any
 //! request: nothing public is known about it, and asking would only disclose it.
 
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::abuseipdb;
 use crate::api_leg::{Api, LegError};
 use crate::canonical::{canonical_domain, canonical_ip};
+use crate::dns::{self, RESOLVE_SOURCE, ResolveErrorKind};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::greynoise;
@@ -36,12 +39,15 @@ use crate::virustotal;
 pub const IP_USAGE: &str = "usage: huntsman-recon ip ADDRESS [--save FILE]";
 pub const IP_HELP: &str = "\
 ip ADDRESS [--save FILE]
-Look up one public IPv4 or IPv6 address: open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat, internet-scanner status from GreyNoise Community threat risk from Pulsedive, scan data from Netlas, threat pulses from AlienVault OTX, public page scans from urlscan.io, hostname, network and city from IPinfo, the route and passive DNS names from Robtex, domains hosted on the address from HackerTarget and forum-spam reports from StopForumSpam, all keyless. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs, and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY, HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
+Look up one public IPv4 or IPv6 address: the names its PTR records carry, open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat, internet-scanner status from GreyNoise Community threat risk from Pulsedive, scan data from Netlas, threat pulses from AlienVault OTX, public page scans from urlscan.io, hostname, network and city from IPinfo, the route and passive DNS names from Robtex, domains hosted on the address from HackerTarget and forum-spam reports from StopForumSpam, all keyless. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs, and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY, HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
 
 /// Confidence of the queried address itself.
 const SEED_CONFIDENCE: f64 = 0.90;
 /// Confidence of a pivot a provider attributes to the address.
 const PIVOT_CONFIDENCE: f64 = 0.60;
+/// Confidence of a name the address's own reverse zone publishes: its operator named it, though
+/// the name is not checked to resolve back.
+const PTR_CONFIDENCE: f64 = 0.80;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -163,6 +169,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, keys: &Keys, ip: &str, now_unix
         network: None,
     };
 
+    ptr_leg(transport, &mut lookup);
     match internetdb::lookup(transport, &ip, now_unix) {
         Ok(Some(host)) => internetdb_leg(&mut lookup, &host),
         Ok(None) => lookup.nothing(&internetdb::API),
@@ -213,6 +220,70 @@ pub fn run<T: Transport + ?Sized>(transport: &T, keys: &Keys, ip: &str, now_unix
         Ok(text) => IpRun::Printed { text, report },
         Err(message) => IpRun::Failed(message),
     }
+}
+
+/// Reverse DNS over the `DoH` resolvers and the lookup's transport, as Spiderfoot's
+/// `sfp_dnsresolve` reverse-resolves every address: the address's evidence lists each PTR record
+/// as published under `ptr`, and each name in canonical form is a domain pivot whose evidence
+/// names the address. No PTR record is a validated zero.
+fn ptr_leg<T: Transport + ?Sized>(transport: &T, lookup: &mut Lookup<'_>) {
+    let Ok(address) = lookup.ip.parse::<IpAddr>() else {
+        return;
+    };
+    let (ip, scan_id) = (lookup.ip, lookup.scan_id);
+    let evidence = |summary: String| {
+        Evidence::new(
+            EvidenceProvenance::for_scan(RESOLVE_SOURCE, scan_id),
+            summary,
+        )
+        .with_attr("record_type", "PTR")
+    };
+    let outcome = match dns::lookup_ptr(transport, address) {
+        Ok(answer) => {
+            let resolver = answer.server.provider;
+            let mut listed =
+                evidence(format!("PTR records of {ip}")).with_attr("resolver", resolver);
+            let mut pivots = Vec::new();
+            for record in &answer.records {
+                let name = record.trim().trim_end_matches('.');
+                listed = listed.with_attr("ptr", name);
+                if let Some(domain) = canonical_domain(name) {
+                    pivots.push(domain);
+                }
+            }
+            lookup.on_address(listed, &[]);
+            for domain in pivots {
+                let named = evidence(format!("PTR record of {ip}"))
+                    .with_attr("ip", ip)
+                    .with_attr("resolver", resolver);
+                push_entity(
+                    &mut lookup.report.entities,
+                    EntityKind::Domain,
+                    &domain,
+                    PTR_CONFIDENCE,
+                    scan_id,
+                    named,
+                    &[tags::PTR],
+                );
+            }
+            SourceExecutionOutcome::success(RESOLVE_SOURCE, lookup.now_unix, answer.records.len())
+        }
+        Err(error) if error.kind == ResolveErrorKind::Empty => {
+            SourceExecutionOutcome::valid_zero(RESOLVE_SOURCE, lookup.now_unix)
+        }
+        Err(error) => SourceExecutionOutcome::failed(
+            RESOLVE_SOURCE,
+            lookup.now_unix,
+            error.kind.outcome_kind(),
+            None,
+            format!(
+                "no resolver answered the PTR query: {}: {}",
+                error.kind.as_str(),
+                error.detail
+            ),
+        ),
+    };
+    lookup.report.outcomes.push(outcome);
 }
 
 fn join<T: ToString>(items: &[T]) -> String {
