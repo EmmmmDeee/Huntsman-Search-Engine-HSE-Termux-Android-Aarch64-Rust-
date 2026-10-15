@@ -19,10 +19,11 @@
 //! A loopback bind answers only requests whose `Host` is a loopback authority,
 //! which blocks a browser DNS-rebinding attack from reaching the local API.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
@@ -35,13 +36,16 @@ use crate::base64;
 use crate::engineering_command;
 use crate::entity::Entity;
 use crate::error::Error;
+use crate::keys::{self, Keys};
 use crate::module::reachable_modules;
+use crate::provider_credentials::PROVIDERS;
 use crate::scan_api::ScanApi;
 use crate::scan_route::{self, ScanKind};
 use crate::scan_service::{ScanRequest, ScanService};
 use crate::scan_store::{LogLevel, ScanStatus};
 use crate::sha256::sha256;
 use crate::source_outcome::SourceExecutionOutcome;
+use crate::value_syntax::form_pairs;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 
@@ -125,6 +129,11 @@ const ANALYZE_STACK_BYTES: usize = 4 * 1024 * 1024;
 /// like an analysis, it runs on its own thread with a stack sized for that. Starting a scan only
 /// saves its row: the scan itself runs on the service's own thread.
 const SCANS_STACK_BYTES: usize = 4 * 1024 * 1024;
+/// The longest request body the server reads: a Settings page key save, its `slot` and `value`
+/// form-encoded. Every other route takes its parameters in the query string.
+const MAX_FORM_BYTES: usize = 3 * keys::MAX_KEY_BYTES + 512;
+/// The Settings page's provider keys: which may be saved, and one save.
+const KEYS_PATH: &str = "/api/settings/keys";
 /// The header a lookup request must carry. Its presence forces a CORS preflight from any other
 /// origin, and this server answers no preflight.
 pub const LOOKUP_HEADER: &str = "x-huntsman-lookup";
@@ -183,6 +192,8 @@ struct Routes {
     lookups: Option<Lookups>,
     analyze: Option<AnalyzeHandler>,
     scans: Option<Arc<ScanApi>>,
+    /// The home whose keys file every lookup reads, for [`KEYS_PATH`].
+    keys_home: Option<PathBuf>,
 }
 
 /// Where `serve` listens and the token its API needs. Only [`ServeConfig::parse`] builds one, so a
@@ -289,6 +300,14 @@ impl Server {
     #[must_use]
     pub fn with_scans(mut self, api: Arc<ScanApi>) -> Self {
         self.routes.scans = Some(api);
+        self
+    }
+
+    /// Serve `/api/settings/keys` over the keys file in `home` (`~/.huntsman.env`), the one every
+    /// lookup reads. Without this the route answers `404`.
+    #[must_use]
+    pub fn with_keys_home(mut self, home: PathBuf) -> Self {
+        self.routes.keys_home = Some(home);
         self
     }
 
@@ -633,6 +652,8 @@ fn handle_stream_with(
 fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Error> {
     let mut bytes = Vec::with_capacity(1024);
     let mut chunk = [0_u8; 1024];
+    // Once the head is in: the whole request's length, the head and the form body it announces.
+    let mut whole = None;
 
     while bytes.len() < MAX_REQUEST_BYTES {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -666,10 +687,16 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
         // the head: scanning the whole buffer after every read was quadratic in its length.
         let scan_from = bytes.len().saturating_sub(3);
         bytes.extend_from_slice(&chunk[..read]);
-        if bytes[scan_from..]
-            .windows(4)
-            .any(|window| window == b"\r\n\r\n")
-        {
+        if whole.is_none() {
+            if let Some(at) = bytes[scan_from..]
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+            {
+                let head = scan_from + at + 4;
+                whole = Some(head + form_body_len(&bytes[..head]));
+            }
+        }
+        if whole.is_some_and(|whole| bytes.len() >= whole) {
             break;
         }
     }
@@ -683,11 +710,21 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// The body to read after a request's `head`: the `Content-Length` it announces, when that is at
+/// most [`MAX_FORM_BYTES`]. A larger body is not read; the route answers without it.
+fn form_body_len(head: &[u8]) -> usize {
+    parse_request(&String::from_utf8_lossy(head))
+        .and_then(|parsed| parsed.content_length)
+        .filter(|length| *length <= MAX_FORM_BYTES)
+        .unwrap_or(0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Method {
     Get,
     Head,
-    /// Only the scan API takes it: a state change with its parameters in the query string.
+    /// A state change: the scan API's, with its parameters in the query string, and a key save,
+    /// with its form in the body.
     Post,
     Other,
 }
@@ -714,6 +751,10 @@ struct ParsedRequest<'a> {
     sec_fetch_site: Option<&'a str>,
     /// A request body was announced: a non-zero `Content-Length` or any `Transfer-Encoding`.
     has_body: bool,
+    /// The `Content-Length`, when it is a number.
+    content_length: Option<usize>,
+    /// What followed the head, as far as it was read.
+    body: &'a str,
 }
 
 fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
@@ -733,6 +774,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
     let mut lookup_header = false;
     let mut sec_fetch_site = None;
     let mut has_body = false;
+    let mut content_length = None;
 
     // The head ends at the first blank line; anything after it is body, never a header.
     for line in lines.take_while(|line| !line.is_empty()) {
@@ -753,6 +795,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
             sec_fetch_site = Some(value.trim());
         } else if name.eq_ignore_ascii_case("content-length") {
             has_body |= value.trim() != "0";
+            content_length = value.trim().parse().ok();
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             has_body = true;
         }
@@ -767,6 +810,8 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
         lookup_header,
         sec_fetch_site,
         has_body,
+        content_length,
+        body: request.split_once("\r\n\r\n").map_or("", |(_, body)| body),
     })
 }
 
@@ -876,9 +921,10 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
         .into_bytes();
     }
 
-    // Only the scan API changes state, so only it takes POST.
+    // Only the scan API and the key save change state, so only they take POST.
     if parsed.method == Method::Other
-        || parsed.method == Method::Post && !ScanApi::handles(parsed.path)
+        || parsed.method == Method::Post
+            && !(ScanApi::handles(parsed.path) || parsed.path == KEYS_PATH)
     {
         return response(
             405,
@@ -892,7 +938,7 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
     let head = parsed.method == Method::Head;
     let protected = matches!(
         parsed.path,
-        "/api/modules" | "/api/command" | "/api/lookup" | "/api/analyze"
+        "/api/modules" | "/api/command" | "/api/lookup" | "/api/analyze" | KEYS_PATH
     ) || ScanApi::handles(parsed.path);
     if protected
         && bearer_token.is_some_and(|expected| !bearer_matches(parsed.authorization, expected))
@@ -939,6 +985,7 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
         },
         "/api/lookup" => lookup_response(&parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
         "/api/analyze" => analyze_response(&parsed, routes.analyze.as_ref()),
+        KEYS_PATH => keys_response(&parsed, routes.keys_home.as_deref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
@@ -1224,6 +1271,109 @@ fn parse_lookup_query(raw: &str) -> Result<LookupQuery, &'static str> {
         .filter(|k| !k.is_empty())
         .unwrap_or_else(|| "auto".into());
     Ok(LookupQuery { kind, selector })
+}
+
+/// `GET` and `POST /api/settings/keys`: the provider keys the Settings page may save, and one save.
+/// Spiderfoot keeps its modules' API keys in its settings. Here they live in the keys file every
+/// lookup reads (`~/.huntsman.env`), so the next lookup uses a saved key without a restart. A save
+/// sends `slot` and `value` as a form body, never in the URL, and an empty `value` removes the
+/// slot. No answer carries a value: only whether each slot is set and whether the file sets it.
+/// It changes what every lookup spends, so it is guarded as the scan API is: refused cross-site or
+/// same-site, it needs the lookup header, and on a public bind the bearer token.
+fn keys_response(parsed: &ParsedRequest<'_>, home: Option<&Path>) -> String {
+    let Some(home) = home else {
+        return json_error(
+            404,
+            "this server keeps no keys file: start it with HOME set to an absolute directory",
+        );
+    };
+    if parsed
+        .sec_fetch_site
+        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
+    {
+        return json_error(403, "cross-site key request refused");
+    }
+    if !parsed.lookup_header {
+        return json_error(403, "the key settings need the X-Huntsman-Lookup: 1 header");
+    }
+    // A URL is kept in history and logs, so a key must not reach this route in one, even beside
+    // a form that would be saved.
+    if !parsed.query.is_empty() {
+        return json_error(
+            400,
+            "the key settings take no query string: send a form body",
+        );
+    }
+    if parsed.method == Method::Post {
+        if let Err(refused) = save_key(parsed, &home.join(keys::DEFAULT_KEYS_FILE)) {
+            return refused;
+        }
+    } else if parsed.has_body {
+        return json_error(400, "only a key save sends a body");
+    }
+    key_slots(home, parsed.method == Method::Head)
+}
+
+/// One key save from the form in `parsed`'s body: `slot`, a slot of a provider in the credential
+/// catalogue, and `value`, the key, or empty to remove the slot. The refusal is the answer to send.
+fn save_key(parsed: &ParsedRequest<'_>, file: &Path) -> Result<(), String> {
+    if parsed.content_length != Some(parsed.body.len()) {
+        return Err(json_error(
+            400,
+            &format!("send slot and value as a form body of at most {MAX_FORM_BYTES} bytes"),
+        ));
+    }
+    let Some(form) = form_pairs(parsed.body) else {
+        return Err(json_error(
+            400,
+            "the form is not valid percent-encoded UTF-8",
+        ));
+    };
+    let field = |name: &str| {
+        form.iter()
+            .rev()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    };
+    let slot = field("slot").unwrap_or_default();
+    if !PROVIDERS
+        .iter()
+        .any(|provider| provider.slots.contains(&slot))
+    {
+        return Err(json_error(400, "slot is not a provider key slot"));
+    }
+    let value = field("value").filter(|value| !value.trim().is_empty());
+    keys::store_slot(file, slot, value).map_err(|error| match error {
+        Error::Invalid(message) => json_error(422, &message),
+        other => json_error(500, &other.to_string()),
+    })
+}
+
+/// Every provider key slot in the credential catalogue: its provider, whether a lookup would find
+/// it set (in the keys file or the environment), and whether the keys file sets it. With the file,
+/// and the warning a lookup would print when it cannot read the file.
+fn key_slots(home: &Path, head: bool) -> String {
+    let resolved = Keys::for_lookup(Some(home.as_os_str()));
+    let saved: BTreeSet<&str> = resolved.keys.slots().into_iter().collect();
+    let slots: Vec<serde_json::Value> = PROVIDERS
+        .iter()
+        .flat_map(|provider| {
+            provider.slots.iter().map(|slot| {
+                serde_json::json!({
+                    "provider": provider.name,
+                    "slot": slot,
+                    "set": resolved.keys.get(slot).is_some(),
+                    "saved": saved.contains(slot),
+                })
+            })
+        })
+        .collect();
+    let body = serde_json::json!({
+        "file": home.join(keys::DEFAULT_KEYS_FILE).display().to_string(),
+        "warning": resolved.warning,
+        "slots": slots,
+    });
+    json_ok(&body.to_string(), head)
 }
 
 /// `GET /api/analyze?seeds=…`: the offline multi-hop analysis of up to [`MAX_ANALYZE_SEEDS`]
@@ -1661,6 +1811,7 @@ mod tests {
                     lookups: Some(lookups.clone()),
                     analyze: echo_seeds().analyze,
                     scans: None,
+                    keys_home: None,
                 };
                 let ask = |path: &str| {
                     text(respond(
@@ -2316,6 +2467,7 @@ mod tests {
             lookups: lookups.cloned(),
             analyze: None,
             scans: None,
+            keys_home: None,
         };
         text(respond(
             request,
@@ -2487,6 +2639,7 @@ mod tests {
             }),
             analyze: None,
             scans: Some(Arc::new(api)),
+            keys_home: None,
         };
         (routes, dir)
     }
@@ -2789,6 +2942,7 @@ mod tests {
             lookups: None,
             analyze: Some(Arc::new(handler)),
             scans: None,
+            keys_home: None,
         }
     }
 
@@ -3170,5 +3324,300 @@ mod tests {
         assert_eq!(header_filename("a\"b\r\nX: y.csv"), "a_b__X__y.csv");
         assert_eq!(header_filename("t1-Huntsman.csv"), "t1-Huntsman.csv");
         assert_eq!(header_filename(""), "export");
+    }
+
+    // --- The Settings page's provider keys ---
+
+    const TEST_KEY: &str = "TEST_ONLY_SETTINGS_KEY_51c0";
+
+    fn key_home(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hse-serve-keys-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn key_routes(home: &Path) -> Routes {
+        Routes {
+            keys_home: Some(home.to_path_buf()),
+            ..Routes::default()
+        }
+    }
+
+    fn key_save(routes: &Routes, form: &str, extra: &str) -> String {
+        scans_request(
+            routes,
+            None,
+            &format!(
+                "POST /api/settings/keys HTTP/1.1\r\n{HEADER}{extra}Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{form}",
+                form.len()
+            ),
+        )
+    }
+
+    fn answer_json(answer: &str) -> serde_json::Value {
+        let (_, body) = answer.split_once("\r\n\r\n").unwrap();
+        serde_json::from_str(body).unwrap_or_else(|error| panic!("{error}: {body}"))
+    }
+
+    fn slot_state(answer: &serde_json::Value, slot: &str) -> (bool, bool) {
+        let row = answer["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["slot"] == slot)
+            .unwrap_or_else(|| panic!("{slot} is not listed"));
+        (
+            row["set"].as_bool().unwrap(),
+            row["saved"].as_bool().unwrap(),
+        )
+    }
+
+    #[test]
+    fn the_key_settings_list_every_catalogue_slot_and_a_save_reaches_the_keys_file_only() {
+        let home = key_home("save");
+        let routes = key_routes(&home);
+        let file = home.join(keys::DEFAULT_KEYS_FILE);
+        let listed = scans_request(
+            &routes,
+            None,
+            &format!("GET /api/settings/keys HTTP/1.1\r\n{HEADER}\r\n"),
+        );
+        assert!(listed.starts_with("HTTP/1.1 200"), "{listed}");
+        let listed = answer_json(&listed);
+        let catalogue: usize = PROVIDERS.iter().map(|provider| provider.slots.len()).sum();
+        assert_eq!(listed["slots"].as_array().unwrap().len(), catalogue);
+        assert_eq!(listed["file"], file.display().to_string());
+        assert!(
+            listed["slots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["saved"] == false)
+        );
+
+        let saved = key_save(
+            &routes,
+            &format!("slot=HUNTSMAN_SHODAN_KEY&value={TEST_KEY}"),
+            "Sec-Fetch-Site: same-origin\r\n",
+        );
+        assert!(saved.starts_with("HTTP/1.1 200"), "{saved}");
+        assert!(!saved.contains(TEST_KEY), "an answer never carries a key");
+        assert_eq!(
+            slot_state(&answer_json(&saved), "HUNTSMAN_SHODAN_KEY"),
+            (true, true)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            format!("HUNTSMAN_SHODAN_KEY='{TEST_KEY}'\n")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        // What a lookup reads is what was saved.
+        let keys = Keys::for_lookup(Some(home.as_os_str())).keys;
+        assert_eq!(keys.get("HUNTSMAN_SHODAN_KEY").unwrap().expose(), TEST_KEY);
+
+        // An empty value removes the slot.
+        let removed = key_save(&routes, "slot=HUNTSMAN_SHODAN_KEY&value=", "");
+        assert!(removed.starts_with("HTTP/1.1 200"), "{removed}");
+        assert!(!slot_state(&answer_json(&removed), "HUNTSMAN_SHODAN_KEY").1);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_key_save_is_refused_off_the_page_in_the_url_or_for_a_slot_outside_the_catalogue() {
+        let home = key_home("refused");
+        let routes = key_routes(&home);
+        let form = format!("slot=HUNTSMAN_SHODAN_KEY&value={TEST_KEY}");
+        let status = |answer: &str| answer.split(' ').nth(1).unwrap_or_default().to_owned();
+        for site in ["cross-site", "same-site"] {
+            let answer = key_save(&routes, &form, &format!("Sec-Fetch-Site: {site}\r\n"));
+            assert_eq!(status(&answer), "403", "{answer}");
+        }
+        let unheaded = scans_request(
+            &routes,
+            None,
+            &format!(
+                "POST /api/settings/keys HTTP/1.1\r\nContent-Length: {}\r\n\r\n{form}",
+                form.len()
+            ),
+        );
+        assert_eq!(status(&unheaded), "403", "{unheaded}");
+        let in_the_url = scans_request(
+            &routes,
+            None,
+            &format!("POST /api/settings/keys?{form} HTTP/1.1\r\n{HEADER}\r\n"),
+        );
+        assert_eq!(status(&in_the_url), "400", "{in_the_url}");
+        let beside_a_form = scans_request(
+            &routes,
+            None,
+            &format!(
+                "POST /api/settings/keys?{form} HTTP/1.1\r\n{HEADER}Content-Length: {}\r\n\r\n{form}",
+                form.len()
+            ),
+        );
+        assert_eq!(status(&beside_a_form), "400", "{beside_a_form}");
+        assert!(!beside_a_form.contains(TEST_KEY));
+        for (form, want) in [
+            (format!("slot=HOME&value={TEST_KEY}"), "400"),
+            (format!("slot=HUNTSMAN_NOT_A_SLOT&value={TEST_KEY}"), "400"),
+            ("slot=HUNTSMAN_SHODAN_KEY&value=changeme".to_owned(), "422"),
+            ("slot=HUNTSMAN_SHODAN_KEY&value=%ZZ".to_owned(), "400"),
+        ] {
+            let answer = key_save(&routes, &form, "");
+            assert_eq!(status(&answer), want, "{form}: {answer}");
+            assert!(!answer.contains(TEST_KEY) && !answer.contains("changeme"));
+        }
+        let got_with_a_body = scans_request(
+            &routes,
+            None,
+            &format!("GET /api/settings/keys HTTP/1.1\r\n{HEADER}Content-Length: 3\r\n\r\na=b"),
+        );
+        assert_eq!(status(&got_with_a_body), "400", "{got_with_a_body}");
+        assert!(
+            !home.join(keys::DEFAULT_KEYS_FILE).exists(),
+            "nothing was saved"
+        );
+
+        // On a public bind the token is needed; without a home there is no keys file.
+        let public = text(respond(
+            &format!(
+                "POST /api/settings/keys HTTP/1.1\r\n{HEADER}Content-Length: {}\r\n\r\n{form}",
+                form.len()
+            ),
+            &test_config(public_bind(), Some("tok")),
+            &routes,
+        ));
+        assert_eq!(status(&public), "401", "{public}");
+        let homeless = key_save(&Routes::default(), &form, "");
+        assert_eq!(status(&homeless), "404", "{homeless}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A browser may send the form after its head, in a later packet; the server reads it whole.
+    /// A body past the form bound is not read, and the save is refused at once.
+    #[test]
+    fn a_form_body_that_follows_its_head_is_read_whole_and_a_larger_one_is_refused_unread() {
+        let home = key_home("socket");
+        let server = Server::bind(ServeConfig::parse("127.0.0.1:0", None).unwrap())
+            .unwrap()
+            .with_keys_home(home.clone());
+        let addr = server.local_addr().unwrap();
+        let handle = thread::spawn(move || server.run_n(2).unwrap());
+        let send = |head: String, body: &[u8]| {
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            client.write_all(head.as_bytes()).unwrap();
+            client.flush().unwrap();
+            thread::sleep(Duration::from_millis(100));
+            let _ = client.write_all(body);
+            let mut answer = String::new();
+            let _ = client.read_to_string(&mut answer);
+            answer
+        };
+        let form = format!("slot=HUNTSMAN_SHODAN_KEY&value={TEST_KEY}");
+        let saved = send(
+            format!(
+                "POST /api/settings/keys HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: {}\r\n\r\n",
+                form.len()
+            ),
+            form.as_bytes(),
+        );
+        assert!(saved.starts_with("HTTP/1.1 200"), "{saved}");
+        let big = vec![b'a'; MAX_FORM_BYTES + 1];
+        let started = Instant::now();
+        let refused = send(
+            format!(
+                "POST /api/settings/keys HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: {}\r\n\r\n",
+                big.len()
+            ),
+            &big,
+        );
+        assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "answered without waiting"
+        );
+        handle.join().unwrap();
+        let keys = Keys::for_lookup(Some(home.as_os_str())).keys;
+        assert_eq!(keys.get("HUNTSMAN_SHODAN_KEY").unwrap().expose(), TEST_KEY);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Every keyed module the Settings page lists has a slot it can save, so no key field is shown
+    /// that the server would refuse.
+    #[test]
+    fn every_keyed_module_on_the_settings_page_has_a_slot_it_can_save() {
+        let (routes, _, dir) = scan_routes("keyslots");
+        let settings = answer_json(&scans_request(
+            &routes,
+            None,
+            &format!("GET /api/settings HTTP/1.1\r\n{HEADER}\r\n"),
+        ));
+        let saveable: BTreeSet<&str> = PROVIDERS
+            .iter()
+            .flat_map(|provider| provider.slots.iter().copied())
+            .collect();
+        let mut keyed = 0;
+        for module in settings["modules"].as_array().unwrap() {
+            let slots: Vec<&str> = module["key_env"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|slot| slot.as_str().unwrap())
+                .collect();
+            if slots.is_empty() {
+                continue;
+            }
+            keyed += 1;
+            assert!(
+                slots.iter().any(|slot| saveable.contains(slot)),
+                "{} lists {slots:?}, none of which the credential catalogue names",
+                module["name"]
+            );
+        }
+        assert!(keyed > 20, "the settings list its keyed modules: {keyed}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The page reads the key answer by these names, so a renamed field fails here rather than
+    /// leaving the Settings page without its key fields.
+    #[test]
+    fn the_page_reads_the_key_answer_by_its_field_names() {
+        let home = key_home("reads");
+        let answer = answer_json(&scans_request(
+            &key_routes(&home),
+            None,
+            &format!("GET /api/settings/keys HTTP/1.1\r\n{HEADER}\r\n"),
+        ));
+        for field in ["file", "warning", "slots"] {
+            assert!(answer.get(field).is_some(), "the answer has no {field}");
+        }
+        for field in ["slot", "set", "saved", "provider"] {
+            assert!(
+                answer["slots"][0].get(field).is_some(),
+                "a slot row has no {field}"
+            );
+        }
+        for read in [
+            "api('/api/settings/keys')",
+            "keyslots.file",
+            "keyslots.warning",
+            "keyslots.slots.find(k=>k.slot===s)",
+            "k.saved",
+            "k.set",
+            "method:'POST',body:new URLSearchParams({slot,value})",
+        ] {
+            assert!(INDEX_HTML.contains(read), "the page no longer reads {read}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

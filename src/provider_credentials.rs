@@ -229,6 +229,18 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::OATHNET_KEY_ENV],
     },
     Provider {
+        name: "DeHashed",
+        get_key_url: "https://dehashed.com",
+        free_tier: "paid API",
+        slots: &[crate::environment::DEHASHED_KEY_ENV],
+    },
+    Provider {
+        name: "stolen.tax",
+        get_key_url: "https://stolen.tax",
+        free_tier: "paid API",
+        slots: &[crate::environment::STOLEN_TAX_KEY_ENV],
+    },
+    Provider {
         name: "Exa",
         get_key_url: "https://dashboard.exa.ai/api-keys",
         free_tier: "free tier with signup credits",
