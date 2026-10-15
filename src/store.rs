@@ -10,9 +10,6 @@ use crate::session::{Session, valid_session_id};
 /// investigation that `plan` can finish must also save, and a 1 MiB cap failed it after the work.
 const MAX_SESSION_BYTES: u64 = crate::scan_artifact::MAX_ARTIFACT_BYTES;
 
-/// `current.txt` holds one session id, which [`valid_session_id`] bounds at 80 characters.
-const MAX_POINTER_BYTES: u64 = 128;
-
 pub struct Store {
     root: PathBuf,
 }
@@ -23,8 +20,8 @@ impl Store {
         Self { root: root.into() }
     }
 
-    /// Save a session and mark it current. Both files are mode 600 on Unix: a session holds the
-    /// seeds and findings of an investigation.
+    /// Save a session under `sessions/<id>.json`, mode 600 on Unix: a session holds the seeds and
+    /// findings of an investigation.
     ///
     /// # Errors
     /// `Error::Invalid` for an unsafe id; `Error::Store` for IO, size, or symlink refusal.
@@ -38,11 +35,6 @@ impl Store {
             .join(format!("{}.json", session.id));
         let body = serde_json::to_vec_pretty(session).map_err(|e| Error::Store(e.to_string()))?;
         write_atomic_private(&path, &body, MAX_SESSION_BYTES)?;
-        write_atomic_private(
-            &self.root.join("current.txt"),
-            session.id.as_bytes(),
-            MAX_POINTER_BYTES,
-        )?;
         Ok(path)
     }
 
@@ -106,6 +98,21 @@ mod tests {
         store.save(&session).unwrap();
         let reloaded = store.load(&session.id).unwrap();
         assert_eq!(reloaded, session);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A save writes the session and nothing beside it. The old `current.txt` marker had no reader,
+    /// so it was a second record of the same session that nothing consulted.
+    #[test]
+    fn a_save_writes_only_the_session_file() {
+        let dir = scratch("only-session");
+        let store = Store::new(dir.clone());
+        store.save(&Session::new("alone")).unwrap();
+        let entries: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, ["sessions"], "{entries:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
