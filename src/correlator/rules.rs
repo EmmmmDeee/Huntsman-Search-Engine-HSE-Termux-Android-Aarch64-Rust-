@@ -33,9 +33,11 @@ pub fn source_family(source: &str) -> &'static str {
     // `seeknow` is the live SeekNow collector id. `see_know` is the id the legacy 7dca720 build
     // wrote, and its consensus fixture still uses it.
     match source.as_str() {
-        "comb_search" | "dehashed" | "hibp" | "hudsonrock" | "intelx" | "leakcheck_public"
-        | "leakix" | "niamonx" | "osintcat" | "psbdmp" | "pwned_passwords" | "xposed_or_not"
-        | "oathnet" | "oathnet_pro" | "seeknow" | "see_know" | "stolen_tax" => "breach",
+        "comb_search" | "dehashed" | "hibp" | "hibp_account" | "hudsonrock" | "intelx"
+        | "leakcheck_public" | "leakix" | "niamonx" | "osintcat" | "psbdmp" | "pwned_passwords"
+        | "xposed_or_not" | "oathnet" | "oathnet_pro" | "seeknow" | "see_know" | "stolen_tax" => {
+            "breach"
+        }
         "github_user" | "npm_author" | "crates_io" => "code",
         "wigle" | "wigle_bluetooth" | "oui" => "rf",
         "reddit_user" | "hacker_news" => "forum",
@@ -588,4 +590,35 @@ pub fn rule_au_110_shared_hosting_ip(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::{Evidence, EvidenceProvenance};
+
+    #[test]
+    fn hibp_breaches_from_exposure_are_breach_evidence() {
+        // `exposure` records each HIBP breach that lists an address as that address, tagged
+        // `breach`, with evidence under `exposure_cli::SOURCE`.
+        let breached = |address: &str| {
+            let mut entity = Entity::new(EntityKind::Email, address, 0.9, "scan");
+            entity.tag(tags::BREACH);
+            entity.add_evidence(Evidence::new(
+                EvidenceProvenance::new(crate::exposure_cli::SOURCE),
+                "Address listed in HIBP breach Adobe",
+            ));
+            entity
+        };
+        let entities = [breached("ada@example.com"), breached("ada.l@example.com")];
+        let found = rule_au_001_multi_breach(&RuleContext::new(&entities, &[]), "scan", 0);
+        assert_eq!(
+            found.iter().map(|c| c.rule_id.as_str()).collect::<Vec<_>>(),
+            ["AU-001"]
+        );
+        assert_eq!(
+            tagged_matching_sources(&entities[0], tags::BREACH),
+            BTreeSet::from(["breach".to_owned()])
+        );
+    }
 }
