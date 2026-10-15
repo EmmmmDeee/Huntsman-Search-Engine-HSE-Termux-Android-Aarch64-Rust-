@@ -7,7 +7,7 @@
 //! source that runs leaves exactly one outcome: success with its count, the provider's "nothing
 //! known" as a valid zero, or the typed failure.
 
-use crate::canonical::{canonical_domain, canonical_email, canonical_ip};
+use crate::canonical::{canonical_coordinates, canonical_domain, canonical_email, canonical_ip};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::http::Transport;
 use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Source};
@@ -15,7 +15,7 @@ use crate::keys::Keys;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::{
     hackertarget, hunter, ipinfo, ipqs, kickbox, leakix, netlas, otx, pulsedive, robtex,
-    securitytrails, shodan, stopforumspam, threatfox, urlhaus, urlscan, whoxy, xposedornot,
+    securitytrails, shodan, stopforumspam, tags, threatfox, urlhaus, urlscan, whoxy, xposedornot,
 };
 
 /// Every indicator source, in the order a lookup runs them.
@@ -116,6 +116,9 @@ fn pivot_entity(kind: PivotKind, value: &str) -> Option<(EntityKind, String)> {
             let name = value.trim();
             (!name.is_empty()).then(|| (EntityKind::Organisation, name.to_owned()))
         }
+        PivotKind::Coordinates => {
+            canonical_coordinates(value).map(|v| (EntityKind::Coordinates, v))
+        }
     }
 }
 
@@ -159,6 +162,12 @@ fn fold(
         }
         let evidence = Evidence::new(EvidenceProvenance::for_scan(source, scan_id), pivot.summary)
             .with_attr(seed_attr, indicator.value());
+        // A position is geographic intelligence, as the `network` lookup tags its positions.
+        let pivot_tags: &[&str] = if kind == EntityKind::Coordinates {
+            &[tags::GEOINT]
+        } else {
+            &[]
+        };
         push_entity(
             entities,
             kind,
@@ -166,7 +175,7 @@ fn fold(
             PIVOT_CONFIDENCE,
             scan_id,
             evidence,
-            &[],
+            pivot_tags,
         );
         count += 1;
     }
