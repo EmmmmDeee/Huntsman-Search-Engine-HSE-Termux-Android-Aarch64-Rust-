@@ -358,7 +358,7 @@ fn asn(selector: &str, now: u64) -> Result<Collected, Refused> {
 /// The domain sources for a hostname.
 fn domain(selector: &str, now: u64) -> Result<Collected, Refused> {
     let keys = crate::cli::credentials::lookup_keys();
-    let transport = UreqTransport::new(&TransportConfig::default());
+    let transport = UreqTransport::new(&huntsman_recon::domain_cli::transport_config());
     match huntsman_recon::domain_cli::run(&transport, &keys, selector, now) {
         huntsman_recon::domain_cli::DomainRun::Printed { text, report } => {
             Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))

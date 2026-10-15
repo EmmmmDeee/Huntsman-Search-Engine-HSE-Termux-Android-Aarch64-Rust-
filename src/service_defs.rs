@@ -98,6 +98,17 @@ const SERVICE_DEFS: &[ServiceDef] = &[
         success_indicates_valid_key: true,
     },
     ServiceDef {
+        name: "certspotter",
+        env_var: crate::environment::CERTSPOTTER_KEY_ENV,
+        category: "infrastructure",
+        test_url: "https://api.certspotter.com/v1/issuances?domain=example.com",
+        probe_method: Method::Get,
+        key_placement: KeyPlacement::BearerAuth,
+        rate_limit_reset_secs: 60,
+        probe_body: None,
+        success_indicates_valid_key: true,
+    },
+    ServiceDef {
         name: "netlas",
         env_var: crate::environment::NETLAS_KEY_ENV,
         category: "infrastructure",

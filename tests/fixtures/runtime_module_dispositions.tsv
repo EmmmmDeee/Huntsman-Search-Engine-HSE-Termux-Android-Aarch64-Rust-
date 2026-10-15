@@ -14,7 +14,7 @@ attack_catalog	leaf	ATT&CK catalogue
 attack_cli	diagnostic	ATT&CK command front-end over the reachable module catalogue
 attack_reporting	leaf	hierarchy-aware ATT&CK coverage projection
 au_id	leaf	Australian identifier normalization
-base64	leaf	RFC 4648 base64 encoding for CSP hashes and PKCE values
+base64	leaf	RFC 4648 base64 codec for CSP hashes, PKCE values and certificate DER
 benchmark	diagnostic	benchmarking support
 bluesky_user	adapter	public Bluesky profile source client
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
@@ -35,6 +35,7 @@ correlator	runtime	correlation rules used by the runtime analysis spine
 coverage	runtime	provider coverage and incompleteness semantics
 credential_origin	leaf	authentication authority boundary
 cross_scan	runtime	bounded historical scan bridge analysis
+certspotter	adapter	Cert Spotter certificate leg reached through domain_cli from domain, scan -k domain and /api/lookup, keyless or with its key
 crtsh	adapter	Certificate Transparency source client
 deadline	leaf	shared per-lookup request budget
 dehashed	adapter	DeHashed exact-match source client and lineage-safe collector
@@ -196,6 +197,7 @@ web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
 whoxy	adapter	Whoxy WHOIS leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set
 wigle	adapter	WiGLE network-search leg reached through network_cli from network, scan -k network and /api/lookup
+x509	leaf	dependency-free X.509 DER reader and PEM writer behind certspotter
 xlsx	exporter	dependency-free Excel workbook writer behind scan_export's xlsx exports
 xposedornot	adapter	XposedOrNot breach-name leg reached through indicator_legs from email, scan and /api/lookup
 yaml_lite	leaf	dependency-free YAML subset reader for Spiderfoot correlation rules

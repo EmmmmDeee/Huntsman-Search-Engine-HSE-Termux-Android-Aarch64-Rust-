@@ -366,6 +366,12 @@ fn host_descriptors(
     if !place.is_empty() {
         out.push(("GEOINFO", place.join(", ")));
     }
+    if let Some(certificate) = attr("certificate") {
+        out.push(("SSL_CERTIFICATE_RAW", certificate.to_owned()));
+    }
+    if let Some(subject) = attr("subject") {
+        out.push(("SSL_CERTIFICATE_ISSUED", subject.to_owned()));
+    }
     if let Some(issuer) = attr("issuer") {
         out.push(("SSL_CERTIFICATE_ISSUER", issuer.to_owned()));
     }

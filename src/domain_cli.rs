@@ -1,8 +1,9 @@
 //! End-to-end front-end for `huntsman-recon domain` and the domain arm of `scan`.
 //!
-//! Runs crt.sh certificate transparency, DNS record and RDAP registration lookups (see
-//! [`crate::rdap_legs`]) in sequence for a single domain, then the keyed legs whose key is
-//! configured: `VirusTotal` reputation
+//! Runs crt.sh and Cert Spotter certificate transparency (see [`crate::certspotter`]: every
+//! certificate logged for the domain and its subdomains, each in full), DNS record and RDAP
+//! registration lookups (see [`crate::rdap_legs`]) in sequence for a single domain, then the
+//! keyed legs whose key is configured: `VirusTotal` reputation
 //! (`HUNTSMAN_VIRUSTOTAL_KEY`) and Hunter.io published addresses (`HUNTSMAN_HUNTER_KEY`), then
 //! every domain source in [`crate::indicator_legs::SOURCES`] (Shodan DNS, Pulsedive, Netlas, OTX, urlscan.io, Robtex,
 //! `HackerTarget`, `LeakIX`, `URLhaus`, `SecurityTrails`,
@@ -20,12 +21,13 @@
 use std::path::PathBuf;
 
 use crate::canonical::{canonical_domain, canonical_email, canonical_ip};
+use crate::certspotter;
 use crate::crtsh::{self, CrtShError};
 use crate::dns::{self, DomainDns, RecordType, ResolveErrorKind};
 use crate::entity::Entity;
 use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::http::Transport;
+use crate::http::{Transport, TransportConfig};
 use crate::hunter;
 use crate::indicator_legs;
 use crate::indicator_sources::Indicator;
@@ -83,6 +85,13 @@ pub enum DomainRun {
     Failed(String),
 }
 
+/// Transport settings for a domain lookup: crt.sh's timeout and body limit, the largest any of
+/// its legs needs, so a popular domain's certificate list is read whole.
+#[must_use]
+pub fn transport_config() -> TransportConfig {
+    crtsh::transport_config()
+}
+
 #[must_use]
 pub fn run<T: Transport + ?Sized + Sync>(
     transport: &T,
@@ -101,6 +110,9 @@ pub fn run<T: Transport + ?Sized + Sync>(
     sections.push(crtsh_leg(
         transport, &domain, &scan_id, now_unix, &mut found,
     ));
+    let certificates = certspotter::lookup(transport, keys, &domain, &scan_id, now_unix);
+    found.entities.extend(certificates.entities);
+    found.leg(certificates.outcome);
 
     // Whether the resolvers answered the domain's own queries; when none did, its hosts are not
     // asked either.
