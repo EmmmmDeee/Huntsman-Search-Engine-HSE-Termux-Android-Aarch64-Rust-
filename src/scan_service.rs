@@ -17,7 +17,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::correlator::evaluate_rules;
 use crate::entity::Entity;
@@ -46,6 +46,9 @@ pub const MAX_RUNNING: usize = 2;
 pub const MAX_TARGET_BYTES: usize = 512;
 /// The longest scan name, in bytes.
 pub const MAX_NAME_BYTES: usize = 200;
+/// The longest a [`ScanService::wait`] sleeps before it reads the scan's row again, so a scan
+/// whose end it was not told of, as when its thread could not start, is seen soon all the same.
+const WAIT_SLICE: Duration = Duration::from_millis(250);
 /// The use cases Spiderfoot offers.
 pub const USE_CASES: [&str; 4] = ["all", "footprint", "investigate", "passive"];
 
@@ -546,6 +549,57 @@ impl ScanService {
             )));
         }
         Ok(record)
+    }
+
+    /// Start a scan of `request`, or join the scan of the same target, lookup and options that
+    /// this process is still waiting to run or running: `serve`'s `/api/lookup`, so a page
+    /// reloaded mid-lookup waits on the lookup already under way instead of starting another.
+    /// Two requests at once start one scan between them.
+    ///
+    /// # Errors
+    /// As [`Self::start`].
+    pub fn start_or_join(
+        self: &Arc<Self>,
+        request: &ScanRequest,
+    ) -> Result<ScanRecord, ServiceError> {
+        let plan = plan(&request.target, request.kind.as_deref())?;
+        let options = validate_options(&request.options)?;
+        let me = Some(std::process::id());
+        // Held from the search to the start, so a second request finds the first one's scan.
+        let _joining = self.state();
+        let running = self.store.list()?.into_iter().find(|record| {
+            record.status.is_active()
+                && record.owner == me
+                && record.target == plan.target
+                && record.kind == plan.kind.command()
+                && record.options == options
+        });
+        match running {
+            Some(record) => Ok(record),
+            None => self.start(request),
+        }
+    }
+
+    /// Wait until scan `id` ends or `until` passes, and return its row as it then stands.
+    ///
+    /// # Errors
+    /// [`ServiceError::NotFound`] when there is no such scan; [`ServiceError::Store`] when its
+    /// row cannot be read.
+    pub fn wait(&self, id: &str, until: Instant) -> Result<ScanRecord, ServiceError> {
+        loop {
+            // A scan saves its final status before it takes this lock to give up its place and
+            // notify `freed`, so a row read under the lock cannot miss that notice.
+            let state = self.state();
+            let record = self.store.get(id)?;
+            let now = Instant::now();
+            if !record.status.is_active() || now >= until {
+                return Ok(record);
+            }
+            let _ = self
+                .freed
+                .wait_timeout(state, (until - now).min(WAIT_SLICE))
+                .unwrap_or_else(PoisonError::into_inner);
+        }
     }
 
     /// Run a scan on this thread and return its final row: the `scans run` command.
