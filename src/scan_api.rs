@@ -754,7 +754,6 @@ fn route_exists(segments: &[&str], write: bool) -> bool {
         matches!(
             segments,
             ["eventtypes" | "correlationrules" | "settings" | "scans"]
-                | ["scans", "compare"]
                 | ["scans", _]
                 | [
                     "scans",
@@ -944,6 +943,14 @@ mod tests {
             csv.filename.as_deref(),
             Some(format!("{earlier}-vs-{later}-Huntsman.csv").as_str())
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_comparison_takes_two_saved_scans_and_a_table_format() {
+        let (api, dir) = api("compare-refused");
+        let earlier = finished(&api);
+        let later = finished(&api);
         assert_eq!(
             api.handle("GET", "/api/scans/compare", &format!("ids={earlier}"))
                 .status,
