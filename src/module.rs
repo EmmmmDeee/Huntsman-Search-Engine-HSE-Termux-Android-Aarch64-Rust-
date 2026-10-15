@@ -646,7 +646,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::Threat,
         attack_techniques: &["T1596.005"],
-        description: "DNS for Family filter over DNS-over-HTTPS",
+        description: "DNS for Family filter over UDP to its own servers",
     },
     ReachableModule {
         name: "opendns",
@@ -664,7 +664,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::Threat,
         attack_techniques: &["T1596.005"],
-        description: "Quad9 threat-blocking resolver over DNS-over-HTTPS",
+        description: "Quad9 threat-blocking resolver over UDP to its own servers",
     },
     ReachableModule {
         name: "yandexdns",
@@ -673,7 +673,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::Threat,
         attack_techniques: &["T1596.005"],
-        description: "Yandex DNS family filter (infected and adult) over DNS-over-HTTPS",
+        description: "Yandex DNS family filter (infected and adult) over UDP to its own servers",
     },
     ReachableModule {
         name: "abuseipdb",
