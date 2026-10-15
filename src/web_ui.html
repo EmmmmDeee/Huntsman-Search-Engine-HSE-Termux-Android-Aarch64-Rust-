@@ -157,6 +157,7 @@ dd dl{margin:0}
 .more{width:100%;border-width:1px 0 0;border-radius:0}
 .menu{position:relative}
 .menu summary{list-style:none}
+.menu-list.end{left:auto;right:0}
 .menu-list{position:absolute;top:100%;left:0;z-index:5;display:flex;flex-direction:column;min-width:10em;margin-top:4px;padding:4px;background:var(--el);border:1px solid var(--line2);border-radius:var(--r);box-shadow:0 4px 14px rgba(0,0,0,.35)}
 .menu-list button{min-height:44px;padding:0 12px;border:0;border-radius:4px;background:none;color:var(--fg);font:13.5px var(--sans);text-align:left;cursor:pointer}
 .menu-list button:hover{background:var(--hover)}
@@ -229,7 +230,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel" id="sempty" hidden><div class="panel-body"><b>No scan history</b><p class="help">There is currently no history of previously run scans. Start one from <a class="link" href="#/newscan">New Scan</a>.</p></div></div>
 <div id="slist" hidden>
 <div class="toolbar"><label class="chk"><input type="checkbox" id="sall">All</label><select id="sfilter" aria-label="Filter scans"><option value="">Filter: None</option><option value="running">Filter: Running</option><option value="finished">Filter: Finished</option><option value="failed">Filter: Failed/Aborted</option></select><button class="btn" id="srefresh" type="button">Refresh</button></div>
-<div class="toolbar" id="sbulk" hidden><span class="when" id="snsel"></span><button class="btn" id="sstop" type="button">Stop</button><button class="btn" id="srerun" type="button">Re-run</button><button class="btn" id="sexport" type="button">Export JSON</button><button class="btn btn-danger" id="sdelete" type="button">Delete</button></div>
+<div class="toolbar" id="sbulk" hidden><span class="when" id="snsel"></span><button class="btn" id="sstop" type="button">Stop</button><button class="btn" id="srerun" type="button">Re-run</button><details class="menu" id="sexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-mformat="csv">CSV</button><button type="button" data-mformat="xlsx">Excel</button><button type="button" data-mformat="json">JSON</button><button type="button" data-mformat="tsv">TSV</button></div></details><button class="btn btn-danger" id="sdelete" type="button">Delete</button></div>
 <div class="panel"><div class="table-wrap"><table class="sortable"><thead><tr><th>Name</th><th>Target</th><th>Started</th><th>Finished</th><th>Status</th><th>Elements</th><th>Correlations</th><th>Action</th></tr></thead><tbody id="scans"></tbody></table></div></div>
 </div>
 </section>
@@ -275,7 +276,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <nav class="tabs" id="sctabs" aria-label="Scan sections"><a class="tab" data-tab="summary">Summary</a><a class="tab" data-tab="correlations">Correlations</a><a class="tab" data-tab="browse">Browse</a><a class="tab" data-tab="graph">Graph</a><a class="tab" data-tab="settings">Scan Settings</a><a class="tab" data-tab="log">Log</a></nav>
 <div class="toolbar">
 <button class="btn" id="screfresh" type="button">Refresh</button>
-<details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button></div></details>
+<details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="xlsx">Excel</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button></div></details>
 <button class="btn" id="scstop" type="button" hidden>Stop</button>
 <button class="btn" id="screrun" type="button">Re-run</button>
 <button class="btn btn-danger" id="scdelete" type="button">Delete</button>
@@ -291,7 +292,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel"><div class="panel-heading">Sources <span class="badge" id="srcs-n"></span></div><div class="table-wrap"><table class="sortable"><thead><tr><th>Source</th><th>Outcome</th><th>Detail</th></tr></thead><tbody id="srcs"></tbody></table></div></div>
 </div>
 <div id="pane-correlations" hidden>
-<div class="toolbar"><button class="btn" id="recorrelate" type="button">Re-run Correlations</button><details class="menu" id="cexport"><summary class="btn">Export Correlations</summary><div class="menu-list"><button type="button" data-cformat="csv">CSV</button><button type="button" data-cformat="json">JSON</button><button type="button" data-cformat="tsv">TSV</button></div></details></div>
+<div class="toolbar"><button class="btn" id="recorrelate" type="button">Re-run Correlations</button><details class="menu" id="cexport"><summary class="btn">Export Correlations</summary><div class="menu-list"><button type="button" data-cformat="csv">CSV</button><button type="button" data-cformat="xlsx">Excel</button><button type="button" data-cformat="json">JSON</button><button type="button" data-cformat="tsv">TSV</button></div></details></div>
 <p class="help" id="cnote" role="status"></p>
 <div class="panel"><div class="table-wrap"><table><thead><tr><th>Correlation</th><th>Rule</th><th>Risk</th><th>Data Elements</th></tr></thead><tbody id="corrs"></tbody></table></div></div></div>
 <div id="pane-browse" hidden>
@@ -564,7 +565,8 @@ function showScans(){
 }
 function bulk(){
   const n=picked.size;$('snsel').textContent=n+' selected';$('sbulk').hidden=!n;
-  for(const id of ['sstop','srerun','sexport','sdelete'])$(id).disabled=!n;
+  for(const id of ['sstop','srerun','sdelete'])$(id).disabled=!n;
+  if(!n)$('sexport').open=false;
   $('sall').checked=n>0&&n===scans.length;
 }
 $('sall').onchange=()=>{picked.clear();if($('sall').checked)for(const s of scans)picked.add(s.id);showScans()};
@@ -584,9 +586,13 @@ async function act1(action,ids){
 $('sstop').onclick=()=>act1('stop',[...picked].filter(id=>scans.some(s=>s.id===id&&live(s.status))));
 $('srerun').onclick=()=>act1('rerun',[...picked]);
 $('sdelete').onclick=()=>act1('delete',[...picked]);
-$('sexport').onclick=()=>exportJson([...picked]);
-async function exportJson(ids){
-  try{await fetchFile('/api/scans/export?ids='+ids.map(enc).join(','),'huntsman-scans.json')}
+// The selected scans in one file, Spiderfoot's multi-scan export: a Scan Name column leads each row.
+$('sexport').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-mformat]');if(!b)return;
+  $('sexport').open=false;exportJson([...picked],b.dataset.mformat);
+});
+async function exportJson(ids,format='json'){
+  try{await fetchFile('/api/scans/export?'+new URLSearchParams({ids:ids.join(','),format}),'huntsman-scans.'+format)}
   catch(e){fail(view==='scan'?'scerror':'serror',e.message)}
 }
 // New Scan: a target and Spiderfoot's three ways of choosing what runs.
@@ -995,6 +1001,18 @@ $('scexport').addEventListener('click',async e=>{
   $('scexport').open=false;
   try{await exportFile(b.dataset.format)}catch(err){fail('scerror',err.message)}
 });
+// A menu near the right edge opens leftward, so it never runs off a phone's screen: placed from
+// its button before it opens, so it never paints off the edge, then checked once it has opened.
+const edge=()=>document.documentElement.clientWidth-8;
+document.addEventListener('click',e=>{
+  const s=e.target.closest&&e.target.closest('details.menu>summary');if(!s||s.parentNode.open)return;
+  const l=s.parentNode.querySelector('.menu-list');
+  l.classList.toggle('end',s.getBoundingClientRect().left+parseFloat(getComputedStyle(l).minWidth)>edge());
+},true);
+document.addEventListener('toggle',e=>{
+  const m=e.target;if(!(m instanceof HTMLDetailsElement)||!m.classList.contains('menu')||!m.open)return;
+  const l=m.querySelector('.menu-list');if(l.getBoundingClientRect().right>edge())l.classList.add('end');
+},true);
 document.addEventListener('click',e=>{for(const m of document.querySelectorAll('details.menu[open]'))if(!m.contains(e.target))m.open=false});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')for(const m of document.querySelectorAll('details.menu[open]'))m.open=false});
 // Settings: every module, what it needs, and what this server knows of itself. Keys stay in the
