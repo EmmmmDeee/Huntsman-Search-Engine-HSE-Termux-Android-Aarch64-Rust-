@@ -197,3 +197,80 @@ fn hse_baseline_runs_the_full_workspace_check_set() {
         );
     }
 }
+
+/// Runs the baseline with `HOME` and `WORK` in a fresh scratch directory and `REPO_URL` pointing
+/// at a path that does not exist, so the run reaches the lock, then stops fast at the clone with
+/// no network. `seed_lock` optionally pre-creates `$WORK/.baseline.lock` holding that PID string
+/// (empty = a lock directory with no pid file). Returns whether the run exited 0 and the text the
+/// run left behind (its `run.log` and `SUMMARY.txt`).
+fn run_against_missing_repo(tag: &str, seed_lock: Option<&str>) -> (bool, String) {
+    let base = std::env::temp_dir().join(format!("hse-baseline-{tag}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let work = base.join("work");
+    fs::create_dir_all(&work).expect("scratch work dir");
+    if let Some(pid) = seed_lock {
+        let lock = work.join(".baseline.lock");
+        fs::create_dir_all(&lock).expect("seed lock dir");
+        if !pid.is_empty() {
+            fs::write(lock.join("pid"), pid).expect("seed lock pid");
+        }
+    }
+    let out = Command::new("bash")
+        .arg(script_path())
+        .env("HOME", &base)
+        .env("WORK", &work)
+        .env("REPO_URL", base.join("no-such-repo"))
+        .env("REF", "origin/main")
+        .env("SKIP_TESTS", "1")
+        .env_remove("RUN_RELEASE")
+        .output()
+        .expect("bash runs the baseline");
+    let mut text = String::new();
+    if let Ok(reports) = fs::read_dir(work.join("reports")) {
+        let mut dirs: Vec<_> = reports.flatten().map(|e| e.path()).collect();
+        dirs.sort();
+        if let Some(dir) = dirs.last() {
+            text.push_str(&fs::read_to_string(dir.join("run.log")).unwrap_or_default());
+            text.push_str(&fs::read_to_string(dir.join("SUMMARY.txt")).unwrap_or_default());
+        }
+    }
+    let ok = out.status.success();
+    let _ = fs::remove_dir_all(&base);
+    (ok, text)
+}
+
+#[test]
+fn hse_baseline_reclaims_a_stale_lock() {
+    // A lock left behind by a run whose owner is gone (here, a PID that is not a live process)
+    // must be reclaimed, not wedge every later run forever.
+    let (ok, text) = run_against_missing_repo("stale", Some("not-a-live-pid"));
+    assert!(
+        text.contains("Reclaiming a stale lock"),
+        "a stale lock must be reclaimed; output was:\n{text}"
+    );
+    assert!(
+        !text.contains("is using"),
+        "a stale lock must not block the run; output was:\n{text}"
+    );
+    // The run still stops at the missing repo — the lock is not what failed it.
+    assert!(
+        !ok,
+        "the run exits non-zero at the missing clone, not at the lock"
+    );
+}
+
+#[test]
+fn hse_baseline_blocks_on_a_live_lock() {
+    // A lock whose owner is alive (this test process) must block, naming the owner.
+    let pid = std::process::id().to_string();
+    let (ok, text) = run_against_missing_repo("live", Some(&pid));
+    assert!(!ok, "a blocked run exits non-zero");
+    assert!(
+        text.contains(&format!("another run (pid {pid}) is using")),
+        "a live lock must block and name its owner; output was:\n{text}"
+    );
+    assert!(
+        !text.contains("Reclaiming a stale lock"),
+        "a live lock must never be reclaimed; output was:\n{text}"
+    );
+}

@@ -98,7 +98,7 @@ finish() {
   if [ ! -s "$REPORT_DIR/SUMMARY.txt" ]; then
     write_summary "HSE baseline $STAMP did not finish (exit $rc)" "${ABORT_REASON:-unexpected exit; see run.log}"
   fi
-  if [ "$HAVE_LOCK" = 1 ]; then rmdir "$LOCK" 2>/dev/null; fi
+  if [ "$HAVE_LOCK" = 1 ]; then rm -rf "$LOCK" 2>/dev/null; fi
   exit "$rc"
 }
 
@@ -149,9 +149,22 @@ ensure() {
 
 # --- phases ----------------------------------------------------------------
 acquire_lock() {
-  # One run per WORK directory: a concurrent run would corrupt the shared clone.
-  mkdir "$LOCK" 2>/dev/null || abort "another baseline is using $WORK (if none is running, remove $LOCK)"
+  # One run per WORK directory: a concurrent run would corrupt the shared clone. The lock is a
+  # directory holding the owner's PID. A hard-killed run (Termux closed, OOM, logout) cannot run
+  # its EXIT trap and so leaves the lock behind; rather than wedge every later run forever, a lock
+  # whose owner is no longer running is reclaimed.
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    local owner
+    owner="$(cat "$LOCK/pid" 2>/dev/null || true)"
+    if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+      abort "another run (pid $owner) is using $WORK"
+    fi
+    log "Reclaiming a stale lock at $LOCK (owner ${owner:-unknown} is not running)"
+    rm -rf "$LOCK"
+    mkdir "$LOCK" 2>/dev/null || abort "could not take the lock at $LOCK"
+  fi
   HAVE_LOCK=1
+  echo "$$" > "$LOCK/pid"
 }
 
 phase_toolchain() {
