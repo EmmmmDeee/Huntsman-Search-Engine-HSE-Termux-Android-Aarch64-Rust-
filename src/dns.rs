@@ -3,6 +3,7 @@
 //! use fakes and a challenge page is a wall, not a JSON parse error.
 
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -22,6 +23,62 @@ use crate::{
 /// The module name of resolving a name or an address another source found, forward (A and
 /// AAAA) or reverse (PTR), as Spiderfoot's `sfp_dnsresolve` does: on outcome rows and evidence.
 pub const RESOLVE_SOURCE: &str = "dnsresolve";
+
+/// Names or addresses resolved at once by [`ask_all`].
+pub const ASK_WORKERS: usize = 8;
+/// Names or addresses that may fail before the first answer, before [`ask_all`] stops asking: the
+/// resolvers are unreachable, so every other one would fail the same way.
+pub const ASK_FAILURES_BEFORE_ABORT: usize = 4;
+
+/// `ask` for each item, [`ASK_WORKERS`] at a time, each answer at its item's index. Once
+/// [`ASK_FAILURES_BEFORE_ABORT`] answers are `failed` before any other came back, no further item
+/// is asked and those items' answers are `None`; so is the answer of a worker that panicked.
+pub fn ask_all<I, R, F, B>(items: &[I], ask: F, failed: B) -> Vec<Option<R>>
+where
+    I: Sync,
+    R: Send,
+    F: Fn(&I) -> R + Sync,
+    B: Fn(&R) -> bool + Sync,
+{
+    let next = AtomicUsize::new(0);
+    let failures = AtomicUsize::new(0);
+    let answered = AtomicUsize::new(0);
+    let work = || {
+        let mut mine = Vec::new();
+        loop {
+            if answered.load(Ordering::SeqCst) == 0
+                && failures.load(Ordering::SeqCst) >= ASK_FAILURES_BEFORE_ABORT
+            {
+                break;
+            }
+            let index = next.fetch_add(1, Ordering::SeqCst);
+            let Some(item) = items.get(index) else {
+                break;
+            };
+            let result = ask(item);
+            let counter = if failed(&result) {
+                &failures
+            } else {
+                &answered
+            };
+            counter.fetch_add(1, Ordering::SeqCst);
+            mine.push((index, result));
+        }
+        mine
+    };
+    let mut out: Vec<Option<R>> = items.iter().map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..ASK_WORKERS.min(items.len()))
+            .map(|_| scope.spawn(work))
+            .collect();
+        for worker in workers {
+            for (index, result) in worker.join().unwrap_or_default() {
+                out[index] = Some(result);
+            }
+        }
+    });
+    out
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordType {

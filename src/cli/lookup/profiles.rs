@@ -1,7 +1,7 @@
 //! Person-selector lookup adapters.
 //!
 //! [`collect`] is the one execution path per lookup kind. The `people`, `email`, `exposure`,
-//! `username`, `phone`, `domain` and `network` commands, `scan`, and the Web UI's `/api/lookup` all run through it,
+//! `username`, `phone`, `domain`, `ip`, `netblock` and `network` commands, `scan`, and the Web UI's `/api/lookup` all run through it,
 //! so a kind cannot behave differently depending on where it was asked from.
 
 use std::path::Path;
@@ -23,9 +23,10 @@ use huntsman_recon::ip_cli::{IP_USAGE, IpArgs, IpRun};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
     self, DOMAIN_POLICY, EMAIL_EXPOSURE_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, IP_POLICY,
-    NETWORK_POLICY, PEOPLE_POLICY, PHONE_POLICY, SavePolicy, USERNAME_EXPOSURE_POLICY,
-    USERNAME_POLICY,
+    NETBLOCK_POLICY, NETWORK_POLICY, PEOPLE_POLICY, PHONE_POLICY, SavePolicy,
+    USERNAME_EXPOSURE_POLICY, USERNAME_POLICY,
 };
+use huntsman_recon::netblock_cli::{NETBLOCK_USAGE, NetblockArgs, NetblockRun};
 use huntsman_recon::network_cli::{NETWORK_USAGE, NetworkArgs, NetworkRun};
 use huntsman_recon::oathnet;
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
@@ -90,6 +91,7 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
         ScanKind::Username => username(selector, now),
         ScanKind::Phone => phone(selector, now),
         ScanKind::Ip => ip(selector, now),
+        ScanKind::Netblock => netblock(selector, now),
         ScanKind::Domain => domain(selector, now),
         ScanKind::Network => network(selector, now),
     }
@@ -320,6 +322,21 @@ fn ip(selector: &str, now: u64) -> Result<Collected, Refused> {
     }
 }
 
+/// The address-block sources for a CIDR block.
+fn netblock(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let transport = UreqTransport::new(&api_leg::transport_config());
+    match huntsman_recon::netblock_cli::run(&transport, selector, now) {
+        NetblockRun::Printed { text, report } => Ok(done(
+            text,
+            report.entities,
+            report.outcomes,
+            NETBLOCK_POLICY,
+        )),
+        NetblockRun::Network(m) => Err(Refused::Network(m)),
+        NetblockRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
 /// The domain sources for a hostname.
 fn domain(selector: &str, now: u64) -> Result<Collected, Refused> {
     let keys = crate::cli::credentials::lookup_keys();
@@ -448,6 +465,13 @@ pub(in crate::cli) fn ip_cmd(args: &[String]) -> ExitCode {
     match IpArgs::parse(args) {
         Ok(p) => finish(ScanKind::Ip, &p.ip, p.save.as_deref()),
         Err(e) => usage_failure(&e, IP_USAGE),
+    }
+}
+
+pub(in crate::cli) fn netblock_cmd(args: &[String]) -> ExitCode {
+    match NetblockArgs::parse(args) {
+        Ok(p) => finish(ScanKind::Netblock, &p.netblock, p.save.as_deref()),
+        Err(e) => usage_failure(&e, NETBLOCK_USAGE),
     }
 }
 

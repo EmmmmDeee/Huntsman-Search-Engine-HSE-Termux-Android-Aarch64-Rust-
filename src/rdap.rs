@@ -18,8 +18,8 @@ use serde_json::Value;
 
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport};
+use crate::netblock::{Ipv4Cidr, Ipv6Cidr, Netblock};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
-use crate::spf::{Ipv4Cidr, Ipv6Cidr};
 
 /// The module name on outcome rows and evidence; Spiderfoot's `sfp_whois` does its work.
 pub const SOURCE: &str = "rdap";
@@ -237,18 +237,39 @@ pub fn lookup_domain<T: Transport + ?Sized>(
 /// # Errors
 /// [`Failure`] when the bootstrap or the registry gave no usable answer.
 pub fn lookup_ip<T: Transport + ?Sized>(transport: &T, ip: IpAddr) -> Result<Answer, Failure> {
-    let url = if ip.is_ipv4() {
+    network(transport, ip, &ip.to_string())
+}
+
+/// Look up the registration of `block`: the smallest registered network that holds all of it
+/// (RFC 9082 `ip/{address}/{prefix}`), from the registry the bootstrap names for its first
+/// address.
+///
+/// # Errors
+/// [`Failure`] when the bootstrap or the registry gave no usable answer.
+pub fn lookup_netblock<T: Transport + ?Sized>(
+    transport: &T,
+    block: Netblock,
+) -> Result<Answer, Failure> {
+    network(transport, block.network(), &block.to_string())
+}
+
+fn network<T: Transport + ?Sized>(
+    transport: &T,
+    first: IpAddr,
+    resource: &str,
+) -> Result<Answer, Failure> {
+    let url = if first.is_ipv4() {
         BOOTSTRAP_IPV4
     } else {
         BOOTSTRAP_IPV6
     };
     let bootstrap = bootstrap(transport, url)?;
-    let Some(service) = service_for_ip(&bootstrap, ip) else {
+    let Some(service) = service_for_ip(&bootstrap, first) else {
         return Ok(Answer::NoService(format!(
-            "the IANA bootstrap names no RDAP service for {ip}"
+            "the IANA bootstrap names no RDAP service for {resource}"
         )));
     };
-    object(transport, &format!("{service}ip/{ip}"))
+    object(transport, &format!("{service}ip/{resource}"))
 }
 
 /// The service base URL for `domain`: the entry whose TLD is the longest dot-aligned suffix of

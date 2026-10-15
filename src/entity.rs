@@ -86,6 +86,8 @@ pub enum EntityKind {
     ApiKey,
     MacAddress,
     Asn,
+    /// An address block in CIDR form, written as its first address and prefix length.
+    Netblock,
     Other,
 }
 
@@ -113,6 +115,7 @@ impl EntityKind {
             Self::ApiKey => "api_key",
             Self::MacAddress => "mac_address",
             Self::Asn => "asn",
+            Self::Netblock => "netblock",
             Self::Other => "other",
         }
     }
@@ -584,6 +587,8 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
         | EntityKind::MacAddress
         | EntityKind::Asn
         | EntityKind::Other => canonical_whitespace(value),
+        EntityKind::Netblock => crate::netblock::Netblock::parse(value)
+            .map_or_else(|| canonical_whitespace(value), |block| block.to_string()),
     }
 }
 
