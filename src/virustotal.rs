@@ -2,14 +2,18 @@
 //!
 //! One lookup is one `GET https://www.virustotal.com/api/v3/domains/{domain}` or
 //! `.../ip_addresses/{ip}` with the key in the `x-apikey` header. It runs only when
-//! `HUNTSMAN_VIRUSTOTAL_KEY` is set. What is kept is the last analysis verdict counts, the
-//! community reputation, and the object's registry context: registrar and creation date for a
-//! domain, AS number, AS owner, network and country for an address. A `404` `NotFoundError` is
-//! "`VirusTotal` has no object for it", a valid zero. An answer must be the looked-up object (its
-//! `id` names the domain or address) and carry `last_analysis_stats`; one that does not is drift,
-//! never "0 of 0 engines flag it".
+//! `HUNTSMAN_VIRUSTOTAL_KEY` is set. Everything the answer holds is kept: the last analysis
+//! verdict counts and each engine that flagged it, the community reputation and votes, every
+//! category, tag and popularity rank, the WHOIS text line by line, the last DNS records (their
+//! addresses and host names are pivots), the last HTTPS certificate (its names are pivots), the
+//! crowd-sourced context, every date, the registry context (registrar and creation date for a
+//! domain; AS number, AS owner, network, country, continent and RIR for an address), and the
+//! whole answer as JSON. A `404` `NotFoundError` is "`VirusTotal` has no object for it", a valid
+//! zero. An answer must be the looked-up object (its `id` names the domain or address) and carry
+//! `last_analysis_stats`; one that does not is drift, never "0 of 0 engines flag it".
 
 use serde::Deserialize;
+use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 
@@ -29,9 +33,6 @@ pub const API: Api = Api {
         required: true,
     }),
 };
-/// Most categories kept.
-pub const MAX_CATEGORIES: usize = 8;
-
 /// What a lookup is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Object {
@@ -56,6 +57,16 @@ pub struct Report {
     pub as_owner: Option<String>,
     pub network: Option<String>,
     pub country: Option<String>,
+    /// Everything else the answer says, as `(attribute, value)` pairs in answer order; a name
+    /// that repeats is a list.
+    pub details: Vec<(String, String)>,
+    /// The addresses the domain's last DNS records resolve to, as written.
+    pub addresses: Vec<String>,
+    /// The host names the answer names, each with the record type or `certificate` that names
+    /// it: lower case, no root dot, a wildcard's `*.` dropped.
+    pub hosts: Vec<(String, String)>,
+    /// The whole answer as compact JSON.
+    pub raw_answer: String,
 }
 
 impl Report {
@@ -194,6 +205,7 @@ pub fn decode(answer: Answer, object: Object, value: &str) -> Result<Option<Repo
     if !is_about(&data.id, object, value) {
         return Err(LegError::Decode("answer is about another object".into()));
     }
+    let whole: Value = api_leg::decode(&body)?;
     let a = data.attributes;
     let mut categories: Vec<String> = a
         .categories
@@ -203,7 +215,14 @@ pub fn decode(answer: Answer, object: Object, value: &str) -> Result<Option<Repo
         .collect();
     categories.sort();
     categories.dedup();
-    categories.truncate(MAX_CATEGORIES);
+    let mut read = ReadOut::default();
+    if let Some(attributes) = whole
+        .get("data")
+        .and_then(|data| data.get("attributes"))
+        .and_then(Value::as_object)
+    {
+        read.attributes(attributes);
+    }
     Ok(Some(Report {
         malicious: a.last_analysis_stats.malicious,
         suspicious: a.last_analysis_stats.suspicious,
@@ -217,7 +236,237 @@ pub fn decode(answer: Answer, object: Object, value: &str) -> Result<Option<Repo
         as_owner: api_leg::clean(a.as_owner.as_deref()),
         network: api_leg::clean(a.network.as_deref()),
         country: api_leg::clean(a.country.as_deref()),
+        details: read.details,
+        addresses: read.addresses,
+        hosts: read.hosts,
+        raw_answer: whole.to_string(),
     }))
+}
+
+/// The top-level attributes a [`Report`] field holds; the read-out skips them.
+const REPORT_FIELDS: [&str; 7] = [
+    "reputation",
+    "registrar",
+    "creation_date",
+    "asn",
+    "as_owner",
+    "network",
+    "country",
+];
+
+/// The DNS record types whose value is a host name.
+const HOST_RECORDS: [&str; 5] = ["NS", "MX", "CNAME", "PTR", "SOA"];
+
+/// The members of a DNS record after its type, in the order a zone file writes them.
+const RECORD_MEMBERS: [&str; 10] = [
+    "flag", "tag", "priority", "value", "rname", "serial", "refresh", "retry", "expire", "minimum",
+];
+
+/// What the answer's `attributes` say beyond the [`Report`] fields.
+#[derive(Default)]
+struct ReadOut {
+    details: Vec<(String, String)>,
+    addresses: Vec<String>,
+    hosts: Vec<(String, String)>,
+}
+
+impl ReadOut {
+    fn push(&mut self, name: impl Into<String>, value: Option<String>) {
+        if let Some(value) = value {
+            self.details.push((name.into(), value));
+        }
+    }
+
+    fn host(&mut self, role: &str, name: &str) {
+        let name = name.trim().trim_end_matches('.').to_ascii_lowercase();
+        let name = name.strip_prefix("*.").unwrap_or(&name).to_owned();
+        let entry = (role.to_ascii_lowercase(), name);
+        if !entry.1.is_empty() && !self.hosts.contains(&entry) {
+            self.hosts.push(entry);
+        }
+    }
+
+    /// Every attribute: the shapes `VirusTotal` documents read out by name, any other scalar as
+    /// itself (a `*_date` as `*_date_unix`), any other object's scalar members as
+    /// `{name}_{member}`, any other list's scalars as `{name}`. Deeper values stay in
+    /// `raw_answer`.
+    fn attributes(&mut self, attributes: &Map<String, Value>) {
+        for (name, value) in attributes {
+            match (name.as_str(), value) {
+                (field, _) if REPORT_FIELDS.contains(&field) => {}
+                ("last_analysis_stats", Value::Object(stats)) => {
+                    for (verdict, count) in stats {
+                        if !matches!(verdict.as_str(), "malicious" | "suspicious") {
+                            self.push(verdict.replace('-', "_"), scalar(count));
+                        }
+                    }
+                }
+                ("last_analysis_results", Value::Object(engines)) => self.engines(engines),
+                ("categories", Value::Object(by_engine)) => {
+                    for (engine, label) in by_engine {
+                        let label = scalar(label).map(|label| format!("{engine}: {label}"));
+                        self.push("categories_by_engine", label);
+                    }
+                }
+                ("popularity_ranks", Value::Object(ranks)) => {
+                    for (list, entry) in ranks {
+                        let rank = entry.get("rank").and_then(scalar);
+                        self.push(
+                            "popularity_ranks",
+                            rank.map(|rank| format!("{list} {rank}")),
+                        );
+                    }
+                }
+                ("whois", Value::String(text)) => {
+                    for line in text.lines() {
+                        self.push("whois", api_leg::clean(Some(line)));
+                    }
+                }
+                ("last_dns_records", Value::Array(records)) => {
+                    records.iter().for_each(|record| self.dns_record(record));
+                }
+                ("last_https_certificate", Value::Object(certificate)) => {
+                    self.certificate(certificate);
+                }
+                ("crowdsourced_context", Value::Array(items)) => {
+                    for item in items {
+                        let parts: Vec<String> = ["source", "title", "severity", "details"]
+                            .iter()
+                            .filter_map(|member| item.get(*member).and_then(scalar))
+                            .collect();
+                        let line = (!parts.is_empty()).then(|| parts.join(" | "));
+                        self.push("crowdsourced_context", line);
+                    }
+                }
+                (_, Value::Object(members)) => {
+                    for (member, value) in members {
+                        self.push(format!("{name}_{member}"), scalar(value));
+                    }
+                }
+                (_, Value::Array(items)) => {
+                    for item in items {
+                        self.push(name.as_str(), scalar(item));
+                    }
+                }
+                (_, Value::Number(_)) if name.ends_with("_date") => {
+                    self.push(format!("{name}_unix"), scalar(value));
+                }
+                _ => self.push(name.as_str(), scalar(value)),
+            }
+        }
+    }
+
+    /// Each engine that called it malicious or suspicious, with what it called it.
+    fn engines(&mut self, engines: &Map<String, Value>) {
+        for (engine, verdict) in engines {
+            let category = verdict.get("category").and_then(Value::as_str);
+            if matches!(category, Some("malicious" | "suspicious")) {
+                let said = verdict
+                    .get("result")
+                    .and_then(scalar)
+                    .or_else(|| category.map(str::to_owned));
+                self.push("flagged_by", said.map(|said| format!("{engine}: {said}")));
+            }
+        }
+    }
+
+    /// One of the last DNS records as a zone file writes it, `MX 10 mail.example.com ttl 300`;
+    /// an address is kept for a pivot and a host name with its record type.
+    fn dns_record(&mut self, record: &Value) {
+        let Some(kind) = record.get("type").and_then(Value::as_str) else {
+            return;
+        };
+        let mut line = vec![kind.to_owned()];
+        line.extend(
+            RECORD_MEMBERS
+                .iter()
+                .filter_map(|member| record.get(*member).and_then(scalar)),
+        );
+        if let Some(ttl) = record.get("ttl").and_then(scalar) {
+            line.push(format!("ttl {ttl}"));
+        }
+        self.push("dns_records", Some(line.join(" ")));
+        let Some(target) = record.get("value").and_then(Value::as_str) else {
+            return;
+        };
+        if matches!(kind, "A" | "AAAA") {
+            let address = target.trim().to_owned();
+            if !self.addresses.contains(&address) {
+                self.addresses.push(address);
+            }
+        } else if HOST_RECORDS.contains(&kind) {
+            self.host(kind, target);
+        }
+    }
+
+    /// The last HTTPS certificate: subject, issuer, validity, serial, digests, signature
+    /// algorithm and every name, each name a host.
+    fn certificate(&mut self, certificate: &Map<String, Value>) {
+        for (field, name) in [("subject", "subject"), ("issuer", "issuer")] {
+            let line = certificate
+                .get(field)
+                .and_then(Value::as_object)
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(|(key, value)| {
+                            scalar(value).map(|value| format!("{key}={value}"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                });
+            self.push(
+                format!("certificate_{name}"),
+                line.filter(|l| !l.is_empty()),
+            );
+        }
+        let validity = certificate.get("validity");
+        for bound in ["not_before", "not_after"] {
+            let at = validity.and_then(|v| v.get(bound)).and_then(scalar);
+            self.push(format!("certificate_{bound}"), at);
+        }
+        for (field, name) in [
+            ("serial_number", "serial"),
+            ("thumbprint", "sha1"),
+            ("thumbprint_sha256", "sha256"),
+            ("signature_algorithm", "signature_algorithm"),
+        ] {
+            self.push(
+                format!("certificate_{name}"),
+                certificate.get(field).and_then(scalar),
+            );
+        }
+        let common_name = certificate
+            .get("subject")
+            .and_then(|subject| subject.get("CN"))
+            .and_then(Value::as_str);
+        let alternative = certificate
+            .get("extensions")
+            .and_then(|extensions| extensions.get("subject_alternative_name"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str);
+        let mut seen = Vec::new();
+        for name in common_name.into_iter().chain(alternative) {
+            if !seen.contains(&name) {
+                seen.push(name);
+                self.push("certificate_names", api_leg::clean(Some(name)));
+                self.host("certificate", name);
+            }
+        }
+    }
+}
+
+/// A scalar as text: a string cleaned, a number or flag as written, `None` for null, an empty
+/// string or a structure. **Pure.**
+fn scalar(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => api_leg::clean(Some(text)),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(flag) => Some(flag.to_string()),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -242,6 +491,111 @@ mod tests {
         assert_eq!(
             report.categories,
             ["computersandsoftware", "reference materials"]
+        );
+    }
+
+    /// The details named `name`, in answer order.
+    fn detail<'a>(report: &'a Report, name: &str) -> Vec<&'a str> {
+        report
+            .details
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, value)| value.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn every_documented_attribute_is_read_out_and_the_answer_kept_whole() {
+        let body = r#"{"data":{"id":"example.com","type":"domain","attributes":{
+            "last_analysis_stats":{"harmless":66,"malicious":1,"suspicious":1,"undetected":24,"timeout":2,"type-unsupported":3},
+            "last_analysis_results":{"Kaspersky":{"category":"malicious","engine_name":"Kaspersky","method":"blacklist","result":"phishing"},"Sophos":{"category":"suspicious","result":null},"Google Safebrowsing":{"category":"harmless","result":"clean"}},
+            "categories":{"a":"one","b":"two","c":"three","d":"four","e":"five","f":"six","g":"seven","h":"eight","i":"nine"},
+            "popularity_ranks":{"Tranco":{"rank":122,"timestamp":1760000000}},
+            "total_votes":{"harmless":12,"malicious":3},
+            "tags":["parking","dga"],
+            "whois":"Domain Name: EXAMPLE.COM\nName Server: A.IANA-SERVERS.NET\n",
+            "last_dns_records":[{"type":"A","value":"93.184.215.14","ttl":300},{"type":"MX","priority":10,"value":"MX.Example.NET.","ttl":300},{"type":"TXT","value":"v=spf1 -all","ttl":60},{"type":"SOA","value":"ns.icann.org","rname":"noc.dns.icann.org","serial":2025011500,"ttl":3600}],
+            "last_https_certificate":{"subject":{"CN":"www.example.org"},"issuer":{"C":"US","O":"DigiCert Inc"},"validity":{"not_after":"2025-03-01 23:59:59","not_before":"2024-01-30 00:00:00"},"serial_number":"075bcef3","thumbprint":"4da25a6d","thumbprint_sha256":"455943cf","extensions":{"subject_alternative_name":["www.example.org","*.example.edu"]}},
+            "crowdsourced_context":[{"source":"ArcSight Threat Intelligence","title":"Phishing kit host","severity":"high","details":"seen in a lure","timestamp":1760000000}],
+            "favicon":{"dhash":"71cc969aa2b28e71","raw_md5":"84c9"},
+            "rdap":{"handle":"2336799_DOMAIN_COM-VRSN","events":[{"event_action":"registration"}]},
+            "jarm":"29d29d00029d29d00042d43d00041d","tld":"com","last_analysis_date":1760000123,
+            "reputation":-3,"creation_date":808372800}}}"#;
+        let report = decode(Answer::Body(body.into()), Object::Domain, "example.com")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("domain body must decode"));
+        assert_eq!(report.categories.len(), 9, "{:?}", report.categories);
+        assert_eq!(
+            detail(&report, "flagged_by"),
+            ["Kaspersky: phishing", "Sophos: suspicious"]
+        );
+        assert_eq!(detail(&report, "timeout"), ["2"]);
+        assert_eq!(detail(&report, "type_unsupported"), ["3"]);
+        assert_eq!(detail(&report, "malicious"), Vec::<&str>::new());
+        assert_eq!(detail(&report, "popularity_ranks"), ["Tranco 122"]);
+        assert_eq!(detail(&report, "total_votes_malicious"), ["3"]);
+        assert_eq!(detail(&report, "tags"), ["parking", "dga"]);
+        assert_eq!(
+            detail(&report, "whois"),
+            [
+                "Domain Name: EXAMPLE.COM",
+                "Name Server: A.IANA-SERVERS.NET"
+            ]
+        );
+        assert_eq!(
+            detail(&report, "dns_records"),
+            [
+                "A 93.184.215.14 ttl 300",
+                "MX 10 MX.Example.NET. ttl 300",
+                "TXT v=spf1 -all ttl 60",
+                "SOA ns.icann.org noc.dns.icann.org 2025011500 ttl 3600"
+            ]
+        );
+        assert_eq!(report.addresses, ["93.184.215.14"]);
+        let hosts: Vec<(&str, &str)> = report
+            .hosts
+            .iter()
+            .map(|(role, name)| (role.as_str(), name.as_str()))
+            .collect();
+        assert_eq!(
+            hosts,
+            [
+                ("mx", "mx.example.net"),
+                ("soa", "ns.icann.org"),
+                ("certificate", "www.example.org"),
+                ("certificate", "example.edu")
+            ]
+        );
+        assert_eq!(
+            detail(&report, "certificate_names"),
+            ["www.example.org", "*.example.edu"]
+        );
+        assert_eq!(
+            detail(&report, "certificate_issuer"),
+            ["C=US, O=DigiCert Inc"]
+        );
+        assert_eq!(
+            detail(&report, "certificate_not_after"),
+            ["2025-03-01 23:59:59"]
+        );
+        assert_eq!(detail(&report, "certificate_sha256"), ["455943cf"]);
+        assert_eq!(
+            detail(&report, "crowdsourced_context"),
+            ["ArcSight Threat Intelligence | Phishing kit host | high | seen in a lure"]
+        );
+        assert_eq!(detail(&report, "favicon_dhash"), ["71cc969aa2b28e71"]);
+        assert_eq!(detail(&report, "rdap_handle"), ["2336799_DOMAIN_COM-VRSN"]);
+        assert_eq!(detail(&report, "last_analysis_date_unix"), ["1760000123"]);
+        assert_eq!(detail(&report, "jarm"), ["29d29d00029d29d00042d43d00041d"]);
+        // A value a report field holds is not read out twice.
+        assert_eq!(detail(&report, "reputation"), Vec::<&str>::new());
+        assert_eq!(detail(&report, "creation_date_unix"), Vec::<&str>::new());
+        let raw: Value = serde_json::from_str(&report.raw_answer)
+            .unwrap_or_else(|e| panic!("raw answer is JSON: {e}"));
+        assert_eq!(
+            raw["data"]["attributes"]["rdap"]["events"][0]["event_action"],
+            "registration"
         );
     }
 
