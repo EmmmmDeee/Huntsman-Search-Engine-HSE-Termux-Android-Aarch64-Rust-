@@ -3,11 +3,12 @@
 // free loopback port, drives the page at 360x740 with touch in both system themes, and fails when
 // a behaviour the page promises does not hold: it loads with no console error or policy
 // violation, fits the screen with 44 px targets, passes axe-core's WCAG 2.2 AA rules in every
-// view of both themes, runs a scan from New Scan to FINISHED and shows exactly what the scan API
-// holds in its Summary, Browse, Correlations, Graph, Scan Settings and Log sections, marks a false
-// positive, searches, exports, re-runs and deletes a scan, keeps its place across a reload, asks
-// only for health when a tab with nothing running comes back, says what to do when the server
-// stops, notices when it is back, and finds the saved scans still there after the restart.
+// view of both themes, runs a scan one hop deep from New Scan to FINISHED and shows exactly what
+// the scan API holds in its Summary, Browse, Correlations, Graph, Scan Settings and Log sections,
+// marks a false positive, searches, exports, clones, re-runs and deletes a scan, keeps its place
+// across a reload, asks only for health when a tab with nothing running comes back, says what to
+// do when the server stops, notices when it is back, and finds the saved scans still there after
+// the restart.
 //
 // It never spends a key: the server runs with a scratch HOME and none of the caller's
 // HUNTSMAN_*, HSE_* or *_KEY variables, and its scans target a phone number, which is offline.
@@ -85,11 +86,13 @@ const LH = { 'X-Huntsman-Lookup': '1' };
   const base = await serve('127.0.0.1:0');
   const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || process.env.CHROME_BIN || undefined });
   const api = async (page, p) => (await page.request.get(base + p, { headers: LH })).json();
-  // Runs a scan through New Scan and waits for it to finish; answers its id and how long it took.
-  async function newScan(page, name) {
+  // Runs a scan through New Scan, following what it finds `depth` hops, and waits for it to
+  // finish; answers its id and how long it took.
+  async function newScan(page, name, depth) {
     await page.goto(base + '/#/newscan', { waitUntil: 'networkidle' });
     await page.fill('#starget', TARGET);
     await page.fill('#sname', name);
+    await page.fill('#sdepth', String(depth));
     const t = Date.now();
     await page.click('#runscan');
     await page.waitForFunction(() => /^#\/scan\/[^/]+/.test(location.hash) && !document.getElementById('view-scan').hidden, null, { timeout: 10000 });
@@ -189,7 +192,7 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       check(`${scheme}: By Required Data lists every data type`, (await page.$$('#typelist input')).length === types.length, `${(await page.$$('#typelist input')).length} of ${types.length}`);
       await audit(page, `${scheme} new scan by data`);
 
-      const run = await newScan(page, `check ${scheme}`);
+      const run = await newScan(page, `check ${scheme}`, 1);
       metrics[`${scheme}ScanMs`] = run.ms;
       check(`${scheme}: the scan finishes`, run.status === 'FINISHED', run);
       const id = run.id, root = '/api/scans/' + encodeURIComponent(id);
@@ -250,6 +253,11 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       await page.click('#sctabs a[data-tab=settings]');
       await page.waitForFunction(t => document.getElementById('meta').textContent.includes(t), TARGET, { timeout: 3000 }).catch(() => {});
       check(`${scheme}: Scan Settings names the target`, (await page.textContent('#meta')).includes(TARGET), await page.textContent('#meta'));
+      // The depth New Scan asked for, why the scan stopped following what it found, and each
+      // lookup it ran with what that lookup found.
+      const opts = await page.textContent('#opts');
+      check(`${scheme}: Scan Settings shows the depth and why the scan stopped`, row.options.depth === 1 && opts.includes('1 hop past the target') && typeof row.termination === 'string' && opts.includes(row.termination + ':'), { opts, depth: row.options.depth, termination: row.termination });
+      check(`${scheme}: the Discovery Tree lists each lookup and what it found`, row.lineage.length > 0 && (await page.$$('#lineage tbody tr')).length === Math.min(200, row.lineage.length) && (await page.textContent('#lineage-n')) === String(row.lineage.length), `${(await page.$$('#lineage tbody tr')).length} of ${row.lineage.length}`);
       await audit(page, `${scheme} scan settings`);
       await page.click('#sctabs a[data-tab=log]');
       await page.waitForSelector('#log tr');
@@ -266,13 +274,15 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       check(`${scheme}: a wildcard search finds the element`, (await page.$$('#sresults tbody tr')).length > 0, `${probe}: ${await page.textContent('#shits')}`);
       await audit(page, `${scheme} search`);
 
-      // Export: CSV as Spiderfoot names it, and JSON with every element.
+      // Export: CSV as Spiderfoot names it, an Excel workbook, and JSON with every element.
       await page.click('#sctabs a[data-tab=summary]');
-      for (const format of ['csv', 'json']) {
+      for (const format of ['csv', 'xlsx', 'json']) {
         await page.click('#scexport summary');
         const [download] = await Promise.all([page.waitForEvent('download', { timeout: 10000 }), page.click(`#scexport button[data-format=${format}]`)]);
-        const body = fs.readFileSync(await download.path(), 'utf8');
-        if (format === 'csv') check(`${scheme}: CSV export saves the elements`, download.suggestedFilename().endsWith('.csv') && body.split('\n').filter(Boolean).length > elements.length, download.suggestedFilename());
+        const body = fs.readFileSync(await download.path(), format === 'xlsx' ? 'latin1' : 'utf8');
+        // An Excel workbook is a zip: it opens with the local file header's PK signature.
+        if (format === 'xlsx') check(`${scheme}: Excel export saves a workbook`, download.suggestedFilename().endsWith('.xlsx') && body.startsWith('PK\x03\x04'), download.suggestedFilename());
+        else if (format === 'csv') check(`${scheme}: CSV export saves the elements`, download.suggestedFilename().endsWith('.csv') && body.split('\n').filter(Boolean).length > elements.length, download.suggestedFilename());
         else { let parsed = null; try { parsed = JSON.parse(body); } catch (_) {} check(`${scheme}: JSON export saves the scan`, parsed !== null && download.suggestedFilename().endsWith('.json'), download.suggestedFilename()); }
       }
 
@@ -308,6 +318,14 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       await page.waitForSelector('#scans tr');
       const listed = await api(page, '/api/scans');
       check(`${scheme}: the scan list shows every saved scan`, (await page.$$('#scans tr')).length === listed.length && listed.some(s => s.id === id && s.elements === elements.length), listed.map(s => [s.id, s.status, s.elements]));
+      // Every scan selected, then Spiderfoot's multi-scan export as one workbook.
+      await page.check('#sall');
+      await page.click('#sexport summary');
+      const menu = await page.evaluate(() => { const r = document.querySelector('#sexport .menu-list').getBoundingClientRect(); return { left: r.left, right: r.right, width: document.documentElement.clientWidth }; });
+      check(`${scheme}: an open export menu stays on the screen`, menu.left >= 0 && menu.right <= menu.width, menu);
+      const [many] = await Promise.all([page.waitForEvent('download', { timeout: 10000 }), page.click('#sexport button[data-mformat=xlsx]')]);
+      check(`${scheme}: the selected scans export as one workbook`, many.suggestedFilename().endsWith('.xlsx') && fs.readFileSync(await many.path(), 'latin1').startsWith('PK\x03\x04'), many.suggestedFilename());
+      await page.uncheck('#sall');
       await audit(page, `${scheme} scans`);
       await page.goto(base + '/#/settings', { waitUntil: 'networkidle' });
       await page.waitForSelector('#mods tr');
@@ -319,15 +337,23 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       await page.goto(base + '/#/about', { waitUntil: 'networkidle' });
       await audit(page, `${scheme} about`);
 
-      // Re-run makes a new scan of the same target; Delete removes it and everything it found.
+      // Clone fills New Scan from the scan; Re-run makes a new scan of the same target with the
+      // same options; Delete removes it and everything it found.
       if (scheme === 'dark') {
+        await page.goto(base + '/#/scan/' + encodeURIComponent(id) + '/summary', { waitUntil: 'networkidle' });
+        await page.waitForFunction(() => document.getElementById('scstatus').textContent === 'FINISHED', null, { timeout: 5000 }).catch(() => {});
+        await page.click('#scclone');
+        await page.waitForSelector('#view-newscan:not([hidden])', { timeout: 5000 }).catch(() => {});
+        const cloned = await page.evaluate(() => ({ name: document.getElementById('sname').value, target: document.getElementById('starget').value, kind: document.getElementById('skind').value, depth: document.getElementById('sdepth').value, usecase: document.querySelector('input[name=usecase]:checked').value }));
+        check('Clone fills New Scan from the scan', cloned.name === row.name && cloned.target === TARGET && cloned.kind === row.kind && cloned.depth === '1' && cloned.usecase === row.options.usecase, cloned);
+        await audit(page, 'dark cloned new scan');
         await page.goto(base + '/#/scan/' + encodeURIComponent(id) + '/summary', { waitUntil: 'networkidle' });
         await page.click('#screrun');
         await page.waitForFunction(was => location.hash.split('/')[2] && decodeURIComponent(location.hash.split('/')[2]) !== was, id, { timeout: 10000 }).catch(() => {});
         const again = decodeURIComponent((await page.evaluate(() => location.hash)).split('/')[2]);
         await page.waitForFunction(() => ['FINISHED', 'ABORTED', 'ERROR-FAILED'].includes(document.getElementById('scstatus').textContent), null, { timeout: 90000 }).catch(() => {});
         const rerun = await api(page, '/api/scans/' + encodeURIComponent(again));
-        check('Re-run makes a new scan of the same target', again !== id && rerun.target === TARGET && rerun.status === 'FINISHED', rerun);
+        check('Re-run makes a new scan of the same target', again !== id && rerun.target === TARGET && rerun.status === 'FINISHED' && rerun.options.depth === 1, rerun);
         await page.click('#scdelete');
         await page.waitForFunction(() => location.hash === '#/scans', null, { timeout: 10000 }).catch(() => {});
         const left = await api(page, '/api/scans');

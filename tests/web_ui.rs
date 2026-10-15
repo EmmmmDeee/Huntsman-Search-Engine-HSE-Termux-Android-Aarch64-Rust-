@@ -15,6 +15,7 @@ use huntsman_recon::scan_route::ScanKind;
 use huntsman_recon::scan_service::{LookupOutput, ScanRequest, ScanService};
 use huntsman_recon::scan_store::{Risk, ScanCorrelation, ScanOptions, ScanStore};
 use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use huntsman_recon::termination::TerminationReason;
 
 const PAGE: &str = include_str!("../src/web_ui.html");
 /// The most the page may weigh. It is read from loopback on a phone, but every byte is parsed on
@@ -285,6 +286,15 @@ const PAGE_READS: &[(&str, &str, &str)] = &[
     ("scan", "/options/types", "list(o.types)"),
     ("scan", "/honoured/modules", "s.honoured"),
     ("scan", "/modules_run", "list(s.modules_run)"),
+    ("scan", "/kind", "s.kind"),
+    ("scan", "/options/depth", "o.depth"),
+    ("scan", "/honoured/depth", "h.depth"),
+    ("scan", "/termination", "s.termination"),
+    ("scan", "/lineage/0/generation", "e.generation"),
+    ("scan", "/lineage/0/from_kind", "e.from_kind"),
+    ("scan", "/lineage/0/from_selector", "e.from_selector"),
+    ("scan", "/lineage/0/to_kind", "e.to_kind"),
+    ("scan", "/lineage/0/to_value", "e.to_value"),
     ("scan", "/report", "s.report"),
     ("scan", "/errors", "errors(scan)"),
     ("scan", "/correlations/info", "scan.correlations[k]"),
@@ -443,30 +453,137 @@ fn the_page_reads_the_fields_the_scan_api_answers() {
     assert!(script.contains("const RISK=[['high','High','bad'],['medium','Medium','warn'],['low','Low','info'],['info','Info','ok']];"));
 }
 
+/// Every reason a scan can stop following what it finds. The match has no wildcard, so a new
+/// reason does not compile until it is listed here, and the test below then needs the page to
+/// say what it means.
+fn every_stop_reason() -> [TerminationReason; 9] {
+    let all = [
+        TerminationReason::FixedPoint,
+        TerminationReason::MaxDepth,
+        TerminationReason::TimeLimit,
+        TerminationReason::RequestBudget,
+        TerminationReason::ProviderBudget,
+        TerminationReason::ResourceLimit,
+        TerminationReason::MarginalGainLimit,
+        TerminationReason::Cancelled,
+        TerminationReason::FatalError,
+    ];
+    for reason in all {
+        match reason {
+            TerminationReason::FixedPoint
+            | TerminationReason::MaxDepth
+            | TerminationReason::TimeLimit
+            | TerminationReason::RequestBudget
+            | TerminationReason::ProviderBudget
+            | TerminationReason::ResourceLimit
+            | TerminationReason::MarginalGainLimit
+            | TerminationReason::Cancelled
+            | TerminationReason::FatalError => {}
+        }
+    }
+    all
+}
+
+#[test]
+fn scan_settings_say_why_a_scan_stopped_following_what_it_found() {
+    let script = inline("script");
+    // The page's words for each reason, beside the reason itself.
+    for reason in every_stop_reason() {
+        let name = serde_json::to_value(reason).expect("reason");
+        let name = name.as_str().expect("a reason serialises as its name");
+        let worded = if reason == TerminationReason::MaxDepth {
+            script.contains("t==='max_depth'?")
+        } else {
+            script.contains(&format!("{name}:'"))
+        };
+        assert!(worded, "the page does not say what {name} means");
+    }
+    // A scan that ran keeps its reason, and the page shows the depth it was asked for.
+    let (api, root, dir) = contract_scan("stop");
+    let scan = answer(&api, &root);
+    let _ = fs::remove_dir_all(&dir);
+    assert!(scan["termination"].is_string(), "{scan}");
+    assert_eq!(scan["options"]["depth"], 0, "{scan}");
+    assert_eq!(scan["lineage"][0]["generation"], 0, "{scan}");
+}
+
+/// What New Scan sends is what the scan API takes: the form's depth is a parameter the API reads,
+/// so a scan started from the page follows what it finds as deep as the operator asked.
+#[test]
+fn new_scan_sends_the_depth_the_api_takes() {
+    let script = inline("script");
+    assert!(
+        script.contains("kind:$('skind').value,depth})"),
+        "New Scan does not send depth"
+    );
+    assert!(PAGE.contains(r#"<input id="sdepth" type="number" min="0" step="1" value="0""#));
+    let (api, _root, dir) = contract_scan("depth");
+    let started = api.handle(
+        "POST",
+        "/api/scans",
+        "target=%2B61412345678&kind=phone&depth=2",
+    );
+    let body = String::from_utf8_lossy(AsRef::<[u8]>::as_ref(&started.body)).into_owned();
+    assert_eq!(started.status, 202, "{body}");
+    let started: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+    assert_eq!(started["options"]["depth"], 2, "{started}");
+    let id = started["id"].as_str().expect("id");
+    // The scan runs on its own thread; it finishes before its directory goes.
+    for _ in 0..400 {
+        if !api
+            .service()
+            .store()
+            .get(id)
+            .expect("scan")
+            .status
+            .is_active()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn every_export_the_page_offers_is_one_the_api_writes() {
     let (api, root, dir) = contract_scan("exports");
-    // The scan's export menu, then the Correlations section's.
-    for (attribute, route) in [("data-format", "export"), ("data-cformat", "correlations")] {
+    let id = root.rsplit('/').next().expect("scan id");
+    // The scan's export menu, the Correlations section's, and the selected scans' on Scans.
+    for (attribute, path, query) in [
+        ("data-format", format!("{root}/export"), String::new()),
+        (
+            "data-cformat",
+            format!("{root}/correlations"),
+            String::new(),
+        ),
+        (
+            "data-mformat",
+            "/api/scans/export".to_owned(),
+            format!("ids={id}&"),
+        ),
+    ] {
         let formats: Vec<&str> = PAGE
             .split(&format!("{attribute}=\""))
             .skip(1)
             .filter_map(|rest| rest.split('"').next())
             .collect();
         assert!(
-            formats.contains(&"csv") && formats.contains(&"json"),
+            ["csv", "xlsx", "json"]
+                .iter()
+                .all(|format| formats.contains(format)),
             "{attribute}: {formats:?}"
         );
         for format in &formats {
-            let export = api.handle(
-                "GET",
-                &format!("{root}/{route}"),
-                &format!("format={format}"),
-            );
-            assert_eq!(export.status, 200, "{route} {format}: {}", export.text());
+            let export = api.handle("GET", &path, &format!("{query}format={format}"));
+            assert_eq!(export.status, 200, "{path} {format}: {}", export.text());
             assert!(
-                export.filename.is_some(),
-                "{route} {format} export has no file name"
+                export
+                    .filename
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with(&format!(".{format}"))),
+                "{path} {format} export is named {:?}",
+                export.filename
             );
         }
     }

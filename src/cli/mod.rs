@@ -45,7 +45,7 @@ Commands:
   investigate           Extract actionable entities from local text or one bounded file
   plan                  Plan an offline investigation from seeds; save or reload it as a session
   query                 Query the rebuilt keyless web-search subset
-  sf                    SpiderFoot-compatible front end over rebuilt lookup paths
+  sf                    SpiderFoot-compatible sf.py front end over saved scans
   scans                 Run, list, read, export, flag, rerun and delete saved Spiderfoot-style scans
   serve                 Start the embedded Web UI and JSON API
   modules               List only currently reachable rebuilt modules

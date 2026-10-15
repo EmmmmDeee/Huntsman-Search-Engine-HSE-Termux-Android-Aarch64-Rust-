@@ -551,6 +551,7 @@ fn spiderfoot_names(module: &str) -> Vec<String> {
         "whoxy" => &["sfp_whois"],
         "kickbox" => &["sfp_debounce"],
         "greynoise" => &["sfp_greynoise_community"],
+        "hostdomain" => &["sfp_dnsresolve"],
         _ => &[],
     };
     let mut names = vec![module.to_owned(), format!("sfp_{module}")];
