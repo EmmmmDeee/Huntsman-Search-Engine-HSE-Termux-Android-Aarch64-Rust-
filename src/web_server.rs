@@ -12,6 +12,10 @@
 //! links between them, the next pivots, the correlations and the planned sources. It makes no
 //! network request and spends no key, so it needs no lookup header, but it is still refused
 //! cross-site and, on a public bind, needs the token.
+//! When the binary installs a [`ScanApi`], the saved scans answer under `/api/scans`,
+//! `/api/eventtypes` and `/api/settings`, Spiderfoot's web API: reads are `GET`, state changes
+//! (start, stop, delete, re-run, false positive) are `POST` with their parameters in the query
+//! string, and every call is guarded as a lookup is. No other route takes `POST`.
 //! A loopback bind answers only requests whose `Host` is a loopback authority,
 //! which blocks a browser DNS-rebinding attack from reaching the local API.
 
@@ -30,6 +34,7 @@ use crate::engineering_command;
 use crate::entity::Entity;
 use crate::error::Error;
 use crate::module::reachable_modules;
+use crate::scan_api::ScanApi;
 use crate::sha256::sha256;
 use crate::source_outcome::SourceExecutionOutcome;
 
@@ -106,6 +111,10 @@ const MAX_ANALYZE_SEEDS: usize = 16;
 /// this stack. It holds no socket and finishes in milliseconds, so the connection cap bounds how
 /// many run at once.
 const ANALYZE_STACK_BYTES: usize = 4 * 1024 * 1024;
+/// A scan API request reads a saved scan whole and encodes its elements, raw records and all, so,
+/// like an analysis, it runs on its own thread with a stack sized for that. Starting a scan only
+/// saves its row: the scan itself runs on the service's own thread.
+const SCANS_STACK_BYTES: usize = 4 * 1024 * 1024;
 /// The header a lookup request must carry. Its presence forces a CORS preflight from any other
 /// origin, and this server answers no preflight.
 pub const LOOKUP_HEADER: &str = "x-huntsman-lookup";
@@ -153,6 +162,7 @@ pub type AnalyzeHandler =
 struct Routes {
     lookups: Option<Lookups>,
     analyze: Option<AnalyzeHandler>,
+    scans: Option<Arc<ScanApi>>,
 }
 
 /// Where `serve` listens and the token its API needs. Only [`ServeConfig::parse`] builds one, so a
@@ -250,6 +260,14 @@ impl Server {
     #[must_use]
     pub fn with_analyze(mut self, handler: AnalyzeHandler) -> Self {
         self.routes.analyze = Some(handler);
+        self
+    }
+
+    /// Serve the saved scans (`/api/scans...`, `/api/eventtypes`, `/api/settings`) through `api`.
+    /// Without this those routes answer `404`.
+    #[must_use]
+    pub fn with_scans(mut self, api: Arc<ScanApi>) -> Self {
+        self.routes.scans = Some(api);
         self
     }
 
@@ -594,7 +612,20 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
 enum Method {
     Get,
     Head,
+    /// Only the scan API takes it: a state change with its parameters in the query string.
+    Post,
     Other,
+}
+
+impl Method {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Head => "HEAD",
+            Self::Post => "POST",
+            Self::Other => "OTHER",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -606,6 +637,8 @@ struct ParsedRequest<'a> {
     authorization: Option<&'a str>,
     lookup_header: bool,
     sec_fetch_site: Option<&'a str>,
+    /// A request body was announced: a non-zero `Content-Length` or any `Transfer-Encoding`.
+    has_body: bool,
 }
 
 fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
@@ -615,6 +648,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
     let method = match parts.next()? {
         "GET" => Method::Get,
         "HEAD" => Method::Head,
+        "POST" => Method::Post,
         _ => Method::Other,
     };
     let raw_path = parts.next()?;
@@ -623,8 +657,10 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
     let mut authorization = None;
     let mut lookup_header = false;
     let mut sec_fetch_site = None;
+    let mut has_body = false;
 
-    for line in lines {
+    // The head ends at the first blank line; anything after it is body, never a header.
+    for line in lines.take_while(|line| !line.is_empty()) {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
@@ -640,6 +676,10 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
             lookup_header = value.trim() == "1";
         } else if name.eq_ignore_ascii_case("sec-fetch-site") {
             sec_fetch_site = Some(value.trim());
+        } else if name.eq_ignore_ascii_case("content-length") {
+            has_body |= value.trim() != "0";
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            has_body = true;
         }
     }
 
@@ -651,6 +691,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
         authorization,
         lookup_header,
         sec_fetch_site,
+        has_body,
     })
 }
 
@@ -747,7 +788,10 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
         );
     }
 
-    if parsed.method == Method::Other {
+    // Only the scan API changes state, so only it takes POST.
+    if parsed.method == Method::Other
+        || parsed.method == Method::Post && !ScanApi::handles(parsed.path)
+    {
         return response(
             405,
             "text/plain; charset=utf-8",
@@ -760,13 +804,16 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
     let protected = matches!(
         parsed.path,
         "/api/modules" | "/api/command" | "/api/lookup" | "/api/analyze"
-    );
+    ) || ScanApi::handles(parsed.path);
     if protected
         && bearer_token.is_some_and(|expected| !bearer_matches(parsed.authorization, expected))
     {
         return response(401, "application/json; charset=utf-8", UNAUTHORIZED, head);
     }
 
+    if ScanApi::handles(parsed.path) {
+        return scans_response(&parsed, routes.scans.as_ref());
+    }
     match parsed.path {
         "/" | "/index.html" => response(200, "text/html; charset=utf-8", INDEX_HTML, head),
         "/api/health" => {
@@ -825,7 +872,7 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
 
 /// The answer to a protected request without the server's token. It names the remedy, because the
 /// page shows it as it is and a bare `unauthorized` left the operator nowhere to go.
-const UNAUTHORIZED: &str = "{\"error\":\"unauthorized: this server was started with HSE_AUTH_TOKEN set; enter that value in the token field under Server status and token\"}\n";
+const UNAUTHORIZED: &str = "{\"error\":\"unauthorized: this server was started with HSE_AUTH_TOKEN set; enter that value in the token field under About\"}\n";
 
 fn json_error(status: u16, message: &str) -> String {
     let body = serde_json::json!({ "error": message }).to_string();
@@ -886,6 +933,84 @@ fn lookup_response(parsed: &ParsedRequest<'_>, lookups: Option<&Lookups>) -> Str
         },
         Ok(Err(error)) => json_error(error.status, &error.message),
         Err(_) => json_error(500, "lookup failed unexpectedly"),
+    }
+}
+
+/// The saved scans: Spiderfoot's scan list, scan views, exports and state changes, answered by the
+/// binary's [`ScanApi`]. A scan makes network requests and spends keys, and its results are the
+/// operator's, so every call is guarded as a lookup is: refused cross-site or same-site, it needs
+/// the lookup header (which another origin cannot send without a preflight this server never
+/// approves), and on a public bind the bearer token. Parameters travel in the query string, so a
+/// request that sends a body is refused rather than half read.
+fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<ScanApi>>) -> String {
+    let Some(scans) = scans else {
+        return json_error(404, "saved scans are not enabled on this server");
+    };
+    if parsed
+        .sec_fetch_site
+        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
+    {
+        return json_error(403, "cross-site scan request refused");
+    }
+    if !parsed.lookup_header {
+        return json_error(403, "the scan API needs the X-Huntsman-Lookup: 1 header");
+    }
+    if parsed.has_body {
+        return json_error(400, "send the parameters in the query string, with no body");
+    }
+    let head = parsed.method == Method::Head;
+    let (api, method, path, query) = (
+        Arc::clone(scans),
+        parsed.method.as_str(),
+        parsed.path.to_owned(),
+        parsed.query.to_owned(),
+    );
+    let worker = thread::Builder::new()
+        .name("serve-scans".into())
+        .stack_size(SCANS_STACK_BYTES)
+        .spawn(move || api.handle(method, &path, &query));
+    let answer = match worker {
+        Ok(worker) => worker.join(),
+        Err(_) => return json_error(503, "could not start a scan API worker"),
+    };
+    match answer {
+        Ok(answer) => {
+            let disposition = answer.filename.as_deref().map(|name| {
+                format!(
+                    "Content-Disposition: attachment; filename=\"{}\"\r\n",
+                    header_filename(name)
+                )
+            });
+            response_with(
+                answer.status,
+                answer.content_type,
+                &answer.body,
+                head,
+                disposition.as_deref().unwrap_or(""),
+            )
+        }
+        Err(_) => json_error(500, "the scan API failed unexpectedly"),
+    }
+}
+
+/// A file name safe inside a quoted header value: letters, digits, `.`, `-` and `_` kept, every
+/// other character `_`, so a name can never end the header or start another.
+fn header_filename(name: &str) -> String {
+    let safe: String = name
+        .chars()
+        .take(128)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() {
+        "export".to_owned()
+    } else {
+        safe
     }
 }
 
@@ -1087,8 +1212,14 @@ fn hash_source(content: &str) -> String {
 }
 
 fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
+    response_with(status, content_type, body, head, "")
+}
+
+/// [`response`] with `extra`, whole `Name: value\r\n` header lines, after the standard ones.
+fn response_with(status: u16, content_type: &str, body: &str, head: bool, extra: &str) -> String {
     let reason = match status {
         200 => "OK",
+        202 => "Accepted",
         204 => "No Content",
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -1096,6 +1227,7 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
         404 => "Not Found",
         405 => "Method Not Allowed",
         408 => "Request Timeout",
+        409 => "Conflict",
         413 => "Payload Too Large",
         422 => "Unprocessable Content",
         500 => "Internal Server Error",
@@ -1116,7 +1248,7 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
         OTHER_POLICY
     };
     format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{status_header}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: {policy}\r\n\r\n{rendered_body}"
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{status_header}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: {policy}\r\n{extra}\r\n{rendered_body}"
     )
 }
 
@@ -1263,6 +1395,7 @@ mod tests {
                 let routes = Routes {
                     lookups: Some(lookups.clone()),
                     analyze: echo_seeds().analyze,
+                    scans: None,
                 };
                 let ask = |path: &str| {
                     respond(
@@ -1372,7 +1505,7 @@ mod tests {
         // Every request goes through `call`, which adds the header, except an export, which is
         // read as a file and sends the same headers: no bare `fetch` elsewhere.
         assert_eq!(script.matches("fetch(").count(), 2);
-        assert!(script.contains("await fetch(base()+'/export?'+p,{headers:headers(LH),"));
+        assert!(script.contains("r=await fetch(path,{headers:headers(LH),"));
         assert!(script.contains("/(?:^#|&)token=([^&]*)/.exec(location.hash)"));
         assert!(script.contains("history.replaceState("));
     }
@@ -1844,6 +1977,7 @@ mod tests {
         let routes = Routes {
             lookups: lookups.cloned(),
             analyze: None,
+            scans: None,
         };
         respond(request, &test_config(bind_for(token), token), &routes)
     }
@@ -2125,6 +2259,7 @@ mod tests {
         Routes {
             lookups: None,
             analyze: Some(Arc::new(handler)),
+            scans: None,
         }
     }
 
@@ -2309,5 +2444,165 @@ mod tests {
             !analyze_call.contains("X-Huntsman-Lookup"),
             "{analyze_call}"
         );
+    }
+
+    /// A server with saved scans whose lookup finds the selector and nothing else, in a scratch
+    /// store; the scan has run to its end before the first request.
+    fn scan_routes(tag: &str) -> (Routes, String, std::path::PathBuf) {
+        use crate::scan_service::{LookupOutput, ScanRequest, ScanService};
+        use crate::scan_store::{ScanOptions, ScanStore};
+        let dir =
+            std::env::temp_dir().join(format!("hse-serve-scans-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lookup = Arc::new(|_kind: crate::scan_route::ScanKind, selector: &str| {
+            Ok(LookupOutput {
+                text: "report".into(),
+                entities: vec![
+                    crate::entity::Entity::builder(
+                        crate::entity::EntityKind::Phone,
+                        selector,
+                        0.9,
+                        "s",
+                    )
+                    .build(),
+                ],
+                outcomes: Vec::new(),
+            })
+        });
+        let api = ScanApi::new(
+            ScanService::new(ScanStore::open(&dir).unwrap(), lookup),
+            None,
+        );
+        let id = api
+            .service()
+            .run(&ScanRequest {
+                target: "+61412345678".into(),
+                name: None,
+                kind: None,
+                options: ScanOptions {
+                    usecase: "all".into(),
+                    modules: Vec::new(),
+                    types: Vec::new(),
+                },
+            })
+            .unwrap()
+            .id;
+        let routes = Routes {
+            scans: Some(Arc::new(api)),
+            ..Routes::default()
+        };
+        (routes, id, dir)
+    }
+
+    fn scans_request(routes: &Routes, token: Option<&str>, request: &str) -> String {
+        respond(request, &test_config(bind_for(token), token), routes)
+    }
+
+    /// The saved scans answer through serve with the same guards as a lookup: the header, never
+    /// cross-site, the token on a public bind. Reads are GET or HEAD, changes are POST, and an
+    /// export downloads under the name the API gives it.
+    #[test]
+    fn saved_scans_answer_through_serve_behind_the_lookup_guards() {
+        let (routes, id, dir) = scan_routes("guards");
+        let ask = |request: String| scans_request(&routes, None, &request);
+        let list = ask(format!(
+            "GET /api/scans HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: same-origin\r\n{HEADER}\r\n"
+        ));
+        assert!(list.starts_with("HTTP/1.1 200"), "{list}");
+        assert!(list.contains(&format!("\"id\":\"{id}\"")), "{list}");
+        let head = ask(format!("HEAD /api/scans HTTP/1.1\r\n{HEADER}\r\n"));
+        assert!(
+            head.starts_with("HTTP/1.1 200") && head.ends_with("\r\n\r\n"),
+            "{head}"
+        );
+        for refused in [
+            "GET /api/scans HTTP/1.1\r\n\r\n".to_owned(),
+            format!("GET /api/scans HTTP/1.1\r\nSec-Fetch-Site: cross-site\r\n{HEADER}\r\n"),
+            format!(
+                "POST /api/scans?target=x HTTP/1.1\r\nSec-Fetch-Site: same-site\r\n{HEADER}\r\n"
+            ),
+            "POST /api/scans?target=x HTTP/1.1\r\nX-Huntsman-Lookup: yes\r\n\r\n".to_owned(),
+        ] {
+            assert!(
+                ask(refused.clone()).starts_with("HTTP/1.1 403"),
+                "{refused}"
+            );
+        }
+        // A body is refused: the parameters travel in the query string.
+        let body = ask(format!(
+            "POST /api/scans/{id}/fp?ids=a&fp=1 HTTP/1.1\r\nContent-Length: 3\r\n{HEADER}\r\nx=1"
+        ));
+        assert!(body.starts_with("HTTP/1.1 400"), "{body}");
+        // A header line after the blank line is body, not a header.
+        let smuggled = ask("GET /api/scans HTTP/1.1\r\n\r\nX-Huntsman-Lookup: 1\r\n".to_owned());
+        assert!(smuggled.starts_with("HTTP/1.1 403"), "{smuggled}");
+        let export = ask(format!(
+            "GET /api/scans/{id}/export?format=csv HTTP/1.1\r\n{HEADER}\r\n"
+        ));
+        assert!(export.starts_with("HTTP/1.1 200"), "{export}");
+        assert_eq!(
+            header(&export, "Content-Type"),
+            Some("text/csv; charset=utf-8")
+        );
+        let disposition = header(&export, "Content-Disposition").unwrap();
+        assert!(
+            disposition.starts_with("attachment; filename=\"") && disposition.ends_with(".csv\""),
+            "{disposition}"
+        );
+        assert!(
+            export.contains("Updated,Type,Module,Source,F/P,Data"),
+            "{export}"
+        );
+        let rerun = ask(format!(
+            "POST /api/scans/{id}/rerun HTTP/1.1\r\nContent-Length: 0\r\n{HEADER}\r\n"
+        ));
+        assert!(rerun.starts_with("HTTP/1.1 202 Accepted"), "{rerun}");
+        let read_as_post = ask(format!(
+            "GET /api/scans/{id}/rerun HTTP/1.1\r\n{HEADER}\r\n"
+        ));
+        assert!(read_as_post.starts_with("HTTP/1.1 405"), "{read_as_post}");
+        // Only the scan API takes POST.
+        for path in [
+            "/",
+            "/api/health",
+            "/api/modules",
+            "/api/lookup?q=a",
+            "/api/analyze?seeds=a",
+        ] {
+            let post = ask(format!("POST {path} HTTP/1.1\r\n{HEADER}\r\n"));
+            assert!(post.starts_with("HTTP/1.1 405"), "{path}: {post}");
+        }
+        // A public bind needs the token for every scan route.
+        let public = scans_request(
+            &routes,
+            Some("s3cret"),
+            &format!("GET /api/eventtypes HTTP/1.1\r\n{HEADER}\r\n"),
+        );
+        assert!(public.starts_with("HTTP/1.1 401"), "{public}");
+        let signed = scans_request(
+            &routes,
+            Some("s3cret"),
+            &format!("GET /api/settings HTTP/1.1\r\nAuthorization: Bearer s3cret\r\n{HEADER}\r\n"),
+        );
+        assert!(signed.starts_with("HTTP/1.1 200"), "{signed}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn saved_scans_are_absent_until_the_binary_installs_them() {
+        let got = response_for_request(
+            &format!("GET /api/scans HTTP/1.1\r\nHost: localhost\r\n{HEADER}\r\n"),
+            None,
+            loopback_bind(),
+        );
+        assert!(got.starts_with("HTTP/1.1 404"), "{got}");
+        assert!(got.contains("saved scans are not enabled"), "{got}");
+    }
+
+    #[test]
+    fn an_export_name_cannot_break_out_of_its_header() {
+        assert_eq!(header_filename("a\"b\r\nX: y.csv"), "a_b__X__y.csv");
+        assert_eq!(header_filename("t1-Huntsman.csv"), "t1-Huntsman.csv");
+        assert_eq!(header_filename(""), "export");
     }
 }

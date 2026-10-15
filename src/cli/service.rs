@@ -11,16 +11,20 @@ use huntsman_recon::environment::SERVE_TOKEN_ENV;
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::runtime::analyze_offline_with_history;
+use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_artifact::{ArtifactError, ArtifactHistory};
 use huntsman_recon::scan_route::{
     ScanKind, canonical_selector, explicit_people_is_name, infer_kind, inferred_people_is_name,
     parse_kind,
 };
+use huntsman_recon::scan_service::ScanService;
+use huntsman_recon::scan_store::ScanStore;
 use huntsman_recon::web_server::{
     LookupError, LookupQuery, LookupReport, ServeConfig, Server, resolve_serve_bind,
 };
 
 use super::lookup::{Refused, collect};
+use super::scans::{default_scan_dir, scan_lookup, slot_check};
 
 /// Printed once by `serve` under Termux. Android may stop a process that Termux started while
 /// Termux is in the background or the screen is off, so the page would stop answering.
@@ -82,6 +86,33 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
             },
             message: refused.message().to_owned(),
         }),
+    }
+}
+
+/// The saved scans `serve` shows and starts: the same store, runner and API router as `scans`, so a
+/// scan run from either shows in both. A scan a stopped server left running reads `ABORTED`. When
+/// there is no usable scan directory the server still starts, says why on stderr, and the scan
+/// routes answer `404`; lookups and analysis are unaffected.
+fn scan_api() -> Option<std::sync::Arc<ScanApi>> {
+    let Some(dir) = default_scan_dir() else {
+        eprintln!(
+            "serve: saved scans are off: set HOME or HUNTSMAN_HOME to an absolute path to keep them"
+        );
+        return None;
+    };
+    let opened = ScanStore::open(&dir).and_then(|store| {
+        store.recover(huntsman_recon::entity::unix_now().saturating_mul(1000))?;
+        Ok(store)
+    });
+    match opened {
+        Ok(store) => Some(std::sync::Arc::new(ScanApi::new(
+            ScanService::new(store, scan_lookup()),
+            Some(slot_check()),
+        ))),
+        Err(error) => {
+            eprintln!("serve: saved scans are off: {}: {error}", dir.display());
+            None
+        }
     }
 }
 
@@ -177,12 +208,19 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     };
     let config_needs_token = config.needs_token();
     let analyze_history = history.clone();
+    let scans = scan_api();
     let server = match Server::bind(config) {
-        Ok(server) => server
-            .with_lookup(std::sync::Arc::new(web_lookup))
-            .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
-                web_analyze(seeds, analyze_history.as_deref())
-            })),
+        Ok(server) => {
+            let server = server
+                .with_lookup(std::sync::Arc::new(web_lookup))
+                .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
+                    web_analyze(seeds, analyze_history.as_deref())
+                }));
+            match scans {
+                Some(scans) => server.with_scans(scans),
+                None => server,
+            }
+        }
         Err(Error::Store(message)) => return fail(EX_UNAVAILABLE, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };

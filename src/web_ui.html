@@ -149,7 +149,7 @@ dl{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:2p
 dt{color:var(--dim);overflow-wrap:break-word}
 dd{margin:0;font-family:var(--mono);overflow-wrap:anywhere}
 dd dl{margin:0}
-.kv{gap:0;margin:0;font-size:12.5px}
+.kv{gap:0;margin:0;font-size:12.5px;grid-template-columns:fit-content(45%) minmax(0,1fr)}
 .kv dt,.kv dd{padding:7px 14px;border-bottom:1px solid var(--line)}
 .kv dt{background:var(--el2);font-weight:600}
 .types{gap:1px 10px}
@@ -163,6 +163,8 @@ dd dl{margin:0}
 .uc td{vertical-align:middle}
 .uc td:first-child{width:44px;padding-right:0}
 .uc .cb{margin:-8px 0}
+.uc td:only-child{width:auto;padding:7px 14px}
+.help.pad{margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
 .uc label{display:block;cursor:pointer}
 .uc b{display:block}
 .spin{width:16px;height:16px;border:2px solid var(--line2);border-top-color:var(--acc);border-radius:50%;animation:spin 1s linear infinite}
@@ -261,7 +263,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <tr><td><label class="cb"><input type="radio" name="usecase" value="passive" id="uc-passive"></label></td><td><label for="uc-passive"><b>Passive</b>When you don't want the target to even suspect they are being investigated. Only modules that do not touch the target or its affiliates are enabled.</label></td></tr>
 </tbody></table></div>
 <div class="panel" id="np-types" role="tabpanel" aria-labelledby="nt-types" hidden><div class="panel-body"><div class="checks" id="typelist"></div></div></div>
-<div class="panel" id="np-modules" role="tabpanel" aria-labelledby="nt-modules" hidden><table class="uc"><tbody id="modlist"></tbody></table></div>
+<div class="panel" id="np-modules" role="tabpanel" aria-labelledby="nt-modules" hidden><p class="help pad">Choosing modules is not applied yet: a scan runs every module its target's lookup uses. These are the modules, with the ones that need a key marked.</p><table class="uc"><tbody id="modlist"></tbody></table></div>
 <p class="alert" id="nerror" role="alert" hidden></p>
 <div><button class="btn btn-primary" id="runscan" type="submit">Run Scan Now</button></div>
 </form>
@@ -273,7 +275,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <nav class="tabs" id="sctabs" aria-label="Scan sections"><a class="tab" data-tab="summary">Summary</a><a class="tab" data-tab="correlations">Correlations</a><a class="tab" data-tab="browse">Browse</a><a class="tab" data-tab="graph">Graph</a><a class="tab" data-tab="settings">Scan Settings</a><a class="tab" data-tab="log">Log</a></nav>
 <div class="toolbar">
 <button class="btn" id="screfresh" type="button">Refresh</button>
-<details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="xlsx">Excel</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button></div></details>
+<details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button></div></details>
 <button class="btn" id="scstop" type="button" hidden>Stop</button>
 <button class="btn" id="screrun" type="button">Re-run</button>
 <button class="btn btn-danger" id="scdelete" type="button">Delete</button>
@@ -307,6 +309,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div id="pane-settings" hidden>
 <div class="panel"><div class="panel-heading">Meta Information</div><dl class="kv" id="meta"></dl></div>
 <div class="panel"><div class="panel-heading">Scan Options</div><dl class="kv" id="opts"></dl></div>
+<div class="panel"><div class="panel-heading">Lookup Report</div><pre id="sreport"></pre></div>
 </div>
 <div id="pane-log" hidden>
 <div class="toolbar"><select id="llevel" aria-label="Log entries"><option value="">All entries</option><option value="ERROR">Errors only</option></select><input type="search" id="lfilter" class="grow" autocomplete="off" placeholder="Filter the log" aria-label="Filter the log"><button class="btn" id="ldownload" type="button">Download logs</button></div>
@@ -359,7 +362,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel"><div class="panel-heading">Global Settings</div><dl class="kv" id="gopts"></dl></div>
 <div class="panel"><div class="panel-heading">Modules <span class="badge" id="mods-n"></span></div>
 <div class="filter"><input type="search" id="mfilter" autocomplete="off" placeholder="Filter modules" aria-label="Filter modules"></div>
-<div class="table-wrap"><table class="sortable"><thead><tr><th>Module</th><th>Category</th><th>Access</th><th>Description</th></tr></thead><tbody id="mods"></tbody></table></div></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>Module</th><th>Category</th><th>Access</th><th>API Key</th><th>Description</th></tr></thead><tbody id="mods"></tbody></table></div></div>
 </section>
 <section id="view-about" hidden>
 <h1>About</h1>
@@ -427,6 +430,9 @@ const refused=res=>{if(res.r.status===401){askToken();return true}return false};
 const LH={'X-Huntsman-Lookup':'1'};
 class Failure extends Error{}
 async function api(path,opts){
+  // The first health answer says whether this server needs the token, so no scan call goes
+  // without one it needs.
+  await started;
   let res;
   try{res=await call(path,LH,opts)}catch(e){throw new Failure(unreachable(e))}
   if(!res.r.ok){refused(res);throw new Failure('HTTP '+res.r.status+' · '+reason(res))}
@@ -469,7 +475,7 @@ function risks(c){const w=el('span','risks');for(const [k,name,t] of RISK){const
 // arrives after the operator moved on is dropped, and its follow-up poll never starts.
 const VIEWS=['scans','newscan','scan','analyze','settings','about'];
 let view='',gen=0,timer=0,resume=null,detailed=false;
-function later(fn){clearTimeout(timer);const g=gen;resume=fn;timer=setTimeout(()=>{if(g===gen&&!document.hidden)fn()},5000)}
+function later(fn,ms=5000){clearTimeout(timer);const g=gen;resume=fn;timer=setTimeout(()=>{if(g===gen&&!document.hidden)fn()},ms)}
 function route(){
   const parts=location.hash.replace(/^#\/?/,'').split('/').map(p=>{try{return decodeURIComponent(p)}catch(_){return p}});
   let v=({lookup:'newscan',status:'about'})[parts[0]]||parts[0];
@@ -574,7 +580,7 @@ $('srerun').onclick=()=>act1('rerun',[...picked]);
 $('sdelete').onclick=()=>act1('delete',[...picked]);
 $('sexport').onclick=()=>exportJson([...picked]);
 async function exportJson(ids){
-  try{const out=[];for(const id of ids)out.push(await api('/api/scans/'+enc(id)+'/export?format=json'));save(ids.length===1?out[0]:out,'huntsman-scans')}
+  try{await fetchFile('/api/scans/export?ids='+ids.map(enc).join(','),'huntsman-scans.json')}
   catch(e){fail(view==='scan'?'scerror':'serror',e.message)}
 }
 // New Scan: a target and Spiderfoot's three ways of choosing what runs.
@@ -583,7 +589,7 @@ const loaded={};
 function newTab(t){
   ntab=t;
   for(const x of ['usecase','types','modules']){$('nt-'+x).setAttribute('aria-selected',String(x===t));$('nt-'+x).tabIndex=x===t?0:-1;$('np-'+x).hidden=x!==t}
-  $('nselectors').hidden=t==='usecase';
+  $('nselectors').hidden=t!=='types';
   if(t!=='usecase'&&!loaded[t])(t==='types'?loadTypes:loadMods)();
 }
 for(const x of ['usecase','types','modules'])$('nt-'+x).onclick=()=>newTab(x);
@@ -598,10 +604,9 @@ async function loadMods(){
   const tb=$('modlist');tb.replaceChildren();
   try{
     for(const m of await moduleList()){
-      const tr=el('tr'),i=el('input'),l=el('label','cb'),text=el('label'),name=el('b','',m.name);
-      i.type='checkbox';i.checked=true;i.value=m.name;i.id='m-'+m.name;l.append(i);text.htmlFor=i.id;
+      const tr=el('tr'),text=el('span'),name=el('b','',m.name);
       if(m.access==='operator_key')name.append(' ',el('span','label warn','key'));
-      text.append(name,m.description);put(tr,'',l);put(tr,'',text);tb.append(tr);
+      text.append(name,m.description);put(tr,'',text);tb.append(tr);
     }
     loaded.modules=true;
   }catch(e){none(tb,e.message,2)}
@@ -614,9 +619,9 @@ $('newscan').onsubmit=async ev=>{
   if(!target){fail('nerror','Enter a scan target.');$('starget').focus();return}
   const p=new URLSearchParams({target,name:$('sname').value.trim()||target,kind:$('skind').value});
   if(ntab==='usecase')p.set('usecase',document.querySelector('input[name=usecase]:checked').value);
-  else{
+  else if(ntab==='types'){
     const on=[...$('np-'+ntab).querySelectorAll('input:checked')].map(i=>i.value);
-    if(!on.length){fail('nerror','Select at least one '+(ntab==='types'?'data type.':'module.'));return}
+    if(!on.length){fail('nerror','Select at least one data type.');return}
     p.set(ntab,on.join(','));
   }
   const b=$('runscan');b.disabled=true;$('nerror').hidden=true;
@@ -626,12 +631,12 @@ $('newscan').onsubmit=async ev=>{
 // One scan: Spiderfoot's sections over the scan API. Answers are cached for the scan and dropped
 // at each poll while it runs, so a section shows what the scan has found so far.
 const TABS=['summary','correlations','browse','graph','settings','log'];
-let sid='',scan=null,tab='summary',btype='',cache={},bmode='full',blist=[];const fpsel=new Set();
+let sid='',scan=null,tab='summary',btype='',cache={},bmode='full',blist=[],polls=0;const fpsel=new Set();
 const base=()=>'/api/scans/'+enc(sid);
 function get(key,path){if(!(key in cache))cache[key]=api(path).catch(e=>{delete cache[key];throw e});return cache[key]}
 const elements=type=>get('el:'+type,base()+'/elements'+(type?'?type='+enc(type):''));
 function openScan([id,t,type]){
-  if(id!==sid){sid=id;scan=null;cache={};fpsel.clear();$('scname').textContent='Scan';$('sccrumb').textContent=id;$('scstatus').textContent='';$('scmeta').textContent='';$('bfilter').value='';$('scq').value=''}
+  if(id!==sid){sid=id;scan=null;cache={};polls=0;fpsel.clear();$('scname').textContent='Scan';$('sccrumb').textContent=id;$('scstatus').textContent='';$('scmeta').textContent='';$('bfilter').value='';$('scq').value=''}
   tab=TABS.includes(t)?t:'summary';btype=tab==='browse'&&type?type:'';
   for(const a of $('sctabs').children){a.href='#/scan/'+enc(sid)+'/'+a.dataset.tab;if(a.dataset.tab===tab)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current')}
   for(const p of TABS.concat('search'))$('pane-'+p).hidden=p!==tab;
@@ -649,7 +654,7 @@ async function loadScan(fresh){
   if(fresh||ended||running&&(tab==='summary'||tab==='log'||tab==='browse'&&!btype))await pane();
   if(g!==gen)return;
   $('scspin').hidden=!running;
-  if(running)later(()=>loadScan(false));else resume=null;
+  if(running)later(()=>loadScan(false),Math.min(5000,1000*2**polls++));else resume=null;
 }
 function head(){
   const s=scan,name=s.name||s.target;
@@ -673,6 +678,8 @@ $('scstop').onclick=()=>act1('stop',[sid]);
 $('screrun').onclick=()=>act1('rerun',[sid]);
 $('scdelete').onclick=()=>act1('delete',[sid]);
 const errors=s=>Array.isArray(s.errors)?s.errors.length:(s.errors||0);
+// A source's outcome as the scan saved it: what it found, its HTTP status, when to retry, and why.
+const why=o=>[o.found!=null&&'found '+o.found,o.http_status&&'HTTP '+o.http_status,o.retry_after_secs&&'retry after '+o.retry_after_secs+' s',o.detail].filter(Boolean).join(' · ');
 async function summary(){
   const types=await get('summary',base()+'/summary');
   let total=0,unique=0;for(const t of types){total+=t.total;unique+=t.unique}
@@ -688,8 +695,8 @@ async function summary(){
   }
   if(!types.length)box.append(el('p','help',live(scan.status)?'No data yet. This section updates while the scan runs.':'No data.'));
   $('bars-n').textContent=types.length;
-  const src=scan.sources||[];
-  fill('srcs',src,o=>[o.source,'',o.detail||'']);
+  const src=scan.sources||[];$('srcs-n').textContent=src.length;
+  fill('srcs',src,o=>[o.module,'',why(o)]);
   [...$('srcs').rows].forEach((tr,i)=>{const o=src[i];if(o)tr.cells[1].replaceChildren(el('span','label '+(tone[o.outcome]||'bad'),o.outcome))});
 }
 // A data element as Spiderfoot lists it, opening to the whole raw record it came from.
@@ -702,7 +709,7 @@ function value(v){
 }
 function rawView(x){
   const b=el('div','ent-b'),meta=[x.type];
-  if(x.confidence!=null)meta.push('confidence '+Number(x.confidence).toFixed(2));
+  if(x.confidence!=null)meta.push('confidence '+x.confidence);
   if(x.entity)meta.push('entity '+show(x.entity));
   b.append(el('p','ent-m',meta.join(' · ')),value(x.raw));
   return b;
@@ -778,24 +785,23 @@ async function renderBrowse(){
 }
 $('bfull').onclick=()=>{bmode='full';renderBrowse()};$('bunique').onclick=()=>{bmode='unique';renderBrowse()};$('bpath').onclick=()=>{bmode='path';renderBrowse()};
 // Discovery Path, Spiderfoot's dendrogram as a tree that reads on a phone: each element of the
-// type under the elements it was found from, back to the scan's target. An element's source is the
-// element holding its source data, as Spiderfoot links an event to its source event.
+// type under the element it was found from, and so on back to the scan's target.
 function paths(rows,all){
-  const by=new Map(),kids=new Map(),tops=new Set(),hit=new Set(rows.map(x=>String(x.data)));
-  for(const x of all)if(!by.has(String(x.data)))by.set(String(x.data),x);
+  const ROOT='',by=new Map(all.map(x=>[x.id,x])),kids=new Map(),tops=new Set(),hit=new Set(rows.map(x=>x.id));
+  const up=e=>e.source==null?null:by.has(e.source)?e.source:ROOT;
   for(const x of rows){
-    let c=String(x.data),e=x;const seen=new Set([c]);
+    let c=x.id,e=x;const seen=new Set([c]);
     for(;;){
-      const p=e&&e.source_data!=null?String(e.source_data):'';
-      if(!p||seen.has(p))break;
+      const p=e?up(e):null;
+      if(p==null||seen.has(p))break;
       if(!kids.has(p))kids.set(p,new Set());kids.get(p).add(c);seen.add(p);c=p;e=by.get(p);
     }
     tops.add(c);
   }
-  const node=d=>{
-    const li=el('li',hit.has(d)?'hit':''),e=by.get(d);
-    li.append(el('span','label',e?e.type:d===scan.target?'ROOT':'?'),' ',el('span','data',d));
-    if(kids.has(d)){const ul=el('ul');for(const k of kids.get(d))ul.append(node(k));li.append(ul)}
+  const node=id=>{
+    const li=el('li',hit.has(id)?'hit':''),e=by.get(id);
+    li.append(el('span','label',e?e.type:'ROOT'),' ',el('span','data',e?e.data:scan.target));
+    if(kids.has(id)){const ul=el('ul');for(const k of kids.get(id))ul.append(node(k));li.append(ul)}
     return li;
   };
   const ul=el('ul','tree');for(const t of tops)ul.append(node(t));
@@ -930,8 +936,10 @@ $('gsave').onclick=()=>{
 };
 function scanSettings(){
   const s=scan,o=s.options||{},list=v=>Array.isArray(v)?v.join(', '):v;
-  kv('meta',[['Name',s.name],['Internal ID',s.id],['Target',s.target],['Target type',s.target_type||s.kind],['Route',s.route],['Created',when(s.created)],['Started',when(s.started)],['Completed',when(s.ended)],['Status',s.status],['Data elements',s.elements]]);
-  kv('opts',[['Use case',o.usecase],['Modules selected',list(o.modules)],['Data types selected',list(o.types)],['Modules run',list(s.modules_run)]]);
+  kv('meta',[['Name',s.name],['Internal ID',s.id],['Target',s.target],['Target type',s.target_type],['Lookup',s.kind],['Created',when(s.created)],['Started',when(s.started)],['Completed',when(s.ended)],['Status',s.status],['Data elements',s.elements]]);
+  const h=s.honoured||{},applied=v=>v===true?'applied':v===false?'not applied yet: every module of the target\'s lookup ran':v;
+  kv('opts',[['Use case',o.usecase],['Use case applied',applied(h.usecase)],['Data types selected',list(o.types)||'all'],['Data types applied',applied(h.types)],['Modules selected',list(o.modules)||'all'],['Modules applied',applied(h.modules)],['Modules run',list(s.modules_run)]]);
+  $('sreport').textContent=s.report||'No report yet.';
 }
 let logs=[];
 async function logView(){logs=await get('log',base()+'/log');showLog()}
@@ -947,11 +955,15 @@ $('ldownload').onclick=()=>download(new Blob([['Date','Component','Type','Event'
 // Exports come from the server, which writes every element whole; the page only saves them.
 async function exportFile(format){
   const p=new URLSearchParams({format}),type=tab==='browse'?btype:'';if(type)p.set('type',type);
+  await fetchFile(base()+'/export?'+p,'huntsman-'+sid+(type?'-'+type:'')+'.'+format);
+}
+// An export is read as a file, under the name the server gives it.
+async function fetchFile(path,name){
   let r;
-  try{r=await fetch(base()+'/export?'+p,{headers:headers(LH),cache:'no-store'})}catch(e){throw new Failure(unreachable(e))}
+  try{r=await fetch(path,{headers:headers(LH),cache:'no-store'})}catch(e){throw new Failure(unreachable(e))}
   if(!r.ok){const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}refused({r});throw new Failure('HTTP '+r.status+' · '+reason({text,body}))}
   const m=/filename="?([^";]+)"?/.exec(r.headers.get('content-disposition')||'');
-  download(await r.blob(),m?m[1]:'huntsman-'+sid+(type?'-'+type:'')+'.'+format);
+  download(await r.blob(),m?m[1]:name);
 }
 $('scexport').addEventListener('click',async e=>{
   const b=e.target.closest('button[data-format]');if(!b)return;
@@ -963,16 +975,31 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')$('scexport').open=f
 // Settings: every module, what it needs, and what this server knows of itself. Keys stay in the
 // environment and ~/.huntsman.env on the device; the page never sees one.
 const ACCESS={operator_key:['API key','warn'],keyless:['keyless','ok'],offline:['offline','info'],local:['local','info'],mixed:['mixed','info']};
+let settings=null;
 async function loadSettings(){
-  kv('gopts',[['Server address',location.host],['Version',$('sversion').textContent],['Sign-in',$('sauth').textContent],['API keys','read from the environment and ~/.huntsman.env on the device, never shown here']]);
-  try{const list=await moduleList();showMods(list)}catch(e){fail('gerror',e.message)}
+  await started;
+  const base=[['Server address',location.host],['Version',$('sversion').textContent],['Sign-in',$('sauth').textContent]];
+  kv('gopts',base);$('gerror').hidden=true;
+  // The server's settings carry each module's key status; without saved scans, the module list.
+  try{settings=await api('/api/settings')}catch(_){try{settings={modules:await moduleList(),global:[]}}catch(e){fail('gerror',e.message);return}}
+  kv('gopts',base.concat((settings.global||[]).map(g=>[g.description?g.description[0].toUpperCase()+g.description.slice(1):g.key,show(g.value)])));
+  showMods();
 }
-function showMods(list){
-  const f=$('mfilter').value.trim().toLowerCase(),rows=list.filter(m=>!f||[m.name,m.category,m.access,m.description].join(' ').toLowerCase().includes(f));
-  fill('mods',rows,m=>[m.name,m.category,'',m.description]);
-  [...$('mods').rows].forEach((tr,i)=>{const m=rows[i];if(m){const a=ACCESS[m.access]||[m.access,''];tr.cells[2].replaceChildren(el('span','label '+a[1],a[0]))}});
+function showMods(){
+  if(!settings)return;
+  const list=settings.modules||[],f=$('mfilter').value.trim().toLowerCase(),rows=list.filter(m=>!f||[m.name,m.category,m.access,m.description].concat(m.key_env||[]).join(' ').toLowerCase().includes(f));
+  $('mods-n').textContent=list.length;
+  fill('mods',rows,m=>[m.name,m.category,'','',m.description]);
+  [...$('mods').rows].forEach((tr,i)=>{
+    const m=rows[i];if(!m)return;
+    const a=ACCESS[m.access]||[m.access,''];tr.cells[2].replaceChildren(el('span','label '+a[1],a[0]));
+    if(m.configured==null)return;
+    const k=el('span','',''),names=(m.key_env||[]).join(', ');
+    k.append(el('span','label '+(m.configured?'ok':'warn'),m.configured?'set':'not set'));if(names)k.append(' ',el('span','mono',names));
+    tr.cells[3].replaceChildren(k);
+  });
 }
-$('mfilter').oninput=()=>{if(modules)showMods(modules)};
+$('mfilter').oninput=showMods;
 // Table headers sort their rows, as Spiderfoot's tables do.
 document.addEventListener('click',e=>{
   const th=e.target.closest('table.sortable th');if(!th||!th.textContent.trim())return;
@@ -1026,7 +1053,8 @@ $('adownload').onclick=()=>{if(alast)save(alast,'huntsman-analysis')};
   if(raw)try{const s=JSON.parse(raw);$('seeds').value=s.seeds;showAnalysis(s)}catch(_){sess.set('hse-analysis','');$('aresult').hidden=true}
 }
 $('refresh').onclick=()=>{health();details()};
-health();route();
+// Settings and About show the version and sign-in the first health answer carries.
+const started=health();route();
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){health();if(resume){clearTimeout(timer);resume()}}});
 </script>
 </html>
