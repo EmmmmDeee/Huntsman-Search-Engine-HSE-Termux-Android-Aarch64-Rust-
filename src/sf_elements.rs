@@ -16,9 +16,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::domains::is_or_subdomain_of;
+use crate::domains::{is_or_subdomain_of, registrable_domain};
 use crate::entity::{Entity, EntityKind, Evidence};
 use crate::recursion::PivotEdge;
+use crate::sf_country;
 use crate::sf_types::{self, base_type};
 use crate::sha256::{hex32, sha256};
 use crate::tags;
@@ -26,6 +27,12 @@ use crate::tags;
 /// The module name of the elements Huntsman itself makes: the root, the target, and verdicts no
 /// single source gave.
 pub const HUNTSMAN_MODULE: &str = "huntsman";
+
+/// The module of the domain each host belongs to, the work of Spiderfoot's `sfp_dnsresolve`.
+pub const DOMAIN_MODULE: &str = "hostdomain";
+
+/// The module of the countries a scan's data names, as Spiderfoot's `sfp_countryname` finds them.
+pub const COUNTRY_MODULE: &str = "countryname";
 
 /// Days before expiry at which a certificate is reported as expiring, as Spiderfoot does.
 const EXPIRING_DAYS: i64 = 30;
@@ -81,6 +88,21 @@ impl Target<'_> {
 
     fn is_ip(&self) -> bool {
         matches!(self.kind, "IP_ADDRESS" | "IPV6_ADDRESS")
+    }
+
+    /// Whether Spiderfoot's target would claim `domain` (`SpiderFootTarget.matches`): the target
+    /// domain or a name under it, a target email's domain or a name under it, and any domain at
+    /// all for a target it cannot place, a name, phone number, username or bitcoin address.
+    fn claims(&self, domain: &str) -> bool {
+        let value = self.value.trim();
+        match self.kind {
+            "HUMAN_NAME" | "PHONE_NUMBER" | "USERNAME" | "BITCOIN_ADDRESS" => true,
+            "INTERNET_NAME" | "DOMAIN_NAME" => is_or_subdomain_of(domain, &value.to_lowercase()),
+            "EMAILADDR" => value
+                .rsplit_once('@')
+                .is_some_and(|(_, host)| is_or_subdomain_of(domain, &host.to_lowercase())),
+            _ => false,
+        }
     }
 
     fn names(&self, entity: &Entity) -> bool {
@@ -495,6 +517,8 @@ pub fn elements_with_lineage(
     for (entity_index, entity) in entities.iter().enumerate() {
         walk.descriptors(entity_index, entity, &made);
     }
+    walk.domains();
+    walk.countries();
     walk.builder.out
 }
 
@@ -693,6 +717,104 @@ impl<'a> Walk<'a> {
     }
 }
 
+impl Walk<'_> {
+    /// The domain each host belongs to, each domain once, as Spiderfoot's `sfp_dnsresolve`
+    /// reports it: a host's domain the target claims as `DOMAIN_NAME`, one the target sits below
+    /// as `DOMAIN_NAME_PARENT`, an affiliate's as `AFFILIATE_DOMAIN_NAME` and a co-hosted site's
+    /// as `CO_HOSTED_SITE_DOMAIN`, each found from the first host that names it.
+    fn domains(&mut self) {
+        let hosts: Vec<(String, &'static str, String, u8, u64)> = self
+            .builder
+            .out
+            .iter()
+            .filter_map(|element| {
+                let derived = match element.kind.as_str() {
+                    "INTERNET_NAME" => "DOMAIN_NAME",
+                    "AFFILIATE_INTERNET_NAME" => "AFFILIATE_DOMAIN_NAME",
+                    "CO_HOSTED_SITE" => "CO_HOSTED_SITE_DOMAIN",
+                    _ => return None,
+                };
+                Some((
+                    element.id.clone(),
+                    derived,
+                    element
+                        .data
+                        .trim()
+                        .trim_end_matches('.')
+                        .to_ascii_lowercase(),
+                    element.confidence,
+                    element.created,
+                ))
+            })
+            .collect();
+        let mut reported = BTreeSet::new();
+        for (source, mut derived, host, confidence, created) in hosts {
+            if host.parse::<std::net::IpAddr>().is_ok() {
+                continue;
+            }
+            let Some(domain) = registrable_domain(&host) else {
+                continue;
+            };
+            if derived == "DOMAIN_NAME" && !self.target.claims(&domain) {
+                if !host.ends_with(&format!(".{domain}")) {
+                    continue;
+                }
+                derived = "DOMAIN_NAME_PARENT";
+            }
+            if reported.insert((derived, domain.clone())) {
+                self.builder.push(
+                    derived,
+                    domain,
+                    Some(&source),
+                    DOMAIN_MODULE,
+                    confidence,
+                    created,
+                    None,
+                    Value::Null,
+                );
+            }
+        }
+    }
+
+    /// The countries the scan's phone numbers, domains, IBANs, places, addresses and WHOIS
+    /// records name, as Spiderfoot's `sfp_countryname` finds them: each country a child of the
+    /// element that names it, and each distinct value read once, whatever its type.
+    fn countries(&mut self) {
+        let mut read = BTreeSet::new();
+        let named: Vec<(String, &'static str, u8, u64)> = self
+            .builder
+            .out
+            .iter()
+            .filter(|element| sf_country::WATCHED.contains(&element.kind.as_str()))
+            .filter(|element| read.insert(element.data.clone()))
+            .flat_map(|element| {
+                sf_country::of_element(&element.kind, &element.data)
+                    .into_iter()
+                    .map(|country| {
+                        (
+                            element.id.clone(),
+                            country,
+                            element.confidence,
+                            element.created,
+                        )
+                    })
+            })
+            .collect();
+        for (source, country, confidence, created) in named {
+            self.builder.push(
+                "COUNTRY_NAME",
+                country.to_owned(),
+                Some(&source),
+                COUNTRY_MODULE,
+                confidence,
+                created,
+                None,
+                Value::Null,
+            );
+        }
+    }
+}
+
 /// Per-type counts of a scan's elements, as Spiderfoot's summary shows them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeSummary {
@@ -798,6 +920,96 @@ mod tests {
         assert_eq!(www.source.as_deref(), Some(found[1].id.as_str()));
         assert_eq!(www.created, 1_700_000_000_000);
         assert_eq!(www.confidence, 80);
+    }
+
+    #[test]
+    fn each_hosts_domain_and_each_named_country_is_derived_once_as_spiderfoot_does() {
+        let found = elements(
+            DOMAIN,
+            &[
+                entity(EntityKind::Domain, "www.example.com", "crtsh", &[]),
+                entity(EntityKind::Domain, "mail.example.com", "crtsh", &[]),
+                entity(EntityKind::Domain, "shop.example.com.au", "robtex", &[]),
+                entity(EntityKind::Domain, "cdn.example.com.au", "robtex", &[]),
+                entity(EntityKind::Phone, "+442071838750", "hunter", &[]),
+                entity(
+                    EntityKind::IpAddress,
+                    "8.8.8.8",
+                    "ipinfo",
+                    &[("city", "Mountain View"), ("country", "US")],
+                ),
+            ],
+            1_700_000_000,
+        );
+        let data = |kind: &str| -> Vec<&str> {
+            of_type(&found, kind)
+                .iter()
+                .map(|element| element.data.as_str())
+                .collect()
+        };
+        // The target's domain once, from the target, though three hosts sit in it.
+        assert_eq!(data("DOMAIN_NAME"), ["example.com"]);
+        assert_eq!(
+            of_type(&found, "DOMAIN_NAME")[0].source.as_deref(),
+            Some(found[1].id.as_str())
+        );
+        assert_eq!(of_type(&found, "DOMAIN_NAME")[0].module, DOMAIN_MODULE);
+        assert_eq!(data("AFFILIATE_DOMAIN_NAME"), ["example.com.au"]);
+        let mut countries = data("COUNTRY_NAME");
+        countries.sort_unstable();
+        // .com is the United States to Spiderfoot, and so is the place; .com.au is Australia.
+        assert_eq!(
+            countries,
+            [
+                "Australia",
+                "United Kingdom",
+                "United States",
+                "United States"
+            ]
+        );
+        let uk = of_type(&found, "COUNTRY_NAME")
+            .into_iter()
+            .find(|element| element.data == "United Kingdom")
+            .unwrap();
+        let phone = of_type(&found, "PHONE_NUMBER")[0];
+        assert_eq!(uk.source.as_deref(), Some(phone.id.as_str()));
+        assert_eq!(uk.module, COUNTRY_MODULE);
+    }
+
+    #[test]
+    fn a_host_above_a_named_target_gives_its_parent_domain_and_an_address_target_gives_co_hosts() {
+        let host = Target {
+            value: "www.example.com",
+            kind: "INTERNET_NAME",
+        };
+        let found = elements(
+            host,
+            &[entity(EntityKind::Domain, "api.example.com", "crtsh", &[])],
+            1_700_000_000,
+        );
+        let parent: Vec<&str> = of_type(&found, "DOMAIN_NAME_PARENT")
+            .iter()
+            .map(|element| element.data.as_str())
+            .collect();
+        assert_eq!(parent, ["example.com"]);
+        assert!(of_type(&found, "DOMAIN_NAME").is_empty());
+        let address = Target {
+            value: "8.8.8.8",
+            kind: "IP_ADDRESS",
+        };
+        let found = elements(
+            address,
+            &[entity(EntityKind::Domain, "dns.google", "robtex", &[])],
+            1_700_000_000,
+        );
+        assert_eq!(
+            of_type(&found, "CO_HOSTED_SITE_DOMAIN")[0].data,
+            "dns.google"
+        );
+        assert!(
+            of_type(&found, "COUNTRY_NAME").is_empty(),
+            ".google names no country"
+        );
     }
 
     #[test]
@@ -1036,6 +1248,11 @@ mod tests {
             "MALICIOUS_EMAILADDR",
             "MALICIOUS_PHONE_NUMBER",
             "MALICIOUS_ASN",
+            "DOMAIN_NAME",
+            "DOMAIN_NAME_PARENT",
+            "AFFILIATE_DOMAIN_NAME",
+            "CO_HOSTED_SITE_DOMAIN",
+            "COUNTRY_NAME",
         ];
         for kind in emitted {
             assert!(sf_types::find(kind).is_some(), "{kind} is not catalogued");

@@ -163,6 +163,7 @@ pub mod service_defs;
 pub mod session;
 pub mod sf_compat;
 pub mod sf_correlate;
+pub mod sf_country;
 pub mod sf_elements;
 pub mod sf_types;
 pub mod sha256;
