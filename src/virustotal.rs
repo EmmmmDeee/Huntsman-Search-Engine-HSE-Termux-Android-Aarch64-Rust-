@@ -63,7 +63,7 @@ pub struct Report {
     /// The addresses the domain's last DNS records resolve to, as written.
     pub addresses: Vec<String>,
     /// The host names the answer names, each with the record type or `certificate` that names
-    /// it: lower case, no root dot, a wildcard's `*.` dropped.
+    /// it: lower case, no root dot, a wildcard's `*.` dropped, an address left out.
     pub hosts: Vec<(String, String)>,
     /// The whole answer as compact JSON.
     pub raw_answer: String,
@@ -281,7 +281,11 @@ impl ReadOut {
         let name = name.trim().trim_end_matches('.').to_ascii_lowercase();
         let name = name.strip_prefix("*.").unwrap_or(&name).to_owned();
         let entry = (role.to_ascii_lowercase(), name);
-        if !entry.1.is_empty() && !self.hosts.contains(&entry) {
+        // A certificate can name an address; that is not a host name to pivot on.
+        if entry.1.is_empty() || entry.1.parse::<IpAddr>().is_ok() {
+            return;
+        }
+        if !self.hosts.contains(&entry) {
             self.hosts.push(entry);
         }
     }
