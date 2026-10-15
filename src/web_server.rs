@@ -1361,7 +1361,9 @@ mod tests {
         );
         assert!(INDEX_HTML.contains(r#"<div class="panel" id="tokenpanel" hidden>"#));
         assert!(script.contains("if(needsToken&&token)h.Authorization='Bearer '+token"));
-        assert!(script.contains("if(res.body.auth==='token'){needsToken=true;"));
+        assert!(script.contains("if(b.auth==='token'){\n        needsToken=true;"));
+        // A stored token is tried without fetching a body: HEAD answers 401 or 200 and nothing else.
+        assert!(script.contains("refused(await call('/api/command',{},{method:'HEAD'}))"));
         assert!(script.contains("else{needsToken=false;token='';store.set('hse-token','');"));
         assert!(
             script.contains("const refused=res=>{if(res.r.status===401){askToken();return true}")

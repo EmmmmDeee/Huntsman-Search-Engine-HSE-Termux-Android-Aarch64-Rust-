@@ -9,10 +9,9 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use crate::collector::{CollectionLimits, CollectionOutcome};
-use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::entity::{Entity, EntityKind};
 use crate::error::Error;
-use crate::fetch::{AuthStyle, Credential};
+use crate::fetch::Credential;
 use crate::http::Transport;
 use crate::keys::Keys;
 use crate::lineage::Lineage;
@@ -147,18 +146,7 @@ fn split_keys_arg(args: &[String]) -> Result<(Vec<String>, Option<PathBuf>), ()>
 }
 
 fn credential_from_keys(keys: &Keys, now_unix: u64) -> Result<Credential, String> {
-    let secret = keys
-        .get(KEY_SLOT)
-        .ok_or_else(|| format!("credential {KEY_SLOT} is not configured"))?;
-    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
-        provider_id: "seeknow".into(),
-        credential_slot: KEY_SLOT.into(),
-        approved_at_unix: now_unix,
-        approval_provenance: "huntsman-recon seeknow command".into(),
-    })
-    .map_err(|error| error.to_string())?;
-    Credential::new(authority, secret, AuthStyle::Header("X-API-Key".into()))
-        .map_err(|error| error.to_string())
+    crate::seeknow_collector::operator_credential(keys, now_unix, "huntsman-recon seeknow command")
 }
 
 fn run_search<T: Transport + ?Sized>(
