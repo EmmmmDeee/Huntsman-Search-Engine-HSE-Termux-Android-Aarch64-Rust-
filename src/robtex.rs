@@ -11,7 +11,9 @@
 //! Everything is kept. For an address: the whole answer as JSON in `raw_answer`, and read out of
 //! it the BGP route and its description, the origin AS with its name and description, the WHOIS
 //! description, the city and country, and every name passive and active DNS has seen pointing at
-//! the address, with the newest sighting of each kind; each name is a domain pivot. For a domain:
+//! the address, with the time Robtex dates each list by; each name is a domain pivot. Robtex puts
+//! one time on every name of an answer, the time it made the answer, not when it saw each name
+//! (checked 2026-10-15), so that time is `passive_as_of` and `active_as_of`. For a domain:
 //! every record whole in `raw_records`, the record count, the first and newest sightings, the
 //! addresses (A, AAAA) and names (NS, MX, CNAME) it resolved to, each also a pivot, and every
 //! other record (TXT and the rest) as `TYPE data`.
@@ -170,12 +172,12 @@ pub fn decode_ip(body: &[u8]) -> Result<Option<Finding>, LegError> {
     .opt_attr("country", body.country.as_deref())
     .list_attr("passive_names", &passive)
     .opt_attr(
-        "passive_last_seen",
+        "passive_as_of",
         when(body.pas.iter().filter_map(|s| s.t).max()),
     )
     .list_attr("active_names", &active)
     .opt_attr(
-        "active_last_seen",
+        "active_as_of",
         when(body.act.iter().filter_map(|s| s.t).max()),
     );
     if let Some(asn) = &asn {
@@ -370,7 +372,7 @@ mod tests {
         ] {
             assert_eq!(value(&f, key), Some(expected), "{key}: {:?}", f.attrs);
         }
-        assert!(value(&f, "passive_last_seen").is_some_and(|t| t.starts_with("2026-10-")));
+        assert!(value(&f, "passive_as_of").is_some_and(|t| t.starts_with("2026-10-")));
         let raw: Value =
             serde_json::from_str(value(&f, "raw_answer").unwrap_or_default()).unwrap_or_default();
         assert_eq!(raw["pas"].as_array().map(Vec::len), Some(3));
