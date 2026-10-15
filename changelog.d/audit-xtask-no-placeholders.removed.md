@@ -1,0 +1,1 @@
+- `xtask ops`, `xtask release`, and the `xtask dual-pass` planner, red classifier, runner and publisher, which only printed "is not implemented yet" and exited 70. Their working authority stays in `scripts/` and `.github/scripts/`, which CI calls directly; a command returns when it is ported, not as a placeholder.
