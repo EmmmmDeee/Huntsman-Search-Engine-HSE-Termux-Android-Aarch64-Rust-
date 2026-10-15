@@ -548,7 +548,7 @@ fn spiderfoot_names(module: &str) -> Vec<String> {
         "urlhaus" | "threatfox" => &["sfp_abusech"],
         "github_user" => &["sfp_github"],
         "openpgp_keys" => &["sfp_pgp"],
-        "whoxy" => &["sfp_whois"],
+        "whoxy" | "rdap" => &["sfp_whois"],
         "kickbox" => &["sfp_debounce"],
         "greynoise" => &["sfp_greynoise_community"],
         "hostdomain" => &["sfp_dnsresolve"],
