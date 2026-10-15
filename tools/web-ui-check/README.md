@@ -20,7 +20,7 @@ It is not part of `huntsman-recon`: the engine ships no browser or JavaScript ru
   or best-practice violation in any view, before or after the toggle.
 - New Scan lists every module and every data type the server has. A scan started there runs to
   FINISHED, and each section shows what the scan API holds: Summary's counters and a bar per data
-  type, Browse's data types and every element of a type with its raw record, a false positive
+  type, Browse's data types and every element of a type with its raw record and on its discovery path, a false positive
   marked on the server, every correlation, a graph node per element, Scan Settings naming the
   target, every log entry, a wildcard search, and CSV and JSON exports that hold the elements.
 - A reload (Android discarding the tab) returns to the same section of the same scan and keeps

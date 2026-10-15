@@ -121,6 +121,12 @@ td.none{color:var(--dim)}
 .risks{display:inline-flex;gap:3px}
 .acts{display:flex;flex-wrap:wrap;gap:4px}
 .nw,#log td:first-child{white-space:nowrap}
+.tree,.tree ul{margin:0;padding:0;list-style:none}
+.tree{padding:8px 14px;font-size:12.5px}
+.tree ul{margin-left:6px;padding-left:10px;border-left:1px solid var(--line)}
+.tree li{padding:3px 0}
+.tree .label{margin-right:2px}
+.tree .hit>.data{font-weight:700;color:var(--fg)}
 .acts .btn{min-width:44px;padding:6px 10px;font-size:12.5px}
 pre{margin:0;padding:12px 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 var(--mono);color:var(--fg)}
 .data{font:12.5px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
@@ -287,7 +293,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel" id="btypes"><div class="table-wrap"><table class="sortable"><thead><tr><th>Type</th><th>Unique Data Elements</th><th>Total Data Elements</th><th>Last Data Element</th></tr></thead><tbody id="types"></tbody></table></div></div>
 <div id="btype" hidden>
 <p class="crumbs"><a class="link" id="bback">Browse</a><span aria-hidden="true">›</span><span id="bname"></span></p>
-<div class="toolbar"><span class="seg" role="group" aria-label="View"><button class="btn" id="bfull" type="button" aria-pressed="true">Full</button><button class="btn" id="bunique" type="button" aria-pressed="false">Unique</button></span><label class="chk" id="bfpl"><input type="checkbox" id="bhidefp"><span id="bfpn">Hide false positives</span></label><input type="search" id="bfilter" class="grow" autocomplete="off" placeholder="Filter these elements" aria-label="Filter these elements"></div>
+<div class="toolbar"><span class="seg" role="group" aria-label="View"><button class="btn" id="bfull" type="button" aria-pressed="true">Full</button><button class="btn" id="bunique" type="button" aria-pressed="false">Unique</button><button class="btn" id="bpath" type="button" aria-pressed="false">Discovery Path</button></span><label class="chk" id="bfpl"><input type="checkbox" id="bhidefp"><span id="bfpn">Hide false positives</span></label><input type="search" id="bfilter" class="grow" autocomplete="off" placeholder="Filter these elements" aria-label="Filter these elements"></div>
 <div class="toolbar" id="bfp"><button class="btn" id="bsetfp" type="button">Set false positive</button><button class="btn" id="bunsetfp" type="button">Unset false positive</button></div>
 <div class="panel" id="bbody"></div>
 </div>
@@ -758,17 +764,44 @@ async function browseType(){
   renderBrowse();
 }
 const hay=x=>(String(x.data)+' '+String(x.source_data)+' '+String(x.module)).toLowerCase();
-function renderBrowse(){
-  const f=$('bfilter').value.trim().toLowerCase(),hide=$('bhidefp').checked,rows=blist.filter(x=>!(hide&&x.fp)&&(!f||hay(x).includes(f)));
-  $('bfull').setAttribute('aria-pressed',String(bmode==='full'));$('bunique').setAttribute('aria-pressed',String(bmode==='unique'));$('bfp').hidden=bmode!=='full';
+let rgen=0;
+async function renderBrowse(){
+  const r=++rgen,f=$('bfilter').value.trim().toLowerCase(),hide=$('bhidefp').checked,rows=blist.filter(x=>!(hide&&x.fp)&&(!f||hay(x).includes(f)));
+  for(const m of ['full','unique','path'])$('b'+m).setAttribute('aria-pressed',String(bmode===m));$('bfp').hidden=bmode!=='full';
   let body;
-  if(bmode==='unique'){
+  if(bmode==='path')try{body=paths(rows,await elements(''))}catch(e){fail('scerror',e.message);return}
+  else if(bmode==='unique'){
     const count=new Map();for(const x of rows)count.set(x.data,(count.get(x.data)||0)+1);
     body=table(['Unique Data Element','Occurrences'],[...count].sort((a,b)=>b[1]-a[1]),([v,n])=>{const tr=el('tr');put(tr,'Unique Data Element',el('span','data',v));put(tr,'Occurrences',n);return tr});
   }else body=elemTable(rows,false,fpsel);
-  $('bbody').replaceChildren(body);
+  if(r===rgen)$('bbody').replaceChildren(body);
 }
-$('bfull').onclick=()=>{bmode='full';renderBrowse()};$('bunique').onclick=()=>{bmode='unique';renderBrowse()};
+$('bfull').onclick=()=>{bmode='full';renderBrowse()};$('bunique').onclick=()=>{bmode='unique';renderBrowse()};$('bpath').onclick=()=>{bmode='path';renderBrowse()};
+// Discovery Path, Spiderfoot's dendrogram as a tree that reads on a phone: each element of the
+// type under the elements it was found from, back to the scan's target. An element's source is the
+// element holding its source data, as Spiderfoot links an event to its source event.
+function paths(rows,all){
+  const by=new Map(),kids=new Map(),tops=new Set(),hit=new Set(rows.map(x=>String(x.data)));
+  for(const x of all)if(!by.has(String(x.data)))by.set(String(x.data),x);
+  for(const x of rows){
+    let c=String(x.data),e=x;const seen=new Set([c]);
+    for(;;){
+      const p=e&&e.source_data!=null?String(e.source_data):'';
+      if(!p||seen.has(p))break;
+      if(!kids.has(p))kids.set(p,new Set());kids.get(p).add(c);seen.add(p);c=p;e=by.get(p);
+    }
+    tops.add(c);
+  }
+  const node=d=>{
+    const li=el('li',hit.has(d)?'hit':''),e=by.get(d);
+    li.append(el('span','label',e?e.type:d===scan.target?'ROOT':'?'),' ',el('span','data',d));
+    if(kids.has(d)){const ul=el('ul');for(const k of kids.get(d))ul.append(node(k));li.append(ul)}
+    return li;
+  };
+  const ul=el('ul','tree');for(const t of tops)ul.append(node(t));
+  if(!rows.length)ul.append(el('li','none','No data elements.'));
+  return ul;
+}
 $('bhidefp').onchange=renderBrowse;$('bfilter').oninput=renderBrowse;
 async function setFp(on){
   if(!fpsel.size){fail('scerror','Select the data elements to flag first.');return}
