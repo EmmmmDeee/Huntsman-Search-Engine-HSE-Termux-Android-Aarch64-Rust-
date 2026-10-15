@@ -18,8 +18,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::correlator::{Correlation, Severity};
+use crate::correlator::{Correlation, rule_catalog};
 use crate::entity::Entity;
+use crate::sf_correlate::Finding;
+pub use crate::sf_correlate::Risk;
 use crate::sf_elements::DataElement;
 use crate::sha256::{hex32, sha256};
 use crate::source_outcome::SourceExecutionOutcome;
@@ -126,28 +128,6 @@ pub struct RiskCounts {
     pub info: usize,
 }
 
-/// Spiderfoot's correlation risk levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Risk {
-    High,
-    Medium,
-    Low,
-    Info,
-}
-
-impl Risk {
-    /// The risk a Huntsman rule's severity reads as: Spiderfoot has no level above HIGH.
-    #[must_use]
-    pub const fn of(severity: Severity) -> Self {
-        match severity {
-            Severity::Critical | Severity::High => Self::High,
-            Severity::Medium => Self::Medium,
-            Severity::Low => Self::Low,
-        }
-    }
-}
-
 /// One scan's row: Spiderfoot's `tbl_scan_instance` plus the counts its scan list shows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScanRecord {
@@ -185,19 +165,31 @@ pub struct ScanRecord {
     pub owner: Option<u32>,
 }
 
-/// One correlation on a saved scan, with the elements it is about.
+/// One correlation on a saved scan, with the elements it is about: a row of Spiderfoot's
+/// `tbl_scan_correlation_results`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScanCorrelation {
     pub id: String,
     pub rule: String,
+    /// The rule's name.
+    #[serde(default)]
+    pub name: String,
+    /// The headline naming what this result found.
     pub title: String,
     pub risk: Risk,
+    /// What the rule looks for.
     pub description: String,
+    /// `huntsman` for Huntsman's own rules, `spiderfoot` for Spiderfoot's, else the rule's file.
+    #[serde(default)]
+    pub origin: String,
+    /// The rule as written (Spiderfoot's `rule_logic`); empty for a built-in Huntsman rule.
+    #[serde(default)]
+    pub logic: String,
     pub elements: Vec<String>,
 }
 
 impl ScanCorrelation {
-    /// A correlator result as a scan correlation, naming the elements of its entities.
+    /// A Huntsman correlator result as a scan correlation, naming the elements of its entities.
     #[must_use]
     pub fn from_rule(correlation: &Correlation, elements: &[DataElement]) -> Self {
         let ids: Vec<String> = correlation
@@ -215,13 +207,40 @@ impl ScanCorrelation {
             key.push(0);
             key.extend_from_slice(uid.as_bytes());
         }
+        let name = correlation.rule_name.replace('_', " ");
+        let description = rule_catalog()
+            .into_iter()
+            .find(|rule| rule.id == correlation.rule_id)
+            .map_or_else(
+                || correlation.description.clone(),
+                |rule| rule.description.to_owned(),
+            );
         Self {
             id: hex32(&sha256(&key))[..ID_LEN].to_owned(),
             rule: correlation.rule_id.clone(),
-            title: correlation.rule_name.replace('_', " "),
+            title: format!("{name}: {}", correlation.description),
+            name,
             risk: Risk::of(correlation.severity),
-            description: correlation.description.clone(),
+            description,
+            origin: "huntsman".to_owned(),
+            logic: String::new(),
             elements: ids,
+        }
+    }
+
+    /// A Spiderfoot-rule result as a scan correlation.
+    #[must_use]
+    pub fn from_finding(finding: Finding) -> Self {
+        Self {
+            id: finding.id,
+            rule: finding.rule,
+            name: finding.name,
+            title: finding.title,
+            risk: finding.risk,
+            description: finding.description,
+            origin: finding.origin,
+            logic: finding.logic,
+            elements: finding.elements,
         }
     }
 }

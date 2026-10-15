@@ -391,9 +391,12 @@ fn the_page_reads_the_fields_the_scan_api_answers() {
     let correlation = serde_json::to_value(ScanCorrelation {
         id: "c".into(),
         rule: "rule".into(),
+        name: "rule".into(),
         title: "title".into(),
         risk: Risk::High,
         description: "why".into(),
+        origin: "huntsman".into(),
+        logic: String::new(),
         elements: vec!["e".into()],
     })
     .expect("correlation");
