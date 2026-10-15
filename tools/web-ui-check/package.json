@@ -1,0 +1,9 @@
+{
+  "name": "huntsman-web-ui-check",
+  "private": true,
+  "description": "Drives the serve web UI in a phone-sized headless Chromium; see README.md. Not part of huntsman-recon.",
+  "dependencies": {
+    "axe-core": "4.10.3",
+    "playwright-core": "1.56.1"
+  }
+}
