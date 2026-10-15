@@ -14,6 +14,8 @@
 
 use std::collections::BTreeSet;
 
+use serde::Serialize;
+
 use crate::entity::{Entity, EntityKind, merge_by_uid};
 use crate::pipeline_limits::PipelineLimits;
 use crate::scan_route::{ScanKind, canonical_selector, infer_kind};
@@ -85,7 +87,7 @@ impl Default for RecursionPolicy {
 }
 
 /// One generation's dispatch and growth, for the latency/depth report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct GenerationStat {
     pub generation: u32,
     pub dispatched: usize,
@@ -96,7 +98,7 @@ pub struct GenerationStat {
 /// reconstructs the crawl's pivot tree — which lookup surfaced which finding, generation by
 /// generation — the linkage a recursive OSINT crawl exists to produce. An entity reached by more
 /// than one lookup contributes one edge per lookup, so shared findings are visible, not collapsed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PivotEdge {
     /// The dispatched lookup's kind, as its stable command word.
     pub from_kind: String,
