@@ -5,9 +5,11 @@
 //! The rows are tab-separated records, and the values in them come from third parties: a profile
 //! name, a register entry, a dataset name. Every value is written through
 //! [`escape_controls`](crate::textnorm::escape_controls) here, so a value can neither drive the
-//! terminal with an escape sequence nor start a row or a column of its own. [`entity_row`] and
-//! [`evidence_row`] are the only places a row of this shape is formatted, and
-//! `tests/architecture_boundaries.rs` fails if a second one appears.
+//! terminal with an escape sequence nor start a row or a column of its own. [`entity_row`],
+//! [`evidence_row`] and [`attribute_row`] are the only places a row of this shape is formatted, and
+//! `tests/architecture_boundaries.rs` fails if a second one appears. A report leaves nothing out:
+//! each entity is followed by every evidence record behind it, and each evidence record by every
+//! attribute it carries.
 
 use std::fmt::Write as _;
 
@@ -38,6 +40,30 @@ pub fn evidence_row(evidence: &Evidence) -> String {
         escape_controls(&evidence.provenance.source),
         escape_controls(&evidence.summary)
     )
+}
+
+/// The row that names one attribute of an evidence record: its key and its value, both escaped.
+#[must_use]
+pub fn attribute_row(key: &str, value: &str) -> String {
+    format!(
+        "attribute\t{}\t{}",
+        escape_controls(key),
+        escape_controls(value)
+    )
+}
+
+/// The rows that name one evidence record: its own row, then one row per attribute it carries, in
+/// key order.
+#[must_use]
+pub fn evidence_rows(evidence: &Evidence) -> Vec<String> {
+    let mut rows = vec![evidence_row(evidence)];
+    rows.extend(
+        evidence
+            .attributes
+            .iter()
+            .map(|(key, value)| attribute_row(key, value)),
+    );
+    rows
 }
 
 /// Longest outcome detail shown, in characters.
@@ -81,7 +107,8 @@ pub fn outcome_row(outcome: &SourceExecutionOutcome) -> String {
 }
 
 /// The report of one lookup. The first line is `entities=N`. Each entity follows as a
-/// tab-separated line (kind, value, confidence, tags), then each source outcome (module, kind,
+/// tab-separated line (kind, value, confidence, tags), then each evidence record behind it and each
+/// attribute of that evidence (see [`evidence_rows`]). Then each source outcome (module, kind,
 /// found count, and `detail=` when the source gave a reason), and the lineage block closes the
 /// report.
 ///
@@ -92,6 +119,11 @@ pub fn render(entities: &[Entity], outcomes: &[SourceExecutionOutcome]) -> Resul
     for entity in entities {
         writeln!(out, "{}", entity_row(entity, &entity.raw_value))
             .map_err(|err| err.to_string())?;
+        for evidence in &entity.evidence {
+            for row in evidence_rows(evidence) {
+                writeln!(out, "{row}").map_err(|err| err.to_string())?;
+            }
+        }
     }
     for outcome in outcomes {
         writeln!(out, "{}", outcome_row(outcome)).map_err(|err| err.to_string())?;
@@ -184,7 +216,9 @@ mod tests {
             unexpected_controls(&text, &['\n', '\t']).is_empty(),
             "a control character other than the report's own separators: {text:?}"
         );
-        for row in text.lines().skip(1).take(entities.len()) {
+        for entity in &entities {
+            let row = entity_row(entity, &entity.raw_value);
+            assert!(text.lines().any(|line| line == row), "{row:?} in {text:?}");
             assert_eq!(
                 row.matches('\t').count(),
                 3,
@@ -217,6 +251,45 @@ mod tests {
         assert_eq!(
             evidence_row(&evidence),
             "evidence\tprobe\\u{1b}[1m\tsummary\\nforged\\tcolumn\\u{1b}[2J"
+        );
+        assert_eq!(
+            attribute_row("key\nforged", "value\tcolumn\u{1b}[2J"),
+            "attribute\tkey\\nforged\tvalue\\tcolumn\\u{1b}[2J"
+        );
+    }
+
+    #[test]
+    fn every_evidence_record_and_attribute_is_printed_under_its_entity() {
+        let mut entity = entity_from(EntityKind::Person, "Ada Lovelace", &[]);
+        let mut first = Evidence::new(EvidenceProvenance::new("register"), "first record")
+            .with_attr("registrant", "Ada Lovelace")
+            .with_attr("note", "line one\nline two");
+        first
+            .attributes
+            .insert("address".into(), "1 Analytical Way".into());
+        entity.add_evidence(first);
+        entity.add_evidence(Evidence::new(
+            EvidenceProvenance::new("forum"),
+            "second record",
+        ));
+
+        let text = render(std::slice::from_ref(&entity), &[]).expect("the report renders");
+        let lines: Vec<&str> = text.lines().collect();
+        let at = lines
+            .iter()
+            .position(|line| *line == entity_row(&entity, &entity.raw_value))
+            .expect("the entity row is printed");
+        assert_eq!(
+            &lines[at + 1..at + 7],
+            [
+                "evidence\tprobe\trecord",
+                "evidence\tregister\tfirst record",
+                "attribute\taddress\t1 Analytical Way",
+                "attribute\tnote\tline one\\nline two",
+                "attribute\tregistrant\tAda Lovelace",
+                "evidence\tforum\tsecond record",
+            ],
+            "{text}"
         );
     }
 

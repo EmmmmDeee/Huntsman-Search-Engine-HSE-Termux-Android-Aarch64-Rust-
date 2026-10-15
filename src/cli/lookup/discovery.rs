@@ -12,7 +12,7 @@ use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::{TransportConfig, UreqTransport};
-use huntsman_recon::lookup_report::{entity_row, evidence_row};
+use huntsman_recon::lookup_report::{entity_row, evidence_rows};
 use huntsman_recon::search::{Document, load_dir, search, tokenize};
 use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
 use huntsman_recon::source_registry::routes_for;
@@ -54,7 +54,9 @@ pub(in crate::cli) fn investigate_cmd(args: &[String]) -> ExitCode {
     for entity in &entities {
         println!("{}", entity_row(entity, &entity.raw_value));
         for evidence in &entity.evidence {
-            println!("{}", evidence_row(evidence));
+            for row in evidence_rows(evidence) {
+                println!("{row}");
+            }
         }
     }
     ExitCode::SUCCESS
