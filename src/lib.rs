@@ -153,6 +153,7 @@ pub mod scan_batch;
 pub mod scan_compare;
 pub mod scan_export;
 pub mod scan_route;
+pub mod scan_search;
 pub mod scan_service;
 pub mod scan_store;
 pub mod scraper_health;

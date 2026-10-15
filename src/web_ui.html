@@ -231,6 +231,8 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel" id="sempty" hidden><div class="panel-body"><b>No scan history</b><p class="help">There is currently no history of previously run scans. Start one from <a class="link" href="#/newscan">New Scan</a>.</p></div></div>
 <div id="slist" hidden>
 <div class="toolbar"><label class="chk"><input type="checkbox" id="sall">All</label><select id="sfilter" aria-label="Filter scans"><option value="">Filter: None</option><option value="running">Filter: Running</option><option value="finished">Filter: Finished</option><option value="failed">Filter: Failed/Aborted</option></select><button class="btn" id="srefresh" type="button">Refresh</button></div>
+<form class="toolbar" id="allsearch"><input type="search" id="allq" class="grow" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="Search every scan: text, *wild*, /re/" aria-label="Search every scan: plain text, a *wild*card or a /regular expression/"><button class="btn" type="submit">Search</button></form>
+<div id="allhits" hidden><div class="toolbar"><span class="when grow" id="allcount"></span><button class="btn" id="allclose" type="button">Close</button></div><div class="panel" id="allresults"></div></div>
 <div class="toolbar" id="sbulk" hidden><span class="when" id="snsel"></span><button class="btn" id="sstop" type="button">Stop</button><button class="btn" id="srerun" type="button">Re-run</button><button class="btn" id="scompare" type="button">Compare</button><details class="menu" id="sexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-mformat="csv">CSV</button><button type="button" data-mformat="xlsx">Excel</button><button type="button" data-mformat="json">JSON</button><button type="button" data-mformat="tsv">TSV</button></div></details><button class="btn btn-danger" id="sdelete" type="button">Delete</button></div>
 <div class="panel"><div class="table-wrap"><table class="sortable"><thead><tr><th>Name</th><th>Target</th><th>Started</th><th>Finished</th><th>Status</th><th>Elements</th><th>Correlations</th><th>Action</th></tr></thead><tbody id="scans"></tbody></table></div></div>
 </div>
@@ -880,18 +882,15 @@ async function setFp(on){
 }
 $('bsetfp').onclick=()=>setFp(true);$('bunsetfp').onclick=()=>setFp(false);
 // Search, as Spiderfoot's box reads it: /regex/, a *wild*card, or a plain value anywhere in the
-// element, over the type being browsed or the whole scan.
-function matcher(q){
-  if(q.length>2&&q[0]==='/'&&q.endsWith('/')){try{const re=new RegExp(q.slice(1,-1),'i');return s=>re.test(s)}catch(_){return null}}
-  if(q.includes('*')){const re=new RegExp('^'+q.split('*').map(p=>p.replace(/[.+?^${}()|[\]\\]/g,'\\$&')).join('.*')+'$','i');return s=>re.test(s)}
-  const l=q.toLowerCase();return s=>s.toLowerCase().includes(l);
-}
+// element, over the type being browsed or the whole scan. The server's matcher decides, the one
+// `scans search` and every-scan search use too.
+const search=(value,more)=>api('/api/scans/search?'+new URLSearchParams({value,...more}));
 $('scsearch').onsubmit=async ev=>{
   ev.preventDefault();
-  const q=$('scq').value.trim(),m=q&&matcher(q),type=tab==='browse'?btype:'';
-  if(!q)return;if(!m){fail('scerror','That regular expression does not parse.');return}
+  const q=$('scq').value.trim(),type=tab==='browse'?btype:'';
+  if(!q)return;
   try{
-    const hits=(await elements(type)).filter(x=>m(String(x.data))||m(String(x.source_data))||m(String(x.module)));
+    const hits=await search(q,type?{ids:sid,type}:{ids:sid});
     for(const p of TABS)$('pane-'+p).hidden=true;
     $('pane-search').hidden=false;$('scerror').hidden=true;
     $('sback').href='#/scan/'+enc(sid)+'/browse'+(type?'/'+enc(type):'');
@@ -899,6 +898,23 @@ $('scsearch').onsubmit=async ev=>{
     $('sresults').replaceChildren(elemTable(hits,!type));
   }catch(e){fail('scerror',e.message)}
 };
+// The same search over every saved scan, which Spiderfoot's page cannot do: each hit names its scan.
+$('allsearch').onsubmit=async ev=>{
+  ev.preventDefault();
+  const q=$('allq').value.trim();
+  if(!q)return;
+  try{
+    const hits=await search(q,{});
+    $('serror').hidden=true;$('allhits').hidden=false;
+    $('allcount').textContent='Search results for '+q+' in '+new Set(hits.map(x=>x.scan_id)).size+' scans ('+hits.length+' records)';
+    $('allresults').replaceChildren(table(['Scan','Type'].concat(ELEM),hits,x=>{
+      const tr=elemRow(x,true),a=el('a','link',x.scan_name||x.scan_target);
+      a.href='#/scan/'+enc(x.scan_id)+'/browse/'+enc(x.type);
+      const td=put(tr,'Scan',a);tr.prepend(td);return tr;
+    }));
+  }catch(e){fail('serror',e.message)}
+};
+$('allclose').onclick=()=>{$('allhits').hidden=true;$('allresults').replaceChildren()};
 $('sback').onclick=ev=>{if(location.hash===$('sback').getAttribute('href')){ev.preventDefault();route()}};
 // Graph: the elements and the elements they came from, laid out by a small force simulation
 // that runs a few milliseconds a frame, panned and zoomed by touch, mouse or wheel.
