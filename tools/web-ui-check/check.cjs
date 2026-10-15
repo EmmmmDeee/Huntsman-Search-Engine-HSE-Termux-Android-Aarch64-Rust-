@@ -5,10 +5,10 @@
 // violation, fits the screen with 44 px targets, passes axe-core's WCAG 2.2 AA rules in every
 // view of both themes, runs a scan one hop deep from New Scan to FINISHED and shows exactly what
 // the scan API holds in its Summary, Browse, Correlations, Graph, Scan Settings and Log sections,
-// marks a false positive, searches, exports, clones, re-runs, compares and deletes a scan, starts
-// a scan of a value it found, keeps its place across a reload, asks only for health when a tab
-// with nothing running comes back, says what to do when the server stops, notices when it is
-// back, and finds the saved scans still there after the restart.
+// marks a false positive, searches, exports, clones, re-runs, compares and deletes a scan,
+// searches every scan, starts a scan of a value it found, keeps its place across a reload, asks
+// only for health when a tab with nothing running comes back, says what to do when the server
+// stops, notices when it is back, and finds the saved scans still there after the restart.
 //
 // It never spends a key: the server runs with a scratch HOME and none of the caller's
 // HUNTSMAN_*, HSE_* or *_KEY variables, and its scans target a phone number, which is offline.
@@ -276,10 +276,14 @@ const LH = { 'X-Huntsman-Lookup': '1' };
 
       // Search across the scan, Spiderfoot's wildcard form, for the middle of an element it holds.
       const probe = elements.map(e => String(e.data)).filter(d => d.length > 2 && !/[\n*]/.test(d)).sort((a, b) => a.length - b.length)[0] || TARGET;
-      await page.fill('#scq', '*' + probe.slice(1, -1) + '*');
+      const wild = '*' + probe.slice(1, -1) + '*';
+      await page.fill('#scq', wild);
       await page.click('#scsearch button');
       await page.waitForSelector('#pane-search:not([hidden])');
-      check(`${scheme}: a wildcard search finds the element`, (await page.$$('#sresults tbody tr')).length > 0, `${probe}: ${await page.textContent('#shits')}`);
+      // The server's matcher decides, so the page shows exactly what the API finds in this scan.
+      const sought = await api(page, '/api/scans/search?' + new URLSearchParams({ value: wild, ids: root.split('/').pop() }));
+      const soughtRows = (await page.$$('#sresults tbody tr:not(:has(td.none))')).length;
+      check(`${scheme}: a wildcard search finds the element`, sought.some(x => String(x.data) === probe) && soughtRows === Math.min(200, sought.length), `${probe}: ${soughtRows} rows, API ${sought.length}`);
       await audit(page, `${scheme} search`);
 
       // Export: CSV as Spiderfoot names it, an Excel workbook, and JSON with every element.
@@ -393,6 +397,17 @@ const LH = { 'X-Huntsman-Lookup': '1' };
         await page.click('#scompare');
         await page.waitForFunction(() => location.hash.startsWith('#/compare/'), null, { timeout: 5000 }).catch(() => {});
         check('Scans compares the two selected, the earlier first', (await page.evaluate(() => location.hash)) === '#/compare/' + pair, await page.evaluate(() => location.hash));
+        // Search every scan, which Spiderfoot's page cannot: each hit names its scan, as the API answers.
+        await page.goto(base + '/#/scans', { waitUntil: 'networkidle' });
+        await page.waitForSelector('#scans tr');
+        await page.fill('#allq', TARGET);
+        await page.click('#allsearch button');
+        await page.waitForSelector('#allresults tbody tr', { timeout: 5000 }).catch(() => {});
+        const everywhere = await api(page, '/api/scans/search?value=' + encodeURIComponent(TARGET));
+        const hitRows = (await page.$$('#allresults tbody tr:not(:has(td.none))')).length;
+        const hitScans = await page.$$eval('#allresults td[data-label=Scan] a', l => [...new Set(l.map(a => decodeURIComponent(a.getAttribute('href').split('/')[2])))]);
+        check('Search finds a value in every scan, each hit naming its scan', everywhere.length > 0 && hitRows === Math.min(200, everywhere.length) && hitScans.length === new Set(everywhere.map(x => x.scan_id)).size && hitScans.includes(id) && hitScans.includes(again), { hitRows, api: everywhere.length, hitScans });
+        await audit(page, 'dark search every scan');
         await page.goto(base + '/#/scan/' + encodeURIComponent(again) + '/summary', { waitUntil: 'networkidle' });
         await page.waitForFunction(() => document.getElementById('scstatus').textContent === 'FINISHED', null, { timeout: 5000 }).catch(() => {});
         await page.click('#scdelete');

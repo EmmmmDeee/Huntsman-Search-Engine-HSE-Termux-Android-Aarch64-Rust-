@@ -169,7 +169,7 @@ fn help_and_version_are_available() {
         ("phone", "phone NUMBER [--save FILE]"),
         (
             "scan",
-            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network]",
+            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|network]",
         ),
         ("investigate", "investigate TEXT..."),
         ("modules", "modules [--json]"),
@@ -659,6 +659,93 @@ fn scans_compare_lists_what_a_later_scan_added_and_removed() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// `scans search` finds elements in every saved scan, or only the ones named, each with its scan.
+#[test]
+fn scans_search_finds_values_in_every_scan_or_the_ones_named() {
+    let home = scratch("scans-search");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let id = |args: &[&str]| {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+    let first = id(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+    let second = id(&["scans", "run", "+61412345679", "-u", "passive", "--json"]);
+    let lines = |args: &[&str]| -> Vec<String> {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    };
+    let phone = |line: &String, scan: &str, number: &str| {
+        line.starts_with(&format!("{scan}\t"))
+            && line.contains("\tPHONE_NUMBER\t")
+            && line.ends_with(&format!("\t{number}"))
+    };
+    // Text anywhere: both numbers, each under its own scan.
+    let both = lines(&["scans", "search", "61412345", "-t", "PHONE_NUMBER"]);
+    assert_eq!(
+        both[0],
+        "SCAN\tID\tUPDATED\tTYPE\tMODULE\tSOURCE\tF/P\tDATA"
+    );
+    assert!(
+        both.iter().any(|line| phone(line, &first, "+61412345678")),
+        "{both:?}"
+    );
+    assert!(
+        both.iter().any(|line| phone(line, &second, "+61412345679")),
+        "{both:?}"
+    );
+    // A wildcard is the whole value; a regex is anywhere; named scans only.
+    let one = lines(&["scans", "search", "*79", "-t", "PHONE_NUMBER"]);
+    assert_eq!(one.len(), 2, "{one:?}");
+    assert!(phone(&one[1], &second, "+61412345679"), "{one:?}");
+    let named = lines(&["scans", "search", "/5678$/", &first, "-t", "PHONE_NUMBER"]);
+    assert_eq!(named.len(), 2, "{named:?}");
+    assert!(phone(&named[1], &first, "+61412345678"), "{named:?}");
+    assert_eq!(
+        lines(&["scans", "search", "61412345", &second, "-t", "PHONE_NUMBER"]).len(),
+        2
+    );
+    let json = run(&[
+        "scans",
+        "search",
+        "61412345",
+        "-t",
+        "PHONE_NUMBER",
+        "--json",
+    ]);
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert!(
+        json.as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["scan_name"].is_string() && row["scan_target"].is_string())
+    );
+    assert_eq!(run(&["scans", "search"]).status.code(), Some(64));
+    assert_eq!(run(&["scans", "search", "/(a/"]).status.code(), Some(64));
+    assert_eq!(
+        run(&["scans", "search", "x", "0000000000000000"])
+            .status
+            .code(),
+        Some(66)
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
 /// `sf.py`'s output flags shape the rows, `-d` prints the scan's log, `-l` is `serve --bind`,
 /// and the combinations `sf.py` refuses are refused before any request.
 #[test]
@@ -715,7 +802,7 @@ fn sf_takes_sf_py_output_flags_debug_and_listen() {
 fn sf_refuses_a_target_no_lookup_can_take() {
     let home = scratch("sf-refuses");
     for (target, why) in [
-        ("192.0.2.0/24", "not available yet"),
+        ("192.0.2.0/24", "not valid for a netblock scan"),
         ("192.0.2.1", "not valid for a ip scan"),
         ("Jane 123", "two alphabetic tokens"),
     ] {

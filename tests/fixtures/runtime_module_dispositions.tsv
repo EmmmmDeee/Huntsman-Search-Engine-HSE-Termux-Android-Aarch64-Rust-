@@ -100,6 +100,8 @@ meta_plan	runtime	meta-plan validation consumed by the runtime
 metrics	runtime	shared scan metrics
 module	runtime	provider economics metadata
 navigator	exporter	ATT&CK Navigator output from admitted claims
+netblock	runtime	CIDR address-block parsing, containment and listing shared by spf, rdap and netblock_cli
+netblock_cli	runtime	netblock lookup front-end reached from netblock, scan -k netblock, sf -s and /api/lookup
 netlas	adapter	Netlas host leg reached through indicator_legs from ip, domain, scan and /api/lookup
 network_cli	adapter	network lookup front-end reached from network, scan -k network and /api/lookup
 numverify	adapter	Numverify leg reached through phone_cli from phone, scan -k phone and /api/lookup when its key is set
@@ -143,6 +145,7 @@ scan_batch	leaf	bounded ordered scan seed-list parsing
 scan_compare	runtime	what changed between two saved scans, reached through scans compare and the scan API
 scan_export	exporter	Spiderfoot-layout CSV, TSV, Excel, JSON and GEXF exports of saved scans through scans export and the scan API
 scan_route	runtime	deterministic lookup-front-end selector routing
+scan_search	runtime	Spiderfoot's search over one or every saved scan, reached through scans search, the scan API and the console
 scan_service	runtime	saved-scan runner reached through scans run and the scan API
 scan_store	runtime	private on-disk saved-scan store with crash recovery read by scans and the scan API
 scraper_health	diagnostic	source drift diagnostics

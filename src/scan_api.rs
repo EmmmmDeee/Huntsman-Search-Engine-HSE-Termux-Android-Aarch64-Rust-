@@ -22,6 +22,7 @@
 //! | `scaneventresultexport`, `scanviz?gexf=1` | `GET /api/scans/ID/export?format=csv|tsv|xlsx|json|gexf[&type=T]` |
 //! | `scaneventresultexportmulti`, `scanexportjsonmulti` | `GET /api/scans/export?ids=A,B[&format=json|csv|tsv|xlsx][&type=T]` |
 //! | (none: Spiderfoot cannot compare scans) | `GET /api/scans/compare?ids=EARLIER,LATER[&format=json|csv|tsv|xlsx]` |
+//! | `search` (one scan, or every scan here) | `GET /api/scans/search?value=V[&type=T][&ids=A,B][&hidefp=1]` |
 //! | `stopscan`, `scandelete`, `rerunscan` | `POST /api/scans/ID/stop|delete|rerun` |
 //! | `resultsetfp` | `POST /api/scans/ID/fp?ids=A,B&fp=1|0` |
 //! | `eventtypes` | `GET /api/eventtypes` |
@@ -38,6 +39,7 @@ use crate::correlator::rule_catalog;
 use crate::module::reachable_modules;
 use crate::scan_compare;
 use crate::scan_export;
+use crate::scan_search;
 use crate::scan_service::{MAX_RUNNING, ScanRequest, ScanService, ServiceError};
 use crate::scan_store::{LogLevel, Risk, ScanOptions, ScanRecord, ScanResults, ScanStatus};
 use crate::sf_correlate::Rule;
@@ -227,6 +229,7 @@ impl ScanApi {
             (["scans"], true) => self.start(&param),
             (["scans", "export"], false) => self.export_many(&param),
             (["scans", "compare"], false) => self.compare(&param),
+            (["scans", "search"], false) => self.search(&param),
             (["scans", id], false) => self.status(id),
             (["scans", id, "summary"], false) => self.summary(id),
             (["scans", id, "elements"], false) => self.elements(id, &param),
@@ -483,6 +486,64 @@ impl ScanApi {
     /// not, what it no longer finds, the change in each data type and the correlations each has
     /// that the other lacks ([`scan_compare`]). JSON by default; `csv`, `tsv` and `xlsx` are the
     /// added and removed elements as a file. A scan with no results yet compares as empty.
+    /// Spiderfoot's `search`, over the scans `ids` names or every saved scan: each matching
+    /// element as `/elements` gives it, with the scan it belongs to.
+    fn search(&self, param: &Params) -> ApiResponse {
+        let value = param.get("value").unwrap_or_default();
+        let kind = param
+            .get("type")
+            .filter(|kind| !kind.is_empty() && *kind != "ALL");
+        if value.trim().is_empty() && kind.is_none() {
+            return error(400, "search needs a value, a type or both");
+        }
+        let query = match scan_search::Query::parse(value) {
+            Ok(query) => query,
+            Err(failure) => return error(400, &failure.to_string()),
+        };
+        let ids: Vec<&str> = param
+            .get("ids")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .collect();
+        let records = if ids.is_empty() {
+            match self.service.store().list() {
+                Ok(records) => records,
+                Err(failure) => return service_error(&failure.into()),
+            }
+        } else {
+            let mut records = Vec::with_capacity(ids.len());
+            for id in ids {
+                match self.record(id) {
+                    Ok(record) => records.push(record),
+                    Err(response) => return response,
+                }
+            }
+            records
+        };
+        let hide_fp = matches!(param.get("hidefp"), Some("1" | "true"));
+        let mut rows = Vec::new();
+        for record in records {
+            let results = match self.service.store().results(&record.id) {
+                Ok(Some(results)) => results,
+                Ok(None) => continue,
+                Err(failure) => return service_error(&failure.into()),
+            };
+            let mut hits = scan_search::hits(&results, &query, kind);
+            if hide_fp {
+                hits.retain(|element| !element.fp);
+            }
+            for mut row in element_rows(&results, hits) {
+                row["scan_id"] = Value::String(record.id.clone());
+                row["scan_name"] = Value::String(record.name.clone());
+                row["scan_target"] = Value::String(record.target.clone());
+                rows.push(row);
+            }
+        }
+        ok(200, &Value::Array(rows))
+    }
+
     fn compare(&self, param: &Params) -> ApiResponse {
         let ids: Vec<&str> = param
             .get("ids")
@@ -930,6 +991,94 @@ mod tests {
             })
             .unwrap()
             .id
+    }
+
+    /// Spiderfoot's search box over one scan or all of them: text anywhere, a wildcard as the
+    /// whole value, a regex anywhere, in the data, the source's data or the module.
+    #[test]
+    fn search_reads_spiderfoots_forms_over_one_scan_or_every_scan() {
+        let (api, dir) = api("search");
+        let first = finished(&api);
+        let second = api
+            .service()
+            .run(&ScanRequest {
+                target: "8.8.8.8".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap()
+            .id;
+        let search = |query: &str| api.handle("GET", "/api/scans/search", query);
+        let rows = |query: &str| -> Vec<Value> {
+            let answer = search(query);
+            assert_eq!(answer.status, 200, "{query}: {}", answer.text());
+            body(&answer).as_array().unwrap().clone()
+        };
+        let scans = |rows: &[Value]| -> BTreeSet<String> {
+            rows.iter()
+                .map(|row| row["scan_id"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let text = |row: &Value, key: &str| row[key].as_str().unwrap().to_owned();
+        let ports = rows("value=443&type=tcp_port_open");
+        assert_eq!(
+            scans(&ports),
+            BTreeSet::from([first.clone(), second.clone()])
+        );
+        for row in &ports {
+            assert_eq!(row["type"], "TCP_PORT_OPEN");
+            assert!(text(row, "data").contains("443") || text(row, "source_data").contains("443"));
+            assert!(row["scan_name"].is_string() && row["scan_target"].is_string());
+            assert!(row["description"].is_string(), "{row}");
+            // Each port was found from its scan's address, which the row names.
+            assert_eq!(row["source_data"], row["scan_target"], "{row}");
+        }
+        let one = rows(&format!("value=443&ids={first}"));
+        assert!(!one.is_empty());
+        assert_eq!(scans(&one), BTreeSet::from([first.clone()]));
+        // A wildcard is the whole value: 8.8.8.8 and what was found from it, never 1.1.1.1's.
+        let google = rows("value=8.8.*");
+        assert_eq!(scans(&google), BTreeSet::from([second.clone()]));
+        assert!(
+            google
+                .iter()
+                .all(|row| text(row, "data").starts_with("8.8.")
+                    || text(row, "source_data").starts_with("8.8."))
+        );
+        let cves = rows("value=/^cve-2021-/");
+        assert!(!cves.is_empty());
+        assert!(
+            cves.iter()
+                .all(|row| text(row, "data").starts_with("CVE-2021-"))
+        );
+        // A type alone lists it everywhere; the root is never a hit.
+        let every_port: usize = [&first, &second]
+            .iter()
+            .map(|id| {
+                body(&api.handle(
+                    "GET",
+                    &format!("/api/scans/{id}/elements"),
+                    "type=TCP_PORT_OPEN",
+                ))
+                .as_array()
+                .unwrap()
+                .len()
+            })
+            .sum();
+        assert!(every_port > ports.len());
+        assert_eq!(rows("type=TCP_PORT_OPEN").len(), every_port);
+        assert!(
+            rows("value=1.1.1.1")
+                .iter()
+                .all(|row| row["type"] != "ROOT")
+        );
+        assert_eq!(search("").status, 400);
+        assert_eq!(search("value=/(a/").status, 400);
+        assert_eq!(search("value=x&ids=0000000000000000").status, 404);
+        assert_eq!(
+            api.handle("POST", "/api/scans/search", "value=x").status,
+            405
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

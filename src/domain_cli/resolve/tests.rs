@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use super::*;
 use crate::source_outcome::SourceOutcomeKind;
 
@@ -55,7 +57,8 @@ fn an_outage_stops_asking_after_a_few_hosts() {
     });
     let asked = asked.into_inner();
     assert!(
-        (FAILURES_BEFORE_ABORT..FAILURES_BEFORE_ABORT + WORKERS).contains(&asked),
+        (dns::ASK_FAILURES_BEFORE_ABORT..dns::ASK_FAILURES_BEFORE_ABORT + dns::ASK_WORKERS)
+            .contains(&asked),
         "{asked} hosts asked"
     );
     assert_eq!(

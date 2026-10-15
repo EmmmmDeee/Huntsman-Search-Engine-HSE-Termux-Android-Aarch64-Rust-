@@ -317,7 +317,7 @@ pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
     })?;
     let kind = scan_kind(target_type).ok_or_else(|| {
         Error::Invalid(format!(
-            "sf target type {target_type} is detected but its scan path is not available yet; sf scans a domain, IP address, email address, phone number, username or name"
+            "sf target type {target_type} is detected but its scan path is not available yet; sf scans a domain, IP address, address block, email address, phone number, username or name"
         ))
     })?;
     // `-F` picks what is printed; otherwise `-f` and `-x` print only the `-t` types, as `sf.py`'s
@@ -351,12 +351,13 @@ pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
 }
 
 /// The lookup a saved scan of a target of this Spiderfoot type runs, or `None` for a type no
-/// lookup takes yet (a netblock or an AS number).
+/// lookup takes yet (an AS number).
 #[must_use]
 pub fn scan_kind(target_type: &str) -> Option<ScanKind> {
     match target_type {
         "INTERNET_NAME" => Some(ScanKind::Domain),
         "IP_ADDRESS" | "IPV6_ADDRESS" => Some(ScanKind::Ip),
+        "NETBLOCK_OWNER" | "NETBLOCKV6_OWNER" => Some(ScanKind::Netblock),
         "EMAILADDR" => Some(ScanKind::Email),
         "PHONE_NUMBER" => Some(ScanKind::Phone),
         "USERNAME" => Some(ScanKind::Username),
@@ -803,6 +804,8 @@ mod tests {
             "+61412345678",
             "jdoe",
             "Jane Doe",
+            "1.1.1.0/24",
+            "2606:4700::/32",
         ] {
             let Ok(SfAction::Scan(scan)) = action(&args(&["-s", raw]).unwrap()) else {
                 panic!("{raw} is not a scan");
@@ -815,13 +818,9 @@ mod tests {
                 "{raw}"
             );
         }
-        for raw in ["192.0.2.0/24", "2001:db8::/32"] {
-            let error = action(&args(&["-s", raw]).unwrap()).unwrap_err();
-            assert!(
-                error.to_string().contains("not available yet"),
-                "{raw}: {error}"
-            );
-        }
+        // An AS number is the one type sf.py detects that no lookup takes yet, and only from
+        // an API target: sf.py quotes a bare number, which makes it a username.
+        assert_eq!(scan_kind("BGP_AS_OWNER"), None);
     }
 
     #[test]

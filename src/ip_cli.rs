@@ -234,39 +234,18 @@ fn ptr_leg<T: Transport + ?Sized>(transport: &T, lookup: &mut Lookup<'_>) {
     let Ok(address) = lookup.ip.parse::<IpAddr>() else {
         return;
     };
-    let (ip, scan_id) = (lookup.ip, lookup.scan_id);
-    let evidence = |summary: String| {
-        Evidence::new(
-            EvidenceProvenance::for_scan(RESOLVE_SOURCE, scan_id),
-            summary,
-        )
-        .with_attr("record_type", "PTR")
-    };
     let outcome = match dns::lookup_ptr(transport, address) {
         Ok(answer) => {
-            let resolver = answer.server.provider;
-            let mut listed =
-                evidence(format!("PTR records of {ip}")).with_attr("resolver", resolver);
-            let mut pivots = Vec::new();
-            for record in &answer.records {
-                let name = record.trim().trim_end_matches('.');
-                listed = listed.with_attr("ptr", name);
-                if let Some(domain) = canonical_domain(name) {
-                    pivots.push(domain);
-                }
-            }
-            lookup.on_address(listed, &[]);
-            for domain in pivots {
-                let named = evidence(format!("PTR record of {ip}"))
-                    .with_attr("ip", ip)
-                    .with_attr("resolver", resolver);
+            let found = reverse(lookup.ip, &answer, lookup.scan_id);
+            lookup.on_address(found.address, &[]);
+            for (domain, evidence) in found.names {
                 push_entity(
                     &mut lookup.report.entities,
                     EntityKind::Domain,
                     &domain,
                     PTR_CONFIDENCE,
-                    scan_id,
-                    named,
+                    lookup.scan_id,
+                    evidence,
                     &[tags::PTR],
                 );
             }
@@ -288,6 +267,39 @@ fn ptr_leg<T: Transport + ?Sized>(transport: &T, lookup: &mut Lookup<'_>) {
         ),
     };
     lookup.report.outcomes.push(outcome);
+}
+
+/// What an address's PTR records say: the address's evidence, listing every record as published,
+/// and each name in canonical form with evidence that names the address.
+pub(crate) struct Reverse {
+    pub address: Evidence,
+    pub names: Vec<(String, Evidence)>,
+}
+
+/// The evidence a PTR answer for `ip` makes. **Pure.**
+pub(crate) fn reverse(ip: &str, answer: &dns::ResolveAnswer, scan_id: &str) -> Reverse {
+    let resolver = answer.server.provider;
+    let evidence = |summary: String| {
+        Evidence::new(
+            EvidenceProvenance::for_scan(RESOLVE_SOURCE, scan_id),
+            summary,
+        )
+        .with_attr("record_type", "PTR")
+        .with_attr("resolver", resolver)
+    };
+    let mut address = evidence(format!("PTR records of {ip}"));
+    let mut names = Vec::new();
+    for record in &answer.records {
+        let name = record.trim().trim_end_matches('.');
+        address = address.with_attr("ptr", name);
+        if let Some(domain) = canonical_domain(name) {
+            names.push((
+                domain,
+                evidence(format!("PTR record of {ip}")).with_attr("ip", ip),
+            ));
+        }
+    }
+    Reverse { address, names }
 }
 
 fn join<T: ToString>(items: &[T]) -> String {

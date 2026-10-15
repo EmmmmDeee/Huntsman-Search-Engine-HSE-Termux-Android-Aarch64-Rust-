@@ -192,6 +192,8 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         "hackertarget" => ("hackertarget", "src/hackertarget.rs"),
         "stopforumspam" => ("stopforumspam", "src/stopforumspam.rs"),
         "xposed_or_not" => ("xposed_or_not", "src/xposedornot.rs"),
+        "rdap" => ("rdap", "src/rdap.rs"),
+        "dnsresolve" => ("dnsresolve", "src/dns.rs"),
         _ => return None,
     })
 }
@@ -201,6 +203,20 @@ pub const IP_POLICY: SavePolicy = SavePolicy {
     does_not_show: "an address-reputation lead is not an identity-resolution verdict",
     outcome_provenance: ip_provenance,
     entity_provenance: ip_provenance,
+};
+
+fn netblock_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        "ripestat" => ("ripestat", "src/ripestat.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/netblock_cli.rs")),
+    }
+}
+
+pub const NETBLOCK_POLICY: SavePolicy = SavePolicy {
+    default_source: "rdap",
+    does_not_show: "an address-block lead is not an identity-resolution verdict",
+    outcome_provenance: netblock_provenance,
+    entity_provenance: netblock_provenance,
 };
 
 fn network_provenance(source: &str) -> (&str, &'static str) {

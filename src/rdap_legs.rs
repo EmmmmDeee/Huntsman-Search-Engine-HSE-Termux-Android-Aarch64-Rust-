@@ -17,6 +17,7 @@ use std::net::IpAddr;
 use crate::canonical::{canonical_domain, canonical_email, canonical_phone};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::http::Transport;
+use crate::netblock::Netblock;
 use crate::rdap::{self, Answer, Contact, Record, SOURCE};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::tags;
@@ -69,6 +70,30 @@ pub fn ip<T: Transport + ?Sized>(transport: &T, ip: &str, scan_id: &str, now_uni
         };
         subject.entities(record)
     })
+}
+
+/// The registration of `block`: the smallest registered network that holds all of it.
+#[must_use]
+pub fn netblock<T: Transport + ?Sized>(
+    transport: &T,
+    block: Netblock,
+    scan_id: &str,
+    now_unix: u64,
+) -> Leg {
+    let value = block.to_string();
+    leg(
+        rdap::lookup_netblock(transport, block),
+        now_unix,
+        |record| {
+            let subject = Subject {
+                kind: EntityKind::Netblock,
+                value: &value,
+                parent_attr: "netblock",
+                scan_id,
+            };
+            subject.entities(record)
+        },
+    )
 }
 
 fn leg(
