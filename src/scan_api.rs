@@ -14,17 +14,19 @@
 //! | `scanstatus` | `GET /api/scans/ID` |
 //! | `scansummary` | `GET /api/scans/ID/summary` |
 //! | `scaneventresults`, `scaneventresultsunique` | `GET /api/scans/ID/elements[?type=T][&unique=1][&hidefp=1][&correlation=C]` |
-//! | `scancorrelations`, `scancorrelationsexport` | `GET /api/scans/ID/correlations[?format=csv|tsv|json]` |
+//! | `scancorrelations`, `scancorrelationsexport` | `GET /api/scans/ID/correlations[?format=csv|tsv|xlsx|json]` |
 //! | `sf.py -C` | `POST /api/scans/ID/correlate` |
 //! | `correlationrules` | `GET /api/correlationrules` |
 //! | `scanlog`, `scanerrors` | `GET /api/scans/ID/log[?level=ERROR]` |
 //! | `scanviz` | `GET /api/scans/ID/graph` |
-//! | `scaneventresultexport`, `scanexportjsonmulti`, `scanviz?gexf=1` | `GET /api/scans/ID/export?format=csv|tsv|json|gexf[&type=T]`, `GET /api/scans/export?ids=A,B` |
+//! | `scaneventresultexport`, `scanviz?gexf=1` | `GET /api/scans/ID/export?format=csv|tsv|xlsx|json|gexf[&type=T]` |
+//! | `scaneventresultexportmulti`, `scanexportjsonmulti` | `GET /api/scans/export?ids=A,B[&format=json|csv|tsv|xlsx][&type=T]` |
 //! | `stopscan`, `scandelete`, `rerunscan` | `POST /api/scans/ID/stop|delete|rerun` |
 //! | `resultsetfp` | `POST /api/scans/ID/fp?ids=A,B&fp=1|0` |
 //! | `eventtypes` | `GET /api/eventtypes` |
 //! | `opts` (status only) | `GET /api/settings` |
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -53,9 +55,27 @@ pub const MAX_EXPORT_SCANS: usize = 50;
 pub struct ApiResponse {
     pub status: u16,
     pub content_type: &'static str,
-    pub body: String,
+    /// The bytes to send: UTF-8 text for every answer but an Excel export.
+    pub body: Vec<u8>,
     /// For an export: the file name for `Content-Disposition: attachment`.
     pub filename: Option<String>,
+}
+
+impl ApiResponse {
+    /// The body as text; only an Excel export is not text.
+    #[must_use]
+    pub fn text(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.body)
+    }
+
+    fn export(export: scan_export::Export) -> Self {
+        Self {
+            status: 200,
+            content_type: export.content_type,
+            body: export.body,
+            filename: Some(export.filename),
+        }
+    }
 }
 
 const JSON: &str = "application/json; charset=utf-8";
@@ -64,7 +84,7 @@ fn ok(status: u16, value: &Value) -> ApiResponse {
     ApiResponse {
         status,
         content_type: JSON,
-        body: format!("{value}\n"),
+        body: format!("{value}\n").into_bytes(),
         filename: None,
     }
 }
@@ -480,12 +500,7 @@ impl ScanApi {
             return ok(200, &json!(results.correlations));
         };
         match scan_export::render_correlations(&record, &results, format) {
-            Ok(export) => ApiResponse {
-                status: 200,
-                content_type: export.content_type,
-                body: export.body,
-                filename: Some(export.filename),
-            },
+            Ok(export) => ApiResponse::export(export),
             Err(message) => error(400, &message),
         }
     }
@@ -558,12 +573,7 @@ impl ScanApi {
             param.get("format").unwrap_or("csv"),
             param.get("type").filter(|kind| !kind.is_empty()),
         ) {
-            Ok(export) => ApiResponse {
-                status: 200,
-                content_type: export.content_type,
-                body: export.body,
-                filename: Some(export.filename),
-            },
+            Ok(export) => ApiResponse::export(export),
             Err(message) => error(400, &message),
         }
     }
@@ -585,9 +595,6 @@ impl ScanApi {
                 &format!("export takes at most {MAX_EXPORT_SCANS} scans"),
             );
         }
-        if param.get("format").is_some_and(|format| format != "json") {
-            return error(400, "a multi-scan export is JSON");
-        }
         let mut scans = Vec::new();
         for id in ids {
             match self.results(id) {
@@ -602,11 +609,13 @@ impl ScanApi {
             .iter()
             .map(|(record, results)| (record, results))
             .collect();
-        ApiResponse {
-            status: 200,
-            content_type: JSON,
-            body: scan_export::json_rows(&pairs, param.get("type")).to_string(),
-            filename: Some("Huntsman.json".into()),
+        match scan_export::render_many(
+            &pairs,
+            param.get("format").unwrap_or("json"),
+            param.get("type").filter(|kind| !kind.is_empty()),
+        ) {
+            Ok(export) => ApiResponse::export(export),
+            Err(message) => error(400, &message),
         }
     }
 
@@ -771,7 +780,7 @@ mod tests {
     }
 
     fn body(response: &ApiResponse) -> Value {
-        serde_json::from_str(&response.body).unwrap()
+        serde_json::from_slice(&response.body).unwrap()
     }
 
     fn finished(api: &ScanApi) -> String {
@@ -822,7 +831,7 @@ mod tests {
             "{titles:?}"
         );
         let rerun = api.handle("POST", &format!("/api/scans/{id}/correlate"), "");
-        assert_eq!(rerun.status, 200, "{}", rerun.body);
+        assert_eq!(rerun.status, 200, "{}", rerun.text());
         assert_eq!(body(&rerun), saved);
         let csv = api.handle(
             "GET",
@@ -831,10 +840,10 @@ mod tests {
         );
         assert_eq!(csv.status, 200);
         assert!(
-            csv.body
+            csv.text()
                 .starts_with("Rule Name,Correlation,Risk,Description,Rule,Origin,Elements\r\n")
         );
-        assert_eq!(csv.body.matches("\r\n").count(), titles.len() + 1);
+        assert_eq!(csv.text().matches("\r\n").count(), titles.len() + 1);
         assert!(
             csv.filename
                 .unwrap()
@@ -846,7 +855,7 @@ mod tests {
             refused(
                 "GET",
                 &format!("/api/scans/{id}/correlations"),
-                "format=xlsx"
+                "format=gexf"
             ),
             400
         );
@@ -863,9 +872,9 @@ mod tests {
     fn a_scan_started_with_a_depth_keeps_it_and_a_bad_depth_is_refused() {
         let (api, dir) = api("depth");
         let bad = api.handle("POST", "/api/scans", "target=1.1.1.1&depth=deep");
-        assert_eq!(bad.status, 400, "{}", bad.body);
+        assert_eq!(bad.status, 400, "{}", bad.text());
         let started = api.handle("POST", "/api/scans", "target=1.1.1.1&depth=2");
-        assert_eq!(started.status, 202, "{}", started.body);
+        assert_eq!(started.status, 202, "{}", started.text());
         assert_eq!(body(&started)["options"]["depth"], 2);
         let id = body(&started)["id"].as_str().unwrap().to_owned();
         for _ in 0..200 {
@@ -885,7 +894,7 @@ mod tests {
             "/api/scans",
             "target=1.1.1.1&name=resolver&usecase=footprint",
         );
-        assert_eq!(started.status, 202, "{}", started.body);
+        assert_eq!(started.status, 202, "{}", started.text());
         let id = body(&started)["id"].as_str().unwrap().to_owned();
         let mut status = String::new();
         for _ in 0..200 {
@@ -973,7 +982,7 @@ mod tests {
             &format!("/api/scans/{id}/fp"),
             &format!("ids={first}&fp=1"),
         );
-        assert_eq!(set.status, 200, "{}", set.body);
+        assert_eq!(set.status, 200, "{}", set.text());
         let shown = body(&api.handle(
             "GET",
             &format!("/api/scans/{id}/elements"),
@@ -999,13 +1008,42 @@ mod tests {
         let csv = api.handle("GET", &format!("/api/scans/{id}/export"), "format=csv");
         assert_eq!(csv.status, 200);
         assert!(
-            csv.body
+            csv.text()
                 .starts_with("Updated,Type,Module,Source,F/P,Data\r\n")
         );
         assert_eq!(csv.filename.as_deref(), Some("1.1.1.1-Huntsman.csv"));
+        let book = api.handle("GET", &format!("/api/scans/{id}/export"), "format=xlsx");
+        assert_eq!(book.status, 200);
+        assert_eq!(book.content_type, crate::xlsx::CONTENT_TYPE);
+        assert_eq!(book.filename.as_deref(), Some("1.1.1.1-Huntsman.xlsx"));
+        assert!(book.body.starts_with(b"PK\x03\x04"));
+        assert!(crate::xlsx::tests::sheet_names(&book.body).contains(&"TCP_PORT_OPEN".to_owned()));
         let many = api.handle("GET", "/api/scans/export", &format!("ids={id},{id}"));
         assert_eq!(many.status, 200);
         assert!(body(&many).as_array().unwrap().len() > 2);
+        let many = api.handle(
+            "GET",
+            "/api/scans/export",
+            &format!("ids={id},{id}&format=csv&type=TCP_PORT_OPEN"),
+        );
+        assert_eq!(many.filename.as_deref(), Some("Huntsman.csv"));
+        assert!(
+            many.text()
+                .starts_with("Scan Name,Updated,Type,Module,Source,F/P,Data\r\n")
+        );
+        let book = api.handle(
+            "GET",
+            "/api/scans/export",
+            &format!("ids={id}&format=excel"),
+        );
+        assert_eq!(book.filename.as_deref(), Some("1.1.1.1-Huntsman.xlsx"));
+        let correlations = api.handle(
+            "GET",
+            &format!("/api/scans/{id}/correlations"),
+            "format=xlsx",
+        );
+        assert_eq!(correlations.status, 200);
+        assert_eq!(correlations.content_type, crate::xlsx::CONTENT_TYPE);
         assert_eq!(
             api.handle("GET", &format!("/api/scans/{id}/export"), "format=pdf")
                 .status,

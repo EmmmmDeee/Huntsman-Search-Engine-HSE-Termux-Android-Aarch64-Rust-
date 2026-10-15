@@ -5,27 +5,29 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::OsString;
+use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use super::fail;
-use super::lookup::collect;
+use super::lookup::{Refused, collect};
 use huntsman_recon::doctor::STATE_DIR;
 use huntsman_recon::environment::HUNTSMAN_HOME_ENV;
-use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
+use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_PIPE, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::write_atomic_private;
 use huntsman_recon::http::percent_encode_component;
 use huntsman_recon::scan_api::{ApiResponse, ScanApi, SlotCheck, correlation_rules};
 use huntsman_recon::scan_service::{LookupOutput, ScanLookup, ScanRequest, ScanService};
 use huntsman_recon::scan_store::{ScanOptions, ScanRecord, ScanStatus, ScanStore};
+use huntsman_recon::sf_compat::{self, SfScan};
 use huntsman_recon::sf_correlate;
 use huntsman_recon::sf_types;
 use huntsman_recon::textnorm::escape_controls;
 use serde_json::Value;
 
-pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [--depth N] [--json] | scans list [--json] | scans show ID | scans summary ID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans export ID|ID,ID... [-f csv|tsv|json|gexf] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans rules [--json] | scans types
-Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read, and scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. --depth N follows what the scan finds, as Spiderfoot does: each email, username, domain, phone, IP address and BSSID a lookup finds is looked up in turn, N hops past the target (0, the default, runs the target's lookup only), under the shared lookup and entity budgets; each element then names the element it was found from, so the elements form the scan's discovery tree. -t keeps only those element types; -u passive skips the keyed breach lookup of every email. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); several ids give one JSON export. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
+pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [--depth N] [--json] | scans list [--json] | scans show ID | scans summary ID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans export ID|ID,ID... [-f csv|tsv|xlsx|json|gexf] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans rules [--json] | scans types
+Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read, and scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. --depth N follows what the scan finds, as Spiderfoot does: each email, username, domain, phone, IP address and BSSID a lookup finds is looked up in turn, N hops past the target (0, the default, runs the target's lookup only), under the shared lookup and entity budgets; each element then names the element it was found from, so the elements form the scan's discovery tree. -t keeps only those element types; -u passive skips the keyed breach lookup of every email. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); xlsx (or excel) is Spiderfoot's workbook, a sheet per element type, with every value whole and never read as a formula; several ids give one export with the Scan Name first, JSON unless -f says csv, tsv or xlsx. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
 
 /// The synopsis line of [`SCANS_HELP`], for a usage error.
 fn usage() -> &'static str {
@@ -34,14 +36,19 @@ fn usage() -> &'static str {
 
 /// The lookup a saved scan runs: the same front-ends as `scan` and `/api/lookup`.
 pub(super) fn scan_lookup() -> ScanLookup {
-    Arc::new(|kind, selector| {
+    lookup_with(|refused| refused.message().to_owned())
+}
+
+/// [`scan_lookup`], with `refusal` turning a lookup's refusal into the message the scan logs.
+fn lookup_with(refusal: impl Fn(Refused) -> String + Send + Sync + 'static) -> ScanLookup {
+    Arc::new(move |kind, selector| {
         collect(kind, selector)
             .map(|found| LookupOutput {
                 text: found.text,
                 entities: found.entities,
                 outcomes: found.outcomes,
             })
-            .map_err(|refused| refused.message().to_owned())
+            .map_err(&refusal)
     })
 }
 
@@ -81,6 +88,15 @@ pub(super) fn default_rules_dir() -> Option<PathBuf> {
 /// the API router, its scans running Spiderfoot's rules and those in `rules_dir`. `scans` and
 /// `serve` both open scans here.
 pub(super) fn open_api(dir: &Path, rules_dir: Option<&Path>) -> Result<ScanApi, String> {
+    open_api_with(dir, rules_dir, scan_lookup())
+}
+
+/// [`open_api`], its scans running `lookup`.
+fn open_api_with(
+    dir: &Path,
+    rules_dir: Option<&Path>,
+    lookup: ScanLookup,
+) -> Result<ScanApi, String> {
     let store = ScanStore::open(dir).map_err(|error| error.to_string())?;
     // One another live process is still running is left as it is.
     store.recover(now_ms()).map_err(|error| error.to_string())?;
@@ -89,7 +105,7 @@ pub(super) fn open_api(dir: &Path, rules_dir: Option<&Path>) -> Result<ScanApi, 
         None => (sf_correlate::shipped().to_vec(), Vec::new()),
     };
     Ok(ScanApi::new(
-        ScanService::with_rules(store, scan_lookup(), rules, errors),
+        ScanService::with_rules(store, lookup, rules, errors),
         Some(slot_check()),
     ))
 }
@@ -187,18 +203,18 @@ fn status_exit(status: u16) -> u8 {
 /// Print an API answer, or report its error with the exit status that matches it.
 fn emit(response: &ApiResponse) -> ExitCode {
     if response.status >= 400 {
-        let message = serde_json::from_str::<Value>(&response.body)
+        let message = serde_json::from_slice::<Value>(&response.body)
             .ok()
             .and_then(|body| body["error"].as_str().map(str::to_owned))
-            .unwrap_or_else(|| response.body.trim().to_owned());
+            .unwrap_or_else(|| response.text().trim().to_owned());
         return fail(status_exit(response.status), &format!("scans: {message}"));
     }
-    let pretty = serde_json::from_str::<Value>(&response.body)
+    let pretty = serde_json::from_slice::<Value>(&response.body)
         .ok()
         .and_then(|body| serde_json::to_string_pretty(&body).ok());
     println!(
         "{}",
-        pretty.unwrap_or_else(|| response.body.trim_end().to_owned())
+        pretty.unwrap_or_else(|| response.text().trim_end().to_owned())
     );
     ExitCode::SUCCESS
 }
@@ -337,7 +353,7 @@ pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
             if parsed.on("--json") || response.status >= 400 {
                 return emit(&response);
             }
-            print_list(&serde_json::from_str(&response.body).unwrap_or(Value::Null));
+            print_list(&serde_json::from_slice(&response.body).unwrap_or(Value::Null));
             ExitCode::SUCCESS
         }
         ("fp", [id, elements]) => emit(&api.handle(
@@ -454,7 +470,7 @@ fn table_or_json(response: &ApiResponse, parsed: &Parsed, print: fn(&Value)) -> 
     if parsed.on("--json") || response.status >= 400 {
         return emit(response);
     }
-    print(&serde_json::from_str(&response.body).unwrap_or(Value::Null));
+    print(&serde_json::from_slice(&response.body).unwrap_or(Value::Null));
     ExitCode::SUCCESS
 }
 
@@ -566,6 +582,78 @@ fn rerun(api: &ScanApi, id: &str, json: bool) -> ExitCode {
     }
 }
 
+/// `sf -s`: one scan of the target, run to its end and saved with the others, as `sf.py` saves
+/// its scans, and its elements printed in `sf.py`'s rows. It runs the lookups `scans run` runs for
+/// the target, so `scans`, `serve` and `sf -C` read it afterwards. A scan no lookup could run exits
+/// with the status the plain lookup gives its refusal.
+pub(super) fn sf_scan(scan: &SfScan) -> ExitCode {
+    let Some(dir) = default_scan_dir() else {
+        return fail(
+            EX_UNAVAILABLE,
+            "sf: no scan directory: set HOME or HUNTSMAN_HOME to an absolute path",
+        );
+    };
+    let first_refusal = Arc::new(Mutex::new(None::<Refused>));
+    let kept = Arc::clone(&first_refusal);
+    let lookup = lookup_with(move |refused| {
+        let message = refused.message().to_owned();
+        kept.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert(refused);
+        message
+    });
+    let api = match open_api_with(&dir, default_rules_dir().as_deref(), lookup) {
+        Ok(api) => api,
+        Err(error) => return fail(EX_IOERR, &format!("sf: {error}")),
+    };
+    let request = ScanRequest {
+        target: scan.target.clone(),
+        name: None,
+        kind: Some(scan.kind.command().to_owned()),
+        options: ScanOptions {
+            usecase: scan.use_case.clone(),
+            types: scan.types.clone(),
+            ..ScanOptions::default()
+        },
+    };
+    let record = match api.service().run(&request) {
+        Ok(record) => record,
+        // A target the lookup cannot take is bad data, as `sf.py` treats an unusable target.
+        Err(error) if error.status() == 400 => return fail(EX_DATAERR, &format!("sf: {error}")),
+        Err(error) => return fail(EX_IOERR, &format!("sf: {error}")),
+    };
+    if record.status != ScanStatus::Finished {
+        let refused = first_refusal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        return match refused {
+            Some(refused) => fail(refused.exit_status(), refused.message()),
+            None => fail(
+                EX_UNAVAILABLE,
+                &format!("sf: scan {} ended {}", record.id, record.status.as_str()),
+            ),
+        };
+    }
+    let elements = match api.service().store().results(&record.id) {
+        Ok(results) => results.map(|results| results.elements).unwrap_or_default(),
+        Err(error) => return fail(EX_IOERR, &format!("sf: {error}")),
+    };
+    match sf_compat::render(scan, &elements) {
+        Ok(body) => {
+            print!("{body}");
+            if !scan.quiet {
+                eprintln!(
+                    "[INFO] Scan {} saved with {} elements: scans show {} reads it, sf -C {} correlates it again.",
+                    record.id, record.elements, record.id, record.id
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(EX_DATAERR, &error.to_string()),
+    }
+}
+
 fn export(api: &ScanApi, parsed: &Parsed, rest: &[&str]) -> ExitCode {
     let [ids] = rest else {
         return fail(
@@ -602,10 +690,17 @@ fn deliver(response: &ApiResponse, output: Option<&str>) -> ExitCode {
         return emit(response);
     }
     let Some(path) = output else {
-        print!("{}", response.body);
-        return ExitCode::SUCCESS;
+        let mut stdout = std::io::stdout().lock();
+        return match stdout
+            .write_all(&response.body)
+            .and_then(|()| stdout.flush())
+        {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) if error.kind() == ErrorKind::BrokenPipe => ExitCode::from(EX_PIPE),
+            Err(error) => fail(EX_IOERR, &format!("scans: writing the export: {error}")),
+        };
     };
-    match write_atomic_private(Path::new(path), response.body.as_bytes(), u64::MAX) {
+    match write_atomic_private(Path::new(path), &response.body, u64::MAX) {
         Ok(()) => {
             eprintln!(
                 "scans: wrote {} ({} bytes)",

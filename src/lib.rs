@@ -199,6 +199,7 @@ pub mod web_query;
 pub mod web_server;
 pub mod whoxy;
 pub mod wigle;
+pub mod xlsx;
 pub mod xposedornot;
 pub mod yaml_lite;
 
