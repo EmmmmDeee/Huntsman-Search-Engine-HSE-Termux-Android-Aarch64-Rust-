@@ -399,6 +399,17 @@ fn print_recursion(seed_count: usize, report: &RecursionReport) {
             entity.tags.join(",")
         );
     }
+    println!("lineage={}", report.edges.len());
+    for edge in &report.edges {
+        println!(
+            "{}:{}\t->\t{}:{}\tgen={}",
+            escape_controls(&edge.from_kind),
+            escape_controls(&edge.from_selector),
+            edge.to_kind,
+            escape_controls(&edge.to_value),
+            edge.generation
+        );
+    }
     println!("outcomes={}", report.outcomes.len());
     for outcome in &report.outcomes {
         let found = outcome
