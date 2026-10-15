@@ -15,6 +15,7 @@ fn active_ndk_action_exports_aarch64_android_toolchain() {
         "CC_aarch64_linux_android",
         "AR_aarch64_linux_android",
         "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER",
+        "CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS=-C link-arg=-Wl,-z,max-page-size=16384",
         "android-api",
         "24",
     ] {
@@ -38,8 +39,39 @@ fn ci_cross_builds_the_actual_termux_target() {
         "HUNTSMAN_BUILD_SHA: ${{ github.sha }}",
         "llvm-readelf",
         "/system/bin/linker64",
+        "[ $((align)) -ge 16384 ]",
     ] {
         assert!(ci.contains(required), "{CI} must contain {required:?}");
+    }
+}
+
+/// Devices with 16 KiB pages (Android 15 and later on recent hardware) refuse an ELF whose LOAD
+/// segments are aligned to less. The action asks the linker for 16 KiB by name, and both
+/// cross-builds refuse a binary that did not get it, so the published binary cannot silently
+/// depend on the runner's NDK default (r28 links for 16 KiB, r27 for 4 KiB).
+#[test]
+fn the_android_binary_is_linked_and_checked_for_16_kib_pages() {
+    let action = fs::read_to_string(NDK_ACTION).expect("NDK action");
+    assert!(
+        action.contains("max-page-size=16384"),
+        "{NDK_ACTION} must link aarch64-linux-android for 16 KiB pages"
+    );
+    for (path, text) in [
+        (CI, fs::read_to_string(CI).expect("ci workflow")),
+        (
+            ".github/workflows/release.yml",
+            fs::read_to_string(".github/workflows/release.yml").expect("release workflow"),
+        ),
+    ] {
+        for required in [
+            "awk '$1 == \"LOAD\" { print $NF }'",
+            "[ $((align)) -ge 16384 ]",
+        ] {
+            assert!(
+                text.contains(required),
+                "{path} must refuse a LOAD segment aligned below 16 KiB: {required}"
+            );
+        }
     }
 }
 

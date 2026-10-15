@@ -12,6 +12,10 @@
 //! links between them, the next pivots, the correlations and the planned sources. It makes no
 //! network request and spends no key, so it needs no lookup header, but it is still refused
 //! cross-site and, on a public bind, needs the token.
+//! When the binary installs a [`ScanApi`], the saved scans answer under `/api/scans`,
+//! `/api/eventtypes` and `/api/settings`, Spiderfoot's web API: reads are `GET`, state changes
+//! (start, stop, delete, re-run, false positive) are `POST` with their parameters in the query
+//! string, and every call is guarded as a lookup is. No other route takes `POST`.
 //! A loopback bind answers only requests whose `Host` is a loopback authority,
 //! which blocks a browser DNS-rebinding attack from reaching the local API.
 
@@ -30,6 +34,7 @@ use crate::engineering_command;
 use crate::entity::Entity;
 use crate::error::Error;
 use crate::module::reachable_modules;
+use crate::scan_api::ScanApi;
 use crate::sha256::sha256;
 use crate::source_outcome::SourceExecutionOutcome;
 
@@ -106,6 +111,10 @@ const MAX_ANALYZE_SEEDS: usize = 16;
 /// this stack. It holds no socket and finishes in milliseconds, so the connection cap bounds how
 /// many run at once.
 const ANALYZE_STACK_BYTES: usize = 4 * 1024 * 1024;
+/// A scan API request reads a saved scan whole and encodes its elements, raw records and all, so,
+/// like an analysis, it runs on its own thread with a stack sized for that. Starting a scan only
+/// saves its row: the scan itself runs on the service's own thread.
+const SCANS_STACK_BYTES: usize = 4 * 1024 * 1024;
 /// The header a lookup request must carry. Its presence forces a CORS preflight from any other
 /// origin, and this server answers no preflight.
 pub const LOOKUP_HEADER: &str = "x-huntsman-lookup";
@@ -153,6 +162,7 @@ pub type AnalyzeHandler =
 struct Routes {
     lookups: Option<Lookups>,
     analyze: Option<AnalyzeHandler>,
+    scans: Option<Arc<ScanApi>>,
 }
 
 /// Where `serve` listens and the token its API needs. Only [`ServeConfig::parse`] builds one, so a
@@ -253,6 +263,14 @@ impl Server {
         self
     }
 
+    /// Serve the saved scans (`/api/scans...`, `/api/eventtypes`, `/api/settings`) through `api`.
+    /// Without this those routes answer `404`.
+    #[must_use]
+    pub fn with_scans(mut self, api: Arc<ScanApi>) -> Self {
+        self.routes.scans = Some(api);
+        self
+    }
+
     /// Actual bound address, useful when port 0 was requested.
     ///
     /// # Errors
@@ -264,10 +282,12 @@ impl Server {
     }
 
     /// Run until the listener returns an unrecoverable error. Each connection is served on its
-    /// own thread, up to [`MAX_CONNECTIONS`] at a time. A failed `accept` that a later one can
-    /// succeed after (no free file descriptor or memory, a connection reset before it was taken)
-    /// pauses the loop instead of ending it; see [`AcceptFailure`]. `notice` hears the first
-    /// failure of each such run, so the process boundary can say why requests are waiting.
+    /// own thread, up to [`MAX_CONNECTIONS`] at a time. A failed `accept` that concerned only
+    /// the one connection being taken (reset or aborted before it was accepted, a pending
+    /// network error on it) is retried at once; one that a later `accept` can succeed after
+    /// (no free file descriptor or memory) pauses the loop instead of ending it; see
+    /// [`AcceptFailure`]. `notice` hears a shortage at most once every [`ACCEPT_NOTICE_EVERY`],
+    /// so the process boundary can say why requests are waiting without flooding its log.
     ///
     /// # Errors
     /// Returns the listener error that stops the loop.
@@ -286,8 +306,9 @@ impl Server {
                     AcceptFailure::Fatal => {
                         return Err(Error::Store(format!("serve accept: {error}")));
                     }
-                    AcceptFailure::Transient => {
-                        if failures.is_first() {
+                    AcceptFailure::Retry if failures.retry_at_once() => {}
+                    AcceptFailure::Retry | AcceptFailure::Transient => {
+                        if failures.notice_due(Instant::now()) {
                             notice(&error);
                         }
                         thread::sleep(failures.pause());
@@ -315,9 +336,13 @@ impl Server {
 enum AcceptFailure {
     /// The listener itself is unusable, so no later `accept` can succeed.
     Fatal,
+    /// The failure was the one connection being taken: it was reset or aborted before it was
+    /// accepted, or Linux reported a network error pending on it (`accept(2)` lists them and
+    /// says to retry). Nothing was short, so the next `accept` can succeed at once.
+    Retry,
     /// The process or system is short of something (file descriptors when every connection
-    /// thread holds some, memory under Android's pressure) or the one pending connection went
-    /// away. Connections finishing free what was short, so a later `accept` succeeds.
+    /// thread holds some, memory under Android's pressure). Connections finishing free what
+    /// was short, so a later `accept` succeeds.
     Transient,
 }
 
@@ -325,44 +350,90 @@ enum AcceptFailure {
 const EBADF: i32 = 9;
 
 /// Errors that say the listener itself is unusable: a closed descriptor, and on Linux and
-/// Android a descriptor that is not a socket (`ENOTSOCK`, 88) or not a listening one
-/// (`EOPNOTSUPP`, 95). std files neither of the last two under a named `ErrorKind`.
+/// Android a descriptor that is not a socket (`ENOTSOCK`, 88), which std files under no named
+/// `ErrorKind`.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-const FATAL_ERRNOS: [i32; 3] = [EBADF, 88, 95];
+const FATAL_ERRNOS: [i32; 2] = [EBADF, 88];
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 const FATAL_ERRNOS: [i32; 1] = [EBADF];
 
+/// Errors `accept(2)` on Linux and Android reports for the one connection it dequeued, not
+/// for the listener: `EPERM` (1, a firewall rule), `ENONET` (64), `EPROTO` (71),
+/// `ENOPROTOOPT` (92), `EOPNOTSUPP` (95), `ENETDOWN` (100), `ENETUNREACH` (101),
+/// `ECONNABORTED` (103), `ECONNRESET` (104), `EHOSTDOWN` (112) and `EHOSTUNREACH` (113). The
+/// manual says to treat them like `EAGAIN` and retry. They are matched by number before any
+/// `ErrorKind`, because std files `EOPNOTSUPP` under `Unsupported` from Rust 1.88, which would
+/// otherwise end the server over one bad connection.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const RETRY_ERRNOS: [i32; 11] = [1, 64, 71, 92, 95, 100, 101, 103, 104, 112, 113];
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const RETRY_ERRNOS: [i32; 0] = [];
+
 impl AcceptFailure {
     fn of(error: &std::io::Error) -> Self {
-        // An invalid socket (EINVAL is `InvalidInput`), an unsupported operation, and the
-        // descriptors in `FATAL_ERRNOS` never recover; everything else is about the moment,
-        // not the listener.
-        match error.kind() {
-            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::Unsupported => Self::Fatal,
-            _ if error
-                .raw_os_error()
-                .is_some_and(|raw| FATAL_ERRNOS.contains(&raw)) =>
-            {
-                Self::Fatal
+        use std::io::ErrorKind;
+        if let Some(raw) = error.raw_os_error() {
+            if RETRY_ERRNOS.contains(&raw) {
+                return Self::Retry;
             }
+            if FATAL_ERRNOS.contains(&raw) {
+                return Self::Fatal;
+            }
+        }
+        // An invalid socket (EINVAL is `InvalidInput`) and an unsupported operation never
+        // recover; a connection that went away or was interrupted costs nothing to retry;
+        // everything else is about the moment, not the listener.
+        match error.kind() {
+            ErrorKind::InvalidInput | ErrorKind::Unsupported => Self::Fatal,
+            ErrorKind::ConnectionAborted
+            | ErrorKind::ConnectionReset
+            | ErrorKind::Interrupted
+            | ErrorKind::HostUnreachable
+            | ErrorKind::NetworkUnreachable
+            | ErrorKind::NetworkDown
+            | ErrorKind::TimedOut => Self::Retry,
             _ => Self::Transient,
         }
     }
 }
 
 /// The pause after each failed `accept` in a row: it doubles from [`ACCEPT_PAUSE_FIRST`] to
-/// [`ACCEPT_PAUSE_MOST`], so a shortage is not met with a busy loop.
+/// [`ACCEPT_PAUSE_MOST`], so a shortage is not met with a busy loop. Per-connection failures
+/// are retried without a pause, up to [`RETRY_BURST`] in a row: a longer run means something
+/// is wrong beyond the one connection, and it is paused like a shortage.
 #[derive(Default)]
 struct AcceptFailures {
     in_a_row: u32,
+    retried_in_a_row: u32,
+    last_notice: Option<Instant>,
 }
 
 const ACCEPT_PAUSE_FIRST: Duration = Duration::from_millis(10);
 const ACCEPT_PAUSE_MOST: Duration = Duration::from_millis(500);
+/// How often the operator is told that `accept` is failing. One successful `accept` ends a
+/// failure run, and at a descriptor limit runs end with every connection that finishes, so
+/// a per-run notice would print once per request served for as long as the shortage lasts.
+const ACCEPT_NOTICE_EVERY: Duration = Duration::from_secs(30);
+const RETRY_BURST: u32 = 64;
 
 impl AcceptFailures {
-    fn is_first(&self) -> bool {
-        self.in_a_row == 0
+    /// Whether a per-connection failure is retried at once; a burst of them is paused instead.
+    fn retry_at_once(&mut self) -> bool {
+        self.retried_in_a_row = self.retried_in_a_row.saturating_add(1);
+        self.retried_in_a_row <= RETRY_BURST
+    }
+
+    /// Whether to tell the operator now: the first failure of a run, and not within
+    /// [`ACCEPT_NOTICE_EVERY`] of the last notice.
+    fn notice_due(&mut self, now: Instant) -> bool {
+        let due = self.in_a_row == 0
+            && self
+                .last_notice
+                .is_none_or(|last| now.saturating_duration_since(last) >= ACCEPT_NOTICE_EVERY);
+        if due {
+            self.last_notice = Some(now);
+        }
+        due
     }
 
     fn pause(&mut self) -> Duration {
@@ -375,6 +446,7 @@ impl AcceptFailures {
 
     fn recovered(&mut self) {
         self.in_a_row = 0;
+        self.retried_in_a_row = 0;
     }
 }
 
@@ -594,7 +666,20 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
 enum Method {
     Get,
     Head,
+    /// Only the scan API takes it: a state change with its parameters in the query string.
+    Post,
     Other,
+}
+
+impl Method {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Head => "HEAD",
+            Self::Post => "POST",
+            Self::Other => "OTHER",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -606,6 +691,8 @@ struct ParsedRequest<'a> {
     authorization: Option<&'a str>,
     lookup_header: bool,
     sec_fetch_site: Option<&'a str>,
+    /// A request body was announced: a non-zero `Content-Length` or any `Transfer-Encoding`.
+    has_body: bool,
 }
 
 fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
@@ -615,6 +702,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
     let method = match parts.next()? {
         "GET" => Method::Get,
         "HEAD" => Method::Head,
+        "POST" => Method::Post,
         _ => Method::Other,
     };
     let raw_path = parts.next()?;
@@ -623,8 +711,10 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
     let mut authorization = None;
     let mut lookup_header = false;
     let mut sec_fetch_site = None;
+    let mut has_body = false;
 
-    for line in lines {
+    // The head ends at the first blank line; anything after it is body, never a header.
+    for line in lines.take_while(|line| !line.is_empty()) {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
@@ -640,6 +730,10 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
             lookup_header = value.trim() == "1";
         } else if name.eq_ignore_ascii_case("sec-fetch-site") {
             sec_fetch_site = Some(value.trim());
+        } else if name.eq_ignore_ascii_case("content-length") {
+            has_body |= value.trim() != "0";
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            has_body = true;
         }
     }
 
@@ -651,6 +745,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
         authorization,
         lookup_header,
         sec_fetch_site,
+        has_body,
     })
 }
 
@@ -747,7 +842,10 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
         );
     }
 
-    if parsed.method == Method::Other {
+    // Only the scan API changes state, so only it takes POST.
+    if parsed.method == Method::Other
+        || parsed.method == Method::Post && !ScanApi::handles(parsed.path)
+    {
         return response(
             405,
             "text/plain; charset=utf-8",
@@ -760,13 +858,16 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
     let protected = matches!(
         parsed.path,
         "/api/modules" | "/api/command" | "/api/lookup" | "/api/analyze"
-    );
+    ) || ScanApi::handles(parsed.path);
     if protected
         && bearer_token.is_some_and(|expected| !bearer_matches(parsed.authorization, expected))
     {
         return response(401, "application/json; charset=utf-8", UNAUTHORIZED, head);
     }
 
+    if ScanApi::handles(parsed.path) {
+        return scans_response(&parsed, routes.scans.as_ref());
+    }
     match parsed.path {
         "/" | "/index.html" => response(200, "text/html; charset=utf-8", INDEX_HTML, head),
         "/api/health" => {
@@ -781,12 +882,7 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
                 },
             })
             .unwrap_or_else(|_| "{\"status\":\"error\"}".into());
-            response(
-                200,
-                "application/json; charset=utf-8",
-                &format!("{body}\n"),
-                head,
-            )
+            json_ok(&body, head)
         }
         "/api/modules" => {
             let body = serde_json::to_string_pretty(&serde_json::json!({
@@ -794,20 +890,10 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
                 "modules": reachable_modules(),
             }))
             .unwrap_or_else(|_| "{\"count\":0,\"modules\":[]}".into());
-            response(
-                200,
-                "application/json; charset=utf-8",
-                &format!("{body}\n"),
-                head,
-            )
+            json_ok(&body, head)
         }
         "/api/command" => match engineering_command::render_json() {
-            Ok(body) => response(
-                200,
-                "application/json; charset=utf-8",
-                &format!("{body}\n"),
-                head,
-            ),
+            Ok(body) => json_ok(&body, head),
             Err(_) => response(
                 500,
                 "application/json; charset=utf-8",
@@ -825,7 +911,7 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
 
 /// The answer to a protected request without the server's token. It names the remedy, because the
 /// page shows it as it is and a bare `unauthorized` left the operator nowhere to go.
-const UNAUTHORIZED: &str = "{\"error\":\"unauthorized: this server was started with HSE_AUTH_TOKEN set; enter that value in the token field under Server status and token\"}\n";
+const UNAUTHORIZED: &str = "{\"error\":\"unauthorized: this server was started with HSE_AUTH_TOKEN set; enter that value in the token field under About\"}\n";
 
 fn json_error(status: u16, message: &str) -> String {
     let body = serde_json::json!({ "error": message }).to_string();
@@ -834,6 +920,19 @@ fn json_error(status: u16, message: &str) -> String {
         "application/json; charset=utf-8",
         &format!("{body}\n"),
         false,
+    )
+}
+
+/// A `200 OK` answer carrying an already-rendered JSON `body`. It owns the one JSON success
+/// contract the route handlers share, as [`json_error`] owns the failure one: the
+/// `application/json; charset=utf-8` content type and the single trailing newline every answer
+/// ends with. `head` drops the body for a `HEAD` request while keeping its `Content-Length`.
+fn json_ok(body: &str, head: bool) -> String {
+    response(
+        200,
+        "application/json; charset=utf-8",
+        &format!("{body}\n"),
+        head,
     )
 }
 
@@ -876,16 +975,89 @@ fn lookup_response(parsed: &ParsedRequest<'_>, lookups: Option<&Lookups>) -> Str
     };
     match outcome {
         Ok(Ok(report)) => match serde_json::to_string(&report) {
-            Ok(body) => response(
-                200,
-                "application/json; charset=utf-8",
-                &format!("{body}\n"),
-                false,
-            ),
+            Ok(body) => json_ok(&body, false),
             Err(_) => json_error(500, "report could not be encoded"),
         },
         Ok(Err(error)) => json_error(error.status, &error.message),
         Err(_) => json_error(500, "lookup failed unexpectedly"),
+    }
+}
+
+/// The saved scans: Spiderfoot's scan list, scan views, exports and state changes, answered by the
+/// binary's [`ScanApi`]. A scan makes network requests and spends keys, and its results are the
+/// operator's, so every call is guarded as a lookup is: refused cross-site or same-site, it needs
+/// the lookup header (which another origin cannot send without a preflight this server never
+/// approves), and on a public bind the bearer token. Parameters travel in the query string, so a
+/// request that sends a body is refused rather than half read.
+fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<ScanApi>>) -> String {
+    let Some(scans) = scans else {
+        return json_error(404, "saved scans are not enabled on this server");
+    };
+    if parsed
+        .sec_fetch_site
+        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
+    {
+        return json_error(403, "cross-site scan request refused");
+    }
+    if !parsed.lookup_header {
+        return json_error(403, "the scan API needs the X-Huntsman-Lookup: 1 header");
+    }
+    if parsed.has_body {
+        return json_error(400, "send the parameters in the query string, with no body");
+    }
+    let head = parsed.method == Method::Head;
+    let (api, method, path, query) = (
+        Arc::clone(scans),
+        parsed.method.as_str(),
+        parsed.path.to_owned(),
+        parsed.query.to_owned(),
+    );
+    let worker = thread::Builder::new()
+        .name("serve-scans".into())
+        .stack_size(SCANS_STACK_BYTES)
+        .spawn(move || api.handle(method, &path, &query));
+    let answer = match worker {
+        Ok(worker) => worker.join(),
+        Err(_) => return json_error(503, "could not start a scan API worker"),
+    };
+    match answer {
+        Ok(answer) => {
+            let disposition = answer.filename.as_deref().map(|name| {
+                format!(
+                    "Content-Disposition: attachment; filename=\"{}\"\r\n",
+                    header_filename(name)
+                )
+            });
+            response_with(
+                answer.status,
+                answer.content_type,
+                &answer.body,
+                head,
+                disposition.as_deref().unwrap_or(""),
+            )
+        }
+        Err(_) => json_error(500, "the scan API failed unexpectedly"),
+    }
+}
+
+/// A file name safe inside a quoted header value: letters, digits, `.`, `-` and `_` kept, every
+/// other character `_`, so a name can never end the header or start another.
+fn header_filename(name: &str) -> String {
+    let safe: String = name
+        .chars()
+        .take(128)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe.is_empty() {
+        "export".to_owned()
+    } else {
+        safe
     }
 }
 
@@ -946,12 +1118,7 @@ fn analyze_response(parsed: &ParsedRequest<'_>, analyze: Option<&AnalyzeHandler>
         Err(_) => return json_error(503, "could not start an analysis worker"),
     };
     match outcome {
-        Ok(Ok(report)) => response(
-            200,
-            "application/json; charset=utf-8",
-            &format!("{report}\n"),
-            false,
-        ),
+        Ok(Ok(report)) => json_ok(&report.to_string(), false),
         Ok(Err(error)) => json_error(error.status, &error.message),
         Err(_) => json_error(500, "analysis failed unexpectedly"),
     }
@@ -1087,8 +1254,14 @@ fn hash_source(content: &str) -> String {
 }
 
 fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
+    response_with(status, content_type, body, head, "")
+}
+
+/// [`response`] with `extra`, whole `Name: value\r\n` header lines, after the standard ones.
+fn response_with(status: u16, content_type: &str, body: &str, head: bool, extra: &str) -> String {
     let reason = match status {
         200 => "OK",
+        202 => "Accepted",
         204 => "No Content",
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -1096,6 +1269,7 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
         404 => "Not Found",
         405 => "Method Not Allowed",
         408 => "Request Timeout",
+        409 => "Conflict",
         413 => "Payload Too Large",
         422 => "Unprocessable Content",
         500 => "Internal Server Error",
@@ -1116,7 +1290,7 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
         OTHER_POLICY
     };
     format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{status_header}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: {policy}\r\n\r\n{rendered_body}"
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{status_header}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: {policy}\r\n{extra}\r\n{rendered_body}"
     )
 }
 
@@ -1153,28 +1327,45 @@ mod tests {
         }
     }
 
-    /// Running out of descriptors or memory, or losing the pending connection, must not end
-    /// `serve`; only a listener that can never accept again does.
+    /// Running out of descriptors or memory must not end `serve`, and losing the pending
+    /// connection must not even pause it; only a listener that can never accept again ends it.
     #[test]
     fn only_an_unusable_listener_ends_the_accept_loop() {
         use std::io::{Error as IoError, ErrorKind};
-        // Linux and Android numbers: EMFILE, ENFILE, ENOMEM, ENOBUFS, ECONNABORTED, EPROTO, EPERM.
-        for raw in [24, 23, 12, 105, 103, 71, 1] {
+        // Linux and Android numbers: EMFILE, ENFILE, ENOMEM, ENOBUFS.
+        for raw in [24, 23, 12, 105] {
             assert_eq!(
                 AcceptFailure::of(&IoError::from_raw_os_error(raw)),
                 AcceptFailure::Transient,
                 "errno {raw}"
             );
         }
-        for kind in [
-            ErrorKind::Interrupted,
-            ErrorKind::ConnectionAborted,
-            ErrorKind::WouldBlock,
-            ErrorKind::OutOfMemory,
-        ] {
+        for kind in [ErrorKind::WouldBlock, ErrorKind::OutOfMemory] {
             assert_eq!(
                 AcceptFailure::of(&IoError::from(kind)),
                 AcceptFailure::Transient
+            );
+        }
+        // The one dequeued connection: EPERM, EPROTO, EOPNOTSUPP, ENETUNREACH, ECONNABORTED,
+        // ECONNRESET, EHOSTUNREACH. EOPNOTSUPP is `Unsupported` from Rust 1.88, which must not
+        // make it fatal.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        for raw in [1, 71, 95, 101, 103, 104, 113] {
+            assert_eq!(
+                AcceptFailure::of(&IoError::from_raw_os_error(raw)),
+                AcceptFailure::Retry,
+                "errno {raw}"
+            );
+        }
+        for kind in [
+            ErrorKind::Interrupted,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::ConnectionReset,
+            ErrorKind::HostUnreachable,
+        ] {
+            assert_eq!(
+                AcceptFailure::of(&IoError::from(kind)),
+                AcceptFailure::Retry
             );
         }
         assert_eq!(
@@ -1186,15 +1377,12 @@ mod tests {
             AcceptFailure::of(&IoError::from_raw_os_error(22)),
             AcceptFailure::Fatal
         );
-        // ENOTSOCK and EOPNOTSUPP: std leaves both `Uncategorized`, so they are named by number.
+        // ENOTSOCK: std leaves it `Uncategorized`, so it is named by number.
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        for raw in [88, 95] {
-            assert_eq!(
-                AcceptFailure::of(&IoError::from_raw_os_error(raw)),
-                AcceptFailure::Fatal,
-                "errno {raw}"
-            );
-        }
+        assert_eq!(
+            AcceptFailure::of(&IoError::from_raw_os_error(88)),
+            AcceptFailure::Fatal
+        );
         assert_eq!(
             AcceptFailure::of(&IoError::from(ErrorKind::Unsupported)),
             AcceptFailure::Fatal
@@ -1204,15 +1392,44 @@ mod tests {
     #[test]
     fn accept_pauses_back_off_to_a_ceiling_and_reset_on_success() {
         let mut failures = AcceptFailures::default();
-        assert!(failures.is_first());
         let pauses: Vec<_> = (0..12).map(|_| failures.pause()).collect();
-        assert!(!failures.is_first());
         assert_eq!(pauses[0], ACCEPT_PAUSE_FIRST);
         assert!(pauses.windows(2).all(|pair| pair[0] <= pair[1]));
         assert_eq!(pauses[11], ACCEPT_PAUSE_MOST);
         failures.recovered();
-        assert!(failures.is_first());
         assert_eq!(failures.pause(), ACCEPT_PAUSE_FIRST);
+    }
+
+    /// At a descriptor limit every finishing connection lets one `accept` succeed and the next
+    /// one fail again, so a notice per failure run would print once per request served.
+    #[test]
+    fn the_accept_notice_is_rate_limited_across_failure_runs() {
+        let start = Instant::now();
+        let mut failures = AcceptFailures::default();
+        assert!(failures.notice_due(start), "the first failure is told");
+        let _ = failures.pause();
+        assert!(!failures.notice_due(start), "not again within the run");
+        for seconds in [0, 1, 29] {
+            failures.recovered();
+            assert!(
+                !failures.notice_due(start + Duration::from_secs(seconds)),
+                "a new run {seconds} s later is not told again"
+            );
+            let _ = failures.pause();
+        }
+        failures.recovered();
+        assert!(failures.notice_due(start + ACCEPT_NOTICE_EVERY));
+    }
+
+    /// Per-connection failures cost nothing to retry, until a run of them says the trouble is
+    /// not one connection.
+    #[test]
+    fn per_connection_failures_retry_at_once_until_a_burst() {
+        let mut failures = AcceptFailures::default();
+        assert!((0..RETRY_BURST).all(|_| failures.retry_at_once()));
+        assert!(!failures.retry_at_once());
+        failures.recovered();
+        assert!(failures.retry_at_once());
     }
 
     #[test]
@@ -1263,6 +1480,7 @@ mod tests {
                 let routes = Routes {
                     lookups: Some(lookups.clone()),
                     analyze: echo_seeds().analyze,
+                    scans: None,
                 };
                 let ask = |path: &str| {
                     respond(
@@ -1313,6 +1531,36 @@ mod tests {
         );
         assert!(allowed.starts_with("HTTP/1.1 200"));
         assert!(allowed.contains("\"modules\""));
+    }
+
+    /// Every `200 OK` JSON answer shares one content type and ends in exactly one newline,
+    /// the contract [`json_ok`] now owns in one place (as [`json_error`] owns the failure one).
+    /// Each route handler builds its own body, so a handler reverting to a hand-rolled
+    /// `response(200, …)` could drift the content type or newline; this pins all three
+    /// JSON success routes to the shared shape.
+    #[test]
+    fn every_json_ok_route_shares_one_content_type_and_a_single_trailing_newline() {
+        for path in ["/api/health", "/api/modules", "/api/command"] {
+            let answer = response_for_request(
+                &format!("GET {path} HTTP/1.1\r\nAuthorization: Bearer secret\r\n\r\n"),
+                Some("secret"),
+                loopback_bind(),
+            );
+            assert!(answer.starts_with("HTTP/1.1 200"), "{path}: {answer}");
+            assert_eq!(
+                header(&answer, "Content-Type"),
+                Some("application/json; charset=utf-8"),
+                "{path} content type"
+            );
+            let body = answer.split("\r\n\r\n").nth(1).unwrap_or_default();
+            assert!(
+                body.ends_with('\n') && !body.ends_with("\n\n"),
+                "{path} body must end in exactly one newline: {body:?}"
+            );
+            // The body before that newline is valid JSON.
+            serde_json::from_str::<serde_json::Value>(body.trim_end_matches('\n'))
+                .unwrap_or_else(|e| panic!("{path} body is not JSON: {e}"));
+        }
     }
 
     /// A token-protected server said only `{"error":"unauthorized"}`, and health gave no sign a
@@ -1369,32 +1617,48 @@ mod tests {
             script.contains("const refused=res=>{if(res.r.status===401){askToken();return true}")
         );
         assert_eq!(script.matches("refused(res)").count(), 3);
-        // Every request goes through `call`, which adds the header: no bare `fetch` elsewhere.
-        assert_eq!(script.matches("fetch(").count(), 1);
+        // Every request goes through `call`, which adds the header, except an export, which is
+        // read as a file and sends the same headers: no bare `fetch` elsewhere.
+        assert_eq!(script.matches("fetch(").count(), 2);
+        assert!(script.contains("r=await fetch(path,{headers:headers(LH),"));
         assert!(script.contains("/(?:^#|&)token=([^&]*)/.exec(location.hash)"));
         assert!(script.contains("history.replaceState("));
     }
 
-    /// The page is the HSE console again: an app bar with the locator mark, one tab per view
-    /// (a bottom tab bar on a phone, a top nav on a wider screen), and a view for each tab.
+    /// The page is laid out as Spiderfoot 4.0's: an app bar with the locator mark, the theme switch
+    /// and About, Spiderfoot's New Scan, Scans and Settings plus Analyze as tabs (a bottom tab bar
+    /// on a phone, a top nav on a wider screen), one scan's sections under `#/scan/ID`, and a
+    /// view for each.
     #[test]
     fn the_page_is_the_console_shell_with_a_tab_per_view() {
         assert!(INDEX_HTML.contains(r#"<header class="appbar">"#));
         assert!(INDEX_HTML.contains(r#"<nav class="navbar" aria-label="Primary">"#));
         let script = inline_block(INDEX_HTML, "script");
-        assert!(script.contains("const views=['lookup','analyze','status'];"));
-        for view in ["lookup", "analyze", "status"] {
+        assert!(
+            script.contains("const VIEWS=['scans','newscan','scan','analyze','settings','about'];")
+        );
+        for view in ["newscan", "scans", "analyze", "settings"] {
             assert!(
                 INDEX_HTML.contains(&format!(
-                    r##"<a class="navlink" id="nav-{view}" href="#/{view}">"##
+                    r##"<a class="navlink" data-view="{view}" href="#/{view}">"##
                 )),
                 "{view}"
             );
+        }
+        assert!(INDEX_HTML.contains(r##"<a class="iconbtn" id="nav-about" href="#/about""##));
+        for view in ["scans", "newscan", "scan", "analyze", "settings", "about"] {
             assert!(
-                INDEX_HTML.contains(&format!(r#"<section id="view-{view}""#)),
+                INDEX_HTML.contains(&format!(r#"<section id="view-{view}" hidden>"#)),
                 "{view}"
             );
         }
+        // Spiderfoot's sections of one scan, and the addresses an older page used.
+        assert!(
+            script.contains(
+                "const TABS=['summary','correlations','browse','graph','settings','log'];"
+            )
+        );
+        assert!(script.contains("({lookup:'newscan',status:'about'})[parts[0]]"));
         let style = inline_block(INDEX_HTML, "style");
         assert!(style.contains(".navbar{position:fixed;left:0;right:0;bottom:0;"));
         assert!(style.contains("@media (min-width:768px){\n.navbar{top:"));
@@ -1828,6 +2092,7 @@ mod tests {
         let routes = Routes {
             lookups: lookups.cloned(),
             analyze: None,
+            scans: None,
         };
         respond(request, &test_config(bind_for(token), token), &routes)
     }
@@ -1836,12 +2101,19 @@ mod tests {
 
     #[test]
     fn the_page_offers_every_lookup_kind_the_cli_routes() {
-        // The kind picker is how a phone user names a kind; a kind missing from it is reachable
-        // only by `auto` inference, and an SSID never is.
+        // New Scan's target type is how a phone user names a kind; a kind missing from it is
+        // reachable only by `auto` inference, and an SSID never is.
+        let picker = &INDEX_HTML[INDEX_HTML.find(r#"<select id="skind">"#).unwrap()..];
+        let picker = &picker[..picker.find("</select>").unwrap()];
+        assert!(picker.starts_with(r#"<select id="skind"><option value="auto">"#));
         for kind in crate::scan_route::ScanKind::ALL {
-            let option = format!("<option value=\"{0}\">{0}</option>", kind.command());
-            assert!(INDEX_HTML.contains(&option), "missing {option}");
+            let option = format!("<option value=\"{}\">", kind.command());
+            assert!(picker.contains(&option), "missing {option}");
         }
+        assert_eq!(
+            picker.matches("<option ").count(),
+            1 + crate::scan_route::ScanKind::ALL.len()
+        );
     }
 
     #[test]
@@ -2102,6 +2374,7 @@ mod tests {
         Routes {
             lookups: None,
             analyze: Some(Arc::new(handler)),
+            scans: None,
         }
     }
 
@@ -2277,7 +2550,7 @@ mod tests {
     /// header: it makes no network request and spends no key.
     #[test]
     fn the_page_runs_the_offline_analysis() {
-        assert!(INDEX_HTML.contains(r#"<form id="analyze">"#));
+        assert!(INDEX_HTML.contains(r#"<form class="row" id="analyze">"#));
         assert!(INDEX_HTML.contains("call('/api/analyze?'"));
         let script = inline_block(INDEX_HTML, "script");
         let analyze_call = &script[script.find("call('/api/analyze?'").unwrap()..];
@@ -2286,5 +2559,165 @@ mod tests {
             !analyze_call.contains("X-Huntsman-Lookup"),
             "{analyze_call}"
         );
+    }
+
+    /// A server with saved scans whose lookup finds the selector and nothing else, in a scratch
+    /// store; the scan has run to its end before the first request.
+    fn scan_routes(tag: &str) -> (Routes, String, std::path::PathBuf) {
+        use crate::scan_service::{LookupOutput, ScanRequest, ScanService};
+        use crate::scan_store::{ScanOptions, ScanStore};
+        let dir =
+            std::env::temp_dir().join(format!("hse-serve-scans-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lookup = Arc::new(|_kind: crate::scan_route::ScanKind, selector: &str| {
+            Ok(LookupOutput {
+                text: "report".into(),
+                entities: vec![
+                    crate::entity::Entity::builder(
+                        crate::entity::EntityKind::Phone,
+                        selector,
+                        0.9,
+                        "s",
+                    )
+                    .build(),
+                ],
+                outcomes: Vec::new(),
+            })
+        });
+        let api = ScanApi::new(
+            ScanService::new(ScanStore::open(&dir).unwrap(), lookup),
+            None,
+        );
+        let id = api
+            .service()
+            .run(&ScanRequest {
+                target: "+61412345678".into(),
+                name: None,
+                kind: None,
+                options: ScanOptions {
+                    usecase: "all".into(),
+                    modules: Vec::new(),
+                    types: Vec::new(),
+                },
+            })
+            .unwrap()
+            .id;
+        let routes = Routes {
+            scans: Some(Arc::new(api)),
+            ..Routes::default()
+        };
+        (routes, id, dir)
+    }
+
+    fn scans_request(routes: &Routes, token: Option<&str>, request: &str) -> String {
+        respond(request, &test_config(bind_for(token), token), routes)
+    }
+
+    /// The saved scans answer through serve with the same guards as a lookup: the header, never
+    /// cross-site, the token on a public bind. Reads are GET or HEAD, changes are POST, and an
+    /// export downloads under the name the API gives it.
+    #[test]
+    fn saved_scans_answer_through_serve_behind_the_lookup_guards() {
+        let (routes, id, dir) = scan_routes("guards");
+        let ask = |request: String| scans_request(&routes, None, &request);
+        let list = ask(format!(
+            "GET /api/scans HTTP/1.1\r\nHost: localhost\r\nSec-Fetch-Site: same-origin\r\n{HEADER}\r\n"
+        ));
+        assert!(list.starts_with("HTTP/1.1 200"), "{list}");
+        assert!(list.contains(&format!("\"id\":\"{id}\"")), "{list}");
+        let head = ask(format!("HEAD /api/scans HTTP/1.1\r\n{HEADER}\r\n"));
+        assert!(
+            head.starts_with("HTTP/1.1 200") && head.ends_with("\r\n\r\n"),
+            "{head}"
+        );
+        for refused in [
+            "GET /api/scans HTTP/1.1\r\n\r\n".to_owned(),
+            format!("GET /api/scans HTTP/1.1\r\nSec-Fetch-Site: cross-site\r\n{HEADER}\r\n"),
+            format!(
+                "POST /api/scans?target=x HTTP/1.1\r\nSec-Fetch-Site: same-site\r\n{HEADER}\r\n"
+            ),
+            "POST /api/scans?target=x HTTP/1.1\r\nX-Huntsman-Lookup: yes\r\n\r\n".to_owned(),
+        ] {
+            assert!(
+                ask(refused.clone()).starts_with("HTTP/1.1 403"),
+                "{refused}"
+            );
+        }
+        // A body is refused: the parameters travel in the query string.
+        let body = ask(format!(
+            "POST /api/scans/{id}/fp?ids=a&fp=1 HTTP/1.1\r\nContent-Length: 3\r\n{HEADER}\r\nx=1"
+        ));
+        assert!(body.starts_with("HTTP/1.1 400"), "{body}");
+        // A header line after the blank line is body, not a header.
+        let smuggled = ask("GET /api/scans HTTP/1.1\r\n\r\nX-Huntsman-Lookup: 1\r\n".to_owned());
+        assert!(smuggled.starts_with("HTTP/1.1 403"), "{smuggled}");
+        let export = ask(format!(
+            "GET /api/scans/{id}/export?format=csv HTTP/1.1\r\n{HEADER}\r\n"
+        ));
+        assert!(export.starts_with("HTTP/1.1 200"), "{export}");
+        assert_eq!(
+            header(&export, "Content-Type"),
+            Some("text/csv; charset=utf-8")
+        );
+        let disposition = header(&export, "Content-Disposition").unwrap();
+        assert!(
+            disposition.starts_with("attachment; filename=\"") && disposition.ends_with(".csv\""),
+            "{disposition}"
+        );
+        assert!(
+            export.contains("Updated,Type,Module,Source,F/P,Data"),
+            "{export}"
+        );
+        let rerun = ask(format!(
+            "POST /api/scans/{id}/rerun HTTP/1.1\r\nContent-Length: 0\r\n{HEADER}\r\n"
+        ));
+        assert!(rerun.starts_with("HTTP/1.1 202 Accepted"), "{rerun}");
+        let read_as_post = ask(format!(
+            "GET /api/scans/{id}/rerun HTTP/1.1\r\n{HEADER}\r\n"
+        ));
+        assert!(read_as_post.starts_with("HTTP/1.1 405"), "{read_as_post}");
+        // Only the scan API takes POST.
+        for path in [
+            "/",
+            "/api/health",
+            "/api/modules",
+            "/api/lookup?q=a",
+            "/api/analyze?seeds=a",
+        ] {
+            let post = ask(format!("POST {path} HTTP/1.1\r\n{HEADER}\r\n"));
+            assert!(post.starts_with("HTTP/1.1 405"), "{path}: {post}");
+        }
+        // A public bind needs the token for every scan route.
+        let public = scans_request(
+            &routes,
+            Some("s3cret"),
+            &format!("GET /api/eventtypes HTTP/1.1\r\n{HEADER}\r\n"),
+        );
+        assert!(public.starts_with("HTTP/1.1 401"), "{public}");
+        let signed = scans_request(
+            &routes,
+            Some("s3cret"),
+            &format!("GET /api/settings HTTP/1.1\r\nAuthorization: Bearer s3cret\r\n{HEADER}\r\n"),
+        );
+        assert!(signed.starts_with("HTTP/1.1 200"), "{signed}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn saved_scans_are_absent_until_the_binary_installs_them() {
+        let got = response_for_request(
+            &format!("GET /api/scans HTTP/1.1\r\nHost: localhost\r\n{HEADER}\r\n"),
+            None,
+            loopback_bind(),
+        );
+        assert!(got.starts_with("HTTP/1.1 404"), "{got}");
+        assert!(got.contains("saved scans are not enabled"), "{got}");
+    }
+
+    #[test]
+    fn an_export_name_cannot_break_out_of_its_header() {
+        assert_eq!(header_filename("a\"b\r\nX: y.csv"), "a_b__X__y.csv");
+        assert_eq!(header_filename("t1-Huntsman.csv"), "t1-Huntsman.csv");
+        assert_eq!(header_filename(""), "export");
     }
 }

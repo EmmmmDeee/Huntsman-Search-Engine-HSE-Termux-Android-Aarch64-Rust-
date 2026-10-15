@@ -92,13 +92,32 @@ pub struct GenerationStat {
     pub entities_after: usize,
 }
 
-/// The finished crawl: the full entity graph, every source outcome, the per-generation shape, and
-/// why it stopped.
+/// One discovery edge: a dispatched lookup and an entity it produced. Chaining these edges
+/// reconstructs the crawl's pivot tree — which lookup surfaced which finding, generation by
+/// generation — the linkage a recursive OSINT crawl exists to produce. An entity reached by more
+/// than one lookup contributes one edge per lookup, so shared findings are visible, not collapsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PivotEdge {
+    /// The dispatched lookup's kind, as its stable command word.
+    pub from_kind: String,
+    /// The selector that lookup ran on.
+    pub from_selector: String,
+    /// The produced entity's kind.
+    pub to_kind: String,
+    /// The produced entity's value.
+    pub to_value: String,
+    /// The generation the lookup ran in (seeds are generation 0).
+    pub generation: u32,
+}
+
+/// The finished crawl: the full entity graph, the pivot lineage, every source outcome, the
+/// per-generation shape, and why it stopped.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecursionReport {
     pub accepted_seeds: Vec<Target>,
     pub rejected_seeds: Vec<String>,
     pub entities: Vec<Entity>,
+    pub edges: Vec<PivotEdge>,
     pub outcomes: Vec<SourceExecutionOutcome>,
     pub generations: Vec<GenerationStat>,
     pub dispatches: usize,
@@ -114,15 +133,21 @@ fn target_for_seed(seed: &str) -> Option<Target> {
     Some(Target { kind, selector })
 }
 
-/// The lookup kind an entity of this kind expands into, for the identity-bearing kinds only. Urls,
-/// persons, IPs, coordinates and the rest are retained in the graph but are not re-dispatched: a
-/// recursive crawl pivots on identity, not on every incidental artefact.
+/// The lookup kind an entity of this kind expands into. Two families re-dispatch: the
+/// identity-bearing kinds (e-mail, username, domain, phone), and the specific-infrastructure kinds
+/// that name one addressable node — an IP address (public-host recon: ASN, geo, open services,
+/// reputation) and a MAC/BSSID (one access point on `WiGLE`). Everything else — persons,
+/// organisations, URLs, free-text SSIDs, coordinates, credentials, ASNs and the rest — is retained
+/// in the graph and reported, but not re-dispatched: a crawl pivots on identity and on a specific
+/// node, not on broad or incidental artefacts whose lookup would be noise, not linkage.
 fn expansion_kind(kind: &EntityKind) -> Option<ScanKind> {
     match kind {
         EntityKind::Email => Some(ScanKind::Email),
         EntityKind::Username => Some(ScanKind::Username),
         EntityKind::Domain => Some(ScanKind::Domain),
         EntityKind::Phone => Some(ScanKind::Phone),
+        EntityKind::IpAddress => Some(ScanKind::Ip),
+        EntityKind::MacAddress => Some(ScanKind::Network),
         _ => None,
     }
 }
@@ -211,6 +236,7 @@ fn seed_frontier(seeds: &[String]) -> (Vec<Target>, Vec<String>, Vec<Target>) {
 struct CrawlState {
     visited: BTreeSet<(String, String)>,
     entities: Vec<Entity>,
+    edges: Vec<PivotEdge>,
     outcomes: Vec<SourceExecutionOutcome>,
     generations: Vec<GenerationStat>,
     dispatches: usize,
@@ -252,6 +278,13 @@ impl CrawlState {
             self.outcomes.extend(step.outcomes);
             for mut entity in step.entities {
                 entity.generation = generation;
+                self.edges.push(PivotEdge {
+                    from_kind: target.kind.command().to_owned(),
+                    from_selector: target.selector.clone(),
+                    to_kind: entity.kind.as_str().to_owned(),
+                    to_value: entity.value.clone(),
+                    generation,
+                });
                 self.queue_expansions(&entity, policy, &mut next);
                 self.entities.push(entity);
             }
@@ -336,6 +369,7 @@ pub fn run<C: SelectorCollector>(
         truncated: state.resource_limited || max_depth,
         visited: state.visited.len(),
         entities: state.entities,
+        edges: state.edges,
         outcomes: state.outcomes,
         generations: state.generations,
         dispatches: state.dispatches,
@@ -471,6 +505,138 @@ mod tests {
             .filter(|(kind, selector)| kind == "username" && selector == "shared")
             .count();
         assert_eq!(shared_dispatches, 1, "the shared username ran twice");
+        assert_eq!(report.termination, TerminationReason::FixedPoint);
+    }
+
+    #[test]
+    fn an_ip_finding_pivots_into_an_ip_lookup() {
+        // A domain lookup surfaces a public IP; the crawl must re-dispatch it as an ip lookup, so
+        // infrastructure recon (ASN, geo, services, reputation) runs in the one crawl, the way
+        // SpiderFoot cross-correlates host findings rather than leaving them inert.
+        let mut collector = Scripted::new()
+            .on(
+                ScanKind::Domain,
+                "example.com",
+                vec![ent(EntityKind::IpAddress, "8.8.8.8", 0.9)],
+            )
+            .on(ScanKind::Ip, "8.8.8.8", vec![]);
+
+        let report = run(&["example.com".to_owned()], &policy(), &mut collector);
+
+        assert!(
+            collector
+                .calls
+                .iter()
+                .any(|(kind, selector)| kind == "ip" && selector == "8.8.8.8"),
+            "the IP finding was not re-dispatched as an ip lookup"
+        );
+        assert_eq!(report.termination, TerminationReason::FixedPoint);
+    }
+
+    #[test]
+    fn a_bssid_finding_pivots_into_a_network_lookup() {
+        // A specific MAC/BSSID names one access point, so the crawl re-dispatches it as a network
+        // lookup (WiGLE), extending cross-correlation onto infrastructure.
+        let mut collector = Scripted::new().on(
+            ScanKind::Email,
+            "person@example.com",
+            vec![ent(EntityKind::MacAddress, "00:11:22:33:44:55", 0.9)],
+        );
+
+        let report = run(
+            &["person@example.com".to_owned()],
+            &policy(),
+            &mut collector,
+        );
+
+        assert!(
+            collector.calls.iter().any(|(kind, _)| kind == "network"),
+            "the BSSID finding was not re-dispatched as a network lookup"
+        );
+        assert_eq!(report.termination, TerminationReason::FixedPoint);
+    }
+
+    #[test]
+    fn incidental_artefacts_are_retained_but_not_dispatched() {
+        // Broad or non-addressable findings stay in the graph and are reported, but the crawl does
+        // not fan out a lookup for each: no SSID, coordinate, URL or person re-dispatch. This is
+        // the discipline that keeps breadth from becoming noise — surpassing SpiderFoot, not just
+        // matching its reach.
+        let mut collector = Scripted::new()
+            .on(
+                ScanKind::Email,
+                "person@example.com",
+                vec![
+                    ent(EntityKind::Email, "person@example.com", 0.99),
+                    ent(EntityKind::Ssid, "linksys", 0.9),
+                    ent(EntityKind::Coordinates, "40.712800,-74.006000", 0.9),
+                    ent(EntityKind::Url, "https://example.com/a", 0.9),
+                    ent(EntityKind::Person, "Jane Doe", 0.9),
+                ],
+            )
+            .on(ScanKind::Exposure, "person@example.com", vec![]);
+
+        let report = run(
+            &["person@example.com".to_owned()],
+            &policy(),
+            &mut collector,
+        );
+
+        // Only the seed e-mail and its exposure pass ran; no incidental artefact was dispatched.
+        let dispatched_kinds: std::collections::BTreeSet<&str> = collector
+            .calls
+            .iter()
+            .map(|(kind, _)| kind.as_str())
+            .collect();
+        assert_eq!(
+            dispatched_kinds,
+            ["email", "exposure"].into_iter().collect()
+        );
+        // The incidental entities are retained and reported, never dropped.
+        assert_eq!(report.entities.len(), 5);
+        assert_eq!(report.termination, TerminationReason::FixedPoint);
+    }
+
+    #[test]
+    fn the_report_records_the_pivot_lineage() {
+        // email -> username (generation 0), then username -> domain (generation 1). The edges must
+        // reconstruct that path: which lookup surfaced which finding, and in which generation.
+        let mut collector = Scripted::new()
+            .on(
+                ScanKind::Email,
+                "person@example.com",
+                vec![ent(EntityKind::Username, "person", 0.9)],
+            )
+            .on(ScanKind::Exposure, "person@example.com", vec![])
+            .on(
+                ScanKind::Username,
+                "person",
+                vec![ent(EntityKind::Domain, "example.net", 0.9)],
+            )
+            .on(ScanKind::Domain, "example.net", vec![]);
+
+        let report = run(
+            &["person@example.com".to_owned()],
+            &policy(),
+            &mut collector,
+        );
+
+        assert!(
+            report.edges.iter().any(|edge| edge.from_kind == "email"
+                && edge.from_selector == "person@example.com"
+                && edge.to_kind == "username"
+                && edge.to_value == "person"
+                && edge.generation == 0),
+            "missing the email -> username discovery edge"
+        );
+        assert!(
+            report.edges.iter().any(|edge| edge.from_kind == "username"
+                && edge.from_selector == "person"
+                && edge.to_kind == "domain"
+                && edge.to_value == "example.net"
+                && edge.generation == 1),
+            "missing the username -> domain discovery edge"
+        );
         assert_eq!(report.termination, TerminationReason::FixedPoint);
     }
 

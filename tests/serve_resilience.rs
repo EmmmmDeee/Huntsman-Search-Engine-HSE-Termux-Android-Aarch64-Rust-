@@ -10,38 +10,82 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// `serve` on a free loopback port under `ulimit -n limit`; returns the child and its address.
-fn serve_with_descriptor_limit(limit: u32) -> (Child, String) {
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "ulimit -n {limit} && exec \"$0\" serve --bind 127.0.0.1:0"
-        ))
-        .arg(env!("CARGO_BIN_EXE_huntsman-recon"))
-        .env_remove("HSE_BIND")
-        .env_remove("HSE_AUTH_TOKEN")
-        .env_remove("PORT")
-        // Every name `serve` reads to decide it is on Railway, where it binds 0.0.0.0:$PORT.
-        .env_remove("RAILWAY_ENVIRONMENT")
-        .env_remove("RAILWAY_ENVIRONMENT_ID")
-        .env_remove("RAILWAY_PROJECT_ID")
-        .env_remove("RAILWAY_SERVICE_ID")
-        .env_remove("TERMUX_VERSION")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut first = String::new();
-    BufReader::new(child.stdout.take().unwrap())
-        .read_line(&mut first)
-        .unwrap();
-    let addr = first
-        .trim()
-        .strip_prefix("serving=http://")
-        .and_then(|rest| rest.strip_suffix('/'))
-        .unwrap_or_else(|| panic!("no serving= line: {first:?}"))
-        .to_owned();
-    (child, addr)
+/// A running `serve`. Dropping it, including when an assertion fails, kills the process, so
+/// a failed test does not leave a server bound on the machine that ran it.
+struct Serve {
+    child: Child,
+}
+
+impl Serve {
+    /// `serve` on a free loopback port under `ulimit -n limit`; returns the server and its
+    /// address.
+    fn with_descriptor_limit(limit: u32) -> (Self, String) {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!(
+                "ulimit -n {limit} && exec \"$0\" serve --bind 127.0.0.1:0"
+            ))
+            .arg(env!("CARGO_BIN_EXE_huntsman-recon"));
+        // No inherited bind, token, Railway or Termux setting: any `RAILWAY_*` name makes
+        // `serve` bind `0.0.0.0:$PORT` and exit before `--bind` is read.
+        for name in [
+            "HSE_BIND",
+            "HSE_AUTH_TOKEN",
+            "PORT",
+            "RAILWAY_ENVIRONMENT",
+            "RAILWAY_ENVIRONMENT_ID",
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_SERVICE_ID",
+            "TERMUX_VERSION",
+            "PREFIX",
+        ] {
+            command.env_remove(name);
+        }
+        let mut serve = Self {
+            child: command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        };
+        let mut first = String::new();
+        BufReader::new(serve.child.stdout.take().unwrap())
+            .read_line(&mut first)
+            .unwrap();
+        let addr = first
+            .trim()
+            .strip_prefix("serving=http://")
+            .and_then(|rest| rest.strip_suffix('/'))
+            .unwrap_or_else(|| panic!("no serving= line: {first:?}"))
+            .to_owned();
+        (serve, addr)
+    }
+
+    fn exited(&mut self) -> bool {
+        self.child.try_wait().unwrap().is_some()
+    }
+
+    /// Kill the server and return what it wrote to stderr.
+    fn stop(mut self) -> String {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let mut stderr = String::new();
+        self.child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut stderr)
+            .unwrap();
+        stderr
+    }
+}
+
+impl Drop for Serve {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 fn health(addr: &str) -> Option<String> {
@@ -57,7 +101,7 @@ fn health(addr: &str) -> Option<String> {
 fn running_out_of_descriptors_pauses_serve_instead_of_ending_it() {
     // Standard streams, the listener and a few the runtime opens leave room for about two
     // connections, so the burst below must make `accept` fail with EMFILE.
-    let (mut child, addr) = serve_with_descriptor_limit(12);
+    let (mut serve, addr) = Serve::with_descriptor_limit(12);
     assert!(health(&addr).is_some_and(|r| r.starts_with("HTTP/1.1 200")));
 
     let burst: Vec<TcpStream> = (0..16)
@@ -68,10 +112,10 @@ fn running_out_of_descriptors_pauses_serve_instead_of_ending_it() {
     std::thread::sleep(Duration::from_millis(500));
     drop(burst);
 
-    let exited = child.try_wait().unwrap();
+    let exited_during_burst = serve.exited();
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut answered = None;
-    while exited.is_none() && Instant::now() < deadline {
+    while !exited_during_burst && Instant::now() < deadline {
         if let Some(response) = health(&addr) {
             if response.starts_with("HTTP/1.1 200") {
                 answered = Some(response);
@@ -80,18 +124,10 @@ fn running_out_of_descriptors_pauses_serve_instead_of_ending_it() {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let still_running = child.try_wait().unwrap().is_none();
-    let _ = child.kill();
-    let _ = child.wait();
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .unwrap();
-    assert_eq!(
-        exited, None,
+    let still_running = !serve.exited();
+    let stderr = serve.stop();
+    assert!(
+        !exited_during_burst,
         "serve exited after running short of descriptors"
     );
     assert!(
