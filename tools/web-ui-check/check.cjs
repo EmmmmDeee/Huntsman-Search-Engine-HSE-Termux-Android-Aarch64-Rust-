@@ -387,6 +387,45 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await page.waitForSelector('#rules tr', { timeout: 5000 }).catch(() => {});
       check(`${scheme}: Settings lists every correlation rule`, rules.length > 0 && (await page.$$('#rules tr')).length === rules.length, `${(await page.$$('#rules tr')).length} of ${rules.length}`);
       await audit(page, `${scheme} settings`);
+      // A key saved from Settings lands in the keys file every lookup reads, at mode 600, sent in
+      // the request body; no answer and nothing on the page carries it back. Shodan's slot, which
+      // no phone lookup uses, and it is removed again before any scan runs.
+      if (scheme === 'light') {
+        const KEY = 'TEST_ONLY_WEB_UI_KEY_3e9a';
+        const sent = [], answers = [];
+        const ask = r => sent.push(r.url() + ' ' + (r.postData() || ''));
+        const answered = r => { if (r.url().includes('/api/')) answers.push(r.text().catch(() => '')); };
+        page.on('request', ask);
+        page.on('response', answered);
+        const file = path.join(home, '.huntsman.env');
+        const cellState = () => page.evaluate(() => {
+          const td = document.querySelector('#mods tr').cells[3];
+          return { label: td.querySelector('.label').textContent, note: (td.querySelector('[role=status]') || {}).textContent || '', typed: [...td.querySelectorAll('input')].map(i => i.value).join('') };
+        });
+        await page.fill('#mfilter', 'HUNTSMAN_SHODAN_KEY');
+        check('Settings filters to the module that reads a slot', (await page.$$('#mods tr')).length === 1, (await page.$$('#mods tr')).length);
+        await page.click('#mods tr .keyedit summary');
+        await page.fill('#mods tr input[data-slot=HUNTSMAN_SHODAN_KEY]', KEY);
+        await page.click('#mods tr .keyedit button[type=submit]');
+        await page.waitForFunction(() => /saved to/.test((document.querySelector('#mods [role=status]') || {}).textContent || ''), null, { timeout: 5000 }).catch(() => {});
+        const saved = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+        const mode = fs.existsSync(file) ? (fs.statSync(file).mode & 0o777).toString(8) : 'none';
+        check('Settings saves a key into the keys file at mode 600', saved === `HUNTSMAN_SHODAN_KEY='${KEY}'\n` && mode === '600', { saved: saved.replace(KEY, '<key>'), mode });
+        const after = await cellState();
+        check('a saved key reads as set and its field is empty again', after.label === 'set' && /saved to/.test(after.note) && after.typed === '', after);
+        await audit(page, 'settings key editor');
+        await page.click('#mods tr .keyedit button.btn-ghost');
+        await page.waitForFunction(() => /removed from/.test((document.querySelector('#mods [role=status]') || {}).textContent || ''), null, { timeout: 5000 }).catch(() => {});
+        const removed = await cellState();
+        const left = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+        check('Remove takes the key out of the keys file', removed.label === 'not set' && !left.includes('HUNTSMAN_SHODAN_KEY'), { removed, left: left.replace(KEY, '<key>') });
+        page.off('request', ask);
+        page.off('response', answered);
+        const bodies = await Promise.all(answers);
+        check('the key travels only in a request body', sent.some(r => r.includes('/api/settings/keys ') && r.includes(KEY)) && !sent.some(r => r.split(' ')[0].includes(KEY)), sent.length);
+        check('no answer and nothing on the page carries the key back', !bodies.some(b => b.includes(KEY)) && !(await page.content()).includes(KEY), bodies.filter(b => b.includes(KEY)).length);
+        await page.fill('#mfilter', '');
+      }
       await page.goto(base + '/#/about', { waitUntil: 'networkidle' });
       await audit(page, `${scheme} about`);
 

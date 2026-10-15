@@ -216,6 +216,7 @@ dd dl{margin:0}
 main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 .acts{flex-wrap:nowrap}
 }
+.keyedit summary{margin-top:6px;padding:0 10px;border-radius:var(--r)}.keyedit form{display:grid;gap:6px;padding:8px 0 0}.keyedit label{font:12.5px var(--mono)}.keyedit input{margin:0}
 </style>
 <header class="appbar">
 <a class="brand" href="#/scans"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg><span class="brand-text">Huntsman<span class="brand-sub"><span class="sep">·</span>Search Engine</span></span><span class="ver" id="ver"></span></a>
@@ -388,7 +389,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <section id="view-settings" hidden>
 <h1>Settings</h1>
 <p class="alert" id="gerror" role="alert" hidden></p>
-<div class="panel"><div class="panel-heading">Global Settings</div><dl class="kv" id="gopts"></dl></div>
+<div class="panel"><div class="panel-heading">Global Settings</div><dl class="kv" id="gopts"></dl><p class="alert warn" id="kwarn" role="alert" hidden></p></div>
 <div class="panel"><div class="panel-heading">Modules <span class="badge" id="mods-n"></span></div>
 <div class="filter"><input type="search" id="mfilter" autocomplete="off" placeholder="Filter modules" aria-label="Filter modules"></div>
 <div class="table-wrap"><table class="sortable"><thead><tr><th>Module</th><th>Category</th><th>Access</th><th>API Key</th><th>Description</th></tr></thead><tbody id="mods"></tbody></table></div></div>
@@ -1183,15 +1184,17 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')for(const m of docum
 // Settings: every module, what it needs, and what this server knows of itself. Keys stay in the
 // environment and ~/.huntsman.env on the device; the page never sees one.
 const ACCESS={operator_key:['API key','warn'],keyless:['keyless','ok'],offline:['offline','info'],local:['local','info'],mixed:['mixed','info']};
-let settings=null;
+let settings=null,keyslots=null,keynote=null;
 async function loadSettings(){
   await started;
   const base=[['Server address',location.host],['Version',$('sversion').textContent],['Sign-in',$('sauth').textContent]];
   kv('gopts',base);$('gerror').hidden=true;
   // The server's settings carry each module's key status; without saved scans, the module list.
   try{settings=await api('/api/settings')}catch(_){try{settings={modules:await moduleList(),global:[]}}catch(e){fail('gerror',e.message);return}}
-  kv('gopts',base.concat((settings.global||[]).map(g=>[g.description?g.description[0].toUpperCase()+g.description.slice(1):g.key,show(g.value)])));
-  showMods();
+  // Which keys the page may save, and whether each is set; a server without a keys file answers none.
+  try{keyslots=await api('/api/settings/keys')}catch(_){keyslots=null}
+  kv('gopts',base.concat((settings.global||[]).map(g=>[g.description?g.description[0].toUpperCase()+g.description.slice(1):g.key,show(g.value)]),keyslots?[['Keys file',keyslots.file]]:[]));
+  keyWarning();showMods();
   try{showRules(await api('/api/correlationrules'))}catch(_){$('rules-p').hidden=true}
 }
 function showRules(rules){
@@ -1216,8 +1219,44 @@ function showMods(){
     if(m.configured==null)return;
     const k=el('span','',''),names=(m.key_env||[]).join(', ');
     k.append(el('span','label '+(m.configured?'ok':'warn'),m.configured?'set':'not set'));if(names)k.append(' ',el('span','mono',names));
+    const ed=keyEditor(m);if(ed)k.append(ed);
     tr.cells[3].replaceChildren(k);
   });
+}
+// Spiderfoot takes each module's API key in its settings. Here Save writes the key into the keys
+// file every lookup reads, so the next lookup uses it. The key goes in the request body, and the
+// page never gets it back: it learns only whether each slot is set.
+function keyEditor(m){
+  const rows=keyslots?(m.key_env||[]).map(s=>keyslots.slots.find(k=>k.slot===s)).filter(Boolean):[];
+  if(!rows.length)return null;
+  const d=el('details','keyedit'),f=el('form'),msg=el('p','help');
+  msg.setAttribute('role','status');
+  d.append(el('summary','',m.configured?'Change key':'Set key'));
+  for(const k of rows){
+    const i=el('input'),l=el('label','',k.slot);
+    i.id=l.htmlFor='key-'+m.name+'-'+k.slot;i.type='password';i.autocomplete='off';i.spellcheck=false;i.dataset.slot=k.slot;
+    i.placeholder=k.saved?'saved; type a new key to replace it':k.set?'set in the environment; a saved key replaces it':'';
+    f.append(l,i);
+    if(k.saved)f.append(button('Remove '+k.slot,()=>saveKey(m,k.slot,''),'btn-ghost'));
+  }
+  const save=el('button','btn','Save');save.type='submit';f.append(save,msg);
+  f.onsubmit=async e=>{
+    e.preventDefault();
+    const typed=[...f.querySelectorAll('input')].filter(i=>i.value.trim());
+    if(!typed.length){msg.textContent='Type a key first.';return}
+    for(const i of typed)if(!await saveKey(m,i.dataset.slot,i.value))return;
+  };
+  if(keynote&&keynote.name===m.name){d.open=true;msg.textContent=keynote.text}
+  d.append(f);return d;
+}
+function keyWarning(){const w=keyslots&&keyslots.warning;$('kwarn').hidden=!w;$('kwarn').textContent=w||''}
+async function saveKey(m,slot,value){
+  keynote={name:m.name,text:'Saving…'};
+  try{keyslots=await api('/api/settings/keys',{method:'POST',body:new URLSearchParams({slot,value})})}
+  catch(e){keynote.text=e.message;showMods();return false}
+  keynote.text=value?slot+' saved to '+keyslots.file+'. The next lookup uses it.':slot+' removed from '+keyslots.file+'.';
+  try{settings=await api('/api/settings')}catch(_){}
+  keyWarning();showMods();return true;
 }
 $('mfilter').oninput=showMods;
 // Table headers sort their rows, as Spiderfoot's tables do.

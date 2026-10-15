@@ -18,6 +18,8 @@ these slots without printing their values.
 | HIBP | `HUNTSMAN_HIBP_KEY` | owned subscription/key history; clean current credential required |
 | SeekNow | `HUNTSMAN_SEEKNOW_KEY` | historical credential only; clean current credential required |
 | OathNet | `HUNTSMAN_OATHNET_KEY` | used by `exposure` (CLI, `scan -k exposure`, web UI) when set in the environment; one daily lookup per search; validity unverified until a live search |
+| DeHashed | `HUNTSMAN_DEHASHED_KEY` | used by `exposure` and the `email` lookup (CLI, `scan`, web UI) when set, for an email address |
+| stolen.tax | `HUNTSMAN_STOLEN_TAX_KEY` | used by `exposure` and the `email` and `username` lookups (CLI, `scan`, web UI) when set |
 | Exa | `HUNTSMAN_EXA_KEY` | account confirmed; current credential not recovered |
 | OpenRouter | `HUNTSMAN_OPENROUTER_KEY` | account confirmed; current credential not recovered |
 | Google Gemini | `HUNTSMAN_GEMINI_KEY` | provider key existence confirmed; current value requires provider account |
@@ -55,6 +57,8 @@ HUNTSMAN_WHOXY_KEY=
 HUNTSMAN_HIBP_KEY=
 HUNTSMAN_SEEKNOW_KEY=
 HUNTSMAN_OATHNET_KEY=
+HUNTSMAN_DEHASHED_KEY=
+HUNTSMAN_STOLEN_TAX_KEY=
 HUNTSMAN_EXA_KEY=
 HUNTSMAN_OPENROUTER_KEY=
 HUNTSMAN_GEMINI_KEY=
