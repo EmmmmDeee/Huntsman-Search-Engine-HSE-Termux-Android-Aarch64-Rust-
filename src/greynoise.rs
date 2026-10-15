@@ -3,7 +3,9 @@
 //! One lookup is one `GET https://api.greynoise.io/v3/community/{ip}`. The Community API answers
 //! without a key at a low daily limit; with `HUNTSMAN_GREYNOISE_KEY` set (a free Community key)
 //! the key goes in the `key` header and the limit is the account's. A `404` whose body has the
-//! address and `noise: false` is the documented "not observed" answer, a valid zero.
+//! address and `noise: false` is the documented "not observed" answer, a valid zero. The API
+//! answers for IPv4 addresses only: an IPv6 address gets `400` "Request is not a valid routable
+//! IPv4 address" (checked 2026-10-15), so [`answers_for`] keeps a lookup from asking.
 
 use serde::Deserialize;
 
@@ -51,6 +53,12 @@ struct Body {
     name: Option<String>,
     #[serde(default)]
     last_seen: Option<String>,
+}
+
+/// Whether the Community API answers for `ip`: an IPv4 address. **Pure.**
+#[must_use]
+pub fn answers_for(ip: &str) -> bool {
+    ip.parse::<std::net::Ipv4Addr>().is_ok()
 }
 
 /// The request URL for `ip`. **Pure.**
