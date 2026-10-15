@@ -144,10 +144,14 @@ fn termux_installer_is_arm64_userland_and_self_accepting() {
         "pkg update -y",
         "pkg install -y git rust clang curl coreutils",
         "rust-std-",
-        "--root \"$TERMUX_PREFIX\"",
+        "readonly INSTALL_ROOT=\"${HUNTSMAN_INSTALL_ROOT:-$TERMUX_PREFIX}\"",
+        "--root \"$INSTALL_ROOT\"",
         "huntsman-recon",
-        "timeout 30 \"$installed\" check",
-        "timeout 30 \"$installed\" verify var/ledger.json",
+        "sha256sum -c --quiet \"$ASSET.sha256\"",
+        "timeout 30 \"$1\" check",
+        "timeout 30 \"$1\" verify var/ledger.json",
+        "accept_binary \"$release_dir/$ASSET\"",
+        "accept_binary \"$installed\"",
         "chmod 0600 \"$ENV_FILE\"",
     ] {
         assert!(

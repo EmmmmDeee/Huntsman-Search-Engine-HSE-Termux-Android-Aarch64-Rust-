@@ -24,7 +24,7 @@ use crate::sha256::sha256;
 pub const ANALYZE_PROBE_PATH: &str = "/api/analyze?seeds=alice%40example.com%0Aexample.com";
 /// The API routes the page must call.
 pub const PAGE_ROUTES: [&str; 3] = ["/api/lookup", "/api/analyze", "/api/health"];
-/// The most of one response the probe reads. The page is about 20 KiB.
+/// The most of one response the probe reads. The page is about 25 KiB.
 const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// What the probe found at the address.

@@ -169,14 +169,14 @@ fn help_and_version_are_available() {
         ("phone", "phone NUMBER [--save FILE]"),
         (
             "scan",
-            "scan SELECTOR [-k people|email|exposure|username|phone|domain|network]",
+            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network]",
         ),
         ("investigate", "investigate TEXT..."),
         ("modules", "modules [--json]"),
         ("attack", "attack status|coverage|gaps [--json]"),
         ("query", "query QUERY..."),
         ("sf", "sf [-M|-T|-V]"),
-        ("serve", "serve [--bind ADDR]"),
+        ("serve", "serve [--bind ADDR] [--history DIR]"),
         ("fetch", "fetch URL [--body]"),
         ("hibp", "hibp [breach NAME"),
         ("recon", "recon crtsh TARGET"),
@@ -436,11 +436,20 @@ fn modules_lists_only_reachable_catalog_entries() {
         "sf_compat",
         "web_server",
         "crtsh",
+        "netlas",
+        "otx",
+        "urlscan",
+        "ipinfo",
+        "kickbox",
+        "robtex",
+        "hackertarget",
+        "stopforumspam",
+        "xposed_or_not",
     ] {
         assert!(stdout.contains(name), "missing reachable module {name}");
     }
     assert!(
-        !stdout.contains("netlas"),
+        !stdout.contains("onyphe"),
         "registered-but-unwired services must not appear as reachable modules"
     );
 

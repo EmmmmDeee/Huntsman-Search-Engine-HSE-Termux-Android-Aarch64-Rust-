@@ -2,6 +2,7 @@
 
 use std::env;
 use std::io::Write;
+use std::path::Path;
 use std::process::ExitCode;
 
 use super::fail;
@@ -9,7 +10,8 @@ use huntsman_recon::diagnostics::TermuxState;
 use huntsman_recon::environment::SERVE_TOKEN_ENV;
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
-use huntsman_recon::runtime::analyze_offline;
+use huntsman_recon::runtime::analyze_offline_with_history;
+use huntsman_recon::scan_artifact::{ArtifactError, ArtifactHistory};
 use huntsman_recon::scan_route::{
     ScanKind, canonical_selector, explicit_people_is_name, infer_kind, inferred_people_is_name,
     parse_kind,
@@ -31,9 +33,13 @@ fn bad_selector(message: &str) -> LookupError {
     }
 }
 
-/// `/api/analyze`: the offline investigation spine on the seeds, as `plan` runs it.
-fn web_analyze(seeds: &[String]) -> Result<serde_json::Value, LookupError> {
-    analyze_offline(seeds).map_err(|error| LookupError {
+/// `/api/analyze`: the offline investigation spine on the seeds, as `plan` runs it, bridged to the
+/// saved scans in `history` when `serve --history` gave one.
+fn web_analyze(
+    seeds: &[String],
+    history: Option<&ArtifactHistory>,
+) -> Result<serde_json::Value, LookupError> {
+    analyze_offline_with_history(seeds, history).map_err(|error| LookupError {
         status: match error {
             Error::Invalid(_) => 422,
             _ => 500,
@@ -79,13 +85,22 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
     }
 }
 
-/// Printed by `serve` when `HSE_AUTH_TOKEN` is set. The page and every API call except health
-/// then need the token, and nothing else tells the operator so: the page only showed
-/// `unauthorized`. The value is never printed, so it stays out of terminal scrollback and logs.
-fn token_hint(addr: std::net::SocketAddr) -> String {
-    format!(
-        "serve: {SERVE_TOKEN_ENV} is set, so the API needs it: enter its value (echo \"${SERVE_TOKEN_ENV}\") in the page's token field, or open http://{addr}/#token=VALUE once; unset {SERVE_TOKEN_ENV} before serve to run a loopback server without a token"
-    )
+/// What `serve` says about `HSE_AUTH_TOKEN` when it starts. On a public bind the page and every
+/// API call except health need the token, and nothing else tells the operator so; on loopback a
+/// token that was set is not used, and the operator should not wonder whether it guards anything.
+/// The value is never printed, so it stays out of terminal scrollback and logs.
+fn token_note(addr: std::net::SocketAddr, needs_token: bool, supplied: bool) -> Option<String> {
+    if needs_token {
+        Some(format!(
+            "serve: this public bind needs {SERVE_TOKEN_ENV}: enter its value (echo \"${SERVE_TOKEN_ENV}\") in the page's token field, or open http://{addr}/#token=VALUE once"
+        ))
+    } else if supplied {
+        Some(format!(
+            "serve: a loopback bind needs no token, so the page and API answer without {SERVE_TOKEN_ENV}"
+        ))
+    } else {
+        None
+    }
 }
 
 pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
@@ -104,6 +119,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         Err(Error::Invalid(message)) => return fail(EX_DATAERR, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };
+    let mut history_dir: Option<String> = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -114,37 +130,67 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
                 bind.clone_from(value);
                 index += 2;
             }
+            "--history" => {
+                let Some(value) = args.get(index + 1) else {
+                    return fail(EX_USAGE, "serve --history needs DIR");
+                };
+                history_dir = Some(value.clone());
+                index += 2;
+            }
             other => {
                 return fail(
                     EX_USAGE,
                     &format!(
-                        "unknown serve option: {other}\nusage: huntsman-recon serve [--bind ADDR]"
+                        "unknown serve option: {other}\nusage: huntsman-recon serve [--bind ADDR] [--history DIR]"
                     ),
                 );
             }
         }
     }
 
+    // Load the history before the listener binds, so a bad directory stops `serve` at startup
+    // instead of failing each analysis. The exit codes match `correlate --history`.
+    let history = match history_dir {
+        Some(dir) => match ArtifactHistory::open(Path::new(&dir)) {
+            Ok(history) => {
+                eprintln!(
+                    "serve: {} saved scan(s) in {dir} bridge the analysis",
+                    history.scan_count()
+                );
+                Some(std::sync::Arc::new(history))
+            }
+            Err(ArtifactError::Io(error)) => {
+                return fail(EX_NOINPUT, &format!("serve --history: {error}"));
+            }
+            Err(error) => return fail(EX_DATAERR, &format!("serve --history: {error}")),
+        },
+        None => None,
+    };
+
     let token = env::var(SERVE_TOKEN_ENV).ok();
+    let token_supplied = token.is_some();
     let config = match ServeConfig::parse(&bind, token) {
         Ok(config) => config,
         Err(Error::MissingCredential(message)) => return fail(EX_NOINPUT, &message),
         Err(Error::Invalid(message)) => return fail(EX_DATAERR, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };
-    let config_needs_token = config.bearer_token.is_some();
+    let config_needs_token = config.needs_token();
+    let analyze_history = history.clone();
     let server = match Server::bind(config) {
         Ok(server) => server
             .with_lookup(std::sync::Arc::new(web_lookup))
-            .with_analyze(std::sync::Arc::new(web_analyze)),
+            .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
+                web_analyze(seeds, analyze_history.as_deref())
+            })),
         Err(Error::Store(message)) => return fail(EX_UNAVAILABLE, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };
     match server.local_addr() {
         Ok(addr) => {
             println!("serving=http://{addr}/");
-            if config_needs_token {
-                eprintln!("{}", token_hint(addr));
+            if let Some(note) = token_note(addr, config_needs_token, token_supplied) {
+                eprintln!("{note}");
             }
             if TermuxState::current() == TermuxState::Detected {
                 eprintln!("{TERMUX_BACKGROUND_HINT}");
