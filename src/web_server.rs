@@ -1405,9 +1405,11 @@ mod tests {
             );
         }
         // Spiderfoot's sections of one scan, and the addresses an older page used.
-        assert!(script.contains(
-            "const TABS=['summary','correlations','browse','graph','settings','log'];"
-        ));
+        assert!(
+            script.contains(
+                "const TABS=['summary','correlations','browse','graph','settings','log'];"
+            )
+        );
         assert!(script.contains("({lookup:'newscan',status:'about'})[parts[0]]"));
         let style = inline_block(INDEX_HTML, "style");
         assert!(style.contains(".navbar{position:fixed;left:0;right:0;bottom:0;"));
@@ -1859,7 +1861,10 @@ mod tests {
             let option = format!("<option value=\"{}\">", kind.command());
             assert!(picker.contains(&option), "missing {option}");
         }
-        assert_eq!(picker.matches("<option ").count(), 1 + crate::scan_route::ScanKind::ALL.len());
+        assert_eq!(
+            picker.matches("<option ").count(),
+            1 + crate::scan_route::ScanKind::ALL.len()
+        );
     }
 
     #[test]

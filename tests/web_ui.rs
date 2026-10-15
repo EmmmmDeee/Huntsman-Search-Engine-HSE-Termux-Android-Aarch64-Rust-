@@ -197,13 +197,18 @@ fn the_light_theme_follows_the_system_until_the_toggle_picks_one() {
 #[test]
 fn the_graph_nodes_stand_out_from_the_graph_in_both_themes() {
     let style = inline("style");
-    assert!(style.contains(".graph{height:62vh;min-height:300px;margin:0 0 10px;background:var(--el);"));
+    assert!(
+        style.contains(".graph{height:62vh;min-height:300px;margin:0 0 10px;background:var(--el);")
+    );
     let mut failures = Vec::new();
     for (theme, t) in themes() {
         let ground = colour(&t["--el"]).0;
         for i in 0..10 {
             let name = format!("--g{i}");
-            assert!(style.contains(&format!(".g{i}{{fill:var({name});")), "no .g{i} rule");
+            assert!(
+                style.contains(&format!(".g{i}{{fill:var({name});")),
+                "no .g{i} rule"
+            );
             let ratio = contrast(colour(&t[&name]).0, ground);
             if ratio < NON_TEXT {
                 failures.push(format!("{theme}: {name} on --el is {ratio:.2}:1"));
@@ -224,9 +229,14 @@ fn every_scan_call_carries_the_lookup_header_and_provider_text_stays_text() {
     // another origin cannot send without a preflight this server never approves.
     assert!(script.contains("const LH={'X-Huntsman-Lookup':'1'}"));
     assert!(script.contains("try{res=await call(path,LH,opts)}"));
-    assert!(!script.contains("call('/api/scans"), "a scan call without the header");
+    assert!(
+        !script.contains("call('/api/scans"),
+        "a scan call without the header"
+    );
     assert_eq!(script.matches("fetch(").count(), 2, "call() and the export");
-    assert!(script.contains("await fetch(base()+'/export?'+p,{headers:headers(LH),cache:'no-store'})"));
+    assert!(
+        script.contains("await fetch(base()+'/export?'+p,{headers:headers(LH),cache:'no-store'})")
+    );
     // Provider text reaches the page only as text.
     assert!(script.contains("function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=String(text);return e}"));
     for sink in [
@@ -259,7 +269,11 @@ fn scans_live_on_the_server_and_only_the_analysis_is_kept_for_the_tab() {
     // finds it there. The tab keeps only the last analysis, which the server does not save.
     assert!(script.contains("showAnalysis(saved);sess.set('hse-analysis',JSON.stringify(saved));"));
     for call in script.split("sess.set(").skip(1) {
-        assert!(call.starts_with("'hse-analysis'"), "sess.set({}", &call[..call.len().min(40)]);
+        assert!(
+            call.starts_with("'hse-analysis'"),
+            "sess.set({}",
+            &call[..call.len().min(40)]
+        );
     }
     assert!(script.contains("location.hash='#/scan/'+enc(r.id)+'/summary'"));
     // Local storage outlives the tab, so it holds a preference and a public bind's token, never a
