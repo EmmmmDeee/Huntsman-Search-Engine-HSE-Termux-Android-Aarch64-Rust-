@@ -4,7 +4,8 @@
 //! Shodan's weekly scan summary. A `404` whose body says `No information available` is the
 //! documented "nothing known" answer and is a valid zero; any other `404` is not an answer.
 //! Every answer names the address it describes (`ip`): a body without it, or about another
-//! address, is not an answer either, however few of its lists it has.
+//! address, is not an answer either, however few of its lists it has. Every port, hostname, CPE,
+//! tag and CVE of an answer is kept, each once.
 
 use std::net::IpAddr;
 
@@ -21,9 +22,6 @@ pub const API: Api = Api {
     origin: "https://internetdb.shodan.io:443",
     key: None,
 };
-/// Most items kept from one list of the answer.
-pub const MAX_ITEMS: usize = 64;
-
 /// What `InternetDB` knows about one address.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Host {
@@ -105,7 +103,6 @@ pub fn decode(answer: Answer, ip: &str) -> Result<Option<Host>, LegError> {
                 let mut kept: Vec<String> = items
                     .iter()
                     .filter_map(|item| api_leg::clean(Some(item)))
-                    .take(MAX_ITEMS)
                     .collect();
                 kept.sort();
                 kept.dedup();
@@ -114,7 +111,6 @@ pub fn decode(answer: Answer, ip: &str) -> Result<Option<Host>, LegError> {
             let mut ports = body.ports;
             ports.sort_unstable();
             ports.dedup();
-            ports.truncate(MAX_ITEMS);
             Ok(Some(Host {
                 ports,
                 hostnames: list(body.hostnames),
@@ -179,6 +175,23 @@ mod tests {
             "2606:4700:4700::1111",
         );
         assert_eq!(host.ok().flatten().map(|host| host.ports), Some(vec![443]));
+    }
+
+    #[test]
+    fn every_item_of_every_list_is_kept_once() {
+        let ports: Vec<String> = (1..=300).map(|p| p.to_string()).collect();
+        let vulns: Vec<String> = (0..150).map(|n| format!(r#""CVE-2020-{n:05}""#)).collect();
+        let body = format!(
+            r#"{{"ip":"192.0.2.7","ports":[{},1],"vulns":[{},"CVE-2020-00000"],"hostnames":[],"cpes":[],"tags":[]}}"#,
+            ports.join(","),
+            vulns.join(",")
+        );
+        let host = decode(Answer::Body(body.into_bytes()), "192.0.2.7")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("a long answer must decode"));
+        assert_eq!(host.ports.len(), 300);
+        assert_eq!(host.vulns.len(), 150);
     }
 
     #[test]
