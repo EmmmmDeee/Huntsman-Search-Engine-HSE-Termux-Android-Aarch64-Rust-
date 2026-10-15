@@ -12,6 +12,9 @@ pub const SPAM_LIST: &str = "spam-list";
 pub const WEB: &str = "web";
 pub const CRAWLED: &str = "crawled";
 pub const SUBDOMAIN: &str = "subdomain";
+/// The host has neither an A nor an AAAA record: its zone answered both queries with none.
+/// Spiderfoot reports such a name as `INTERNET_NAME_UNRESOLVED`.
+pub const UNRESOLVED: &str = "unresolved";
 pub const EXTERNAL: &str = "external";
 pub const WEB_SCRAPED: &str = "web-scraped";
 pub const CT_LOG: &str = "ct-log";

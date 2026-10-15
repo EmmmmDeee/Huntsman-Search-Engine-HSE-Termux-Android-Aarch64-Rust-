@@ -11,8 +11,7 @@ use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::{TransportConfig, UreqTransport};
-use huntsman_recon::keys::Keys;
-use huntsman_recon::lookup_report::{entity_row, evidence_row};
+use huntsman_recon::lookup_report::{entity_row, evidence_rows};
 use huntsman_recon::search::{Document, load_dir, search, tokenize};
 use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
 use huntsman_recon::source_registry::routes_for;
@@ -54,7 +53,9 @@ pub(in crate::cli) fn investigate_cmd(args: &[String]) -> ExitCode {
     for entity in &entities {
         println!("{}", entity_row(entity, &entity.raw_value));
         for evidence in &entity.evidence {
-            println!("{}", evidence_row(evidence));
+            for row in evidence_rows(evidence) {
+                println!("{row}");
+            }
         }
     }
     ExitCode::SUCCESS
@@ -99,21 +100,11 @@ pub(in crate::cli) fn sf_cmd(args: &[String]) -> ExitCode {
             print!("{body}");
             ExitCode::SUCCESS
         }
-        SfAction::Scan(scan) => {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_secs());
-            let transport = UreqTransport::new(&TransportConfig::default());
-            match sf_compat::run_scan(&transport, &Keys::from_env(), &scan, now) {
-                Ok(body) => {
-                    print!("{body}");
-                    ExitCode::SUCCESS
-                }
-                Err(Error::Network(message)) => fail(EX_UNAVAILABLE, &message),
-                Err(Error::Invalid(message)) => fail(EX_DATAERR, &message),
-                Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
-            }
-        }
+        // `sf.py -C ID` is `scans correlate ID`, over the same saved scans.
+        SfAction::Correlate(id) => crate::cli::scans::scans_cmd(&["correlate".to_owned(), id]),
+        SfAction::Scan(scan) => crate::cli::scans::sf_scan(&scan),
+        // `sf.py -l IP:PORT` starts its web UI there; `serve` is Huntsman's.
+        SfAction::Listen(bind) => crate::cli::service::serve_cmd(&["--bind".to_owned(), bind]),
     }
 }
 

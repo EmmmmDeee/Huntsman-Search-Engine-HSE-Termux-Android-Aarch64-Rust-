@@ -190,6 +190,7 @@ pub trait Rule: Sync {
     fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
     fn severity(&self) -> Severity;
+    fn description(&self) -> &'static str;
     fn run(&self, context: &RuleContext<'_>, scan_id: &str, now: u64) -> Vec<Correlation>;
 }
 
@@ -197,6 +198,7 @@ struct FnRule {
     id: &'static str,
     name: &'static str,
     severity: Severity,
+    description: &'static str,
     runner: fn(&RuleContext<'_>, &str, u64) -> Vec<Correlation>,
 }
 
@@ -213,6 +215,10 @@ impl Rule for FnRule {
         self.severity
     }
 
+    fn description(&self) -> &'static str {
+        self.description
+    }
+
     fn run(&self, context: &RuleContext<'_>, scan_id: &str, now: u64) -> Vec<Correlation> {
         (self.runner)(context, scan_id, now)
     }
@@ -222,72 +228,84 @@ static AU_001: FnRule = FnRule {
     id: "AU-001",
     name: "multi_breach",
     severity: Severity::High,
+    description: "Two or more identity entities appear in breach data.",
     runner: rule_au_001_multi_breach,
 };
 static AU_002: FnRule = FnRule {
     id: "AU-002",
     name: "identity_cluster",
     severity: Severity::Critical,
+    description: "Identities of at least two kinds (email, username, phone, name) that plausibly belong to one person.",
     runner: rule_au_002_identity_cluster,
 };
 static AU_003: FnRule = FnRule {
     id: "AU-003",
     name: "high_corroboration",
     severity: Severity::Medium,
+    description: "An entity that two or more independent sources corroborate with high confidence.",
     runner: rule_au_003_high_corroboration,
 };
 static AU_019: FnRule = FnRule {
     id: "AU-019",
     name: "temporal_breach_cluster",
     severity: Severity::High,
+    description: "Three or more breached entities whose first breaches fall within one 30-day window.",
     runner: rule_au_019_temporal_breach_cluster,
 };
 static AU_021: FnRule = FnRule {
     id: "AU-021",
     name: "api_key_exposure",
     severity: Severity::Critical,
+    description: "An API key found exposed.",
     runner: rule_au_021_api_key_exposure,
 };
 static AU_060: FnRule = FnRule {
     id: "AU-060",
     name: "transitive_identity_closure",
     severity: Severity::High,
+    description: "Three or more entities joined by identity-binding relations.",
     runner: rule_au_060_transitive_identity_closure,
 };
 static AU_062: FnRule = FnRule {
     id: "AU-062",
     name: "multipath_corroboration",
     severity: Severity::High,
+    description: "Two entities linked by two or more independent pathways.",
     runner: rule_au_062_multipath_corroboration,
 };
 static AU_063: FnRule = FnRule {
     id: "AU-063",
     name: "corroboration_gap",
     severity: Severity::Low,
+    description: "Entities that only one identity pathway connects; corroborating it would firm up the link.",
     runner: rule_au_063_corroboration_gap,
 };
 static AU_070: FnRule = FnRule {
     id: "AU-070",
     name: "connection_broker",
     severity: Severity::Medium,
+    description: "An entity that brokers two or more of the strongest identity paths between others.",
     runner: rule_au_070_connection_broker,
 };
 static AU_071: FnRule = FnRule {
     id: "AU-071",
     name: "robust_identity_cluster",
     severity: Severity::High,
+    description: "An identity cluster of four or more entities held together by more than one kind of identity relation and more than one piece of evidence.",
     runner: rule_au_071_robust_identity_cluster,
 };
 static AU_109: FnRule = FnRule {
     id: "AU-109",
     name: "shared_registrant",
     severity: Severity::Medium,
+    description: "Two or more assets registered or operated by one registrant.",
     runner: rule_au_109_shared_registrant,
 };
 static AU_110: FnRule = FnRule {
     id: "AU-110",
     name: "shared_hosting_ip",
     severity: Severity::Medium,
+    description: "Two or more domains resolving to one hosting IP address.",
     runner: rule_au_110_shared_hosting_ip,
 };
 
@@ -300,6 +318,29 @@ static REGISTRY: [&dyn Rule; 12] = [
 /// correlation comes from one pass over one rule input.
 fn registry() -> &'static [&'static dyn Rule] {
     &REGISTRY
+}
+
+/// One of Huntsman's own correlation rules, as a rule list shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuleInfo {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub severity: Severity,
+    pub description: &'static str,
+}
+
+/// Every rule [`evaluate_rules`] runs, in the order it runs them.
+#[must_use]
+pub fn rule_catalog() -> Vec<RuleInfo> {
+    registry()
+        .iter()
+        .map(|rule| RuleInfo {
+            id: rule.id(),
+            name: rule.name(),
+            severity: rule.severity(),
+            description: rule.description(),
+        })
+        .collect()
 }
 
 pub fn rank_and_sort(correlations: &mut [Correlation], entities: &[Entity]) {
@@ -409,6 +450,19 @@ mod tests {
             entity.tag(tags::CANDIDATE);
         }
         entity
+    }
+
+    #[test]
+    fn the_rule_catalog_names_and_describes_every_rule_once() {
+        let catalog = rule_catalog();
+        assert_eq!(catalog.len(), REGISTRY.len());
+        let ids: std::collections::BTreeSet<&str> = catalog.iter().map(|rule| rule.id).collect();
+        assert_eq!(ids.len(), catalog.len());
+        assert!(
+            catalog
+                .iter()
+                .all(|rule| !rule.name.is_empty() && rule.description.ends_with('.'))
+        );
     }
 
     #[test]
