@@ -96,9 +96,12 @@ pub fn run<T: Transport + ?Sized>(
         Ok(report) => {
             let count = report.entities.len();
             found.entities.extend(report.entities);
-            found
-                .outcomes
-                .push(SourceExecutionOutcome::success("crtsh", now_unix, count));
+            // crt.sh answered with its list of logged certificates; an empty list is "none".
+            found.outcomes.push(if count == 0 {
+                SourceExecutionOutcome::valid_zero("crtsh", now_unix)
+            } else {
+                SourceExecutionOutcome::success("crtsh", now_unix, count)
+            });
             sections.push(format!("crtsh: {count} certificate-transparency entities"));
         }
         Err(CrtShError::Refused(reason)) => {
@@ -160,18 +163,15 @@ pub fn run<T: Transport + ?Sized>(
     } = found;
     merge_by_uid(&mut entities);
 
-    let any_results = !entities.is_empty()
-        || outcomes
-            .iter()
-            .any(|o| o.kind.is_accepted() && o.found.unwrap_or(0) > 0);
-    if !any_results {
-        let answered = outcomes.iter().any(|o| o.kind.is_accepted());
-        return match (answered, refused, unanswered) {
-            (false, Some(message), _) => DomainRun::Network(message),
-            (false, None, Some(why)) => {
+    // A source that answered "nothing known" answered: its zero row is the result.
+    let answered = outcomes.iter().any(|o| o.kind.is_accepted());
+    if entities.is_empty() && !answered {
+        return match (refused, unanswered) {
+            (Some(message), _) => DomainRun::Network(message),
+            (None, Some(why)) => {
                 DomainRun::Failed(format!("no source answered for domain {domain}: {why}"))
             }
-            _ => DomainRun::Failed(format!("no results for domain {domain}")),
+            (None, None) => DomainRun::Failed(format!("no source answered for domain {domain}")),
         };
     }
 
@@ -1035,6 +1035,26 @@ mod tests {
             "{row:?}"
         );
         assert!(entity(&report, &EntityKind::IpAddress, IPV4).is_none());
+    }
+
+    /// A name crt.sh has no certificates for and DNS has no records for is a result: the lookup
+    /// prints its zero rows. crt.sh's empty list is its answer for a name with no logged
+    /// certificates, a validated zero. Before, the crt.sh row was `inconclusive`, as if crt.sh had
+    /// not answered, and the lookup failed with "no results for domain" (exit 69, "no usable
+    /// response") although every source had answered.
+    #[test]
+    fn a_name_nothing_is_known_about_prints_its_zero_rows() {
+        let report = printed(&Zone::new(&[]), "gone-shop.com");
+        assert!(report.entities.is_empty(), "{:?}", report.entities);
+        for source in ["crtsh", "dns"] {
+            let row = report
+                .outcomes
+                .iter()
+                .find(|outcome| outcome.module == source)
+                .unwrap_or_else(|| panic!("a {source} outcome row"));
+            assert_eq!(row.kind, SourceOutcomeKind::ValidZero, "{row:?}");
+            assert_eq!(row.found, Some(0));
+        }
     }
 
     /// When no source answers, the lookup fails with the first reason (exit 69, "no usable
