@@ -158,7 +158,8 @@ impl Lookup<'_> {
 }
 
 /// Run every IP leg for `ip`, then check it and everything the legs found against the threat
-/// `feeds`. Keyed legs run only when `keys` holds their key.
+/// `feeds`. Keyed legs run only when `keys` holds their key, and each leg only when the
+/// transport's lookup asks its module ([`Transport::runs_module`]).
 #[must_use]
 pub fn run<T: Transport + ?Sized>(
     transport: &T,
@@ -179,37 +180,45 @@ pub fn run<T: Transport + ?Sized>(
         network: None,
     };
 
-    ptr_leg(transport, &mut lookup);
+    if transport.runs_module(RESOLVE_SOURCE) {
+        ptr_leg(transport, &mut lookup);
+    }
     let registration = crate::rdap_legs::ip(transport, &ip, &scan_id, now_unix);
     lookup.report.entities.extend(registration.entities);
     lookup.report.outcomes.extend(registration.outcome);
-    match internetdb::lookup(transport, &ip, now_unix) {
-        Ok(Some(host)) => internetdb_leg(&mut lookup, &host),
-        Ok(None) => lookup.nothing(&internetdb::API),
-        Err(err) => lookup.failed(&internetdb::API, &err),
+    if internetdb::API.runs(transport, keys) {
+        match internetdb::lookup(transport, &ip, now_unix) {
+            Ok(Some(host)) => internetdb_leg(&mut lookup, &host),
+            Ok(None) => lookup.nothing(&internetdb::API),
+            Err(err) => lookup.failed(&internetdb::API, &err),
+        }
     }
-    match ripestat::lookup(transport, &ip, now_unix) {
-        Ok(routing) if routing.origins.is_empty() => lookup.nothing(&ripestat::API),
-        Ok(routing) => ripestat_leg(&mut lookup, &routing),
-        Err(err) => lookup.failed(&ripestat::API, &err),
+    if ripestat::API.runs(transport, keys) {
+        match ripestat::lookup(transport, &ip, now_unix) {
+            Ok(routing) if routing.origins.is_empty() => lookup.nothing(&ripestat::API),
+            Ok(routing) => ripestat_leg(&mut lookup, &routing),
+            Err(err) => lookup.failed(&ripestat::API, &err),
+        }
     }
-    match greynoise::lookup(transport, keys, &ip, now_unix) {
-        Ok(Some(sighting)) => greynoise_leg(&mut lookup, &sighting),
-        Ok(None) => lookup.nothing(&greynoise::API),
-        Err(err) => lookup.failed(&greynoise::API, &err),
+    if greynoise::API.runs(transport, keys) {
+        match greynoise::lookup(transport, keys, &ip, now_unix) {
+            Ok(Some(sighting)) => greynoise_leg(&mut lookup, &sighting),
+            Ok(None) => lookup.nothing(&greynoise::API),
+            Err(err) => lookup.failed(&greynoise::API, &err),
+        }
     }
     if let Ok(address) = ip.parse() {
         let (listed, rows) = dnsbl::check(transport, Subject::Address(address), &scan_id, now_unix);
         lookup.report.entities.extend(listed);
         lookup.report.outcomes.extend(rows);
     }
-    if abuseipdb::API.wanted(keys) {
+    if abuseipdb::API.runs(transport, keys) {
         match abuseipdb::lookup(transport, keys, &ip, now_unix) {
             Ok(check) => abuseipdb_leg(&mut lookup, &check),
             Err(err) => lookup.failed(&abuseipdb::API, &err),
         }
     }
-    if virustotal::API.wanted(keys) {
+    if virustotal::API.runs(transport, keys) {
         match virustotal::lookup(transport, keys, virustotal::Object::Ip, &ip, now_unix) {
             Ok(Some(report)) => virustotal_leg(&mut lookup, &report),
             Ok(None) => lookup.nothing(&virustotal::API),

@@ -281,6 +281,14 @@ pub trait Transport {
             blocked: false,
         })
     }
+
+    /// Whether the lookup this transport serves asks `module`, by its Huntsman name: every leg
+    /// asks before it sends, and one that may not sends nothing and leaves no outcome. Only
+    /// [`crate::module_selection::Selected`] runs fewer than every module; a transport that wraps
+    /// another passes the question on.
+    fn runs_module(&self, _module: &str) -> bool {
+        true
+    }
 }
 
 /// The longest one UDP exchange waits for its answer.

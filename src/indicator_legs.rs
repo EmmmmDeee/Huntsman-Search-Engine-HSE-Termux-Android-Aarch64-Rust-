@@ -63,7 +63,7 @@ pub fn planned(indicator: Indicator<'_>, keys: &Keys) -> Vec<&'static Source> {
         .collect()
 }
 
-/// Run every source that applies to `indicator`.
+/// Run every source that applies to `indicator` and that the transport's lookup asks.
 #[must_use]
 pub fn run<T: Transport + ?Sized>(
     transport: &T,
@@ -75,6 +75,9 @@ pub fn run<T: Transport + ?Sized>(
     let transport = DynTransport(transport);
     let mut legs = Legs::default();
     for source in planned(indicator, keys) {
+        if !transport.runs_module(source.api.source) {
+            continue;
+        }
         let api = source.api;
         match (source.lookup)(&transport, keys, indicator, now_unix) {
             Ok(Some(finding)) => {

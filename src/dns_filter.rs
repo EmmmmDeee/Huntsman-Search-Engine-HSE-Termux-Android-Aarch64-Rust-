@@ -309,7 +309,7 @@ enum Verdict {
 }
 
 /// What the filters say about `name`, whose unfiltered answer is `unfiltered`: each block as
-/// evidence on it, and one row per source.
+/// evidence on it, and one row per source the transport's lookup asks.
 #[must_use]
 pub fn check<T: Transport + ?Sized + Sync>(
     transport: &T,
@@ -319,13 +319,17 @@ pub fn check<T: Transport + ?Sized + Sync>(
     now_unix: u64,
 ) -> (Vec<Entity>, Vec<SourceExecutionOutcome>) {
     let kind = unfiltered.kind();
+    let filters: Vec<&Filter> = FILTERS
+        .iter()
+        .filter(|filter| transport.runs_module(filter.source))
+        .collect();
     let asked = dns::ask_all(
-        FILTERS,
+        &filters,
         |filter| ask(transport, filter, name, kind, unfiltered, now_unix),
         unreachable,
     );
-    let mut verdicts: Vec<(&Filter, Verdict)> = FILTERS
-        .iter()
+    let mut verdicts: Vec<(&Filter, Verdict)> = filters
+        .into_iter()
         .zip(asked)
         .map(|(filter, verdict)| {
             (

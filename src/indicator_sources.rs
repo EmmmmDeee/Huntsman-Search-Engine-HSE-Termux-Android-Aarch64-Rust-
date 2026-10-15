@@ -198,6 +198,10 @@ impl<T: Transport + ?Sized> Transport for DynTransport<'_, T> {
     ) -> Result<Vec<u8>, TransportFailure> {
         self.0.exchange_udp(server, message)
     }
+
+    fn runs_module(&self, module: &str) -> bool {
+        self.0.runs_module(module)
+    }
 }
 
 #[cfg(test)]

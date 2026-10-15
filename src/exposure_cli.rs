@@ -45,6 +45,7 @@ use crate::http::Transport;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
+use crate::module_selection::Selection;
 use crate::oathnet::{self, OathnetError};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_http_status};
 use crate::stolen_tax::{self, StolenTaxError};
@@ -58,6 +59,8 @@ Canonicalise the email address ADDR or the username HANDLE and run the keyed bre
 
 /// Source label for the HIBP breached-account leg.
 pub const SOURCE: &str = "hibp_account";
+/// The module a lookup asks for HIBP's account search by.
+pub const HIBP_MODULE: &str = "hibp";
 /// Source label for the stolen.tax leg.
 pub const STOLEN_TAX_SOURCE: &str = "stolen_tax";
 /// Source label for the `OathNet` leg.
@@ -324,18 +327,32 @@ pub struct Sources<'a> {
     pub stolen_tax: Option<(&'a (dyn Transport + Sync), &'a Keys)>,
     pub oathnet: Option<(&'a (dyn Transport + Sync), &'a Keys)>,
     pub dehashed: Option<&'a DehashedClient>,
+    /// The modules the lookup asks; `None` asks every one. A leg it leaves out sends nothing and
+    /// leaves no row, configured or not.
+    pub selection: Option<&'a Selection>,
 }
 
 impl Sources<'_> {
-    /// Whether a lookup of `selector` would reach at least one keyed leg: HIBP or `DeHashed` for
-    /// an address, stolen.tax or `OathNet` for either. Another lookup of the same selector runs exposure when
-    /// this holds, so a configured paid source is never left out of it.
+    /// Whether a lookup of `selector` would reach at least one keyed leg it asks: HIBP or
+    /// `DeHashed` for an address, stolen.tax or `OathNet` for either. Another lookup of the same
+    /// selector runs exposure when this holds, so a configured paid source is never left out of it.
     #[must_use]
     pub fn reach(&self, selector: &str) -> bool {
         let email = canonical_email(selector).is_some();
-        let email_only = email && (self.hibp.is_some() || self.dehashed.is_some());
+        let email_only = email
+            && ((self.hibp.is_some() && self.runs(HIBP_MODULE))
+                || (self.dehashed.is_some() && self.runs(DEHASHED_SOURCE)));
         canonical_selector(selector).is_some()
-            && (email_only || self.stolen_tax.is_some() || self.oathnet.is_some())
+            && (email_only
+                || (self.stolen_tax.is_some() && self.runs(STOLEN_TAX_SOURCE))
+                || (self.oathnet.is_some() && self.runs(OATHNET_SOURCE)))
+    }
+
+    /// Whether the lookup asks `module`.
+    #[must_use]
+    pub fn runs(&self, module: &str) -> bool {
+        self.selection
+            .is_none_or(|selection| selection.runs(module))
     }
 }
 
@@ -458,7 +475,7 @@ pub fn run(sources: Sources<'_>, selector: &str, now_unix: u64) -> ExposureRun {
     let seed = (&kind, value.as_str());
     let jobs: Vec<Job<'_, Option<LegRun>>> = breach_hybrid::exposure_order(true)
         .into_iter()
-        .filter(|&leg| searches(leg, &kind))
+        .filter(|&leg| searches(leg, &kind) && sources.runs(leg_module(leg)))
         .map(|leg| {
             let scan_id = scan_id.as_str();
             Box::new(move || run_leg(sources, leg, seed, scan_id, now_unix))
@@ -514,6 +531,16 @@ fn searches(leg: BreachLeg, kind: &EntityKind) -> bool {
         BreachLeg::PwnedPasswords | BreachLeg::HibpCatalog => false,
         BreachLeg::HibpAccount | BreachLeg::DeHashed => *kind == EntityKind::Email,
         BreachLeg::StolenTax | BreachLeg::OathNet => true,
+    }
+}
+
+/// The module a scan chooses `leg` by.
+fn leg_module(leg: BreachLeg) -> &'static str {
+    match leg {
+        BreachLeg::PwnedPasswords | BreachLeg::HibpCatalog | BreachLeg::HibpAccount => HIBP_MODULE,
+        BreachLeg::StolenTax => STOLEN_TAX_SOURCE,
+        BreachLeg::OathNet => OATHNET_SOURCE,
+        BreachLeg::DeHashed => DEHASHED_SOURCE,
     }
 }
 
@@ -2024,9 +2051,7 @@ mod tests {
         );
         let sources = Sources {
             hibp: Some(&client),
-            stolen_tax: None,
-            oathnet: None,
-            dehashed: None,
+            ..Sources::default()
         };
         let ExposureRun::Printed { text, report } = run(sources, "ada@example.com", 7) else {
             panic!("expected a printed report");
@@ -2884,6 +2909,7 @@ mod tests {
             stolen_tax: Some((&stolen_tax, &keys)),
             oathnet: Some((&oathnet, &keys)),
             dehashed: Some(&dehashed),
+            ..Sources::default()
         };
         let started = std::time::Instant::now();
         let ExposureRun::Printed { report, .. } = run(sources, "ada@example.com", 7) else {

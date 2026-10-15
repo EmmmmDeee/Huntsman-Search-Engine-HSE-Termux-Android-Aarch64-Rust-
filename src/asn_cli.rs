@@ -82,7 +82,8 @@ struct Routing {
     neighbours: Result<Neighbours, LegError>,
 }
 
-/// Look up `asn`.
+/// Look up `asn`, each leg only when the transport's lookup asks its module
+/// ([`Transport::runs_module`]).
 #[must_use]
 pub fn run<T: Transport + ?Sized + Sync>(transport: &T, asn: &str, now_unix: u64) -> AsnRun {
     let Some((value, number)) =
@@ -92,22 +93,27 @@ pub fn run<T: Transport + ?Sized + Sync>(transport: &T, asn: &str, now_unix: u64
     };
     let scan_id = crate::entity::scan_id("asn", &value);
     let (registration, routing) = std::thread::scope(|scope| {
-        let overview = scope.spawn(|| ripestat::as_overview(transport, number, now_unix));
-        let prefixes = scope.spawn(|| ripestat::announced_prefixes(transport, number, now_unix));
-        let neighbours = scope.spawn(|| ripestat::neighbours(transport, number, now_unix));
+        let calls = transport.runs_module(ripestat::SOURCE).then(|| {
+            (
+                scope.spawn(|| ripestat::as_overview(transport, number, now_unix)),
+                scope.spawn(|| ripestat::announced_prefixes(transport, number, now_unix)),
+                scope.spawn(|| ripestat::neighbours(transport, number, now_unix)),
+            )
+        });
         let registration = rdap_legs::asn(transport, number, &scan_id, now_unix);
-        let routing = Routing {
+        let routing = calls.map(|(overview, prefixes, neighbours)| Routing {
             overview: joined(overview),
             prefixes: joined(prefixes),
             neighbours: joined(neighbours),
-        };
+        });
         (registration, routing)
     });
 
     let mut report = Report::default();
     report.entities.extend(registration.entities);
     report.outcomes.extend(registration.outcome);
-    let network = routing_entities(&mut report, &value, &scan_id, &routing, now_unix);
+    let network = routing
+        .and_then(|routing| routing_entities(&mut report, &value, &scan_id, &routing, now_unix));
     merge_by_uid(&mut report.entities);
     if !report.outcomes.iter().any(|o| o.kind.is_accepted()) {
         return match network {

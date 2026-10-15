@@ -70,7 +70,11 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
     };
     let canonical = canonical_selector(kind, &query.selector)
         .ok_or_else(|| bad_selector("selector is not valid for this kind"))?;
-    match collect(kind, &canonical) {
+    match collect(
+        kind,
+        &canonical,
+        &huntsman_recon::module_selection::Selection::all(),
+    ) {
         Ok(found) => Ok(LookupReport {
             route: kind.command(),
             text: found.text,

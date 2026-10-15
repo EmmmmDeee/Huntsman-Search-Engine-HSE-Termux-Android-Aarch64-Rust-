@@ -2670,8 +2670,11 @@ mod tests {
 
     #[test]
     fn a_lookup_with_saved_scans_is_kept_as_a_scan_and_names_it() {
-        let lookup: crate::scan_service::ScanLookup =
-            Arc::new(|_kind, selector: &str| Ok(found_phone(selector)));
+        let lookup: crate::scan_service::ScanLookup = Arc::new(
+            |_kind, selector: &str, _: &crate::module_selection::Selection| {
+                Ok(found_phone(selector))
+            },
+        );
         let (routes, dir) = saved_lookup_routes("kept", lookup, Duration::from_secs(10));
         let got = scans_request(&routes, None, &format!("{PHONE_LOOKUP}{HEADER}\r\n"));
         assert!(got.starts_with("HTTP/1.1 200"), "{got}");
@@ -2716,11 +2719,13 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let lookup: crate::scan_service::ScanLookup = {
             let (gate, calls) = (Arc::clone(&gate), Arc::clone(&calls));
-            Arc::new(move |_kind, selector: &str| {
-                calls.fetch_add(1, Ordering::AcqRel);
-                drop(gate.lock().unwrap_or_else(PoisonError::into_inner));
-                Ok(found_phone(selector))
-            })
+            Arc::new(
+                move |_kind, selector: &str, _: &crate::module_selection::Selection| {
+                    calls.fetch_add(1, Ordering::AcqRel);
+                    drop(gate.lock().unwrap_or_else(PoisonError::into_inner));
+                    Ok(found_phone(selector))
+                },
+            )
         };
         let (routes, dir) = saved_lookup_routes("wait", lookup, Duration::from_millis(150));
         let held = gate.lock().unwrap();
@@ -2758,8 +2763,11 @@ mod tests {
 
     #[test]
     fn a_saved_lookup_that_finds_nothing_answers_502_with_its_reason_and_scan() {
-        let lookup: crate::scan_service::ScanLookup =
-            Arc::new(|_kind, _selector: &str| Err("every source failed".to_owned()));
+        let lookup: crate::scan_service::ScanLookup = Arc::new(
+            |_kind, _selector: &str, _: &crate::module_selection::Selection| {
+                Err("every source failed".to_owned())
+            },
+        );
         let (routes, dir) = saved_lookup_routes("failed", lookup, Duration::from_secs(10));
         let got = scans_request(&routes, None, &format!("{PHONE_LOOKUP}{HEADER}\r\n"));
         assert!(got.starts_with("HTTP/1.1 502"), "{got}");
@@ -3137,21 +3145,25 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("hse-serve-scans-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let lookup = Arc::new(|_kind: crate::scan_route::ScanKind, selector: &str| {
-            Ok(LookupOutput {
-                text: "report".into(),
-                entities: vec![
-                    crate::entity::Entity::builder(
-                        crate::entity::EntityKind::Phone,
-                        selector,
-                        0.9,
-                        "s",
-                    )
-                    .build(),
-                ],
-                outcomes: Vec::new(),
-            })
-        });
+        let lookup = Arc::new(
+            |_kind: crate::scan_route::ScanKind,
+             selector: &str,
+             _: &crate::module_selection::Selection| {
+                Ok(LookupOutput {
+                    text: "report".into(),
+                    entities: vec![
+                        crate::entity::Entity::builder(
+                            crate::entity::EntityKind::Phone,
+                            selector,
+                            0.9,
+                            "s",
+                        )
+                        .build(),
+                    ],
+                    outcomes: Vec::new(),
+                })
+            },
+        );
         let api = ScanApi::new(
             ScanService::new(ScanStore::open(&dir).unwrap(), lookup),
             None,

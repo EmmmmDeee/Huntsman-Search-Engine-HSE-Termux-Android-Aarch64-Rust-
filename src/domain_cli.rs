@@ -52,6 +52,7 @@ pub const DOMAIN_USAGE: &str = "usage: huntsman-recon domain DOMAIN [--save FILE
 
 /// The DNS leg's module name, on its outcome row and its evidence.
 const DNS_SOURCE: &str = "dns";
+const CRTSH_SOURCE: &str = "crtsh";
 /// The queried domain, as the keyed legs hold it.
 const DOMAIN_CONFIDENCE: f64 = 0.90;
 /// An address, host or mailbox the domain's own records name: its zone published it.
@@ -96,6 +97,9 @@ pub fn transport_config() -> TransportConfig {
     crtsh::transport_config()
 }
 
+/// Run every domain leg for `domain`, then check it and everything the legs found against the
+/// threat `feeds`. Keyed legs run only when `keys` holds their key, and each leg only when the
+/// transport's lookup asks its module ([`Transport::runs_module`]).
 #[must_use]
 pub fn run<T: Transport + ?Sized + Sync>(
     transport: &T,
@@ -112,43 +116,27 @@ pub fn run<T: Transport + ?Sized + Sync>(
     let mut found = Found::default();
     let mut sections = Vec::new();
 
-    sections.push(crtsh_leg(
-        transport, &domain, &scan_id, now_unix, &mut found,
-    ));
-    let certificates = certspotter::lookup(transport, keys, &domain, &scan_id, now_unix);
-    found.entities.extend(certificates.entities);
-    found.leg(certificates.outcome);
-
-    // Whether the resolvers answered the domain's own queries; when none did, its hosts are not
-    // asked either.
-    let mut resolvers_up = false;
-    // The domain's own addresses, which a filtering resolver's missing answer is read against.
-    let mut unfiltered = dns_filter::Unfiltered::Unanswered("not a name to ask".to_owned());
-    match dns::lookup_domain(transport, &domain) {
-        Some(records) => {
-            unfiltered = dns_filter::Unfiltered::from_records(&records);
-            if let Some(failure) = resolver_failure(&records) {
-                found.no_response(format!(
-                    "dns: no resolver answered ({})",
-                    failure.error.detail
-                ));
-            } else {
-                resolvers_up = true;
-            }
-            found.outcomes.push(dns_outcome(&records, now_unix));
-            found.entities.extend(dns_entities(&records, &scan_id));
-            sections.push(records.render());
-        }
-        None => {
-            found.outcomes.push(SourceExecutionOutcome::failed(
-                DNS_SOURCE,
-                now_unix,
-                SourceOutcomeKind::Inconclusive,
-                None,
-                "bad domain",
-            ));
-        }
+    if transport.runs_module(CRTSH_SOURCE) {
+        sections.push(crtsh_leg(
+            transport, &domain, &scan_id, now_unix, &mut found,
+        ));
     }
+    if transport.runs_module(certspotter::SOURCE) {
+        let certificates = certspotter::lookup(transport, keys, &domain, &scan_id, now_unix);
+        found.entities.extend(certificates.entities);
+        found.leg(certificates.outcome);
+    }
+    let Resolved {
+        resolvers_up,
+        unfiltered,
+    } = dns_leg(
+        transport,
+        &domain,
+        &scan_id,
+        now_unix,
+        &mut found,
+        &mut sections,
+    );
 
     let registration = crate::rdap_legs::domain(transport, &domain, &scan_id, now_unix);
     found.entities.extend(registration.entities);
@@ -163,7 +151,7 @@ pub fn run<T: Transport + ?Sized + Sync>(
     found.outcomes.extend(rows);
     keyed_legs(transport, keys, &domain, &scan_id, now_unix, &mut found);
     let hosts = resolve::hosts(&found.entities, &domain);
-    if resolvers_up && !hosts.is_empty() {
+    if resolvers_up && !hosts.is_empty() && transport.runs_module(RESOLVE_SOURCE) {
         let resolved = resolve::resolve(transport, &domain, &hosts, &scan_id, now_unix);
         found.entities.extend(resolved.entities);
         found.outcomes.push(resolved.outcome);
@@ -214,6 +202,72 @@ pub fn run<T: Transport + ?Sized + Sync>(
     }
 }
 
+/// What the domain's own resolution told the legs after it.
+struct Resolved {
+    /// Whether the resolvers answered the domain's own queries; when none did, its hosts are not
+    /// asked either. A lookup that does not ask `dns` cannot tell, so it asks them.
+    resolvers_up: bool,
+    /// The domain's own addresses, which a filtering resolver's missing answer is read against.
+    unfiltered: dns_filter::Unfiltered,
+}
+
+/// The `dns` leg: the domain's records, its entities and its report section. A lookup that does
+/// not ask `dns` sends none of its queries; when it asks a filtering resolver, the filters' own
+/// unfiltered answer is asked instead, as that is what they are read against.
+fn dns_leg<T: Transport + ?Sized>(
+    transport: &T,
+    domain: &str,
+    scan_id: &str,
+    now_unix: u64,
+    found: &mut Found,
+    sections: &mut Vec<String>,
+) -> Resolved {
+    if !transport.runs_module(DNS_SOURCE) {
+        let filtered = dns_filter::FILTERS
+            .iter()
+            .any(|filter| transport.runs_module(filter.source));
+        return Resolved {
+            resolvers_up: true,
+            unfiltered: if filtered {
+                dns_filter::Unfiltered::ask(transport, domain)
+            } else {
+                dns_filter::Unfiltered::Unanswered("not asked".to_owned())
+            },
+        };
+    }
+    let Some(records) = dns::lookup_domain(transport, domain) else {
+        found.outcomes.push(SourceExecutionOutcome::failed(
+            DNS_SOURCE,
+            now_unix,
+            SourceOutcomeKind::Inconclusive,
+            None,
+            "bad domain",
+        ));
+        return Resolved {
+            resolvers_up: false,
+            unfiltered: dns_filter::Unfiltered::Unanswered("not a name to ask".to_owned()),
+        };
+    };
+    let unfiltered = dns_filter::Unfiltered::from_records(&records);
+    let resolvers_up = match resolver_failure(&records) {
+        Some(failure) => {
+            found.no_response(format!(
+                "dns: no resolver answered ({})",
+                failure.error.detail
+            ));
+            false
+        }
+        None => true,
+    };
+    found.outcomes.push(dns_outcome(&records, now_unix));
+    found.entities.extend(dns_entities(&records, scan_id));
+    sections.push(records.render());
+    Resolved {
+        resolvers_up,
+        unfiltered,
+    }
+}
+
 /// The crt.sh leg: the names in certificates logged for the domain. Returns its report line.
 fn crtsh_leg<T: Transport + ?Sized>(
     transport: &T,
@@ -228,16 +282,16 @@ fn crtsh_leg<T: Transport + ?Sized>(
             found.entities.extend(report.entities);
             // crt.sh answered with its list of logged certificates; an empty list is "none".
             found.outcomes.push(if count == 0 {
-                SourceExecutionOutcome::valid_zero("crtsh", now_unix)
+                SourceExecutionOutcome::valid_zero(CRTSH_SOURCE, now_unix)
             } else {
-                SourceExecutionOutcome::success("crtsh", now_unix, count)
+                SourceExecutionOutcome::success(CRTSH_SOURCE, now_unix, count)
             });
             format!("crtsh: {count} certificate-transparency entities")
         }
         Err(CrtShError::Refused(reason)) => {
             found.refused(format!("crtsh: request refused: {reason}"));
             found.outcomes.push(SourceExecutionOutcome::failed(
-                "crtsh",
+                CRTSH_SOURCE,
                 now_unix,
                 SourceOutcomeKind::EntitlementDenied,
                 None,
@@ -255,7 +309,11 @@ fn crtsh_leg<T: Transport + ?Sized>(
                 _ => SourceOutcomeKind::Inconclusive,
             };
             found.outcomes.push(SourceExecutionOutcome::failed(
-                "crtsh", now_unix, kind, None, &message,
+                CRTSH_SOURCE,
+                now_unix,
+                kind,
+                None,
+                &message,
             ));
             format!("crtsh: unavailable ({message})")
         }
@@ -303,7 +361,7 @@ fn keyed_legs<T: Transport + ?Sized>(
     now_unix: u64,
     found: &mut Found,
 ) {
-    if virustotal::API.wanted(keys) {
+    if virustotal::API.runs(transport, keys) {
         let api = &virustotal::API;
         match virustotal::lookup(
             transport,
@@ -322,7 +380,7 @@ fn keyed_legs<T: Transport + ?Sized>(
             Err(err) => found.leg(err.outcome(api, now_unix)),
         }
     }
-    if hunter::API.wanted(keys) {
+    if hunter::API.runs(transport, keys) {
         let outcome = hunter_leg(
             transport,
             keys,

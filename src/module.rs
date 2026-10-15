@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub use crate::dependency::{ModuleCategory, ModuleCost, ModuleMeta};
 use crate::environment;
 pub use crate::environment::PROVIDER_COST_ENV_PREFIX;
+use crate::module_selection::Selection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1044,11 +1045,115 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         attack_techniques: &["T1589.001", "T1589.002"],
         description: "explicit DeHashed exact-match search with a declared purpose",
     },
+    ReachableModule {
+        name: "oathnet",
+        command: "exposure EMAIL|USERNAME | email ADDR | username HANDLE",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Breach,
+        attack_techniques: &["T1589.001", "T1589.002"],
+        description: "OathNet breach and stealer-log search of an email address or username: incidents, exposed fields and pivots",
+    },
+    ReachableModule {
+        name: "wigle",
+        command: "network BSSID|LAT,LON|SSID",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Geo,
+        attack_techniques: &["T1590"],
+        description: "WiGLE WiFi and Bluetooth sightings of a BSSID, an SSID or around a coordinate",
+    },
+    ReachableModule {
+        name: "oui",
+        command: "network BSSID",
+        access: "offline",
+        network: false,
+        category: ModuleCategory::Sensor,
+        attack_techniques: &[],
+        description: "the IEEE vendor assignment of a BSSID's OUI",
+    },
 ];
 
 #[must_use]
 pub const fn reachable_modules() -> &'static [ReachableModule] {
     REACHABLE_MODULES
+}
+
+/// The Spiderfoot module names a Huntsman module does the work of, beside `sfp_<module>`.
+/// **Pure.**
+#[must_use]
+pub fn spiderfoot_names(module: &str) -> Vec<String> {
+    let extra: &[&str] = match module {
+        "crtsh" => &["sfp_crt"],
+        "dns" => &["sfp_dnsresolve", "sfp_dnsraw"],
+        "internetdb" => &["sfp_shodan"],
+        "otx" => &["sfp_alienvault"],
+        "hibp" | "hibp_account" => &["sfp_haveibeenpwned"],
+        "ipqs" => &["sfp_ipqualityscore"],
+        "ripestat" => &["sfp_ripe"],
+        "urlhaus" | "threatfox" => &["sfp_abusech"],
+        "github_user" => &["sfp_github"],
+        "openpgp_keys" => &["sfp_pgp"],
+        "whoxy" | "rdap" => &["sfp_whois"],
+        "kickbox" => &["sfp_debounce"],
+        "greynoise" => &["sfp_greynoise_community"],
+        "hostdomain" => &["sfp_dnsresolve"],
+        _ => &[],
+    };
+    let mut names = vec![module.to_owned(), format!("sfp_{module}")];
+    names.extend(extra.iter().map(|name| (*name).to_owned()));
+    names
+}
+
+/// The module an outcome or evidence label belongs to, by the name a scan chooses it by: HIBP's
+/// account search is `hibp`, `WiGLE`'s Bluetooth search `wigle`, and a module's part
+/// (`asic_persons.banned`) the module. **Pure.**
+#[must_use]
+pub fn module_of(label: &str) -> &str {
+    match label {
+        "hibp_account" => "hibp",
+        "wigle_bluetooth" => "wigle",
+        _ => label.split_once('.').map_or(label, |(module, _)| module),
+    }
+}
+
+/// The selection a scan's chosen `names` make. Each name is a module [`reachable_modules`] lists,
+/// or a Spiderfoot module (`sfp_spamhaus`, `sfp_dnsresolve`) standing for every module that does
+/// its work, in any case. No name chooses every module.
+///
+/// # Errors
+/// Every name that is neither, in the order given.
+pub fn selection(names: &[String]) -> Result<Selection, String> {
+    let names: Vec<String> = names
+        .iter()
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect();
+    if names.is_empty() {
+        return Ok(Selection::all());
+    }
+    let mut chosen = Vec::new();
+    let mut unknown = Vec::new();
+    for name in &names {
+        let modules: Vec<&str> = REACHABLE_MODULES
+            .iter()
+            .map(|module| module.name)
+            .filter(|module| module == name || spiderfoot_names(module).iter().any(|sf| sf == name))
+            .collect();
+        if modules.is_empty() {
+            unknown.push(name.as_str());
+        }
+        chosen.extend(modules);
+    }
+    if unknown.is_empty() {
+        Ok(Selection::only(chosen))
+    } else {
+        Err(format!(
+            "no module is named {}; /api/modules and the New Scan page list them, and a \
+             Spiderfoot name (sfp_...) stands for the modules that do its work",
+            unknown.join(", ")
+        ))
+    }
 }
 
 #[cfg(test)]

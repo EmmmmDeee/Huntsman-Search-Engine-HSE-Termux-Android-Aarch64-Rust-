@@ -76,6 +76,13 @@ impl Api {
             Some(key) => !key.required || keys.get(key.slot).is_some(),
         }
     }
+
+    /// Whether this leg runs in the lookup `transport` serves: [`Api::wanted`] for `keys`, and
+    /// asked by the lookup (see [`Transport::runs_module`]).
+    #[must_use]
+    pub fn runs<T: Transport + ?Sized>(&self, transport: &T, keys: &Keys) -> bool {
+        self.wanted(keys) && transport.runs_module(self.source)
+    }
 }
 
 /// What a provider answered.
