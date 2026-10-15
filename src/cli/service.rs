@@ -17,14 +17,12 @@ use huntsman_recon::scan_route::{
     ScanKind, canonical_selector, explicit_people_is_name, infer_kind, inferred_people_is_name,
     parse_kind,
 };
-use huntsman_recon::scan_service::ScanService;
-use huntsman_recon::scan_store::ScanStore;
 use huntsman_recon::web_server::{
     LookupError, LookupQuery, LookupReport, ServeConfig, Server, resolve_serve_bind,
 };
 
 use super::lookup::{Refused, collect};
-use super::scans::{default_scan_dir, scan_lookup, slot_check};
+use super::scans::{default_rules_dir, default_scan_dir, open_api};
 
 /// Printed once by `serve` under Termux. Android may stop a process that Termux started while
 /// Termux is in the background or the screen is off, so the page would stop answering.
@@ -89,10 +87,12 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
     }
 }
 
-/// The saved scans `serve` shows and starts: the same store, runner and API router as `scans`, so a
-/// scan run from either shows in both. A scan a stopped server left running reads `ABORTED`. When
-/// there is no usable scan directory the server still starts, says why on stderr, and the scan
-/// routes answer `404`; lookups and analysis are unaffected.
+/// The saved scans `serve` shows and starts: the same store, runner, correlation rules and API
+/// router as `scans`, so a scan run from either shows in both. A scan a stopped server left running
+/// reads `ABORTED`, and a rule file in `~/.huntsman/correlations` that cannot be read is named on
+/// stderr as well as in each scan's log. When there is no usable scan directory the server still
+/// starts, says why on stderr, and the scan routes answer `404`; lookups and analysis are
+/// unaffected.
 fn scan_api() -> Option<std::sync::Arc<ScanApi>> {
     let Some(dir) = default_scan_dir() else {
         eprintln!(
@@ -100,15 +100,16 @@ fn scan_api() -> Option<std::sync::Arc<ScanApi>> {
         );
         return None;
     };
-    let opened = ScanStore::open(&dir).and_then(|store| {
-        store.recover(huntsman_recon::entity::unix_now().saturating_mul(1000))?;
-        Ok(store)
-    });
-    match opened {
-        Ok(store) => Some(std::sync::Arc::new(ScanApi::new(
-            ScanService::new(store, scan_lookup()),
-            Some(slot_check()),
-        ))),
+    match open_api(&dir, default_rules_dir().as_deref()) {
+        Ok(api) => {
+            for failure in api.service().rule_errors() {
+                eprintln!(
+                    "serve: correlation rule {} is not used: {}",
+                    failure.rule, failure.reason
+                );
+            }
+            Some(std::sync::Arc::new(api))
+        }
         Err(error) => {
             eprintln!("serve: saved scans are off: {}: {error}", dir.display());
             None
