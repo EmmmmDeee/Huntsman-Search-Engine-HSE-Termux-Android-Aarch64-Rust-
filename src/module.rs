@@ -712,6 +712,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "DNS and mail-policy lookup",
     },
     ReachableModule {
+        name: "dnsresolve",
+        command: "domain DOMAIN | ip ADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1590.002"],
+        description: "A and AAAA records of every subdomain a domain lookup finds, PTR records of an address",
+    },
+    ReachableModule {
         name: "stolen_tax",
         command: "recon stolen-tax QUERY",
         access: "operator_key",
