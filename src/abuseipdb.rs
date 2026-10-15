@@ -95,13 +95,13 @@ struct Data {
     #[serde(default)]
     ip_version: Option<u8>,
     #[serde(default)]
-    reports: Vec<Reported>,
+    reports: Vec<AbuseReport>,
 }
 
 /// One report, as `verbose` lists it.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Reported {
+struct AbuseReport {
     #[serde(default)]
     reported_at: Option<String>,
     #[serde(default)]
@@ -154,7 +154,7 @@ fn category(id: u16) -> String {
 
 /// One report as a row: `reported at | categories | reporter id (country) | comment`, a
 /// comment's line breaks as spaces and a part the report leaves empty left out. **Pure.**
-fn report_row(report: &Reported) -> String {
+fn report_row(report: &AbuseReport) -> String {
     let categories: Vec<String> = report.categories.iter().map(|id| category(*id)).collect();
     let country = report
         .reporter_country_name
