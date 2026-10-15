@@ -1,0 +1,1 @@
+- `PipelineLimits::max_concurrent` and the `roi` round-sizing and adaptive-termination helpers (`top_k_for_round`, `effective_cutoff`, `KNEE_FRACTION`, `marginal_yield`, `should_terminate_adaptive`, `DEFAULT_MIN_MARGINAL_YIELD`), which nothing called: no dispatch runs concurrently or stops on marginal yield, so the limit and the knobs described behaviour the engine does not have.
