@@ -188,6 +188,7 @@ fn a_quoted_public_ca_is_not_an_enterprise_issuer() {
 fn public_cas_are_recognised_case_insensitively() {
     assert!(is_public_ca("DigiCert Inc"));
     assert!(is_public_ca("let's encrypt"));
+    assert!(is_public_ca("SSL Corporation"));
     assert!(!is_public_ca("Acme Enterprise CA"));
 }
 

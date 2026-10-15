@@ -76,6 +76,8 @@ const PUBLIC_CA_ORG_PREFIXES: &[&str] = &[
     "buypass",
     "zerossl",
     "ssl.com",
+    // SSL.com issues under its legal name.
+    "ssl corporation",
     "actalis",
     "certum",
     "swisssign",
