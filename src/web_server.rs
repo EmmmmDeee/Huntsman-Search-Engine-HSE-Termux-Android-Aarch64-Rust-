@@ -602,7 +602,7 @@ fn handle_stream_with(
     drop(waiting);
     let response = respond(&request, config, routes);
     stream
-        .write_all(response.as_bytes())
+        .write_all(&response)
         .map_err(|error| Error::Store(format!("serve write: {error}")))?;
     stream
         .flush()
@@ -796,11 +796,17 @@ struct Health<'a> {
 /// The router for a server started with this bind and token, built the way `serve` builds it.
 #[cfg(test)]
 fn response_for_request(request: &str, bearer_token: Option<&str>, bind: SocketAddr) -> String {
-    respond(
+    text(respond(
         request,
         &test_config(bind, bearer_token),
         &Routes::default(),
-    )
+    ))
+}
+
+/// An answer that is text, as text.
+#[cfg(test)]
+fn text(answer: Vec<u8>) -> String {
+    String::from_utf8(answer).unwrap_or_else(|error| panic!("an answer that is not text: {error}"))
 }
 
 #[cfg(test)]
@@ -809,7 +815,9 @@ fn test_config(bind: SocketAddr, bearer_token: Option<&str>) -> ServeConfig {
         .unwrap_or_else(|error| panic!("{bind} with {bearer_token:?}: {error}"))
 }
 
-fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
+/// The bytes to write for one request: text for every answer but a scan export that is a
+/// workbook.
+fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
     let (bind, bearer_token) = (config.bind, config.bearer_token.as_deref());
     if request == "REQUEST_TOO_LARGE" {
         return response(
@@ -817,15 +825,16 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
             "text/plain; charset=utf-8",
             "request too large\n",
             false,
-        );
+        )
+        .into_bytes();
     }
 
     if request == "REQUEST_TIMEOUT" {
-        return response(408, "text/plain; charset=utf-8", "request timeout\n", false);
+        return response(408, "text/plain; charset=utf-8", "request timeout\n", false).into_bytes();
     }
 
     let Some(parsed) = parse_request(request) else {
-        return response(400, "text/plain; charset=utf-8", "bad request\n", false);
+        return response(400, "text/plain; charset=utf-8", "bad request\n", false).into_bytes();
     };
 
     // DNS-rebinding guard. A loopback server is reached from a page whose origin is
@@ -839,7 +848,8 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
             "text/plain; charset=utf-8",
             "host not allowed\n",
             parsed.method == Method::Head,
-        );
+        )
+        .into_bytes();
     }
 
     // Only the scan API changes state, so only it takes POST.
@@ -851,7 +861,8 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
             "text/plain; charset=utf-8",
             "method not allowed\n",
             false,
-        );
+        )
+        .into_bytes();
     }
 
     let head = parsed.method == Method::Head;
@@ -862,13 +873,13 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
     if protected
         && bearer_token.is_some_and(|expected| !bearer_matches(parsed.authorization, expected))
     {
-        return response(401, "application/json; charset=utf-8", UNAUTHORIZED, head);
+        return response(401, "application/json; charset=utf-8", UNAUTHORIZED, head).into_bytes();
     }
 
     if ScanApi::handles(parsed.path) {
         return scans_response(&parsed, routes.scans.as_ref());
     }
-    match parsed.path {
+    let text = match parsed.path {
         "/" | "/index.html" => response(200, "text/html; charset=utf-8", INDEX_HTML, head),
         "/api/health" => {
             let body = serde_json::to_string_pretty(&Health {
@@ -906,7 +917,8 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> String {
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
-    }
+    };
+    text.into_bytes()
 }
 
 /// The answer to a protected request without the server's token. It names the remedy, because the
@@ -989,21 +1001,22 @@ fn lookup_response(parsed: &ParsedRequest<'_>, lookups: Option<&Lookups>) -> Str
 /// the lookup header (which another origin cannot send without a preflight this server never
 /// approves), and on a public bind the bearer token. Parameters travel in the query string, so a
 /// request that sends a body is refused rather than half read.
-fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<ScanApi>>) -> String {
+fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<ScanApi>>) -> Vec<u8> {
     let Some(scans) = scans else {
-        return json_error(404, "saved scans are not enabled on this server");
+        return json_error(404, "saved scans are not enabled on this server").into_bytes();
     };
     if parsed
         .sec_fetch_site
         .is_some_and(|site| !matches!(site, "same-origin" | "none"))
     {
-        return json_error(403, "cross-site scan request refused");
+        return json_error(403, "cross-site scan request refused").into_bytes();
     }
     if !parsed.lookup_header {
-        return json_error(403, "the scan API needs the X-Huntsman-Lookup: 1 header");
+        return json_error(403, "the scan API needs the X-Huntsman-Lookup: 1 header").into_bytes();
     }
     if parsed.has_body {
-        return json_error(400, "send the parameters in the query string, with no body");
+        return json_error(400, "send the parameters in the query string, with no body")
+            .into_bytes();
     }
     let head = parsed.method == Method::Head;
     let (api, method, path, query) = (
@@ -1018,7 +1031,7 @@ fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<ScanApi>>) -> S
         .spawn(move || api.handle(method, &path, &query));
     let answer = match worker {
         Ok(worker) => worker.join(),
-        Err(_) => return json_error(503, "could not start a scan API worker"),
+        Err(_) => return json_error(503, "could not start a scan API worker").into_bytes(),
     };
     match answer {
         Ok(answer) => {
@@ -1028,7 +1041,7 @@ fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<ScanApi>>) -> S
                     header_filename(name)
                 )
             });
-            response_with(
+            response_bytes(
                 answer.status,
                 answer.content_type,
                 &answer.body,
@@ -1036,7 +1049,7 @@ fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<ScanApi>>) -> S
                 disposition.as_deref().unwrap_or(""),
             )
         }
-        Err(_) => json_error(500, "the scan API failed unexpectedly"),
+        Err(_) => json_error(500, "the scan API failed unexpectedly").into_bytes(),
     }
 }
 
@@ -1259,6 +1272,31 @@ fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
 
 /// [`response`] with `extra`, whole `Name: value\r\n` header lines, after the standard ones.
 fn response_with(status: u16, content_type: &str, body: &str, head: bool, extra: &str) -> String {
+    let mut out = response_head(status, content_type, body.len(), extra);
+    if !head {
+        out.push_str(body);
+    }
+    out
+}
+
+/// [`response_with`] for a body of bytes, such as an Excel export.
+fn response_bytes(
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    head: bool,
+    extra: &str,
+) -> Vec<u8> {
+    let mut out = response_head(status, content_type, body.len(), extra).into_bytes();
+    if !head {
+        out.extend_from_slice(body);
+    }
+    out
+}
+
+/// The status line and headers of an answer whose body is `content_length` bytes, through the
+/// blank line that ends them.
+fn response_head(status: u16, content_type: &str, content_length: usize, extra: &str) -> String {
     let reason = match status {
         200 => "OK",
         202 => "Accepted",
@@ -1282,15 +1320,13 @@ fn response_with(status: u16, content_type: &str, body: &str, head: bool, extra:
         401 => "WWW-Authenticate: Bearer realm=\"huntsman-recon\"\r\n",
         _ => "",
     };
-    let content_length = body.len();
-    let rendered_body = if head { "" } else { body };
     let policy = if content_type.starts_with("text/html") {
         PAGE_POLICY.as_str()
     } else {
         OTHER_POLICY
     };
     format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{status_header}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: {policy}\r\n{extra}\r\n{rendered_body}"
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{status_header}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: {policy}\r\n{extra}\r\n"
     )
 }
 
@@ -1483,11 +1519,11 @@ mod tests {
                     scans: None,
                 };
                 let ask = |path: &str| {
-                    respond(
+                    text(respond(
                         &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n{HEADER}\r\n"),
                         &config,
                         &routes,
-                    )
+                    ))
                 };
                 for path in [
                     "/",
@@ -2094,7 +2130,11 @@ mod tests {
             analyze: None,
             scans: None,
         };
-        respond(request, &test_config(bind_for(token), token), &routes)
+        text(respond(
+            request,
+            &test_config(bind_for(token), token),
+            &routes,
+        ))
     }
 
     const HEADER: &str = "X-Huntsman-Lookup: 1\r\n";
@@ -2384,11 +2424,11 @@ mod tests {
     }
 
     fn analyze(query: &str, extra: &str, token: Option<&str>, routes: &Routes) -> String {
-        respond(
+        text(respond(
             &format!("GET /api/analyze?{query} HTTP/1.1\r\nHost: localhost\r\n{extra}\r\n"),
             &test_config(bind_for(token), token),
             routes,
-        )
+        ))
     }
 
     #[test]
@@ -2451,11 +2491,11 @@ mod tests {
             assert!(response.contains(fragment), "{query}: {response}");
             assert!(!response.contains("\"seeds\":["), "{query} ran the spine");
         }
-        let post = respond(
+        let post = text(respond(
             "POST /api/analyze?seeds=a HTTP/1.1\r\nHost: localhost\r\n\r\n",
             &test_config(loopback_bind(), None),
             &echo_seeds(),
-        );
+        ));
         assert!(post.starts_with("HTTP/1.1 405"), "{post}");
     }
 
@@ -2611,7 +2651,43 @@ mod tests {
     }
 
     fn scans_request(routes: &Routes, token: Option<&str>, request: &str) -> String {
-        respond(request, &test_config(bind_for(token), token), routes)
+        text(respond(
+            request,
+            &test_config(bind_for(token), token),
+            routes,
+        ))
+    }
+
+    /// An Excel export is bytes, sent whole after its headers, its length counted in bytes.
+    #[test]
+    fn an_excel_export_is_sent_as_bytes_with_its_exact_length() {
+        let (routes, id, dir) = scan_routes("xlsx");
+        let book = respond(
+            &format!("GET /api/scans/{id}/export?format=xlsx HTTP/1.1\r\n{HEADER}\r\n"),
+            &test_config(loopback_bind(), None),
+            &routes,
+        );
+        let split = book.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let (head_bytes, body) = book.split_at(split);
+        let head_text = String::from_utf8(head_bytes.to_vec()).unwrap();
+        assert!(head_text.starts_with("HTTP/1.1 200"), "{head_text}");
+        assert_eq!(
+            header(&head_text, "Content-Type"),
+            Some(crate::xlsx::CONTENT_TYPE)
+        );
+        assert_eq!(
+            header(&head_text, "Content-Length"),
+            Some(body.len().to_string().as_str())
+        );
+        assert!(
+            header(&head_text, "Content-Disposition")
+                .unwrap()
+                .ends_with(".xlsx\""),
+            "{head_text}"
+        );
+        assert!(body.starts_with(b"PK\x03\x04"));
+        assert!(std::str::from_utf8(body).is_err(), "a workbook is not text");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The saved scans answer through serve with the same guards as a lookup: the header, never
