@@ -1369,32 +1369,46 @@ mod tests {
             script.contains("const refused=res=>{if(res.r.status===401){askToken();return true}")
         );
         assert_eq!(script.matches("refused(res)").count(), 3);
-        // Every request goes through `call`, which adds the header: no bare `fetch` elsewhere.
-        assert_eq!(script.matches("fetch(").count(), 1);
+        // Every request goes through `call`, which adds the header, except an export, which is
+        // read as a file and sends the same headers: no bare `fetch` elsewhere.
+        assert_eq!(script.matches("fetch(").count(), 2);
+        assert!(script.contains("await fetch(base()+'/export?'+p,{headers:headers(LH),"));
         assert!(script.contains("/(?:^#|&)token=([^&]*)/.exec(location.hash)"));
         assert!(script.contains("history.replaceState("));
     }
 
-    /// The page is the HSE console again: an app bar with the locator mark, one tab per view
-    /// (a bottom tab bar on a phone, a top nav on a wider screen), and a view for each tab.
+    /// The page is laid out as Spiderfoot 4.0's: an app bar with the locator mark, the theme switch
+    /// and About, Spiderfoot's New Scan, Scans and Settings plus Analyze as tabs (a bottom tab bar
+    /// on a phone, a top nav on a wider screen), one scan's sections under `#/scan/ID`, and a
+    /// view for each.
     #[test]
     fn the_page_is_the_console_shell_with_a_tab_per_view() {
         assert!(INDEX_HTML.contains(r#"<header class="appbar">"#));
         assert!(INDEX_HTML.contains(r#"<nav class="navbar" aria-label="Primary">"#));
         let script = inline_block(INDEX_HTML, "script");
-        assert!(script.contains("const views=['lookup','analyze','status'];"));
-        for view in ["lookup", "analyze", "status"] {
+        assert!(
+            script.contains("const VIEWS=['scans','newscan','scan','analyze','settings','about'];")
+        );
+        for view in ["newscan", "scans", "analyze", "settings"] {
             assert!(
                 INDEX_HTML.contains(&format!(
-                    r##"<a class="navlink" id="nav-{view}" href="#/{view}">"##
+                    r##"<a class="navlink" data-view="{view}" href="#/{view}">"##
                 )),
                 "{view}"
             );
+        }
+        assert!(INDEX_HTML.contains(r##"<a class="iconbtn" id="nav-about" href="#/about""##));
+        for view in ["scans", "newscan", "scan", "analyze", "settings", "about"] {
             assert!(
-                INDEX_HTML.contains(&format!(r#"<section id="view-{view}""#)),
+                INDEX_HTML.contains(&format!(r#"<section id="view-{view}" hidden>"#)),
                 "{view}"
             );
         }
+        // Spiderfoot's sections of one scan, and the addresses an older page used.
+        assert!(script.contains(
+            "const TABS=['summary','correlations','browse','graph','settings','log'];"
+        ));
+        assert!(script.contains("({lookup:'newscan',status:'about'})[parts[0]]"));
         let style = inline_block(INDEX_HTML, "style");
         assert!(style.contains(".navbar{position:fixed;left:0;right:0;bottom:0;"));
         assert!(style.contains("@media (min-width:768px){\n.navbar{top:"));
@@ -1836,12 +1850,16 @@ mod tests {
 
     #[test]
     fn the_page_offers_every_lookup_kind_the_cli_routes() {
-        // The kind picker is how a phone user names a kind; a kind missing from it is reachable
-        // only by `auto` inference, and an SSID never is.
+        // New Scan's target type is how a phone user names a kind; a kind missing from it is
+        // reachable only by `auto` inference, and an SSID never is.
+        let picker = &INDEX_HTML[INDEX_HTML.find(r#"<select id="skind">"#).unwrap()..];
+        let picker = &picker[..picker.find("</select>").unwrap()];
+        assert!(picker.starts_with(r#"<select id="skind"><option value="auto">"#));
         for kind in crate::scan_route::ScanKind::ALL {
-            let option = format!("<option value=\"{0}\">{0}</option>", kind.command());
-            assert!(INDEX_HTML.contains(&option), "missing {option}");
+            let option = format!("<option value=\"{}\">", kind.command());
+            assert!(picker.contains(&option), "missing {option}");
         }
+        assert_eq!(picker.matches("<option ").count(), 1 + crate::scan_route::ScanKind::ALL.len());
     }
 
     #[test]
@@ -2277,7 +2295,7 @@ mod tests {
     /// header: it makes no network request and spends no key.
     #[test]
     fn the_page_runs_the_offline_analysis() {
-        assert!(INDEX_HTML.contains(r#"<form id="analyze">"#));
+        assert!(INDEX_HTML.contains(r#"<form class="row" id="analyze">"#));
         assert!(INDEX_HTML.contains("call('/api/analyze?'"));
         let script = inline_block(INDEX_HTML, "script");
         let analyze_call = &script[script.find("call('/api/analyze?'").unwrap()..];
