@@ -193,7 +193,22 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     }
     assert_eq!(outcome(&report, RESOLVE_SOURCE), SourceOutcomeKind::Success);
     assert_eq!(outcome(&report, "rdap"), SourceOutcomeKind::Success);
-    assert_eq!(report.outcomes.len(), 13, "an unkeyed leg reports nothing");
+    // The DNS blocklists are keyless and always asked; this transport has no system resolver.
+    for source in [
+        "spamhaus",
+        "spamcop",
+        "uceprotect",
+        "dronebl",
+        "sorbs",
+        "surbl",
+    ] {
+        assert_eq!(
+            outcome(&report, source),
+            SourceOutcomeKind::DnsFailure,
+            "{source}"
+        );
+    }
+    assert_eq!(report.outcomes.len(), 19, "an unkeyed leg reports nothing");
 
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
     assert!(ip.has_tag(tags::VULNERABLE));
