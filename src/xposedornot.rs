@@ -2,7 +2,10 @@
 //!
 //! One lookup is one keyless `GET https://api.xposedornot.com/v1/check-email/{email}`. Kept: the
 //! breach names (at most [`MAX_NAMES`]) and how many there are. No record content is returned or
-//! kept. An address in no breach answers `{"Error":"Not found"}` (or 404), a valid zero.
+//! kept. An address in no breach answers `200` `{"Error":"Not found","email":null}`, a valid zero;
+//! a `404` carrying that body is read the same way. Any other `404`, such as
+//! `{"detail":"Not Found"}` for a path the API does not have, is a failed lookup, never a zero
+//! (both checked 2026-10-15).
 
 use serde::Deserialize;
 
@@ -61,7 +64,21 @@ pub fn lookup(
     };
     match api_leg::get(transport, &API, keys, &url(email), now_unix)? {
         Answer::Body(body) => decode(&body),
-        Answer::NotFound(_) => Ok(None),
+        Answer::NotFound(body) => decode_not_found(&body),
+    }
+}
+
+/// One `404` body: the miss is a valid zero, anything else is [`LegError::Unexpected`]. **Pure.**
+///
+/// # Errors
+/// [`LegError::Unexpected`] for a `404` that is not the miss.
+fn decode_not_found(body: &[u8]) -> Result<Option<Finding>, LegError> {
+    match api_leg::decode::<Body>(body) {
+        Ok(Body {
+            breaches: None,
+            error: Some(error),
+        }) if error.eq_ignore_ascii_case("not found") => Ok(None),
+        _ => Err(LegError::Unexpected(404)),
     }
 }
 
@@ -160,5 +177,32 @@ mod tests {
             url("a+b@example.com"),
             "https://api.xposedornot.com/v1/check-email/a%2Bb%40example.com"
         );
+    }
+
+    #[test]
+    fn a_404_for_a_path_the_api_lacks_is_a_failure_not_a_valid_zero() {
+        // Recorded for `https://api.xposedornot.com/v1/check-emailx/test%40example.com` on 2026-10-15.
+        let unknown = r#"{"detail":"Not Found"}"#;
+        let transport = crate::test_support::OneResponse::json(404, unknown);
+        let looked_up = lookup(
+            &transport,
+            &Keys::default(),
+            Indicator::Email("test@example.com"),
+            1,
+        );
+        assert!(
+            matches!(looked_up, Err(LegError::Unexpected(404))),
+            "{looked_up:?}"
+        );
+        // The miss, as a 404, is still a valid zero.
+        let miss = r#"{"Error":"Not found","email":null}"#;
+        let transport = crate::test_support::OneResponse::json(404, miss);
+        let looked_up = lookup(
+            &transport,
+            &Keys::default(),
+            Indicator::Email("test@example.com"),
+            1,
+        );
+        assert!(matches!(looked_up, Ok(None)), "{looked_up:?}");
     }
 }
