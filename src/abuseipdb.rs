@@ -1,10 +1,13 @@
 //! `AbuseIPDB` check: community abuse reports for one IP (free key, 1,000 checks a day).
 //!
-//! One lookup is one `GET https://api.abuseipdb.com/api/v2/check?ipAddress={ip}&maxAgeInDays=90`
-//! with the key in the `Key` header. It runs only when `HUNTSMAN_ABUSEIPDB_KEY` is set. The answer
-//! is the provider's confidence score (0 to 100), report counts over the window, the network's
-//! usage type, ISP and domain, and whether the address is a Tor exit or allow-listed. An answer
-//! whose `ipAddress` is not the address looked up (however either is written) is refused.
+//! One lookup is one
+//! `GET https://api.abuseipdb.com/api/v2/check?ipAddress={ip}&maxAgeInDays=90&verbose` with the key
+//! in the `Key` header. It runs only when `HUNTSMAN_ABUSEIPDB_KEY` is set. The answer is the
+//! provider's confidence score (0 to 100), report counts over the window, the network's usage
+//! type, ISP and domain, whether the address is public, a Tor exit or allow-listed, and (asked for
+//! with `verbose`) every report: when, which abuse categories, the reporter's id and country and
+//! their comment. All of it is kept, with the whole answer as `raw_answer`. An answer whose
+//! `ipAddress` is not the address looked up (however either is written) is refused.
 
 use serde::Deserialize;
 use std::net::IpAddr;
@@ -42,6 +45,17 @@ pub struct Check {
     pub hostnames: Vec<String>,
     pub tor: bool,
     pub allow_listed: Option<bool>,
+    pub country_name: Option<String>,
+    pub public: Option<bool>,
+    pub ip_version: Option<u8>,
+    /// Each report in answer order: `reported at | categories | reporter | comment`.
+    pub reports: Vec<String>,
+    /// Each abuse category reported, by name, with how many reports give it, most first.
+    pub categories: Vec<String>,
+    /// The whole answer as compact JSON.
+    pub raw_answer: String,
+    /// The answer with every report was past the body limit, so this is the check without them.
+    pub reports_unread: bool,
 }
 
 #[derive(Deserialize)]
@@ -74,18 +88,119 @@ struct Data {
     is_tor: bool,
     #[serde(default)]
     is_whitelisted: Option<bool>,
+    #[serde(default)]
+    country_name: Option<String>,
+    #[serde(default)]
+    is_public: Option<bool>,
+    #[serde(default)]
+    ip_version: Option<u8>,
+    #[serde(default)]
+    reports: Vec<Reported>,
 }
 
-/// The request URL for `ip`. **Pure.**
+/// One report, as `verbose` lists it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Reported {
+    #[serde(default)]
+    reported_at: Option<String>,
+    #[serde(default)]
+    comment: Option<String>,
+    #[serde(default)]
+    categories: Vec<u16>,
+    #[serde(default)]
+    reporter_id: Option<u64>,
+    #[serde(default)]
+    reporter_country_code: Option<String>,
+    #[serde(default)]
+    reporter_country_name: Option<String>,
+}
+
+/// The name `AbuseIPDB` gives category `id` (<https://www.abuseipdb.com/categories>). **Pure.**
+#[must_use]
+pub const fn category_name(id: u16) -> Option<&'static str> {
+    Some(match id {
+        1 => "DNS Compromise",
+        2 => "DNS Poisoning",
+        3 => "Fraud Orders",
+        4 => "DDoS Attack",
+        5 => "FTP Brute-Force",
+        6 => "Ping of Death",
+        7 => "Phishing",
+        8 => "Fraud VoIP",
+        9 => "Open Proxy",
+        10 => "Web Spam",
+        11 => "Email Spam",
+        12 => "Blog Spam",
+        13 => "VPN IP",
+        14 => "Port Scan",
+        15 => "Hacking",
+        16 => "SQL Injection",
+        17 => "Spoofing",
+        18 => "Brute-Force",
+        19 => "Bad Web Bot",
+        20 => "Exploited Host",
+        21 => "Web App Attack",
+        22 => "SSH",
+        23 => "IoT Targeted",
+        _ => return None,
+    })
+}
+
+/// Category `id` by name, or `category {id}` for one this list does not know. **Pure.**
+fn category(id: u16) -> String {
+    category_name(id).map_or_else(|| format!("category {id}"), str::to_owned)
+}
+
+/// One report as a row: `reported at | categories | reporter id (country) | comment`, a
+/// comment's line breaks as spaces and a part the report leaves empty left out. **Pure.**
+fn report_row(report: &Reported) -> String {
+    let categories: Vec<String> = report.categories.iter().map(|id| category(*id)).collect();
+    let country = report
+        .reporter_country_name
+        .as_deref()
+        .or(report.reporter_country_code.as_deref());
+    let reporter = match (report.reporter_id, country) {
+        (Some(id), Some(country)) => format!("reporter {id} ({country})"),
+        (Some(id), None) => format!("reporter {id}"),
+        (None, Some(country)) => format!("reporter in {country}"),
+        (None, None) => String::new(),
+    };
+    let comment = report
+        .comment
+        .as_deref()
+        .map(|c| c.split_whitespace().collect::<Vec<_>>().join(" "))
+        .unwrap_or_default();
+    [
+        report.reported_at.clone().unwrap_or_default(),
+        categories.join(", "),
+        reporter,
+        comment,
+    ]
+    .iter()
+    .filter_map(|part| api_leg::clean(Some(part)))
+    .collect::<Vec<_>>()
+    .join(" | ")
+}
+
+/// The request URL for `ip`, asking for every report. **Pure.**
 #[must_use]
 pub fn url(ip: &str) -> String {
+    format!("{}&verbose", summary_url(ip))
+}
+
+/// The request URL for `ip` without the report list. **Pure.**
+#[must_use]
+pub fn summary_url(ip: &str) -> String {
     format!(
         "https://api.abuseipdb.com/api/v2/check?ipAddress={}&maxAgeInDays={MAX_AGE_DAYS}",
         percent_encode_component(ip)
     )
 }
 
-/// Check `ip` with the key in `keys`.
+/// Check `ip` with the key in `keys`, asking for every report. When the answer with every report
+/// is past the body limit, the check is asked again without them and says so
+/// ([`Check::reports_unread`]), so the score and counts are never lost to the list's length.
 ///
 /// # Errors
 /// [`LegError::MissingKey`] before any request when no key is configured; otherwise the
@@ -96,7 +211,24 @@ pub fn lookup<T: Transport + ?Sized>(
     ip: &str,
     now_unix: u64,
 ) -> Result<Check, LegError> {
-    match api_leg::get(transport, &API, keys, &url(ip), now_unix)? {
+    match check(transport, keys, &url(ip), ip, now_unix) {
+        Err(LegError::TooLarge) => {
+            let mut summary = check(transport, keys, &summary_url(ip), ip, now_unix)?;
+            summary.reports_unread = true;
+            Ok(summary)
+        }
+        answered => answered,
+    }
+}
+
+fn check<T: Transport + ?Sized>(
+    transport: &T,
+    keys: &Keys,
+    url: &str,
+    ip: &str,
+    now_unix: u64,
+) -> Result<Check, LegError> {
+    match api_leg::get(transport, &API, keys, url, now_unix)? {
         Answer::Body(body) => decode(&body, ip),
         Answer::NotFound(_) => Err(LegError::Unexpected(404)),
     }
@@ -108,6 +240,7 @@ pub fn lookup<T: Transport + ?Sized>(
 /// [`LegError::Decode`] for a body that is not the documented `data` object or is about another
 /// address.
 pub fn decode(body: &[u8], ip: &str) -> Result<Check, LegError> {
+    let whole: serde_json::Value = api_leg::decode(body)?;
     let data = api_leg::decode::<Envelope>(body)?.data;
     if !matches!(
         (data.ip_address.trim().parse::<IpAddr>(), ip.parse::<IpAddr>()),
@@ -125,6 +258,14 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Check, LegError> {
         .collect();
     hostnames.sort();
     hostnames.dedup();
+    let mut counts: Vec<(u16, usize)> = Vec::new();
+    for id in data.reports.iter().flat_map(|r| &r.categories) {
+        match counts.iter_mut().find(|(seen, _)| seen == id) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((*id, 1)),
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     Ok(Check {
         confidence: data.abuse_confidence_score,
         total_reports: data.total_reports,
@@ -137,6 +278,16 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Check, LegError> {
         hostnames,
         tor: data.is_tor,
         allow_listed: data.is_whitelisted,
+        country_name: api_leg::clean(data.country_name.as_deref()),
+        public: data.is_public,
+        ip_version: data.ip_version,
+        reports: data.reports.iter().map(report_row).collect(),
+        categories: counts
+            .iter()
+            .map(|(id, n)| format!("{} ({n})", category(*id)))
+            .collect(),
+        raw_answer: whole.to_string(),
+        reports_unread: false,
     })
 }
 
@@ -193,7 +344,7 @@ mod tests {
     fn the_url_carries_the_window_and_no_key() {
         assert_eq!(
             url("1.2.3.4"),
-            "https://api.abuseipdb.com/api/v2/check?ipAddress=1.2.3.4&maxAgeInDays=90"
+            "https://api.abuseipdb.com/api/v2/check?ipAddress=1.2.3.4&maxAgeInDays=90&verbose"
         );
     }
 }
