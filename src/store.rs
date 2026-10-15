@@ -44,13 +44,49 @@ impl Store {
     /// Load a session by id.
     ///
     /// # Errors
-    /// `Error::Invalid` for an unsafe id; `Error::Store` for IO, size, symlink, or JSON failure.
+    /// `Error::Invalid` for an unsafe id, or for a file that was read but does not hold a session
+    /// (bad data); `Error::Store` for IO, size, or symlink refusal (unreadable input). Callers map
+    /// the two to distinct exit statuses, as they do for `ledger::load_chain`.
     pub fn load(&self, id: &str) -> Result<Session, Error> {
         if !valid_session_id(id) {
             return Err(Error::Invalid(format!("unsafe session id: {id}")));
         }
         let path = self.root.join("sessions").join(format!("{id}.json"));
         let body = read_bounded(&path, MAX_BYTES)?;
-        serde_json::from_slice(&body).map_err(|e| Error::Store(e.to_string()))
+        serde_json::from_slice(&body)
+            .map_err(|e| Error::Invalid(format!("{}: not a session: {e}", path.display())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("huntsman-store-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        dir
+    }
+
+    /// A file that is read but does not parse is bad data, as a malformed ledger is; only a file
+    /// that cannot be read is a store failure. `plan --load-session` exits 65 and 66 on them.
+    #[test]
+    fn a_session_file_that_does_not_parse_is_bad_data_not_a_store_failure() {
+        let dir = scratch("malformed");
+        let store = Store::new(dir.clone());
+        // Truncated JSON, and a document an older build could have written without a field.
+        for body in ["{\"id\": \"broken\"", "{\"id\": \"broken\"}"] {
+            std::fs::write(dir.join("sessions").join("broken.json"), body).unwrap();
+            match store.load("broken") {
+                Err(Error::Invalid(message)) => {
+                    assert!(message.contains("broken.json"), "{message}");
+                    assert!(message.contains("not a session"), "{message}");
+                }
+                other => panic!("{body}: {other:?}"),
+            }
+        }
+        assert!(matches!(store.load("missing"), Err(Error::Store(_))));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

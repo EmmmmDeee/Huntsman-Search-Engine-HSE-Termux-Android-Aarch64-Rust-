@@ -14,6 +14,8 @@
 
 use std::collections::BTreeSet;
 
+use serde::Serialize;
+
 use crate::entity::{Entity, EntityKind, merge_by_uid};
 use crate::pipeline_limits::PipelineLimits;
 use crate::scan_route::{ScanKind, canonical_selector, infer_kind};
@@ -85,20 +87,39 @@ impl Default for RecursionPolicy {
 }
 
 /// One generation's dispatch and growth, for the latency/depth report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct GenerationStat {
     pub generation: u32,
     pub dispatched: usize,
     pub entities_after: usize,
 }
 
-/// The finished crawl: the full entity graph, every source outcome, the per-generation shape, and
-/// why it stopped.
+/// One discovery edge: a dispatched lookup and an entity it produced. Chaining these edges
+/// reconstructs the crawl's pivot tree — which lookup surfaced which finding, generation by
+/// generation — the linkage a recursive OSINT crawl exists to produce. An entity reached by more
+/// than one lookup contributes one edge per lookup, so shared findings are visible, not collapsed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PivotEdge {
+    /// The dispatched lookup's kind, as its stable command word.
+    pub from_kind: String,
+    /// The selector that lookup ran on.
+    pub from_selector: String,
+    /// The produced entity's kind.
+    pub to_kind: String,
+    /// The produced entity's value.
+    pub to_value: String,
+    /// The generation the lookup ran in (seeds are generation 0).
+    pub generation: u32,
+}
+
+/// The finished crawl: the full entity graph, the pivot lineage, every source outcome, the
+/// per-generation shape, and why it stopped.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecursionReport {
     pub accepted_seeds: Vec<Target>,
     pub rejected_seeds: Vec<String>,
     pub entities: Vec<Entity>,
+    pub edges: Vec<PivotEdge>,
     pub outcomes: Vec<SourceExecutionOutcome>,
     pub generations: Vec<GenerationStat>,
     pub dispatches: usize,
@@ -217,6 +238,7 @@ fn seed_frontier(seeds: &[String]) -> (Vec<Target>, Vec<String>, Vec<Target>) {
 struct CrawlState {
     visited: BTreeSet<(String, String)>,
     entities: Vec<Entity>,
+    edges: Vec<PivotEdge>,
     outcomes: Vec<SourceExecutionOutcome>,
     generations: Vec<GenerationStat>,
     dispatches: usize,
@@ -258,6 +280,13 @@ impl CrawlState {
             self.outcomes.extend(step.outcomes);
             for mut entity in step.entities {
                 entity.generation = generation;
+                self.edges.push(PivotEdge {
+                    from_kind: target.kind.command().to_owned(),
+                    from_selector: target.selector.clone(),
+                    to_kind: entity.kind.as_str().to_owned(),
+                    to_value: entity.value.clone(),
+                    generation,
+                });
                 self.queue_expansions(&entity, policy, &mut next);
                 self.entities.push(entity);
             }
@@ -342,6 +371,7 @@ pub fn run<C: SelectorCollector>(
         truncated: state.resource_limited || max_depth,
         visited: state.visited.len(),
         entities: state.entities,
+        edges: state.edges,
         outcomes: state.outcomes,
         generations: state.generations,
         dispatches: state.dispatches,
@@ -566,6 +596,49 @@ mod tests {
         );
         // The incidental entities are retained and reported, never dropped.
         assert_eq!(report.entities.len(), 5);
+        assert_eq!(report.termination, TerminationReason::FixedPoint);
+    }
+
+    #[test]
+    fn the_report_records_the_pivot_lineage() {
+        // email -> username (generation 0), then username -> domain (generation 1). The edges must
+        // reconstruct that path: which lookup surfaced which finding, and in which generation.
+        let mut collector = Scripted::new()
+            .on(
+                ScanKind::Email,
+                "person@example.com",
+                vec![ent(EntityKind::Username, "person", 0.9)],
+            )
+            .on(ScanKind::Exposure, "person@example.com", vec![])
+            .on(
+                ScanKind::Username,
+                "person",
+                vec![ent(EntityKind::Domain, "example.net", 0.9)],
+            )
+            .on(ScanKind::Domain, "example.net", vec![]);
+
+        let report = run(
+            &["person@example.com".to_owned()],
+            &policy(),
+            &mut collector,
+        );
+
+        assert!(
+            report.edges.iter().any(|edge| edge.from_kind == "email"
+                && edge.from_selector == "person@example.com"
+                && edge.to_kind == "username"
+                && edge.to_value == "person"
+                && edge.generation == 0),
+            "missing the email -> username discovery edge"
+        );
+        assert!(
+            report.edges.iter().any(|edge| edge.from_kind == "username"
+                && edge.from_selector == "person"
+                && edge.to_kind == "domain"
+                && edge.to_value == "example.net"
+                && edge.generation == 1),
+            "missing the username -> domain discovery edge"
+        );
         assert_eq!(report.termination, TerminationReason::FixedPoint);
     }
 

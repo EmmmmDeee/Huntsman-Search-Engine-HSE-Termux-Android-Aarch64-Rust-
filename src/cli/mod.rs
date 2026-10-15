@@ -8,7 +8,7 @@ use std::env;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | network BSSID|LAT,LON|ssid:NAME [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|network] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | serve [--bind ADDR] [--history DIR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
+const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR|HANDLE [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | network BSSID|LAT,LON|ssid:NAME [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|network] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | scans run|list|show|summary|elements|correlations|log|export|fp|delete|rerun|types [ARGS] | serve [--bind ADDR] [--history DIR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -46,6 +46,7 @@ Commands:
   plan                  Plan an offline investigation from seeds; save or reload it as a session
   query                 Query the rebuilt keyless web-search subset
   sf                    SpiderFoot-compatible front end over rebuilt lookup paths
+  scans                 Run, list, read, export, flag, rerun and delete saved Spiderfoot-style scans
   serve                 Start the embedded Web UI and JSON API
   modules               List only currently reachable rebuilt modules
   attack                MITRE ATT&CK Reconnaissance posture, coverage, gaps, or Navigator JSON
@@ -63,7 +64,7 @@ Commands:
 
 Run `huntsman-recon <COMMAND> --help` for command details.
 Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
-`seeknow`, `people`, `email`, `exposure`, `username`, `domain`, `network`, `query`, `dehashed`, and networked `sf -s` lookups make HTTP requests; `serve` accepts inbound HTTP connections; their default
+`seeknow`, `people`, `email`, `exposure`, `username`, `domain`, `network`, `query`, `dehashed`, networked `sf -s` lookups and `scans run` make HTTP requests; `serve` accepts inbound HTTP connections; their default
 egress policy is public-only.";
 const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
 mod doctor;
@@ -72,6 +73,7 @@ mod lookup;
 mod meta;
 mod network;
 mod report;
+mod scans;
 mod selfcheck;
 mod service;
 mod utility;
@@ -136,6 +138,7 @@ pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
         Some("plan") => lookup::plan_cmd(&remaining.collect::<Vec<_>>()),
         Some("query") => lookup::query_cmd(&remaining.collect::<Vec<_>>()),
         Some("sf") => lookup::sf_cmd(&remaining.collect::<Vec<_>>()),
+        Some("scans") => scans::scans_cmd(&remaining.collect::<Vec<_>>()),
         Some("serve") => service::serve_cmd(&remaining.collect::<Vec<_>>()),
         Some("modules") => meta::modules_cmd(&remaining.collect::<Vec<_>>()),
         Some("attack") => meta::attack_cmd(&remaining.collect::<Vec<_>>()),

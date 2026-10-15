@@ -109,6 +109,8 @@ fn load_session(rest: &[String]) -> ExitCode {
             &format!("plan --load-session needs exactly DIR ID\n{PLAN_USAGE}"),
         );
     };
+    // A session that cannot be read is unreadable input (66); one that is read but does not
+    // parse, which a session an older build wrote can be, is bad data (65), as for a ledger.
     match Store::new(dir).load(id) {
         Ok(session) => {
             print_session_summary(&session);

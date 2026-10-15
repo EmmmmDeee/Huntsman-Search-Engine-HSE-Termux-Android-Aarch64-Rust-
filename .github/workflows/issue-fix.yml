@@ -80,7 +80,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
-          toolchain: stable
+          toolchain: "1.99" # the pinned stable release; tests/ci_toolchains.rs holds the pin
           components: clippy, rustfmt
 
       - name: Build the trusted xtask before the model runs
@@ -205,7 +205,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
-          toolchain: stable
+          toolchain: "1.99" # the pinned stable release; tests/ci_toolchains.rs holds the pin
           components: clippy, rustfmt
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -251,7 +251,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
-          toolchain: stable
+          toolchain: "1.99" # the pinned stable release; tests/ci_toolchains.rs holds the pin
 
       - name: Build the trusted xtask before the patch arrives
         run: |
@@ -325,7 +325,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable
         with:
-          toolchain: stable
+          toolchain: "1.99" # the pinned stable release; tests/ci_toolchains.rs holds the pin
 
       - name: Build the trusted xtask
         run: |
