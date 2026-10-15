@@ -391,3 +391,66 @@ pub fn normalize_observations(
         truncated: batch.truncated || relation_overflow,
     })
 }
+
+/// Build an [`AnalysisSnapshot`] from an already-merged entity set, deriving the relations those
+/// entities imply so the shared graph analysis (metrics, gaps, pivots) runs over them.
+///
+/// This is the authoritative "analyze this entity set" entry point for a consumer that holds a
+/// finished, de-duplicated set of entities but did not run [`normalize_observations`] — the
+/// recursive crawl is one, its engine producing merged entities directly. The derived relations are
+/// the same graph projection [`normalize_observations`] builds, so the resulting report is the one
+/// the analysis spine produces for those entities, not a reduced view. Coverage and ancestry are
+/// empty: a reconstruction from merged entities carries no provider-coverage events or
+/// evidence-ancestry graph, and the analysis that reads them degrades honestly to the entities and
+/// the relations they imply. Relations are capped by `limits.max_relations`, and an overflow sets
+/// the snapshot's `truncated` flag.
+#[must_use]
+pub fn snapshot_from_entities(
+    entities: &[Entity],
+    scan_id: &str,
+    limits: &PipelineLimits,
+) -> AnalysisSnapshot {
+    let mut relations = derive_relations(entities, scan_id);
+    let relation_overflow = relations.len() > limits.max_relations;
+    relations.truncate(limits.max_relations);
+    AnalysisSnapshot {
+        entities: entities.to_vec(),
+        relations,
+        coverage: Vec::new(),
+        ancestry: EvidenceAncestryGraph::default(),
+        truncated: relation_overflow,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PipelineLimits, snapshot_from_entities};
+    use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+
+    /// Two confirmed domains resolving to one address imply a hosting relation. Reconstructing a
+    /// snapshot from the merged entities must derive that relation, so a consumer that only has the
+    /// entities (the recursive crawl) still gets the graph analysis, not an edgeless view.
+    #[test]
+    fn a_reconstructed_snapshot_derives_the_relations_its_entities_imply() {
+        let hosted_on = |domain: &str| {
+            let mut entity = Entity::new(EntityKind::Domain, domain, 0.9, "scan-1");
+            entity.add_evidence(
+                Evidence::new(EvidenceProvenance::for_scan("dns", "scan-1"), "A record")
+                    .with_attr("ip", "192.0.2.10"),
+            );
+            entity
+        };
+        let entities = vec![
+            hosted_on("alpha.example"),
+            hosted_on("beta.example"),
+            Entity::new(EntityKind::IpAddress, "192.0.2.10", 0.9, "scan-1"),
+        ];
+        let snapshot = snapshot_from_entities(&entities, "scan-1", &PipelineLimits::default());
+        assert_eq!(snapshot.entities.len(), 3);
+        assert!(
+            !snapshot.relations.is_empty(),
+            "the hosting relation the entities imply was not derived",
+        );
+        assert!(!snapshot.truncated);
+    }
+}

@@ -20,11 +20,13 @@ use thiserror::Error;
 
 use crate::correlator::{Correlation, rule_catalog};
 use crate::entity::Entity;
+use crate::recursion::PivotEdge;
 use crate::sf_correlate::Finding;
 pub use crate::sf_correlate::Risk;
 use crate::sf_elements::DataElement;
 use crate::sha256::{hex32, sha256};
 use crate::source_outcome::SourceExecutionOutcome;
+use crate::termination::TerminationReason;
 
 /// The only format this build reads and writes.
 pub const FORMAT_VERSION: u32 = 1;
@@ -117,6 +119,11 @@ pub struct ScanOptions {
     /// Data types asked for; empty means every type.
     #[serde(default)]
     pub types: Vec<String>,
+    /// How many hops past the target the scan follows what it finds, as Spiderfoot hands every
+    /// event to the modules that take it: each email, username, domain, phone, IP address and
+    /// BSSID a lookup finds is looked up in turn. 0 runs the target's own lookup only.
+    #[serde(default)]
+    pub depth: u32,
 }
 
 /// Correlation results per Spiderfoot risk level.
@@ -257,6 +264,12 @@ pub struct ScanResults {
     pub outcomes: Vec<SourceExecutionOutcome>,
     pub elements: Vec<DataElement>,
     pub correlations: Vec<ScanCorrelation>,
+    /// Which lookup found which entity, generation by generation: the scan's discovery tree.
+    #[serde(default)]
+    pub lineage: Vec<PivotEdge>,
+    /// Why the scan stopped following what it found.
+    #[serde(default)]
+    pub termination: Option<TerminationReason>,
 }
 
 /// A log entry's level.
@@ -722,6 +735,8 @@ mod tests {
             outcomes: Vec::new(),
             elements: Vec::new(),
             correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
         };
         store.save_results(&results).unwrap();
         assert_eq!(store.results(&row.id).unwrap(), Some(results));

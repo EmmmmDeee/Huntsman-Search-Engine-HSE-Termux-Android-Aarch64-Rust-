@@ -20,7 +20,11 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::correlator::evaluate_rules;
-use crate::entity::{Entity, merge_by_uid};
+use crate::entity::Entity;
+use crate::recursion::{
+    self, PivotEdge, RecursionPolicy, RecursionReport, SelectorCollector, Step,
+    Target as CrawlTarget,
+};
 use crate::scan_route::{
     NetworkSelector, ScanKind, canonical_selector, explicit_people_is_name, infer_kind,
     inferred_people_is_name, parse_kind,
@@ -33,6 +37,7 @@ use crate::sf_correlate::{self, Rule, RuleError};
 use crate::sf_elements::{self, DataElement, Target};
 use crate::sf_types;
 use crate::source_outcome::SourceExecutionOutcome;
+use crate::termination::TerminationReason;
 
 /// Scans that run at once; more wait as `STARTING`. A phone runs two lookups' worth of requests
 /// comfortably, and each lookup already fans out to its sources.
@@ -235,12 +240,77 @@ fn validate_options(options: &ScanOptions) -> Result<ScanOptions, ServiceError> 
             .filter(|module| !module.is_empty())
             .collect(),
         types,
+        depth: options.depth,
     })
 }
 
 struct State {
     running: usize,
     aborts: BTreeSet<String>,
+}
+
+/// What following a scan's findings produced beside the findings themselves.
+struct Crawl {
+    lineage: Vec<PivotEdge>,
+    termination: TerminationReason,
+}
+
+/// The crawl's lookups: each one logged and run through the installed lookup, a stop honoured
+/// before the next, and an email's breach lookup skipped when its email lookup already ran a
+/// breach source, so a keyed breach source is never skipped and never asked twice.
+struct ScanCollector<'a> {
+    service: &'a ScanService,
+    id: &'a str,
+    text: String,
+    ran: usize,
+    errors: usize,
+    breach_checked: BTreeSet<String>,
+}
+
+impl SelectorCollector for ScanCollector<'_> {
+    fn collect(&mut self, target: &CrawlTarget) -> Step {
+        if target.kind == ScanKind::Exposure && self.breach_checked.contains(&target.selector) {
+            return Step {
+                entities: Vec::new(),
+                outcomes: Vec::new(),
+            };
+        }
+        let mut found = LookupOutput::default();
+        match self
+            .service
+            .lookup_into(self.id, target.kind, &target.selector, &mut found)
+        {
+            Some(failed) => {
+                self.ran += 1;
+                self.errors += failed;
+            }
+            None => self.errors += 1,
+        }
+        if target.kind == ScanKind::Email
+            && found
+                .outcomes
+                .iter()
+                .any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
+        {
+            if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector) {
+                self.breach_checked.insert(selector);
+            }
+        }
+        if !found.text.is_empty() {
+            if !self.text.is_empty() {
+                self.text.push('\n');
+            }
+            self.text.push_str(&found.text);
+        }
+        Step {
+            entities: found.entities,
+            outcomes: found.outcomes,
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.service.aborted(self.id)
+    }
 }
 
 /// Starts, stops, reruns and deletes saved scans over one store.
@@ -551,41 +621,45 @@ impl ScanService {
             .get(id)
             .map(|record| record.options)
             .unwrap_or_default();
-        let mut found = LookupOutput::default();
-        let mut errors = 0;
-        let mut ran = 0;
-        let mut kinds = vec![plan.kind];
-        if plan.kind == ScanKind::Email && options.usecase != "passive" {
-            kinds.push(ScanKind::Exposure);
-        }
-        for kind in kinds {
-            if self.aborted(id) {
-                self.log(
-                    id,
-                    "huntsman",
-                    LogLevel::Info,
-                    format!("stop requested; the {} lookup did not run", kind.command()),
-                );
-                break;
-            }
-            if kind == ScanKind::Exposure
-                && found
-                    .outcomes
-                    .iter()
-                    .any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
-            {
-                continue;
-            }
-            match self.lookup_into(id, kind, &plan.target, &mut found) {
-                Some(failed) => {
-                    ran += 1;
-                    errors += failed;
-                }
-                None => errors += 1,
+        let passive = options.usecase == "passive";
+        let mut targets = vec![CrawlTarget {
+            kind: plan.kind,
+            selector: plan.target.clone(),
+        }];
+        if plan.kind == ScanKind::Email && !passive {
+            if let Some(selector) = canonical_selector(ScanKind::Exposure, &plan.target) {
+                targets.push(CrawlTarget {
+                    kind: ScanKind::Exposure,
+                    selector,
+                });
             }
         }
-        merge_by_uid(&mut found.entities);
-        let saved = self.save(id, plan, &options, found, errors);
+        let policy = RecursionPolicy {
+            max_generations: options.depth,
+            expose_emails: !passive,
+            ..RecursionPolicy::default()
+        };
+        let mut collector = ScanCollector {
+            service: self,
+            id,
+            text: String::new(),
+            ran: 0,
+            errors: 0,
+            breach_checked: BTreeSet::new(),
+        };
+        let report = recursion::run_targets(targets, &policy, &mut collector);
+        let (ran, errors) = (collector.ran, collector.errors);
+        self.log_crawl(id, &options, &report);
+        let found = LookupOutput {
+            text: collector.text,
+            entities: report.entities,
+            outcomes: report.outcomes,
+        };
+        let crawl = Crawl {
+            lineage: report.edges,
+            termination: report.termination,
+        };
+        let saved = self.save(id, plan, &options, found, errors, crawl);
         let status = if self.aborted(id) {
             ScanStatus::Aborted
         } else if ran == 0 {
@@ -612,6 +686,42 @@ impl ScanService {
         self.set_status(id, status, Some(now_ms()));
     }
 
+    /// How far the scan followed what it found, and why it stopped there.
+    fn log_crawl(&self, id: &str, options: &ScanOptions, report: &RecursionReport) {
+        let reason = serde_json::to_value(report.termination)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        let detail = match report.termination {
+            TerminationReason::Cancelled => {
+                "stop requested; the lookups still queued did not run".to_owned()
+            }
+            TerminationReason::MaxDepth if options.depth == 0 => {
+                "depth 0 follows nothing it finds; a deeper scan would look up its findings in turn"
+                    .to_owned()
+            }
+            TerminationReason::MaxDepth => format!(
+                "depth {} reached; a deeper scan would look up more of its findings",
+                options.depth
+            ),
+            TerminationReason::ResourceLimit => {
+                "the lookup or entity budget ran out with findings left to follow".to_owned()
+            }
+            _ => "nothing new was left to look up".to_owned(),
+        };
+        self.log(
+            id,
+            "huntsman",
+            LogLevel::Info,
+            format!(
+                "{} lookups over {} generations found {} entities; stopped ({reason}): {detail}",
+                report.dispatches,
+                report.generations.len(),
+                report.entities.len()
+            ),
+        );
+    }
+
     /// Run one lookup, log each source's outcome, and add what it found to `found`. Returns how
     /// many of its sources failed, or `None` when the lookup gave no report at all.
     fn lookup_into(
@@ -625,7 +735,7 @@ impl ScanService {
             id,
             "huntsman",
             LogLevel::Info,
-            format!("running the {} lookup", kind.command()),
+            format!("running the {} lookup on {target}", kind.command()),
         );
         match (self.lookup)(kind, target) {
             Ok(output) => {
@@ -667,13 +777,19 @@ impl ScanService {
         options: &ScanOptions,
         found: LookupOutput,
         errors: usize,
+        crawl: Crawl,
     ) -> Result<(), ServiceError> {
         let now = now_ms();
         let target = Target {
             value: &plan.target,
             kind: plan.target_type,
         };
-        let mut elements = sf_elements::elements(target, &found.entities, now / 1000);
+        let mut elements = sf_elements::elements_with_lineage(
+            target,
+            &found.entities,
+            &sf_elements::lineage(&crawl.lineage),
+            now / 1000,
+        );
         if !options.types.is_empty() {
             let keep: BTreeSet<&str> = options.types.iter().map(String::as_str).collect();
             elements.retain(|element| {
@@ -708,6 +824,8 @@ impl ScanService {
             outcomes: found.outcomes,
             elements,
             correlations,
+            lineage: crawl.lineage,
+            termination: Some(crawl.termination),
         })?;
         let mut record = self.store.get(id)?;
         record.elements = total;
@@ -944,6 +1062,101 @@ mod tests {
     }
 
     #[test]
+    fn a_deeper_scan_looks_up_what_it_finds_and_links_each_element_to_its_finder() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&calls);
+        let (service, dir) = with_lookup(
+            "depth",
+            Arc::new(move |kind: ScanKind, selector: &str| {
+                seen.lock()
+                    .unwrap()
+                    .push(format!("{} {selector}", kind.command()));
+                let entity = |kind: EntityKind, value: &str, source: &str| {
+                    Entity::builder(kind, value, 0.9, "s")
+                        .evidence(Evidence::new(
+                            EvidenceProvenance::for_scan(source, "s"),
+                            "found",
+                        ))
+                        .build()
+                };
+                Ok(match kind {
+                    ScanKind::Domain => LookupOutput {
+                        text: format!("domain {selector}\n"),
+                        entities: vec![entity(EntityKind::IpAddress, "8.8.8.8", "dns")],
+                        outcomes: vec![SourceExecutionOutcome::success("dns", 1, 1)],
+                    },
+                    ScanKind::Ip => {
+                        let mut output = found(kind, selector);
+                        output.entities.push(entity(
+                            EntityKind::Domain,
+                            "cohost.example.net",
+                            "hackertarget",
+                        ));
+                        output
+                    }
+                    _ => LookupOutput::default(),
+                })
+            }),
+        );
+        let record = service
+            .run(&ScanRequest {
+                target: "example.org".into(),
+                options: ScanOptions {
+                    depth: 1,
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        assert_eq!(record.status, ScanStatus::Finished);
+        assert_eq!(record.options.depth, 1);
+        // The co-hosted domain would be the third hop's lookup; depth 1 stops before it.
+        assert_eq!(*calls.lock().unwrap(), ["domain example.org", "ip 8.8.8.8"]);
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        assert_eq!(results.termination, Some(TerminationReason::MaxDepth));
+        assert_eq!(results.text, "domain example.org\n\nip 8.8.8.8\n");
+        assert!(
+            results
+                .lineage
+                .iter()
+                .any(|edge| edge.from_selector == "8.8.8.8"
+                    && edge.to_value == "cohost.example.net"
+                    && edge.generation == 1)
+        );
+        let element = |data: &str| {
+            results
+                .elements
+                .iter()
+                .find(|element| element.data == data && element.kind != "ROOT")
+                .unwrap()
+        };
+        let target = element("example.org");
+        let address = element("8.8.8.8");
+        assert_eq!(address.source.as_deref(), Some(target.id.as_str()));
+        // Found by the address's lookup, so the address's element is its source.
+        assert_eq!(
+            element("cohost.example.net").source.as_deref(),
+            Some(address.id.as_str())
+        );
+        // A port hangs off the address element its own record made.
+        let port_source = element("8.8.8.8:22").source.clone().unwrap();
+        assert!(
+            results
+                .elements
+                .iter()
+                .any(|element| element.id == port_source
+                    && element.data == "8.8.8.8"
+                    && element.module == "internetdb")
+        );
+        let log = service.store().log(&record.id).unwrap();
+        assert!(log.iter().any(|entry| entry.message
+            == "2 lookups over 2 generations found 2 entities; stopped (max_depth): depth 1 reached; a deeper scan would look up more of its findings"));
+        let rerun = service.rerun_request(&record.id).unwrap();
+        assert_eq!(rerun.options.depth, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_run_saves_elements_counts_log_and_finishes() {
         let (service, dir) = with_lookup(
             "run",
@@ -1159,13 +1372,14 @@ mod tests {
         // The email lookup's results are kept; the breach lookup never started.
         let results = service.store().results(&record.id).unwrap().unwrap();
         assert!(!results.entities.is_empty());
+        assert_eq!(results.termination, Some(TerminationReason::Cancelled));
+        let log = service.store().log(&record.id).unwrap();
+        assert!(log.iter().any(|entry| entry.message.contains(
+            "stopped (cancelled): stop requested; the lookups still queued did not run"
+        )));
         assert!(
-            service
-                .store()
-                .log(&record.id)
-                .unwrap()
-                .iter()
-                .any(|entry| entry.message.contains("exposure lookup did not run"))
+            !log.iter()
+                .any(|entry| entry.message.contains("running the exposure"))
         );
         assert!(matches!(
             service.stop(&record.id),
