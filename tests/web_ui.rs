@@ -1,22 +1,22 @@
 //! The serve page's contracts that hold without a browser: its colours meet WCAG AA in both
-//! themes, its light theme follows the system until the toggle picks one, it reads the fields a
-//! lookup report carries, it keeps results in the tab's session only, a returning tab asks only
-//! for health, and it stays within its weight budget. CI also drives the page in a phone-sized
-//! browser (`tools/web-ui-check`), and the last test here keeps that job in place.
+//! themes (text 4.5:1, the graph's node colours 3:1), its light theme follows the system until the
+//! toggle picks one, every scan call carries the lookup header, provider text reaches the page only
+//! as text, it keeps nothing of a scan in the browser, a returning tab asks only for health unless
+//! a scan is running, and it stays within its weight budget. CI also drives the page in a
+//! phone-sized browser (`tools/web-ui-check`), and the last test here keeps that job in place.
 
 use std::collections::BTreeMap;
 use std::fs;
 
-use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
-use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
-use huntsman_recon::web_server::LookupReport;
-
 const PAGE: &str = include_str!("../src/web_ui.html");
 /// The most the page may weigh. It is read from loopback on a phone, but every byte is parsed on
-/// the phone's CPU each time the tab loads.
-const PAGE_BUDGET: usize = 40 * 1024;
+/// the phone's CPU each time the tab loads. Spiderfoot's own UI loads about 1 MiB of scripts and
+/// styles for the same views; this page is one file with no library.
+const PAGE_BUDGET: usize = 96 * 1024;
 /// WCAG 2.2 AA for text under 18.66 px bold or 24 px: the page has none larger.
 const AA: f64 = 4.5;
+/// WCAG 2.2 AA for a graphical object a reader must see (1.4.11), such as a graph node.
+const NON_TEXT: f64 = 3.0;
 
 /// The text between `<tag>` and `</tag>`.
 fn inline(tag: &str) -> &'static str {
@@ -195,74 +195,54 @@ fn the_light_theme_follows_the_system_until_the_toggle_picks_one() {
 }
 
 #[test]
-fn the_page_reads_the_fields_a_lookup_report_carries() {
-    let mut entity = Entity::new(EntityKind::Phone, "+61 412 345 678", 0.9, "scan");
-    entity.tag("mobile");
-    entity.add_evidence(
-        Evidence::new(EvidenceProvenance::new("phone_intl"), "Phone → Australia")
-            .with_attr("country_iso", "AU")
-            .inferred(),
-    );
-    let report = LookupReport {
-        route: "phone",
-        text: "entities=1\n".into(),
-        entities: vec![entity],
-        outcomes: vec![
-            SourceExecutionOutcome::failed(
-                "numverify",
-                0,
-                SourceOutcomeKind::RateLimited,
-                Some(429),
-                "slow down",
-            )
-            .with_retry_after(30),
-        ],
-    };
-    let json = serde_json::to_value(&report).expect("report");
-    let script = inline("script");
-    // Each field the report carries, and how the page reads it. A renamed field fails here
-    // instead of leaving a blank column on the phone.
-    for (pointer, read) in [
-        ("/route", "body.route"),
-        ("/text", "body.text"),
-        ("/entities/0/kind", "show(e.kind)"),
-        ("/entities/0/value", "e.value"),
-        ("/entities/0/raw_value", "e.raw_value"),
-        ("/entities/0/confidence", "Number(e.confidence)"),
-        ("/entities/0/corroboration", "e.corroboration"),
-        ("/entities/0/tags/0", "e.tags"),
-        (
-            "/entities/0/evidence/0/provenance/source",
-            "v.provenance.source",
-        ),
-        ("/entities/0/evidence/0/summary", "v.summary"),
-        (
-            "/entities/0/evidence/0/attributes/country_iso",
-            "Object.entries(v.attributes||{})",
-        ),
-        ("/entities/0/evidence/0/is_inferred", "v.is_inferred"),
-        ("/outcomes/0/module", "o.module"),
-        ("/outcomes/0/kind", "o.kind"),
-        ("/outcomes/0/found", "o.found"),
-        ("/outcomes/0/http_status", "o.http_status"),
-        ("/outcomes/0/retry_after_secs", "o.retry_after_secs"),
-        ("/outcomes/0/detail", "o.detail"),
-    ] {
-        assert!(
-            json.pointer(pointer).is_some(),
-            "the report has no {pointer}: {json}"
-        );
-        assert!(
-            script.contains(read),
-            "the page never reads {pointer} ({read})"
-        );
+fn the_graph_nodes_stand_out_from_the_graph_in_both_themes() {
+    let style = inline("style");
+    assert!(style.contains(".graph{height:62vh;min-height:300px;margin:0 0 10px;background:var(--el);"));
+    let mut failures = Vec::new();
+    for (theme, t) in themes() {
+        let ground = colour(&t["--el"]).0;
+        for i in 0..10 {
+            let name = format!("--g{i}");
+            assert!(style.contains(&format!(".g{i}{{fill:var({name});")), "no .g{i} rule");
+            let ratio = contrast(colour(&t[&name]).0, ground);
+            if ratio < NON_TEXT {
+                failures.push(format!("{theme}: {name} on --el is {ratio:.2}:1"));
+            }
+        }
     }
-    // Provider text reaches the page only as text.
-    assert!(script.contains("function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=String(text);return e}"));
+    assert!(
+        failures.is_empty(),
+        "below {NON_TEXT}:1:\n{}",
+        failures.join("\n")
+    );
 }
 
 #[test]
-fn results_are_kept_for_the_tab_only_and_come_back_after_a_reload() {
+fn every_scan_call_carries_the_lookup_header_and_provider_text_stays_text() {
+    let script = inline("script");
+    // Scans spend egress and keys, so they go through api(), which always sends the header that
+    // another origin cannot send without a preflight this server never approves.
+    assert!(script.contains("const LH={'X-Huntsman-Lookup':'1'}"));
+    assert!(script.contains("try{res=await call(path,LH,opts)}"));
+    assert!(!script.contains("call('/api/scans"), "a scan call without the header");
+    assert_eq!(script.matches("fetch(").count(), 2, "call() and the export");
+    assert!(script.contains("await fetch(base()+'/export?'+p,{headers:headers(LH),cache:'no-store'})"));
+    // Provider text reaches the page only as text.
+    assert!(script.contains("function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=String(text);return e}"));
+    for sink in [
+        "innerHTML",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "eval(",
+        "new Function",
+    ] {
+        assert!(!script.contains(sink), "the page uses {sink}");
+    }
+}
+
+#[test]
+fn scans_live_on_the_server_and_only_the_analysis_is_kept_for_the_tab() {
     let script = inline("script");
     assert!(script.contains("const store=keep(()=>localStorage),sess=keep(()=>sessionStorage);"));
     assert_eq!(
@@ -275,10 +255,13 @@ fn results_are_kept_for_the_tab_only_and_come_back_after_a_reload() {
         1,
         "one guarded accessor"
     );
-    assert!(script.contains("showLookup(saved);sess.set('hse-lookup',JSON.stringify(saved));"));
+    // A scan is saved by the server and named in the address (#/scan/ID/section), so a reload
+    // finds it there. The tab keeps only the last analysis, which the server does not save.
     assert!(script.contains("showAnalysis(saved);sess.set('hse-analysis',JSON.stringify(saved));"));
-    assert!(script.contains("['hse-lookup','result',"));
-    assert!(script.contains("['hse-analysis','aresult',"));
+    for call in script.split("sess.set(").skip(1) {
+        assert!(call.starts_with("'hse-analysis'"), "sess.set({}", &call[..call.len().min(40)]);
+    }
+    assert!(script.contains("location.hash='#/scan/'+enc(r.id)+'/summary'"));
     // Local storage outlives the tab, so it holds a preference and a public bind's token, never a
     // result.
     for call in script.split("store.set(").skip(1) {
@@ -291,20 +274,25 @@ fn results_are_kept_for_the_tab_only_and_come_back_after_a_reload() {
 }
 
 #[test]
-fn a_returning_tab_asks_only_for_health_and_a_running_lookup_can_be_stopped() {
+fn a_returning_tab_asks_only_for_health_unless_a_scan_is_running() {
     let script = inline("script");
     assert!(script.contains(
-        "document.addEventListener('visibilitychange',()=>{if(!document.hidden)health()});"
+        "document.addEventListener('visibilitychange',()=>{if(!document.hidden){health();if(resume){clearTimeout(timer);resume()}}});"
     ));
+    // A poll is set only while a scan runs, skipped while the tab is hidden, and dropped when the
+    // view changes; a finished scan leaves nothing to resume.
+    assert!(script.contains("function later(fn){clearTimeout(timer);const g=gen;resume=fn;timer=setTimeout(()=>{if(g===gen&&!document.hidden)fn()},5000)}"));
+    assert!(script.contains("gen++;clearTimeout(timer);resume=null;view=v;"));
+    assert!(script.contains("if(scans.some(s=>live(s.status)))later(loadScans);else resume=null;"));
+    assert!(script.contains("if(running)later(()=>loadScan(false));else resume=null;"));
     let start = script.find("async function health(){").expect("health");
     let end = script.find("async function details(){").expect("details");
     let health = &script[start..end];
     assert!(!health.contains("/api/modules"), "{health}");
+    assert!(!health.contains("/api/scans"), "{health}");
     assert_eq!(health.matches("/api/command").count(), 1, "{health}");
     assert!(health.contains("call('/api/command',{},{method:'HEAD'})"));
-    assert!(script.contains("if(view==='status'&&!detailed)details();"));
-    assert!(script.contains("if(ctl){ctl.abort();return}"));
-    assert!(script.contains("{'X-Huntsman-Lookup':'1'},{signal:ctl.signal}"));
+    assert!(script.contains("else if(v==='about'&&!detailed)details();"));
 }
 
 #[test]
