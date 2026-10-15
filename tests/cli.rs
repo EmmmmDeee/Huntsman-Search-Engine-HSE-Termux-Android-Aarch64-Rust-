@@ -536,31 +536,131 @@ fn sf_metadata_and_offline_phone_path_work() {
     let stdout = String::from_utf8_lossy(&types.stdout);
     assert!(stdout.contains("EMAILADDR"), "{stdout:?}");
     assert!(stdout.contains("PHONE_NUMBER"), "{stdout:?}");
+}
 
-    let scan = bin()
-        .args(["sf", "-s", "+61412345678", "-u", "passive", "-o", "json"])
-        .output()
-        .unwrap();
-    assert_eq!(scan.status.code(), Some(0));
+/// `sf -s` saves its scan with the others, as `sf.py` does, so `scans` reads it and `sf -C`
+/// correlates it again.
+#[test]
+fn sf_scan_is_a_saved_scan_that_scans_reads_and_sf_correlates() {
+    let home = scratch("sf-saved");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let scan = run(&["sf", "-s", "+61412345678", "-u", "passive", "-o", "json"]);
+    let stderr = String::from_utf8_lossy(&scan.stderr);
+    assert_eq!(scan.status.code(), Some(0), "{stderr}");
     let value: serde_json::Value = serde_json::from_slice(&scan.stdout).unwrap();
     assert_eq!(value[0]["event_type"], "PHONE_NUMBER");
     assert_eq!(value[0]["data"], "+61412345678");
+
+    let list = run(&["scans", "list", "--json"]);
+    assert_eq!(list.status.code(), Some(0));
+    let list: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    let [saved] = list.as_array().unwrap().as_slice() else {
+        panic!("one saved scan: {list}");
+    };
+    assert_eq!(saved["target"], "+61412345678");
+    assert_eq!(saved["target_type"], "PHONE_NUMBER");
+    assert_eq!(saved["status"], "FINISHED");
+    let id = saved["id"].as_str().unwrap();
+    assert!(stderr.contains(id), "{stderr}");
+    assert_eq!(
+        saved["elements"].as_u64(),
+        Some(value.as_array().unwrap().len() as u64)
+    );
+
+    let correlate = run(&["sf", "-C", id]);
+    assert_eq!(
+        correlate.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&correlate.stderr)
+    );
+    assert!(String::from_utf8_lossy(&correlate.stdout).starts_with("ID\tRISK\tRULE"));
+    assert_eq!(run(&["sf", "-C", "no-such-scan"]).status.code(), Some(66));
+    let quiet = run(&["sf", "-q", "-s", "+61412345678"]);
+    assert_eq!(quiet.status.code(), Some(0));
+    assert!(quiet.stderr.is_empty(), "{:?}", quiet.stderr);
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// `sf.py`'s output flags shape the rows, `-d` prints the scan's log, `-l` is `serve --bind`,
+/// and the combinations `sf.py` refuses are refused before any request.
+#[test]
+fn sf_takes_sf_py_output_flags_debug_and_listen() {
+    let home = scratch("sf-flags");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let csv = run(&[
+        "sf",
+        "-q",
+        "-s",
+        "+61412345678",
+        "-o",
+        "csv",
+        "-D",
+        ";",
+        "-H",
+        "-r",
+    ]);
+    assert_eq!(
+        csv.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&csv.stderr)
+    );
+    let csv = String::from_utf8_lossy(&csv.stdout);
+    let first = csv.lines().next().unwrap();
+    assert!(!first.starts_with("Source"), "{csv}");
+    assert_eq!(first.matches(';').count(), 3, "{csv}");
+    // A CSV cell a spreadsheet would read as a formula keeps its leading quote guard.
+    assert!(first.ends_with(";'+61412345678"), "{csv}");
+
+    let debug = run(&["sf", "-s", "+61412345678", "-d", "-F", "PHONE_NUMBER"]);
+    let stderr = String::from_utf8_lossy(&debug.stderr);
+    assert_eq!(debug.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("[INFO] huntsman: scan created"), "{stderr}");
+    assert_eq!(String::from_utf8_lossy(&debug.stdout).lines().count(), 2);
+
+    let listen = run(&["sf", "-l", "not-a-socket"]);
+    assert_eq!(listen.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&listen.stderr).contains("invalid serve bind"));
+    for refused in [
+        &["sf", "-s", "example.org", "-f"][..],
+        &["sf", "-s", "example.org", "-D", ";"],
+        &["sf", "-s", "example.org", "-m", "sfp_dnsresolve"],
+    ] {
+        let out = run(refused);
+        assert_eq!(out.status.code(), Some(64), "{refused:?}");
+        assert!(out.stdout.is_empty(), "{refused:?}");
+    }
+    let _ = fs::remove_dir_all(&home);
 }
 
 #[test]
-fn sf_rejects_unrebuilt_target_classes_explicitly() {
-    let out = bin()
-        .args(["sf", "-s", "example.org", "-u", "all"])
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(65));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not available yet"));
+fn sf_refuses_a_target_no_lookup_can_take() {
+    let home = scratch("sf-refuses");
+    for (target, why) in [
+        ("192.0.2.0/24", "not available yet"),
+        ("192.0.2.1", "not valid for a ip scan"),
+        ("Jane 123", "two alphabetic tokens"),
+    ] {
+        let out = bin()
+            .args(["sf", "-s", target])
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(65), "{target}: {stderr}");
+        assert!(stderr.contains(why), "{target}: {stderr}");
+        assert!(out.stdout.is_empty(), "{target}");
+    }
+    let _ = fs::remove_dir_all(&home);
 }
 
 /// `sf -s` exits as the plain lookup it runs would for the same outcome. A trust store without a
-/// certificate fails every request before a socket opens, so both ASIC registers are unusable:
-/// `people` exits 69, and `sf -s` of the same name must too. It exited 65, the status of bad
-/// data, from a status table of its own that also sent an egress refusal to 69 instead of 77.
+/// certificate fails every request before a socket opens, so every source is unusable: `people`,
+/// `domain` and `ip` refuse, and `sf -s` of the same target must exit with the same status and
+/// message. It exited 65, the status of bad data, from a status table of its own that also sent an
+/// egress refusal to 69 instead of 77; it now runs the plain lookups' own `collect` and keeps the
+/// refusal it gave.
 #[test]
 fn sf_scan_exits_as_the_plain_lookup_does() {
     let dir = scratch("sf-status");
@@ -569,22 +669,36 @@ fn sf_scan_exits_as_the_plain_lookup_does() {
     let run = |args: &[&str]| {
         bin()
             .args(args)
+            .env("HOME", &dir)
             .env("HUNTSMAN_CA_BUNDLE", &bundle)
             .output()
             .unwrap()
     };
-    let people = run(&["people", "Jane Citizen"]);
-    assert_eq!(
-        people.status.code(),
-        Some(69),
-        "{}",
-        String::from_utf8_lossy(&people.stderr)
-    );
-    let sf = run(&["sf", "-s", "Jane Citizen"]);
-    let stderr = String::from_utf8_lossy(&sf.stderr);
-    assert_eq!(sf.status.code(), people.status.code(), "sf: {stderr}");
-    assert!(sf.stdout.is_empty(), "{:?}", sf.stdout);
-    assert!(stderr.contains("HUNTSMAN_CA_BUNDLE"), "{stderr}");
+    for (plain, target) in [
+        ("people", "Jane Citizen"),
+        ("domain", "example.org"),
+        ("ip", "1.1.1.1"),
+    ] {
+        let lookup = run(&[plain, target]);
+        assert!(
+            matches!(lookup.status.code(), Some(69 | 77)),
+            "{plain}: {:?} {}",
+            lookup.status.code(),
+            String::from_utf8_lossy(&lookup.stderr)
+        );
+        let sf = run(&["sf", "-s", target]);
+        let stderr = String::from_utf8_lossy(&sf.stderr);
+        assert_eq!(
+            sf.status.code(),
+            lookup.status.code(),
+            "sf {target}: {stderr}"
+        );
+        assert!(sf.stdout.is_empty(), "{:?}", sf.stdout);
+        assert_eq!(stderr, String::from_utf8_lossy(&lookup.stderr), "{target}");
+    }
+    let people = run(&["sf", "-s", "Jane Citizen"]);
+    assert_eq!(people.status.code(), Some(69));
+    assert!(String::from_utf8_lossy(&people.stderr).contains("HUNTSMAN_CA_BUNDLE"));
     let _ = fs::remove_dir_all(&dir);
 }
 

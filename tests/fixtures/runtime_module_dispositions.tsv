@@ -151,7 +151,8 @@ seeknow_collector	adapter	SeekNow lineage-safe collector
 serve_probe	diagnostic	loopback probe of a running serve called by doctor and doctor serve
 service_defs	adapter	keyed-provider service registry
 session	exporter	auditable execution session
-sf_compat	diagnostic	SpiderFoot-compatible front end over rebuilt lookup paths
+sf_compat	diagnostic	SpiderFoot-compatible sf.py front end over saved scans
+sf_country	leaf	Spiderfoot's country table and sfp_countryname's readings behind sf_elements' COUNTRY_NAME elements
 sf_correlate	runtime	Spiderfoot 4.0 correlation rules run on every saved scan, scans rules and /api/correlationrules
 sf_elements	runtime	entities as typed Spiderfoot data elements for saved scans and sf -s rows
 sf_types	runtime	Spiderfoot 4.0 data-element type catalogue read by sf -T, scans and /api/eventtypes

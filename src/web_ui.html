@@ -144,6 +144,7 @@ details[open] summary{border-bottom:1px solid var(--line)}
 .corr summary{font-weight:600}
 .filter{padding:8px 14px;border-bottom:1px solid var(--line)}
 .ent-b{padding:4px 0 8px 15px;font-size:12.5px}
+.ent-b .pivot{margin-top:8px}
 .ent-m{margin:0 0 6px;color:var(--muted)}
 dl{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:2px 10px;margin:4px 0 0;font-size:12px}
 dt{color:var(--dim);overflow-wrap:break-word}
@@ -157,6 +158,7 @@ dd dl{margin:0}
 .more{width:100%;border-width:1px 0 0;border-radius:0}
 .menu{position:relative}
 .menu summary{list-style:none}
+.menu-list.end{left:auto;right:0}
 .menu-list{position:absolute;top:100%;left:0;z-index:5;display:flex;flex-direction:column;min-width:10em;margin-top:4px;padding:4px;background:var(--el);border:1px solid var(--line2);border-radius:var(--r);box-shadow:0 4px 14px rgba(0,0,0,.35)}
 .menu-list button{min-height:44px;padding:0 12px;border:0;border-radius:4px;background:none;color:var(--fg);font:13.5px var(--sans);text-align:left;cursor:pointer}
 .menu-list button:hover{background:var(--hover)}
@@ -229,7 +231,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel" id="sempty" hidden><div class="panel-body"><b>No scan history</b><p class="help">There is currently no history of previously run scans. Start one from <a class="link" href="#/newscan">New Scan</a>.</p></div></div>
 <div id="slist" hidden>
 <div class="toolbar"><label class="chk"><input type="checkbox" id="sall">All</label><select id="sfilter" aria-label="Filter scans"><option value="">Filter: None</option><option value="running">Filter: Running</option><option value="finished">Filter: Finished</option><option value="failed">Filter: Failed/Aborted</option></select><button class="btn" id="srefresh" type="button">Refresh</button></div>
-<div class="toolbar" id="sbulk" hidden><span class="when" id="snsel"></span><button class="btn" id="sstop" type="button">Stop</button><button class="btn" id="srerun" type="button">Re-run</button><button class="btn" id="sexport" type="button">Export JSON</button><button class="btn btn-danger" id="sdelete" type="button">Delete</button></div>
+<div class="toolbar" id="sbulk" hidden><span class="when" id="snsel"></span><button class="btn" id="sstop" type="button">Stop</button><button class="btn" id="srerun" type="button">Re-run</button><details class="menu" id="sexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-mformat="csv">CSV</button><button type="button" data-mformat="xlsx">Excel</button><button type="button" data-mformat="json">JSON</button><button type="button" data-mformat="tsv">TSV</button></div></details><button class="btn btn-danger" id="sdelete" type="button">Delete</button></div>
 <div class="panel"><div class="table-wrap"><table class="sortable"><thead><tr><th>Name</th><th>Target</th><th>Started</th><th>Finished</th><th>Status</th><th>Elements</th><th>Correlations</th><th>Action</th></tr></thead><tbody id="scans"></tbody></table></div></div>
 </div>
 </section>
@@ -244,6 +246,9 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <input id="starget" class="mono" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" placeholder="The target of your scan.">
 <label class="fl" for="skind">Target type</label>
 <select id="skind"><option value="auto">Detect from the target</option><option value="domain">Domain name</option><option value="ip">IP address</option><option value="email">E-mail address</option><option value="exposure">E-mail breach exposure</option><option value="phone">Phone number</option><option value="username">Username</option><option value="people">Human name</option><option value="network">Wi-Fi BSSID or location</option></select>
+<label class="fl" for="sdepth">Recursion depth</label>
+<input id="sdepth" type="number" min="0" step="1" value="0" inputmode="numeric" aria-describedby="sdepth-h">
+<p class="help" id="sdepth-h">How many hops the scan follows what it finds, as Spiderfoot feeds each finding to the modules that take it: every email, username, domain, phone, IP address and BSSID found is looked up in turn. 0 looks up the target only.</p>
 </div></div>
 <div class="panel"><div class="panel-body">
 <p class="help">Your scan target may be one of the following. Huntsman detects the target type from the format of your input:</p>
@@ -275,9 +280,10 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <nav class="tabs" id="sctabs" aria-label="Scan sections"><a class="tab" data-tab="summary">Summary</a><a class="tab" data-tab="correlations">Correlations</a><a class="tab" data-tab="browse">Browse</a><a class="tab" data-tab="graph">Graph</a><a class="tab" data-tab="settings">Scan Settings</a><a class="tab" data-tab="log">Log</a></nav>
 <div class="toolbar">
 <button class="btn" id="screfresh" type="button">Refresh</button>
-<details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button></div></details>
+<details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="xlsx">Excel</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button></div></details>
 <button class="btn" id="scstop" type="button" hidden>Stop</button>
 <button class="btn" id="screrun" type="button">Re-run</button>
+<button class="btn" id="scclone" type="button">Clone</button>
 <button class="btn btn-danger" id="scdelete" type="button">Delete</button>
 </div>
 <form class="toolbar" id="scsearch"><input type="search" id="scq" class="grow" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="Search: text, *wild*, /re/" aria-label="Search this scan: plain text, a *wild*card or a /regular expression/"><button class="btn" type="submit">Search</button></form>
@@ -291,7 +297,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel"><div class="panel-heading">Sources <span class="badge" id="srcs-n"></span></div><div class="table-wrap"><table class="sortable"><thead><tr><th>Source</th><th>Outcome</th><th>Detail</th></tr></thead><tbody id="srcs"></tbody></table></div></div>
 </div>
 <div id="pane-correlations" hidden>
-<div class="toolbar"><button class="btn" id="recorrelate" type="button">Re-run Correlations</button><details class="menu" id="cexport"><summary class="btn">Export Correlations</summary><div class="menu-list"><button type="button" data-cformat="csv">CSV</button><button type="button" data-cformat="json">JSON</button><button type="button" data-cformat="tsv">TSV</button></div></details></div>
+<div class="toolbar"><button class="btn" id="recorrelate" type="button">Re-run Correlations</button><details class="menu" id="cexport"><summary class="btn">Export Correlations</summary><div class="menu-list"><button type="button" data-cformat="csv">CSV</button><button type="button" data-cformat="xlsx">Excel</button><button type="button" data-cformat="json">JSON</button><button type="button" data-cformat="tsv">TSV</button></div></details></div>
 <p class="help" id="cnote" role="status"></p>
 <div class="panel"><div class="table-wrap"><table><thead><tr><th>Correlation</th><th>Rule</th><th>Risk</th><th>Data Elements</th></tr></thead><tbody id="corrs"></tbody></table></div></div></div>
 <div id="pane-browse" hidden>
@@ -312,6 +318,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div id="pane-settings" hidden>
 <div class="panel"><div class="panel-heading">Meta Information</div><dl class="kv" id="meta"></dl></div>
 <div class="panel"><div class="panel-heading">Scan Options</div><dl class="kv" id="opts"></dl></div>
+<div class="panel"><div class="panel-heading">Discovery Tree <span class="badge" id="lineage-n"></span></div><p class="help pad">Each lookup the scan ran, by hop from the target, and every entity it found.</p><div id="lineage"></div></div>
 <div class="panel"><div class="panel-heading">Lookup Report</div><pre id="sreport"></pre></div>
 </div>
 <div id="pane-log" hidden>
@@ -564,7 +571,8 @@ function showScans(){
 }
 function bulk(){
   const n=picked.size;$('snsel').textContent=n+' selected';$('sbulk').hidden=!n;
-  for(const id of ['sstop','srerun','sexport','sdelete'])$(id).disabled=!n;
+  for(const id of ['sstop','srerun','sdelete'])$(id).disabled=!n;
+  if(!n)$('sexport').open=false;
   $('sall').checked=n>0&&n===scans.length;
 }
 $('sall').onchange=()=>{picked.clear();if($('sall').checked)for(const s of scans)picked.add(s.id);showScans()};
@@ -584,9 +592,13 @@ async function act1(action,ids){
 $('sstop').onclick=()=>act1('stop',[...picked].filter(id=>scans.some(s=>s.id===id&&live(s.status))));
 $('srerun').onclick=()=>act1('rerun',[...picked]);
 $('sdelete').onclick=()=>act1('delete',[...picked]);
-$('sexport').onclick=()=>exportJson([...picked]);
-async function exportJson(ids){
-  try{await fetchFile('/api/scans/export?ids='+ids.map(enc).join(','),'huntsman-scans.json')}
+// The selected scans in one file, Spiderfoot's multi-scan export: a Scan Name column leads each row.
+$('sexport').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-mformat]');if(!b)return;
+  $('sexport').open=false;exportJson([...picked],b.dataset.mformat);
+});
+async function exportJson(ids,format='json'){
+  try{await fetchFile('/api/scans/export?'+new URLSearchParams({ids:ids.join(','),format}),'huntsman-scans.'+format)}
   catch(e){fail(view==='scan'?'scerror':'serror',e.message)}
 }
 // New Scan: a target and Spiderfoot's three ways of choosing what runs.
@@ -623,7 +635,9 @@ $('newscan').onsubmit=async ev=>{
   ev.preventDefault();
   const target=$('starget').value.trim();
   if(!target){fail('nerror','Enter a scan target.');$('starget').focus();return}
-  const p=new URLSearchParams({target,name:$('sname').value.trim()||target,kind:$('skind').value});
+  const depth=$('sdepth').value.trim()||'0';
+  if($('sdepth').validity.badInput||!/^\d+$/.test(depth)){fail('nerror','Recursion depth is a whole number of hops, 0 or more.');$('sdepth').focus();return}
+  const p=new URLSearchParams({target,name:$('sname').value.trim()||target,kind:$('skind').value,depth});
   if(ntab==='usecase')p.set('usecase',document.querySelector('input[name=usecase]:checked').value);
   else if(ntab==='types'){
     const on=[...$('np-'+ntab).querySelectorAll('input:checked')].map(i=>i.value);
@@ -666,7 +680,7 @@ function head(){
   const s=scan,name=s.name||s.target;
   $('scname').textContent=name;$('sccrumb').textContent=name;
   $('scstatus').textContent=s.status;$('scstatus').className='label '+stTone(s.status);
-  $('scmeta').textContent=[s.target,s.target_type||s.kind,s.started&&'started '+when(s.started),s.ended&&'finished '+when(s.ended)].filter(Boolean).join(' · ');
+  $('scmeta').textContent=[s.target,s.target_type||s.kind,s.options&&s.options.depth&&'depth '+s.options.depth,s.started&&'started '+when(s.started),s.ended&&'finished '+when(s.ended)].filter(Boolean).join(' · ');
   $('scstop').hidden=!live(s.status);$('scdelete').hidden=live(s.status);
 }
 async function pane(){
@@ -682,6 +696,7 @@ async function pane(){
 $('screfresh').onclick=()=>{cache={};loadScan(true)};
 $('scstop').onclick=()=>act1('stop',[sid]);
 $('screrun').onclick=()=>act1('rerun',[sid]);
+$('scclone').onclick=()=>clone(scan);
 $('scdelete').onclick=()=>act1('delete',[sid]);
 const errors=s=>Array.isArray(s.errors)?s.errors.length:(s.errors||0);
 // A source's outcome as the scan saved it: what it found, its HTTP status, when to retry, and why.
@@ -718,6 +733,7 @@ function rawView(x){
   if(x.confidence!=null)meta.push('confidence '+x.confidence);
   if(x.entity)meta.push('entity '+show(x.entity));
   b.append(el('p','ent-m',meta.join(' · ')),value(x.raw));
+  if(PIVOT.has(x.type))b.append(button('New Scan of this',()=>pivot(x),'pivot'));
   return b;
 }
 function elemRow(x,withType,select){
@@ -733,13 +749,13 @@ function elemRow(x,withType,select){
   return tr;
 }
 // Rows arrive 200 at a time, so a scan with thousands of elements stays quick on a phone.
-function table(cols,rows,render){
+function table(cols,rows,render,empty='No data elements.'){
   const wrap=el('div'),tw=el('div','table-wrap'),t=el('table'),hr=el('tr'),tb=el('tbody'),head=el('thead'),more=button('',()=>page(),'more');
   for(const c of cols)hr.append(el('th','',c));
   head.append(hr);t.append(head,tb);tw.append(t);wrap.append(tw,more);
   let shown=0;
   function page(){const end=Math.min(rows.length,shown+200);for(;shown<end;shown++)tb.append(render(rows[shown]));const left=rows.length-shown;more.hidden=!left;more.textContent='Show '+Math.min(200,left)+' more of '+left}
-  page();if(!rows.length)none(tb,'No data elements.',cols.length);
+  page();if(!rows.length)none(tb,empty,cols.length);
   return wrap;
 }
 const ELEM=['Data Element','Source Data Element','Source Module','Identified'];
@@ -959,11 +975,41 @@ $('gsave').onclick=()=>{
   [...copy.querySelectorAll('circle,line')].forEach((c,i)=>{const k=was[i].getAttribute('class')||was[i].tagName;if(!fills.has(k)){const s=getComputedStyle(was[i]);fills.set(k,[s.fill,s.stroke])}const [f,s]=fills.get(k);c.setAttribute('fill',f);c.setAttribute('stroke',s);c.removeAttribute('class')});
   download(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml'}),'huntsman-'+sid+'-graph.svg');
 };
+// Why a scan stopped following what it found: the crawl's own reason, and what it means.
+const STOP={fixed_point:'nothing new was left to look up',resource_limit:'the lookup or entity budget ran out with findings left to follow',cancelled:'stop requested; the lookups still queued did not run',time_limit:'the time limit ran out',request_budget:'the request budget ran out',provider_budget:'a provider\'s request budget ran out',marginal_gain_limit:'new lookups had stopped finding anything new',fatal_error:'a lookup failed and the crawl could not go on'};
+function stopped(s){
+  const t=s.termination,d=(s.options||{}).depth||0;
+  if(!t)return live(s.status)?'still following what it finds':'not recorded';
+  const why=t==='max_depth'?(d?'depth '+d+' reached; a deeper scan would look up more of its findings':'depth 0 follows nothing it finds; a deeper scan would look up its findings in turn'):STOP[t];
+  return why?t+': '+why:t;
+}
+// New Scan filled in, to change before it runs: Spiderfoot's Clone of a scan, or a scan of a value
+// a scan found.
+async function prefill(f){
+  const types=f.types||[];
+  $('sname').value=f.name;$('starget').value=f.target;$('skind').value=f.kind||'auto';if(!$('skind').value)$('skind').value='auto';$('sdepth').value=String(f.depth||0);
+  const uc=document.querySelector('input[name=usecase][value="'+CSS.escape(f.usecase||'all')+'"]');if(uc)uc.checked=true;
+  ntab='usecase';
+  if(types.length){
+    if(!loaded.types)await loadTypes();
+    for(const i of $('typelist').querySelectorAll('input'))i.checked=types.includes(i.value);
+    ntab='types';
+  }
+  $('nerror').hidden=true;location.hash='#/newscan';
+}
+const clone=s=>s&&prefill({...s.options,name:s.name||s.target,target:s.target,kind:s.kind});
+// Spiderfoot types whose value is itself a scan target. An element of one starts New Scan on that
+// value, with the use case and depth of the scan that found it, as Spiderfoot hands each event to
+// the modules that take it.
+const PIVOT=new Set(['INTERNET_NAME','DOMAIN_NAME','DOMAIN_NAME_PARENT','AFFILIATE_INTERNET_NAME','AFFILIATE_DOMAIN_NAME','CO_HOSTED_SITE','CO_HOSTED_SITE_DOMAIN','SIMILARDOMAIN','IP_ADDRESS','IPV6_ADDRESS','AFFILIATE_IPADDR','AFFILIATE_IPV6_ADDRESS','EMAILADDR','EMAILADDR_GENERIC','AFFILIATE_EMAILADDR','PHONE_NUMBER','USERNAME','HUMAN_NAME','HSE_MAC_ADDRESS']);
+const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:'auto',usecase:o.usecase,depth:o.depth})};
 function scanSettings(){
   const s=scan,o=s.options||{},list=v=>Array.isArray(v)?v.join(', '):v;
   kv('meta',[['Name',s.name],['Internal ID',s.id],['Target',s.target],['Target type',s.target_type],['Lookup',s.kind],['Created',when(s.created)],['Started',when(s.started)],['Completed',when(s.ended)],['Status',s.status],['Data elements',s.elements]]);
   const h=s.honoured||{},applied=v=>v===true?'applied':v===false?'not applied yet: every module of the target\'s lookup ran':v;
-  kv('opts',[['Use case',o.usecase],['Use case applied',applied(h.usecase)],['Data types selected',list(o.types)||'all'],['Data types applied',applied(h.types)],['Modules selected',list(o.modules)||'all'],['Modules applied',applied(h.modules)],['Modules run',list(s.modules_run)]]);
+  kv('opts',[['Use case',o.usecase],['Use case applied',applied(h.usecase)],['Data types selected',list(o.types)||'all'],['Data types applied',applied(h.types)],['Modules selected',list(o.modules)||'all'],['Modules applied',applied(h.modules)],['Recursion depth',o.depth?o.depth+(o.depth===1?' hop':' hops')+' past the target':'0: the target\'s own lookup only'],['Recursion applied',applied(h.depth)],['Stopped following because',stopped(s)],['Modules run',list(s.modules_run)]]);
+  const tree=s.lineage||[];$('lineage-n').textContent=tree.length;
+  $('lineage').replaceChildren(table(['Hop','Lookup','Found'],tree,e=>{const tr=el('tr');put(tr,'Hop',e.generation).className='nw';put(tr,'Lookup',el('span','data',e.from_kind+': '+e.from_selector));put(tr,'Found',el('span','data',e.to_kind+': '+e.to_value)).classList.add('wide');return tr},live(s.status)?'Nothing found yet.':'No lookups were kept for this scan.'));
   $('sreport').textContent=s.report||'No report yet.';
 }
 let logs=[];
@@ -995,6 +1041,18 @@ $('scexport').addEventListener('click',async e=>{
   $('scexport').open=false;
   try{await exportFile(b.dataset.format)}catch(err){fail('scerror',err.message)}
 });
+// A menu near the right edge opens leftward, so it never runs off a phone's screen: placed from
+// its button before it opens, so it never paints off the edge, then checked once it has opened.
+const edge=()=>document.documentElement.clientWidth-8;
+document.addEventListener('click',e=>{
+  const s=e.target.closest&&e.target.closest('details.menu>summary');if(!s||s.parentNode.open)return;
+  const l=s.parentNode.querySelector('.menu-list');
+  l.classList.toggle('end',s.getBoundingClientRect().left+parseFloat(getComputedStyle(l).minWidth)>edge());
+},true);
+document.addEventListener('toggle',e=>{
+  const m=e.target;if(!(m instanceof HTMLDetailsElement)||!m.classList.contains('menu')||!m.open)return;
+  const l=m.querySelector('.menu-list');if(l.getBoundingClientRect().right>edge())l.classList.add('end');
+},true);
 document.addEventListener('click',e=>{for(const m of document.querySelectorAll('details.menu[open]'))if(!m.contains(e.target))m.open=false});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')for(const m of document.querySelectorAll('details.menu[open]'))m.open=false});
 // Settings: every module, what it needs, and what this server knows of itself. Keys stay in the

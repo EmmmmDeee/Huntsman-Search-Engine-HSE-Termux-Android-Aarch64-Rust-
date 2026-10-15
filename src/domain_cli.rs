@@ -6,8 +6,9 @@
 //! every domain source in [`crate::indicator_legs::SOURCES`] (Shodan DNS, Pulsedive, Netlas, OTX, urlscan.io, Robtex,
 //! `HackerTarget`, `LeakIX`, `URLhaus`, `SecurityTrails`,
 //! `ThreatFox`, Whoxy WHOIS). A keyed leg without its key makes no request and reports nothing;
-//! a configured key always runs its leg. Every result set is combined into one entity list and
-//! rendered report.
+//! a configured key always runs its leg. Last, every subdomain the legs found is resolved, as
+//! Spiderfoot's `sfp_dnsresolve` does (see `resolve`). Every result set is combined into one
+//! entity list and rendered report.
 //!
 //! Every leg, DNS included, sends through the one transport the caller hands in. The DNS leg's
 //! records are entities like any other leg's findings: each address, mail exchanger, name
@@ -35,6 +36,10 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::spf::Mechanism;
 use crate::tags;
 use crate::virustotal;
+
+mod resolve;
+
+pub use resolve::{MAX_RESOLVED_HOSTS, RESOLVE_SOURCE};
 
 pub const DOMAIN_USAGE: &str = "usage: huntsman-recon domain DOMAIN [--save FILE]";
 
@@ -78,7 +83,7 @@ pub enum DomainRun {
 }
 
 #[must_use]
-pub fn run<T: Transport + ?Sized>(
+pub fn run<T: Transport + ?Sized + Sync>(
     transport: &T,
     keys: &Keys,
     domain: &str,
@@ -92,45 +97,13 @@ pub fn run<T: Transport + ?Sized>(
     let mut found = Found::default();
     let mut sections = Vec::new();
 
-    match crtsh::lookup(transport, ReconTargetKind::Domain, &domain, &scan_id) {
-        Ok(report) => {
-            let count = report.entities.len();
-            found.entities.extend(report.entities);
-            // crt.sh answered with its list of logged certificates; an empty list is "none".
-            found.outcomes.push(if count == 0 {
-                SourceExecutionOutcome::valid_zero("crtsh", now_unix)
-            } else {
-                SourceExecutionOutcome::success("crtsh", now_unix, count)
-            });
-            sections.push(format!("crtsh: {count} certificate-transparency entities"));
-        }
-        Err(CrtShError::Refused(reason)) => {
-            found.refused(format!("crtsh: request refused: {reason}"));
-            found.outcomes.push(SourceExecutionOutcome::failed(
-                "crtsh",
-                now_unix,
-                SourceOutcomeKind::EntitlementDenied,
-                None,
-                &reason,
-            ));
-            sections.push(format!("crtsh: refused ({reason})"));
-        }
-        Err(error) => {
-            let message = error.to_string();
-            let kind = match error {
-                CrtShError::NoResponse(kind) => {
-                    found.no_response(message.clone());
-                    kind
-                }
-                _ => SourceOutcomeKind::Inconclusive,
-            };
-            found.outcomes.push(SourceExecutionOutcome::failed(
-                "crtsh", now_unix, kind, None, &message,
-            ));
-            sections.push(format!("crtsh: unavailable ({message})"));
-        }
-    }
+    sections.push(crtsh_leg(
+        transport, &domain, &scan_id, now_unix, &mut found,
+    ));
 
+    // Whether the resolvers answered the domain's own queries; when none did, its hosts are not
+    // asked either.
+    let mut resolvers_up = false;
     match dns::lookup_domain(transport, &domain) {
         Some(records) => {
             if let Some(failure) = resolver_failure(&records) {
@@ -138,6 +111,8 @@ pub fn run<T: Transport + ?Sized>(
                     "dns: no resolver answered ({})",
                     failure.error.detail
                 ));
+            } else {
+                resolvers_up = true;
             }
             found.outcomes.push(dns_outcome(&records, now_unix));
             found.entities.extend(dns_entities(&records, &scan_id));
@@ -155,6 +130,13 @@ pub fn run<T: Transport + ?Sized>(
     }
 
     keyed_legs(transport, keys, &domain, &scan_id, now_unix, &mut found);
+    let hosts = resolve::hosts(&found.entities, &domain);
+    if resolvers_up && !hosts.is_empty() {
+        let resolved = resolve::resolve(transport, &domain, &hosts, &scan_id, now_unix);
+        found.entities.extend(resolved.entities);
+        found.outcomes.push(resolved.outcome);
+        sections.push(resolved.section);
+    }
     let Found {
         mut entities,
         outcomes,
@@ -189,6 +171,54 @@ pub fn run<T: Transport + ?Sized>(
     DomainRun::Printed {
         text,
         report: Report { entities, outcomes },
+    }
+}
+
+/// The crt.sh leg: the names in certificates logged for the domain. Returns its report line.
+fn crtsh_leg<T: Transport + ?Sized>(
+    transport: &T,
+    domain: &str,
+    scan_id: &str,
+    now_unix: u64,
+    found: &mut Found,
+) -> String {
+    match crtsh::lookup(transport, ReconTargetKind::Domain, domain, scan_id) {
+        Ok(report) => {
+            let count = report.entities.len();
+            found.entities.extend(report.entities);
+            // crt.sh answered with its list of logged certificates; an empty list is "none".
+            found.outcomes.push(if count == 0 {
+                SourceExecutionOutcome::valid_zero("crtsh", now_unix)
+            } else {
+                SourceExecutionOutcome::success("crtsh", now_unix, count)
+            });
+            format!("crtsh: {count} certificate-transparency entities")
+        }
+        Err(CrtShError::Refused(reason)) => {
+            found.refused(format!("crtsh: request refused: {reason}"));
+            found.outcomes.push(SourceExecutionOutcome::failed(
+                "crtsh",
+                now_unix,
+                SourceOutcomeKind::EntitlementDenied,
+                None,
+                &reason,
+            ));
+            format!("crtsh: refused ({reason})")
+        }
+        Err(error) => {
+            let message = error.to_string();
+            let kind = match error {
+                CrtShError::NoResponse(kind) => {
+                    found.no_response(message.clone());
+                    kind
+                }
+                _ => SourceOutcomeKind::Inconclusive,
+            };
+            found.outcomes.push(SourceExecutionOutcome::failed(
+                "crtsh", now_unix, kind, None, &message,
+            ));
+            format!("crtsh: unavailable ({message})")
+        }
     }
 }
 
@@ -296,14 +326,7 @@ fn resolver_failure(records: &DomainDns) -> Option<&dns::QueryFailure> {
 /// are named in `detail`. **Pure.**
 fn dns_outcome(records: &DomainDns, now_unix: u64) -> SourceExecutionOutcome {
     if let Some(failure) = resolver_failure(records) {
-        let kind = match failure.error.kind {
-            ResolveErrorKind::Timeout => SourceOutcomeKind::TtfbTimeout,
-            ResolveErrorKind::RateLimited => SourceOutcomeKind::RateLimited,
-            ResolveErrorKind::BotWaf => SourceOutcomeKind::BotWaf,
-            ResolveErrorKind::Upstream | ResolveErrorKind::Truncated | ResolveErrorKind::Empty => {
-                SourceOutcomeKind::Inconclusive
-            }
-        };
+        let kind = failure.error.kind.outcome_kind();
         let detail = format!(
             "no resolver answered: {} queries failed, the first {} {}: {}",
             records.failures.len(),
@@ -473,7 +496,7 @@ impl<'a> ZoneFindings<'a> {
                     .with_attr("record_type", label);
                 self.apex.add_evidence(evidence);
             }
-            RecordType::Soa => {}
+            RecordType::Soa | RecordType::Ptr => {}
         }
     }
 
@@ -745,7 +768,7 @@ mod tests {
         );
     }
 
-    use std::cell::RefCell;
+    use std::sync::Mutex;
 
     use crate::http::{Request, Response, TransportFailure};
     use crate::relation::RelationKind;
@@ -762,7 +785,7 @@ mod tests {
         records: Vec<(String, &'static str, String)>,
         crtsh: Option<&'static str>,
         resolvers_down: bool,
-        seen: RefCell<Vec<String>>,
+        seen: Mutex<Vec<String>>,
     }
 
     impl Zone {
@@ -774,7 +797,7 @@ mod tests {
                     .collect(),
                 crtsh: Some("[]"),
                 resolvers_down: false,
-                seen: RefCell::new(Vec::new()),
+                seen: Mutex::new(Vec::new()),
             }
         }
 
@@ -810,7 +833,8 @@ mod tests {
 
         fn requests(&self, prefix: &str) -> usize {
             self.seen
-                .borrow()
+                .lock()
+                .expect("request log")
                 .iter()
                 .filter(|url| url.starts_with(prefix))
                 .count()
@@ -855,7 +879,10 @@ mod tests {
 
     impl Transport for Zone {
         fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-            self.seen.borrow_mut().push(request.url.clone());
+            self.seen
+                .lock()
+                .expect("request log")
+                .push(request.url.clone());
             let resolver = dns::resolver_config()
                 .name_servers
                 .iter()
@@ -910,7 +937,8 @@ mod tests {
         let zone = Zone::published("example.com");
         let report = printed(&zone, "example.com");
 
-        assert_eq!(zone.requests("https://cloudflare-dns.com/dns-query?"), 7);
+        // Seven queries for the domain's own records, then A and AAAA for its mail exchanger.
+        assert_eq!(zone.requests("https://cloudflare-dns.com/dns-query?"), 9);
         for ip in [IPV4, IPV6] {
             let address = entity(&report, &EntityKind::IpAddress, ip).expect("address entity");
             let evidence = &address.evidence[0];
@@ -922,6 +950,8 @@ mod tests {
         }
         let mx = entity(&report, &EntityKind::Domain, "mx.example.com").expect("mail exchanger");
         assert!(mx.has_tag(crate::tags::SUBDOMAIN));
+        // The zone names a mail exchanger it publishes no address for.
+        assert!(mx.has_tag(crate::tags::UNRESOLVED));
         assert_eq!(
             mx.evidence[0]
                 .attr_values("mx_preference")
@@ -975,6 +1005,156 @@ mod tests {
         let row = dns_row(&report);
         assert_eq!(row.kind, SourceOutcomeKind::Success);
         assert_eq!(row.found, Some(8));
+    }
+
+    /// `shop`'s own addresses, beside the domain's.
+    const SHOP_V4: &str = "93.184.215.34";
+    const SHOP_V6: &str = "2606:2800:21f:cb07:6820:80da:af6b:8b2d";
+
+    /// A domain whose certificates name a host with public addresses, one with a private
+    /// address, one with other records but no address and one with no records at all.
+    fn hosts_report() -> Report {
+        let mut zone = Zone::new(&[
+            ("example.com", "A", IPV4),
+            ("shop.example.com", "A", SHOP_V4),
+            ("shop.example.com", "AAAA", SHOP_V6),
+            ("intranet.example.com", "A", "10.0.0.5"),
+            ("legacy.example.com", "TXT", "\"retired\""),
+        ]);
+        zone.crtsh = Some(
+            r#"[{"name_value":"shop.example.com"},{"name_value":"intranet.example.com"},{"name_value":"legacy.example.com"},{"name_value":"gone.example.com"}]"#,
+        );
+        printed(&zone, "example.com")
+    }
+
+    /// Each host a lookup finds is resolved, as Spiderfoot's `sfp_dnsresolve` resolves every
+    /// `INTERNET_NAME`: its public addresses are entities tied to the host, every address it
+    /// resolves to is listed on it, and a host with no address is tagged unresolved. Before, a
+    /// domain scan's subdomains were names only: no address of `shop` was found unless it was the
+    /// apex's own.
+    #[test]
+    fn the_hosts_a_lookup_finds_are_resolved_as_sfp_dnsresolve_does() {
+        let report = hosts_report();
+        for (ip, record_type) in [(SHOP_V4, "A"), (SHOP_V6, "AAAA")] {
+            let address = entity(&report, &EntityKind::IpAddress, ip).expect("shop's address");
+            let evidence = &address.evidence[0];
+            assert_eq!(evidence.provenance.source, RESOLVE_SOURCE);
+            assert_eq!(
+                evidence.summary,
+                format!("{record_type} record of shop.example.com")
+            );
+            assert_eq!(
+                evidence.attr_values("domain").collect::<Vec<_>>(),
+                ["shop.example.com"]
+            );
+            assert_eq!(
+                evidence.attr_values("resolver").collect::<Vec<_>>(),
+                ["Cloudflare"]
+            );
+        }
+        let resolved = |host: &str| {
+            let found = entity(&report, &EntityKind::Domain, host).expect(host);
+            let listed: Vec<String> = found
+                .evidence
+                .iter()
+                .flat_map(|evidence| evidence.attr_values("resolved_ip"))
+                .map(str::to_owned)
+                .collect();
+            (found.has_tag(crate::tags::UNRESOLVED), listed)
+        };
+        assert_eq!(
+            resolved("shop.example.com"),
+            (false, vec![SHOP_V4.into(), SHOP_V6.into()])
+        );
+        // A private address is listed as published, but it is not an address pivot.
+        assert_eq!(
+            resolved("intranet.example.com"),
+            (false, vec!["10.0.0.5".into()])
+        );
+        assert!(entity(&report, &EntityKind::IpAddress, "10.0.0.5").is_none());
+        // A name with other records but no address, and a name with no records at all.
+        assert_eq!(resolved("legacy.example.com"), (true, Vec::new()));
+        assert_eq!(resolved("gone.example.com"), (true, Vec::new()));
+
+        let row = report
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == RESOLVE_SOURCE)
+            .expect("a dnsresolve row");
+        assert_eq!(row.kind, SourceOutcomeKind::Success);
+        assert_eq!(row.found, Some(3));
+        assert_eq!(
+            row.detail.as_deref(),
+            Some("2 of 4 hosts resolved, 2 unresolved")
+        );
+    }
+
+    /// In the saved scan a resolved address is the host's child, the host resolves to it for the
+    /// relation builder, and a name that does not resolve is `INTERNET_NAME_UNRESOLVED`, so
+    /// Spiderfoot's "host only from certificate transparency" rule names only the live hosts, as
+    /// it does in Spiderfoot. Before, it named every certificate name, dead ones included.
+    #[test]
+    fn a_resolved_host_is_its_addresses_parent_and_a_dead_one_is_unresolved() {
+        let report = hosts_report();
+        let relations = crate::relation::derive_all(&report.entities, "resolve");
+        let shop = entity(&report, &EntityKind::Domain, "shop.example.com").expect("shop");
+        let shop_v4 = entity(&report, &EntityKind::IpAddress, SHOP_V4).expect("shop's address");
+        assert!(relations.iter().any(|relation| {
+            relation.kind == RelationKind::ResolvesTo
+                && relation.from_uid == shop.uid
+                && relation.to_uid == shop_v4.uid
+        }));
+
+        let target = crate::sf_elements::Target {
+            value: "example.com",
+            kind: "INTERNET_NAME",
+        };
+        let elements = crate::sf_elements::elements(target, &report.entities, 1);
+        let of = |data: &str| -> Vec<&crate::sf_elements::DataElement> {
+            elements
+                .iter()
+                .filter(|element| element.data == data)
+                .collect()
+        };
+        for host in ["legacy.example.com", "gone.example.com"] {
+            assert!(
+                of(host)
+                    .iter()
+                    .all(|element| element.kind == "INTERNET_NAME_UNRESOLVED"),
+                "{host}: {:?}",
+                of(host)
+            );
+        }
+        let shop_ids: Vec<&str> = of("shop.example.com")
+            .iter()
+            .map(|element| element.id.as_str())
+            .collect();
+        let address = of(SHOP_V4);
+        assert_eq!(address.len(), 1, "{address:?}");
+        assert_eq!(address[0].kind, "IP_ADDRESS");
+        assert_eq!(address[0].module, RESOLVE_SOURCE);
+        assert!(
+            shop_ids.contains(&address[0].source.as_deref().unwrap_or_default()),
+            "the address is shop's child: {address:?}"
+        );
+
+        let rule: Vec<_> = crate::sf_correlate::shipped()
+            .iter()
+            .filter(|rule| rule.id == "host_only_from_certificatetransparency")
+            .cloned()
+            .collect();
+        let mut named: Vec<String> = crate::sf_correlate::run(&rule, &elements)
+            .into_iter()
+            .map(|finding| finding.title)
+            .collect();
+        named.sort();
+        assert_eq!(
+            named,
+            [
+                "Host found only in certificate transparency: intranet.example.com",
+                "Host found only in certificate transparency: shop.example.com",
+            ]
+        );
     }
 
     /// Two live lookups whose domains share an address give the relation builder a `resolves_to`
