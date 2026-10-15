@@ -6,7 +6,9 @@
 //! `GET https://freeapi.robtex.com/pdns/forward/{domain}`, which answers one JSON record per
 //! line: kept are the record count, the newest sighting, and the addresses (A, AAAA) and names
 //! (NS, MX, CNAME) it has resolved to, each also a pivot. An address with no route or names, or
-//! a domain with no records, is a valid zero.
+//! a domain with no records, is a valid zero. Robtex answers both with `200`
+//! (`{"status":"ok","act":[]}`, `[]`) and gives a `404` only for an endpoint it does not have
+//! (checked 2026-10-15): a `404` is not an answer.
 
 use serde::Deserialize;
 
@@ -95,7 +97,7 @@ pub fn lookup(
             Indicator::Domain(domain) => decode_forward(&body, domain),
             _ => decode_ip(&body),
         },
-        Answer::NotFound(_) => Ok(None),
+        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
     }
 }
 
@@ -306,6 +308,23 @@ mod tests {
                 .any(|p| p.kind == PivotKind::Domain && p.value == "hera.ns.cloudflare.com")
         );
         assert!(!format!("{f:?}").contains("spf1"));
+    }
+
+    #[test]
+    fn a_404_is_an_endpoint_robtex_lacks_not_a_valid_zero() {
+        // Recorded for `https://freeapi.robtex.com/nosuchpath/1.1.1.1` on 2026-10-15.
+        let unknown = r#"{"status":"error","message":"Unknown endpoint"}"#;
+        for indicator in [Indicator::Ip("1.1.1.1"), Indicator::Domain("example.com")] {
+            let transport = crate::test_support::OneResponse::json(404, unknown);
+            let looked_up = lookup(&transport, &Keys::default(), indicator, 1);
+            assert!(
+                matches!(looked_up, Err(LegError::Unexpected(404))),
+                "{indicator:?}: {looked_up:?}"
+            );
+        }
+        // What Robtex answers for an address it knows nothing about, recorded the same day.
+        let unseen = br#"{"status":"ok","act":[]}"#;
+        assert!(matches!(decode_ip(unseen), Ok(None)));
     }
 
     #[test]
