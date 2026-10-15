@@ -174,7 +174,7 @@ dd dl{margin:0}
 @media (prefers-reduced-motion:reduce){.spin{animation:none}}
 .graph{height:62vh;min-height:300px;margin:0 0 10px;background:var(--el);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 .graph svg{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
-#gedges line{stroke:var(--line2);stroke-width:1;vector-effect:non-scaling-stroke}
+#gedges path{fill:none;stroke:var(--line2);stroke-width:1;vector-effect:non-scaling-stroke}
 #gnodes circle{r:calc(5px / var(--k,1));stroke:var(--el);stroke-width:1;vector-effect:non-scaling-stroke}
 #gnodes circle.groot{r:calc(9px / var(--k,1))}
 #gnodes circle.sel{stroke:var(--fg);stroke-width:3}
@@ -507,7 +507,7 @@ function route(){
   const parts=location.hash.replace(/^#\/?/,'').split('/').map(p=>{try{return decodeURIComponent(p)}catch(_){return p}});
   let v=({lookup:'newscan',status:'about'})[parts[0]]||parts[0];
   if(!VIEWS.includes(v)||(v==='scan'&&!parts[1])||(v==='compare'&&!parts[2]))v='scans';
-  gen++;clearTimeout(timer);resume=null;view=v;
+  gen++;clearTimeout(timer);resume=null;view=v;dropGraph();
   for(const x of VIEWS)$('view-'+x).hidden=x!==v;
   const nav=v==='scan'||v==='compare'?'scans':v;
   for(const a of document.querySelectorAll('.navlink,#nav-about')){const on=(a.dataset.view||'about')===nav;a.classList.toggle('active',on);if(on)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current')}
@@ -892,7 +892,7 @@ $('scsearch').onsubmit=async ev=>{
   try{
     const hits=await search(q,type?{ids:sid,type}:{ids:sid});
     for(const p of TABS)$('pane-'+p).hidden=true;
-    $('pane-search').hidden=false;$('scerror').hidden=true;
+    dropGraph();$('pane-search').hidden=false;$('scerror').hidden=true;
     $('sback').href='#/scan/'+enc(sid)+'/browse'+(type?'/'+enc(type):'');
     $('shits').textContent='Search results for '+q+' ('+hits.length+' records)';
     $('sresults').replaceChildren(elemTable(hits,!type));
@@ -917,24 +917,33 @@ $('allsearch').onsubmit=async ev=>{
 $('allclose').onclick=()=>{$('allhits').hidden=true;$('allresults').replaceChildren()};
 $('sback').onclick=ev=>{if(location.hash===$('sback').getAttribute('href')){ev.preventDefault();route()}};
 // Graph: the elements and the elements they came from, laid out by a small force simulation
-// that runs a few milliseconds a frame, panned and zoomed by touch, mouse or wheel.
-const NS='http://www.w3.org/2000/svg',svg=$('gsvg');
+// that runs a few milliseconds a frame, panned and zoomed by touch, mouse or wheel. However many
+// elements a scan has, no frame spends more than SLICE_MS arranging them, so the page answers a
+// tap while the layout settles; a layout stops after LAYOUT_MS of work, keeping the place it
+// reached, and stops as soon as the page leaves the graph.
+const NS='http://www.w3.org/2000/svg',svg=$('gsvg'),SLICE_MS=12,LAYOUT_MS=20000,BIG=600;
 let G=null,raf=0;
+function stopLayout(){cancelAnimationFrame(raf);raf=0}
+// Leaving the graph lets its elements go: coming back draws it again from the saved answer.
+function dropGraph(){stopLayout();if(G){G=null;$('gedges').replaceChildren();$('gnodes').replaceChildren()}}
 async function graph(){drawGraph(await get('graph',base()+'/graph'),'force')}
 function drawGraph(g,layout){
-  cancelAnimationFrame(raf);
+  stopLayout();
   const nodes=(g.nodes||[]).map(n=>({id:n.id,type:n.type,data:n.data,x:0,y:0,vx:0,vy:0}));
   const at=new Map(nodes.map(n=>[n.id,n])),counts=new Map();
   for(const n of nodes)counts.set(n.type,(counts.get(n.type)||0)+1);
   const types=[...counts.keys()].sort((a,b)=>counts.get(b)-counts.get(a)),cls=new Map(types.map((t,i)=>[t,'g'+i%10]));
-  const edges=[],E=$('gedges'),N=$('gnodes');E.replaceChildren();N.replaceChildren();
-  for(const e of g.edges||[]){const a=at.get(e.source),b=at.get(e.target);if(a&&b&&a!==b){const l=document.createElementNS(NS,'line');E.append(l);edges.push([a,b,l])}}
+  // Every link is one segment of a single path, so a big graph adds one element for its links.
+  const edges=[],E=$('gedges'),N=$('gnodes'),links=document.createElementNS(NS,'path'),dots=document.createDocumentFragment();
+  E.replaceChildren(links);N.replaceChildren();
+  for(const e of g.edges||[]){const a=at.get(e.source),b=at.get(e.target);if(a&&b&&a!==b)edges.push([a,b])}
   const linked=new Set();for(const [a,b] of edges){linked.add(b)}
   for(const n of nodes){
     n.root=n.type==='ROOT'||(!linked.has(n)&&scan&&n.data===scan.target);
-    const c=document.createElementNS(NS,'circle');c.setAttribute('r',n.root?9:5);c.setAttribute('class',n.root?'groot':cls.get(n.type));c.node=n;n.el=c;N.append(c);
+    const c=document.createElementNS(NS,'circle');c.setAttribute('r',n.root?9:5);c.setAttribute('class',n.root?'groot':cls.get(n.type));c.node=n;n.el=c;dots.append(c);
   }
-  G={nodes,edges,k:1,tx:0,ty:0,sel:null};
+  N.append(dots);
+  G={nodes,edges,links,k:1,tx:0,ty:0,sel:null};
   svg.setAttribute('aria-label','Graph of '+nodes.length+' data elements and '+edges.length+' links');
   const lg=$('glegend');lg.replaceChildren();
   for(const t of types.slice(0,20)){const s=el('span'),i=el('i',cls.get(t));s.append(i,t+' ('+counts.get(t)+')');lg.append(s)}
@@ -943,31 +952,53 @@ function drawGraph(g,layout){
 }
 function arrange(layout){
   if(!G)return;
-  cancelAnimationFrame(raf);
+  stopLayout();
   $('grandom').setAttribute('aria-pressed',String(layout==='random'));$('gforce').setAttribute('aria-pressed',String(layout==='force'));
-  const ns=G.nodes,span=40*Math.sqrt(ns.length+1);
-  ns.forEach((n,i)=>{n.fixed=n.root&&layout==='force';n.vx=n.vy=0;if(n.fixed){n.x=n.y=0}else if(layout==='random'){n.x=(Math.random()-.5)*span;n.y=(Math.random()-.5)*span}else{const a=i*2.4,r=8*Math.sqrt(i+1);n.x=r*Math.cos(a);n.y=r*Math.sin(a)}});
+  // A big graph starts spread wider, a few elements to a repulsion cell, so a step costs a few
+  // neighbours per element rather than every element near the middle.
+  const ns=G.nodes,big=ns.length>BIG,span=40*Math.sqrt(ns.length+1),gap=big?42:8;
+  ns.forEach((n,i)=>{n.fixed=n.root&&layout==='force';n.vx=n.vy=0;if(n.fixed){n.x=n.y=0}else if(layout==='random'){n.x=(Math.random()-.5)*span;n.y=(Math.random()-.5)*span}else{const a=i*2.4,r=gap*Math.sqrt(i+1);n.x=r*Math.cos(a);n.y=r*Math.sin(a)}});
   render();fit();
   if(layout!=='force'||ns.length<2)return;
-  let alpha=1;
-  const step=()=>{const t0=performance.now();while(alpha>.02&&performance.now()-t0<12){simulate(alpha);alpha*=.985}render();if(alpha>.02)raf=requestAnimationFrame(step);else fit()};
+  let alpha=1,at=0,grid=null,spent=0,moved=false;
+  const step=()=>{
+    const t0=performance.now(),busy=()=>performance.now()-t0;
+    while(alpha>.02&&spent+busy()<LAYOUT_MS&&busy()<SLICE_MS){
+      if(!big){repelAll(alpha);settle(alpha);alpha*=.985;moved=true;continue}
+      if(!at)grid=cells(ns);
+      at=repelFrom(grid,alpha,at,t0);
+      if(at>=ns.length){settle(alpha);alpha*=.985;at=0;moved=true}
+    }
+    spent+=busy();
+    if(moved){render();moved=false}
+    if(alpha>.02&&spent<LAYOUT_MS)raf=requestAnimationFrame(step);else{raf=0;fit()}
+  };
   raf=requestAnimationFrame(step);
 }
-function simulate(alpha){
-  const ns=G.nodes,n=ns.length,rep=alpha*1200,push=(a,b)=>{let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy;if(d2<.01){dx=Math.random()-.5;dy=Math.random()-.5;d2=.5}if(d2>90000)return;const f=rep/d2;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f};
-  if(n<=600){for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)push(ns[i],ns[j])}
-  else{
-    // Past a few hundred elements, only neighbours within a cell or two repel each other.
-    const cell=new Map(),key=(x,y)=>x+','+y;
-    for(const p of ns){const k=key(Math.floor(p.x/150),Math.floor(p.y/150));if(!cell.has(k))cell.set(k,[]);cell.get(k).push(p)}
-    for(const p of ns){const cx=Math.floor(p.x/150),cy=Math.floor(p.y/150);for(let x=cx-1;x<=cx+1;x++)for(let y=cy-1;y<=cy+1;y++)for(const q of cell.get(key(x,y))||[])if(q!==p&&q.id>p.id)push(p,q)}
+const push=(a,b,rep)=>{let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy;if(d2<.01){dx=Math.random()-.5;dy=Math.random()-.5;d2=.5}if(d2>90000)return;const f=rep/d2;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f};
+function repelAll(alpha){const ns=G.nodes,n=ns.length,rep=alpha*1200;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)push(ns[i],ns[j],rep)}
+// Past a few hundred elements, only neighbours within a cell or two repel each other.
+const cellKey=(x,y)=>x+','+y;
+function cells(ns){const cell=new Map();for(const p of ns){const k=cellKey(Math.floor(p.x/150),Math.floor(p.y/150));if(!cell.has(k))cell.set(k,[]);cell.get(k).push(p)}return cell}
+// Repel the elements from index `from` on until the frame's slice is spent; the index to go on from.
+function repelFrom(cell,alpha,from,t0){
+  const ns=G.nodes,rep=alpha*1200;
+  for(let i=from;i<ns.length;i++){
+    if(!(i&31)&&i>from&&performance.now()-t0>=SLICE_MS)return i;
+    const p=ns[i],cx=Math.floor(p.x/150),cy=Math.floor(p.y/150);
+    for(let x=cx-1;x<=cx+1;x++)for(let y=cy-1;y<=cy+1;y++)for(const q of cell.get(cellKey(x,y))||[])if(q!==p&&q.id>p.id)push(p,q,rep);
   }
+  return ns.length;
+}
+// Links pull, the middle draws everything in a little, then every element moves.
+function settle(alpha){
   for(const [a,b] of G.edges){const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1,f=alpha*.15*(d-40)/d;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f}
-  for(const p of ns){if(p.fixed){p.vx=p.vy=0;continue}p.vx=(p.vx-p.x*alpha*.005)*.6;p.vy=(p.vy-p.y*alpha*.005)*.6;p.x+=Math.max(-25,Math.min(25,p.vx));p.y+=Math.max(-25,Math.min(25,p.vy))}
+  for(const p of G.nodes){if(p.fixed){p.vx=p.vy=0;continue}p.vx=(p.vx-p.x*alpha*.005)*.6;p.vy=(p.vy-p.y*alpha*.005)*.6;p.x+=Math.max(-25,Math.min(25,p.vx));p.y+=Math.max(-25,Math.min(25,p.vy))}
 }
 function render(){
   for(const n of G.nodes){n.el.setAttribute('cx',n.x.toFixed(1));n.el.setAttribute('cy',n.y.toFixed(1))}
-  for(const [a,b,l] of G.edges){l.setAttribute('x1',a.x.toFixed(1));l.setAttribute('y1',a.y.toFixed(1));l.setAttribute('x2',b.x.toFixed(1));l.setAttribute('y2',b.y.toFixed(1))}
+  let d='';for(const [a,b] of G.edges)d+='M'+a.x.toFixed(1)+' '+a.y.toFixed(1)+'L'+b.x.toFixed(1)+' '+b.y.toFixed(1);
+  G.links.setAttribute('d',d);
 }
 function place(){$('gview').style.setProperty('--k',G.k.toFixed(4));$('gview').setAttribute('transform','translate('+G.tx.toFixed(1)+' '+G.ty.toFixed(1)+') scale('+G.k.toFixed(4)+')')}
 function fit(){
@@ -1010,8 +1041,8 @@ $('gsave').onclick=()=>{
   const copy=svg.cloneNode(true),r=svg.getBoundingClientRect(),bg=document.createElementNS(NS,'rect'),fills=new Map();
   copy.setAttribute('xmlns',NS);copy.setAttribute('width',Math.round(r.width));copy.setAttribute('height',Math.round(r.height));copy.removeAttribute('role');
   bg.setAttribute('width','100%');bg.setAttribute('height','100%');bg.setAttribute('fill',getComputedStyle(svg.parentNode).backgroundColor);copy.insertBefore(bg,copy.firstChild);
-  const was=[...svg.querySelectorAll('circle,line')];
-  [...copy.querySelectorAll('circle,line')].forEach((c,i)=>{const k=was[i].getAttribute('class')||was[i].tagName;if(!fills.has(k)){const s=getComputedStyle(was[i]);fills.set(k,[s.fill,s.stroke])}const [f,s]=fills.get(k);c.setAttribute('fill',f);c.setAttribute('stroke',s);c.removeAttribute('class')});
+  const was=[...svg.querySelectorAll('circle,path')];
+  [...copy.querySelectorAll('circle,path')].forEach((c,i)=>{const k=was[i].getAttribute('class')||was[i].tagName;if(!fills.has(k)){const s=getComputedStyle(was[i]);fills.set(k,[s.fill,s.stroke])}const [f,s]=fills.get(k);c.setAttribute('fill',f);c.setAttribute('stroke',s);c.removeAttribute('class')});
   download(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml'}),'huntsman-'+sid+'-graph.svg');
 };
 // Two saved scans side by side, which Spiderfoot cannot do: what the later scan found that the
