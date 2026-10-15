@@ -1,0 +1,1 @@
+- The Railway guides no longer say the generated token is printed to deployment logs, which the entrypoint never does, or that the root `Dockerfile` is the legacy `hse` adapter; it builds `huntsman-recon`. `tests/deployment_targets.rs` locks both.
