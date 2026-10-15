@@ -5,10 +5,13 @@
 //! `HUNTSMAN_VIRUSTOTAL_KEY` is set. What is kept is the last analysis verdict counts, the
 //! community reputation, and the object's registry context: registrar and creation date for a
 //! domain, AS number, AS owner, network and country for an address. A `404` `NotFoundError` is
-//! "`VirusTotal` has no object for it", a valid zero.
+//! "`VirusTotal` has no object for it", a valid zero. An answer must be the looked-up object (its
+//! `id` names the domain or address) and carry `last_analysis_stats`; one that does not is drift,
+//! never "0 of 0 engines flag it".
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::{Transport, percent_encode_component};
@@ -70,6 +73,7 @@ struct Envelope {
 
 #[derive(Deserialize)]
 struct Data {
+    id: String,
     #[serde(rename = "type")]
     kind: String,
     attributes: Attributes,
@@ -77,7 +81,6 @@ struct Data {
 
 #[derive(Deserialize)]
 struct Attributes {
-    #[serde(default)]
     last_analysis_stats: Stats,
     #[serde(default)]
     reputation: i64,
@@ -147,14 +150,28 @@ pub fn lookup<T: Transport + ?Sized>(
     decode(
         api_leg::get(transport, &API, keys, &url(object, value), now_unix)?,
         object,
+        value,
     )
 }
 
-/// One answer as a report on an `object`. **Pure.**
+/// Whether the object `id` `VirusTotal` answered about is `value`: the same domain in any case,
+/// or the same address however it is written. **Pure.**
+fn is_about(id: &str, object: Object, value: &str) -> bool {
+    match object {
+        Object::Domain => id.eq_ignore_ascii_case(value),
+        Object::Ip => matches!(
+            (id.trim().parse::<IpAddr>(), value.parse::<IpAddr>()),
+            (Ok(answered), Ok(asked)) if answered == asked
+        ),
+    }
+}
+
+/// One answer as a report on the `object` `value`. **Pure.**
 ///
 /// # Errors
-/// [`LegError::Decode`] for a body that is not the documented shape or is another object type.
-pub fn decode(answer: Answer, object: Object) -> Result<Option<Report>, LegError> {
+/// [`LegError::Decode`] for a body that is not the documented shape, is another object type, or
+/// is about another domain or address.
+pub fn decode(answer: Answer, object: Object, value: &str) -> Result<Option<Report>, LegError> {
     let body = match answer {
         Answer::NotFound(body) => {
             let error: ErrorEnvelope = api_leg::decode(&body)?;
@@ -173,6 +190,9 @@ pub fn decode(answer: Answer, object: Object) -> Result<Option<Report>, LegError
     };
     if data.kind != expected {
         return Err(LegError::Decode("answer is another object type".into()));
+    }
+    if !is_about(&data.id, object, value) {
+        return Err(LegError::Decode("answer is about another object".into()));
     }
     let a = data.attributes;
     let mut categories: Vec<String> = a
@@ -211,7 +231,7 @@ mod tests {
 
     #[test]
     fn a_domain_report_keeps_verdicts_registrar_and_categories() {
-        let report = decode(Answer::Body(DOMAIN.into()), Object::Domain)
+        let report = decode(Answer::Body(DOMAIN.into()), Object::Domain, "example.com")
             .ok()
             .flatten()
             .unwrap_or_else(|| panic!("domain body must decode"));
@@ -227,7 +247,7 @@ mod tests {
 
     #[test]
     fn an_ip_report_keeps_its_network_context() {
-        let report = decode(Answer::Body(IP.into()), Object::Ip)
+        let report = decode(Answer::Body(IP.into()), Object::Ip, "1.1.1.1")
             .ok()
             .flatten()
             .unwrap_or_else(|| panic!("ip body must decode"));
@@ -238,7 +258,7 @@ mod tests {
 
     #[test]
     fn a_report_on_another_object_type_is_refused() {
-        assert!(decode(Answer::Body(IP.into()), Object::Domain).is_err());
+        assert!(decode(Answer::Body(IP.into()), Object::Domain, "1.1.1.1").is_err());
     }
 
     #[test]
@@ -246,10 +266,56 @@ mod tests {
         let missing =
             r#"{"error":{"code":"NotFoundError","message":"Domain \"x.invalid\" not found"}}"#;
         assert_eq!(
-            decode(Answer::NotFound(missing.into()), Object::Domain),
+            decode(
+                Answer::NotFound(missing.into()),
+                Object::Domain,
+                "x.invalid"
+            ),
             Ok(None)
         );
         let other = r#"{"error":{"code":"WrongCredentialsError","message":"x"}}"#;
-        assert!(decode(Answer::NotFound(other.into()), Object::Domain).is_err());
+        assert!(decode(Answer::NotFound(other.into()), Object::Domain, "x.invalid").is_err());
+    }
+
+    /// `lookup` with a configured key, answered by `body`.
+    fn looked_up(object: Object, value: &str, body: &str) -> Result<Option<Report>, LegError> {
+        let keys = Keys::parse(&format!("{KEY_SLOT}=virustotal-test-key\n"))
+            .unwrap_or_else(|e| panic!("keys: {e}"));
+        let transport = crate::test_support::OneResponse::json(200, body);
+        lookup(&transport, &keys, object, value, 1)
+    }
+
+    #[test]
+    fn a_report_on_another_object_or_without_verdicts_is_drift_not_a_clean_verdict() {
+        for (object, value, body) in [
+            (Object::Domain, "example.org", DOMAIN),
+            (Object::Ip, "8.8.8.8", IP),
+            (
+                Object::Domain,
+                "example.com",
+                r#"{"data":{"id":"example.com","type":"domain","attributes":{}}}"#,
+            ),
+            (
+                Object::Ip,
+                "1.1.1.1",
+                r#"{"data":{"type":"ip_address","attributes":{"last_analysis_stats":{"malicious":0}}}}"#,
+            ),
+        ] {
+            let got = looked_up(object, value, body);
+            assert!(
+                matches!(got, Err(LegError::Decode(_))),
+                "{object:?} {value}: {got:?}"
+            );
+        }
+        // The same address written in full, and the same domain in another case, are the subject.
+        let full = r#"{"data":{"id":"2606:4700:4700:0:0:0:0:1111","type":"ip_address","attributes":{"last_analysis_stats":{"malicious":0,"suspicious":0,"harmless":61,"undetected":29}}}}"#;
+        assert!(matches!(
+            looked_up(Object::Ip, "2606:4700:4700::1111", full),
+            Ok(Some(_))
+        ));
+        assert!(matches!(
+            looked_up(Object::Domain, "EXAMPLE.com", DOMAIN),
+            Ok(Some(_))
+        ));
     }
 }
