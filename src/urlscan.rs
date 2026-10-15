@@ -5,7 +5,8 @@
 //! `API-Key` header and the account's quota applies. Kept: how many scans match, when the newest
 //! ran, and from each of the newest ten the page's domain, address, AS, server and urlscan's
 //! verdict. Scanned URLs are not kept: their query strings can carry other people's tokens. No
-//! match is a valid zero.
+//! match is a valid zero. Every search answer carries `results`, empty when nothing matched
+//! (checked 2026-10-15): a JSON body without it, such as an error or quota notice, is drift.
 
 use serde::Deserialize;
 
@@ -39,7 +40,6 @@ const MAX_NAMES: usize = 10;
 
 #[derive(Deserialize)]
 struct Body {
-    #[serde(default)]
     results: Vec<Scan>,
     #[serde(default)]
     total: Option<u64>,
@@ -234,6 +234,21 @@ mod tests {
             !f.pivots.iter().any(|p| p.value == "example.com"),
             "the indicator is not its own pivot"
         );
+    }
+
+    #[test]
+    fn a_json_answer_without_results_is_drift_not_no_scans() {
+        for body in [
+            "{}",
+            r#"{"message":"Search is temporarily unavailable","status":503}"#,
+            r#"{"results":null,"total":0}"#,
+        ] {
+            let decoded = decode(body.as_bytes(), Indicator::Domain("example.com"));
+            assert!(
+                matches!(decoded, Err(LegError::Decode(_))),
+                "{body}: {decoded:?}"
+            );
+        }
     }
 
     #[test]
