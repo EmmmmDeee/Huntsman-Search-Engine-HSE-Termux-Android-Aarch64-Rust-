@@ -185,7 +185,12 @@ fn numverify_evidence(entity: &mut Entity, v: &numverify::Verification) {
         ("line_type", v.line_type.as_deref()),
         ("location", v.location.as_deref()),
         ("country_iso", v.country_code.as_deref()),
-    ]);
+        ("country_name", v.country_name.as_deref()),
+        ("country_prefix", v.country_prefix.as_deref()),
+        ("local_format", v.local_format.as_deref()),
+        ("international_format", v.international_format.as_deref()),
+    ])
+    .with_attr("raw_answer", v.raw_answer.as_str());
     entity.add_evidence(evidence);
 }
 
