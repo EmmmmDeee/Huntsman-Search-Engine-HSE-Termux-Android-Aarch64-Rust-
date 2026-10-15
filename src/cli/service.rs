@@ -76,6 +76,8 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
             text: found.text,
             entities: found.entities,
             outcomes: found.outcomes,
+            scan: None,
+            status: None,
         }),
         Err(refused) => Err(LookupError {
             status: match refused {

@@ -22,7 +22,9 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -35,6 +37,9 @@ use crate::entity::Entity;
 use crate::error::Error;
 use crate::module::reachable_modules;
 use crate::scan_api::ScanApi;
+use crate::scan_route::{self, ScanKind};
+use crate::scan_service::{ScanRequest, ScanService};
+use crate::scan_store::{LogLevel, ScanStatus};
 use crate::sha256::sha256;
 use crate::source_outcome::SourceExecutionOutcome;
 
@@ -101,6 +106,11 @@ const MAX_LOOKUPS: usize = 2;
 /// A lookup does TLS and JSON decoding, which the small connection stack is not sized for, so it
 /// runs on its own thread with this stack.
 const LOOKUP_STACK_BYTES: usize = 4 * 1024 * 1024;
+/// The longest `/api/lookup` waits for its lookup: the two minutes a lookup may hold its
+/// providers, and time to wait for a place behind the scans already running. A lookup still
+/// running then is answered `504` with the saved scan it runs as, which goes on and keeps what it
+/// finds; a phone that reloads mid-lookup waits on that same scan instead of starting another.
+const LOOKUP_WAIT: Duration = Duration::from_secs(150);
 /// Longest decoded `q` accepted by `/api/lookup`, and longest seed accepted by `/api/analyze`.
 const MAX_SELECTOR_BYTES: usize = 512;
 /// Seeds in one `/api/analyze` request. The spine is offline and bounded by its own limits; this
@@ -133,6 +143,14 @@ pub struct LookupReport {
     pub text: String,
     pub entities: Vec<Entity>,
     pub outcomes: Vec<SourceExecutionOutcome>,
+    /// The saved scan the lookup ran as, which `/api/scans/ID` reads again; absent when the
+    /// server keeps no saved scans.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scan: Option<String>,
+    /// How that scan ended: `FINISHED`, or `ABORTED` when it was stopped under Scans, so the
+    /// report holds what it had found by then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<&'static str>,
 }
 
 /// Why a lookup produced no report: the HTTP status and a message safe to show.
@@ -150,6 +168,8 @@ pub type LookupHandler =
 struct Lookups {
     handler: LookupHandler,
     live: Arc<AtomicUsize>,
+    /// [`LOOKUP_WAIT`], shorter in tests.
+    wait: Duration,
 }
 
 /// Runs the offline multi-hop analysis of the seeds and returns its report as JSON. Installed by
@@ -252,6 +272,7 @@ impl Server {
         self.routes.lookups = Some(Lookups {
             handler,
             live: Arc::new(AtomicUsize::new(0)),
+            wait: LOOKUP_WAIT,
         });
         self
     }
@@ -912,7 +933,7 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
                 head,
             ),
         },
-        "/api/lookup" => lookup_response(&parsed, routes.lookups.as_ref()),
+        "/api/lookup" => lookup_response(&parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
         "/api/analyze" => analyze_response(&parsed, routes.analyze.as_ref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
@@ -948,7 +969,16 @@ fn json_ok(body: &str, head: bool) -> String {
     )
 }
 
-fn lookup_response(parsed: &ParsedRequest<'_>, lookups: Option<&Lookups>) -> String {
+/// `GET /api/lookup`: one lookup, answered with its report. With saved scans on, the lookup runs
+/// as a saved scan, so it is kept, listed under Scans, can be stopped there, and reads `ABORTED`
+/// after a server that stopped mid-lookup starts again; the answer names it. Without them the
+/// installed handler runs it and nothing is kept, as there is nowhere to keep it. Either way the
+/// request waits at most [`Lookups::wait`] and then answers `504`.
+fn lookup_response(
+    parsed: &ParsedRequest<'_>,
+    lookups: Option<&Lookups>,
+    scans: Option<&Arc<ScanApi>>,
+) -> String {
     let Some(lookups) = lookups else {
         return json_error(404, "lookups are not enabled on this server");
     };
@@ -970,28 +1000,117 @@ fn lookup_response(parsed: &ParsedRequest<'_>, lookups: Option<&Lookups>) -> Str
         Ok(query) => query,
         Err(message) => return json_error(400, message),
     };
+    let until = Instant::now() + lookups.wait;
+    if let Some(scans) = scans {
+        let service = Arc::clone(scans.service());
+        // Reading and encoding the saved report needs more stack than a connection has.
+        let worker = thread::Builder::new()
+            .name("serve-lookup".into())
+            .stack_size(LOOKUP_STACK_BYTES)
+            .spawn(move || saved_lookup(&service, &query, until));
+        return match worker.map(thread::JoinHandle::join) {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(_)) => json_error(500, "lookup failed unexpectedly"),
+            Err(_) => json_error(503, "could not start a lookup worker"),
+        };
+    }
     let Some(slot) = Slot::take_of(&lookups.live, MAX_LOOKUPS) else {
         return json_error(503, "lookup capacity in use; retry shortly");
     };
     let handler = Arc::clone(&lookups.handler);
+    let (sender, receiver) = sync_channel(1);
     let worker = thread::Builder::new()
         .name("serve-lookup".into())
         .stack_size(LOOKUP_STACK_BYTES)
         .spawn(move || {
             let _slot = slot;
-            handler(&query)
+            let outcome = catch_unwind(AssertUnwindSafe(|| handler(&query)));
+            let _ = sender.send(outcome);
         });
-    let outcome = match worker {
-        Ok(worker) => worker.join(),
-        Err(_) => return json_error(503, "could not start a lookup worker"),
-    };
-    match outcome {
-        Ok(Ok(report)) => match serde_json::to_string(&report) {
+    if worker.is_err() {
+        return json_error(503, "could not start a lookup worker");
+    }
+    match receiver.recv_timeout(until.saturating_duration_since(Instant::now())) {
+        Ok(Ok(Ok(report))) => match serde_json::to_string(&report) {
             Ok(body) => json_ok(&body, false),
             Err(_) => json_error(500, "report could not be encoded"),
         },
-        Ok(Err(error)) => json_error(error.status, &error.message),
-        Err(_) => json_error(500, "lookup failed unexpectedly"),
+        Ok(Ok(Err(error))) => json_error(error.status, &error.message),
+        Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
+            json_error(500, "lookup failed unexpectedly")
+        }
+        Err(RecvTimeoutError::Timeout) => json_error(
+            504,
+            "the lookup is still running and this server keeps no saved scans, so its result \
+             will not be kept; set HOME or HUNTSMAN_HOME to keep lookups as saved scans",
+        ),
+    }
+}
+
+/// One `/api/lookup` as a saved scan of the target: started, or joined when the same lookup is
+/// already under way, then waited on until `until`. A scan that has not ended by then is answered
+/// `504` and runs on; one that ended with nothing saved is answered `502` with the reason its log
+/// gives. Each answer names the scan.
+fn saved_lookup(service: &Arc<ScanService>, query: &LookupQuery, until: Instant) -> String {
+    let request = ScanRequest {
+        target: query.selector.clone(),
+        kind: Some(query.kind.clone()),
+        ..ScanRequest::default()
+    };
+    let record = match service
+        .start_or_join(&request)
+        .and_then(|record| service.wait(&record.id, until))
+    {
+        Ok(record) => record,
+        Err(failure) => return json_error(failure.status(), &failure.to_string()),
+    };
+    let failed = |status: u16, error: String| {
+        let body = serde_json::json!({ "error": error, "scan": record.id });
+        response(
+            status,
+            "application/json; charset=utf-8",
+            &format!("{body}\n"),
+            false,
+        )
+    };
+    if record.status.is_active() {
+        return failed(
+            504,
+            format!(
+                "the lookup is still running as saved scan {}; it goes on and keeps what it finds \
+                 at /api/scans/{} and under Scans",
+                record.id, record.id
+            ),
+        );
+    }
+    let saved = match service.store().results(&record.id) {
+        Ok(saved) => saved.filter(|_| record.status != ScanStatus::ErrorFailed),
+        Err(failure) => return json_error(500, &failure.to_string()),
+    };
+    let Some(results) = saved else {
+        let log = service.store().log(&record.id).unwrap_or_default();
+        let why = log
+            .iter()
+            .rev()
+            .find(|entry| entry.level == LogLevel::Error)
+            .or_else(|| log.last())
+            .map_or_else(
+                || "the lookup saved nothing".to_owned(),
+                |entry| entry.message.clone(),
+            );
+        return failed(502, why);
+    };
+    let report = LookupReport {
+        route: scan_route::parse_kind(&record.kind).map_or("scan", ScanKind::command),
+        text: results.text,
+        entities: results.entities,
+        outcomes: results.outcomes,
+        scan: Some(record.id.clone()),
+        status: Some(record.status.as_str()),
+    };
+    match serde_json::to_string(&report) {
+        Ok(body) => json_ok(&body, false),
+        Err(_) => json_error(500, "report could not be encoded"),
     }
 }
 
@@ -2115,14 +2234,20 @@ mod tests {
                         message: "no".into(),
                     });
                 }
+                if query.selector == "slow" {
+                    thread::sleep(Duration::from_secs(1));
+                }
                 Ok(LookupReport {
                     route: "email",
                     text: format!("{}|{}", query.kind, query.selector),
                     entities: Vec::new(),
                     outcomes: Vec::new(),
+                    scan: None,
+                    status: None,
                 })
             }),
             live: Arc::new(AtomicUsize::new(0)),
+            wait: Duration::from_secs(10),
         }
     }
 
@@ -2246,6 +2371,182 @@ mod tests {
         assert!(ask("a").starts_with("HTTP/1.1 503"));
         lookups.live.store(0, Ordering::Release);
         assert!(ask("a").starts_with("HTTP/1.1 200"));
+    }
+
+    #[test]
+    fn a_lookup_without_saved_scans_answers_504_when_its_wait_runs_out() {
+        let lookups = Lookups {
+            wait: Duration::from_millis(100),
+            ..echo_lookups()
+        };
+        let got = lookup(
+            &format!("GET /api/lookup?q=slow HTTP/1.1\r\n{HEADER}\r\n"),
+            None,
+            Some(&lookups),
+        );
+        assert!(got.starts_with("HTTP/1.1 504"), "{got}");
+        assert!(got.contains("keeps no saved scans"), "{got}");
+        // The request is answered; the lookup holds its place until it ends, then frees it.
+        assert_eq!(lookups.live.load(Ordering::Acquire), 1);
+        let freed = Instant::now() + Duration::from_secs(5);
+        while lookups.live.load(Ordering::Acquire) != 0 {
+            assert!(Instant::now() < freed, "the slot was never freed");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// A server with lookups and saved scans over `lookup` in a scratch store, waiting `wait`.
+    fn saved_lookup_routes(
+        tag: &str,
+        lookup: crate::scan_service::ScanLookup,
+        wait: Duration,
+    ) -> (Routes, std::path::PathBuf) {
+        use crate::scan_store::ScanStore;
+        let dir =
+            std::env::temp_dir().join(format!("hse-serve-lookup-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let api = ScanApi::new(
+            ScanService::new(ScanStore::open(&dir).unwrap(), lookup),
+            None,
+        );
+        let routes = Routes {
+            lookups: Some(Lookups {
+                wait,
+                ..echo_lookups()
+            }),
+            analyze: None,
+            scans: Some(Arc::new(api)),
+        };
+        (routes, dir)
+    }
+
+    fn found_phone(selector: &str) -> crate::scan_service::LookupOutput {
+        crate::scan_service::LookupOutput {
+            text: format!("report on {selector}"),
+            entities: vec![
+                crate::entity::Entity::builder(
+                    crate::entity::EntityKind::Phone,
+                    selector,
+                    0.9,
+                    "s",
+                )
+                .build(),
+            ],
+            outcomes: Vec::new(),
+        }
+    }
+
+    fn scan_of(answer: &str) -> String {
+        let body = &answer[answer.find("\r\n\r\n").unwrap() + 4..];
+        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+        value["scan"].as_str().unwrap().to_owned()
+    }
+
+    const PHONE_LOOKUP: &str = "GET /api/lookup?kind=phone&q=%2B61412345678 HTTP/1.1\r\n";
+
+    #[test]
+    fn a_lookup_with_saved_scans_is_kept_as_a_scan_and_names_it() {
+        let lookup: crate::scan_service::ScanLookup =
+            Arc::new(|_kind, selector: &str| Ok(found_phone(selector)));
+        let (routes, dir) = saved_lookup_routes("kept", lookup, Duration::from_secs(10));
+        let got = scans_request(&routes, None, &format!("{PHONE_LOOKUP}{HEADER}\r\n"));
+        assert!(got.starts_with("HTTP/1.1 200"), "{got}");
+        // The report the legacy handler gave, with the scan it ran as.
+        for part in [
+            r#""route":"phone""#,
+            r#""value":"+61412345678""#,
+            r#""text":"report on +61412345678""#,
+            r#""status":"FINISHED""#,
+        ] {
+            assert!(got.contains(part), "{part} in {got}");
+        }
+        let id = scan_of(&got);
+        let record = scans_request(
+            &routes,
+            None,
+            &format!("GET /api/scans/{id} HTTP/1.1\r\n{HEADER}\r\n"),
+        );
+        assert!(record.starts_with("HTTP/1.1 200"), "{record}");
+        assert!(record.contains(r#""status":"FINISHED""#), "{record}");
+        let listed = scans_request(
+            &routes,
+            None,
+            &format!("GET /api/scans HTTP/1.1\r\n{HEADER}\r\n"),
+        );
+        assert!(listed.contains(&id), "{listed}");
+        // A target the scan cannot route is refused before any scan is kept.
+        let bad = scans_request(
+            &routes,
+            None,
+            &format!("GET /api/lookup?kind=ip&q=nope HTTP/1.1\r\n{HEADER}\r\n"),
+        );
+        assert!(bad.starts_with("HTTP/1.1 400"), "{bad}");
+        let api = routes.scans.as_ref().unwrap();
+        assert_eq!(api.service().store().list().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_lookup_past_its_wait_answers_504_and_its_scan_runs_on_and_is_joined() {
+        let gate = Arc::new(Mutex::new(()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let lookup: crate::scan_service::ScanLookup = {
+            let (gate, calls) = (Arc::clone(&gate), Arc::clone(&calls));
+            Arc::new(move |_kind, selector: &str| {
+                calls.fetch_add(1, Ordering::AcqRel);
+                drop(gate.lock().unwrap_or_else(PoisonError::into_inner));
+                Ok(found_phone(selector))
+            })
+        };
+        let (routes, dir) = saved_lookup_routes("wait", lookup, Duration::from_millis(150));
+        let held = gate.lock().unwrap();
+        let ask = || scans_request(&routes, None, &format!("{PHONE_LOOKUP}{HEADER}\r\n"));
+        let first = ask();
+        assert!(first.starts_with("HTTP/1.1 504"), "{first}");
+        let id = scan_of(&first);
+        assert!(first.contains(&format!("/api/scans/{id}")), "{first}");
+        // A reload while it runs waits on the same scan instead of starting another.
+        let reload = ask();
+        assert!(reload.starts_with("HTTP/1.1 504"), "{reload}");
+        assert_eq!(scan_of(&reload), id);
+        let service = Arc::clone(routes.scans.as_ref().unwrap().service());
+        assert_eq!(service.store().list().unwrap().len(), 1);
+        drop(held);
+        let done = service
+            .wait(&id, Instant::now() + Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(done.status, ScanStatus::Finished);
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            1,
+            "one lookup ran for both requests"
+        );
+        let results = service.store().results(&id).unwrap().unwrap();
+        assert_eq!(results.entities.len(), 1, "what it found was kept");
+        // Once it has ended, the same lookup is a new scan, given the time to run this time.
+        let mut routes = routes;
+        routes.lookups.as_mut().unwrap().wait = Duration::from_secs(10);
+        let again = scans_request(&routes, None, &format!("{PHONE_LOOKUP}{HEADER}\r\n"));
+        assert!(again.starts_with("HTTP/1.1 200"), "{again}");
+        assert_ne!(scan_of(&again), id);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_saved_lookup_that_finds_nothing_answers_502_with_its_reason_and_scan() {
+        let lookup: crate::scan_service::ScanLookup =
+            Arc::new(|_kind, _selector: &str| Err("every source failed".to_owned()));
+        let (routes, dir) = saved_lookup_routes("failed", lookup, Duration::from_secs(10));
+        let got = scans_request(&routes, None, &format!("{PHONE_LOOKUP}{HEADER}\r\n"));
+        assert!(got.starts_with("HTTP/1.1 502"), "{got}");
+        assert!(got.contains("every source failed"), "{got}");
+        let id = scan_of(&got);
+        let api = routes.scans.as_ref().unwrap();
+        assert_eq!(
+            api.service().store().get(&id).unwrap().status,
+            ScanStatus::ErrorFailed
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

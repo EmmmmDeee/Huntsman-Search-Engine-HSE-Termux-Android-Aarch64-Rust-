@@ -106,7 +106,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "sf" => SF_USAGE,
         "scans" => SCANS_HELP,
         "serve" => {
-            "serve [--bind ADDR] [--history DIR]\nStart the embedded Web UI and JSON API, including GET /api/lookup (needs the X-Huntsman-Lookup: 1 header) and GET /api/analyze?seeds=... (offline multi-hop analysis, one seed per line, no network request). With --history DIR, each analysis also bridges its seeds to the saved scan artifacts in DIR, as correlate --history does, and reports the bridges as cross_scan; a directory that cannot be read, or holds a malformed artifact, stops serve at startup. Default: 127.0.0.1:8080. HSE_BIND supplies the default bind. A loopback bind needs no token; an explicit non-loopback bind requires HSE_AUTH_TOKEN."
+            "serve [--bind ADDR] [--history DIR]\nStart the embedded Web UI and JSON API, including GET /api/lookup (needs the X-Huntsman-Lookup: 1 header; each lookup is kept as a saved scan, listed under Scans and in scans list, and a request waits at most 150 seconds, then answers 504 with the scan, which runs on) and GET /api/analyze?seeds=... (offline multi-hop analysis, one seed per line, no network request). With --history DIR, each analysis also bridges its seeds to the saved scan artifacts in DIR, as correlate --history does, and reports the bridges as cross_scan; a directory that cannot be read, or holds a malformed artifact, stops serve at startup. Default: 127.0.0.1:8080. HSE_BIND supplies the default bind. A loopback bind needs no token; an explicit non-loopback bind requires HSE_AUTH_TOKEN."
         }
         "modules" => {
             "modules [--json]\nList only rebuilt modules that are currently reachable through a huntsman-recon command."
