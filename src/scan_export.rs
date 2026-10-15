@@ -121,6 +121,88 @@ fn file_name(scan: &ScanRecord, extension: &str) -> String {
     }
 }
 
+/// A CSV (`csv`) or TSV table with `header`, and its media type.
+fn table(
+    csv: bool,
+    header: &[&str],
+    lines: impl Iterator<Item = Vec<String>>,
+) -> (String, &'static str) {
+    let (separator, cell, content_type): (&str, fn(&str) -> String, _) = if csv {
+        (",", csv_cell, "text/csv; charset=utf-8")
+    } else {
+        ("\t", tsv_cell, "text/tab-separated-values; charset=utf-8")
+    };
+    let mut body = header.join(separator);
+    body.push_str("\r\n");
+    for line in lines {
+        let line = line
+            .iter()
+            .map(|value| cell(value))
+            .collect::<Vec<_>>()
+            .join(separator);
+        body.push_str(&line);
+        body.push_str("\r\n");
+    }
+    (body, content_type)
+}
+
+/// A scan's correlations as `csv`, `tsv` or `json`: Spiderfoot's `scancorrelationsexport`
+/// columns (Rule Name, Correlation, Risk, Description), then the rule id, where the rule came
+/// from and the ids of the elements each is about.
+///
+/// # Errors
+/// The format name, when it is not one of those three.
+pub fn render_correlations(
+    scan: &ScanRecord,
+    results: &ScanResults,
+    format: &str,
+) -> Result<Export, String> {
+    let filename = |extension: &str| {
+        file_name(scan, extension).replacen("-Huntsman.", "-Huntsman-correlations.", 1)
+    };
+    match format {
+        "csv" | "tsv" => {
+            let lines = results.correlations.iter().map(|correlation| {
+                vec![
+                    correlation.name.clone(),
+                    correlation.title.clone(),
+                    correlation.risk.as_str().to_owned(),
+                    correlation.description.clone(),
+                    correlation.rule.clone(),
+                    correlation.origin.clone(),
+                    correlation.elements.join(" "),
+                ]
+            });
+            let (body, content_type) = table(
+                format == "csv",
+                &[
+                    "Rule Name",
+                    "Correlation",
+                    "Risk",
+                    "Description",
+                    "Rule",
+                    "Origin",
+                    "Elements",
+                ],
+                lines,
+            );
+            Ok(Export {
+                body,
+                content_type,
+                filename: filename(format),
+            })
+        }
+        "json" => Ok(Export {
+            body: serde_json::to_string(&results.correlations).unwrap_or_else(|_| "[]".to_owned()),
+            content_type: "application/json; charset=utf-8",
+            filename: filename("json"),
+        }),
+        other => Err(format!(
+            "unknown correlation export format {other}; choose csv, tsv or json"
+        )),
+    }
+}
+
 /// One scan as `format`, optionally only elements of one type.
 ///
 /// # Errors
@@ -131,19 +213,10 @@ pub fn render(
     format: &str,
     kind: Option<&str>,
 ) -> Result<Export, String> {
-    let rows = rows(results, kind);
     match format {
         "csv" | "tsv" => {
-            let (separator, cell, content_type): (&str, fn(&str) -> String, _) = if format == "csv"
-            {
-                (",", csv_cell, "text/csv; charset=utf-8")
-            } else {
-                ("\t", tsv_cell, "text/tab-separated-values; charset=utf-8")
-            };
-            let mut body = ["Updated", "Type", "Module", "Source", "F/P", "Data"].join(separator);
-            body.push_str("\r\n");
-            for (element, source) in rows {
-                let line = [
+            let lines = rows(results, kind).into_iter().map(|(element, source)| {
+                vec![
                     timestamp(element.created),
                     element.kind.clone(),
                     element.module.clone(),
@@ -151,13 +224,12 @@ pub fn render(
                     u8::from(element.fp).to_string(),
                     element.data.clone(),
                 ]
-                .iter()
-                .map(|value| cell(value))
-                .collect::<Vec<_>>()
-                .join(separator);
-                body.push_str(&line);
-                body.push_str("\r\n");
-            }
+            });
+            let (body, content_type) = table(
+                format == "csv",
+                &["Updated", "Type", "Module", "Source", "F/P", "Data"],
+                lines,
+            );
             Ok(Export {
                 body,
                 content_type,
@@ -302,6 +374,34 @@ mod tests {
             correlations: Vec::new(),
         };
         (record, results)
+    }
+
+    #[test]
+    fn correlations_export_with_spiderfoots_columns_first() {
+        let (scan, mut results) = scan();
+        results
+            .correlations
+            .push(crate::scan_store::ScanCorrelation {
+                id: "c1".into(),
+                rule: "database_exposed".into(),
+                name: "Database server exposed to the Internet".into(),
+                title: "Database server exposed to the Internet: 1.1.1.1:3306".into(),
+                risk: crate::scan_store::Risk::High,
+                description: "A database, \"open\".".into(),
+                origin: "spiderfoot".into(),
+                logic: "id: database_exposed".into(),
+                elements: vec!["e1".into(), "e2".into()],
+            });
+        let csv = render_correlations(&scan, &results, "csv").unwrap();
+        assert_eq!(
+            csv.body,
+            "Rule Name,Correlation,Risk,Description,Rule,Origin,Elements\r\nDatabase server exposed to the Internet,Database server exposed to the Internet: 1.1.1.1:3306,HIGH,\"A database, \"\"open\"\".\",database_exposed,spiderfoot,e1 e2\r\n"
+        );
+        assert!(csv.filename.ends_with("-Huntsman-correlations.csv"));
+        let json = render_correlations(&scan, &results, "json").unwrap();
+        let rows: serde_json::Value = serde_json::from_str(&json.body).unwrap();
+        assert_eq!(rows[0]["logic"], "id: database_exposed");
+        assert!(render_correlations(&scan, &results, "gexf").is_err());
     }
 
     #[test]
