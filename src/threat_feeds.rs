@@ -137,6 +137,15 @@ pub const FEEDS: &[Feed] = &[
         max_age: SPIDERFOOT_CACHE,
     },
     Feed {
+        id: "cleantalk",
+        source: "cleantalk",
+        name: "CleanTalk Spam List",
+        url: "https://iplists.firehol.org/files/cleantalk_7d.ipset",
+        format: Format::Lines,
+        meaning: Meaning::Threat,
+        max_age: SPIDERFOOT_CACHE,
+    },
+    Feed {
         id: "coinblocker",
         source: "coinblocker",
         name: "CoinBlocker",

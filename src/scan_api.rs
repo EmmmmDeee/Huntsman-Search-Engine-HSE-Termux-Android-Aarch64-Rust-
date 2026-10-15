@@ -104,7 +104,7 @@ fn service_error(failure: &ServiceError) -> ApiResponse {
 /// The keyed sources' slots, from each source's own [`Api`] constant, plus the sources that
 /// read their key elsewhere.
 fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
-    let apis: [&Api; 24] = [
+    let apis: [&Api; 27] = [
         &crate::abuseipdb::API,
         &crate::greynoise::API,
         &crate::hackertarget::API,
@@ -112,11 +112,14 @@ fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
         &crate::internetdb::API,
         &crate::ipinfo::API,
         &crate::ipqs::API,
+        &crate::isc::API,
         &crate::kickbox::API,
         &crate::leakix::API,
+        &crate::maltiverse::API,
         &crate::netlas::API,
         &crate::numverify::API,
         &crate::otx::API,
+        &crate::phishstats::API,
         &crate::pulsedive::API,
         &crate::ripestat::API,
         &crate::robtex::API,
