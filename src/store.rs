@@ -6,7 +6,12 @@ use crate::error::Error;
 use crate::fsio::{read_bounded, write_atomic_private};
 use crate::session::{Session, valid_session_id};
 
-const MAX_BYTES: u64 = 1_048_576;
+/// A saved session's ceiling is the saved-artifact ceiling, as a saved ledger's is: a long
+/// investigation that `plan` can finish must also save, and a 1 MiB cap failed it after the work.
+const MAX_SESSION_BYTES: u64 = crate::scan_artifact::MAX_ARTIFACT_BYTES;
+
+/// `current.txt` holds one session id, which [`valid_session_id`] bounds at 80 characters.
+const MAX_POINTER_BYTES: u64 = 128;
 
 pub struct Store {
     root: PathBuf,
@@ -32,11 +37,11 @@ impl Store {
             .join("sessions")
             .join(format!("{}.json", session.id));
         let body = serde_json::to_vec_pretty(session).map_err(|e| Error::Store(e.to_string()))?;
-        write_atomic_private(&path, &body, MAX_BYTES)?;
+        write_atomic_private(&path, &body, MAX_SESSION_BYTES)?;
         write_atomic_private(
             &self.root.join("current.txt"),
             session.id.as_bytes(),
-            MAX_BYTES,
+            MAX_POINTER_BYTES,
         )?;
         Ok(path)
     }
@@ -52,7 +57,7 @@ impl Store {
             return Err(Error::Invalid(format!("unsafe session id: {id}")));
         }
         let path = self.root.join("sessions").join(format!("{id}.json"));
-        let body = read_bounded(&path, MAX_BYTES)?;
+        let body = read_bounded(&path, MAX_SESSION_BYTES)?;
         serde_json::from_slice(&body)
             .map_err(|e| Error::Invalid(format!("{}: not a session: {e}", path.display())))
     }
@@ -87,6 +92,31 @@ mod tests {
             }
         }
         assert!(matches!(store.load("missing"), Err(Error::Store(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A long investigation saves and reloads whole. Over the old 1 MiB cap, `save` refused it.
+    #[test]
+    fn a_session_larger_than_a_megabyte_saves_and_reloads() {
+        let dir = scratch("large");
+        let store = Store::new(dir.clone());
+        let mut session = Session::new("large investigation");
+        session.title = "finding ".repeat(200_000);
+        assert!(serde_json::to_vec(&session).unwrap().len() > 1_048_576);
+        store.save(&session).unwrap();
+        let reloaded = store.load(&session.id).unwrap();
+        assert_eq!(reloaded, session);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The ceiling still refuses a session that cannot be bounded, so a runaway save is an error.
+    #[test]
+    fn a_session_over_the_ceiling_is_refused() {
+        let dir = scratch("ceiling");
+        let store = Store::new(dir.clone());
+        let mut session = Session::new("oversized");
+        session.title = "x".repeat(usize::try_from(MAX_SESSION_BYTES).unwrap());
+        assert!(matches!(store.save(&session), Err(Error::Store(_))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -228,10 +228,18 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       await audit(page, `${scheme} discovery path`);
       await page.click('#bfull');
       await page.check('#bbody tbody tr >> nth=0 >> input[type=checkbox]');
+      const [chosen] = await page.evaluate(() => [...fpsel]);
       await page.click('#bsetfp');
       await page.waitForSelector('#bbody .label.warn', { timeout: 5000 }).catch(() => {});
-      const marked = (await api(page, root + '/elements?type=' + encodeURIComponent(type))).filter(e => e.fp);
-      check(`${scheme}: an element can be marked a false positive`, marked.length === 1 && await page.isVisible('#bbody .label.warn'), marked.length);
+      // As Spiderfoot's resultsetfp: the element and every element found from it, nothing else.
+      const all = await api(page, root + '/elements');
+      const branch = new Set([chosen]);
+      for (let grew = true; grew;) {
+        grew = false;
+        for (const e of all) if (e.source && branch.has(e.source) && !branch.has(e.id)) { branch.add(e.id); grew = true; }
+      }
+      const marked = all.filter(e => e.fp).map(e => e.id);
+      check(`${scheme}: a false positive flags the element and everything found from it`, marked.length === branch.size && marked.every(id => branch.has(id)) && await page.isVisible('#bbody .label.warn'), `${marked.length} flagged, branch of ${branch.size}`);
 
       // Correlations, Graph, Scan Settings and Log, each as the API holds them.
       await page.click('#sctabs a[data-tab=correlations]');
