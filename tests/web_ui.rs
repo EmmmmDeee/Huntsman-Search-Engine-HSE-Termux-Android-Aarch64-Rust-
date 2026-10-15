@@ -445,27 +445,42 @@ fn the_page_reads_the_fields_the_scan_api_answers() {
 #[test]
 fn every_export_the_page_offers_is_one_the_api_writes() {
     let (api, root, dir) = contract_scan("exports");
-    // The scan's export menu, then the Correlations section's.
-    for (attribute, route) in [("data-format", "export"), ("data-cformat", "correlations")] {
+    let id = root.rsplit('/').next().expect("scan id");
+    // The scan's export menu, the Correlations section's, and the selected scans' on Scans.
+    for (attribute, path, query) in [
+        ("data-format", format!("{root}/export"), String::new()),
+        (
+            "data-cformat",
+            format!("{root}/correlations"),
+            String::new(),
+        ),
+        (
+            "data-mformat",
+            "/api/scans/export".to_owned(),
+            format!("ids={id}&"),
+        ),
+    ] {
         let formats: Vec<&str> = PAGE
             .split(&format!("{attribute}=\""))
             .skip(1)
             .filter_map(|rest| rest.split('"').next())
             .collect();
         assert!(
-            formats.contains(&"csv") && formats.contains(&"json"),
+            ["csv", "xlsx", "json"]
+                .iter()
+                .all(|format| formats.contains(format)),
             "{attribute}: {formats:?}"
         );
         for format in &formats {
-            let export = api.handle(
-                "GET",
-                &format!("{root}/{route}"),
-                &format!("format={format}"),
-            );
-            assert_eq!(export.status, 200, "{route} {format}: {}", export.text());
+            let export = api.handle("GET", &path, &format!("{query}format={format}"));
+            assert_eq!(export.status, 200, "{path} {format}: {}", export.text());
             assert!(
-                export.filename.is_some(),
-                "{route} {format} export has no file name"
+                export
+                    .filename
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with(&format!(".{format}"))),
+                "{path} {format} export is named {:?}",
+                export.filename
             );
         }
     }
