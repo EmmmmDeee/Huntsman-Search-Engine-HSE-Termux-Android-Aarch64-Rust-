@@ -309,3 +309,106 @@ fn entity_capacity_still_absorbs_evidence_for_existing_uid() {
     assert_eq!(batch.entities[0].value, "alice@example.com");
     assert_eq!(batch.entities[0].evidence.len(), 2);
 }
+
+#[test]
+fn enumerated_contact_fields_are_mapped_not_dropped() {
+    // One SeekNow record often packs several contacts under enumerated keys
+    // (`email_1`, `name_2`, `phone_1`). Each must become its own entity; before the
+    // index was stripped they were silently dropped.
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[
+            {"dbname":"Dataset A","email_1":"alice@example.com","name_1":"Alice Roe","email_2":"alice.alt@example.net","phone_1":"+15125550143"}
+        ]}"#,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Person, "Alice Roe"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::FastOnly,
+        30,
+    )
+    .unwrap();
+    assert_eq!(batch.outcome, CollectionOutcome::Success);
+    let emails: Vec<_> = batch
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::Email)
+        .map(|entity| entity.value.as_str())
+        .collect();
+    assert!(emails.contains(&"alice@example.com"), "{emails:?}");
+    assert!(emails.contains(&"alice.alt@example.net"), "{emails:?}");
+    assert!(
+        batch
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Phone)
+    );
+    assert!(
+        batch
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Person && entity.value == "alice roe")
+    );
+}
+
+#[test]
+fn record_with_only_enumerated_identifiers_still_yields_entities() {
+    // A record whose only identifier keys are enumerated (`email_1`+`email_2`) produced
+    // zero entities before the fix; it must now yield both addresses.
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[
+            {"email_1":"first@example.com","email_2":"second@example.org"}
+        ]}"#,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Email, "first@example.com"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::FastOnly,
+        30,
+    )
+    .unwrap();
+    let emails: Vec<_> = batch
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::Email)
+        .map(|entity| entity.value.as_str())
+        .collect();
+    assert_eq!(emails.len(), 2, "{emails:?}");
+    assert!(emails.contains(&"first@example.com"));
+    assert!(emails.contains(&"second@example.org"));
+}
+
+#[test]
+fn non_identifier_numeric_suffixed_fields_stay_unmapped() {
+    // Stripping the numeric index must not turn unrelated enumerated keys into entities:
+    // `id_1`, `postal_code`, and a bare `email_address` boundary case stay correct.
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[
+            {"email_address":"edge@example.com","id_1":"998877","postal_code_11_characters":"12345678901"}
+        ]}"#,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Email, "edge@example.com"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::FastOnly,
+        30,
+    )
+    .unwrap();
+    let kinds: Vec<_> = batch.entities.iter().map(|entity| &entity.kind).collect();
+    assert!(kinds.contains(&&EntityKind::Email));
+    assert!(!batch.entities.iter().any(|entity| entity.value == "998877"));
+    assert!(
+        !batch
+            .entities
+            .iter()
+            .any(|entity| entity.value == "12345678901")
+    );
+}
