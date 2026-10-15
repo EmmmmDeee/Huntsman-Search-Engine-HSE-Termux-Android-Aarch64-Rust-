@@ -102,7 +102,7 @@ pub fn run<T: Transport + ?Sized>(
             sections.push(format!("crtsh: {count} certificate-transparency entities"));
         }
         Err(CrtShError::Refused(reason)) => {
-            found.no_response(format!("crtsh: request refused: {reason}"));
+            found.refused(format!("crtsh: request refused: {reason}"));
             found.outcomes.push(SourceExecutionOutcome::failed(
                 "crtsh",
                 now_unix,
@@ -155,7 +155,8 @@ pub fn run<T: Transport + ?Sized>(
     let Found {
         mut entities,
         outcomes,
-        network,
+        refused,
+        unanswered,
     } = found;
     merge_by_uid(&mut entities);
 
@@ -165,8 +166,11 @@ pub fn run<T: Transport + ?Sized>(
             .any(|o| o.kind.is_accepted() && o.found.unwrap_or(0) > 0);
     if !any_results {
         let answered = outcomes.iter().any(|o| o.kind.is_accepted());
-        return match network {
-            Some(message) if !answered => DomainRun::Network(message),
+        return match (answered, refused, unanswered) {
+            (false, Some(message), _) => DomainRun::Network(message),
+            (false, None, Some(why)) => {
+                DomainRun::Failed(format!("no source answered for domain {domain}: {why}"))
+            }
             _ => DomainRun::Failed(format!("no results for domain {domain}")),
         };
     }
@@ -188,21 +192,28 @@ pub fn run<T: Transport + ?Sized>(
     }
 }
 
-/// What the legs have found so far: their entities, one outcome per leg, and the first leg that
-/// got no response at all, which a lookup where no leg answered reports as a network failure.
+/// What the legs have found so far: their entities, one outcome per leg, the first request the
+/// egress policy refused and the first leg that got no response at all. A lookup where no leg
+/// answered is a refusal (exit 77) when a request was refused, otherwise it fails with the first
+/// reason no leg answered (exit 69), as the README's exit codes say.
 #[derive(Default)]
 struct Found {
     entities: Vec<Entity>,
     outcomes: Vec<SourceExecutionOutcome>,
-    network: Option<String>,
+    refused: Option<String>,
+    unanswered: Option<String>,
 }
 
 impl Found {
-    fn no_response(&mut self, message: String) {
-        self.network.get_or_insert(message);
+    fn refused(&mut self, message: String) {
+        self.refused.get_or_insert(message);
     }
 
-    /// Record a keyed leg's outcome; one that got no response is also the network signal.
+    fn no_response(&mut self, message: String) {
+        self.unanswered.get_or_insert(message);
+    }
+
+    /// Record a keyed leg's outcome; one that got no response is remembered as the reason.
     fn leg(&mut self, outcome: SourceExecutionOutcome) {
         if outcome.kind.is_transport_failure() {
             let detail = outcome.detail.as_deref().unwrap_or("no response");
@@ -1026,17 +1037,42 @@ mod tests {
         assert!(entity(&report, &EntityKind::IpAddress, IPV4).is_none());
     }
 
-    /// When no source gets a response, the lookup is a network failure (exit 77 at the CLI), as
-    /// for `ip` and `email`. Before, it was "no results" (exit 69) whatever the cause.
+    /// When no source answers, the lookup fails with the first reason (exit 69, "no usable
+    /// response"), or is a refusal (exit 77) when the egress policy refused a request. Before, it
+    /// said "no results for domain" whatever the cause, which reads as a real zero.
     #[test]
-    fn a_lookup_no_source_could_reach_is_a_network_failure() {
+    fn a_lookup_no_source_answered_fails_and_says_why() {
         let mut zone = Zone::published("example.com");
         zone.crtsh = None;
         zone.resolvers_down = true;
         match run(&zone, &Keys::default(), "example.com", 1) {
-            DomainRun::Network(message) => assert!(message.starts_with("crtsh"), "{message}"),
+            DomainRun::Failed(message) => assert_eq!(
+                message,
+                "no source answered for domain example.com: crtsh: no response (DnsFailure)"
+            ),
+            DomainRun::Printed { text, .. } => panic!("printed: {text}"),
+            DomainRun::Network(message) => panic!("network: {message}"),
+        }
+
+        match run(&Refusing, &Keys::default(), "example.com", 1) {
+            DomainRun::Network(message) => {
+                assert!(message.starts_with("crtsh: request refused: "), "{message}");
+            }
             DomainRun::Printed { text, .. } => panic!("printed: {text}"),
             DomainRun::Failed(message) => panic!("failed: {message}"),
+        }
+    }
+
+    /// Every request refused by the egress policy, as for a host that resolves to 0.0.0.0.
+    struct Refusing;
+
+    impl Transport for Refusing {
+        fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
+            Err(TransportFailure {
+                kind: SourceOutcomeKind::ConnectFailure,
+                detail: "egress-policy: destination (0.0.0.0) is not publicly routable".into(),
+                blocked: true,
+            })
         }
     }
 }
