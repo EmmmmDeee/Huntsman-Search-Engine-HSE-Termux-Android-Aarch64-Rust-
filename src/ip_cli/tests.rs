@@ -4,6 +4,11 @@ use super::*;
 use crate::http::{Request, Response, TransportFailure};
 use crate::source_outcome::SourceOutcomeKind;
 
+/// Every IP leg for `ip`, with no threat feed consulted: the feeds' own tests cover them.
+fn run<T: Transport + ?Sized>(transport: &T, keys: &Keys, ip: &str, now_unix: u64) -> IpRun {
+    super::run(transport, keys, &Feeds::none(), ip, now_unix)
+}
+
 const ABUSE_KEY: &str = "abuse-test-key-0123456789abcdef";
 const VT_KEY: &str = "vt-test-key-0123456789abcdef0123";
 

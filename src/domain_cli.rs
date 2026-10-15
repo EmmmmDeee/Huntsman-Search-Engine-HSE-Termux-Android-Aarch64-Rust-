@@ -41,6 +41,7 @@ use crate::recon::ReconTargetKind;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::spf::Mechanism;
 use crate::tags;
+use crate::threat_feeds::{self, Feeds};
 use crate::virustotal;
 
 mod resolve;
@@ -99,6 +100,7 @@ pub fn transport_config() -> TransportConfig {
 pub fn run<T: Transport + ?Sized + Sync>(
     transport: &T,
     keys: &Keys,
+    feeds: &Feeds,
     domain: &str,
     now_unix: u64,
 ) -> DomainRun {
@@ -167,6 +169,14 @@ pub fn run<T: Transport + ?Sized + Sync>(
         found.outcomes.push(resolved.outcome);
         sections.push(resolved.section);
     }
+    threat_feeds::check_found(
+        feeds,
+        threat_feeds::Subject::Name(domain.clone()),
+        &mut found.entities,
+        &mut found.outcomes,
+        &scan_id,
+        now_unix,
+    );
     let Found {
         mut entities,
         outcomes,
@@ -731,6 +741,16 @@ mod tests {
     use super::*;
     use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::OneResponse;
+
+    /// The domain lookup, with no threat feed consulted: the feeds' own tests cover them.
+    fn run<T: Transport + ?Sized + Sync>(
+        transport: &T,
+        keys: &Keys,
+        domain: &str,
+        now_unix: u64,
+    ) -> DomainRun {
+        super::run(transport, keys, &Feeds::none(), domain, now_unix)
+    }
 
     const HUNTER_KEY: &str = "hunter-test-key-0123456789abcdef";
     const SEARCH: &str = r#"{"data":{"domain":"example.com","pattern":"{first}.{last}","organization":"Example Corp","emails":[{"value":"ada.lovelace@example.com","type":"personal","confidence":90,"sources":[{"domain":"example.org"}],"first_name":"Ada","last_name":"Lovelace","position":"Engineer"},{"value":"info@example.com","type":"generic","confidence":70,"sources":[]}]},"meta":{"results":2}}"#;

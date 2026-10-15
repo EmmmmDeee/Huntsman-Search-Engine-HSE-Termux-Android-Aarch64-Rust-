@@ -227,6 +227,7 @@ fn malicious_type(kind: &EntityKind) -> Option<&'static str> {
         EntityKind::Email => Some("MALICIOUS_EMAILADDR"),
         EntityKind::Phone => Some("MALICIOUS_PHONE_NUMBER"),
         EntityKind::Asn => Some("MALICIOUS_ASN"),
+        EntityKind::Netblock => Some("MALICIOUS_NETBLOCK"),
         _ => None,
     }
 }
@@ -481,6 +482,18 @@ fn identity_descriptors(
             out.push((kind, data.clone()));
         }
         if attr("dns_filter_threat").is_some_and(positive) {
+            if let Some(kind) = malicious_type(&entity.kind) {
+                out.push((kind, data));
+            }
+        }
+    } else if let Some(feed) = attr("threat_feed") {
+        // A threat feed's listing, as Spiderfoot's feed modules write it: always the blacklisted
+        // element, and the malicious one too when the feed lists threats.
+        let data = format!("{feed} [{host}]");
+        if let Some(kind) = blacklisted_type(&entity.kind) {
+            out.push((kind, data.clone()));
+        }
+        if attr("threat_feed_threat").is_some_and(positive) {
             if let Some(kind) = malicious_type(&entity.kind) {
                 out.push((kind, data));
             }
