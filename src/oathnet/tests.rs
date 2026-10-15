@@ -96,18 +96,62 @@ fn records_become_per_database_exposure_metadata() {
 }
 
 #[test]
-fn no_secret_or_personal_value_survives_decoding() {
+fn record_values_survive_decoding_except_cleartext_credentials() {
+    // The report is unredacted for the record's own data: names, emails, phone numbers,
+    // usernames, countries and the like are kept on their breach, not reduced to a field name.
+    // The one exception is a third party's cleartext credential — a password, hash or salt — which
+    // is the value an attacker needs for account takeover: its presence and type are recorded, the
+    // secret itself is never emitted.
     let rendered = format!("{:?}", decoded(&sample()));
-    for value in [
-        "hunter2-secret",
-        "5f4dcc3b5aa765d61d8327deb882cf99",
-        "+15555550100",
-        "Ada Example",
-        "@ada",
-        "US",
-    ] {
-        assert!(!rendered.contains(value), "{value:?} kept: {rendered}");
+    for value in ["+15555550100", "Ada Example", "@ada", "US", "user123"] {
+        assert!(rendered.contains(value), "{value:?} dropped: {rendered}");
     }
+    for credential in ["hunter2-secret", "5f4dcc3b5aa765d61d8327deb882cf99"] {
+        assert!(
+            !rendered.contains(credential),
+            "cleartext credential {credential:?} emitted: {rendered}"
+        );
+    }
+
+    let search = decoded(&sample());
+    let linkedin = &search.breaches[1];
+    // The credential fields are still reported as exposed, by name and flag, with no value.
+    assert!(linkedin.password_exposed);
+    assert!(linkedin.fields.contains("password"));
+    assert!(linkedin.fields.contains("password_hash"));
+    assert_eq!(
+        linkedin.values.get("password"),
+        None,
+        "the cleartext password value is held back"
+    );
+    assert_eq!(
+        linkedin.values.get("password_hash"),
+        None,
+        "the password hash value is held back"
+    );
+    // Every non-credential value the records held is surfaced.
+    assert_eq!(
+        linkedin
+            .values
+            .get("phone_number")
+            .map(|v| v.iter().map(String::as_str).collect::<Vec<_>>()),
+        Some(vec!["+15555550100"]),
+    );
+    assert_eq!(
+        linkedin
+            .values
+            .get("username")
+            .map(|v| v.iter().map(String::as_str).collect::<Vec<_>>()),
+        Some(vec!["user123"]),
+    );
+    let forum = &search.breaches[0];
+    assert_eq!(
+        forum
+            .values
+            .get("full_name")
+            .map(|v| v.iter().map(String::as_str).collect::<Vec<_>>()),
+        Some(vec!["Ada Example"]),
+    );
 }
 
 #[test]
@@ -242,7 +286,7 @@ fn status(code: u16, body: &str) -> Response {
 #[test]
 fn the_search_sends_one_get_with_the_key_header_to_the_fixed_origin() {
     let transport = Recorder::new(vec![crate::test_support::json_ok(&sample().to_string())]);
-    let search = match search_email(&transport, &keys(), "user+tag@example.com", 7) {
+    let search = match search(&transport, &keys(), Query::Email("user+tag@example.com"), 7) {
         Ok(search) => search,
         Err(error) => panic!("search failed: {error}"),
     };
@@ -253,9 +297,21 @@ fn the_search_sends_one_get_with_the_key_header_to_the_fixed_origin() {
     assert_eq!(request.method, Method::Get);
     assert_eq!(
         request.url,
-        "https://oathnet.org/api/service/v2/breach/search?email%5B%5D=user%2Btag%40example.com&page_size=100"
+        "https://oathnet.org/api/service/v2/breach/search?email%5B%5D=user%2Btag%40example.com&page_size=200"
     );
     assert_eq!(request.header_value("x-api-key"), Some(KEY));
+}
+
+#[test]
+fn a_username_query_filters_on_the_username_field() {
+    let transport = Recorder::new(vec![crate::test_support::json_ok(&sample().to_string())]);
+    if let Err(error) = search(&transport, &keys(), Query::Username("ada_99"), 7) {
+        panic!("search failed: {error}");
+    }
+    assert_eq!(
+        transport.sent()[0].url,
+        "https://oathnet.org/api/service/v2/breach/search?username%5B%5D=ada_99&page_size=200"
+    );
 }
 
 #[test]
@@ -266,7 +322,7 @@ fn no_key_sends_nothing() {
         Err(error) => panic!("empty keys parse: {error}"),
     };
     assert_eq!(
-        search_email(&transport, &empty, "user@example.com", 7),
+        search(&transport, &empty, Query::Email("user@example.com"), 7),
         Err(OathnetError::MissingKey)
     );
     assert!(transport.sent().is_empty());
@@ -302,7 +358,7 @@ fn statuses_map_to_outcomes_and_never_quote_the_body() {
     for (response, kind, http) in cases {
         let code = response.status;
         let transport = Recorder::new(vec![response]);
-        let error = match search_email(&transport, &keys(), "user@example.com", 7) {
+        let error = match search(&transport, &keys(), Query::Email("user@example.com"), 7) {
             Err(error) => error,
             Ok(search) => panic!("HTTP {code} gave {search:?}"),
         };
@@ -331,7 +387,7 @@ fn a_redirect_is_not_followed_so_the_key_goes_nowhere_else() {
         .headers
         .push(("location".into(), "https://elsewhere.example/steal".into()));
     let transport = Recorder::new(vec![moved]);
-    let result = search_email(&transport, &keys(), "user@example.com", 7);
+    let result = search(&transport, &keys(), Query::Email("user@example.com"), 7);
     assert_eq!(result, Err(OathnetError::Unexpected(302)));
     let sent = transport.sent();
     assert_eq!(sent.len(), 1, "only the first request is sent");

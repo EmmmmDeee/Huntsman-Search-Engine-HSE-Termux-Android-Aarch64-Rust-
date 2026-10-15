@@ -557,6 +557,37 @@ fn sf_rejects_unrebuilt_target_classes_explicitly() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("not available yet"));
 }
 
+/// `sf -s` exits as the plain lookup it runs would for the same outcome. A trust store without a
+/// certificate fails every request before a socket opens, so both ASIC registers are unusable:
+/// `people` exits 69, and `sf -s` of the same name must too. It exited 65, the status of bad
+/// data, from a status table of its own that also sent an egress refusal to 69 instead of 77.
+#[test]
+fn sf_scan_exits_as_the_plain_lookup_does() {
+    let dir = scratch("sf-status");
+    let bundle = dir.join("no-certificates.pem");
+    fs::write(&bundle, "not a certificate\n").unwrap();
+    let run = |args: &[&str]| {
+        bin()
+            .args(args)
+            .env("HUNTSMAN_CA_BUNDLE", &bundle)
+            .output()
+            .unwrap()
+    };
+    let people = run(&["people", "Jane Citizen"]);
+    assert_eq!(
+        people.status.code(),
+        Some(69),
+        "{}",
+        String::from_utf8_lossy(&people.stderr)
+    );
+    let sf = run(&["sf", "-s", "Jane Citizen"]);
+    let stderr = String::from_utf8_lossy(&sf.stderr);
+    assert_eq!(sf.status.code(), people.status.code(), "sf: {stderr}");
+    assert!(sf.stdout.is_empty(), "{:?}", sf.stdout);
+    assert!(stderr.contains("HUNTSMAN_CA_BUNDLE"), "{stderr}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn serve_rejects_invalid_or_unconfigured_public_bind_before_listening() {
     let invalid = bin()
@@ -746,10 +777,10 @@ fn identifier_geohash_and_coarsen_commands() {
 }
 
 #[test]
-fn stolen_tax_ignores_a_key_in_the_default_file() {
-    // The default file serves the other keyed lookups. stolen-tax reads only --keys FILE or the
-    // environment, so a valid key placed in the default file is still a missing key here, and
-    // the refusal happens before any request.
+fn stolen_tax_uses_a_key_in_the_default_file() {
+    // Every lookup reads the keys `credential-status` reports, so a key placed only in the
+    // default file is used, not refused as missing (66). A CA bundle that cannot be parsed fails
+    // the TLS handshake, so the key is never sent and the run ends as unavailable (69).
     let home = scratch("stolen-default-file");
     let default_file = home.join(".huntsman.env");
     fs::write(
@@ -762,18 +793,19 @@ fn stolen_tax_ignores_a_key_in_the_default_file() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&default_file, fs::Permissions::from_mode(0o600)).unwrap();
     }
+    let bundle = home.join("not-a-ca.pem");
+    fs::write(&bundle, "not a certificate\n").unwrap();
     let out = bin()
         .args(["recon", "stolen-tax", "a@example.com"])
         .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
         .env("HOME", &home)
+        .env("HUNTSMAN_CA_BUNDLE", &bundle)
         .output()
         .unwrap();
-    assert_eq!(
-        out.status.code(),
-        Some(66),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(69), "{stderr}");
+    assert!(!stderr.contains("no API key"), "{stderr}");
+    assert!(!stderr.contains("fixture-not-a-key"), "{stderr}");
     assert_eq!(out.stdout.len(), 0);
     let _ = fs::remove_dir_all(&home);
 }

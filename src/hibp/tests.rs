@@ -470,6 +470,36 @@ fn hash_vectors_cover_sha1_padding_ntlm_unicode_and_rfc_md4() {
     }
 }
 
+/// The NTLM path wipes its UTF-16LE copy of the password and MD4's padded message. A buffer that
+/// grew while being filled would have left its old allocation, holding the password, unwiped, so
+/// each is sized once and never reallocates.
+#[test]
+fn ntlm_password_buffers_never_reallocate_so_the_wipe_reaches_every_copy() {
+    for password in [
+        String::new(),
+        "p".into(),
+        "pässwörd 🔑".into(),
+        "x".repeat(27),
+        "x".repeat(28),
+        "x".repeat(32),
+        "x".repeat(500),
+        "ü".repeat(2048),
+    ] {
+        let utf16 = super::passwords::utf16le(&password);
+        assert_eq!(utf16.len(), password.encode_utf16().count() * 2);
+        assert_eq!(utf16.capacity(), utf16.len(), "{} chars", password.len());
+        let padded = super::md4::padded(&utf16);
+        assert_eq!(padded.len() % 64, 56);
+        assert_eq!(
+            padded.capacity(),
+            utf16.len() + 72,
+            "{} chars: the padded copy reallocated",
+            password.len()
+        );
+        assert!(padded.capacity() >= padded.len() + 8, "room for the length");
+    }
+}
+
 #[test]
 fn status_errors_and_decode_errors_never_echo_secrets_or_body() {
     let (client, fake) = keyed();
@@ -704,34 +734,31 @@ fn scratch(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn key_precedence_and_missing_embedded_fallback() {
+fn key_precedence() {
     let dir = scratch("keys");
     let path = dir.join("key");
     crate::fsio::write_atomic_private(&path, b"file-key", 4096).unwrap();
-    for (env, slot, file, embedded, expected) in [
+    for (env, slot, file, expected) in [
         (
             Some("env-key"),
             Some("slot-key"),
             Some(path.clone()),
-            "embedded-key",
             "env-key",
         ),
         (
             Some("insert_key_here"),
             Some("slot-key"),
             Some(path.clone()),
-            "embedded-key",
             "slot-key",
         ),
-        (None, None, Some(path.clone()), "embedded-key", "file-key"),
-        (None, None, None, "embedded-key", "embedded-key"),
-        (Some("runtime-key"), None, None, "", "runtime-key"),
+        (None, None, Some(path.clone()), "file-key"),
+        (Some("runtime-key"), None, None, "runtime-key"),
     ] {
-        let loader = key::KeyLoader::from_parts(env.map(str::to_owned), slot, file, embedded);
+        let loader = key::KeyLoader::from_parts(env.map(str::to_owned), slot, file);
         assert_eq!(loader.load().unwrap().0.expose(), expected);
     }
     assert!(
-        key::KeyLoader::from_parts(None, None, None, "")
+        key::KeyLoader::from_parts(None, None, None)
             .load()
             .is_none()
     );
@@ -740,7 +767,7 @@ fn key_precedence_and_missing_embedded_fallback() {
     assert!(!format!("{key:?} {key}").contains("never-print"));
     crate::fsio::write_atomic_private(&path, &vec![b'x'; 4097], 5000).unwrap();
     assert!(
-        key::KeyLoader::from_parts(None, None, Some(path), "")
+        key::KeyLoader::from_parts(None, None, Some(path))
             .load()
             .is_none()
     );
@@ -797,7 +824,7 @@ fn key_and_token_symlinks_are_refused() {
     let link = dir.join("link");
     std::os::unix::fs::symlink(&target, &link).unwrap();
     assert!(
-        key::KeyLoader::from_parts(None, None, Some(link.clone()), "")
+        key::KeyLoader::from_parts(None, None, Some(link.clone()))
             .load()
             .is_none()
     );

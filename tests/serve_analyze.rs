@@ -69,8 +69,13 @@ fn serve_runs_the_offline_multi_hop_analysis_its_page_offers() {
     child.wait().unwrap();
 
     assert!(page.starts_with("HTTP/1.1 200"), "{page}");
-    assert!(
-        page.contains(r#"<form id="analyze">"#),
+    // The analysis form, whatever other attributes its tag carries.
+    let form = page
+        .find(r#" id="analyze""#)
+        .map(|at| &page[page[..at].rfind('<').unwrap()..at]);
+    assert_eq!(
+        form.map(|tag| tag.split(' ').next()),
+        Some(Some("<form")),
         "the page offers no analysis"
     );
     assert!(analysis.starts_with("HTTP/1.1 200"), "{analysis}");

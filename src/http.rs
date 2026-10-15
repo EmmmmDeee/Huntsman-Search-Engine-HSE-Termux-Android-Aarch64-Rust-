@@ -156,9 +156,17 @@ impl Response {
         find_header(&self.headers, name)
     }
 
+    /// The body as text, borrowed when it is valid UTF-8 (the common case) and copied with
+    /// replacement characters only when it is not. A classifier that reads the body once
+    /// takes this; [`Self::text`] copies.
+    #[must_use]
+    pub fn text_view(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.body)
+    }
+
     #[must_use]
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.body).into_owned()
+        self.text_view().into_owned()
     }
 }
 
@@ -874,5 +882,27 @@ mod tests {
         let (b, t) = read_capped(&data[..], 0).expect("read");
         assert_eq!((b.len(), t), (0, true));
         assert_eq!(read_capped(&[][..], 0).expect("read"), (Vec::new(), false));
+    }
+    #[test]
+    fn text_view_borrows_a_utf8_body_and_copies_only_an_invalid_one() {
+        let valid = Response {
+            status: 200,
+            headers: Vec::new(),
+            body: b"{\"ok\":true}".to_vec(),
+            truncated: false,
+        };
+        assert!(matches!(
+            valid.text_view(),
+            std::borrow::Cow::Borrowed("{\"ok\":true}")
+        ));
+        assert_eq!(valid.text(), "{\"ok\":true}");
+        let invalid = Response {
+            status: 200,
+            headers: Vec::new(),
+            body: vec![b'a', 0xff, b'b'],
+            truncated: false,
+        };
+        assert!(matches!(invalid.text_view(), std::borrow::Cow::Owned(_)));
+        assert_eq!(invalid.text(), "a\u{fffd}b");
     }
 }
