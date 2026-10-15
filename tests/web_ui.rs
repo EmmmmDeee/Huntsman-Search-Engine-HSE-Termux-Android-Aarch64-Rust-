@@ -212,13 +212,15 @@ fn the_graph_nodes_stand_out_from_the_graph_in_both_themes() {
     assert!(
         style.contains(".graph{height:62vh;min-height:300px;margin:0 0 10px;background:var(--el);")
     );
+    // Each element is a dot drawn in its data type's colour, the colour its class sets.
+    assert!(style.contains("#gnodes path{fill:none;stroke:currentColor;"));
     let mut failures = Vec::new();
     for (theme, t) in themes() {
         let ground = colour(&t["--el"]).0;
         for i in 0..10 {
             let name = format!("--g{i}");
             assert!(
-                style.contains(&format!(".g{i}{{fill:var({name});")),
+                style.contains(&format!(".g{i}{{color:var({name})}}")),
                 "no .g{i} rule"
             );
             let ratio = contrast(colour(&t[&name]).0, ground);
