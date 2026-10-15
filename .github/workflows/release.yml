@@ -22,13 +22,11 @@ name: Release (prebuilt Termux aarch64 binary)
 # GitHub's "Latest release". This workflow never creates, edits or deletes a
 # stable release: it has no tag trigger and no stable code path.
 #
-# Publish gate: the build must run on GitHub Actions with HSE_RELEASE=1, every
-# build-time embed file must be empty, the key scan of the exact artifacts
-# must report zero findings, and the binary must get a build provenance
-# attestation (a required step, never optional). Otherwise nothing is
-# published. build.rs registers HSE_RELEASE, HUNTSMAN_HIBP_NO_EMBED,
-# HIBP_API_KEY and HUNTSMAN_BUILD_SHA for rebuilds (not CI, not a key file),
-# reads none of them, and writes an empty HIBP embed file on every build.
+# Publish gate: the build must run on GitHub Actions with HSE_RELEASE=1, the
+# key scan of the exact artifacts must report zero findings, and the binary
+# must get a build provenance attestation (a required step, never optional).
+# Otherwise nothing is published. No build reads a key: HIBP keys are read at
+# run time only, so the scan is the proof that none is in the published files.
 # See docs/RELEASING.md.
 #
 # Privilege split (same shape as HSE-BLE-API- release.yml):
@@ -68,7 +66,6 @@ on:
       - ".railway/**"
       - "Dockerfile"
       - ".dockerignore"
-      - "build.rs"
       - "Cargo.toml"
       - "Cargo.lock"
       - "capabilities.json"
@@ -80,15 +77,14 @@ on:
       - ".cargo/**"
       - "scripts/validate-railway-iac.sh"
   workflow_dispatch:
-  # Dry run on PRs that touch the release path: same build, embed check and
-  # key scan, nothing published, no write token requested.
+  # Dry run on PRs that touch the release path: same build and key scan,
+  # nothing published, no write token requested.
   pull_request:
     paths:
       - ".github/workflows/release.yml"
       - ".github/scripts/scan-for-keys.sh"
       - ".github/scripts/install-termux.sh"
       - ".github/actions/setup-ndk-aarch64/**"
-      - "build.rs"
       - "Cargo.toml"
       - "Cargo.lock"
       - "capabilities.json"
@@ -109,7 +105,6 @@ permissions:
 
 env:
   HSE_RELEASE: "1"
-  HUNTSMAN_HIBP_NO_EMBED: "1"
   HUNTSMAN_BUILD_SHA: ${{ github.sha }}
   ASSET: huntsman-recon-aarch64-linux-android
   # Exact benign hex values the key scan deletes before its hex-run rule (see
@@ -149,7 +144,7 @@ jobs:
           publish=true
           if [ "$GH_EVENT_NAME" = "pull_request" ]; then
             publish=false
-            echo "Pull request: dry run (build + embed check + key scan), nothing is published." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Pull request: dry run (build + key scan), nothing is published." | tee -a "$GITHUB_STEP_SUMMARY"
           elif [ "$GH_REF" != "refs/heads/main" ]; then
             echo "::error::main-channel releases are built from refs/heads/main only (got ${GH_REF})"
             exit 1
@@ -298,16 +293,6 @@ jobs:
       - name: Build aarch64 Android release binary
         run: cargo build --release --locked --target aarch64-linux-android
 
-      - name: Require empty build-time key embed
-        run: |
-          set -euo pipefail
-          mapfile -t embeds < <(find target/aarch64-linux-android/release/build -path '*/out/hibp_embedded_key.txt' -type f)
-          [ "${#embeds[@]}" -gt 0 ] || { echo "::error::no hibp_embedded_key.txt found; cannot prove the embed is empty"; exit 1; }
-          for f in "${embeds[@]}"; do
-            [ ! -s "$f" ] || { echo "::error file=${f}::build-time HIBP key embed is NOT empty; refusing to publish"; exit 1; }
-            echo "empty: ${f}"
-          done
-
       - name: Verify Android ELF, strip and stage
         run: |
           set -euo pipefail
@@ -388,7 +373,6 @@ jobs:
             echo "commit: ${GITHUB_SHA}"
             echo "release_tag: ${TAG}"
             echo "run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            echo "build_time_hibp_embed: empty (checked)"
             cat "$RUNNER_TEMP/identity.txt"
             [ "$HUNTSMAN_BUILD_SHA" = "$GITHUB_SHA" ] || { echo "::error::HUNTSMAN_BUILD_SHA is not github.sha"; exit 1; }
             # Known value from the checkout (the provenance names this digest).
@@ -1000,7 +984,7 @@ jobs:
 
           Authenticity (optional): \`gh attestation verify ${ASSET} --repo ${GITHUB_REPOSITORY}\`.
 
-          Built with HSE_RELEASE=1 (no build-time key embedding). \`key-scan-report.txt\` is the zero-finding key scan of these exact files. No Termux handset run is claimed.
+          Built with HSE_RELEASE=1; no build reads a key. \`key-scan-report.txt\` is the zero-finding key scan of these exact files. No Termux handset run is claimed.
           NOTES
           candidate_tag=false
           candidate_release=false

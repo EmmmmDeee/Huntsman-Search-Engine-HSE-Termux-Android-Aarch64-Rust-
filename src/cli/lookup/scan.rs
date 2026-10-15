@@ -3,6 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use serde::Serialize;
+
 use crate::cli::{MAX_ARTIFACT_BYTES, fail};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_USAGE};
@@ -283,14 +285,19 @@ impl SelectorCollector for LiveCollector {
 /// crawl stops at a fixed point or a shared bound. Output is the full, unredacted linkage: every
 /// entity, every source outcome, the per-generation shape, and the stop reason.
 fn recurse_scan(args: &[String]) -> ExitCode {
-    const RECURSE_USAGE: &str = "usage: huntsman-recon scan --recurse SELECTOR [SELECTOR ...] [--max-generations N] [--expand-floor F]";
+    const RECURSE_USAGE: &str = "usage: huntsman-recon scan --recurse SELECTOR [SELECTOR ...] [--max-generations N] [--expand-floor F] [--json]";
     let mut seeds: Vec<String> = Vec::new();
     let mut max_generations: Option<u32> = None;
     let mut expand_floor: Option<f64> = None;
+    let mut json = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--recurse" => index += 1,
+            "--json" => {
+                json = true;
+                index += 1;
+            }
             "--max-generations" => {
                 if max_generations.is_some() {
                     return fail(EX_USAGE, "scan accepts only one --max-generations");
@@ -359,11 +366,78 @@ fn recurse_scan(args: &[String]) -> ExitCode {
     }
     let mut collector = LiveCollector;
     let report = recursion::run(&seeds, &policy, &mut collector);
-    print_recursion(seeds.len(), &report);
+    // Compute the correlation findings once and hand them to whichever renderer runs: the text and
+    // JSON outputs show the same analysis, never a different one.
+    let correlations = recursion_correlations(&report);
+    if json {
+        let view = recursion_json(seeds.len(), &report, &correlations);
+        match serde_json::to_string_pretty(&view) {
+            Ok(body) => println!("{body}"),
+            Err(error) => return fail(EX_DATAERR, &format!("json: {error}")),
+        }
+    } else {
+        print_recursion(seeds.len(), &report, &correlations);
+    }
     if report.accepted_seeds.is_empty() {
         return fail(EX_DATAERR, "no actionable seeds");
     }
     ExitCode::SUCCESS
+}
+
+/// A machine-readable view of the whole crawl result: the same linkage, lineage, correlations and
+/// source outcomes the text output carries, as one JSON object a downstream consumer can parse. A
+/// seed's kind is its stable command word (not the internal variant name), matching the text
+/// output; nothing is summarised or redacted away. Borrows the report, so building it is free.
+#[derive(Serialize)]
+struct RecursionJson<'a> {
+    seeds: usize,
+    accepted: Vec<SeedJson<'a>>,
+    rejected: &'a [String],
+    generations: &'a [huntsman_recon::recursion::GenerationStat],
+    entities: &'a [huntsman_recon::entity::Entity],
+    lineage: &'a [huntsman_recon::recursion::PivotEdge],
+    correlations: &'a [Correlation],
+    outcomes: &'a [SourceExecutionOutcome],
+    dispatches: usize,
+    visited: usize,
+    termination: huntsman_recon::termination::TerminationReason,
+    truncated: bool,
+}
+
+/// One accepted seed in the JSON view: the lookup kind as its command word and the canonical selector.
+#[derive(Serialize)]
+struct SeedJson<'a> {
+    kind: &'a str,
+    selector: &'a str,
+}
+
+/// Assemble the JSON view from the finished report and the correlations computed over it.
+fn recursion_json<'a>(
+    seed_count: usize,
+    report: &'a RecursionReport,
+    correlations: &'a [Correlation],
+) -> RecursionJson<'a> {
+    RecursionJson {
+        seeds: seed_count,
+        accepted: report
+            .accepted_seeds
+            .iter()
+            .map(|target| SeedJson {
+                kind: target.kind.command(),
+                selector: &target.selector,
+            })
+            .collect(),
+        rejected: &report.rejected_seeds,
+        generations: &report.generations,
+        entities: &report.entities,
+        lineage: &report.edges,
+        correlations,
+        outcomes: &report.outcomes,
+        dispatches: report.dispatches,
+        visited: report.visited,
+        termination: report.termination,
+        truncated: report.truncated,
+    }
 }
 
 /// Run the shared correlation engine over everything the crawl reached. This is the exact analysis
@@ -382,8 +456,9 @@ fn recursion_correlations(report: &RecursionReport) -> Vec<Correlation> {
 }
 
 /// Print the crawl result in full: no uid masking, no counts in place of values — the real linkage
-/// map, as the tool exists to produce.
-fn print_recursion(seed_count: usize, report: &RecursionReport) {
+/// map, as the tool exists to produce. The correlations are computed once by the caller and shared
+/// with the JSON renderer, so both outputs show the same analysis.
+fn print_recursion(seed_count: usize, report: &RecursionReport, correlations: &[Correlation]) {
     println!(
         "recurse seeds={seed_count} accepted={} rejected={}",
         report.accepted_seeds.len(),
@@ -426,14 +501,13 @@ fn print_recursion(seed_count: usize, report: &RecursionReport) {
             edge.generation
         );
     }
-    let correlations = recursion_correlations(report);
     println!("correlations={}", correlations.len());
     let by_uid: std::collections::HashMap<&str, &huntsman_recon::entity::Entity> = report
         .entities
         .iter()
         .map(|entity| (entity.uid.as_str(), entity))
         .collect();
-    for correlation in &correlations {
+    for correlation in correlations {
         println!(
             "rule={} ({}) severity={:?} rank={:.2}\t{}",
             escape_controls(&correlation.rule_id),
@@ -480,9 +554,10 @@ fn print_recursion(seed_count: usize, report: &RecursionReport) {
 
 #[cfg(test)]
 mod tests {
-    use super::{per_seed_save_path, recursion_correlations};
+    use super::{per_seed_save_path, recursion_correlations, recursion_json};
     use huntsman_recon::entity::{Entity, EntityKind};
-    use huntsman_recon::recursion::RecursionReport;
+    use huntsman_recon::recursion::{RecursionReport, Target};
+    use huntsman_recon::scan_route::ScanKind;
     use huntsman_recon::termination::TerminationReason;
 
     /// A report carrying only the entities a crawl would have reached, for driving the correlation
@@ -546,6 +621,47 @@ mod tests {
         assert!(
             recursion_correlations(&report).is_empty(),
             "a lone entity should produce no correlation"
+        );
+    }
+
+    #[test]
+    fn the_json_view_carries_the_whole_crawl_result() {
+        // The JSON output is the same analysis as the text output, machine-readable: it must carry
+        // the entities, the accepted seeds (kind as the command word), the termination reason and
+        // the correlations — not a reduced or redacted shape a consumer cannot act on.
+        let mut report = report_of(vec![
+            Entity::new(EntityKind::Email, "person@example.com", 0.9, "recurse"),
+            Entity::new(EntityKind::Username, "person", 0.9, "recurse"),
+        ]);
+        report.accepted_seeds = vec![Target {
+            kind: ScanKind::Email,
+            selector: "person@example.com".to_owned(),
+        }];
+        let correlations = recursion_correlations(&report);
+        let view = recursion_json(1, &report, &correlations);
+        let value = serde_json::to_value(&view).expect("the view serialises");
+
+        assert_eq!(value["seeds"], 1);
+        assert_eq!(
+            value["entities"].as_array().expect("entities array").len(),
+            2
+        );
+        // The seed's kind is its stable command word, matching the text output, not the internal
+        // enum variant name.
+        assert_eq!(value["accepted"][0]["kind"], "email");
+        assert_eq!(value["accepted"][0]["selector"], "person@example.com");
+        // TerminationReason serialises in its snake_case contract form.
+        assert_eq!(value["termination"], "fixed_point");
+        // The correlations travel in the JSON too: the machine output is not a reduced one.
+        let rules: Vec<&str> = value["correlations"]
+            .as_array()
+            .expect("correlations array")
+            .iter()
+            .filter_map(|correlation| correlation["rule_id"].as_str())
+            .collect();
+        assert!(
+            rules.contains(&"AU-002"),
+            "the json view dropped the identity-cluster correlation: {value}"
         );
     }
 

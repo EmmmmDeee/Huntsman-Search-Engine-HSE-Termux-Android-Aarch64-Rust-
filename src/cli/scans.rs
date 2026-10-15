@@ -16,15 +16,16 @@ use huntsman_recon::environment::HUNTSMAN_HOME_ENV;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::write_atomic_private;
 use huntsman_recon::http::percent_encode_component;
-use huntsman_recon::scan_api::{ApiResponse, ScanApi, SlotCheck};
+use huntsman_recon::scan_api::{ApiResponse, ScanApi, SlotCheck, correlation_rules};
 use huntsman_recon::scan_service::{LookupOutput, ScanLookup, ScanRequest, ScanService};
 use huntsman_recon::scan_store::{ScanOptions, ScanRecord, ScanStatus, ScanStore};
+use huntsman_recon::sf_correlate;
 use huntsman_recon::sf_types;
 use huntsman_recon::textnorm::escape_controls;
 use serde_json::Value;
 
-pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [--json] | scans list [--json] | scans show ID | scans summary ID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID | scans log ID [--level INFO|WARNING|ERROR] | scans export ID|ID,ID... [-f csv|tsv|json|gexf] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans types
-Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. -t keeps only those element types; -u passive skips the keyed breach lookup of an email. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); several ids give one JSON export. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
+pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [--json] | scans list [--json] | scans show ID | scans summary ID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans export ID|ID,ID... [-f csv|tsv|json|gexf] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans rules [--json] | scans types
+Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read, and scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. -t keeps only those element types; -u passive skips the keyed breach lookup of an email. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); several ids give one JSON export. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
 
 /// The synopsis line of [`SCANS_HELP`], for a usage error.
 fn usage() -> &'static str {
@@ -50,8 +51,8 @@ pub(super) fn slot_check() -> SlotCheck {
     Arc::new(|slot| crate::cli::credentials::lookup_keys().get(slot).is_some())
 }
 
-/// `$HUNTSMAN_HOME/scans`, else `~/.huntsman/scans`; only an absolute directory counts.
-pub(super) fn default_scan_dir() -> Option<PathBuf> {
+/// `$HUNTSMAN_HOME`, else `~/.huntsman`; only an absolute directory counts.
+fn state_dir() -> Option<PathBuf> {
     let absolute = |value: OsString| {
         let path = PathBuf::from(value);
         path.is_absolute().then_some(path)
@@ -63,12 +64,40 @@ pub(super) fn default_scan_dir() -> Option<PathBuf> {
                 .and_then(absolute)
                 .map(|home| home.join(STATE_DIR))
         })
-        .map(|state| state.join("scans"))
+}
+
+/// `$HUNTSMAN_HOME/scans`, else `~/.huntsman/scans`.
+pub(super) fn default_scan_dir() -> Option<PathBuf> {
+    state_dir().map(|state| state.join("scans"))
+}
+
+/// `$HUNTSMAN_HOME/correlations`, else `~/.huntsman/correlations`: the operator's own
+/// Spiderfoot-format correlation rules.
+pub(super) fn default_rules_dir() -> Option<PathBuf> {
+    state_dir().map(|state| state.join("correlations"))
+}
+
+/// The scan store at `dir`, with what a stopped process left running marked `ABORTED`, behind
+/// the API router, its scans running Spiderfoot's rules and those in `rules_dir`. `scans` and
+/// `serve` both open scans here.
+pub(super) fn open_api(dir: &Path, rules_dir: Option<&Path>) -> Result<ScanApi, String> {
+    let store = ScanStore::open(dir).map_err(|error| error.to_string())?;
+    // One another live process is still running is left as it is.
+    store.recover(now_ms()).map_err(|error| error.to_string())?;
+    let (rules, errors) = match rules_dir {
+        Some(rules_dir) => sf_correlate::with_dir(rules_dir),
+        None => (sf_correlate::shipped().to_vec(), Vec::new()),
+    };
+    Ok(ScanApi::new(
+        ScanService::with_rules(store, scan_lookup(), rules, errors),
+        Some(slot_check()),
+    ))
 }
 
 /// Options that take a value, by every spelling, and the name each is read back by.
-const VALUED: [(&str, &str); 14] = [
+const VALUED: [(&str, &str); 15] = [
     ("--dir", "dir"),
+    ("--rules", "rules"),
     ("-k", "kind"),
     ("--kind", "kind"),
     ("-n", "name"),
@@ -281,6 +310,13 @@ pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
             ),
         );
     }
+    if command == "rules" {
+        return if rest.is_empty() {
+            rules_listing(&parsed)
+        } else {
+            fail(EX_USAGE, "scans rules takes no argument")
+        };
+    }
     if command == "types" {
         return if rest.is_empty() {
             types_listing()
@@ -322,23 +358,25 @@ pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
 }
 
 /// Every `scans` subcommand.
-const SUBCOMMANDS: [&str; 12] = [
+const SUBCOMMANDS: [&str; 14] = [
     "run",
     "list",
     "show",
     "summary",
     "elements",
     "correlations",
+    "correlate",
     "log",
     "export",
     "fp",
     "delete",
     "rerun",
+    "rules",
     "types",
 ];
 
-/// The store at `--dir`, or the default one, with what a stopped process left running marked
-/// `ABORTED`, behind the API router `serve` uses.
+/// The store at `--dir`, or the default one, running the rules in `--rules`, or the default
+/// rule directory.
 fn open(parsed: &Parsed) -> Result<ScanApi, ExitCode> {
     let Some(dir) = parsed
         .value("dir")
@@ -350,16 +388,73 @@ fn open(parsed: &Parsed) -> Result<ScanApi, ExitCode> {
             "scans: no scan directory: set HOME or HUNTSMAN_HOME to an absolute path, or pass --dir DIR",
         ));
     };
-    let store =
-        ScanStore::open(&dir).map_err(|error| fail(EX_IOERR, &format!("scans: {error}")))?;
-    // One another live process is still running is left as it is.
-    store
-        .recover(now_ms())
-        .map_err(|error| fail(EX_IOERR, &format!("scans: {error}")))?;
-    Ok(ScanApi::new(
-        ScanService::new(store, scan_lookup()),
-        Some(slot_check()),
-    ))
+    open_api(&dir, rules_dir(parsed).as_deref())
+        .map_err(|error| fail(EX_IOERR, &format!("scans: {error}")))
+}
+
+fn rules_dir(parsed: &Parsed) -> Option<PathBuf> {
+    parsed
+        .value("rules")
+        .map(PathBuf::from)
+        .or_else(default_rules_dir)
+}
+
+/// Every correlation rule a scan runs, then each rule file that could not be read; exit 65 when
+/// one could not.
+fn rules_listing(parsed: &Parsed) -> ExitCode {
+    let (rules, errors) = match rules_dir(parsed) {
+        Some(dir) => sf_correlate::with_dir(&dir),
+        None => (sf_correlate::shipped().to_vec(), Vec::new()),
+    };
+    let rows = correlation_rules(&rules);
+    if parsed.on("--json") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&rows).unwrap_or_else(|_| rows.to_string())
+        );
+    } else {
+        println!("ID\tRISK\tORIGIN\tNAME");
+        for row in rows.as_array().into_iter().flatten() {
+            println!(
+                "{}\t{}\t{}\t{}",
+                one_line(row["id"].as_str().unwrap_or_default()),
+                one_line(row["risk"].as_str().unwrap_or_default()),
+                one_line(row["origin"].as_str().unwrap_or_default()),
+                one_line(row["name"].as_str().unwrap_or_default()),
+            );
+        }
+    }
+    for error in &errors {
+        eprintln!("scans: {}", one_line(&error.to_string()));
+    }
+    if errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EX_DATAERR)
+    }
+}
+
+fn print_correlations(rows: &Value) {
+    println!("ID\tRISK\tRULE\tELEMENTS\tCORRELATION");
+    for row in rows.as_array().into_iter().flatten() {
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            one_line(row["id"].as_str().unwrap_or_default()),
+            one_line(row["risk"].as_str().unwrap_or_default()),
+            one_line(row["rule"].as_str().unwrap_or_default()),
+            row["elements"].as_array().map_or(0, Vec::len),
+            one_line(row["title"].as_str().unwrap_or_default()),
+        );
+    }
+}
+
+/// An API answer as a table, unless `--json` asked for the JSON or it is an error.
+fn table_or_json(response: &ApiResponse, parsed: &Parsed, print: fn(&Value)) -> ExitCode {
+    if parsed.on("--json") || response.status >= 400 {
+        return emit(response);
+    }
+    print(&serde_json::from_str(&response.body).unwrap_or(Value::Null));
+    ExitCode::SUCCESS
 }
 
 /// A subcommand on one saved scan.
@@ -367,10 +462,26 @@ fn one_scan(api: &ScanApi, parsed: &Parsed, command: &str, id: &str) -> ExitCode
     let get = |path: String, query: &str| api.handle("GET", &path, query);
     match command {
         "show" => emit(&get(format!("/api/scans/{id}"), "")),
-        "summary" | "correlations" | "log" => emit(&get(
+        "summary" | "log" => emit(&get(
             format!("/api/scans/{id}/{command}"),
             &query(&[("level", parsed.value("level"))]),
         )),
+        "correlations" => {
+            let response = get(
+                format!("/api/scans/{id}/correlations"),
+                &query(&[("format", parsed.value("format"))]),
+            );
+            if parsed.value("format").is_some() {
+                deliver(&response, parsed.value("output"))
+            } else {
+                table_or_json(&response, parsed, print_correlations)
+            }
+        }
+        "correlate" => table_or_json(
+            &api.handle("POST", &format!("/api/scans/{id}/correlate"), ""),
+            parsed,
+            print_correlations,
+        ),
         "elements" => {
             let response = get(
                 format!("/api/scans/{id}/elements"),
@@ -380,11 +491,7 @@ fn one_scan(api: &ScanApi, parsed: &Parsed, command: &str, id: &str) -> ExitCode
                     ("hidefp", parsed.on("--hide-fp").then_some("1")),
                 ]),
             );
-            if parsed.on("--json") || response.status >= 400 {
-                return emit(&response);
-            }
-            print_elements(&serde_json::from_str(&response.body).unwrap_or(Value::Null));
-            ExitCode::SUCCESS
+            table_or_json(&response, parsed, print_elements)
         }
         // The rerun runs here, to its end, as `scans run` does.
         "rerun" => rerun(api, id, parsed.on("--json")),
@@ -479,10 +586,15 @@ fn export(api: &ScanApi, parsed: &Parsed, rest: &[&str]) -> ExitCode {
             ]),
         )
     };
+    deliver(&response, parsed.value("output"))
+}
+
+/// An export to stdout, or written whole to `output`.
+fn deliver(response: &ApiResponse, output: Option<&str>) -> ExitCode {
     if response.status >= 400 {
-        return emit(&response);
+        return emit(response);
     }
-    let Some(path) = parsed.value("output") else {
+    let Some(path) = output else {
         print!("{}", response.body);
         return ExitCode::SUCCESS;
     };
