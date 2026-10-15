@@ -91,6 +91,7 @@ internetdb	adapter	Shodan InternetDB leg reached through ip_cli from ip, scan -k
 ip_cli	runtime	ip lookup front-end reached from ip, scan -k ip and /api/lookup
 ipinfo	adapter	IPinfo leg reached through indicator_legs from ip, scan and /api/lookup
 ipqs	adapter	IPQualityScore IP leg reached through indicator_legs from ip, scan -k ip and /api/lookup when its key is set
+isc	adapter	Internet Storm Center leg reached through indicator_legs from ip, scan and /api/lookup
 json	exporter	canonical JSON support
 key_import	adapter	Spiderfoot SpiderFoot.cfg and keys-file key import reached through serve's POST /api/settings/keys (Settings, Import API keys)
 keys	leaf	credential file handling
@@ -103,6 +104,7 @@ lookup_args	leaf	lookup option grammar shared by the front-ends
 lookup_modules	runtime	the modules each lookup kind asks, reached through scans run -m, sf -m, the New Scan page's modules and /api/settings
 lookup_report	leaf	shared text report of an identifier lookup
 lookup_save	exporter	shared unverified lookup ledger persistence
+maltiverse	adapter	Maltiverse leg reached through indicator_legs from ip, domain, scan and /api/lookup
 md5	leaf	MD5 primitive for protocols that require public MD5 identifiers
 meta_plan	runtime	meta-plan validation consumed by the runtime
 metrics	runtime	shared scan metrics
@@ -121,6 +123,7 @@ oui	leaf	OUI lookup
 oui_ieee	leaf	IEEE OUI data
 pattern	leaf	linear-time regular expressions the Spiderfoot correlation rules run
 people_cli	diagnostic	ASIC people command front-end
+phishstats	adapter	PhishStats leg reached through indicator_legs from ip, scan and /api/lookup
 phone_cli	diagnostic	offline phone enrichment command front-end
 phone_intl	leaf	international phone canonicalization and country-prefix lookup
 pipeline	runtime	bounded normalization and evidence composition
