@@ -131,7 +131,7 @@ td.none{color:var(--dim)}
 pre{margin:0;padding:12px 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 var(--mono);color:var(--fg)}
 .data{font:12.5px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
 .note{margin:0;padding:8px 14px;color:var(--muted);font-size:12px;border-top:1px solid var(--line)}
-.note:empty{display:none}
+.note:empty,#cnote:empty{display:none}
 details summary{cursor:pointer;min-height:44px;display:flex;align-items:center;padding:0 14px;font-size:12.5px;font-weight:600;background:var(--el2)}
 details[open] summary{border-bottom:1px solid var(--line)}
 .raw summary,.corr summary{gap:8px;padding:0;background:none;font-weight:400;list-style:none}
@@ -290,7 +290,10 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel"><div class="panel-heading">Data Types <span class="badge" id="bars-n"></span></div><div class="bars" id="bars"></div></div>
 <div class="panel"><div class="panel-heading">Sources <span class="badge" id="srcs-n"></span></div><div class="table-wrap"><table class="sortable"><thead><tr><th>Source</th><th>Outcome</th><th>Detail</th></tr></thead><tbody id="srcs"></tbody></table></div></div>
 </div>
-<div id="pane-correlations" hidden><div class="panel"><div class="table-wrap"><table><thead><tr><th>Correlation</th><th>Risk</th><th>Data Elements</th></tr></thead><tbody id="corrs"></tbody></table></div></div></div>
+<div id="pane-correlations" hidden>
+<div class="toolbar"><button class="btn" id="recorrelate" type="button">Re-run Correlations</button><details class="menu" id="cexport"><summary class="btn">Export Correlations</summary><div class="menu-list"><button type="button" data-cformat="csv">CSV</button><button type="button" data-cformat="json">JSON</button><button type="button" data-cformat="tsv">TSV</button></div></details></div>
+<p class="help" id="cnote" role="status"></p>
+<div class="panel"><div class="table-wrap"><table><thead><tr><th>Correlation</th><th>Rule</th><th>Risk</th><th>Data Elements</th></tr></thead><tbody id="corrs"></tbody></table></div></div></div>
 <div id="pane-browse" hidden>
 <div class="panel" id="btypes"><div class="table-wrap"><table class="sortable"><thead><tr><th>Type</th><th>Unique Data Elements</th><th>Total Data Elements</th><th>Last Data Element</th></tr></thead><tbody id="types"></tbody></table></div></div>
 <div id="btype" hidden>
@@ -363,6 +366,9 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel"><div class="panel-heading">Modules <span class="badge" id="mods-n"></span></div>
 <div class="filter"><input type="search" id="mfilter" autocomplete="off" placeholder="Filter modules" aria-label="Filter modules"></div>
 <div class="table-wrap"><table class="sortable"><thead><tr><th>Module</th><th>Category</th><th>Access</th><th>API Key</th><th>Description</th></tr></thead><tbody id="mods"></tbody></table></div></div>
+<div class="panel" id="rules-p" hidden><div class="panel-heading">Correlation Rules <span class="badge" id="rules-n"></span></div>
+<p class="help pad">Every saved scan runs these. Rules of your own in Spiderfoot's format go in <span class="mono">~/.huntsman/correlations</span>: one with a shipped rule's id replaces it.</p>
+<div class="table-wrap"><table><thead><tr><th>Rule</th><th>Risk</th><th>Origin</th></tr></thead><tbody id="rules"></tbody></table></div></div>
 </section>
 <section id="view-about" hidden>
 <h1>About</h1>
@@ -738,22 +744,41 @@ function table(cols,rows,render){
 }
 const ELEM=['Data Element','Source Data Element','Source Module','Identified'];
 const elemTable=(list,withType,select)=>table((withType?['Type']:[]).concat(ELEM),list,x=>elemRow(x,withType,select));
+// A rule as Spiderfoot writes it, shown on request: the YAML is long and most readers want the finding.
+function logicView(text){const d=el('details','raw'),sum=el('summary');sum.append(el('span','','Rule logic'));d.append(sum,el('pre','',text));return d}
+const ruleMeta=c=>[c.name&&c.name!==c.rule?c.name:'',c.rule||c.id,c.origin].filter(Boolean).join(' · ');
 async function correlations(){
   const list=await get('correlations',base()+'/correlations'),tb=$('corrs'),order=r=>RISK.findIndex(x=>x[0]===String(r||'').toLowerCase());
+  $('recorrelate').disabled=live(scan.status);$('cnote').textContent='';
   tb.replaceChildren();
   for(const c of [...list].sort((a,b)=>order(a.risk)-order(b.risk))){
     const tr=el('tr'),d=el('details','corr'),ids=new Set(c.elements||[]);
-    d.append(el('summary','',c.title||c.rule));
+    d.append(el('summary','',c.title||c.name||c.rule));
     if(c.description)d.append(el('p','ent-m',c.description));
-    if(c.rule)d.append(el('p','ent-m','rule '+c.rule));
+    d.append(el('p','ent-m','rule '+ruleMeta(c)));
+    if(c.logic)d.append(logicView(c.logic));
     d.addEventListener('toggle',async()=>{
       if(!d.open||d.built)return;d.built=true;
       try{d.append(elemTable((await elements('')).filter(x=>ids.has(x.id)),true))}catch(e){d.built=false;fail('scerror',e.message)}
     });
-    put(tr,'',d);put(tr,'Risk',el('span','label '+riskTone(c.risk),String(c.risk||'').toUpperCase()));put(tr,'Data Elements',ids.size);tb.append(tr);
+    put(tr,'',d).classList.add('wide');put(tr,'Rule',c.name||c.rule);put(tr,'Risk',el('span','label '+riskTone(c.risk),String(c.risk||'').toUpperCase()));put(tr,'Data Elements',ids.size);tb.append(tr);
   }
-  if(!list.length)none(tb,live(scan.status)?'No correlations yet. They are reported once the scan has finished.':'No correlations.',3);
+  if(!list.length)none(tb,live(scan.status)?'No correlations yet. They are reported once the scan has finished.':'No correlations.',4);
 }
+// Spiderfoot's sf.py -C: every rule again over the saved elements, after false positives change.
+$('recorrelate').onclick=async()=>{
+  const b=$('recorrelate');b.disabled=true;$('cnote').textContent='';
+  try{
+    const found=await api(base()+'/correlate',{method:'POST'});
+    cache={};$('scerror').hidden=true;await loadScan(true);
+    $('cnote').textContent='Correlations re-run: '+found.length+' found.';
+  }catch(e){fail('scerror',e.message)}finally{b.disabled=live(scan.status)}
+};
+$('cexport').addEventListener('click',async e=>{
+  const b=e.target.closest('button[data-cformat]');if(!b)return;
+  $('cexport').open=false;
+  try{await fetchFile(base()+'/correlations?format='+b.dataset.cformat,'huntsman-'+sid+'-correlations.'+b.dataset.cformat)}catch(err){fail('scerror',err.message)}
+});
 async function browseTypes(){
   $('btypes').hidden=false;$('btype').hidden=true;
   const types=await get('summary',base()+'/summary'),tb=$('types');tb.replaceChildren();
@@ -970,8 +995,8 @@ $('scexport').addEventListener('click',async e=>{
   $('scexport').open=false;
   try{await exportFile(b.dataset.format)}catch(err){fail('scerror',err.message)}
 });
-document.addEventListener('click',e=>{if($('scexport').open&&!$('scexport').contains(e.target))$('scexport').open=false});
-document.addEventListener('keydown',e=>{if(e.key==='Escape')$('scexport').open=false});
+document.addEventListener('click',e=>{for(const m of document.querySelectorAll('details.menu[open]'))if(!m.contains(e.target))m.open=false});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')for(const m of document.querySelectorAll('details.menu[open]'))m.open=false});
 // Settings: every module, what it needs, and what this server knows of itself. Keys stay in the
 // environment and ~/.huntsman.env on the device; the page never sees one.
 const ACCESS={operator_key:['API key','warn'],keyless:['keyless','ok'],offline:['offline','info'],local:['local','info'],mixed:['mixed','info']};
@@ -984,6 +1009,18 @@ async function loadSettings(){
   try{settings=await api('/api/settings')}catch(_){try{settings={modules:await moduleList(),global:[]}}catch(e){fail('gerror',e.message);return}}
   kv('gopts',base.concat((settings.global||[]).map(g=>[g.description?g.description[0].toUpperCase()+g.description.slice(1):g.key,show(g.value)])));
   showMods();
+  try{showRules(await api('/api/correlationrules'))}catch(_){$('rules-p').hidden=true}
+}
+function showRules(rules){
+  const tb=$('rules');tb.replaceChildren();$('rules-p').hidden=false;$('rules-n').textContent=rules.length;
+  for(const r of rules){
+    const tr=el('tr'),d=el('details','corr');
+    d.append(el('summary','',r.name||r.id));
+    if(r.descr)d.append(el('p','ent-m',r.descr));
+    d.append(el('p','ent-m mono',r.id));
+    if(r.logic)d.append(logicView(r.logic));
+    put(tr,'',d).classList.add('wide');put(tr,'Risk',el('span','label '+riskTone(r.risk),String(r.risk||'').toUpperCase()));put(tr,'Origin',r.origin);tb.append(tr);
+  }
 }
 function showMods(){
   if(!settings)return;

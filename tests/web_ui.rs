@@ -312,10 +312,19 @@ const PAGE_READS: &[(&str, &str, &str)] = &[
     ("elements", "/0/entity", "x.entity"),
     ("elements", "/0/raw", "x.raw"),
     ("correlation", "/rule", "c.rule"),
-    ("correlation", "/title", "c.title||c.rule"),
+    ("correlation", "/title", "c.title||c.name||c.rule"),
     ("correlation", "/risk", "c.risk"),
     ("correlation", "/description", "c.description"),
     ("correlation", "/elements", "c.elements"),
+    ("correlation", "/name", "c.name"),
+    ("correlation", "/origin", "c.origin"),
+    ("correlation", "/logic", "logicView(c.logic)"),
+    ("rules", "/0/id", "r.id"),
+    ("rules", "/0/name", "r.name||r.id"),
+    ("rules", "/0/descr", "r.descr"),
+    ("rules", "/0/risk", "riskTone(r.risk)"),
+    ("rules", "/0/origin", "r.origin"),
+    ("rules", "/0/logic", "logicView(r.logic)"),
     ("log", "/0/time", "when(x.time)"),
     ("log", "/0/component", "x.component"),
     ("log", "/0/level", "x.level"),
@@ -391,9 +400,12 @@ fn the_page_reads_the_fields_the_scan_api_answers() {
     let correlation = serde_json::to_value(ScanCorrelation {
         id: "c".into(),
         rule: "rule".into(),
+        name: "name".into(),
         title: "title".into(),
         risk: Risk::High,
         description: "why".into(),
+        origin: "huntsman".into(),
+        logic: "logic".into(),
         elements: vec!["e".into()],
     })
     .expect("correlation");
@@ -406,6 +418,7 @@ fn the_page_reads_the_fields_the_scan_api_answers() {
         ("graph", answer(&api, &format!("{root}/graph"))),
         ("eventtypes", answer(&api, "/api/eventtypes")),
         ("settings", answer(&api, "/api/settings")),
+        ("rules", answer(&api, "/api/correlationrules")),
         ("correlation", correlation),
     ];
     let _ = fs::remove_dir_all(&dir);
@@ -432,26 +445,29 @@ fn the_page_reads_the_fields_the_scan_api_answers() {
 #[test]
 fn every_export_the_page_offers_is_one_the_api_writes() {
     let (api, root, dir) = contract_scan("exports");
-    let formats: Vec<&str> = PAGE
-        .split("data-format=\"")
-        .skip(1)
-        .filter_map(|rest| rest.split('"').next())
-        .collect();
-    assert!(
-        formats.contains(&"csv") && formats.contains(&"json"),
-        "{formats:?}"
-    );
-    for format in &formats {
-        let export = api.handle(
-            "GET",
-            &format!("{root}/export"),
-            &format!("format={format}"),
-        );
-        assert_eq!(export.status, 200, "{format}: {}", export.body);
+    // The scan's export menu, then the Correlations section's.
+    for (attribute, route) in [("data-format", "export"), ("data-cformat", "correlations")] {
+        let formats: Vec<&str> = PAGE
+            .split(&format!("{attribute}=\""))
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .collect();
         assert!(
-            export.filename.is_some(),
-            "{format} export has no file name"
+            formats.contains(&"csv") && formats.contains(&"json"),
+            "{attribute}: {formats:?}"
         );
+        for format in &formats {
+            let export = api.handle(
+                "GET",
+                &format!("{root}/{route}"),
+                &format!("format={format}"),
+            );
+            assert_eq!(export.status, 200, "{route} {format}: {}", export.body);
+            assert!(
+                export.filename.is_some(),
+                "{route} {format} export has no file name"
+            );
+        }
     }
     let _ = fs::remove_dir_all(&dir);
 }
