@@ -419,11 +419,34 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         const removed = await cellState();
         const left = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
         check('Remove takes the key out of the keys file', removed.label === 'not set' && !left.includes('HUNTSMAN_SHODAN_KEY'), { removed, left: left.replace(KEY, '<key>') });
+        // Spiderfoot's Import API Keys: its SpiderFoot.cfg export, pasted or chosen as a file, fills
+        // the slots its keys belong to and names the keys no Huntsman source takes.
+        const PASTED = 'TEST_ONLY_WEB_UI_IMPORT_8b2f', CHOSEN = 'TEST_ONLY_WEB_UI_FILE_4d7a';
+        const imported = () => page.waitForFunction(() => /^Imported/.test(document.getElementById('kimp-m').textContent), null, { timeout: 5000 }).catch(() => {});
+        await page.click('#kimp summary');
+        await page.fill('#kimp-text', `sfp_fullhunt:api_key=TEST_ONLY_UNUSED\nsfp_shodan:api_key=${PASTED}\nsfp_spider:maxpages=100\n`);
+        await page.click('#kimp button[type=submit]');
+        await imported();
+        const note = await page.evaluate(() => ({ note: document.getElementById('kimp-m').textContent, typed: document.getElementById('kimp-text').value, label: document.querySelector('#mods tr').cells[3].querySelector('.label').textContent }));
+        const pasted = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+        check('Import API keys saves a pasted Spiderfoot export into the keys file', pasted === `HUNTSMAN_SHODAN_KEY='${PASTED}'\n` && note.label === 'set' && note.typed === '', { pasted: pasted.replace(PASTED, '<key>'), note });
+        check('the import names the keys no Huntsman source takes', note.note.includes('HUNTSMAN_SHODAN_KEY') && note.note.includes('sfp_fullhunt:api_key') && /1 Spiderfoot setting/.test(note.note), note.note);
+        await audit(page, 'settings key import');
+        await page.evaluate(() => { document.getElementById('kimp-m').textContent = ''; });
+        await page.setInputFiles('#kimp-file', { name: 'SpiderFoot.cfg', mimeType: 'text/plain', buffer: Buffer.from(`sfp_virustotal:api_key=${CHOSEN}\n`) });
+        await page.click('#kimp button[type=submit]');
+        await imported();
+        const chosen = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+        check('Import API keys reads a chosen SpiderFoot.cfg', chosen === `HUNTSMAN_SHODAN_KEY='${PASTED}'\nHUNTSMAN_VIRUSTOTAL_KEY='${CHOSEN}'\n` && (fs.statSync(file).mode & 0o777) === 0o600, chosen.replace(PASTED, '<key>').replace(CHOSEN, '<key>'));
+        // No scan in this check may run with a key.
+        fs.unlinkSync(file);
         page.off('request', ask);
         page.off('response', answered);
         const bodies = await Promise.all(answers);
         check('the key travels only in a request body', sent.some(r => r.includes('/api/settings/keys ') && r.includes(KEY)) && !sent.some(r => r.split(' ')[0].includes(KEY)), sent.length);
-        check('no answer and nothing on the page carries the key back', !bodies.some(b => b.includes(KEY)) && !(await page.content()).includes(KEY), bodies.filter(b => b.includes(KEY)).length);
+        const content = await page.content();
+        check('no answer and nothing on the page carries a key back', [KEY, PASTED, CHOSEN].every(k => !bodies.some(b => b.includes(k)) && !content.includes(k)), bodies.filter(b => [KEY, PASTED, CHOSEN].some(k => b.includes(k))).length);
+        check('an imported key travels only in a request body', sent.some(r => r.includes(PASTED)) && sent.some(r => r.includes(CHOSEN)) && !sent.some(r => [PASTED, CHOSEN].some(k => r.split(' ')[0].includes(k))), sent.length);
         await page.fill('#mfilter', '');
       }
       await page.goto(base + '/#/about', { waitUntil: 'networkidle' });
