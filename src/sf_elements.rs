@@ -90,6 +90,10 @@ impl Target<'_> {
         matches!(self.kind, "IP_ADDRESS" | "IPV6_ADDRESS")
     }
 
+    fn is_netblock(&self) -> bool {
+        matches!(self.kind, "NETBLOCK_OWNER" | "NETBLOCKV6_OWNER")
+    }
+
     /// Whether Spiderfoot's target would claim `domain` (`SpiderFootTarget.matches`): the target
     /// domain or a name under it, a target email's domain or a name under it, and any domain at
     /// all for a target it cannot place, a name, phone number, username or bitcoin address.
@@ -114,6 +118,7 @@ impl Target<'_> {
             EntityKind::Username => self.kind == "USERNAME",
             EntityKind::Person => self.kind == "HUMAN_NAME",
             EntityKind::Asn => self.kind == "BGP_AS_OWNER",
+            EntityKind::Netblock => self.is_netblock(),
             EntityKind::MacAddress => self.kind == "HSE_MAC_ADDRESS",
             EntityKind::Ssid => self.kind == "HSE_WIFI_SSID",
             EntityKind::Coordinates => self.kind == "PHYSICAL_COORDINATES",
@@ -147,8 +152,11 @@ fn entity_type(entity: &Entity, target: Target<'_>) -> &'static str {
                 Some(_) if unresolved => "AFFILIATE_INTERNET_NAME_UNRESOLVED",
                 Some(_) => "AFFILIATE_INTERNET_NAME",
                 // The address's own reverse zone names it: Spiderfoot takes such a name as the
-                // target's alias. Any other name on the address is a site hosted there.
-                None if target.is_ip() && entity.has_tag(tags::PTR) => "INTERNET_NAME",
+                // target's alias, as it does a name of an address in a target block. Any other
+                // name on the address is a site hosted there.
+                None if (target.is_ip() || target.is_netblock()) && entity.has_tag(tags::PTR) => {
+                    "INTERNET_NAME"
+                }
                 None if target.is_ip() => "CO_HOSTED_SITE",
                 None if unresolved => "INTERNET_NAME_UNRESOLVED",
                 None => "INTERNET_NAME",
@@ -168,6 +176,13 @@ fn entity_type(entity: &Entity, target: Target<'_>) -> &'static str {
             _ => "LINKED_URL_EXTERNAL",
         },
         EntityKind::CryptoAddress => crypto_type(value),
+        // An AS target owns the blocks it announces; any other block holds what was found.
+        EntityKind::Netblock => match (target.kind == "BGP_AS_OWNER", value.contains(':')) {
+            (true, false) => "NETBLOCK_OWNER",
+            (true, true) => "NETBLOCKV6_OWNER",
+            (false, false) => "NETBLOCK_MEMBER",
+            (false, true) => "NETBLOCKV6_MEMBER",
+        },
         _ => base_type(&entity.kind),
     }
 }
@@ -367,7 +382,7 @@ fn identity_descriptors(
     // A registration record as published: an address's is its network's.
     if let Some(whois) = attr("whois") {
         let kind = match entity.kind {
-            EntityKind::IpAddress | EntityKind::Asn => "NETBLOCK_WHOIS",
+            EntityKind::IpAddress | EntityKind::Asn | EntityKind::Netblock => "NETBLOCK_WHOIS",
             _ => "DOMAIN_WHOIS",
         };
         out.push((kind, whois.to_owned()));
@@ -437,7 +452,9 @@ fn exposed(value: &str) -> bool {
 
 /// Attributes naming the indicator a source was asked about when it found this entity: the
 /// element of that indicator is the new element's source.
-const PARENT_KEYS: [&str; 6] = ["ip", "domain", "email", "username", "phone", "host"];
+const PARENT_KEYS: [&str; 7] = [
+    "ip", "domain", "email", "username", "phone", "host", "netblock",
+];
 
 fn raw_of(evidence: &Evidence, entity: &Entity) -> Value {
     json!({

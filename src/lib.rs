@@ -110,6 +110,8 @@ pub mod meta_plan;
 pub mod metrics;
 pub mod module;
 pub mod navigator;
+pub mod netblock;
+pub mod netblock_cli;
 pub mod netlas;
 pub mod network_cli;
 pub mod numverify;

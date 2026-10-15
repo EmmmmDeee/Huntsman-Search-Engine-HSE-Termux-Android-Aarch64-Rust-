@@ -111,6 +111,15 @@ pub fn canonical_ip(raw: &str) -> Option<String> {
     is_public_ip(ip).then(|| ip.to_string())
 }
 
+/// A public address block in canonical form, `192.0.2.7/24` written `192.0.2.0/24`, or `None`
+/// for a bare address, a malformed block, or a block whose first address is not public (see
+/// [`is_public_ip`]): a private or documentation block is refused before any request. **Pure.**
+#[must_use]
+pub fn canonical_netblock(raw: &str) -> Option<String> {
+    let block = crate::netblock::Netblock::parse(raw)?;
+    is_public_ip(block.network()).then(|| block.to_string())
+}
+
 /// Whether `ip` is public unicast: see [`canonical_ip`]. IPv6 is public only inside global
 /// unicast `2000::/3` and outside the documentation and transition prefixes; an IPv4-mapped
 /// address is judged as its IPv4 address. **Pure.**
@@ -333,6 +342,27 @@ pub fn canonicalise_token(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_public_blocks_are_canonical_netblocks() {
+        assert_eq!(
+            canonical_netblock(" 1.1.1.9/24 ").as_deref(),
+            Some("1.1.1.0/24")
+        );
+        assert_eq!(
+            canonical_netblock("2606:4700::/32").as_deref(),
+            Some("2606:4700::/32")
+        );
+        for refused in [
+            "10.0.0.0/8",
+            "192.0.2.0/24",
+            "0.0.0.0/0",
+            "2001:db8::/32",
+            "1.1.1.1",
+        ] {
+            assert_eq!(canonical_netblock(refused), None, "{refused}");
+        }
+    }
 
     #[test]
     fn only_public_unicast_addresses_are_canonical_ips() {

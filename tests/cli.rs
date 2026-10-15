@@ -169,7 +169,7 @@ fn help_and_version_are_available() {
         ("phone", "phone NUMBER [--save FILE]"),
         (
             "scan",
-            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network]",
+            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|network]",
         ),
         ("investigate", "investigate TEXT..."),
         ("modules", "modules [--json]"),
@@ -715,7 +715,7 @@ fn sf_takes_sf_py_output_flags_debug_and_listen() {
 fn sf_refuses_a_target_no_lookup_can_take() {
     let home = scratch("sf-refuses");
     for (target, why) in [
-        ("192.0.2.0/24", "not available yet"),
+        ("192.0.2.0/24", "not valid for a netblock scan"),
         ("192.0.2.1", "not valid for a ip scan"),
         ("Jane 123", "two alphabetic tokens"),
     ] {

@@ -8,7 +8,7 @@ use std::env;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR|HANDLE [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | network BSSID|LAT,LON|ssid:NAME [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|network] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | scans run|list|show|summary|elements|correlations|log|export|fp|delete|rerun|types [ARGS] | serve [--bind ADDR] [--history DIR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
+const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR|HANDLE [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | netblock CIDR [--save FILE] | network BSSID|LAT,LON|ssid:NAME [--save FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|netblock|network] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query QUERY... | sf [-M|-T|-V]|-s TARGET [options] | scans run|list|show|summary|elements|correlations|log|export|fp|delete|rerun|types [ARGS] | serve [--bind ADDR] [--history DIR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -40,6 +40,7 @@ Commands:
   phone                 Canonicalise and classify a phone number offline, plus a keyed carrier lookup
   domain                Certificate-transparency names and DNS records for one domain, plus keyed reputation and published addresses
   ip                    Open ports, routing, scanner status and keyed reputation for one public IP address
+  netblock              Registration, routing and every address's PTR names for one public address block
   network               WiFi network by BSSID, SSID or LAT,LON (OUI offline, WiGLE keyed)
   scan                  Route one selector or bounded seed-list into rebuilt lookup front-ends
   investigate           Extract actionable entities from local text or one bounded file
@@ -133,6 +134,7 @@ pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
         Some("phone") => lookup::phone_cmd(&remaining.collect::<Vec<_>>()),
         Some("domain") => lookup::domain_cmd(&remaining.collect::<Vec<_>>()),
         Some("ip") => lookup::ip_cmd(&remaining.collect::<Vec<_>>()),
+        Some("netblock") => lookup::netblock_cmd(&remaining.collect::<Vec<_>>()),
         Some("network") => lookup::network_cmd(&remaining.collect::<Vec<_>>()),
         Some("scan") => lookup::scan_cmd(&remaining.collect::<Vec<_>>()),
         Some("investigate") => lookup::investigate_cmd(&remaining.collect::<Vec<_>>()),

@@ -187,6 +187,8 @@ pub fn target_type(kind: ScanKind, canonical: &str) -> &'static str {
         ScanKind::Domain => "INTERNET_NAME",
         ScanKind::Ip if canonical.contains(':') => "IPV6_ADDRESS",
         ScanKind::Ip => "IP_ADDRESS",
+        ScanKind::Netblock if canonical.contains(':') => "NETBLOCKV6_OWNER",
+        ScanKind::Netblock => "NETBLOCK_OWNER",
         ScanKind::Network => match NetworkSelector::parse(canonical) {
             Some(NetworkSelector::Bssid(_)) => "HSE_MAC_ADDRESS",
             Some(NetworkSelector::Area { .. }) => "PHYSICAL_COORDINATES",
