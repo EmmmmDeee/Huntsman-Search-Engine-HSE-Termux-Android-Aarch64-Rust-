@@ -264,10 +264,12 @@ impl Server {
     }
 
     /// Run until the listener returns an unrecoverable error. Each connection is served on its
-    /// own thread, up to [`MAX_CONNECTIONS`] at a time. A failed `accept` that a later one can
-    /// succeed after (no free file descriptor or memory, a connection reset before it was taken)
-    /// pauses the loop instead of ending it; see [`AcceptFailure`]. `notice` hears the first
-    /// failure of each such run, so the process boundary can say why requests are waiting.
+    /// own thread, up to [`MAX_CONNECTIONS`] at a time. A failed `accept` that concerned only
+    /// the one connection being taken (reset or aborted before it was accepted, a pending
+    /// network error on it) is retried at once; one that a later `accept` can succeed after
+    /// (no free file descriptor or memory) pauses the loop instead of ending it; see
+    /// [`AcceptFailure`]. `notice` hears a shortage at most once every [`ACCEPT_NOTICE_EVERY`],
+    /// so the process boundary can say why requests are waiting without flooding its log.
     ///
     /// # Errors
     /// Returns the listener error that stops the loop.
@@ -286,8 +288,9 @@ impl Server {
                     AcceptFailure::Fatal => {
                         return Err(Error::Store(format!("serve accept: {error}")));
                     }
-                    AcceptFailure::Transient => {
-                        if failures.is_first() {
+                    AcceptFailure::Retry if failures.retry_at_once() => {}
+                    AcceptFailure::Retry | AcceptFailure::Transient => {
+                        if failures.notice_due(Instant::now()) {
                             notice(&error);
                         }
                         thread::sleep(failures.pause());
@@ -315,9 +318,13 @@ impl Server {
 enum AcceptFailure {
     /// The listener itself is unusable, so no later `accept` can succeed.
     Fatal,
+    /// The failure was the one connection being taken: it was reset or aborted before it was
+    /// accepted, or Linux reported a network error pending on it (`accept(2)` lists them and
+    /// says to retry). Nothing was short, so the next `accept` can succeed at once.
+    Retry,
     /// The process or system is short of something (file descriptors when every connection
-    /// thread holds some, memory under Android's pressure) or the one pending connection went
-    /// away. Connections finishing free what was short, so a later `accept` succeeds.
+    /// thread holds some, memory under Android's pressure). Connections finishing free what
+    /// was short, so a later `accept` succeeds.
     Transient,
 }
 
@@ -325,44 +332,90 @@ enum AcceptFailure {
 const EBADF: i32 = 9;
 
 /// Errors that say the listener itself is unusable: a closed descriptor, and on Linux and
-/// Android a descriptor that is not a socket (`ENOTSOCK`, 88) or not a listening one
-/// (`EOPNOTSUPP`, 95). std files neither of the last two under a named `ErrorKind`.
+/// Android a descriptor that is not a socket (`ENOTSOCK`, 88), which std files under no named
+/// `ErrorKind`.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-const FATAL_ERRNOS: [i32; 3] = [EBADF, 88, 95];
+const FATAL_ERRNOS: [i32; 2] = [EBADF, 88];
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 const FATAL_ERRNOS: [i32; 1] = [EBADF];
 
+/// Errors `accept(2)` on Linux and Android reports for the one connection it dequeued, not
+/// for the listener: `EPERM` (1, a firewall rule), `ENONET` (64), `EPROTO` (71),
+/// `ENOPROTOOPT` (92), `EOPNOTSUPP` (95), `ENETDOWN` (100), `ENETUNREACH` (101),
+/// `ECONNABORTED` (103), `ECONNRESET` (104), `EHOSTDOWN` (112) and `EHOSTUNREACH` (113). The
+/// manual says to treat them like `EAGAIN` and retry. They are matched by number before any
+/// `ErrorKind`, because std files `EOPNOTSUPP` under `Unsupported` from Rust 1.88, which would
+/// otherwise end the server over one bad connection.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const RETRY_ERRNOS: [i32; 11] = [1, 64, 71, 92, 95, 100, 101, 103, 104, 112, 113];
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+const RETRY_ERRNOS: [i32; 0] = [];
+
 impl AcceptFailure {
     fn of(error: &std::io::Error) -> Self {
-        // An invalid socket (EINVAL is `InvalidInput`), an unsupported operation, and the
-        // descriptors in `FATAL_ERRNOS` never recover; everything else is about the moment,
-        // not the listener.
-        match error.kind() {
-            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::Unsupported => Self::Fatal,
-            _ if error
-                .raw_os_error()
-                .is_some_and(|raw| FATAL_ERRNOS.contains(&raw)) =>
-            {
-                Self::Fatal
+        use std::io::ErrorKind;
+        if let Some(raw) = error.raw_os_error() {
+            if RETRY_ERRNOS.contains(&raw) {
+                return Self::Retry;
             }
+            if FATAL_ERRNOS.contains(&raw) {
+                return Self::Fatal;
+            }
+        }
+        // An invalid socket (EINVAL is `InvalidInput`) and an unsupported operation never
+        // recover; a connection that went away or was interrupted costs nothing to retry;
+        // everything else is about the moment, not the listener.
+        match error.kind() {
+            ErrorKind::InvalidInput | ErrorKind::Unsupported => Self::Fatal,
+            ErrorKind::ConnectionAborted
+            | ErrorKind::ConnectionReset
+            | ErrorKind::Interrupted
+            | ErrorKind::HostUnreachable
+            | ErrorKind::NetworkUnreachable
+            | ErrorKind::NetworkDown
+            | ErrorKind::TimedOut => Self::Retry,
             _ => Self::Transient,
         }
     }
 }
 
 /// The pause after each failed `accept` in a row: it doubles from [`ACCEPT_PAUSE_FIRST`] to
-/// [`ACCEPT_PAUSE_MOST`], so a shortage is not met with a busy loop.
+/// [`ACCEPT_PAUSE_MOST`], so a shortage is not met with a busy loop. Per-connection failures
+/// are retried without a pause, up to [`RETRY_BURST`] in a row: a longer run means something
+/// is wrong beyond the one connection, and it is paused like a shortage.
 #[derive(Default)]
 struct AcceptFailures {
     in_a_row: u32,
+    retried_in_a_row: u32,
+    last_notice: Option<Instant>,
 }
 
 const ACCEPT_PAUSE_FIRST: Duration = Duration::from_millis(10);
 const ACCEPT_PAUSE_MOST: Duration = Duration::from_millis(500);
+/// How often the operator is told that `accept` is failing. One successful `accept` ends a
+/// failure run, and at a descriptor limit runs end with every connection that finishes, so
+/// a per-run notice would print once per request served for as long as the shortage lasts.
+const ACCEPT_NOTICE_EVERY: Duration = Duration::from_secs(30);
+const RETRY_BURST: u32 = 64;
 
 impl AcceptFailures {
-    fn is_first(&self) -> bool {
-        self.in_a_row == 0
+    /// Whether a per-connection failure is retried at once; a burst of them is paused instead.
+    fn retry_at_once(&mut self) -> bool {
+        self.retried_in_a_row = self.retried_in_a_row.saturating_add(1);
+        self.retried_in_a_row <= RETRY_BURST
+    }
+
+    /// Whether to tell the operator now: the first failure of a run, and not within
+    /// [`ACCEPT_NOTICE_EVERY`] of the last notice.
+    fn notice_due(&mut self, now: Instant) -> bool {
+        let due = self.in_a_row == 0
+            && self
+                .last_notice
+                .is_none_or(|last| now.saturating_duration_since(last) >= ACCEPT_NOTICE_EVERY);
+        if due {
+            self.last_notice = Some(now);
+        }
+        due
     }
 
     fn pause(&mut self) -> Duration {
@@ -375,6 +428,7 @@ impl AcceptFailures {
 
     fn recovered(&mut self) {
         self.in_a_row = 0;
+        self.retried_in_a_row = 0;
     }
 }
 
@@ -1153,28 +1207,45 @@ mod tests {
         }
     }
 
-    /// Running out of descriptors or memory, or losing the pending connection, must not end
-    /// `serve`; only a listener that can never accept again does.
+    /// Running out of descriptors or memory must not end `serve`, and losing the pending
+    /// connection must not even pause it; only a listener that can never accept again ends it.
     #[test]
     fn only_an_unusable_listener_ends_the_accept_loop() {
         use std::io::{Error as IoError, ErrorKind};
-        // Linux and Android numbers: EMFILE, ENFILE, ENOMEM, ENOBUFS, ECONNABORTED, EPROTO, EPERM.
-        for raw in [24, 23, 12, 105, 103, 71, 1] {
+        // Linux and Android numbers: EMFILE, ENFILE, ENOMEM, ENOBUFS.
+        for raw in [24, 23, 12, 105] {
             assert_eq!(
                 AcceptFailure::of(&IoError::from_raw_os_error(raw)),
                 AcceptFailure::Transient,
                 "errno {raw}"
             );
         }
-        for kind in [
-            ErrorKind::Interrupted,
-            ErrorKind::ConnectionAborted,
-            ErrorKind::WouldBlock,
-            ErrorKind::OutOfMemory,
-        ] {
+        for kind in [ErrorKind::WouldBlock, ErrorKind::OutOfMemory] {
             assert_eq!(
                 AcceptFailure::of(&IoError::from(kind)),
                 AcceptFailure::Transient
+            );
+        }
+        // The one dequeued connection: EPERM, EPROTO, EOPNOTSUPP, ENETUNREACH, ECONNABORTED,
+        // ECONNRESET, EHOSTUNREACH. EOPNOTSUPP is `Unsupported` from Rust 1.88, which must not
+        // make it fatal.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        for raw in [1, 71, 95, 101, 103, 104, 113] {
+            assert_eq!(
+                AcceptFailure::of(&IoError::from_raw_os_error(raw)),
+                AcceptFailure::Retry,
+                "errno {raw}"
+            );
+        }
+        for kind in [
+            ErrorKind::Interrupted,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::ConnectionReset,
+            ErrorKind::HostUnreachable,
+        ] {
+            assert_eq!(
+                AcceptFailure::of(&IoError::from(kind)),
+                AcceptFailure::Retry
             );
         }
         assert_eq!(
@@ -1186,15 +1257,12 @@ mod tests {
             AcceptFailure::of(&IoError::from_raw_os_error(22)),
             AcceptFailure::Fatal
         );
-        // ENOTSOCK and EOPNOTSUPP: std leaves both `Uncategorized`, so they are named by number.
+        // ENOTSOCK: std leaves it `Uncategorized`, so it is named by number.
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        for raw in [88, 95] {
-            assert_eq!(
-                AcceptFailure::of(&IoError::from_raw_os_error(raw)),
-                AcceptFailure::Fatal,
-                "errno {raw}"
-            );
-        }
+        assert_eq!(
+            AcceptFailure::of(&IoError::from_raw_os_error(88)),
+            AcceptFailure::Fatal
+        );
         assert_eq!(
             AcceptFailure::of(&IoError::from(ErrorKind::Unsupported)),
             AcceptFailure::Fatal
@@ -1204,15 +1272,44 @@ mod tests {
     #[test]
     fn accept_pauses_back_off_to_a_ceiling_and_reset_on_success() {
         let mut failures = AcceptFailures::default();
-        assert!(failures.is_first());
         let pauses: Vec<_> = (0..12).map(|_| failures.pause()).collect();
-        assert!(!failures.is_first());
         assert_eq!(pauses[0], ACCEPT_PAUSE_FIRST);
         assert!(pauses.windows(2).all(|pair| pair[0] <= pair[1]));
         assert_eq!(pauses[11], ACCEPT_PAUSE_MOST);
         failures.recovered();
-        assert!(failures.is_first());
         assert_eq!(failures.pause(), ACCEPT_PAUSE_FIRST);
+    }
+
+    /// At a descriptor limit every finishing connection lets one `accept` succeed and the next
+    /// one fail again, so a notice per failure run would print once per request served.
+    #[test]
+    fn the_accept_notice_is_rate_limited_across_failure_runs() {
+        let start = Instant::now();
+        let mut failures = AcceptFailures::default();
+        assert!(failures.notice_due(start), "the first failure is told");
+        let _ = failures.pause();
+        assert!(!failures.notice_due(start), "not again within the run");
+        for seconds in [0, 1, 29] {
+            failures.recovered();
+            assert!(
+                !failures.notice_due(start + Duration::from_secs(seconds)),
+                "a new run {seconds} s later is not told again"
+            );
+            let _ = failures.pause();
+        }
+        failures.recovered();
+        assert!(failures.notice_due(start + ACCEPT_NOTICE_EVERY));
+    }
+
+    /// Per-connection failures cost nothing to retry, until a run of them says the trouble is
+    /// not one connection.
+    #[test]
+    fn per_connection_failures_retry_at_once_until_a_burst() {
+        let mut failures = AcceptFailures::default();
+        assert!((0..RETRY_BURST).all(|_| failures.retry_at_once()));
+        assert!(!failures.retry_at_once());
+        failures.recovered();
+        assert!(failures.retry_at_once());
     }
 
     #[test]
