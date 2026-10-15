@@ -9,6 +9,8 @@
 //! seen with `200` and a `pulse_info` whose count is 0, and gives a 404 only for a path it does
 //! not have (both checked 2026-10-15): an answer without `pulse_info`, and a 404, are drift.
 
+use std::net::IpAddr;
+
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -154,13 +156,25 @@ fn family_name(value: &Value) -> Option<&str> {
     }
 }
 
+/// Whether `answered`, the indicator an answer names, is `indicator`. An address is compared as
+/// an address: OTX writes an IPv6 address uncompressed (`2606:4700:4700:0:0:0:0:1111`). **Pure.**
+fn is_about(answered: &str, indicator: Indicator<'_>) -> bool {
+    match indicator {
+        Indicator::Ip(ip) => matches!(
+            (answered.trim().parse::<IpAddr>(), ip.parse::<IpAddr>()),
+            (Ok(answered), Ok(ip)) if answered == ip
+        ),
+        _ => answered.eq_ignore_ascii_case(indicator.value()),
+    }
+}
+
 /// One answer body for `indicator`. **Pure.**
 ///
 /// # Errors
 /// [`LegError::Decode`] for a body that is not the documented shape or names another indicator.
 pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, LegError> {
     let body: Body = api_leg::decode(body)?;
-    if !body.indicator.eq_ignore_ascii_case(indicator.value()) {
+    if !is_about(&body.indicator, indicator) {
         return Err(LegError::Decode("answer names another indicator".into()));
     }
     let info = body.pulse_info;
@@ -304,6 +318,15 @@ mod tests {
                 "{body}: {decoded:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_ipv6_answer_written_in_full_is_about_the_address_looked_up() {
+        // Recorded for `2606:4700:4700::1111` on 2026-10-15, shortened: OTX writes it in full.
+        let answer = r#"{"indicator":"2606:4700:4700:0:0:0:0:1111","type":"IPv6","asn":"AS13335 cloudflare","country_code":"US","pulse_info":{"count":0,"pulses":[]},"validation":[]}"#;
+        let decoded = decode(answer.as_bytes(), Indicator::Ip("2606:4700:4700::1111"));
+        assert!(matches!(decoded, Ok(None)), "{decoded:?}");
+        assert!(decode(answer.as_bytes(), Indicator::Ip("2606:4700:4700::1001")).is_err());
     }
 
     #[test]
