@@ -26,13 +26,26 @@ pub enum Indicator<'a> {
     Phone(&'a str),
 }
 
-/// The kind of an [`Indicator`].
+/// The kind of an [`Indicator`], or of the indicators a [`Source`] answers for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndicatorKind {
     Ip,
+    /// Only an IPv4 address: for a source whose address endpoint refuses or misreads IPv6.
+    Ipv4,
     Domain,
     Email,
     Phone,
+}
+
+impl IndicatorKind {
+    /// Whether a source that answers for this kind answers for `indicator`. **Pure.**
+    #[must_use]
+    pub fn covers(self, indicator: Indicator<'_>) -> bool {
+        match (self, indicator) {
+            (Self::Ipv4, Indicator::Ip(ip)) => ip.parse::<std::net::Ipv4Addr>().is_ok(),
+            (kind, indicator) => kind == indicator.kind(),
+        }
+    }
 }
 
 impl Indicator<'_> {
@@ -166,7 +179,7 @@ impl Source {
     /// Whether this source answers for `indicator` and runs with `keys`. **Pure.**
     #[must_use]
     pub fn applies(&self, indicator: Indicator<'_>, keys: &Keys) -> bool {
-        self.kinds.contains(&indicator.kind()) && self.api.wanted(keys)
+        self.kinds.iter().any(|kind| kind.covers(indicator)) && self.api.wanted(keys)
     }
 }
 

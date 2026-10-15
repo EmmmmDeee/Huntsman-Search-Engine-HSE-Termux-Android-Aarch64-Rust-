@@ -251,12 +251,34 @@ mod tests {
             let legs = run(&Offline::default(), &keys, indicator, "s", 1);
             let expected: Vec<&str> = SOURCES
                 .iter()
-                .filter(|s| s.kinds.contains(&indicator.kind()))
+                .filter(|s| s.kinds.iter().any(|kind| kind.covers(indicator)))
                 .map(|s| s.api.source)
                 .collect();
             let ran: Vec<&str> = legs.outcomes.iter().map(|o| o.module.as_str()).collect();
             assert_eq!(ran, expected, "{indicator:?}");
         }
+    }
+
+    #[test]
+    fn an_ipv4_only_source_runs_for_ipv4_and_never_for_ipv6() {
+        let keys = all_keys();
+        let ran = |ip: &'static str| -> Vec<String> {
+            run(&Offline::default(), &keys, Indicator::Ip(ip), "s", 1)
+                .outcomes
+                .into_iter()
+                .map(|o| o.module)
+                .collect()
+        };
+        let v4 = ran("1.1.1.1");
+        let v6 = ran("2606:4700:4700::1111");
+        for source in [hackertarget::SOURCE, netlas::SOURCE] {
+            assert!(v4.iter().any(|m| m == source), "{source} skipped IPv4");
+            assert!(!v6.iter().any(|m| m == source), "{source} ran for IPv6");
+        }
+        assert!(
+            v6.iter().any(|m| m == otx::SOURCE),
+            "an any-address source still runs"
+        );
     }
 
     #[test]
@@ -288,7 +310,7 @@ mod tests {
 
     fn sample(kind: IndicatorKind) -> Indicator<'static> {
         match kind {
-            IndicatorKind::Ip => Indicator::Ip("1.1.1.1"),
+            IndicatorKind::Ip | IndicatorKind::Ipv4 => Indicator::Ip("1.1.1.1"),
             IndicatorKind::Domain => Indicator::Domain("example.com"),
             IndicatorKind::Email => Indicator::Email("ada@example.com"),
             IndicatorKind::Phone => Indicator::Phone("+61412345678"),
