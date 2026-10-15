@@ -323,7 +323,9 @@ impl ReadOut {
                     }
                 }
                 ("last_dns_records", Value::Array(records)) => {
-                    records.iter().for_each(|record| self.dns_record(record));
+                    for record in records {
+                        self.dns_record(record);
+                    }
                 }
                 ("last_https_certificate", Value::Object(certificate)) => {
                     self.certificate(certificate);
