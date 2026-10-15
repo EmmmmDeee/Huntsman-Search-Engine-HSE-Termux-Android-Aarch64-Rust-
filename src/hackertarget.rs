@@ -4,14 +4,17 @@
 //! `host,address` lines; an address is one `GET https://api.hackertarget.com/reverseiplookup/?q={ip}`,
 //! answering one host per line. Both answer without a key at a small daily limit; with
 //! `HUNTSMAN_HACKERTARGET_KEY` set, the key goes in the `apikey` query parameter (added as the
-//! request is sent) and the membership limit applies. Kept: how many hosts there are, and up to
-//! [`MAX_NAMES`] of them (and, for a domain, their distinct addresses), each also a pivot. The
-//! service answers its errors as text with status 200: a spent quota is a rate limit, and "no
+//! request is sent) and the membership limit applies. Everything is kept: every line of the
+//! answer as a JSON list in `raw_answer`, how many distinct hosts there are, every one of them
+//! in `names`, and for a domain every distinct address in `addresses` and every `host address`
+//! pair in `host_addresses`. Each host and address is also a pivot. The service answers its
+//! errors as text with status 200: a spent quota is a rate limit, and "no
 //! records" or an unresolvable host is a valid zero. Anything else must be the list itself: a
 //! `host,address` line per host for a domain, a domain name per line for an address. A body
 //! with no such line (an HTML or JSON page, or nothing at all) is drift, and so is a 404, which
 //! the service gives only for a path it does not have (checked 2026-10-15), never "not found".
 
+use std::collections::HashSet;
 use std::net::IpAddr;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
@@ -37,9 +40,6 @@ pub const INTEL: Source = Source {
     kinds: &[IndicatorKind::Domain, IndicatorKind::Ip],
     lookup,
 };
-
-/// Hosts and addresses kept per finding; the count covers all of them.
-const MAX_NAMES: usize = 25;
 
 /// The request URL for `indicator`, or `None` when it is not a domain or address. **Pure.**
 #[must_use]
@@ -105,26 +105,26 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
     let (Indicator::Domain(own) | Indicator::Ip(own)) = indicator else {
         return Ok(None);
     };
-    let mut total = 0usize;
     let mut records = 0usize;
-    let mut hosts: Vec<String> = Vec::new();
-    let mut addresses: Vec<String> = Vec::new();
+    let mut lines: Vec<&str> = Vec::new();
+    let mut hosts = Distinct::default();
+    let mut addresses = Distinct::default();
+    let mut pairs = Distinct::default();
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        lines.push(line);
         let Some((host, address)) = record(line, indicator) else {
             continue;
         };
         records += 1;
-        if let Some(host) = api_leg::clean(Some(host)).filter(|h| !h.eq_ignore_ascii_case(own)) {
-            if !hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {
-                total += 1;
-                if hosts.len() < MAX_NAMES {
-                    hosts.push(host);
-                }
-            }
+        let host = api_leg::clean(Some(host));
+        let address = api_leg::clean(Some(address));
+        if let Some(host) = host.as_deref().filter(|h| !h.eq_ignore_ascii_case(own)) {
+            hosts.push(host);
         }
-        if let Some(address) = api_leg::clean(Some(address)) {
-            if !addresses.contains(&address) && addresses.len() < MAX_NAMES {
-                addresses.push(address);
+        if let Some(address) = address.as_deref() {
+            addresses.push(address);
+            if let Some(host) = host.as_deref() {
+                pairs.push(&format!("{host} {address}"));
             }
         }
     }
@@ -133,9 +133,10 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
             "HackerTarget: the answer is not a host list".into(),
         ));
     }
-    if total == 0 && addresses.is_empty() {
+    if hosts.values.is_empty() && addresses.values.is_empty() {
         return Ok(None);
     }
+    let total = hosts.values.len();
     let (what, why) = match indicator {
         Indicator::Ip(_) => ("domain", "Domain HackerTarget finds hosted on the address"),
         _ => ("host", "Host HackerTarget finds under the domain"),
@@ -145,9 +146,11 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         if total == 1 { "" } else { "s" }
     ))
     .attr("hosts", total.to_string())
-    .list_attr("names", &hosts)
-    .list_attr("addresses", &addresses)
-    .tag_if(total > hosts.len(), "truncated");
+    .list_attr("names", &hosts.values)
+    .list_attr("addresses", &addresses.values)
+    .list_attr("host_addresses", &pairs.values)
+    .attr("raw_answer", serde_json::Value::from(lines).to_string());
+    let (hosts, addresses) = (hosts.values, addresses.values);
     for host in &hosts {
         finding = finding.pivot(PivotKind::Domain, host, why);
     }
@@ -159,6 +162,21 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         );
     }
     Ok(Some(finding))
+}
+
+/// Values in the order first given, each once (hosts compared without case). **Pure.**
+#[derive(Default)]
+struct Distinct {
+    values: Vec<String>,
+    seen: HashSet<String>,
+}
+
+impl Distinct {
+    fn push(&mut self, value: &str) {
+        if self.seen.insert(value.to_ascii_lowercase()) {
+            self.values.push(value.to_owned());
+        }
+    }
 }
 
 /// One line of the list as `(host, address)`, or `None` when it is not one: for a domain a
@@ -205,6 +223,59 @@ mod tests {
             f.pivots.iter().filter(|p| p.kind == PivotKind::Ip).count(),
             3
         );
+    }
+
+    #[test]
+    fn a_domain_keeps_every_host_address_pair_and_the_whole_answer() {
+        let f = decode(HOSTS.as_bytes(), Indicator::Domain("github.com"))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("recorded body must decode"));
+        let value = |key: &str| {
+            f.attrs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(
+            value("host_addresses"),
+            Some(
+                "github.com 140.82.112.4,accelerator.github.com 185.199.110.153,accessibility.github.com 185.199.111.153"
+            )
+        );
+        assert_eq!(
+            value("addresses"),
+            Some("140.82.112.4,185.199.110.153,185.199.111.153")
+        );
+        let raw: Vec<String> = value("raw_answer")
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_default();
+        assert_eq!(raw.len(), 4, "every line, the repeated one too");
+        assert_eq!(raw[0], "github.com,140.82.112.4");
+    }
+
+    #[test]
+    fn every_host_is_kept_and_counted_once() {
+        let mut body = String::new();
+        for n in 0..300 {
+            body.push_str(&format!("host-{n}.example.com,192.0.2.{}\n", n % 200));
+            body.push_str(&format!("HOST-{n}.example.com,192.0.2.{}\n", n % 200));
+        }
+        let f = decode(body.as_bytes(), Indicator::Domain("example.com"))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("a long list must decode"));
+        assert_eq!(f.summary, "HackerTarget: 300 hosts");
+        let count = |key: &str| {
+            f.attrs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map_or(0, |(_, v)| v.split(',').count())
+        };
+        assert_eq!(count("names"), 300);
+        assert_eq!(count("addresses"), 200);
+        assert_eq!(count("host_addresses"), 300);
+        assert!(!f.tags.contains(&"truncated"));
     }
 
     #[test]
