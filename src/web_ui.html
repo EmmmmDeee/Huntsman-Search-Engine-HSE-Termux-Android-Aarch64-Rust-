@@ -36,7 +36,7 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
 .navlink:hover{color:var(--muted)}
 .navlink.active{color:var(--acc)}
 .navlink.active::before{content:"";position:absolute;top:0;width:26px;height:2px;background:var(--acc);border-radius:0 0 2px 2px}
-main{max-width:1100px;margin:0 auto;padding:calc(64px + env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) calc(72px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
+main{max-width:1240px;margin:0 auto;padding:calc(64px + env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) calc(72px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
 h1{display:flex;align-items:center;gap:8px;min-width:0;font-size:17px;font-weight:600;margin:0 0 12px;overflow-wrap:anywhere}
 h1 svg.i{color:var(--acc)}
 .head{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;margin:0 0 12px}
@@ -120,6 +120,7 @@ td.none{color:var(--dim)}
 .label.ok{background:var(--okd);color:var(--ok)}.label.info{background:var(--accd);color:var(--acc)}.label.warn{background:var(--warnd);color:var(--warn)}.label.bad{background:var(--badd);color:var(--bad)}
 .risks{display:inline-flex;gap:3px}
 .acts{display:flex;flex-wrap:wrap;gap:4px}
+.nw,#log td:first-child{white-space:nowrap}
 .acts .btn{min-width:44px;padding:6px 10px;font-size:12.5px}
 pre{margin:0;padding:12px 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 var(--mono);color:var(--fg)}
 .data{font:12.5px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
@@ -155,6 +156,7 @@ dd dl{margin:0}
 .menu-list button:hover{background:var(--hover)}
 .uc td{vertical-align:middle}
 .uc td:first-child{width:44px;padding-right:0}
+.uc .cb{margin:-8px 0}
 .uc label{display:block;cursor:pointer}
 .uc b{display:block}
 .spin{width:16px;height:16px;border:2px solid var(--line2);border-top-color:var(--acc);border-radius:50%;animation:spin 1s linear infinite}
@@ -198,6 +200,7 @@ dd dl{margin:0}
 .navlink.active{background:var(--accd)}
 .navlink.active::before{top:auto;bottom:0;width:100%;height:2px;border-radius:2px 2px 0 0}
 main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
+.acts{flex-wrap:nowrap}
 }
 </style>
 <header class="appbar">
@@ -533,7 +536,7 @@ function showScans(){
     const tr=el('tr'),name=s.name||s.target,a=el('a','link',name),act=el('span','acts');
     a.href='#/scan/'+enc(s.id);
     const pick=el('span','pick');pick.append(tick('Select '+name,picked.has(s.id),on=>{if(on)picked.add(s.id);else picked.delete(s.id);bulk()}),a);
-    put(tr,'Name',pick);put(tr,'Target',el('span','mono',s.target));put(tr,'Started',when(s.started||s.created));put(tr,'Finished',when(s.ended));
+    put(tr,'Name',pick);put(tr,'Target',el('span','mono',s.target));put(tr,'Started',when(s.started||s.created)).className='nw';put(tr,'Finished',when(s.ended)).className='nw';
     put(tr,'Status',el('span','label '+stTone(s.status),s.status));put(tr,'Elements',s.elements);put(tr,'Correlations',risks(s.correlations));
     act.append(live(s.status)?button('Stop',()=>act1('stop',[s.id])):button('Delete',()=>act1('delete',[s.id])),button('Re-run',()=>act1('rerun',[s.id])),button('Export',()=>exportJson([s.id])));
     put(tr,'Action',act);tb.append(tr);
@@ -707,7 +710,7 @@ function elemRow(x,withType,select){
   const pick=el('span','pick');
   if(select)pick.append(tick('Select '+x.data,select.has(x.id),on=>{if(on)select.add(x.id);else select.delete(x.id)}));
   pick.append(d);put(tr,'Data Element',pick).classList.add('wide');
-  put(tr,'Source Data Element',el('span','data',x.source_data));put(tr,'Source Module',x.module);put(tr,'Identified',when(x.created));
+  put(tr,'Source Data Element',el('span','data',x.source_data));put(tr,'Source Module',x.module);put(tr,'Identified',when(x.created)).className='nw';
   return tr;
 }
 // Rows arrive 200 at a time, so a scan with thousands of elements stays quick on a phone.
@@ -743,7 +746,7 @@ async function browseTypes(){
   const types=await get('summary',base()+'/summary'),tb=$('types');tb.replaceChildren();
   for(const t of types){
     const tr=el('tr'),a=el('a','link',t.description||t.type);a.href='#/scan/'+enc(sid)+'/browse/'+enc(t.type);
-    put(tr,'Type',a);put(tr,'Unique Data Elements',t.unique);put(tr,'Total Data Elements',t.total);put(tr,'Last Data Element',when(t.last));tb.append(tr);
+    put(tr,'Type',a);put(tr,'Unique Data Elements',t.unique);put(tr,'Total Data Elements',t.total);put(tr,'Last Data Element',when(t.last)).className='nw';tb.append(tr);
   }
   if(!types.length)none(tb,live(scan.status)?'No data yet. If the scan is still running, try again soon.':'No data.',4);
 }
