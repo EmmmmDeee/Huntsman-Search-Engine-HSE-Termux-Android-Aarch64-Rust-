@@ -362,6 +362,10 @@ const PAGE_READS: &[(&str, &str, &str)] = &[
     ("compare", "/removed/0/data", "elemTable(c.removed,true)"),
     ("compare", "/correlations/added", "c.correlations.added"),
     ("compare", "/correlations/removed", "c.correlations.removed"),
+    ("search", "/0/scan_id", "enc(x.scan_id)"),
+    ("search", "/0/scan_name", "x.scan_name||x.scan_target"),
+    ("search", "/0/type", "'/browse/'+enc(x.type)"),
+    ("search", "/0/data", "elemRow(x,true)"),
     ("settings", "/modules/0/name", "m.name"),
     ("settings", "/modules/0/access", "m.access"),
     ("settings", "/modules/0/key_env", "m.key_env"),
@@ -454,7 +458,11 @@ fn the_page_reads_the_fields_the_scan_api_answers() {
         &format!("ids={earlier},{later}"),
     );
     assert_eq!(compared.status, 200, "{}", compared.text());
+    // Both numbers start +614, so a search of every scan finds each.
+    let found = api.handle("GET", "/api/scans/search", "value=%2B614");
+    assert_eq!(found.status, 200, "{}", found.text());
     let answers = [
+        ("search", serde_json::from_slice(&found.body).expect("JSON")),
         (
             "compare",
             serde_json::from_slice(&compared.body).expect("JSON"),
