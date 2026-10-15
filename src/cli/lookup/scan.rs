@@ -15,10 +15,23 @@ use huntsman_recon::scan_route::{
 use huntsman_recon::textnorm::escape_controls;
 
 use super::profiles::{
-    domain_cmd, email_cmd, exposure_cmd, ip_cmd, network_cmd, people_cmd, phone_cmd, username_cmd,
+    Refused, collect, domain_cmd, email_cmd, exposure_cmd, ip_cmd, network_cmd, people_cmd,
+    phone_cmd, username_cmd,
 };
+use huntsman_recon::correlator::{self, Correlation};
+use huntsman_recon::recursion::{
+    self, RecursionPolicy, RecursionReport, SelectorCollector, Step, Target,
+};
+use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub(in crate::cli) fn scan_cmd(args: &[String]) -> ExitCode {
+    // --recurse is its own mode: it parses its own flags (--max-generations, --expand-floor) and
+    // positional seeds, so detect it first rather than threading those flags through the single and
+    // batch argument loop below.
+    if args.iter().any(|arg| arg == "--recurse") {
+        return recurse_scan(args);
+    }
+
     let mut kind: Option<&str> = None;
     let mut input_file: Option<&str> = None;
     let mut save_dir: Option<&str> = None;
@@ -224,9 +237,317 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
     }
 }
 
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// Live collector for `scan --recurse`: each target runs the real per-kind lookup through
+/// `profiles::collect`, so the recursion fetches exactly what a single `scan` of that selector
+/// would. A refused lookup becomes a recorded source outcome rather than a dropped dispatch, so
+/// no source is silent and nothing is redacted on the way through.
+struct LiveCollector;
+
+impl SelectorCollector for LiveCollector {
+    fn collect(&mut self, target: &Target) -> Step {
+        match collect(target.kind, &target.selector) {
+            Ok(collected) => Step {
+                entities: collected.entities,
+                outcomes: collected.outcomes,
+            },
+            Err(refused) => {
+                let kind = match refused {
+                    Refused::Network(_) => SourceOutcomeKind::ConnectFailure,
+                    Refused::Unavailable(_) | Refused::Data(_) => SourceOutcomeKind::Inconclusive,
+                };
+                let outcome = SourceExecutionOutcome::failed(
+                    target.kind.command(),
+                    now_unix(),
+                    kind,
+                    None,
+                    refused.message(),
+                );
+                Step {
+                    entities: Vec::new(),
+                    outcomes: vec![outcome],
+                }
+            }
+        }
+    }
+}
+
+/// `scan --recurse SELECTOR [SELECTOR ...]`: the bounded fetch → expand → fetch crawl. It parses its
+/// own flags so the single and batch argument loop stays untouched. Each seed is routed by its
+/// inferred kind, its identity-bearing findings are fed back as the next generation's seeds, and the
+/// crawl stops at a fixed point or a shared bound. Output is the full, unredacted linkage: every
+/// entity, every source outcome, the per-generation shape, and the stop reason.
+fn recurse_scan(args: &[String]) -> ExitCode {
+    const RECURSE_USAGE: &str = "usage: huntsman-recon scan --recurse SELECTOR [SELECTOR ...] [--max-generations N] [--expand-floor F]";
+    let mut seeds: Vec<String> = Vec::new();
+    let mut max_generations: Option<u32> = None;
+    let mut expand_floor: Option<f64> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--recurse" => index += 1,
+            "--max-generations" => {
+                if max_generations.is_some() {
+                    return fail(EX_USAGE, "scan accepts only one --max-generations");
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return fail(EX_USAGE, "scan --max-generations needs a value");
+                };
+                let Ok(parsed) = value.parse::<u32>() else {
+                    return fail(
+                        EX_USAGE,
+                        "scan --max-generations needs a non-negative integer",
+                    );
+                };
+                max_generations = Some(parsed);
+                index += 2;
+            }
+            "--expand-floor" => {
+                if expand_floor.is_some() {
+                    return fail(EX_USAGE, "scan accepts only one --expand-floor");
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return fail(EX_USAGE, "scan --expand-floor needs a value");
+                };
+                let Ok(parsed) = value.parse::<f64>() else {
+                    return fail(
+                        EX_USAGE,
+                        "scan --expand-floor needs a number between 0 and 1",
+                    );
+                };
+                expand_floor = Some(parsed);
+                index += 2;
+            }
+            "-k" | "--kind" => {
+                return fail(
+                    EX_USAGE,
+                    "scan --recurse infers each seed's kind; drop -k/--kind",
+                );
+            }
+            "--input-file" | "--save-dir" | "--save" => {
+                return fail(
+                    EX_USAGE,
+                    "scan --recurse takes positional seeds only; --input-file, --save-dir, and --save are not supported with it",
+                );
+            }
+            other if other.starts_with("--") => {
+                return fail(EX_USAGE, &format!("scan --recurse: unknown option {other}"));
+            }
+            value => {
+                seeds.push(value.to_owned());
+                index += 1;
+            }
+        }
+    }
+    if seeds.is_empty() {
+        return fail(EX_USAGE, RECURSE_USAGE);
+    }
+    let mut policy = RecursionPolicy::default();
+    if let Some(generations) = max_generations {
+        policy.max_generations = generations;
+    }
+    if let Some(floor) = expand_floor {
+        if !(0.0..=1.0).contains(&floor) {
+            return fail(EX_DATAERR, "scan --expand-floor must be between 0 and 1");
+        }
+        policy.expand_confidence_floor = floor;
+    }
+    let mut collector = LiveCollector;
+    let report = recursion::run(&seeds, &policy, &mut collector);
+    print_recursion(seeds.len(), &report);
+    if report.accepted_seeds.is_empty() {
+        return fail(EX_DATAERR, "no actionable seeds");
+    }
+    ExitCode::SUCCESS
+}
+
+/// Run the shared correlation engine over everything the crawl reached. This is the exact analysis
+/// `correlate` and the web UI run — reused, not reinvented — so the recursive crawl surfaces the
+/// cross-entity patterns (shared identities, reused breach secrets, co-located hosts, …) that a flat
+/// entity list leaves implicit, the way `SpiderFoot`'s correlation rules do over a whole scan. The
+/// rules derive the relations they need from the entities themselves, so none are passed; the scan
+/// id mirrors the analysis spine's own fallback. Nothing is redacted: correlation is additive
+/// analysis over the already-collected entities, never a filter on them.
+fn recursion_correlations(report: &RecursionReport) -> Vec<Correlation> {
+    let scan_id = report
+        .entities
+        .first()
+        .map_or("recurse", |entity| entity.scan_id.as_str());
+    correlator::evaluate_rules(&report.entities, &[], scan_id)
+}
+
+/// Print the crawl result in full: no uid masking, no counts in place of values — the real linkage
+/// map, as the tool exists to produce.
+fn print_recursion(seed_count: usize, report: &RecursionReport) {
+    println!(
+        "recurse seeds={seed_count} accepted={} rejected={}",
+        report.accepted_seeds.len(),
+        report.rejected_seeds.len()
+    );
+    for seed in &report.rejected_seeds {
+        println!("rejected\t{}", escape_controls(seed));
+    }
+    for stat in &report.generations {
+        println!(
+            "generation={} dispatched={} entities={}",
+            stat.generation, stat.dispatched, stat.entities_after
+        );
+    }
+    println!("entities={}", report.entities.len());
+    let mut entities: Vec<&huntsman_recon::entity::Entity> = report.entities.iter().collect();
+    entities.sort_by(|left, right| {
+        left.kind
+            .cmp(&right.kind)
+            .then_with(|| left.value.cmp(&right.value))
+    });
+    for entity in entities {
+        println!(
+            "{}\t{}\t{:.2}\tgen={}\t{}",
+            entity.kind.as_str(),
+            escape_controls(&entity.value),
+            entity.confidence,
+            entity.generation,
+            entity.tags.join(",")
+        );
+    }
+    println!("lineage={}", report.edges.len());
+    for edge in &report.edges {
+        println!(
+            "{}:{}\t->\t{}:{}\tgen={}",
+            escape_controls(&edge.from_kind),
+            escape_controls(&edge.from_selector),
+            edge.to_kind,
+            escape_controls(&edge.to_value),
+            edge.generation
+        );
+    }
+    let correlations = recursion_correlations(report);
+    println!("correlations={}", correlations.len());
+    let by_uid: std::collections::HashMap<&str, &huntsman_recon::entity::Entity> = report
+        .entities
+        .iter()
+        .map(|entity| (entity.uid.as_str(), entity))
+        .collect();
+    for correlation in &correlations {
+        println!(
+            "rule={} ({}) severity={:?} rank={:.2}\t{}",
+            escape_controls(&correlation.rule_id),
+            escape_controls(&correlation.rule_name),
+            correlation.severity,
+            correlation.rank,
+            escape_controls(&correlation.description)
+        );
+        // Resolve every uid the correlation cites back to its real kind and value, so the finding
+        // names the entities it links, not opaque ids.
+        for uid in &correlation.entity_uids {
+            match by_uid.get(uid.as_str()) {
+                Some(entity) => println!(
+                    "\t{}:{}",
+                    entity.kind.as_str(),
+                    escape_controls(&entity.value)
+                ),
+                None => println!("\t{}", escape_controls(uid)),
+            }
+        }
+    }
+    println!("outcomes={}", report.outcomes.len());
+    for outcome in &report.outcomes {
+        let found = outcome
+            .found
+            .map_or_else(|| "-".to_owned(), |count| count.to_string());
+        let detail = outcome.detail.as_deref().unwrap_or("");
+        println!(
+            "{}\t{:?}\tfound={found}\t{}",
+            escape_controls(&outcome.module),
+            outcome.kind,
+            escape_controls(detail)
+        );
+    }
+    println!(
+        "dispatches={} visited={} generations={} termination={:?} truncated={}",
+        report.dispatches,
+        report.visited,
+        report.generations.len(),
+        report.termination,
+        report.truncated
+    );
+}
+
 #[cfg(test)]
 mod tests {
-    use super::per_seed_save_path;
+    use super::{per_seed_save_path, recursion_correlations};
+    use huntsman_recon::entity::{Entity, EntityKind};
+    use huntsman_recon::recursion::RecursionReport;
+    use huntsman_recon::termination::TerminationReason;
+
+    /// A report carrying only the entities a crawl would have reached, for driving the correlation
+    /// wiring offline with no collector and no network.
+    fn report_of(entities: Vec<Entity>) -> RecursionReport {
+        RecursionReport {
+            accepted_seeds: Vec::new(),
+            rejected_seeds: Vec::new(),
+            entities,
+            edges: Vec::new(),
+            outcomes: Vec::new(),
+            generations: Vec::new(),
+            dispatches: 0,
+            visited: 0,
+            termination: TerminationReason::FixedPoint,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn the_crawl_surfaces_the_shared_identity_cluster_correlation() {
+        // An e-mail and a username reached by the crawl are one identity across two kinds. A flat
+        // entity list leaves that linkage implicit; the recursion output must run the shared
+        // correlation engine and surface it as the identity-cluster finding (AU-002), the way
+        // SpiderFoot correlates a whole scan rather than listing disjoint findings.
+        let report = report_of(vec![
+            Entity::new(EntityKind::Email, "person@example.com", 0.9, "recurse"),
+            Entity::new(EntityKind::Username, "person", 0.9, "recurse"),
+        ]);
+        let correlations = recursion_correlations(&report);
+        assert!(
+            correlations
+                .iter()
+                .any(|correlation| correlation.rule_id == "AU-002"),
+            "the crawl did not surface the identity-cluster correlation: {correlations:?}"
+        );
+        // Every cited uid resolves to an entity actually in the report: the finding names real
+        // entities, never an id the output cannot explain.
+        let uids: std::collections::HashSet<&str> =
+            report.entities.iter().map(|e| e.uid.as_str()).collect();
+        for correlation in &correlations {
+            for uid in &correlation.entity_uids {
+                assert!(
+                    uids.contains(uid.as_str()),
+                    "correlation cited an entity not in the crawl: {uid}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_crawl_with_no_cross_entity_pattern_surfaces_no_correlation() {
+        // A single lone entity has nothing to correlate with: the engine must report an empty set,
+        // not invent a finding.
+        let report = report_of(vec![Entity::new(
+            EntityKind::Email,
+            "person@example.com",
+            0.9,
+            "recurse",
+        )]);
+        assert!(
+            recursion_correlations(&report).is_empty(),
+            "a lone entity should produce no correlation"
+        );
+    }
 
     #[test]
     fn index_prefix_is_zero_padded_and_keeps_a_safe_stem() {

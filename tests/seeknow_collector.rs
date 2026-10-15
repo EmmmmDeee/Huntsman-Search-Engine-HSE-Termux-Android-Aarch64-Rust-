@@ -1,9 +1,11 @@
 use huntsman_recon::collector::{CollectionLimits, CollectionOutcome};
 use huntsman_recon::entity::{Entity, EntityKind};
 use huntsman_recon::fetch::Credential;
+use huntsman_recon::keys::Keys;
 use huntsman_recon::lineage::Lineage;
 use huntsman_recon::seeknow_collector::{
-    SeekNowCollectionMode, SeekNowCollector, collect_with_credential, plan_selector,
+    SeekNowCollectionMode, SeekNowCollector, collect_for_lookup, collect_with_credential,
+    plan_selector,
 };
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
@@ -308,4 +310,199 @@ fn entity_capacity_still_absorbs_evidence_for_existing_uid() {
     assert_eq!(batch.entities[0].kind, EntityKind::Email);
     assert_eq!(batch.entities[0].value, "alice@example.com");
     assert_eq!(batch.entities[0].evidence.len(), 2);
+}
+
+#[test]
+fn enumerated_contact_fields_are_mapped_not_dropped() {
+    // One SeekNow record often packs several contacts under enumerated keys
+    // (`email_1`, `name_2`, `phone_1`). Each must become its own entity; before the
+    // index was stripped they were silently dropped.
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[
+            {"dbname":"Dataset A","email_1":"alice@example.com","name_1":"Alice Roe","email_2":"alice.alt@example.net","phone_1":"+15125550143"}
+        ]}"#,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Person, "Alice Roe"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::FastOnly,
+        30,
+    )
+    .unwrap();
+    assert_eq!(batch.outcome, CollectionOutcome::Success);
+    let emails: Vec<_> = batch
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::Email)
+        .map(|entity| entity.value.as_str())
+        .collect();
+    assert!(emails.contains(&"alice@example.com"), "{emails:?}");
+    assert!(emails.contains(&"alice.alt@example.net"), "{emails:?}");
+    assert!(
+        batch
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Phone)
+    );
+    assert!(
+        batch
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Person && entity.value == "alice roe")
+    );
+}
+
+#[test]
+fn record_with_only_enumerated_identifiers_still_yields_entities() {
+    // A record whose only identifier keys are enumerated (`email_1`+`email_2`) produced
+    // zero entities before the fix; it must now yield both addresses.
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[
+            {"email_1":"first@example.com","email_2":"second@example.org"}
+        ]}"#,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Email, "first@example.com"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::FastOnly,
+        30,
+    )
+    .unwrap();
+    let emails: Vec<_> = batch
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::Email)
+        .map(|entity| entity.value.as_str())
+        .collect();
+    assert_eq!(emails.len(), 2, "{emails:?}");
+    assert!(emails.contains(&"first@example.com"));
+    assert!(emails.contains(&"second@example.org"));
+}
+
+#[test]
+fn non_identifier_numeric_suffixed_fields_stay_unmapped() {
+    // Stripping the numeric index must not turn unrelated enumerated keys into entities:
+    // `id_1`, `postal_code`, and a bare `email_address` boundary case stay correct.
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[
+            {"email_address":"edge@example.com","id_1":"998877","postal_code_11_characters":"12345678901"}
+        ]}"#,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Email, "edge@example.com"),
+        &transport,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::FastOnly,
+        30,
+    )
+    .unwrap();
+    let kinds: Vec<_> = batch.entities.iter().map(|entity| &entity.kind).collect();
+    assert!(kinds.contains(&&EntityKind::Email));
+    assert!(!batch.entities.iter().any(|entity| entity.value == "998877"));
+    assert!(
+        !batch
+            .entities
+            .iter()
+            .any(|entity| entity.value == "12345678901")
+    );
+}
+
+fn keyed() -> Keys {
+    Keys::parse("HUNTSMAN_SEEKNOW_KEY=dummy-seeknow-key-for-tests\n").unwrap()
+}
+
+#[test]
+fn collect_for_lookup_without_key_makes_no_request() {
+    // A lookup with no SeekNow key is unchanged: the leg returns None and sends nothing.
+    let transport = ScriptedTransport::new(Vec::new());
+    let leg = collect_for_lookup(
+        &transport,
+        EntityKind::Email,
+        "alice@example.com",
+        &Keys::default(),
+        30,
+    );
+    assert!(leg.is_none());
+    assert_eq!(transport.request_count(), 0);
+}
+
+#[test]
+fn collect_for_lookup_rejects_unsupported_kind_without_request() {
+    // A kind SeekNow does not accept yields None even with a key set, and sends nothing.
+    let transport = ScriptedTransport::new(Vec::new());
+    let leg = collect_for_lookup(
+        &transport,
+        EntityKind::Coordinates,
+        "-37.8,144.9",
+        &keyed(),
+        30,
+    );
+    assert!(leg.is_none());
+    assert_eq!(transport.request_count(), 0);
+}
+
+#[test]
+fn collect_for_lookup_with_key_runs_and_returns_entities_and_outcome() {
+    // With the key set the leg always runs, returns the response entities, and records at
+    // least one source outcome for the report.
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[{"email":"found@example.com","dbname":"Dataset A"}]}"#,
+    )]);
+    let leg = collect_for_lookup(
+        &transport,
+        EntityKind::Email,
+        "found@example.com",
+        &keyed(),
+        30,
+    )
+    .expect("key configured runs the leg");
+    assert!(transport.request_count() >= 1);
+    assert!(
+        leg.entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Email && entity.value == "found@example.com")
+    );
+    let outcome_count = leg.outcomes.len();
+    assert!(
+        outcome_count >= 1,
+        "keyed SeekNow records at least one source outcome"
+    );
+}
+
+#[test]
+fn collect_for_lookup_runs_person_scan_selector() {
+    // The headline `scan NAME` path routes to ScanKind::People, which maps to EntityKind::Person.
+    // With the key set that selector must run SeekNow like email and username, not sit dead.
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[{"name":"Alice Example","dbname":"Dataset A"}]}"#,
+    )]);
+    let leg = collect_for_lookup(
+        &transport,
+        EntityKind::Person,
+        "Alice Example",
+        &keyed(),
+        30,
+    )
+    .expect("person scan with a key runs the leg");
+    assert!(transport.request_count() >= 1);
+    assert!(
+        leg.entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Person)
+    );
+    let outcome_count = leg.outcomes.len();
+    assert!(
+        outcome_count >= 1,
+        "keyed SeekNow records at least one source outcome"
+    );
 }

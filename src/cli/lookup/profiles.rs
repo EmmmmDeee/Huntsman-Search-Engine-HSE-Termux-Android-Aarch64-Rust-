@@ -13,22 +13,25 @@ use crate::cli::fail;
 use huntsman_recon::api_leg;
 use huntsman_recon::dehashed::{self, client::DehashedClient};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
-use huntsman_recon::entity::Entity;
+use huntsman_recon::entity::{Entity, EntityKind, merge_by_uid};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
-use huntsman_recon::exposure_cli::{EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
+use huntsman_recon::exposure_cli::{self, EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
 use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
 use huntsman_recon::ip_cli::{IP_USAGE, IpArgs, IpRun};
+use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
-    self, DOMAIN_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, IP_POLICY, NETWORK_POLICY, PEOPLE_POLICY,
-    PHONE_POLICY, SavePolicy, USERNAME_POLICY,
+    self, DOMAIN_POLICY, EMAIL_EXPOSURE_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, IP_POLICY,
+    NETWORK_POLICY, PEOPLE_POLICY, PHONE_POLICY, SavePolicy, USERNAME_EXPOSURE_POLICY,
+    USERNAME_POLICY,
 };
 use huntsman_recon::network_cli::{NETWORK_USAGE, NetworkArgs, NetworkRun};
 use huntsman_recon::oathnet;
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
 use huntsman_recon::scan_route::ScanKind;
+use huntsman_recon::sf_compat::SfRefused;
 use huntsman_recon::source_outcome::SourceExecutionOutcome;
 use huntsman_recon::stolen_tax;
 use huntsman_recon::username_cli::{USERNAME_USAGE, UsernameArgs, UsernameRun};
@@ -65,6 +68,18 @@ impl Refused {
     pub(in crate::cli) fn message(&self) -> &str {
         match self {
             Self::Network(m) | Self::Unavailable(m) | Self::Data(m) => m,
+        }
+    }
+}
+
+/// `sf -s` runs the same front-ends, so its refusal takes the same status: each arm becomes the
+/// arm of the same name, and [`Refused::exit_status`] stays the one status table.
+impl From<SfRefused> for Refused {
+    fn from(refused: SfRefused) -> Self {
+        match refused {
+            SfRefused::Network(m) => Self::Network(m),
+            SfRefused::Unavailable(m) => Self::Unavailable(m),
+            SfRefused::Data(m) => Self::Data(m),
         }
     }
 }
@@ -108,33 +123,107 @@ fn done(
     }
 }
 
-/// The people-search sources for a name.
+/// The people-search sources for a name, with the `SeekNow` leg when its key is configured.
 fn people(selector: &str, now: u64) -> Result<Collected, Refused> {
     let transport = UreqTransport::new(&TransportConfig::default());
+    let keys = crate::cli::credentials::lookup_keys();
     match people_cli::run(&transport, selector, now) {
         PeopleRun::Printed { text, report } => {
-            Ok(done(text, report.entities, report.outcomes, PEOPLE_POLICY))
+            let (text, entities, outcomes) = with_seeknow_leg(
+                EntityKind::Person,
+                selector,
+                &keys,
+                now,
+                text,
+                report.entities,
+                report.outcomes,
+            )?;
+            Ok(done(text, entities, outcomes, PEOPLE_POLICY))
         }
         PeopleRun::Network(m) => Err(Refused::Network(m)),
         PeopleRun::Failed(m) => Err(Refused::Unavailable(m)),
     }
 }
 
-/// The email sources for an address.
+/// The email sources for an address, with the `SeekNow` leg when its key is configured.
 fn email(selector: &str, now: u64) -> Result<Collected, Refused> {
     let keys = crate::cli::credentials::lookup_keys();
     let transport = UreqTransport::new(&api_leg::transport_config());
     match huntsman_recon::email_cli::run_keyed(&transport, &keys, selector, now) {
         EmailRun::Printed { text, report } => {
-            Ok(done(text, report.entities, report.outcomes, EMAIL_POLICY))
+            // Compose both legs on the address: the `SeekNow` identity leg first, then the breach
+            // and exposure legs fold onto the combined result.
+            let (text, entities, outcomes) = with_seeknow_leg(
+                EntityKind::Email,
+                selector,
+                &keys,
+                now,
+                text,
+                report.entities,
+                report.outcomes,
+            )?;
+            Ok(with_exposure(
+                selector,
+                now,
+                done(text, entities, outcomes, EMAIL_POLICY),
+                EMAIL_EXPOSURE_POLICY,
+            ))
         }
         EmailRun::Network(m) => Err(Refused::Network(m)),
         EmailRun::Failed(m) => Err(Refused::Unavailable(m)),
     }
 }
 
+/// Append a `SeekNow` leg to a lookup's report when `HUNTSMAN_SEEKNOW_KEY` is configured.
+///
+/// With no key, the leg makes no request and the report is returned unchanged, byte for byte.
+/// With the key set, `SeekNow`'s entities are merged into the report by uid, its source outcome
+/// is appended, and the report text is re-rendered so the console shows the merged result. A
+/// `SeekNow` failure is reported as one outcome row, never an abort of the lookup.
+fn with_seeknow_leg(
+    kind: EntityKind,
+    selector: &str,
+    keys: &Keys,
+    now: u64,
+    text: String,
+    entities: Vec<Entity>,
+    outcomes: Vec<SourceExecutionOutcome>,
+) -> Result<(String, Vec<Entity>, Vec<SourceExecutionOutcome>), Refused> {
+    let transport = UreqTransport::new(&TransportConfig::default());
+    let Some(leg) = huntsman_recon::seeknow_collector::collect_for_lookup(
+        &transport, kind, selector, keys, now,
+    ) else {
+        return Ok((text, entities, outcomes));
+    };
+    let mut entities = entities;
+    let mut outcomes = outcomes;
+    entities.extend(leg.entities);
+    merge_by_uid(&mut entities);
+    outcomes.extend(leg.outcomes);
+    let text = huntsman_recon::lookup_report::render(&entities, &outcomes)
+        .map_err(Refused::Unavailable)?;
+    Ok((text, entities, outcomes))
+}
+
 /// The breach and exposure legs for a selector, each keyed leg built only when its key is configured.
 fn exposure(selector: &str, now: u64) -> Result<Collected, Refused> {
+    match exposure_legs(selector, now, false) {
+        Some(ExposureRun::Printed { text, report }) => Ok(done(
+            text,
+            report.entities,
+            report.outcomes,
+            EXPOSURE_POLICY,
+        )),
+        Some(ExposureRun::Network(m)) => Err(Refused::Network(m)),
+        Some(ExposureRun::Failed(m)) => Err(Refused::Unavailable(m)),
+        None => Err(Refused::Unavailable("no exposure leg ran".into())),
+    }
+}
+
+/// Run the keyed exposure legs for `selector`, each built only when its key is configured. With
+/// `only_if_reachable`, `None` when no configured leg can search `selector`, so a lookup with no
+/// keys set sends nothing more and prints what it did before.
+fn exposure_legs(selector: &str, now: u64, only_if_reachable: bool) -> Option<ExposureRun> {
     let keys = crate::cli::credentials::lookup_keys();
     let client = crate::cli::credentials::hibp_key_loader(&keys)
         .load()
@@ -158,29 +247,61 @@ fn exposure(selector: &str, now: u64) -> Result<Collected, Refused> {
             .then_some((&oathnet_transport as &dyn Transport, &keys)),
         dehashed: dehashed_client.as_ref(),
     };
-    match huntsman_recon::exposure_cli::run(sources, selector, now) {
-        ExposureRun::Printed { text, report } => Ok(done(
-            text,
-            report.entities,
-            report.outcomes,
-            EXPOSURE_POLICY,
-        )),
-        ExposureRun::Network(m) => Err(Refused::Network(m)),
-        ExposureRun::Failed(m) => Err(Refused::Unavailable(m)),
+    if only_if_reachable && !sources.reach(selector) {
+        return None;
     }
+    Some(exposure_cli::run(sources, selector, now))
 }
 
-/// The username sources for a handle.
+/// An email or username lookup with every configured paid breach leg folded in: a keyed source
+/// that can search the selector always runs, never only when `exposure` is asked for by name.
+/// The report then saves under `policy`, which names each leg's own module. An exposure run that
+/// gave no report leaves the lookup as it was, plus one `exposure=unavailable` line.
+fn with_exposure(selector: &str, now: u64, mut found: Collected, policy: SavePolicy) -> Collected {
+    let reason = match exposure_legs(selector, now, true) {
+        None => return found,
+        Some(ExposureRun::Printed { report, .. }) => {
+            match exposure_cli::fold_into(&mut found.entities, &mut found.outcomes, report) {
+                Ok(text) => {
+                    found.text = text;
+                    found.policy = policy;
+                    return found;
+                }
+                Err(m) => m,
+            }
+        }
+        Some(ExposureRun::Network(m) | ExposureRun::Failed(m)) => m,
+    };
+    found
+        .text
+        .push_str(&exposure_cli::unavailable_line(&reason));
+    found
+}
+
+/// The username sources for a handle, with the `SeekNow` leg when its key is configured.
 fn username(selector: &str, now: u64) -> Result<Collected, Refused> {
     let transport = UreqTransport::new(&TransportConfig::default());
     let keys = crate::cli::credentials::lookup_keys();
     match huntsman_recon::username_cli::run(&transport, &keys, selector, now) {
-        UsernameRun::Printed { text, report } => Ok(done(
-            text,
-            report.entities,
-            report.outcomes,
-            USERNAME_POLICY,
-        )),
+        UsernameRun::Printed { text, report } => {
+            // Compose both legs on the handle: the `SeekNow` identity leg first, then the breach
+            // and exposure legs fold onto the combined result.
+            let (text, entities, outcomes) = with_seeknow_leg(
+                EntityKind::Username,
+                selector,
+                &keys,
+                now,
+                text,
+                report.entities,
+                report.outcomes,
+            )?;
+            Ok(with_exposure(
+                selector,
+                now,
+                done(text, entities, outcomes, USERNAME_POLICY),
+                USERNAME_EXPOSURE_POLICY,
+            ))
+        }
         UsernameRun::Failed(m) => Err(Refused::Unavailable(m)),
     }
 }
@@ -309,7 +430,7 @@ pub(in crate::cli) fn email_cmd(args: &[String]) -> ExitCode {
 
 pub(in crate::cli) fn exposure_cmd(args: &[String]) -> ExitCode {
     match ExposureArgs::parse(args) {
-        Ok(p) => finish(ScanKind::Exposure, &p.email, p.save.as_deref()),
+        Ok(p) => finish(ScanKind::Exposure, &p.selector, p.save.as_deref()),
         Err(e) => usage_failure(&e, EXPOSURE_USAGE),
     }
 }
@@ -364,6 +485,23 @@ mod tests {
             argument_status(&Error::invalid("only one --save")),
             EX_USAGE
         );
+    }
+
+    #[test]
+    fn an_sf_refusal_exits_as_the_plain_lookup_would() {
+        for (refused, status) in [
+            (SfRefused::Network("egress-policy".into()), EX_NOPERM),
+            (
+                SfRefused::Unavailable("registers down".into()),
+                EX_UNAVAILABLE,
+            ),
+            (SfRefused::Data("bad target".into()), EX_DATAERR),
+        ] {
+            let message = refused.message().to_owned();
+            let mapped = Refused::from(refused);
+            assert_eq!(mapped.exit_status(), status, "{message}");
+            assert_eq!(mapped.message(), message);
+        }
     }
 
     #[test]
