@@ -1,7 +1,7 @@
 //! xtask runs the commands it names. A command whose port had not landed used to print "is not
 //! implemented yet" and exit 70, which advertised work nobody could run. Those placeholders are
-//! gone, and their live authority stays in `scripts/` and `.github/scripts/`, which CI calls
-//! directly. A removed name must now be a usage error, the same as any unknown command.
+//! gone, and their live authority stays in `scripts/`, `.github/scripts/` and `release.yml`, which
+//! CI or an operator runs. A removed name must now be a usage error, the same as any unknown command.
 
 use std::process::Command;
 
