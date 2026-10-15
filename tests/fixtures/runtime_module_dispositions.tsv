@@ -29,6 +29,7 @@ collection	runtime	provider-neutral execution/observation bridge
 collector	adapter	source-agnostic collection boundary
 commercial_readiness	diagnostic	machine-checkable capability proof and benchmark readiness reporting
 community	runtime	graph community analysis through intelligence report
+concurrent	runtime	runs a lookup's independent sources at once for exposure_cli and every email, username and name lookup
 confidence	runtime	entity confidence and verification helpers
 coref	runtime	deterministic coreference clusters in investigation report
 correlator	runtime	correlation rules used by the runtime analysis spine
