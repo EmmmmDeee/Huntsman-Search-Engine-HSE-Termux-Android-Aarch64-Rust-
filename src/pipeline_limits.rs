@@ -14,7 +14,6 @@ pub struct PipelineLimits {
     pub max_cross_scan_visited: usize,
     pub max_generation: u32,
     pub max_export_bytes: usize,
-    pub max_concurrent: usize,
 }
 
 impl Default for PipelineLimits {
@@ -30,7 +29,6 @@ impl Default for PipelineLimits {
             max_cross_scan_visited: 512,
             max_generation: 4,
             max_export_bytes: 8 * 1024 * 1024,
-            max_concurrent: 4,
         }
     }
 }
@@ -47,6 +45,5 @@ mod tests {
         assert!(limits.max_relations >= limits.max_entities);
         assert!(limits.max_dispatches > 0);
         assert_eq!(limits.max_response_bytes, crate::http::DEFAULT_MAX_BODY);
-        assert!(limits.max_concurrent > 0);
     }
 }
