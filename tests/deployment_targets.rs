@@ -47,7 +47,8 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
         "HUNTSMAN_BIN=\"${HUNTSMAN_BIN:-/usr/local/bin/huntsman-recon}\"",
         "\"$HUNTSMAN_BIN\" check",
         "\"$HUNTSMAN_BIN\" verify var/ledger.json",
-        "exec gosu huntsman \"$HUNTSMAN_BIN\"",
+        "gosu huntsman \"$HUNTSMAN_BIN\" \"$@\" &",
+        "trap 'kill -TERM \"$server\" 2>/dev/null || true' TERM INT HUP",
     ] {
         assert!(
             entrypoint.contains(required),
