@@ -83,13 +83,15 @@ pub enum IpRun {
     Failed(String),
 }
 
-/// One leg's result, folded into the report.
+/// One leg's result, folded into the report, with the first leg the egress policy refused and
+/// the first that got no response.
 struct Lookup<'a> {
     ip: &'a str,
     scan_id: &'a str,
     now_unix: u64,
     report: Report,
-    network: Option<String>,
+    refused: Option<String>,
+    unanswered: Option<String>,
 }
 
 impl Lookup<'_> {
@@ -148,9 +150,13 @@ impl Lookup<'_> {
     }
 
     fn failed(&mut self, api: &Api, err: &LegError) {
-        if let LegError::Transport(_) = err {
-            self.network
-                .get_or_insert_with(|| format!("{}: {err}", api.source));
+        let first = match err {
+            LegError::Refused(_) => Some(&mut self.refused),
+            LegError::Transport(_) => Some(&mut self.unanswered),
+            _ => None,
+        };
+        if let Some(first) = first {
+            first.get_or_insert_with(|| format!("{}: {err}", api.source));
         }
         self.report.outcomes.push(err.outcome(api, self.now_unix));
     }
@@ -168,7 +174,8 @@ pub fn run<T: Transport + ?Sized>(transport: &T, keys: &Keys, ip: &str, now_unix
         scan_id: &scan_id,
         now_unix,
         report: Report::default(),
-        network: None,
+        refused: None,
+        unanswered: None,
     };
 
     ptr_leg(transport, &mut lookup);
@@ -212,18 +219,21 @@ pub fn run<T: Transport + ?Sized>(transport: &T, keys: &Keys, ip: &str, now_unix
     let legs = indicator_legs::run(transport, keys, Indicator::Ip(&ip), &scan_id, now_unix);
     let Lookup {
         mut report,
-        mut network,
+        refused,
+        unanswered,
         ..
     } = lookup;
     report.entities.extend(legs.entities);
     report.outcomes.extend(legs.outcomes);
-    network = network.or(legs.network);
     merge_by_uid(&mut report.entities);
+    // The CLI's exit codes (ARCHITECTURE.md): a refusal by the egress policy is 77, no usable
+    // response 69.
     let collected = report.outcomes.iter().any(|o| o.kind.is_accepted());
     if !collected {
-        return match network {
-            Some(message) => IpRun::Network(message),
-            None => IpRun::Failed(format!("no source answered for ip {ip}")),
+        return match (refused, unanswered.or(legs.network)) {
+            (Some(message), _) => IpRun::Network(message),
+            (None, Some(why)) => IpRun::Failed(format!("no source answered for ip {ip}: {why}")),
+            (None, None) => IpRun::Failed(format!("no source answered for ip {ip}")),
         };
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
