@@ -30,8 +30,14 @@ runs:
           echo "Android llvm-ar not found" >&2
           exit 1
         }
+        # Devices with 16 KiB pages (Android 15 and later on recent hardware) refuse an ELF whose
+        # LOAD segments are aligned to less. NDK r28 links arm64 for 16 KiB by default; r27, the
+        # documented reference, links for 4 KiB, so the alignment is asked for by name rather
+        # than left to whichever NDK the runner image carries. RUSTFLAGS, if set, overrides this
+        # variable; the workflows' readelf check refuses a binary that lost it either way.
         {
           echo "CC_aarch64_linux_android=$CLANG"
           echo "AR_aarch64_linux_android=$TOOLCHAIN/llvm-ar"
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CLANG"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS=-C link-arg=-Wl,-z,max-page-size=16384"
         } >> "$GITHUB_ENV"
