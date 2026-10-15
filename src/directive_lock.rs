@@ -5,7 +5,7 @@
 //! files, so ordinary runtime checks must not depend on these paths.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub const EXPECTED_SHA256: &str =
     "3d02dd021502fd1c4eda70dd2b01cfe4bb19704f79452a890f1301053fac979d";
@@ -69,32 +69,13 @@ pub fn verify_at(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_parent(path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
-    }
-    Ok(())
-}
+/// A mirror is the canonical directive, which is a few KiB; a larger body is a bug.
+const MIRROR_MAX_BYTES: u64 = 1_048_576;
 
-fn replacement_path(path: &Path) -> PathBuf {
-    let mut name = path
-        .file_name()
-        .map_or_else(|| "directive".into(), std::ffi::OsStr::to_os_string);
-    name.push(format!(".tmp-{}", std::process::id()));
-    path.with_file_name(name)
-}
-
+/// Replace a mirror through the crate's one atomic writer, so it lands whole, is flushed with
+/// its directory, and never writes through a symbolic link.
 fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    ensure_parent(path)?;
-    let tmp = replacement_path(path);
-    fs::write(&tmp, bytes).map_err(|error| format!("{}: {error}", tmp.display()))?;
-    match fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = fs::remove_file(&tmp);
-            Err(format!("{}: {error}", path.display()))
-        }
-    }
+    crate::fsio::write_atomic(path, bytes, MIRROR_MAX_BYTES).map_err(|error| error.to_string())
 }
 
 /// Rewrite every repository instruction mirror from the pinned canonical file.
@@ -116,6 +97,7 @@ pub fn sync_at(root: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn unique_root() -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -145,7 +127,7 @@ mod tests {
         fs::write(root.join(CANONICAL), &canonical).unwrap();
         for mirror in MIRRORS {
             let path = root.join(mirror);
-            ensure_parent(&path).unwrap();
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, b"drift").unwrap();
         }
 

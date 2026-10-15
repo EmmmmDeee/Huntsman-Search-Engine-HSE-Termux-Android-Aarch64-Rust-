@@ -18,6 +18,7 @@ use super::profiles::{
     Refused, collect, domain_cmd, email_cmd, exposure_cmd, ip_cmd, network_cmd, people_cmd,
     phone_cmd, username_cmd,
 };
+use huntsman_recon::correlator::{self, Correlation};
 use huntsman_recon::recursion::{
     self, RecursionPolicy, RecursionReport, SelectorCollector, Step, Target,
 };
@@ -365,6 +366,21 @@ fn recurse_scan(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Run the shared correlation engine over everything the crawl reached. This is the exact analysis
+/// `correlate` and the web UI run — reused, not reinvented — so the recursive crawl surfaces the
+/// cross-entity patterns (shared identities, reused breach secrets, co-located hosts, …) that a flat
+/// entity list leaves implicit, the way `SpiderFoot`'s correlation rules do over a whole scan. The
+/// rules derive the relations they need from the entities themselves, so none are passed; the scan
+/// id mirrors the analysis spine's own fallback. Nothing is redacted: correlation is additive
+/// analysis over the already-collected entities, never a filter on them.
+fn recursion_correlations(report: &RecursionReport) -> Vec<Correlation> {
+    let scan_id = report
+        .entities
+        .first()
+        .map_or("recurse", |entity| entity.scan_id.as_str());
+    correlator::evaluate_rules(&report.entities, &[], scan_id)
+}
+
 /// Print the crawl result in full: no uid masking, no counts in place of values — the real linkage
 /// map, as the tool exists to produce.
 fn print_recursion(seed_count: usize, report: &RecursionReport) {
@@ -399,6 +415,46 @@ fn print_recursion(seed_count: usize, report: &RecursionReport) {
             entity.tags.join(",")
         );
     }
+    println!("lineage={}", report.edges.len());
+    for edge in &report.edges {
+        println!(
+            "{}:{}\t->\t{}:{}\tgen={}",
+            escape_controls(&edge.from_kind),
+            escape_controls(&edge.from_selector),
+            edge.to_kind,
+            escape_controls(&edge.to_value),
+            edge.generation
+        );
+    }
+    let correlations = recursion_correlations(report);
+    println!("correlations={}", correlations.len());
+    let by_uid: std::collections::HashMap<&str, &huntsman_recon::entity::Entity> = report
+        .entities
+        .iter()
+        .map(|entity| (entity.uid.as_str(), entity))
+        .collect();
+    for correlation in &correlations {
+        println!(
+            "rule={} ({}) severity={:?} rank={:.2}\t{}",
+            escape_controls(&correlation.rule_id),
+            escape_controls(&correlation.rule_name),
+            correlation.severity,
+            correlation.rank,
+            escape_controls(&correlation.description)
+        );
+        // Resolve every uid the correlation cites back to its real kind and value, so the finding
+        // names the entities it links, not opaque ids.
+        for uid in &correlation.entity_uids {
+            match by_uid.get(uid.as_str()) {
+                Some(entity) => println!(
+                    "\t{}:{}",
+                    entity.kind.as_str(),
+                    escape_controls(&entity.value)
+                ),
+                None => println!("\t{}", escape_controls(uid)),
+            }
+        }
+    }
     println!("outcomes={}", report.outcomes.len());
     for outcome in &report.outcomes {
         let found = outcome
@@ -424,7 +480,74 @@ fn print_recursion(seed_count: usize, report: &RecursionReport) {
 
 #[cfg(test)]
 mod tests {
-    use super::per_seed_save_path;
+    use super::{per_seed_save_path, recursion_correlations};
+    use huntsman_recon::entity::{Entity, EntityKind};
+    use huntsman_recon::recursion::RecursionReport;
+    use huntsman_recon::termination::TerminationReason;
+
+    /// A report carrying only the entities a crawl would have reached, for driving the correlation
+    /// wiring offline with no collector and no network.
+    fn report_of(entities: Vec<Entity>) -> RecursionReport {
+        RecursionReport {
+            accepted_seeds: Vec::new(),
+            rejected_seeds: Vec::new(),
+            entities,
+            edges: Vec::new(),
+            outcomes: Vec::new(),
+            generations: Vec::new(),
+            dispatches: 0,
+            visited: 0,
+            termination: TerminationReason::FixedPoint,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn the_crawl_surfaces_the_shared_identity_cluster_correlation() {
+        // An e-mail and a username reached by the crawl are one identity across two kinds. A flat
+        // entity list leaves that linkage implicit; the recursion output must run the shared
+        // correlation engine and surface it as the identity-cluster finding (AU-002), the way
+        // SpiderFoot correlates a whole scan rather than listing disjoint findings.
+        let report = report_of(vec![
+            Entity::new(EntityKind::Email, "person@example.com", 0.9, "recurse"),
+            Entity::new(EntityKind::Username, "person", 0.9, "recurse"),
+        ]);
+        let correlations = recursion_correlations(&report);
+        assert!(
+            correlations
+                .iter()
+                .any(|correlation| correlation.rule_id == "AU-002"),
+            "the crawl did not surface the identity-cluster correlation: {correlations:?}"
+        );
+        // Every cited uid resolves to an entity actually in the report: the finding names real
+        // entities, never an id the output cannot explain.
+        let uids: std::collections::HashSet<&str> =
+            report.entities.iter().map(|e| e.uid.as_str()).collect();
+        for correlation in &correlations {
+            for uid in &correlation.entity_uids {
+                assert!(
+                    uids.contains(uid.as_str()),
+                    "correlation cited an entity not in the crawl: {uid}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_crawl_with_no_cross_entity_pattern_surfaces_no_correlation() {
+        // A single lone entity has nothing to correlate with: the engine must report an empty set,
+        // not invent a finding.
+        let report = report_of(vec![Entity::new(
+            EntityKind::Email,
+            "person@example.com",
+            0.9,
+            "recurse",
+        )]);
+        assert!(
+            recursion_correlations(&report).is_empty(),
+            "a lone entity should produce no correlation"
+        );
+    }
 
     #[test]
     fn index_prefix_is_zero_padded_and_keeps_a_safe_stem() {
