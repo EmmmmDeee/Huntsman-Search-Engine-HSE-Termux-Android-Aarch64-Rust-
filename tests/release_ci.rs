@@ -3250,8 +3250,11 @@ fn compare_to(head: &str, status: &str, commits: &[&str]) -> Answer {
 /// The fixture key of the release builds of main pushes, as the workflow asks for them.
 const RUNS_KEY: &str = "actions_workflows_release.yml_runs?branch=main&event=push&per_page=100";
 
-/// Fake answer: the release builds of main pushes, each as (head sha, status, conclusion).
-fn release_runs(runs: &[(&str, &str, &str)]) -> Answer {
+/// A release build of a main push: its head sha, status and conclusion (empty while it runs).
+type Build<'a> = (&'a str, &'a str, &'a str);
+
+/// Fake answer: the release builds of main pushes.
+fn release_runs(runs: &[Build<'_>]) -> Answer {
     let runs: Vec<String> = runs
         .iter()
         .map(|(sha, status, conclusion)| {
@@ -3284,7 +3287,7 @@ fn head_run(case: &str, fixtures: &[Answer]) -> StepRun {
 
 /// Runs the publish step with main moved on to `newer`, which the build's commit precedes,
 /// and `runs` as the release builds of main pushes.
-fn publish_run_moved(case: &str, newer: &str, runs: &[(&str, &str, &str)]) -> StepRun {
+fn publish_run_moved(case: &str, newer: &str, runs: &[Build<'_>]) -> StepRun {
     let tag = (
         format!("git_ref_tags_{STEP_TAG}"),
         200,
@@ -3351,6 +3354,22 @@ fn the_superseding_build_check_is_inlined_identically_in_the_head_and_publish_st
     }
 }
 
+/// A build at main's head publishes and asks GitHub nothing more.
+#[test]
+fn a_build_at_mains_head_publishes_and_asks_nothing_more() {
+    if !jq_present() {
+        return;
+    }
+    let run = head_run("still-head", &[main_head(&step_sha())]);
+    assert_eq!(run.code, Some(0), "{}", run.text);
+    assert_eq!(run.output, "publish=true\n", "{}", run.text);
+    assert_eq!(
+        run.calls.trim(),
+        "GET repos/owner/repo/git/ref/heads/main",
+        "a build at main's head asks nothing more"
+    );
+}
+
 /// A build whose commit main has moved past still publishes unless a newer commit has a
 /// release build of its own that is queued, running or succeeded. Before this, any movement of
 /// main skipped publication, so a push that touched no release path (which starts no build) or
@@ -3360,52 +3379,29 @@ fn a_moved_main_skips_publication_only_for_a_newer_commit_with_a_live_or_success
     if !jq_present() {
         return;
     }
-    let (newer, mid, elsewhere) = (other_sha('1'), other_sha('2'), other_sha('3'));
-
-    let run = head_run("still-head", &[main_head(&step_sha())]);
-    assert_eq!(run.code, Some(0), "{}", run.text);
-    assert_eq!(run.output, "publish=true\n", "{}", run.text);
-    assert_eq!(
-        run.calls.trim(),
-        "GET repos/owner/repo/git/ref/heads/main",
-        "a build at main's head asks nothing more"
-    );
-
-    let cases: Vec<(&str, Vec<(&str, &str, &str)>, bool, &str)> = vec![
-        (
-            "newer-running",
-            vec![(&newer, "in_progress", "")],
-            false,
-            &newer,
-        ),
-        ("newer-queued", vec![(&newer, "queued", "")], false, &newer),
+    let (newer, elsewhere) = (other_sha('1'), other_sha('3'));
+    let cases: Vec<(&str, Vec<Build<'_>>, bool)> = vec![
+        ("newer-running", vec![(&newer, "in_progress", "")], false),
+        ("newer-queued", vec![(&newer, "queued", "")], false),
         (
             "newer-succeeded",
             vec![(&newer, "completed", "success")],
             false,
-            &newer,
         ),
-        ("newer-without-build", vec![], true, ""),
-        (
-            "newer-failed",
-            vec![(&newer, "completed", "failure")],
-            true,
-            "",
-        ),
+        ("newer-without-build", vec![], true),
+        ("newer-failed", vec![(&newer, "completed", "failure")], true),
         (
             "newer-cancelled",
             vec![(&newer, "completed", "cancelled")],
             true,
-            "",
         ),
         (
             "build-of-another-commit",
             vec![(&elsewhere, "in_progress", "")],
             true,
-            "",
         ),
     ];
-    for (case, runs, publishes, names) in cases {
+    for (case, runs, publishes) in cases {
         let run = head_run(
             case,
             &[
@@ -3421,13 +3417,12 @@ fn a_moved_main_skips_publication_only_for_a_newer_commit_with_a_live_or_success
             "publish=false\n"
         };
         assert_eq!(run.output, expected, "{case}: {}", run.text);
-        if !names.is_empty() {
-            assert!(
-                run.text.contains(&format!("main advanced to {names}")),
-                "{case} must name the superseding commit: {}",
-                run.text
-            );
-        }
+        assert_eq!(
+            run.text.contains(&format!("main advanced to {newer}")),
+            !publishes,
+            "{case} names the superseding commit exactly when it skips: {}",
+            run.text
+        );
         assert_eq!(
             count_calls(&run, "GET repos/owner/repo/git/ref/heads/main"),
             1,
@@ -3439,9 +3434,17 @@ fn a_moved_main_skips_publication_only_for_a_newer_commit_with_a_live_or_success
             run.calls
         );
     }
+}
 
-    // A commit between the build's and main's head with a successful build supersedes it, even
-    // though main's head itself has none (a docs-only push after a release push).
+/// A commit between the build's and main's head with a successful build supersedes it even
+/// though main's head has none (a docs-only push after a release push), and a main that no
+/// longer descends from the build's commit never publishes it.
+#[test]
+fn an_intermediate_successful_build_supersedes_and_a_diverged_main_never_publishes() {
+    if !jq_present() {
+        return;
+    }
+    let (newer, mid) = (other_sha('1'), other_sha('2'));
     let run = head_run(
         "intermediate-succeeded",
         &[
@@ -3457,7 +3460,6 @@ fn a_moved_main_skips_publication_only_for_a_newer_commit_with_a_live_or_success
         run.text
     );
 
-    // A main that no longer descends from the build's commit never publishes it.
     let run = head_run(
         "diverged",
         &[
