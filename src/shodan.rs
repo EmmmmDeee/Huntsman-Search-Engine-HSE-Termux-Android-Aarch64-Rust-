@@ -3,8 +3,9 @@
 //! An IP is one `GET https://api.shodan.io/shodan/host/{ip}?minify=true` (free with any key, no
 //! query credits). A domain is one `GET https://api.shodan.io/dns/domain/{domain}`, which spends
 //! one query credit. Both run whenever `HUNTSMAN_SHODAN_KEY` is set; Shodan takes the key only as
-//! the `key` query parameter, which [`crate::fetch`] adds as the request is sent. A `404` is
-//! Shodan's "no information available", a valid zero.
+//! the `key` query parameter, which [`crate::fetch`] adds as the request is sent. A `404` whose
+//! body is Shodan's JSON `{"error": …}` is its "no information available", a valid zero; any other
+//! `404` (the HTML page Shodan serves for a path it does not have) is a failed lookup.
 
 use serde::Deserialize;
 
@@ -111,10 +112,16 @@ pub fn lookup(
 /// One answer for `indicator`. **Pure.**
 ///
 /// # Errors
-/// [`LegError::Decode`] for a body that is not the documented shape or is about something else.
+/// [`LegError::Decode`] for a body that is not the documented shape or is about something else;
+/// [`LegError::Unexpected`] for a `404` that is not Shodan's JSON "no information" answer.
 pub fn decode(answer: Answer, indicator: Indicator<'_>) -> Result<Option<Finding>, LegError> {
     let body = match answer {
-        Answer::NotFound(_) => return Ok(None),
+        Answer::NotFound(body) => {
+            return match api_leg::decode::<NoInfo>(&body) {
+                Ok(_) => Ok(None),
+                Err(_) => Err(LegError::Unexpected(404)),
+            };
+        }
         Answer::Body(body) => body,
     };
     match indicator {
@@ -122,6 +129,13 @@ pub fn decode(answer: Answer, indicator: Indicator<'_>) -> Result<Option<Finding
         Indicator::Domain(domain) => dns(&api_leg::decode(&body)?, domain),
         Indicator::Email(_) | Indicator::Phone(_) => Ok(None),
     }
+}
+
+/// Shodan's error body; on a `404` it says it holds nothing on the subject.
+#[derive(Deserialize)]
+struct NoInfo {
+    #[serde(rename = "error")]
+    _error: String,
 }
 
 fn host(host: Host, ip: &str) -> Result<Finding, LegError> {
@@ -281,6 +295,22 @@ mod tests {
         );
         assert!(decode(Answer::Body(HOST.into()), Indicator::Ip("8.8.8.8")).is_err());
         assert!(decode(Answer::Body(DNS.into()), Indicator::Domain("example.org")).is_err());
+    }
+
+    #[test]
+    fn a_404_page_is_a_path_shodan_lacks_not_a_zero() {
+        // What Shodan served on 2026-10-15 for a path it does not have.
+        const PAGE: &str = "<html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1> The resource could not be found.<br/><br/> /shodan/nosuch/8.8.8.8 </body></html>";
+        for indicator in [Indicator::Ip("8.8.8.8"), Indicator::Domain("example.com")] {
+            assert_eq!(
+                decode(Answer::NotFound(PAGE.into()), indicator),
+                Err(LegError::Unexpected(404))
+            );
+            assert_eq!(
+                decode(Answer::NotFound(Vec::new()), indicator),
+                Err(LegError::Unexpected(404))
+            );
+        }
     }
 
     #[test]
