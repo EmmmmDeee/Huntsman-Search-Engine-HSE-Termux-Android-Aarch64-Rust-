@@ -2235,7 +2235,7 @@ mod tests {
                     });
                 }
                 if query.selector == "slow" {
-                    thread::sleep(Duration::from_millis(400));
+                    thread::sleep(Duration::from_secs(1));
                 }
                 Ok(LookupReport {
                     route: "email",
@@ -2523,8 +2523,10 @@ mod tests {
         );
         let results = service.store().results(&id).unwrap().unwrap();
         assert_eq!(results.entities.len(), 1, "what it found was kept");
-        // Once it has ended, the same lookup is a new scan.
-        let again = ask();
+        // Once it has ended, the same lookup is a new scan, given the time to run this time.
+        let mut routes = routes;
+        routes.lookups.as_mut().unwrap().wait = Duration::from_secs(10);
+        let again = scans_request(&routes, None, &format!("{PHONE_LOOKUP}{HEADER}\r\n"));
         assert!(again.starts_with("HTTP/1.1 200"), "{again}");
         assert_ne!(scan_of(&again), id);
         let _ = std::fs::remove_dir_all(dir);
