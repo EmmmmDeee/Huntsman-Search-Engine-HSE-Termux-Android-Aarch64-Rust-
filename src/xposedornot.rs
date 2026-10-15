@@ -1,11 +1,12 @@
 //! `XposedOrNot`: the names of public breaches that included one email address.
 //!
-//! One lookup is one keyless `GET https://api.xposedornot.com/v1/check-email/{email}`. Kept: the
-//! breach names (at most [`MAX_NAMES`]) and how many there are. No record content is returned or
-//! kept. An address in no breach answers `200` `{"Error":"Not found","email":null}`, a valid zero;
+//! One lookup is one keyless `GET https://api.xposedornot.com/v1/check-email/{email}`. Kept: every
+//! breach name, each once, and how many there are. The answer holds no record content. An address in no breach answers `200` `{"Error":"Not found","email":null}`, a valid zero;
 //! a `404` carrying that body is read the same way. Any other `404`, such as
 //! `{"detail":"Not Found"}` for a path the API does not have, is a failed lookup, never a zero
 //! (both checked 2026-10-15).
+
+use std::collections::HashSet;
 
 use serde::Deserialize;
 
@@ -27,9 +28,6 @@ pub const INTEL: Source = Source {
     kinds: &[IndicatorKind::Email],
     lookup,
 };
-
-/// Breach names kept in the finding; the count covers all of them.
-const MAX_NAMES: usize = 25;
 
 /// `breaches` is a list holding one list of names; a miss carries `Error` instead.
 #[derive(Deserialize)]
@@ -97,19 +95,15 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
         };
     };
     let mut names: Vec<String> = Vec::new();
-    let mut total = 0usize;
+    let mut seen: HashSet<String> = HashSet::new();
     for name in breaches.iter().flatten() {
-        let Some(name) = api_leg::clean(Some(name)) else {
-            continue;
-        };
-        if names.contains(&name) {
-            continue;
-        }
-        total += 1;
-        if names.len() < MAX_NAMES {
-            names.push(name);
+        if let Some(name) = api_leg::clean(Some(name)) {
+            if seen.insert(name.clone()) {
+                names.push(name);
+            }
         }
     }
+    let total = names.len();
     if total == 0 {
         return Ok(None);
     }
@@ -120,8 +114,7 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
         ))
         .attr("breach_count", total.to_string())
         .list_attr("breaches", &names)
-        .tag("breached")
-        .tag_if(total > names.len(), "truncated"),
+        .tag("breached"),
     ))
 }
 
@@ -151,15 +144,21 @@ mod tests {
     }
 
     #[test]
-    fn more_names_than_kept_are_counted_and_tagged_truncated() {
-        let names: Vec<String> = (0..30).map(|i| format!("\"B{i}\"")).collect();
+    fn every_breach_name_is_kept_and_counted_once() {
+        let names: Vec<String> = (0..300).map(|i| format!("\"Breach{}\"", i % 120)).collect();
         let body = format!(r#"{{"breaches":[[{}]]}}"#, names.join(","));
         let f = decode(body.as_bytes())
             .ok()
             .flatten()
             .unwrap_or_else(|| panic!("body must decode"));
-        assert!(f.summary.contains("30 public breaches"));
-        assert_eq!(f.tags, ["breached", "truncated"]);
+        assert!(f.summary.contains("120 public breaches"), "{}", f.summary);
+        assert_eq!(f.tags, ["breached"]);
+        let kept = f
+            .attrs
+            .iter()
+            .find(|(k, _)| *k == "breaches")
+            .map_or(0, |(_, v)| v.split(',').count());
+        assert_eq!(kept, 120);
     }
 
     #[test]
