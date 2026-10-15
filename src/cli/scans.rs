@@ -8,10 +8,10 @@ use std::ffi::OsString;
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use super::fail;
-use super::lookup::collect;
+use super::lookup::{Refused, collect};
 use huntsman_recon::doctor::STATE_DIR;
 use huntsman_recon::environment::HUNTSMAN_HOME_ENV;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_PIPE, EX_UNAVAILABLE, EX_USAGE};
@@ -20,6 +20,7 @@ use huntsman_recon::http::percent_encode_component;
 use huntsman_recon::scan_api::{ApiResponse, ScanApi, SlotCheck, correlation_rules};
 use huntsman_recon::scan_service::{LookupOutput, ScanLookup, ScanRequest, ScanService};
 use huntsman_recon::scan_store::{ScanOptions, ScanRecord, ScanStatus, ScanStore};
+use huntsman_recon::sf_compat::{self, SfScan};
 use huntsman_recon::sf_correlate;
 use huntsman_recon::sf_types;
 use huntsman_recon::textnorm::escape_controls;
@@ -35,14 +36,19 @@ fn usage() -> &'static str {
 
 /// The lookup a saved scan runs: the same front-ends as `scan` and `/api/lookup`.
 pub(super) fn scan_lookup() -> ScanLookup {
-    Arc::new(|kind, selector| {
+    lookup_with(|refused| refused.message().to_owned())
+}
+
+/// [`scan_lookup`], with `refusal` turning a lookup's refusal into the message the scan logs.
+fn lookup_with(refusal: impl Fn(Refused) -> String + Send + Sync + 'static) -> ScanLookup {
+    Arc::new(move |kind, selector| {
         collect(kind, selector)
             .map(|found| LookupOutput {
                 text: found.text,
                 entities: found.entities,
                 outcomes: found.outcomes,
             })
-            .map_err(|refused| refused.message().to_owned())
+            .map_err(&refusal)
     })
 }
 
@@ -82,6 +88,15 @@ pub(super) fn default_rules_dir() -> Option<PathBuf> {
 /// the API router, its scans running Spiderfoot's rules and those in `rules_dir`. `scans` and
 /// `serve` both open scans here.
 pub(super) fn open_api(dir: &Path, rules_dir: Option<&Path>) -> Result<ScanApi, String> {
+    open_api_with(dir, rules_dir, scan_lookup())
+}
+
+/// [`open_api`], its scans running `lookup`.
+fn open_api_with(
+    dir: &Path,
+    rules_dir: Option<&Path>,
+    lookup: ScanLookup,
+) -> Result<ScanApi, String> {
     let store = ScanStore::open(dir).map_err(|error| error.to_string())?;
     // One another live process is still running is left as it is.
     store.recover(now_ms()).map_err(|error| error.to_string())?;
@@ -90,7 +105,7 @@ pub(super) fn open_api(dir: &Path, rules_dir: Option<&Path>) -> Result<ScanApi, 
         None => (sf_correlate::shipped().to_vec(), Vec::new()),
     };
     Ok(ScanApi::new(
-        ScanService::with_rules(store, scan_lookup(), rules, errors),
+        ScanService::with_rules(store, lookup, rules, errors),
         Some(slot_check()),
     ))
 }
@@ -564,6 +579,78 @@ fn rerun(api: &ScanApi, id: &str, json: bool) -> ExitCode {
     {
         Ok(record) => finished(&record, json),
         Err(error) => fail(status_exit(error.status()), &format!("scans: {error}")),
+    }
+}
+
+/// `sf -s`: one scan of the target, run to its end and saved with the others, as `sf.py` saves
+/// its scans, and its elements printed in `sf.py`'s rows. It runs the lookups `scans run` runs for
+/// the target, so `scans`, `serve` and `sf -C` read it afterwards. A scan no lookup could run exits
+/// with the status the plain lookup gives its refusal.
+pub(super) fn sf_scan(scan: &SfScan) -> ExitCode {
+    let Some(dir) = default_scan_dir() else {
+        return fail(
+            EX_UNAVAILABLE,
+            "sf: no scan directory: set HOME or HUNTSMAN_HOME to an absolute path",
+        );
+    };
+    let first_refusal = Arc::new(Mutex::new(None::<Refused>));
+    let kept = Arc::clone(&first_refusal);
+    let lookup = lookup_with(move |refused| {
+        let message = refused.message().to_owned();
+        kept.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert(refused);
+        message
+    });
+    let api = match open_api_with(&dir, default_rules_dir().as_deref(), lookup) {
+        Ok(api) => api,
+        Err(error) => return fail(EX_IOERR, &format!("sf: {error}")),
+    };
+    let request = ScanRequest {
+        target: scan.target.clone(),
+        name: None,
+        kind: Some(scan.kind.command().to_owned()),
+        options: ScanOptions {
+            usecase: scan.use_case.clone(),
+            types: scan.types.clone(),
+            ..ScanOptions::default()
+        },
+    };
+    let record = match api.service().run(&request) {
+        Ok(record) => record,
+        // A target the lookup cannot take is bad data, as `sf.py` treats an unusable target.
+        Err(error) if error.status() == 400 => return fail(EX_DATAERR, &format!("sf: {error}")),
+        Err(error) => return fail(EX_IOERR, &format!("sf: {error}")),
+    };
+    if record.status != ScanStatus::Finished {
+        let refused = first_refusal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        return match refused {
+            Some(refused) => fail(refused.exit_status(), refused.message()),
+            None => fail(
+                EX_UNAVAILABLE,
+                &format!("sf: scan {} ended {}", record.id, record.status.as_str()),
+            ),
+        };
+    }
+    let elements = match api.service().store().results(&record.id) {
+        Ok(results) => results.map(|results| results.elements).unwrap_or_default(),
+        Err(error) => return fail(EX_IOERR, &format!("sf: {error}")),
+    };
+    match sf_compat::render(scan, &elements) {
+        Ok(body) => {
+            print!("{body}");
+            if !scan.quiet {
+                eprintln!(
+                    "[INFO] Scan {} saved with {} elements: scans show {} reads it, sf -C {} correlates it again.",
+                    record.id, record.elements, record.id, record.id
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(EX_DATAERR, &error.to_string()),
     }
 }
 

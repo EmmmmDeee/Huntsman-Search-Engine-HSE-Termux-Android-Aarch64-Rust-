@@ -1,27 +1,24 @@
-//! Partial `SpiderFoot` 4.0 command-line compatibility over rebuilt Huntsman paths.
+//! `SpiderFoot` 4.0's `sf.py` command line over Huntsman's saved scans.
 //!
-//! The compatibility layer is deliberately narrow: it implements the legacy target
-//! classifier, `-M` / `-T` / `-V`, use-case validation, tab/csv/json rows, type
-//! filtering, and single-target execution for the people/email/username/phone
-//! front-ends that are actually rebuilt. Unsupported target classes fail explicitly.
+//! This module parses `sf.py`'s flags, detects a target's Spiderfoot type as `sf.py` does, lists
+//! the modules and types, and prints a saved scan's data elements in `sf.py`'s tab, CSV and JSON
+//! rows. The scan itself runs in the binary through the saved-scan service that `scans run` and
+//! `serve` use, so `sf -s` runs every lookup a scan of the same target runs and keeps the scan, as
+//! `sf.py` keeps its scans, and `sf -C ID` runs the correlation rules again over a saved one.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use serde::Serialize;
 
-use crate::email_cli::{self, EmailRun};
 use crate::error::Error;
-use crate::http::Transport;
-use crate::keys::Keys;
 use crate::module::reachable_modules;
-use crate::people_cli::{self, PeopleRun};
-use crate::phone_cli::{self, PhoneRun};
-use crate::sf_elements::{self, DataElement, Target};
+use crate::scan_route::ScanKind;
+use crate::sf_elements::DataElement;
 use crate::sf_types;
 use crate::textnorm::{escape_controls, is_escaped};
-use crate::username_cli::{self, UsernameRun};
 
-pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -s TARGET [-u all|footprint|investigate|passive] [-o tab|csv|json] [-t TYPE[,TYPE...]] [-r] [-q]";
+pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -C SCAN_ID | -s TARGET [-u all|footprint|investigate|passive] [-o tab|csv|json] [-t TYPE[,TYPE...]] [-r] [-q]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SfMode {
@@ -29,6 +26,8 @@ pub enum SfMode {
     ListModules,
     ListTypes,
     Version,
+    /// `-C ID`: run the correlation rules again over a saved scan.
+    Correlate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +39,8 @@ pub struct SfArgs {
     pub include_source: bool,
     pub quiet: bool,
     pub mode: SfMode,
+    /// The saved scan `-C` correlates.
+    pub scan_id: Option<String>,
 }
 
 impl Default for SfArgs {
@@ -52,6 +53,7 @@ impl Default for SfArgs {
             include_source: false,
             quiet: false,
             mode: SfMode::Scan,
+            scan_id: None,
         }
     }
 }
@@ -108,6 +110,11 @@ impl SfArgs {
                     set_mode(&mut parsed, SfMode::Version)?;
                     index += 1;
                 }
+                "-C" | "--correlate" => {
+                    parsed.scan_id = Some(value(args, index, "-C/--correlate")?.to_owned());
+                    set_mode(&mut parsed, SfMode::Correlate)?;
+                    index += 2;
+                }
                 flag if flag.starts_with('-') => {
                     return Err(Error::Invalid(format!(
                         "unsupported sf option {flag}; supported subset: {SF_USAGE}"
@@ -136,11 +143,13 @@ impl SfArgs {
 
         if parsed.mode != SfMode::Scan && parsed.target.is_some() {
             return Err(Error::Invalid(
-                "sf listing/version modes do not accept -s".into(),
+                "sf -M, -T, -V and -C do not accept -s".into(),
             ));
         }
         if parsed.mode == SfMode::Scan && parsed.target.is_none() {
-            return Err(Error::Invalid("sf needs -s TARGET, -M, -T, or -V".into()));
+            return Err(Error::Invalid(
+                "sf needs -s TARGET, -C SCAN_ID, -M, -T, or -V".into(),
+            ));
         }
         Ok(parsed)
     }
@@ -149,7 +158,7 @@ impl SfArgs {
 fn set_mode(args: &mut SfArgs, mode: SfMode) -> Result<(), Error> {
     if args.mode != SfMode::Scan {
         return Err(Error::Invalid(
-            "sf accepts only one of -M, -T, or -V at a time".into(),
+            "sf accepts only one of -M, -T, -V, or -C at a time".into(),
         ));
     }
     args.mode = mode;
@@ -177,16 +186,21 @@ fn validate_use_case(value: &str) -> Result<(), Error> {
 pub enum SfAction {
     Text(String),
     Scan(SfScan),
+    /// Run the correlation rules again over this saved scan.
+    Correlate(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SfScan {
     pub target: String,
     pub target_type: &'static str,
+    /// The lookup a saved scan of the target runs.
+    pub kind: ScanKind,
     pub use_case: String,
     pub format: String,
     pub types: Vec<String>,
     pub include_source: bool,
+    pub quiet: bool,
 }
 
 /// Resolve parsed flags to a metadata action or one supported scan.
@@ -200,20 +214,47 @@ pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
         }
         SfMode::ListModules => return Ok(SfAction::Text(module_listing(args.quiet))),
         SfMode::ListTypes => return Ok(SfAction::Text(type_listing(args.quiet))),
+        SfMode::Correlate => {
+            return Ok(SfAction::Correlate(
+                args.scan_id.clone().unwrap_or_default(),
+            ));
+        }
         SfMode::Scan => {}
     }
     let target = args.target.as_deref().unwrap_or_default();
     let (target_type, normalized) = sf_target_type(target).ok_or_else(|| {
         Error::Invalid(format!("sf: unable to detect target type for {target:?}"))
     })?;
+    let kind = scan_kind(target_type).ok_or_else(|| {
+        Error::Invalid(format!(
+            "sf target type {target_type} is detected but its scan path is not available yet; sf scans a domain, IP address, email address, phone number, username or name"
+        ))
+    })?;
     Ok(SfAction::Scan(SfScan {
         target: normalized,
         target_type,
+        kind,
         use_case: args.use_case.clone(),
         format: args.format.clone(),
         types: args.types.clone(),
         include_source: args.include_source,
+        quiet: args.quiet,
     }))
+}
+
+/// The lookup a saved scan of a target of this Spiderfoot type runs, or `None` for a type no
+/// lookup takes yet (a netblock or an AS number).
+#[must_use]
+pub fn scan_kind(target_type: &str) -> Option<ScanKind> {
+    match target_type {
+        "INTERNET_NAME" => Some(ScanKind::Domain),
+        "IP_ADDRESS" | "IPV6_ADDRESS" => Some(ScanKind::Ip),
+        "EMAILADDR" => Some(ScanKind::Email),
+        "PHONE_NUMBER" => Some(ScanKind::Phone),
+        "USERNAME" => Some(ScanKind::Username),
+        "HUMAN_NAME" => Some(ScanKind::People),
+        _ => None,
+    }
 }
 
 #[must_use]
@@ -258,99 +299,30 @@ pub fn type_listing(quiet: bool) -> String {
     out
 }
 
-/// Why a scan produced no rows. The three arms are those of the plain lookups' refusal in the
-/// CLI (`Refused` in `src/cli/lookup/profiles.rs`), and each run outcome lands in the arm the
-/// plain `email`, `people`, `username` or `phone` command puts it in, so `sf -s` exits with the
-/// status of the plain command for the same outcome. The CLI maps the arms through that one
-/// status table; nothing here chooses a status.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SfRefused {
-    /// The egress policy or the network stopped every source.
-    Network(String),
-    /// The sources ran and gave nothing usable.
-    Unavailable(String),
-    /// The target, the scan options or the output format could not be used.
-    Data(String),
-}
-
-impl SfRefused {
-    #[must_use]
-    pub fn message(&self) -> &str {
-        match self {
-            Self::Network(m) | Self::Unavailable(m) | Self::Data(m) => m,
-        }
-    }
-}
-
-/// Execute one supported sf target over the already-rebuilt lookup front-ends.
+/// A saved scan's data elements as `sf.py` prints a scan's events: one row per element but the
+/// root, only the `-t` types when some were given, each with the data of the element it was
+/// found from.
 ///
 /// # Errors
-/// [`SfRefused`] when the scan produced no rows, in the arm the plain front-end reports.
-pub fn run_scan<T: Transport + ?Sized>(
-    transport: &T,
-    keys: &Keys,
-    scan: &SfScan,
-    now_unix: u64,
-) -> Result<String, SfRefused> {
-    if scan.use_case == "passive" && scan.target_type != "PHONE_NUMBER" {
-        return Err(SfRefused::Data(format!(
-            "sf passive mode has no rebuilt offline collector for {} yet",
-            scan.target_type
-        )));
-    }
-
-    // Each arm mirrors `collect` in `src/cli/lookup/profiles.rs`: a `Network` run is a network
-    // refusal, a `Failed` run of a networked front-end is unavailable, and a failed phone
-    // lookup, which is offline, is bad data.
-    let entities = match scan.target_type {
-        // Every keyed source for the address runs when its key is set.
-        "EMAILADDR" => match email_cli::run_keyed(transport, keys, &scan.target, now_unix) {
-            EmailRun::Printed { report, .. } => report.entities,
-            EmailRun::Network(message) => return Err(SfRefused::Network(message)),
-            EmailRun::Failed(message) => return Err(SfRefused::Unavailable(message)),
-        },
-        "USERNAME" => match username_cli::run(transport, keys, &scan.target, now_unix) {
-            UsernameRun::Printed { report, .. } => report.entities,
-            UsernameRun::Failed(message) => return Err(SfRefused::Unavailable(message)),
-        },
-        // Passive mode stays offline; otherwise the Numverify leg runs when its key is set.
-        "PHONE_NUMBER" => match if scan.use_case == "passive" {
-            phone_cli::run(&scan.target, now_unix)
-        } else {
-            phone_cli::run_keyed(transport, keys, &scan.target, now_unix)
-        } {
-            PhoneRun::Printed { report, .. } => report.entities,
-            PhoneRun::Failed(message) => return Err(SfRefused::Data(message)),
-        },
-        "HUMAN_NAME" => match people_cli::run(transport, &scan.target, now_unix) {
-            PeopleRun::Printed { report, .. } => report.entities,
-            PeopleRun::Network(message) => return Err(SfRefused::Network(message)),
-            PeopleRun::Failed(message) => return Err(SfRefused::Unavailable(message)),
-        },
-        other => {
-            return Err(SfRefused::Data(format!(
-                "sf target type {other} is detected but its rebuilt scan path is not available yet"
-            )));
-        }
-    };
-
-    let target = Target {
-        value: &scan.target,
-        kind: scan.target_type,
-    };
-    let elements = sf_elements::elements(target, &entities, now_unix);
-    let mut rows: Vec<Row> = elements
+/// [`Error::Invalid`] for an output format other than tab, csv or json, or JSON that cannot be
+/// written.
+pub fn render(scan: &SfScan, elements: &[DataElement]) -> Result<String, Error> {
+    let data: HashMap<&str, &str> = elements
+        .iter()
+        .map(|element| (element.id.as_str(), element.data.as_str()))
+        .collect();
+    let rows: Vec<Row> = elements
         .iter()
         .filter(|element| element.kind != "ROOT")
-        .map(|element| Row::from_element(element, &elements))
+        .filter(|element| {
+            scan.types.is_empty()
+                || scan
+                    .types
+                    .iter()
+                    .any(|wanted| wanted.eq_ignore_ascii_case(&element.kind))
+        })
+        .map(|element| Row::from_element(element, &data))
         .collect();
-    if !scan.types.is_empty() {
-        rows.retain(|row| {
-            scan.types
-                .iter()
-                .any(|wanted| wanted.eq_ignore_ascii_case(&row.event_type))
-        });
-    }
     render_rows(&rows, &scan.format, scan.include_source)
 }
 
@@ -365,7 +337,8 @@ struct Row {
 }
 
 impl Row {
-    fn from_element(element: &DataElement, elements: &[DataElement]) -> Self {
+    /// `data` maps each element's id to its data, for the source column.
+    fn from_element(element: &DataElement, data: &HashMap<&str, &str>) -> Self {
         Self {
             source: element.module.clone(),
             event_type: element.kind.clone(),
@@ -373,22 +346,24 @@ impl Row {
             source_data: element
                 .source
                 .as_deref()
-                .and_then(|source| elements.iter().find(|item| item.id == source))
-                .map(|source| source.data.clone())
+                .and_then(|source| data.get(source))
+                .map(|&source| source.to_owned())
                 .unwrap_or_default(),
             data: element.data.clone(),
         }
     }
 }
 
-fn render_rows(rows: &[Row], format: &str, include_source: bool) -> Result<String, SfRefused> {
+fn render_rows(rows: &[Row], format: &str, include_source: bool) -> Result<String, Error> {
     match format {
         "tab" => Ok(render_tab(rows, include_source)),
         "csv" => Ok(render_csv(rows, include_source)),
         "json" => serde_json::to_string_pretty(rows)
             .map(|body| format!("{}\n", escape_unsafe_in_json(&body)))
-            .map_err(|error| SfRefused::Data(format!("sf json: {error}"))),
-        _ => Err(SfRefused::Data("invalid sf output format".into())),
+            .map_err(|error| Error::Invalid(format!("sf json: {error}"))),
+        _ => Err(Error::Invalid(format!(
+            "invalid sf output format {format:?}; choose tab, csv, or json"
+        ))),
     }
 }
 
@@ -579,33 +554,11 @@ fn is_internet_name(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::phone_cli::{self, PhoneRun};
+    use crate::scan_route::canonical_selector;
+    use crate::scan_service::target_type;
+    use crate::sf_elements::{Target, elements};
     use crate::test_support::unexpected_controls;
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
-
-    use crate::http::{Request, Response, TransportFailure};
-    use crate::source_outcome::SourceOutcomeKind;
-
-    struct Fake {
-        responses: RefCell<VecDeque<Result<Response, TransportFailure>>>,
-    }
-
-    impl Fake {
-        fn new(responses: Vec<Result<Response, TransportFailure>>) -> Self {
-            Self {
-                responses: RefCell::new(responses.into()),
-            }
-        }
-    }
-
-    impl Transport for Fake {
-        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
-            self.responses
-                .borrow_mut()
-                .pop_front()
-                .expect("unexpected request")
-        }
-    }
 
     #[test]
     fn target_detection_matches_rebuilt_legacy_shapes() {
@@ -669,110 +622,99 @@ mod tests {
         assert_eq!(types.lines().count(), sf_types::all().count());
     }
 
+    fn args(words: &[&str]) -> Result<SfArgs, Error> {
+        SfArgs::parse(
+            &words
+                .iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// `sf -s` saves a scan routed to the lookup `scans run -k` names for the target, and the
+    /// saved scan's target type is the one `sf.py` detected.
     #[test]
-    fn phone_scan_formats_spiderfoot_rows_without_network() {
-        let fake = Fake::new(Vec::new());
-        let scan = SfScan {
+    fn every_scannable_target_type_routes_to_the_lookup_of_the_same_type() {
+        for raw in [
+            "example.org",
+            "1.1.1.1",
+            "2606:4700:4700::1111",
+            "jane@example.org",
+            "+61412345678",
+            "jdoe",
+            "Jane Doe",
+        ] {
+            let Ok(SfAction::Scan(scan)) = action(&args(&["-s", raw]).unwrap()) else {
+                panic!("{raw} is not a scan");
+            };
+            let canonical = canonical_selector(scan.kind, &scan.target)
+                .unwrap_or_else(|| panic!("{raw}: no canonical {:?}", scan.kind));
+            assert_eq!(
+                target_type(scan.kind, &canonical),
+                scan.target_type,
+                "{raw}"
+            );
+        }
+        for raw in ["192.0.2.0/24", "2001:db8::/32"] {
+            let error = action(&args(&["-s", raw]).unwrap()).unwrap_err();
+            assert!(
+                error.to_string().contains("not available yet"),
+                "{raw}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn dash_c_correlates_one_saved_scan_and_takes_no_target() {
+        assert_eq!(
+            action(&args(&["-C", "scan-1"]).unwrap()).unwrap(),
+            SfAction::Correlate("scan-1".into())
+        );
+        assert!(args(&["-C"]).is_err());
+        assert!(args(&["-C", "scan-1", "-s", "example.org"]).is_err());
+        assert!(args(&["-C", "scan-1", "-M"]).is_err());
+    }
+
+    fn phone_scan(format: &str, types: &[&str]) -> SfScan {
+        SfScan {
             target: "+61412345678".into(),
             target_type: "PHONE_NUMBER",
+            kind: ScanKind::Phone,
             use_case: "passive".into(),
-            format: "json".into(),
-            types: Vec::new(),
-            include_source: false,
+            format: format.into(),
+            types: types.iter().map(|kind| (*kind).to_owned()).collect(),
+            include_source: true,
+            quiet: true,
+        }
+    }
+
+    /// The rows are a saved scan's elements, the root left out, each with the data of the
+    /// element it was found from.
+    #[test]
+    fn a_saved_scans_elements_print_as_spiderfoot_rows() {
+        let PhoneRun::Printed { report, .. } = phone_cli::run("+61412345678", 1) else {
+            panic!("the offline phone lookup gave no report");
         };
-        let rendered = run_scan(&fake, &Keys::default(), &scan, 1).unwrap();
+        let target = Target {
+            value: "+61412345678",
+            kind: "PHONE_NUMBER",
+        };
+        let saved = elements(target, &report.entities, 1);
+        assert!(saved.iter().any(|element| element.kind == "ROOT"));
+
+        let rendered = render(&phone_scan("json", &[]), &saved).unwrap();
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        let rows = value.as_array().unwrap();
+        assert_eq!(rows.len(), saved.len() - 1);
         assert_eq!(value[0]["event_type"], "PHONE_NUMBER");
         assert_eq!(value[0]["data"], "+61412345678");
         assert_eq!(value[0]["source_data"], "+61412345678");
-        assert!(
-            value
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|row| row["event_type"] != "ROOT")
-        );
-    }
+        assert!(rows.iter().all(|row| row["event_type"] != "ROOT"));
 
-    #[test]
-    fn passive_networked_target_fails_before_request() {
-        let fake = Fake::new(Vec::new());
-        let scan = SfScan {
-            target: "jane@example.org".into(),
-            target_type: "EMAILADDR",
-            use_case: "passive".into(),
-            format: "tab".into(),
-            types: Vec::new(),
-            include_source: false,
-        };
-        let error = run_scan(&fake, &Keys::default(), &scan, 1).unwrap_err();
-        assert!(error.message().contains("passive"), "{error:?}");
-    }
-
-    /// Every request refused by the egress policy, as `people_cli`'s own test has it.
-    struct BlockAll;
-
-    impl Transport for BlockAll {
-        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-            Err(TransportFailure {
-                kind: SourceOutcomeKind::ConnectFailure,
-                detail: format!("egress-policy: {}", request.url),
-                blocked: true,
-            })
-        }
-    }
-
-    /// Every request fails before it is sent, as an unusable `HUNTSMAN_CA_BUNDLE` makes it.
-    struct FailAll;
-
-    impl Transport for FailAll {
-        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
-            Err(TransportFailure {
-                kind: SourceOutcomeKind::TlsFailure,
-                detail: "HUNTSMAN_CA_BUNDLE=/nowhere.pem: no certificates".into(),
-                blocked: false,
-            })
-        }
-    }
-
-    fn scan(target: &str, target_type: &'static str) -> SfScan {
-        SfScan {
-            target: target.into(),
-            target_type,
-            use_case: "all".into(),
-            format: "tab".into(),
-            types: Vec::new(),
-            include_source: false,
-        }
-    }
-
-    /// The arms are the plain lookups', so the CLI gives `sf -s` the status of `email` or
-    /// `people` for the same outcome. Both networked front-ends used to come back as `Error`
-    /// variants the CLI mapped the other way round: a refusal to 69 and an outage to 65.
-    #[test]
-    fn a_refused_or_unusable_scan_lands_in_the_plain_lookups_arm() {
-        for (target, target_type) in [
-            ("jane@example.org", "EMAILADDR"),
-            ("Jane Citizen", "HUMAN_NAME"),
-        ] {
-            match run_scan(&BlockAll, &Keys::default(), &scan(target, target_type), 1) {
-                Err(SfRefused::Network(message)) => {
-                    assert!(message.contains("egress-policy"), "{message}");
-                }
-                other => panic!("{target_type}: {other:?}"),
-            }
-        }
-        match run_scan(
-            &FailAll,
-            &Keys::default(),
-            &scan("Jane Citizen", "HUMAN_NAME"),
-            1,
-        ) {
-            Err(SfRefused::Unavailable(message)) => {
-                assert!(message.contains("HUNTSMAN_CA_BUNDLE"), "{message}");
-            }
-            other => panic!("{other:?}"),
-        }
+        let only = render(&phone_scan("json", &["phone_number"]), &saved).unwrap();
+        let only: serde_json::Value = serde_json::from_str(&only).unwrap();
+        assert_eq!(only.as_array().unwrap().len(), 1, "{only}");
+        assert!(render(&phone_scan("xml", &[]), &saved).is_err());
     }
 
     #[test]

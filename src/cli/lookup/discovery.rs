@@ -4,7 +4,6 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::profiles::Refused;
 use crate::cli::{MAX_ARTIFACT_BYTES, fail};
 use huntsman_recon::classifier::{self, classify as classify_indicator};
 use huntsman_recon::entity;
@@ -99,29 +98,9 @@ pub(in crate::cli) fn sf_cmd(args: &[String]) -> ExitCode {
             print!("{body}");
             ExitCode::SUCCESS
         }
-        SfAction::Scan(scan) => {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_secs());
-            let transport = UreqTransport::new(&TransportConfig::default());
-            match sf_compat::run_scan(
-                &transport,
-                &crate::cli::credentials::lookup_keys(),
-                &scan,
-                now,
-            ) {
-                Ok(body) => {
-                    print!("{body}");
-                    ExitCode::SUCCESS
-                }
-                // The plain lookups' one status table (`Refused::exit_status`): `sf -s` exits as
-                // `email`, `people`, `username` or `phone` would for the same outcome.
-                Err(refused) => {
-                    let refused = Refused::from(refused);
-                    fail(refused.exit_status(), refused.message())
-                }
-            }
-        }
+        // `sf.py -C ID` is `scans correlate ID`, over the same saved scans.
+        SfAction::Correlate(id) => crate::cli::scans::scans_cmd(&["correlate".to_owned(), id]),
+        SfAction::Scan(scan) => crate::cli::scans::sf_scan(&scan),
     }
 }
 
