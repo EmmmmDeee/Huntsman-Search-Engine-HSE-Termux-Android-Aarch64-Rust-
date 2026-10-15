@@ -120,10 +120,12 @@ pub fn is_json_body(body: &str) -> bool {
 /// Wall only when a signature is present and the body is not a JSON document
 /// that merely quotes a vendor path. Status-blind: right for a refused response or for an
 /// endpoint that only ever answers JSON (DNS over HTTPS, crt.sh), where any page is a wall.
-/// For a response that may be content, use [`is_challenge_at`].
+/// For a response that may be content, use [`is_challenge_at`]. The JSON test runs first:
+/// it reads the first bytes, while the signature scan lowercases the whole body, and a
+/// crt.sh answer for a popular apex is several MiB that the JSON test alone decides.
 #[must_use]
 pub fn is_challenge(body: &str) -> bool {
-    challenge_signature_present(body) && (!is_json_body(body) || looks_like_document(body))
+    (!is_json_body(body) || looks_like_document(body)) && challenge_signature_present(body)
 }
 
 /// Largest body that can be a challenge interstitial. Interstitials are a few KiB; a longer
