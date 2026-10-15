@@ -245,6 +245,9 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <input id="starget" class="mono" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" placeholder="The target of your scan.">
 <label class="fl" for="skind">Target type</label>
 <select id="skind"><option value="auto">Detect from the target</option><option value="domain">Domain name</option><option value="ip">IP address</option><option value="email">E-mail address</option><option value="exposure">E-mail breach exposure</option><option value="phone">Phone number</option><option value="username">Username</option><option value="people">Human name</option><option value="network">Wi-Fi BSSID or location</option></select>
+<label class="fl" for="sdepth">Recursion depth</label>
+<input id="sdepth" type="number" min="0" step="1" value="0" inputmode="numeric" aria-describedby="sdepth-h">
+<p class="help" id="sdepth-h">How many hops the scan follows what it finds, as Spiderfoot feeds each finding to the modules that take it: every email, username, domain, phone, IP address and BSSID found is looked up in turn. 0 looks up the target only.</p>
 </div></div>
 <div class="panel"><div class="panel-body">
 <p class="help">Your scan target may be one of the following. Huntsman detects the target type from the format of your input:</p>
@@ -279,6 +282,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="xlsx">Excel</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button></div></details>
 <button class="btn" id="scstop" type="button" hidden>Stop</button>
 <button class="btn" id="screrun" type="button">Re-run</button>
+<button class="btn" id="scclone" type="button">Clone</button>
 <button class="btn btn-danger" id="scdelete" type="button">Delete</button>
 </div>
 <form class="toolbar" id="scsearch"><input type="search" id="scq" class="grow" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="Search: text, *wild*, /re/" aria-label="Search this scan: plain text, a *wild*card or a /regular expression/"><button class="btn" type="submit">Search</button></form>
@@ -313,6 +317,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div id="pane-settings" hidden>
 <div class="panel"><div class="panel-heading">Meta Information</div><dl class="kv" id="meta"></dl></div>
 <div class="panel"><div class="panel-heading">Scan Options</div><dl class="kv" id="opts"></dl></div>
+<div class="panel"><div class="panel-heading">Discovery Tree <span class="badge" id="lineage-n"></span></div><p class="help pad">Each lookup the scan ran, by hop from the target, and every entity it found.</p><div id="lineage"></div></div>
 <div class="panel"><div class="panel-heading">Lookup Report</div><pre id="sreport"></pre></div>
 </div>
 <div id="pane-log" hidden>
@@ -629,7 +634,9 @@ $('newscan').onsubmit=async ev=>{
   ev.preventDefault();
   const target=$('starget').value.trim();
   if(!target){fail('nerror','Enter a scan target.');$('starget').focus();return}
-  const p=new URLSearchParams({target,name:$('sname').value.trim()||target,kind:$('skind').value});
+  const depth=$('sdepth').value.trim()||'0';
+  if($('sdepth').validity.badInput||!/^\d+$/.test(depth)){fail('nerror','Recursion depth is a whole number of hops, 0 or more.');$('sdepth').focus();return}
+  const p=new URLSearchParams({target,name:$('sname').value.trim()||target,kind:$('skind').value,depth});
   if(ntab==='usecase')p.set('usecase',document.querySelector('input[name=usecase]:checked').value);
   else if(ntab==='types'){
     const on=[...$('np-'+ntab).querySelectorAll('input:checked')].map(i=>i.value);
@@ -672,7 +679,7 @@ function head(){
   const s=scan,name=s.name||s.target;
   $('scname').textContent=name;$('sccrumb').textContent=name;
   $('scstatus').textContent=s.status;$('scstatus').className='label '+stTone(s.status);
-  $('scmeta').textContent=[s.target,s.target_type||s.kind,s.started&&'started '+when(s.started),s.ended&&'finished '+when(s.ended)].filter(Boolean).join(' · ');
+  $('scmeta').textContent=[s.target,s.target_type||s.kind,s.options&&s.options.depth&&'depth '+s.options.depth,s.started&&'started '+when(s.started),s.ended&&'finished '+when(s.ended)].filter(Boolean).join(' · ');
   $('scstop').hidden=!live(s.status);$('scdelete').hidden=live(s.status);
 }
 async function pane(){
@@ -688,6 +695,7 @@ async function pane(){
 $('screfresh').onclick=()=>{cache={};loadScan(true)};
 $('scstop').onclick=()=>act1('stop',[sid]);
 $('screrun').onclick=()=>act1('rerun',[sid]);
+$('scclone').onclick=()=>clone(scan);
 $('scdelete').onclick=()=>act1('delete',[sid]);
 const errors=s=>Array.isArray(s.errors)?s.errors.length:(s.errors||0);
 // A source's outcome as the scan saved it: what it found, its HTTP status, when to retry, and why.
@@ -739,13 +747,13 @@ function elemRow(x,withType,select){
   return tr;
 }
 // Rows arrive 200 at a time, so a scan with thousands of elements stays quick on a phone.
-function table(cols,rows,render){
+function table(cols,rows,render,empty='No data elements.'){
   const wrap=el('div'),tw=el('div','table-wrap'),t=el('table'),hr=el('tr'),tb=el('tbody'),head=el('thead'),more=button('',()=>page(),'more');
   for(const c of cols)hr.append(el('th','',c));
   head.append(hr);t.append(head,tb);tw.append(t);wrap.append(tw,more);
   let shown=0;
   function page(){const end=Math.min(rows.length,shown+200);for(;shown<end;shown++)tb.append(render(rows[shown]));const left=rows.length-shown;more.hidden=!left;more.textContent='Show '+Math.min(200,left)+' more of '+left}
-  page();if(!rows.length)none(tb,'No data elements.',cols.length);
+  page();if(!rows.length)none(tb,empty,cols.length);
   return wrap;
 }
 const ELEM=['Data Element','Source Data Element','Source Module','Identified'];
@@ -965,11 +973,35 @@ $('gsave').onclick=()=>{
   [...copy.querySelectorAll('circle,line')].forEach((c,i)=>{const k=was[i].getAttribute('class')||was[i].tagName;if(!fills.has(k)){const s=getComputedStyle(was[i]);fills.set(k,[s.fill,s.stroke])}const [f,s]=fills.get(k);c.setAttribute('fill',f);c.setAttribute('stroke',s);c.removeAttribute('class')});
   download(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml'}),'huntsman-'+sid+'-graph.svg');
 };
+// Why a scan stopped following what it found: the crawl's own reason, and what it means.
+const STOP={fixed_point:'nothing new was left to look up',resource_limit:'the lookup or entity budget ran out with findings left to follow',cancelled:'stop requested; the lookups still queued did not run',time_limit:'the time limit ran out',request_budget:'the request budget ran out',provider_budget:'a provider\'s request budget ran out',marginal_gain_limit:'new lookups had stopped finding anything new',fatal_error:'a lookup failed and the crawl could not go on'};
+function stopped(s){
+  const t=s.termination,d=(s.options||{}).depth||0;
+  if(!t)return live(s.status)?'still following what it finds':'not recorded';
+  const why=t==='max_depth'?(d?'depth '+d+' reached; a deeper scan would look up more of its findings':'depth 0 follows nothing it finds; a deeper scan would look up its findings in turn'):STOP[t];
+  return why?t+': '+why:t;
+}
+// Spiderfoot's Clone: New Scan filled in from this scan, to change before it runs.
+async function clone(s){
+  if(!s)return;
+  const o=s.options||{},types=o.types||[];
+  $('sname').value=s.name||s.target;$('starget').value=s.target;$('skind').value=s.kind||'auto';if(!$('skind').value)$('skind').value='auto';$('sdepth').value=String(o.depth||0);
+  const uc=document.querySelector('input[name=usecase][value="'+CSS.escape(o.usecase||'all')+'"]');if(uc)uc.checked=true;
+  ntab='usecase';
+  if(types.length){
+    if(!loaded.types)await loadTypes();
+    for(const i of $('typelist').querySelectorAll('input'))i.checked=types.includes(i.value);
+    ntab='types';
+  }
+  $('nerror').hidden=true;location.hash='#/newscan';
+}
 function scanSettings(){
   const s=scan,o=s.options||{},list=v=>Array.isArray(v)?v.join(', '):v;
   kv('meta',[['Name',s.name],['Internal ID',s.id],['Target',s.target],['Target type',s.target_type],['Lookup',s.kind],['Created',when(s.created)],['Started',when(s.started)],['Completed',when(s.ended)],['Status',s.status],['Data elements',s.elements]]);
   const h=s.honoured||{},applied=v=>v===true?'applied':v===false?'not applied yet: every module of the target\'s lookup ran':v;
-  kv('opts',[['Use case',o.usecase],['Use case applied',applied(h.usecase)],['Data types selected',list(o.types)||'all'],['Data types applied',applied(h.types)],['Modules selected',list(o.modules)||'all'],['Modules applied',applied(h.modules)],['Modules run',list(s.modules_run)]]);
+  kv('opts',[['Use case',o.usecase],['Use case applied',applied(h.usecase)],['Data types selected',list(o.types)||'all'],['Data types applied',applied(h.types)],['Modules selected',list(o.modules)||'all'],['Modules applied',applied(h.modules)],['Recursion depth',o.depth?o.depth+(o.depth===1?' hop':' hops')+' past the target':'0: the target\'s own lookup only'],['Recursion applied',applied(h.depth)],['Stopped following because',stopped(s)],['Modules run',list(s.modules_run)]]);
+  const tree=s.lineage||[];$('lineage-n').textContent=tree.length;
+  $('lineage').replaceChildren(table(['Hop','Lookup','Found'],tree,e=>{const tr=el('tr');put(tr,'Hop',e.generation).className='nw';put(tr,'Lookup',el('span','data',e.from_kind+': '+e.from_selector));put(tr,'Found',el('span','data',e.to_kind+': '+e.to_value)).classList.add('wide');return tr},live(s.status)?'Nothing found yet.':'No lookups were kept for this scan.'));
   $('sreport').textContent=s.report||'No report yet.';
 }
 let logs=[];
