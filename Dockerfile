@@ -5,10 +5,9 @@ FROM rust:1.99-trixie@sha256:6ff07edce8775d0f64be7aba9197229407301bddf2054d62c27
 WORKDIR /build
 
 ARG HUNTSMAN_BUILD_SHA=unknown
-ENV HUNTSMAN_HIBP_NO_EMBED=1 \
-    HUNTSMAN_BUILD_SHA=${HUNTSMAN_BUILD_SHA}
+ENV HUNTSMAN_BUILD_SHA=${HUNTSMAN_BUILD_SHA}
 
-COPY Cargo.toml Cargo.lock build.rs capabilities.json benchmarks.json HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md ./
+COPY Cargo.toml Cargo.lock capabilities.json benchmarks.json HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md ./
 COPY src ./src
 # The root manifest declares xtask as a workspace member, so cargo reads its manifest and
 # source while loading the workspace. This build does not compile xtask.
