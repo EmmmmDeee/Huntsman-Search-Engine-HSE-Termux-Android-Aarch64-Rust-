@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::fail;
+use huntsman_recon::api_leg;
 use huntsman_recon::dehashed::{self, client::DehashedClient};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::Entity;
@@ -19,9 +20,10 @@ use huntsman_recon::exposure_cli::{EXPOSURE_USAGE, ExposureArgs, ExposureRun, So
 use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
 use huntsman_recon::hibp::key::KeyLoader;
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
+use huntsman_recon::ip_cli::{IP_USAGE, IpArgs, IpRun};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
-    self, DOMAIN_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, NETWORK_POLICY, PEOPLE_POLICY,
+    self, DOMAIN_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, IP_POLICY, NETWORK_POLICY, PEOPLE_POLICY,
     PHONE_POLICY, SavePolicy, USERNAME_POLICY,
 };
 use huntsman_recon::network_cli::{NETWORK_USAGE, NetworkArgs, NetworkRun};
@@ -87,6 +89,7 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
         ScanKind::Exposure => exposure(selector, now),
         ScanKind::Username => username(selector, now),
         ScanKind::Phone => phone(selector, now),
+        ScanKind::Ip => ip(selector, now),
         ScanKind::Domain => domain(selector, now),
         ScanKind::Network => network(selector, now),
     }
@@ -121,8 +124,9 @@ fn people(selector: &str, now: u64) -> Result<Collected, Refused> {
 
 /// The email sources for an address.
 fn email(selector: &str, now: u64) -> Result<Collected, Refused> {
-    let transport = UreqTransport::new(&TransportConfig::default());
-    match huntsman_recon::email_cli::run(&transport, selector, now) {
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&api_leg::transport_config());
+    match huntsman_recon::email_cli::run_keyed(&transport, &keys, selector, now) {
         EmailRun::Printed { text, report } => {
             Ok(done(text, report.entities, report.outcomes, EMAIL_POLICY))
         }
@@ -186,9 +190,12 @@ fn username(selector: &str, now: u64) -> Result<Collected, Refused> {
     }
 }
 
-/// The offline phone-number analysis.
+/// The phone sources for a number. Its keyed legs read keys from the environment only; a leg
+/// whose key is not set makes no request.
 fn phone(selector: &str, now: u64) -> Result<Collected, Refused> {
-    match huntsman_recon::phone_cli::run(selector, now) {
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&api_leg::transport_config());
+    match huntsman_recon::phone_cli::run_keyed(&transport, &keys, selector, now) {
         PhoneRun::Printed { text, report } => {
             Ok(done(text, report.entities, report.outcomes, PHONE_POLICY))
         }
@@ -196,10 +203,25 @@ fn phone(selector: &str, now: u64) -> Result<Collected, Refused> {
     }
 }
 
+/// The ip sources for an address. Its keyed legs read keys from the environment only, as the
+/// other free-tier legs do.
+fn ip(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let keys = Keys::from_env();
+    let transport = UreqTransport::new(&api_leg::transport_config());
+    match huntsman_recon::ip_cli::run(&transport, &keys, selector, now) {
+        IpRun::Printed { text, report } => {
+            Ok(done(text, report.entities, report.outcomes, IP_POLICY))
+        }
+        IpRun::Network(m) => Err(Refused::Network(m)),
+        IpRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
 /// The domain sources for a hostname.
 fn domain(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let keys = Keys::from_env();
     let transport = UreqTransport::new(&TransportConfig::default());
-    match huntsman_recon::domain_cli::run(&transport, selector, now) {
+    match huntsman_recon::domain_cli::run(&transport, &keys, selector, now) {
         huntsman_recon::domain_cli::DomainRun::Printed { text, report } => {
             Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
         }
@@ -316,6 +338,13 @@ pub(in crate::cli) fn domain_cmd(args: &[String]) -> ExitCode {
     match DomainArgs::parse(args) {
         Ok(p) => finish(ScanKind::Domain, &p.domain, p.save.as_deref()),
         Err(e) => usage_failure(&e, DOMAIN_USAGE),
+    }
+}
+
+pub(in crate::cli) fn ip_cmd(args: &[String]) -> ExitCode {
+    match IpArgs::parse(args) {
+        Ok(p) => finish(ScanKind::Ip, &p.ip, p.save.as_deref()),
+        Err(e) => usage_failure(&e, IP_USAGE),
     }
 }
 

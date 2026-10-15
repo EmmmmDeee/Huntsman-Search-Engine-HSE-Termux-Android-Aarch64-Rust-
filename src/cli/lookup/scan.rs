@@ -15,7 +15,7 @@ use huntsman_recon::scan_route::{
 use huntsman_recon::textnorm::escape_controls;
 
 use super::profiles::{
-    domain_cmd, email_cmd, exposure_cmd, network_cmd, people_cmd, phone_cmd, username_cmd,
+    domain_cmd, email_cmd, exposure_cmd, ip_cmd, network_cmd, people_cmd, phone_cmd, username_cmd,
 };
 
 pub(in crate::cli) fn scan_cmd(args: &[String]) -> ExitCode {
@@ -171,7 +171,7 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
     let Some(selector) = forwarded.first() else {
         return fail(
             EX_USAGE,
-            "usage: huntsman-recon scan SELECTOR [-k people|email|exposure|username|phone|domain|network] [--save FILE] | scan --input-file FILE [-k KIND] [--save-dir DIR]",
+            "usage: huntsman-recon scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network] [--save FILE] | scan --input-file FILE [-k KIND] [--save-dir DIR]",
         );
     };
     // A leading space must not hide an option from this check, or the selector would be judged
@@ -218,6 +218,7 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
         ScanKind::Username => username_cmd(&forwarded),
         ScanKind::Phone => phone_cmd(&forwarded),
         ScanKind::Domain => domain_cmd(&forwarded),
+        ScanKind::Ip => ip_cmd(&forwarded),
         ScanKind::Network => network_cmd(&forwarded),
         ScanKind::People => people_cmd(&forwarded),
     }
