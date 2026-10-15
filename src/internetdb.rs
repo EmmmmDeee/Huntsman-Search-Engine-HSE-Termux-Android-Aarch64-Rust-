@@ -3,6 +3,10 @@
 //! One lookup is one `GET https://internetdb.shodan.io/{ip}`. No key, no account; the data is
 //! Shodan's weekly scan summary. A `404` whose body says `No information available` is the
 //! documented "nothing known" answer and is a valid zero; any other `404` is not an answer.
+//! Every answer names the address it describes (`ip`): a body without it, or about another
+//! address, is not an answer either, however few of its lists it has.
+
+use std::net::IpAddr;
 
 use serde::Deserialize;
 
@@ -32,6 +36,7 @@ pub struct Host {
 
 #[derive(Deserialize)]
 struct Body {
+    ip: String,
     #[serde(default)]
     ports: Vec<u16>,
     #[serde(default)]
@@ -64,20 +69,18 @@ pub fn lookup<T: Transport + ?Sized>(
     ip: &str,
     now_unix: u64,
 ) -> Result<Option<Host>, LegError> {
-    decode(api_leg::get(
-        transport,
-        &API,
-        &Keys::default(),
-        &url(ip),
-        now_unix,
-    )?)
+    decode(
+        api_leg::get(transport, &API, &Keys::default(), &url(ip), now_unix)?,
+        ip,
+    )
 }
 
-/// One answer as a host. **Pure.**
+/// One answer about `ip` as a host. **Pure.**
 ///
 /// # Errors
-/// [`LegError::Decode`] for a body that is not the documented shape.
-pub fn decode(answer: Answer) -> Result<Option<Host>, LegError> {
+/// [`LegError::Decode`] for a body that is not the documented shape or is about another
+/// address.
+pub fn decode(answer: Answer, ip: &str) -> Result<Option<Host>, LegError> {
     match answer {
         Answer::NotFound(body) => {
             let missing: Missing = api_leg::decode(&body)?;
@@ -92,6 +95,12 @@ pub fn decode(answer: Answer) -> Result<Option<Host>, LegError> {
         }
         Answer::Body(body) => {
             let body: Body = api_leg::decode(&body)?;
+            let about = |text: &str| text.trim().parse::<IpAddr>().ok();
+            if about(&body.ip).is_none() || about(&body.ip) != about(ip) {
+                return Err(LegError::Decode(
+                    "answer is not about the address looked up".into(),
+                ));
+            }
             let list = |items: Vec<String>| -> Vec<String> {
                 let mut kept: Vec<String> = items
                     .iter()
@@ -128,7 +137,9 @@ mod tests {
 
     #[test]
     fn a_recorded_answer_keeps_ports_hostnames_and_cpes() {
-        let host = decode(Answer::Body(RECORDED.into())).ok().flatten();
+        let host = decode(Answer::Body(RECORDED.into()), "1.1.1.1")
+            .ok()
+            .flatten();
         let host = host.unwrap_or_else(|| panic!("recorded body must decode"));
         assert_eq!(host.ports.len(), 11);
         assert_eq!(host.ports[0], 53);
@@ -139,9 +150,35 @@ mod tests {
 
     #[test]
     fn the_documented_404_is_a_valid_zero_and_any_other_is_not() {
-        assert_eq!(decode(Answer::NotFound(NOTHING.into())), Ok(None));
-        assert!(decode(Answer::NotFound(br#"{"detail":"Not Found"}"#.to_vec())).is_err());
-        assert!(decode(Answer::NotFound(b"<html>".to_vec())).is_err());
+        let ip = "192.0.2.1";
+        assert_eq!(decode(Answer::NotFound(NOTHING.into()), ip), Ok(None));
+        assert!(decode(Answer::NotFound(br#"{"detail":"Not Found"}"#.to_vec()), ip).is_err());
+        assert!(decode(Answer::NotFound(b"<html>".to_vec()), ip).is_err());
+    }
+
+    #[test]
+    fn a_200_that_does_not_describe_the_address_is_not_an_answer() {
+        let answer = |body: &str, ip: &str| {
+            lookup(&crate::test_support::OneResponse::json(200, body), ip, 1)
+        };
+        for body in [
+            "{}",
+            r#"{"detail":"Service is being upgraded"}"#,
+            r#"{"ip":"8.8.8.8","ports":[53]}"#,
+            r#"{"ip":"","ports":[]}"#,
+        ] {
+            let looked_up = answer(body, "1.1.1.1");
+            assert!(
+                matches!(looked_up, Err(LegError::Decode(_))),
+                "{body}: {looked_up:?}"
+            );
+        }
+        // The address may be written another way; it is the same address.
+        let host = answer(
+            r#"{"ip":"2606:4700:4700:0:0:0:0:1111","ports":[443]}"#,
+            "2606:4700:4700::1111",
+        );
+        assert_eq!(host.ok().flatten().map(|host| host.ports), Some(vec![443]));
     }
 
     #[test]
