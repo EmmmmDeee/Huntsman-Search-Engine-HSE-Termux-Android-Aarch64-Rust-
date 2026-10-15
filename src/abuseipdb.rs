@@ -3,9 +3,11 @@
 //! One lookup is one `GET https://api.abuseipdb.com/api/v2/check?ipAddress={ip}&maxAgeInDays=90`
 //! with the key in the `Key` header. It runs only when `HUNTSMAN_ABUSEIPDB_KEY` is set. The answer
 //! is the provider's confidence score (0 to 100), report counts over the window, the network's
-//! usage type, ISP and domain, and whether the address is a Tor exit or allow-listed.
+//! usage type, ISP and domain, and whether the address is a Tor exit or allow-listed. An answer
+//! whose `ipAddress` is not the address looked up (however either is written) is refused.
 
 use serde::Deserialize;
+use std::net::IpAddr;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::{Transport, percent_encode_component};
@@ -50,6 +52,7 @@ struct Envelope {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Data {
+    ip_address: String,
     abuse_confidence_score: u8,
     #[serde(default)]
     total_reports: u64,
@@ -94,17 +97,24 @@ pub fn lookup<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<Check, LegError> {
     match api_leg::get(transport, &API, keys, &url(ip), now_unix)? {
-        Answer::Body(body) => decode(&body),
+        Answer::Body(body) => decode(&body, ip),
         Answer::NotFound(_) => Err(LegError::Unexpected(404)),
     }
 }
 
-/// One answer body as a check. **Pure.**
+/// One answer body as the check on `ip`. **Pure.**
 ///
 /// # Errors
-/// [`LegError::Decode`] for a body that is not the documented `data` object.
-pub fn decode(body: &[u8]) -> Result<Check, LegError> {
+/// [`LegError::Decode`] for a body that is not the documented `data` object or is about another
+/// address.
+pub fn decode(body: &[u8], ip: &str) -> Result<Check, LegError> {
     let data = api_leg::decode::<Envelope>(body)?.data;
+    if !matches!(
+        (data.ip_address.trim().parse::<IpAddr>(), ip.parse::<IpAddr>()),
+        (Ok(answered), Ok(asked)) if answered == asked
+    ) {
+        return Err(LegError::Decode("answer names another address".into()));
+    }
     if data.abuse_confidence_score > 100 {
         return Err(LegError::Decode("confidence score above 100".into()));
     }
@@ -141,7 +151,7 @@ mod tests {
 
     #[test]
     fn the_documented_answer_decodes() {
-        let check = decode(DOCUMENTED.as_bytes()).unwrap_or_else(|e| panic!("{e}"));
+        let check = decode(DOCUMENTED.as_bytes(), "118.25.6.39").unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(check.confidence, 100);
         assert_eq!(check.total_reports, 1);
         assert_eq!(check.distinct_reporters, 1);
@@ -153,7 +163,30 @@ mod tests {
 
     #[test]
     fn an_error_body_is_not_a_clean_address() {
-        assert!(decode(REFUSED.as_bytes()).is_err());
+        assert!(decode(REFUSED.as_bytes(), "118.25.6.39").is_err());
+    }
+
+    #[test]
+    fn a_check_on_another_address_is_refused_not_reported() {
+        let keys = Keys::parse(&format!("{KEY_SLOT}=abuseipdb-test-key\n"))
+            .unwrap_or_else(|e| panic!("keys: {e}"));
+        let looked_up = |ip: &str, body: &str| {
+            lookup(
+                &crate::test_support::OneResponse::json(200, body),
+                &keys,
+                ip,
+                1,
+            )
+        };
+        let got = looked_up("8.8.8.8", DOCUMENTED);
+        assert!(matches!(got, Err(LegError::Decode(_))), "{got:?}");
+        let unnamed = r#"{"data":{"abuseConfidenceScore":100,"totalReports":3}}"#;
+        let got = looked_up("118.25.6.39", unnamed);
+        assert!(matches!(got, Err(LegError::Decode(_))), "{got:?}");
+        // The same address, however it is written, is the subject.
+        let full =
+            r#"{"data":{"ipAddress":"2606:4700:4700:0:0:0:0:1111","abuseConfidenceScore":0}}"#;
+        assert!(looked_up("2606:4700:4700::1111", full).is_ok());
     }
 
     #[test]
