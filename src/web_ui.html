@@ -5,6 +5,7 @@
 <meta name="theme-color" content="#11151b" id="themecolor">
 <meta name="color-scheme" content="dark light">
 <meta name="referrer" content="no-referrer">
+<meta name="huntsman-page" content="">
 <title>Huntsman Search Engine</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
@@ -105,6 +106,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc);box
 .bar-f{display:block;height:100%;min-width:2px;border-radius:4px;background:var(--acc)}
 .alert{margin:0 0 14px;padding:10px 14px;border:1px solid var(--bad);border-radius:var(--r);background:var(--badd);color:var(--bad);font-size:13px;overflow-wrap:anywhere}
 .alert.warn{border-color:var(--warn);background:var(--warnd);color:var(--warn)}
+.alert.upgrade:not([hidden]){display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between}
 .when{margin:0 0 12px;color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}
 .table-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
@@ -227,6 +229,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 </nav>
 <main>
 <p class="alert warn" id="authnote" role="alert" hidden></p>
+<p class="alert warn upgrade" id="upgraded" role="alert" hidden><span>Huntsman was updated while this page was open. Reload to use the new version.</span><button class="btn" id="reload" type="button">Reload</button></p>
 <section id="view-scans" hidden>
 <div class="head"><h1>Scans</h1><span class="spin" id="sspin" hidden></span></div>
 <p class="alert" id="serror" role="alert" hidden></p>
@@ -523,6 +526,11 @@ function route(){
 addEventListener('hashchange',route);
 function pill(text,tone){$('state').textContent=text;$('state').className='pill '+tone;$('sstate').textContent=text;$('sstate').className='val '+tone}
 let retry=0;
+// The page this server serves, which every health answer names. One that names another page
+// means the server was upgraded while this tab was open, so the tab runs the old page against
+// the new server until it reloads.
+const PAGE_ID=(document.querySelector('meta[name=huntsman-page]')||{}).content||'';
+$('reload').onclick=()=>location.reload();
 // Health is all a page that comes back into view asks for, besides a scan list or scan that is
 // still running. The module list and the command contract do not change while a server runs,
 // so they load when About first opens and on Refresh, not on every return to the tab.
@@ -532,6 +540,7 @@ async function health(){
   try{
     const res=await call('/api/health'),b=res.body;$('health').textContent=res.text;
     if(b){
+      if(PAGE_ID&&b.page&&b.page!==PAGE_ID)$('upgraded').hidden=false;
       $('ver').textContent='v'+b.version;$('sversion').textContent=b.version;
       $('sauth').textContent=b.auth==='token'?'token':'none';
       if(b.auth==='token'){

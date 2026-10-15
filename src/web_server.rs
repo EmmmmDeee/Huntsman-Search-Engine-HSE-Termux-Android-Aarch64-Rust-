@@ -809,6 +809,9 @@ struct Health<'a> {
     status: &'a str,
     name: &'a str,
     version: &'a str,
+    /// The page this server serves, as [`PAGE_ID`]. A tab whose page names another was loaded
+    /// from an earlier build and asks to be reloaded.
+    page: &'a str,
     /// `token` when every endpoint other than health and the page needs the bearer token, `none`
     /// otherwise. The page reads it to ask for the token before a call is refused.
     auth: &'a str,
@@ -901,12 +904,13 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
         return scans_response(&parsed, routes.scans.as_ref());
     }
     let text = match parsed.path {
-        "/" | "/index.html" => response(200, "text/html; charset=utf-8", INDEX_HTML, head),
+        "/" | "/index.html" => response(200, "text/html; charset=utf-8", &PAGE, head),
         "/api/health" => {
             let body = serde_json::to_string_pretty(&Health {
                 status: "ok",
                 name: "huntsman-recon",
                 version: env!("CARGO_PKG_VERSION"),
+                page: &PAGE_ID,
                 auth: if bearer_token.is_some() {
                     "token"
                 } else {
@@ -1453,6 +1457,29 @@ fn response_head(status: u16, content_type: &str, content_length: usize, extra: 
 /// the HSE console's look (app bar, bottom tabs on a phone, panels), over this server's routes.
 const INDEX_HTML: &str = include_str!("web_ui.html");
 
+/// The empty page id [`PAGE`] fills in, in the page's head and outside its script and style, so
+/// filling it leaves the hashes [`PAGE_POLICY`] lists unchanged.
+const PAGE_ID_SLOT: &str = r#"<meta name="huntsman-page" content="">"#;
+
+/// The first 16 hex digits of the SHA-256 of the page this build embeds. Every page an upgrade
+/// changes gets a new id, a build without provenance metadata included.
+static PAGE_ID: LazyLock<String> = LazyLock::new(|| {
+    sha256(INDEX_HTML.as_bytes())[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+});
+
+/// The page as served: [`INDEX_HTML`] carrying its [`PAGE_ID`], which the page compares with
+/// the one every health answer names.
+static PAGE: LazyLock<String> = LazyLock::new(|| {
+    INDEX_HTML.replacen(
+        PAGE_ID_SLOT,
+        &format!(r#"<meta name="huntsman-page" content="{}">"#, *PAGE_ID),
+        1,
+    )
+});
+
 /// The console's locator mark, as the tab icon. It is a file of its own because the page policy
 /// loads images only from this server.
 const FAVICON_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"6\" fill=\"#0a0d11\"/><circle cx=\"16\" cy=\"16\" r=\"8\" fill=\"none\" stroke=\"#1cb8f5\" stroke-width=\"2\"/><circle cx=\"16\" cy=\"16\" r=\"2.4\" fill=\"#1cb8f5\"/><path d=\"M16 2v6M16 24v6M2 16h6M24 16h6\" stroke=\"#1cb8f5\" stroke-width=\"2\"/></svg>\n";
@@ -1686,6 +1713,41 @@ mod tests {
         );
         assert!(allowed.starts_with("HTTP/1.1 200"));
         assert!(allowed.contains("\"modules\""));
+    }
+
+    /// A tab open across an upgrade notices it: the page is served with the id of the page this
+    /// build embeds, health names the same id, and filling it in leaves the policy's hashes valid.
+    #[test]
+    fn the_page_and_health_name_one_page_id_and_the_policy_still_matches() {
+        assert!(
+            PAGE_ID.len() == 16 && PAGE_ID.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{}",
+            *PAGE_ID
+        );
+        assert!(INDEX_HTML.contains(PAGE_ID_SLOT), "the page keeps the slot");
+        let page = response_for_request("GET / HTTP/1.1\r\n\r\n", None, loopback_bind());
+        let body = page.split("\r\n\r\n").nth(1).unwrap_or_default();
+        assert!(
+            body.contains(&format!(
+                r#"<meta name="huntsman-page" content="{}">"#,
+                *PAGE_ID
+            )),
+            "the served page carries its id"
+        );
+        assert_eq!(
+            inline_block(body, "script"),
+            inline_block(INDEX_HTML, "script")
+        );
+        assert_eq!(
+            inline_block(body, "style"),
+            inline_block(INDEX_HTML, "style")
+        );
+        let health =
+            response_for_request("GET /api/health HTTP/1.1\r\n\r\n", None, loopback_bind());
+        let health = health.split("\r\n\r\n").nth(1).unwrap_or_default();
+        let health: serde_json::Value = serde_json::from_str(health.trim_end())
+            .unwrap_or_else(|e| panic!("health is not JSON: {e}"));
+        assert_eq!(health["page"], PAGE_ID.as_str());
     }
 
     /// Every `200 OK` JSON answer shares one content type and ends in exactly one newline,
