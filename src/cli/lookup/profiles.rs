@@ -18,7 +18,6 @@ use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::exposure_cli::{self, EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
 use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
-use huntsman_recon::hibp::key::KeyLoader;
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
 use huntsman_recon::ip_cli::{IP_USAGE, IpArgs, IpRun};
 use huntsman_recon::keys::Keys;
@@ -127,7 +126,7 @@ fn done(
 /// The people-search sources for a name, with the `SeekNow` leg when its key is configured.
 fn people(selector: &str, now: u64) -> Result<Collected, Refused> {
     let transport = UreqTransport::new(&TransportConfig::default());
-    let keys = Keys::from_env();
+    let keys = crate::cli::credentials::lookup_keys();
     match people_cli::run(&transport, selector, now) {
         PeopleRun::Printed { text, report } => {
             let (text, entities, outcomes) = with_seeknow_leg(
@@ -148,7 +147,7 @@ fn people(selector: &str, now: u64) -> Result<Collected, Refused> {
 
 /// The email sources for an address, with the `SeekNow` leg when its key is configured.
 fn email(selector: &str, now: u64) -> Result<Collected, Refused> {
-    let keys = Keys::from_env();
+    let keys = crate::cli::credentials::lookup_keys();
     let transport = UreqTransport::new(&api_leg::transport_config());
     match huntsman_recon::email_cli::run_keyed(&transport, &keys, selector, now) {
         EmailRun::Printed { text, report } => {
@@ -225,16 +224,13 @@ fn exposure(selector: &str, now: u64) -> Result<Collected, Refused> {
 /// `only_if_reachable`, `None` when no configured leg can search `selector`, so a lookup with no
 /// keys set sends nothing more and prints what it did before.
 fn exposure_legs(selector: &str, now: u64, only_if_reachable: bool) -> Option<ExposureRun> {
-    let client = KeyLoader::default_chain(None)
+    let keys = crate::cli::credentials::lookup_keys();
+    let client = crate::cli::credentials::hibp_key_loader(&keys)
         .load()
         .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
-    // Same rule as `recon stolen-tax`: the stolen.tax and OathNet keys are read from the
-    // environment, never the default file.
-    let keys = Keys::from_env();
     let transport = UreqTransport::new(&stolen_tax::transport_config());
     let oathnet_transport = UreqTransport::new(&oathnet::transport_config());
-    // DeHashed reuses the opt-in client; its key, like stolen.tax and OathNet, is read
-    // from the environment only, never the default keys file.
+    // DeHashed reuses the opt-in client; its key comes from the same lookup keys.
     let dehashed_client = keys.get(dehashed::client::API_KEY_ENV).map(|secret| {
         let transport = Arc::new(UreqTransport::new(&TransportConfig::default()));
         DehashedClient::new(transport, secret)
@@ -285,7 +281,7 @@ fn with_exposure(selector: &str, now: u64, mut found: Collected, policy: SavePol
 /// The username sources for a handle, with the `SeekNow` leg when its key is configured.
 fn username(selector: &str, now: u64) -> Result<Collected, Refused> {
     let transport = UreqTransport::new(&TransportConfig::default());
-    let keys = Keys::from_env();
+    let keys = crate::cli::credentials::lookup_keys();
     match huntsman_recon::username_cli::run(&transport, &keys, selector, now) {
         UsernameRun::Printed { text, report } => {
             // Compose both legs on the handle: the `SeekNow` identity leg first, then the breach
@@ -310,10 +306,10 @@ fn username(selector: &str, now: u64) -> Result<Collected, Refused> {
     }
 }
 
-/// The phone sources for a number. Its keyed legs read keys from the environment only; a leg
-/// whose key is not set makes no request.
+/// The phone sources for a number. Its keyed legs read keys from the default file or the
+/// environment, as the other keyed lookups do; a leg whose key is not set makes no request.
 fn phone(selector: &str, now: u64) -> Result<Collected, Refused> {
-    let keys = Keys::from_env();
+    let keys = crate::cli::credentials::lookup_keys();
     let transport = UreqTransport::new(&api_leg::transport_config());
     match huntsman_recon::phone_cli::run_keyed(&transport, &keys, selector, now) {
         PhoneRun::Printed { text, report } => {
@@ -323,10 +319,10 @@ fn phone(selector: &str, now: u64) -> Result<Collected, Refused> {
     }
 }
 
-/// The ip sources for an address. Its keyed legs read keys from the environment only, as the
-/// other keyed lookups do.
+/// The ip sources for an address. Its keyed legs read keys from the default file or the
+/// environment, as the other keyed lookups do.
 fn ip(selector: &str, now: u64) -> Result<Collected, Refused> {
-    let keys = Keys::from_env();
+    let keys = crate::cli::credentials::lookup_keys();
     let transport = UreqTransport::new(&api_leg::transport_config());
     match huntsman_recon::ip_cli::run(&transport, &keys, selector, now) {
         IpRun::Printed { text, report } => {
@@ -339,7 +335,7 @@ fn ip(selector: &str, now: u64) -> Result<Collected, Refused> {
 
 /// The domain sources for a hostname.
 fn domain(selector: &str, now: u64) -> Result<Collected, Refused> {
-    let keys = Keys::from_env();
+    let keys = crate::cli::credentials::lookup_keys();
     let transport = UreqTransport::new(&TransportConfig::default());
     match huntsman_recon::domain_cli::run(&transport, &keys, selector, now) {
         huntsman_recon::domain_cli::DomainRun::Printed { text, report } => {
@@ -352,9 +348,9 @@ fn domain(selector: &str, now: u64) -> Result<Collected, Refused> {
 
 /// The `WiGLE` network lookup for a BSSID, coordinate or SSID.
 fn network(selector: &str, now: u64) -> Result<Collected, Refused> {
-    // Like the other keyed legs, the WiGLE credentials are read from the environment,
-    // never the default file. Configured, they always run.
-    let keys = Keys::from_env();
+    // Like the other keyed legs, the WiGLE credentials come from the default file or the
+    // environment. Configured, they always run.
+    let keys = crate::cli::credentials::lookup_keys();
     let transport = UreqTransport::new(&wigle::transport_config());
     let leg = wigle::configured(&keys).then_some((&transport as &dyn Transport, &keys));
     match huntsman_recon::network_cli::run(leg, selector, now) {

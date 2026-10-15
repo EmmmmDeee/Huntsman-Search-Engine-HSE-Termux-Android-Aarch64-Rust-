@@ -16,7 +16,6 @@ use huntsman_recon::environment::HUNTSMAN_HOME_ENV;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::write_atomic_private;
 use huntsman_recon::http::percent_encode_component;
-use huntsman_recon::keys::Keys;
 use huntsman_recon::scan_api::{ApiResponse, ScanApi, SlotCheck, correlation_rules};
 use huntsman_recon::scan_service::{LookupOutput, ScanLookup, ScanRequest, ScanService};
 use huntsman_recon::scan_store::{ScanOptions, ScanRecord, ScanStatus, ScanStore};
@@ -46,9 +45,10 @@ pub(super) fn scan_lookup() -> ScanLookup {
     })
 }
 
-/// Whether a key slot holds a key, read from the environment the way the lookups read it.
+/// Whether a key slot holds a key, read from the same places the lookups read keys:
+/// `~/.huntsman.env` when it passes the default-file checks, then the environment.
 pub(super) fn slot_check() -> SlotCheck {
-    Arc::new(|slot| Keys::from_env().get(slot).is_some())
+    Arc::new(|slot| crate::cli::credentials::lookup_keys().get(slot).is_some())
 }
 
 /// `$HUNTSMAN_HOME`, else `~/.huntsman`; only an absolute directory counts.
