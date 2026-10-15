@@ -5,8 +5,8 @@
 //! exact same classifier.
 
 use crate::canonical::{
-    canonical_coordinates, canonical_domain, canonical_email, canonical_handle, canonical_ip,
-    canonical_mac, canonical_name, canonical_netblock, canonical_phone,
+    canonical_asn, canonical_coordinates, canonical_domain, canonical_email, canonical_handle,
+    canonical_ip, canonical_mac, canonical_name, canonical_netblock, canonical_phone,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +25,9 @@ pub enum ScanKind {
     /// One public address block in CIDR form: its RDAP registration, `RIPEstat` routing and the
     /// PTR records of its addresses.
     Netblock,
+    /// One public AS number: its RDAP registration, and from `RIPEstat` its holder, every prefix
+    /// it announces and every BGP neighbour.
+    Asn,
     /// A `WiFi` network: a BSSID, a coordinate pair or an SSID, classified offline and searched
     /// on `WiGLE` when its credentials are configured.
     Network,
@@ -32,7 +35,7 @@ pub enum ScanKind {
 
 impl ScanKind {
     /// Every kind, in the order the CLI usage and the Web UI list them.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::People,
         Self::Email,
         Self::Exposure,
@@ -41,6 +44,7 @@ impl ScanKind {
         Self::Domain,
         Self::Ip,
         Self::Netblock,
+        Self::Asn,
         Self::Network,
     ];
 
@@ -55,6 +59,7 @@ impl ScanKind {
             Self::Domain => "domain",
             Self::Ip => "ip",
             Self::Netblock => "netblock",
+            Self::Asn => "asn",
             Self::Network => "network",
         }
     }
@@ -146,6 +151,7 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
         "domain" => Ok(ScanKind::Domain),
         "ip" | "address" => Ok(ScanKind::Ip),
         "netblock" | "cidr" | "prefix" => Ok(ScanKind::Netblock),
+        "asn" | "as" | "bgp" => Ok(ScanKind::Asn),
         "network" | "wifi" | "bssid" | "ssid" | "wigle" => Ok(ScanKind::Network),
         other => Err(other),
     }
@@ -162,6 +168,7 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
         ScanKind::Domain => canonical_domain(raw),
         ScanKind::Ip => canonical_ip(raw),
         ScanKind::Netblock => canonical_netblock(raw),
+        ScanKind::Asn => canonical_asn(raw),
         ScanKind::Network => network_selector(raw),
         // The people command owns the two-token rule and its offline skip path;
         // here only an empty name is non-canonical.
@@ -175,7 +182,9 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
 /// Infer the rebuilt lookup front-end for one selector.
 ///
 /// Precedence is intentional: canonical email, explicit `@handle`, public IP address, public
-/// address block, a BSSID or coordinate pair, recognised phone syntax, domain, then a person/name fallback. A BSSID or
+/// address block, an `AS`-prefixed public AS number, a BSSID or coordinate pair, recognised phone
+/// syntax, digits alone as an AS number (as Spiderfoot reads `1234`), domain, then a person/name
+/// fallback. A BSSID or
 /// coordinate pair is judged before phone syntax because its digits could otherwise read as a
 /// number. An SSID is free text, so it is never inferred.
 #[must_use]
@@ -188,15 +197,37 @@ pub fn infer_kind(selector: &str) -> ScanKind {
         ScanKind::Ip
     } else if canonical_netblock(selector).is_some() {
         ScanKind::Netblock
+    } else if is_written_as_asn(selector) {
+        ScanKind::Asn
     } else if NetworkSelector::parse_identifier(selector).is_some() {
         ScanKind::Network
     } else if crate::phone_intl::canonicalize(selector).is_some() {
         ScanKind::Phone
+    } else if is_bare_number(selector) && canonical_asn(selector).is_some() {
+        ScanKind::Asn
     } else if canonical_domain(selector).is_some() {
         ScanKind::Domain
     } else {
         ScanKind::People
     }
+}
+
+/// Whether `selector` is a public AS number written with its `AS` prefix.
+fn is_written_as_asn(selector: &str) -> bool {
+    selector
+        .trim()
+        .get(..2)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("as"))
+        && canonical_asn(selector).is_some()
+}
+
+/// Digits alone, which Spiderfoot reads as an AS number once they are not a phone number. A
+/// leading zero is a mistyped phone number (`0412`), never an AS number as one is written.
+fn is_bare_number(selector: &str) -> bool {
+    let trimmed = selector.trim();
+    !trimmed.is_empty()
+        && !trimmed.starts_with('0')
+        && trimmed.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Whether an inferred people route has a name to look up. The selector is the first
@@ -290,6 +321,19 @@ mod tests {
             Some("1.1.1.0/24")
         );
         assert_eq!(canonical_selector(ScanKind::Netblock, "10.0.0.0/8"), None);
+        assert_eq!(infer_kind("AS13335"), ScanKind::Asn);
+        assert_eq!(infer_kind("asn13335"), ScanKind::Asn);
+        assert_eq!(infer_kind("13335"), ScanKind::Asn);
+        assert_eq!(infer_kind("+61412345678"), ScanKind::Phone);
+        assert_ne!(infer_kind("64512"), ScanKind::Asn);
+        assert_ne!(infer_kind("0412"), ScanKind::Asn);
+        assert_ne!(infer_kind("Ashley"), ScanKind::Asn);
+        assert_eq!(
+            canonical_selector(ScanKind::Asn, "13335").as_deref(),
+            Some("AS13335")
+        );
+        assert_eq!(canonical_selector(ScanKind::Asn, "AS64512"), None);
+        assert_eq!(parse_kind("as"), Ok(ScanKind::Asn));
         assert_eq!(infer_kind("Ada Lovelace"), ScanKind::People);
         assert_eq!(infer_kind("00:1A:2B:3C:4D:5E"), ScanKind::Network);
         assert_eq!(infer_kind("00-1a-2b-3c-4d-5e"), ScanKind::Network);

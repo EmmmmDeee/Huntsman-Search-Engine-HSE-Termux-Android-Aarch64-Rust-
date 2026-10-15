@@ -351,13 +351,14 @@ pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
 }
 
 /// The lookup a saved scan of a target of this Spiderfoot type runs, or `None` for a type no
-/// lookup takes yet (an AS number).
+/// lookup takes yet (a bitcoin address).
 #[must_use]
 pub fn scan_kind(target_type: &str) -> Option<ScanKind> {
     match target_type {
         "INTERNET_NAME" => Some(ScanKind::Domain),
         "IP_ADDRESS" | "IPV6_ADDRESS" => Some(ScanKind::Ip),
         "NETBLOCK_OWNER" | "NETBLOCKV6_OWNER" => Some(ScanKind::Netblock),
+        "BGP_AS_OWNER" => Some(ScanKind::Asn),
         "EMAILADDR" => Some(ScanKind::Email),
         "PHONE_NUMBER" => Some(ScanKind::Phone),
         "USERNAME" => Some(ScanKind::Username),
@@ -818,9 +819,11 @@ mod tests {
                 "{raw}"
             );
         }
-        // An AS number is the one type sf.py detects that no lookup takes yet, and only from
-        // an API target: sf.py quotes a bare number, which makes it a username.
-        assert_eq!(scan_kind("BGP_AS_OWNER"), None);
+        // sf.py quotes a bare number, which makes `-s 13335` a username; an AS target comes from
+        // the API and runs the asn lookup.
+        assert_eq!(scan_kind("BGP_AS_OWNER"), Some(ScanKind::Asn));
+        assert_eq!(target_type(ScanKind::Asn, "AS13335"), "BGP_AS_OWNER");
+        assert_eq!(scan_kind("BITCOIN_ADDRESS"), None);
     }
 
     #[test]

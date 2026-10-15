@@ -146,7 +146,7 @@ pub fn plan(target: &str, kind: Option<&str>) -> Result<ScanPlan, ServiceError> 
             let kind = infer_kind(target);
             if kind == ScanKind::People && !inferred_people_is_name(&selector) {
                 return Err(ServiceError::BadRequest(
-                    "not a name, phone, email, handle, domain, IP address, BSSID or LAT,LON; choose a kind to scan it anyway".into(),
+                    "not a name, phone, email, handle, domain, IP address, address block, AS number, BSSID or LAT,LON; choose a kind to scan it anyway".into(),
                 ));
             }
             kind
@@ -189,6 +189,7 @@ pub fn target_type(kind: ScanKind, canonical: &str) -> &'static str {
         ScanKind::Ip => "IP_ADDRESS",
         ScanKind::Netblock if canonical.contains(':') => "NETBLOCKV6_OWNER",
         ScanKind::Netblock => "NETBLOCK_OWNER",
+        ScanKind::Asn => "BGP_AS_OWNER",
         ScanKind::Network => match NetworkSelector::parse(canonical) {
             Some(NetworkSelector::Bssid(_)) => "HSE_MAC_ADDRESS",
             Some(NetworkSelector::Area { .. }) => "PHYSICAL_COORDINATES",

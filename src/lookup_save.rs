@@ -219,6 +219,20 @@ pub const NETBLOCK_POLICY: SavePolicy = SavePolicy {
     entity_provenance: netblock_provenance,
 };
 
+fn asn_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        "ripestat" => ("ripestat", "src/ripestat.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/asn_cli.rs")),
+    }
+}
+
+pub const ASN_POLICY: SavePolicy = SavePolicy {
+    default_source: "ripestat",
+    does_not_show: "an autonomous-system lead is not an identity-resolution verdict",
+    outcome_provenance: asn_provenance,
+    entity_provenance: asn_provenance,
+};
+
 fn network_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "wigle" => ("wigle", "src/wigle.rs"),

@@ -1,7 +1,7 @@
 //! Person-selector lookup adapters.
 //!
 //! [`collect`] is the one execution path per lookup kind. The `people`, `email`, `exposure`,
-//! `username`, `phone`, `domain`, `ip`, `netblock` and `network` commands, `scan`, and the Web UI's `/api/lookup` all run through it,
+//! `username`, `phone`, `domain`, `ip`, `netblock`, `asn` and `network` commands, `scan`, and the Web UI's `/api/lookup` all run through it,
 //! so a kind cannot behave differently depending on where it was asked from.
 
 use std::path::Path;
@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::fail;
 use huntsman_recon::api_leg;
+use huntsman_recon::asn_cli::{ASN_USAGE, AsnArgs, AsnRun};
 use huntsman_recon::dehashed::{self, client::DehashedClient};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::{Entity, EntityKind, merge_by_uid};
@@ -22,8 +23,8 @@ use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
 use huntsman_recon::ip_cli::{IP_USAGE, IpArgs, IpRun};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
-    self, DOMAIN_POLICY, EMAIL_EXPOSURE_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, IP_POLICY,
-    NETBLOCK_POLICY, NETWORK_POLICY, PEOPLE_POLICY, PHONE_POLICY, SavePolicy,
+    self, ASN_POLICY, DOMAIN_POLICY, EMAIL_EXPOSURE_POLICY, EMAIL_POLICY, EXPOSURE_POLICY,
+    IP_POLICY, NETBLOCK_POLICY, NETWORK_POLICY, PEOPLE_POLICY, PHONE_POLICY, SavePolicy,
     USERNAME_EXPOSURE_POLICY, USERNAME_POLICY,
 };
 use huntsman_recon::netblock_cli::{NETBLOCK_USAGE, NetblockArgs, NetblockRun};
@@ -92,6 +93,7 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
         ScanKind::Phone => phone(selector, now),
         ScanKind::Ip => ip(selector, now),
         ScanKind::Netblock => netblock(selector, now),
+        ScanKind::Asn => asn(selector, now),
         ScanKind::Domain => domain(selector, now),
         ScanKind::Network => network(selector, now),
     }
@@ -337,6 +339,22 @@ fn netblock(selector: &str, now: u64) -> Result<Collected, Refused> {
     }
 }
 
+/// The AS sources for an AS number. Its transport reads up to [`huntsman_recon::asn_cli::MAX_BODY`]
+/// a call, so the largest networks' prefix lists arrive whole.
+fn asn(selector: &str, now: u64) -> Result<Collected, Refused> {
+    let transport = UreqTransport::new(&TransportConfig {
+        max_body: huntsman_recon::asn_cli::MAX_BODY,
+        ..api_leg::transport_config()
+    });
+    match huntsman_recon::asn_cli::run(&transport, selector, now) {
+        AsnRun::Printed { text, report } => {
+            Ok(done(text, report.entities, report.outcomes, ASN_POLICY))
+        }
+        AsnRun::Network(m) => Err(Refused::Network(m)),
+        AsnRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
 /// The domain sources for a hostname.
 fn domain(selector: &str, now: u64) -> Result<Collected, Refused> {
     let keys = crate::cli::credentials::lookup_keys();
@@ -472,6 +490,13 @@ pub(in crate::cli) fn netblock_cmd(args: &[String]) -> ExitCode {
     match NetblockArgs::parse(args) {
         Ok(p) => finish(ScanKind::Netblock, &p.netblock, p.save.as_deref()),
         Err(e) => usage_failure(&e, NETBLOCK_USAGE),
+    }
+}
+
+pub(in crate::cli) fn asn_cmd(args: &[String]) -> ExitCode {
+    match AsnArgs::parse(args) {
+        Ok(p) => finish(ScanKind::Asn, &p.asn, p.save.as_deref()),
+        Err(e) => usage_failure(&e, ASN_USAGE),
     }
 }
 

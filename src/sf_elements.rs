@@ -94,6 +94,18 @@ impl Target<'_> {
         matches!(self.kind, "NETBLOCK_OWNER" | "NETBLOCKV6_OWNER")
     }
 
+    /// Whether the target is the AS `asn` (`AS13335` or `13335`): an AS target is its own
+    /// owner, never a member of what it announces.
+    fn is_as(&self, asn: &str) -> bool {
+        let digits = |value: &str| {
+            value
+                .trim()
+                .trim_start_matches(['A', 'S', 'a', 's'])
+                .to_owned()
+        };
+        self.kind == "BGP_AS_OWNER" && digits(self.value) == digits(asn)
+    }
+
     /// Whether Spiderfoot's target would claim `domain` (`SpiderFootTarget.matches`): the target
     /// domain or a name under it, a target email's domain or a name under it, and any domain at
     /// all for a target it cannot place, a name, phone number, username or bitcoin address.
@@ -719,6 +731,9 @@ impl<'a> Walk<'a> {
             };
             let created = evidence.provenance.recorded_at_unix.saturating_mul(1000);
             for (kind, data) in descriptors(entity, evidence, self.now_unix) {
+                if kind == "BGP_AS_MEMBER" && self.target.is_as(&data) {
+                    continue;
+                }
                 said_malicious |= kind.starts_with("MALICIOUS_");
                 self.builder.push(
                     kind,
