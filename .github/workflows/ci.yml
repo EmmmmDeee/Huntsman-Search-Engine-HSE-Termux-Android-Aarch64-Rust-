@@ -91,6 +91,10 @@ jobs:
       # Keep the MSRV and stable verdicts independent: with fail-fast, a stable
       # failure cancels the 1.87 leg before it reports.
       fail-fast: false
+      # The MSRV leg and one pinned stable release. The gate does not track the floating
+      # `stable` channel: a new release's lints turned main red with no change to the code.
+      # Bump the pin deliberately, with the one in tests/ci_toolchains.rs, after the gate
+      # passes on the new release.
       matrix:
         toolchain: ["1.87", "1.99"]
     steps:

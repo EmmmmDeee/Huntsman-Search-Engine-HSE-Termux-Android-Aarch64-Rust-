@@ -8,6 +8,7 @@ mod error;
 mod gate;
 mod issue_fix;
 mod ops;
+mod oui;
 mod proc;
 mod release;
 
@@ -22,7 +23,8 @@ commands:
   issue-fix ...           the issue-fix path guard, capture, key scan, and publish
   dual-pass ...           the dual-pass planner, red classifier, runner, and publisher
   release ...             the release promotion and release checks
-  ops ...                 Railway checks and prerelease cleanup";
+  ops ...                 Railway checks and prerelease cleanup
+  oui ...                 pack the IEEE MA-L registry into src/oui_ieee.bin, or dump a blob";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,6 +36,7 @@ fn main() -> ExitCode {
         Some("dual-pass") => dual_pass::run(&args[1..]),
         Some("release") => release::run(&args[1..]),
         Some("ops") => ops::run(&args[1..]),
+        Some("oui") => oui::run(&args[1..]),
         Some("-h" | "--help") => {
             println!("{USAGE}");
             ExitCode::SUCCESS

@@ -123,7 +123,7 @@ before using credentials or network access.
 | `var/` | Artifacts written by `check` (`ledger.json`, `navigator.json`, `stix-bundle.json`). CI fails if `check` changes them. |
 | `docs/` | Design and operations notes, including `RELEASING.md` (the main-channel release workflow, its key scanner, publish refusals and required attestation). |
 | `docs/ARCHIVE_PROVENANCE.md` | SHA-256 and Git identities of the historical source archives, which are absent from the active tree and recoverable from Git history. |
-| `.github/` | `workflows/ci.yml` (tests on Rust 1.87 and stable; aarch64 Android cross-build), `workflows/release.yml` (`main-<sha7>` pre-releases of `huntsman-recon`), `scripts/` (`scan-for-keys.sh`, `install-termux.sh`) and `actions/setup-ndk-aarch64` (NDK compiler and linker environment). |
+| `.github/` | `workflows/ci.yml` (tests on Rust 1.87 and the pinned stable release; aarch64 Android cross-build), `workflows/release.yml` (`main-<sha7>` pre-releases of `huntsman-recon`), `scripts/` (`scan-for-keys.sh`, `install-termux.sh`) and `actions/setup-ndk-aarch64` (NDK compiler and linker environment). |
 | `CHANGELOG.md` | Notable changes, Keep a Changelog format. |
 | `changelog.d/` | One fragment per change (`<slug>.<section>.md`), checked by every gate mode and assembled into `CHANGELOG.md` by `cargo run --locked -p xtask -- changelog assemble` when a version heading is cut. |
 | `docs/COMMERCIAL_READINESS.md` | Buyer/client due-diligence index: reusable assets, proof boundaries, commercial-readiness gates, and value-maximizing engineering sequence. |
@@ -311,7 +311,7 @@ markers intentionally suppressed.
 
 ## Build and install
 
-Toolchain: the crate's MSRV is Rust 1.87 (`rust-version` in `Cargo.toml`); CI tests Rust 1.87 and current stable. The owner's reference toolchain is Rust 1.98.0. The repository has no `rust-toolchain.toml`, so rustup uses your default toolchain.
+Toolchain: the crate's MSRV is Rust 1.87 (`rust-version` in `Cargo.toml`); CI tests Rust 1.87 and one pinned stable release, currently 1.99; `tests/ci_toolchains.rs` holds the pin, so a new release's lints cannot turn `main` red until the pin is bumped on purpose. The owner's reference toolchain is Rust 1.98.0. The repository has no `rust-toolchain.toml`, so rustup uses your default toolchain.
 
 On the device, in Termux (unverified on a handset):
 
