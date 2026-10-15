@@ -5,8 +5,8 @@
 //! exact same classifier.
 
 use crate::canonical::{
-    canonical_coordinates, canonical_domain, canonical_email, canonical_handle, canonical_mac,
-    canonical_name, canonical_phone,
+    canonical_coordinates, canonical_domain, canonical_email, canonical_handle, canonical_ip,
+    canonical_mac, canonical_name, canonical_phone,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +20,8 @@ pub enum ScanKind {
     Phone,
     /// Domain recon: crt.sh certificate transparency and DNS record lookups.
     Domain,
+    /// One public IP address: `InternetDB`, `RIPEstat`, `GreyNoise`, and keyed reputation legs.
+    Ip,
     /// A `WiFi` network: a BSSID, a coordinate pair or an SSID, classified offline and searched
     /// on `WiGLE` when its credentials are configured.
     Network,
@@ -27,13 +29,14 @@ pub enum ScanKind {
 
 impl ScanKind {
     /// Every kind, in the order the CLI usage and the Web UI list them.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::People,
         Self::Email,
         Self::Exposure,
         Self::Username,
         Self::Phone,
         Self::Domain,
+        Self::Ip,
         Self::Network,
     ];
 
@@ -46,6 +49,7 @@ impl ScanKind {
             Self::Username => "username",
             Self::Phone => "phone",
             Self::Domain => "domain",
+            Self::Ip => "ip",
             Self::Network => "network",
         }
     }
@@ -135,6 +139,7 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
         "username" | "handle" => Ok(ScanKind::Username),
         "phone" => Ok(ScanKind::Phone),
         "domain" => Ok(ScanKind::Domain),
+        "ip" | "address" => Ok(ScanKind::Ip),
         "network" | "wifi" | "bssid" | "ssid" | "wigle" => Ok(ScanKind::Network),
         other => Err(other),
     }
@@ -149,6 +154,7 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
         ScanKind::Username => canonical_handle(raw),
         ScanKind::Phone => canonical_phone(raw),
         ScanKind::Domain => canonical_domain(raw),
+        ScanKind::Ip => canonical_ip(raw),
         ScanKind::Network => network_selector(raw),
         // The people command owns the two-token rule and its offline skip path;
         // here only an empty name is non-canonical.
@@ -161,16 +167,18 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
 
 /// Infer the rebuilt lookup front-end for one selector.
 ///
-/// Precedence is intentional: canonical email, explicit `@handle`, a BSSID or coordinate
-/// pair, recognised phone syntax, then a person/name fallback. A BSSID or coordinate pair is
-/// judged before phone syntax because its digits could otherwise read as a number. An SSID is
-/// free text, so it is never inferred.
+/// Precedence is intentional: canonical email, explicit `@handle`, public IP address, a BSSID or
+/// coordinate pair, recognised phone syntax, domain, then a person/name fallback. A BSSID or
+/// coordinate pair is judged before phone syntax because its digits could otherwise read as a
+/// number. An SSID is free text, so it is never inferred.
 #[must_use]
 pub fn infer_kind(selector: &str) -> ScanKind {
     if canonical_email(selector).is_some() {
         ScanKind::Email
     } else if selector.starts_with('@') {
         ScanKind::Username
+    } else if canonical_ip(selector).is_some() {
+        ScanKind::Ip
     } else if NetworkSelector::parse_identifier(selector).is_some() {
         ScanKind::Network
     } else if crate::phone_intl::canonicalize(selector).is_some() {
@@ -262,6 +270,10 @@ mod tests {
         assert_eq!(infer_kind("@ada"), ScanKind::Username);
         assert_eq!(infer_kind("+61412345678"), ScanKind::Phone);
         assert_eq!(infer_kind("example.com"), ScanKind::Domain);
+        assert_eq!(infer_kind("1.1.1.1"), ScanKind::Ip);
+        assert_eq!(infer_kind("2606:4700:4700::1111"), ScanKind::Ip);
+        assert_eq!(parse_kind("ip"), Ok(ScanKind::Ip));
+        assert_eq!(canonical_selector(ScanKind::Ip, "10.0.0.1"), None);
         assert_eq!(infer_kind("Ada Lovelace"), ScanKind::People);
         assert_eq!(infer_kind("00:1A:2B:3C:4D:5E"), ScanKind::Network);
         assert_eq!(infer_kind("00-1a-2b-3c-4d-5e"), ScanKind::Network);
