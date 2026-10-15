@@ -585,6 +585,19 @@ impl UreqTransport {
     }
 }
 
+impl UreqTransport {
+    /// Why every question fails, when the configured trust roots could not be loaded: a
+    /// misconfigured transport asks nothing, over HTTPS or otherwise, so the operator sees one
+    /// failure instead of a lookup that half works.
+    fn misconfigured(&self) -> Option<TransportFailure> {
+        self.trust_failure.as_ref().map(|reason| TransportFailure {
+            kind: SourceOutcomeKind::TlsFailure,
+            detail: reason.clone(),
+            blocked: false,
+        })
+    }
+}
+
 impl Default for UreqTransport {
     fn default() -> Self {
         Self::new(&TransportConfig::default())
@@ -593,16 +606,15 @@ impl Default for UreqTransport {
 
 impl Transport for UreqTransport {
     fn resolve(&self, name: &str) -> Result<Vec<IpAddr>, TransportFailure> {
+        if let Some(failure) = self.misconfigured() {
+            return Err(failure);
+        }
         system_resolve(name, RESOLVE_TIMEOUT.min(self.timeout))
     }
 
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-        if let Some(reason) = &self.trust_failure {
-            return Err(TransportFailure {
-                kind: SourceOutcomeKind::TlsFailure,
-                detail: reason.clone(),
-                blocked: false,
-            });
+        if let Some(failure) = self.misconfigured() {
+            return Err(failure);
         }
         let invalid = |detail: String| TransportFailure {
             kind: SourceOutcomeKind::ProtocolDrift,
@@ -764,6 +776,9 @@ mod tests {
             assert!(!failure.blocked);
             assert!(failure.detail.contains(expected), "{}", failure.detail);
             assert!(failure.detail.contains(crate::environment::CA_BUNDLE_ENV));
+            // Nor does it ask the system resolver: the whole transport is closed.
+            let refused = transport.resolve("2.0.0.127.zen.spamhaus.org").unwrap_err();
+            assert_eq!(refused, failure);
         }
         std::fs::remove_file(empty).unwrap();
     }
