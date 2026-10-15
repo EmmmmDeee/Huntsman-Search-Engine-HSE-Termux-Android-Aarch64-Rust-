@@ -1463,12 +1463,8 @@ const PAGE_ID_SLOT: &str = r#"<meta name="huntsman-page" content="">"#;
 
 /// The first 16 hex digits of the SHA-256 of the page this build embeds. Every page an upgrade
 /// changes gets a new id, a build without provenance metadata included.
-static PAGE_ID: LazyLock<String> = LazyLock::new(|| {
-    sha256(INDEX_HTML.as_bytes())[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-});
+static PAGE_ID: LazyLock<String> =
+    LazyLock::new(|| crate::sha256::hex32(&sha256(INDEX_HTML.as_bytes()))[..16].to_owned());
 
 /// The page as served: [`INDEX_HTML`] carrying its [`PAGE_ID`], which the page compares with
 /// the one every health answer names.
