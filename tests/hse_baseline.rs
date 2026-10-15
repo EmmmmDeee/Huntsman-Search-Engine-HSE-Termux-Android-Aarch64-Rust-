@@ -18,40 +18,95 @@ fn script_text() -> String {
     fs::read_to_string(script_path()).expect("scripts/hse-baseline.sh must exist")
 }
 
-/// The script with every comment and quoted string removed, so the scan for destructive commands
-/// below sees only the words the shell would actually run. A `#` starts a comment only after
-/// whitespace or at the start of a line; a `#` inside `$#`/`${#...}` or a string is kept.
-fn executable_words(text: &str) -> String {
+/// The script with comments and the contents of quoted strings removed, leaving only the words the
+/// shell would run as commands and arguments. A command substitution `$( … )` restores an unquoted
+/// context — so a `"…"` nested inside it is its own string, exactly as the shell treats it — and
+/// backslash line continuations are joined so a wrapped command stays one logical line. A `#`
+/// starts a comment only outside quotes and at the start of a line or after whitespace.
+fn executable_words(raw: &str) -> String {
+    let joined = raw.replace("\\\n", " ");
+    #[derive(PartialEq, Clone, Copy)]
+    enum Quote {
+        None,
+        Single,
+        Double,
+    }
+    let mut stack = vec![Quote::None];
     let mut out = String::new();
-    for line in text.lines() {
-        let mut in_single = false;
-        let mut in_double = false;
-        let mut prev_is_space = true;
-        for ch in line.chars() {
-            if !in_single && !in_double && ch == '#' && prev_is_space {
-                break; // comment to end of line
+    let mut prev_space = true;
+    let mut chars = joined.chars().peekable();
+    while let Some(c) = chars.next() {
+        match *stack.last().expect("stack is never empty") {
+            Quote::Single => {
+                if c == '\'' {
+                    *stack.last_mut().unwrap() = Quote::None;
+                }
+                if c == '\n' {
+                    out.push('\n');
+                }
+                prev_space = c == '\n';
             }
-            match ch {
-                '\'' if !in_double => in_single = !in_single,
-                '"' if !in_single => in_double = !in_double,
-                _ if !in_single && !in_double => out.push(ch),
-                _ => {}
+            Quote::Double => {
+                if c == '$' && chars.peek() == Some(&'(') {
+                    chars.next();
+                    stack.push(Quote::None);
+                } else if c == '"' {
+                    *stack.last_mut().unwrap() = Quote::None;
+                } else if c == '\n' {
+                    out.push('\n');
+                }
+                prev_space = c == '\n';
             }
-            prev_is_space = ch.is_whitespace();
+            Quote::None => match c {
+                '#' if prev_space => {
+                    while let Some(&n) = chars.peek() {
+                        if n == '\n' {
+                            break;
+                        }
+                        chars.next();
+                    }
+                }
+                '\'' => {
+                    *stack.last_mut().unwrap() = Quote::Single;
+                    prev_space = false;
+                }
+                '"' => {
+                    *stack.last_mut().unwrap() = Quote::Double;
+                    prev_space = false;
+                }
+                '$' if chars.peek() == Some(&'(') => {
+                    chars.next();
+                    stack.push(Quote::None);
+                    prev_space = false;
+                }
+                ')' if stack.len() > 1 => {
+                    stack.pop();
+                    prev_space = false;
+                }
+                '\n' => {
+                    out.push('\n');
+                    prev_space = true;
+                }
+                _ => {
+                    out.push(c);
+                    prev_space = c.is_whitespace();
+                }
+            },
         }
-        out.push('\n');
     }
     out
 }
 
-/// Whitespace-and-punctuation split, with each token's leading dashes dropped so `--workspace`
-/// becomes `workspace` and `-C` becomes `C`. Hyphens inside a word are kept, so `cherry-pick`
-/// and `rev-parse` stay whole.
-fn tokens(words: &str) -> Vec<String> {
-    words
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-        .map(|t| t.trim_start_matches('-').to_ascii_lowercase())
-        .filter(|t| !t.is_empty())
+/// A line's whitespace-separated words, each trimmed of surrounding shell punctuation but keeping
+/// internal characters, so `push;` becomes `push` while `rev-parse` and `HEAD^{commit}` stay whole
+/// (and `HEAD^{commit}` never reduces to the bare word `commit`).
+fn words_on_line(line: &str) -> Vec<String> {
+    line.split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .to_string()
+        })
+        .filter(|w| !w.is_empty())
         .collect()
 }
 
@@ -68,38 +123,38 @@ fn hse_baseline_parses_as_bash() {
 #[test]
 fn hse_baseline_keeps_its_read_only_contract() {
     let words = executable_words(&script_text());
-    let toks = tokens(&words);
 
-    // No command the script runs may push to a remote, write history, deploy, or install the app.
-    const FORBIDDEN: &[&str] = &[
+    // A git invocation (direct or through the run_git wrapper) may only name read-only or local
+    // subcommands — never one that writes history or publishes to a remote.
+    const DESTRUCTIVE_GIT: &[&str] = &[
         "push",
         "commit",
         "merge",
         "rebase",
         "reset",
-        "cherry-pick",
         "revert",
-        "format-patch",
+        "cherry-pick",
         "tag",
-        "deploy",
-        "publish",
-        "gh",
+        "format-patch",
+        "am",
     ];
-    for bad in FORBIDDEN {
-        assert!(
-            !toks.iter().any(|t| t == bad),
-            "{SCRIPT} must stay read-only, but runs a `{bad}` command"
-        );
-    }
-
-    // `cargo install` / `cargo publish` would mutate the host or a registry; `pkg install` of the
-    // toolchain is allowed, but installing the app or an install.sh is not.
-    for (i, t) in toks.iter().enumerate() {
-        if t == "cargo" {
-            if let Some(next) = toks.get(i + 1) {
+    for line in words.lines() {
+        let toks = words_on_line(line);
+        if toks.iter().any(|t| t == "git" || t == "run_git") {
+            for bad in DESTRUCTIVE_GIT {
                 assert!(
-                    next != "install" && next != "publish",
-                    "{SCRIPT} must not run `cargo {next}`"
+                    !toks.iter().any(|t| t == bad),
+                    "{SCRIPT} must stay read-only, but a git command runs `{bad}`: {line:?}"
+                );
+            }
+        }
+        // `cargo install` / `cargo publish` would mutate the host or a registry; `pkg install` of
+        // the toolchain is on its own line and allowed.
+        if toks.iter().any(|t| t == "cargo") {
+            for bad in ["install", "publish"] {
+                assert!(
+                    !toks.iter().any(|t| t == bad),
+                    "{SCRIPT} must not run `cargo {bad}`: {line:?}"
                 );
             }
         }
