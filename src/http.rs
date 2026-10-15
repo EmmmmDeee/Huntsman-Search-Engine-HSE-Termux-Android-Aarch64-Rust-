@@ -262,6 +262,64 @@ pub trait Transport {
             blocked: false,
         })
     }
+
+    /// Send one DNS message to `server` over UDP and return the datagram it sends back, as a
+    /// resolver that offers no DNS-over-HTTPS is asked. A transport without UDP fails every
+    /// exchange.
+    ///
+    /// # Errors
+    /// `TransportFailure` when nothing came back within [`UDP_TIMEOUT`], or the egress policy
+    /// refuses `server` (then nothing was sent).
+    fn exchange_udp(
+        &self,
+        server: SocketAddr,
+        _message: &[u8],
+    ) -> Result<Vec<u8>, TransportFailure> {
+        Err(TransportFailure {
+            kind: SourceOutcomeKind::ConnectFailure,
+            detail: format!("no UDP to ask {server}"),
+            blocked: false,
+        })
+    }
+}
+
+/// The longest one UDP exchange waits for its answer.
+pub const UDP_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Send `message` to `server` from a fresh socket connected to it, so only `server`'s datagrams
+/// are read, and wait at most `timeout` for one.
+fn udp_exchange(
+    server: SocketAddr,
+    message: &[u8],
+    timeout: Duration,
+) -> Result<Vec<u8>, TransportFailure> {
+    let failure = |error: &io::Error| TransportFailure {
+        kind: if matches!(
+            error.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+        ) {
+            SourceOutcomeKind::TtfbTimeout
+        } else {
+            SourceOutcomeKind::ConnectFailure
+        },
+        detail: format!("{server}: {error}"),
+        blocked: false,
+    };
+    let local: SocketAddr = if server.is_ipv4() {
+        (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+    } else {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    };
+    let socket = std::net::UdpSocket::bind(local).map_err(|e| failure(&e))?;
+    socket.connect(server).map_err(|e| failure(&e))?;
+    socket
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| failure(&e))?;
+    socket.send(message).map_err(|e| failure(&e))?;
+    let mut buffer = vec![0_u8; 65_535];
+    let length = socket.recv(&mut buffer).map_err(|e| failure(&e))?;
+    buffer.truncate(length);
+    Ok(buffer)
 }
 
 /// The longest one system-resolver question may take: a blocklist that does not answer is
@@ -536,6 +594,7 @@ pub struct UreqTransport {
     agent: ureq::Agent,
     max_body: usize,
     timeout: Duration,
+    egress: EgressPolicy,
     /// Why the configured trust roots could not be loaded. Every request fails with it,
     /// so a broken bundle never falls back to other roots.
     trust_failure: Option<String>,
@@ -580,6 +639,7 @@ impl UreqTransport {
             agent,
             max_body: config.max_body,
             timeout: config.timeout,
+            egress: config.egress,
             trust_failure,
         }
     }
@@ -610,6 +670,27 @@ impl Transport for UreqTransport {
             return Err(failure);
         }
         system_resolve(name, RESOLVE_TIMEOUT.min(self.timeout))
+    }
+
+    fn exchange_udp(
+        &self,
+        server: SocketAddr,
+        message: &[u8],
+    ) -> Result<Vec<u8>, TransportFailure> {
+        if let Some(failure) = self.misconfigured() {
+            return Err(failure);
+        }
+        if !self.egress.permits(server.ip()) {
+            return Err(TransportFailure {
+                kind: SourceOutcomeKind::ConnectFailure,
+                detail: format!(
+                    "{BLOCKED_PREFIX} destination ({}) is not publicly routable",
+                    server.ip()
+                ),
+                blocked: true,
+            });
+        }
+        udp_exchange(server, message, UDP_TIMEOUT.min(self.timeout))
     }
 
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
@@ -779,6 +860,11 @@ mod tests {
             // Nor does it ask the system resolver: the whole transport is closed.
             let refused = transport.resolve("2.0.0.127.zen.spamhaus.org").unwrap_err();
             assert_eq!(refused, failure);
+            let query = crate::dns_wire::query(0, "example.com", crate::dns_wire::A).unwrap();
+            let unsent = transport
+                .exchange_udp(SocketAddr::from(([9, 9, 9, 9], 53)), &query)
+                .unwrap_err();
+            assert_eq!(unsent, failure);
         }
         std::fs::remove_file(empty).unwrap();
     }

@@ -198,6 +198,8 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         list @ ("spamhaus" | "spamcop" | "uceprotect" | "dronebl" | "sorbs" | "surbl") => {
             (list, "src/dnsbl.rs")
         }
+        filter @ ("adguard_dns" | "cleanbrowsing" | "cloudflaredns" | "comodo"
+        | "dns_for_family" | "opendns" | "quad9" | "yandexdns") => (filter, "src/dns_filter.rs"),
         _ => return None,
     })
 }

@@ -2,10 +2,10 @@
 //!
 //! Runs crt.sh and Cert Spotter certificate transparency (see [`crate::certspotter`]: every
 //! certificate logged for the domain and its subdomains, each in full), DNS record and RDAP
-//! registration lookups (see [`crate::rdap_legs`]) and the domain blocklists Spiderfoot asks
-//! over the system resolver (see [`crate::dnsbl`]) in sequence for a single domain, then the
-//! keyed legs whose key is configured: `VirusTotal` reputation
-//! (`HUNTSMAN_VIRUSTOTAL_KEY`) and Hunter.io published addresses (`HUNTSMAN_HUNTER_KEY`), then
+//! registration lookups (see [`crate::rdap_legs`]), the domain blocklists Spiderfoot asks over the
+//! system resolver (see [`crate::dnsbl`]) and the filtering resolvers (see [`crate::dns_filter`])
+//! in sequence for a single domain, then the keyed legs whose key is configured: `VirusTotal`
+//! reputation (`HUNTSMAN_VIRUSTOTAL_KEY`) and Hunter.io published addresses (`HUNTSMAN_HUNTER_KEY`), then
 //! every domain source in [`crate::indicator_legs::SOURCES`] (Shodan DNS, Pulsedive, Netlas, OTX, urlscan.io, Robtex,
 //! `HackerTarget`, `LeakIX`, `URLhaus`, `SecurityTrails`,
 //! `ThreatFox`, Whoxy WHOIS). A keyed leg without its key makes no request and reports nothing;
@@ -25,6 +25,7 @@ use crate::canonical::{canonical_domain, canonical_email, canonical_ip};
 use crate::certspotter;
 use crate::crtsh::{self, CrtShError};
 use crate::dns::{self, DomainDns, RecordType, ResolveErrorKind};
+use crate::dns_filter;
 use crate::dnsbl::{self, Subject};
 use crate::entity::Entity;
 use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
@@ -119,8 +120,11 @@ pub fn run<T: Transport + ?Sized + Sync>(
     // Whether the resolvers answered the domain's own queries; when none did, its hosts are not
     // asked either.
     let mut resolvers_up = false;
+    // The domain's own addresses, which a filtering resolver's missing answer is read against.
+    let mut unfiltered = dns_filter::Unfiltered::Unanswered("not a name to ask".to_owned());
     match dns::lookup_domain(transport, &domain) {
         Some(records) => {
+            unfiltered = dns_filter::Unfiltered::from_records(&records);
             if let Some(failure) = resolver_failure(&records) {
                 found.no_response(format!(
                     "dns: no resolver answered ({})",
@@ -151,6 +155,9 @@ pub fn run<T: Transport + ?Sized + Sync>(
     }
     let (listed, rows) = dnsbl::check(transport, Subject::Domain(&domain), &scan_id, now_unix);
     found.entities.extend(listed);
+    found.outcomes.extend(rows);
+    let (blocked, rows) = dns_filter::check(transport, &domain, &unfiltered, &scan_id, now_unix);
+    found.entities.extend(blocked);
     found.outcomes.extend(rows);
     keyed_legs(transport, keys, &domain, &scan_id, now_unix, &mut found);
     let hosts = resolve::hosts(&found.entities, &domain);
