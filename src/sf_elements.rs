@@ -124,6 +124,9 @@ fn entity_type(entity: &Entity, target: Target<'_>) -> &'static str {
                 }
                 Some(_) if unresolved => "AFFILIATE_INTERNET_NAME_UNRESOLVED",
                 Some(_) => "AFFILIATE_INTERNET_NAME",
+                // The address's own reverse zone names it: Spiderfoot takes such a name as the
+                // target's alias. Any other name on the address is a site hosted there.
+                None if target.is_ip() && entity.has_tag(tags::PTR) => "INTERNET_NAME",
                 None if target.is_ip() => "CO_HOSTED_SITE",
                 None if unresolved => "INTERNET_NAME_UNRESOLVED",
                 None => "INTERNET_NAME",

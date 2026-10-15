@@ -320,25 +320,13 @@ fn resolver_failure(records: &DomainDns) -> Option<&dns::QueryFailure> {
         .find(|failure| failure.error.kind != ResolveErrorKind::Empty)
 }
 
-/// The outcome kind of a query no resolver answered. **Pure.**
-const fn unanswered_kind(kind: ResolveErrorKind) -> SourceOutcomeKind {
-    match kind {
-        ResolveErrorKind::Timeout => SourceOutcomeKind::TtfbTimeout,
-        ResolveErrorKind::RateLimited => SourceOutcomeKind::RateLimited,
-        ResolveErrorKind::BotWaf => SourceOutcomeKind::BotWaf,
-        ResolveErrorKind::Upstream | ResolveErrorKind::Truncated | ResolveErrorKind::Empty => {
-            SourceOutcomeKind::Inconclusive
-        }
-    }
-}
-
 /// The DNS leg's outcome. `found` counts the records the zone returned. A zone that answered
 /// every query with "no such name" or "no such record" is a validated zero; when no resolver
 /// answered at all the outcome says why, never a zero. Queries that failed beside answered ones
 /// are named in `detail`. **Pure.**
 fn dns_outcome(records: &DomainDns, now_unix: u64) -> SourceExecutionOutcome {
     if let Some(failure) = resolver_failure(records) {
-        let kind = unanswered_kind(failure.error.kind);
+        let kind = failure.error.kind.outcome_kind();
         let detail = format!(
             "no resolver answered: {} queries failed, the first {} {}: {}",
             records.failures.len(),
@@ -508,7 +496,7 @@ impl<'a> ZoneFindings<'a> {
                     .with_attr("record_type", label);
                 self.apex.add_evidence(evidence);
             }
-            RecordType::Soa => {}
+            RecordType::Soa | RecordType::Ptr => {}
         }
     }
 

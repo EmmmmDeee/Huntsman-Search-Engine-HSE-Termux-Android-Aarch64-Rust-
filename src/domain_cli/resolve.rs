@@ -21,7 +21,7 @@ use crate::http::Transport;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::tags;
 
-use super::{DOMAIN_CONFIDENCE, RECORD_CONFIDENCE, unanswered_kind};
+use super::{DOMAIN_CONFIDENCE, RECORD_CONFIDENCE};
 
 /// The most hosts one lookup resolves, two queries each. A host past it is still an entity of
 /// the lookup; the outcome row counts it as not resolved.
@@ -279,7 +279,7 @@ impl Tally {
             return SourceExecutionOutcome::failed(
                 RESOLVE_SOURCE,
                 now_unix,
-                unanswered_kind(kind),
+                kind.outcome_kind(),
                 None,
                 format!(
                     "no resolver answered: {} of {} hosts failed, the first {}: {detail}",
