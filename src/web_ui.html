@@ -216,7 +216,7 @@ dd dl{margin:0}
 main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 .acts{flex-wrap:nowrap}
 }
-.keyedit summary{margin-top:6px;padding:0 10px;border-radius:var(--r)}.keyedit form{display:grid;gap:6px;padding:8px 0 0}.keyedit label{font:12.5px var(--mono)}.keyedit input{margin:0}
+.keyedit summary{margin-top:6px;padding:0 10px;border-radius:var(--r)}.keyedit form{display:grid;gap:6px;padding:8px 0 0}.keyedit label{font:12.5px var(--mono)}.keyedit input{margin:0}#kimp label{font:13px var(--sans)}
 </style>
 <header class="appbar">
 <a class="brand" href="#/scans"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg><span class="brand-text">Huntsman<span class="brand-sub"><span class="sep">·</span>Search Engine</span></span><span class="ver" id="ver"></span></a>
@@ -389,7 +389,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <section id="view-settings" hidden>
 <h1>Settings</h1>
 <p class="alert" id="gerror" role="alert" hidden></p>
-<div class="panel"><div class="panel-heading">Global Settings</div><dl class="kv" id="gopts"></dl><p class="alert warn" id="kwarn" role="alert" hidden></p></div>
+<div class="panel"><div class="panel-heading">Global Settings</div><dl class="kv" id="gopts"></dl><p class="alert warn" id="kwarn" role="alert" hidden></p><details class="keyedit pad" id="kimp" hidden><summary>Import API keys</summary><form id="kimp-f"><label for="kimp-file">Spiderfoot's settings export (SpiderFoot.cfg) or a keys file</label><input type="file" id="kimp-file" accept=".cfg,.env,.txt,text/plain"><label for="kimp-text">or paste its lines</label><textarea id="kimp-text" rows="3" autocomplete="off" spellcheck="false"></textarea><button class="btn" type="submit">Import</button><p class="help" id="kimp-m" role="status"></p></form></details></div>
 <div class="panel"><div class="panel-heading">Modules <span class="badge" id="mods-n"></span></div>
 <div class="filter"><input type="search" id="mfilter" autocomplete="off" placeholder="Filter modules" aria-label="Filter modules"></div>
 <div class="table-wrap"><table class="sortable"><thead><tr><th>Module</th><th>Category</th><th>Access</th><th>API Key</th><th>Description</th></tr></thead><tbody id="mods"></tbody></table></div></div>
@@ -1194,7 +1194,7 @@ async function loadSettings(){
   // Which keys the page may save, and whether each is set; a server without a keys file answers none.
   try{keyslots=await api('/api/settings/keys')}catch(_){keyslots=null}
   kv('gopts',base.concat((settings.global||[]).map(g=>[g.description?g.description[0].toUpperCase()+g.description.slice(1):g.key,show(g.value)]),keyslots?[['Keys file',keyslots.file]]:[]));
-  keyWarning();showMods();
+  $('kimp').hidden=!keyslots;keyWarning();showMods();
   try{showRules(await api('/api/correlationrules'))}catch(_){$('rules-p').hidden=true}
 }
 function showRules(rules){
@@ -1258,6 +1258,22 @@ async function saveKey(m,slot,value){
   try{settings=await api('/api/settings')}catch(_){}
   keyWarning();showMods();return true;
 }
+// Spiderfoot's Import API Keys: its SpiderFoot.cfg export, or a keys file, saved in one go. The
+// server reads which slot each key belongs to and answers with the slots, never a value.
+$('kimp-f').onsubmit=async e=>{
+  e.preventDefault();
+  const m=$('kimp-m'),t=$('kimp-text'),f=$('kimp-file').files[0],text=t.value.trim()?t.value:f?await f.text():'';
+  if(!text.trim()){m.textContent='Choose a file or paste its lines first.';return}
+  m.textContent='Importing…';
+  try{keyslots=await api('/api/settings/keys',{method:'POST',body:new URLSearchParams({import:text})})}catch(err){m.textContent=err.message;return}
+  t.value='';$('kimp-file').value='';
+  const i=keyslots.imported||{slots:[],unused:[],settings:0},n=i.slots.length;
+  m.textContent='Imported '+n+(n===1?' key':' keys')+' into '+keyslots.file+': '+i.slots.join(', ')+'. The next lookup uses '+(n===1?'it':'them')+'.'
+    +(i.unused.length?' No Huntsman source takes '+i.unused.join(', ')+'.':'')
+    +(i.settings?' '+i.settings+(i.settings===1?' Spiderfoot setting that is not a key was':' Spiderfoot settings that are not keys were')+' left out.':'');
+  try{settings=await api('/api/settings')}catch(_){}
+  keyWarning();showMods();
+};
 $('mfilter').oninput=showMods;
 // Table headers sort their rows, as Spiderfoot's tables do.
 document.addEventListener('click',e=>{

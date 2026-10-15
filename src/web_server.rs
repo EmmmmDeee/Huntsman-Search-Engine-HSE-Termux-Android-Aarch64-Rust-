@@ -36,6 +36,7 @@ use crate::base64;
 use crate::engineering_command;
 use crate::entity::Entity;
 use crate::error::Error;
+use crate::key_import;
 use crate::keys::{self, Keys};
 use crate::module::reachable_modules;
 use crate::provider_credentials::PROVIDERS;
@@ -129,9 +130,10 @@ const ANALYZE_STACK_BYTES: usize = 4 * 1024 * 1024;
 /// like an analysis, it runs on its own thread with a stack sized for that. Starting a scan only
 /// saves its row: the scan itself runs on the service's own thread.
 const SCANS_STACK_BYTES: usize = 4 * 1024 * 1024;
-/// The longest request body the server reads: a Settings page key save, its `slot` and `value`
-/// form-encoded. Every other route takes its parameters in the query string.
-const MAX_FORM_BYTES: usize = 3 * keys::MAX_KEY_BYTES + 512;
+/// The longest request body the server reads: a Settings page key save (`slot` and `value`) or
+/// key import (`import`, a whole `SpiderFoot.cfg` or keys file), form-encoded, in what a request
+/// leaves past its head (25 KiB). Every other route takes its parameters in the query string.
+const MAX_FORM_BYTES: usize = MAX_REQUEST_BYTES - HEADER_ALLOWANCE;
 /// The Settings page's provider keys: which may be saved, and one save.
 const KEYS_PATH: &str = "/api/settings/keys";
 /// The header a lookup request must carry. Its presence forces a CORS preflight from any other
@@ -1305,22 +1307,32 @@ fn keys_response(parsed: &ParsedRequest<'_>, home: Option<&Path>) -> String {
         );
     }
     if parsed.method == Method::Post {
-        if let Err(refused) = save_key(parsed, &home.join(keys::DEFAULT_KEYS_FILE)) {
-            return refused;
-        }
-    } else if parsed.has_body {
+        return match save_key(parsed, &home.join(keys::DEFAULT_KEYS_FILE)) {
+            Ok(imported) => key_slots(home, false, imported.as_ref()),
+            Err(refused) => refused,
+        };
+    }
+    if parsed.has_body {
         return json_error(400, "only a key save sends a body");
     }
-    key_slots(home, parsed.method == Method::Head)
+    key_slots(home, parsed.method == Method::Head, None)
+}
+
+/// What a key import saved: the slots, and what it left out, by name.
+struct Imported {
+    slots: Vec<&'static str>,
+    unused: Vec<String>,
+    settings: usize,
 }
 
 /// One key save from the form in `parsed`'s body: `slot`, a slot of a provider in the credential
-/// catalogue, and `value`, the key, or empty to remove the slot. The refusal is the answer to send.
-fn save_key(parsed: &ParsedRequest<'_>, file: &Path) -> Result<(), String> {
+/// catalogue, and `value`, the key, or empty to remove the slot; or a key import, `import`, the
+/// text of a file holding keys. The refusal is the answer to send.
+fn save_key(parsed: &ParsedRequest<'_>, file: &Path) -> Result<Option<Imported>, String> {
     if parsed.content_length != Some(parsed.body.len()) {
         return Err(json_error(
             400,
-            &format!("send slot and value as a form body of at most {MAX_FORM_BYTES} bytes"),
+            &format!("send the form as a body of at most {MAX_FORM_BYTES} bytes"),
         ));
     }
     let Some(form) = form_pairs(parsed.body) else {
@@ -1335,6 +1347,15 @@ fn save_key(parsed: &ParsedRequest<'_>, file: &Path) -> Result<(), String> {
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.as_str())
     };
+    if let Some(text) = field("import") {
+        if field("slot").is_some() || field("value").is_some() {
+            return Err(json_error(
+                400,
+                "send either slot and value, or import, not both",
+            ));
+        }
+        return import_keys(file, text).map(Some);
+    }
     let slot = field("slot").unwrap_or_default();
     if !PROVIDERS
         .iter()
@@ -1343,16 +1364,59 @@ fn save_key(parsed: &ParsedRequest<'_>, file: &Path) -> Result<(), String> {
         return Err(json_error(400, "slot is not a provider key slot"));
     }
     let value = field("value").filter(|value| !value.trim().is_empty());
-    keys::store_slot(file, slot, value).map_err(|error| match error {
+    keys::store_slot(file, slot, value).map_err(store_refusal)?;
+    Ok(None)
+}
+
+/// Every key `text` holds that a Huntsman source takes, saved in one rewrite of the keys file:
+/// the text of a Spiderfoot settings export (`SpiderFoot.cfg`) or of a keys file. A line that
+/// cannot be read saves nothing, and neither does a file that sets no key a source takes.
+fn import_keys(file: &Path, text: &str) -> Result<Imported, String> {
+    let plan = key_import::plan(text);
+    if !plan.refused.is_empty() {
+        return Err(json_error(
+            422,
+            &format!("nothing was imported: {}", plan.refused.join("; ")),
+        ));
+    }
+    if plan.saves.is_empty() {
+        let unused = if plan.unused.is_empty() {
+            String::new()
+        } else {
+            format!(" (no Huntsman source takes {})", plan.unused.join(", "))
+        };
+        return Err(json_error(
+            422,
+            &format!("the file sets no key a Huntsman source takes{unused}"),
+        ));
+    }
+    let changes: Vec<(&str, Option<&str>)> = plan
+        .saves
+        .iter()
+        .map(|(slot, secret)| (*slot, Some(secret.expose())))
+        .collect();
+    keys::store_slots(file, &changes).map_err(store_refusal)?;
+    Ok(Imported {
+        slots: plan.saves.iter().map(|(slot, _)| *slot).collect(),
+        unused: plan.unused,
+        settings: plan.settings,
+    })
+}
+
+/// The answer to a key save the keys file refused: 422 for a value or file it cannot hold, 500
+/// for one it cannot read or write.
+fn store_refusal(error: Error) -> String {
+    match error {
         Error::Invalid(message) => json_error(422, &message),
         other => json_error(500, &other.to_string()),
-    })
+    }
 }
 
 /// Every provider key slot in the credential catalogue: its provider, whether a lookup would find
 /// it set (in the keys file or the environment), and whether the keys file sets it. With the file,
-/// and the warning a lookup would print when it cannot read the file.
-fn key_slots(home: &Path, head: bool) -> String {
+/// and the warning a lookup would print when it cannot read the file. After an import, what it
+/// saved and left out.
+fn key_slots(home: &Path, head: bool, imported: Option<&Imported>) -> String {
     let resolved = Keys::for_lookup(Some(home.as_os_str()));
     let saved: BTreeSet<&str> = resolved.keys.slots().into_iter().collect();
     let slots: Vec<serde_json::Value> = PROVIDERS
@@ -1368,11 +1432,18 @@ fn key_slots(home: &Path, head: bool) -> String {
             })
         })
         .collect();
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "file": home.join(keys::DEFAULT_KEYS_FILE).display().to_string(),
         "warning": resolved.warning,
         "slots": slots,
     });
+    if let Some(imported) = imported {
+        body["imported"] = serde_json::json!({
+            "slots": imported.slots,
+            "unused": imported.unused,
+            "settings": imported.settings,
+        });
+    }
     json_ok(&body.to_string(), head)
 }
 
@@ -3441,6 +3512,83 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// Spiderfoot's Settings → Import API Keys: a whole `SpiderFoot.cfg`, saved in one rewrite.
+    #[test]
+    fn a_spiderfoot_key_export_is_imported_into_the_keys_file_in_one_save() {
+        let home = key_home("import");
+        let routes = key_routes(&home);
+        let file = home.join(keys::DEFAULT_KEYS_FILE);
+        std::fs::write(&file, "# mine\nHUNTSMAN_SHODAN_KEY=old-key-1234\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let wigle = base64::standard(b"TEST_ONLY_WIGLE_AID:TEST_ONLY_WIGLE_TOKEN");
+        let export = format!(
+            "sfp_abstractapi:phonevalidation_api_key=\nsfp_fullhunt:api_key=TEST_ONLY_UNUSED\n\
+             sfp_shodan:api_key={TEST_KEY}\nsfp_spider:maxpages=100\n\
+             sfp_virustotal:api_key=TEST_ONLY_VT_KEY\nsfp_wigle:api_key_encoded={wigle}\n"
+        );
+        let form = format!("import={}", crate::http::percent_encode_component(&export));
+        let imported = key_save(&routes, &form, "Sec-Fetch-Site: same-origin\r\n");
+        assert!(imported.starts_with("HTTP/1.1 200"), "{imported}");
+        for value in [
+            TEST_KEY,
+            "TEST_ONLY_VT_KEY",
+            "TEST_ONLY_WIGLE_TOKEN",
+            "TEST_ONLY_UNUSED",
+        ] {
+            assert!(!imported.contains(value), "an answer never carries a key");
+        }
+        let answer = answer_json(&imported);
+        assert_eq!(
+            answer["imported"],
+            serde_json::json!({
+                "slots": [
+                    "HUNTSMAN_SHODAN_KEY",
+                    "HUNTSMAN_VIRUSTOTAL_KEY",
+                    "HUNTSMAN_WIGLE_USER",
+                    "HUNTSMAN_WIGLE_TOKEN"
+                ],
+                "unused": ["sfp_fullhunt:api_key"],
+                "settings": 1,
+            })
+        );
+        assert_eq!(slot_state(&answer, "HUNTSMAN_VIRUSTOTAL_KEY"), (true, true));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            format!(
+                "# mine\nHUNTSMAN_SHODAN_KEY='{TEST_KEY}'\nHUNTSMAN_VIRUSTOTAL_KEY='TEST_ONLY_VT_KEY'\n\
+                 HUNTSMAN_WIGLE_USER='TEST_ONLY_WIGLE_AID'\nHUNTSMAN_WIGLE_TOKEN='TEST_ONLY_WIGLE_TOKEN'\n"
+            )
+        );
+
+        // One unreadable line saves nothing; nor does a file with no key a source takes.
+        let before = std::fs::read_to_string(&file).unwrap();
+        for (text, fragment) in [
+            (
+                "sfp_hunter:api_key=TEST_ONLY_NEW\nmy shodan key TEST_ONLY_PASTED\n",
+                "nothing was imported: line 2",
+            ),
+            (
+                "sfp_fullhunt:api_key=TEST_ONLY_UNUSED\n",
+                "no Huntsman source takes sfp_fullhunt:api_key",
+            ),
+            ("sfp_shodan:api_key=\n", "sets no key"),
+        ] {
+            let form = format!("import={}", crate::http::percent_encode_component(text));
+            let refused = key_save(&routes, &form, "");
+            assert!(refused.starts_with("HTTP/1.1 422"), "{refused}");
+            assert!(refused.contains(fragment), "{refused}");
+            assert!(!refused.contains("TEST_ONLY_NEW") && !refused.contains("TEST_ONLY_PASTED"));
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+        }
+        let both = key_save(&routes, "import=x&slot=HUNTSMAN_SHODAN_KEY&value=y", "");
+        assert!(both.starts_with("HTTP/1.1 400"), "{both}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn a_key_save_is_refused_off_the_page_in_the_url_or_for_a_slot_outside_the_catalogue() {
         let home = key_home("refused");
@@ -3627,8 +3775,25 @@ mod tests {
             "k.saved",
             "k.set",
             "method:'POST',body:new URLSearchParams({slot,value})",
+            "method:'POST',body:new URLSearchParams({import:text})",
+            "keyslots.imported",
+            "i.slots",
+            "i.unused",
+            "i.settings",
         ] {
             assert!(INDEX_HTML.contains(read), "the page no longer reads {read}");
+        }
+        // An import answers with the same fields, and with what it imported.
+        let imported = answer_json(&key_save(
+            &key_routes(&home),
+            &format!("import=sfp_shodan%3Aapi_key%3D{TEST_KEY}"),
+            "",
+        ));
+        for field in ["slots", "unused", "settings"] {
+            assert!(
+                imported["imported"].get(field).is_some(),
+                "an import's answer has no imported.{field}"
+            );
         }
         let _ = std::fs::remove_dir_all(&home);
     }

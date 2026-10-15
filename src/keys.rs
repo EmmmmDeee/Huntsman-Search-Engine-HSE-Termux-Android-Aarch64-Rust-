@@ -531,7 +531,7 @@ fn key_line(slot: &str, value: &str) -> Result<String, Error> {
     ))
 }
 
-/// The keys file's text before [`store_slot`] rewrites it, or nothing when there is no file. A
+/// The keys file's text before [`store_slots`] rewrites it, or nothing when there is no file. A
 /// file the default-file gate refuses is left alone, except one that is only too open: the
 /// rewrite leaves it mode 600, and lookups read it again.
 fn read_for_rewrite(path: &Path) -> Result<String, Error> {
@@ -553,34 +553,63 @@ fn read_for_rewrite(path: &Path) -> Result<String, Error> {
 }
 
 /// Sets `slot` to `value` in the keys file at `path`, or removes it when `value` is `None`, and
-/// keeps every other line as it was. The first line that set the slot takes the new value and
-/// any later one goes, since a later line would override it. The result must read back through
-/// [`Keys::parse`] with exactly this value (or without the slot) before it replaces the file,
-/// atomically and at mode 600, so a save never leaves a file that lookups would refuse or read
-/// differently. Saves in this process run one at a time, so two never lose each other's key.
+/// keeps every other line as it was: [`store_slots`] with one change.
 ///
 /// # Errors
-/// `Error::Invalid` for a bad slot name, a blank, placeholder, over-long or unquotable value, or
-/// a file whose other lines do not parse (by line number, never a value); `Error::Store` for a
-/// file the default-file gate refuses for any reason but loose permissions, or an I/O failure.
+/// As [`store_slots`].
 pub fn store_slot(path: &Path, slot: &str, value: Option<&str>) -> Result<(), Error> {
+    store_slots(path, &[(slot, value)])
+}
+
+/// Applies `changes` to the keys file at `path` in one rewrite: each sets its slot to the value,
+/// or removes the slot when the value is `None`, and a later change to a slot replaces an earlier
+/// one. Every other line stays as it was. The first line that set a slot takes its new value and
+/// any later one goes, since a later line would override it; a slot no line set is appended, in
+/// the order of `changes`. The result must read back through [`Keys::parse`] with exactly these
+/// values (and without the removed slots) before it replaces the file, atomically and at mode
+/// 600, so a save never leaves a file that lookups would refuse or read differently, and a change
+/// that cannot be saved saves nothing. Saves in this process run one at a time, so two never
+/// lose each other's keys.
+///
+/// # Errors
+/// `Error::Invalid` for no change, a bad slot name, a blank, placeholder, over-long or
+/// unquotable value, or a file whose other lines do not parse (by line number, never a value);
+/// `Error::Store` for a file the default-file gate refuses for any reason but loose permissions,
+/// or an I/O failure.
+pub fn store_slots(path: &Path, changes: &[(&str, Option<&str>)]) -> Result<(), Error> {
     static SAVING: Mutex<()> = Mutex::new(());
-    if !valid_slot(slot) {
-        return Err(Error::Invalid("bad slot name".into()));
+    if changes.is_empty() {
+        return Err(Error::Invalid("no key to save".into()));
     }
-    let secret = value.map(Secret::new).transpose()?;
-    let wanted = secret.as_ref().map(Secret::expose);
-    if wanted.is_some_and(|value| value.len() > MAX_KEY_BYTES) {
-        return Err(Error::Invalid(format!(
-            "a key is at most {MAX_KEY_BYTES} bytes"
-        )));
+    // Each slot once, at its first change, with its last value and the line that sets it.
+    let mut planned: Vec<(&str, Option<Secret>, Option<String>)> = Vec::new();
+    for &(slot, value) in changes {
+        if !valid_slot(slot) {
+            return Err(Error::Invalid("bad slot name".into()));
+        }
+        let secret = value.map(Secret::new).transpose()?;
+        if secret
+            .as_ref()
+            .is_some_and(|secret| secret.expose().len() > MAX_KEY_BYTES)
+        {
+            return Err(Error::Invalid(format!(
+                "a key is at most {MAX_KEY_BYTES} bytes"
+            )));
+        }
+        let line = secret
+            .as_ref()
+            .map(|secret| key_line(slot, secret.expose()))
+            .transpose()?;
+        match planned.iter_mut().find(|(known, _, _)| *known == slot) {
+            Some(change) => *change = (slot, secret, line),
+            None => planned.push((slot, secret, line)),
+        }
     }
-    let mut line = wanted.map(|value| key_line(slot, value)).transpose()?;
     let _saving = SAVING.lock().unwrap_or_else(PoisonError::into_inner);
     let current = read_for_rewrite(path)?;
-    let mut text = String::with_capacity(current.len() + 80);
+    let mut text = String::with_capacity(current.len() + 80 * planned.len());
     for raw in current.lines() {
-        if assigns(raw, slot) {
+        if let Some((_, _, line)) = planned.iter_mut().find(|(slot, _, _)| assigns(raw, slot)) {
             if let Some(line) = line.take() {
                 text.push_str(&line);
                 text.push('\n');
@@ -590,12 +619,14 @@ pub fn store_slot(path: &Path, slot: &str, value: Option<&str>) -> Result<(), Er
         text.push_str(raw);
         text.push('\n');
     }
-    if let Some(line) = line {
+    for line in planned.iter_mut().filter_map(|(_, _, line)| line.take()) {
         text.push_str(&line);
         text.push('\n');
     }
     let reread = Keys::parse(&text)?;
-    if reread.entries.get(slot).map(Secret::expose) != wanted {
+    if planned.iter().any(|(slot, secret, _)| {
+        reread.entries.get(*slot).map(Secret::expose) != secret.as_ref().map(Secret::expose)
+    }) {
         return Err(Error::Invalid(
             "the key would not read back as written; add it to the keys file by hand".into(),
         ));
@@ -1258,6 +1289,58 @@ mod tests {
             keys.get("HUNTSMAN_B_KEY").expect("b").expose(),
             "other-5678"
         );
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn several_changes_land_in_one_rewrite_and_a_later_change_to_a_slot_wins() {
+        let home = fake_home("store-many");
+        let path = home.join(DEFAULT_KEYS_FILE);
+        write_mode(
+            &path,
+            "HUNTSMAN_A_KEY=old-1234\nHUNTSMAN_B_KEY=gone-5678\n# end\n",
+            0o600,
+        );
+        store_slots(
+            &path,
+            &[
+                ("HUNTSMAN_C_KEY", Some("first-c-1111")),
+                ("HUNTSMAN_A_KEY", Some(SAVED_KEY)),
+                ("HUNTSMAN_B_KEY", None),
+                ("HUNTSMAN_D_KEY", Some("new-d-2222")),
+                ("HUNTSMAN_C_KEY", Some("last-c-3333")),
+            ],
+        )
+        .expect("saved");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            format!(
+                "HUNTSMAN_A_KEY='{SAVED_KEY}'\n# end\nHUNTSMAN_C_KEY='last-c-3333'\nHUNTSMAN_D_KEY='new-d-2222'\n"
+            )
+        );
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_change_that_cannot_be_saved_saves_none_of_the_others() {
+        let home = fake_home("store-none");
+        let path = home.join(DEFAULT_KEYS_FILE);
+        let before = "HUNTSMAN_A_KEY=old-1234\n";
+        write_mode(&path, before, 0o600);
+        for bad in [
+            ("HUNTSMAN_B_KEY", Some("changeme")),
+            ("not a slot", Some("value-5678")),
+            ("HUNTSMAN_B_KEY", Some("a'b\"c$d")),
+        ] {
+            let error = store_slots(&path, &[("HUNTSMAN_A_KEY", Some(SAVED_KEY)), bad])
+                .expect_err("refused");
+            assert!(matches!(error, Error::Invalid(_)), "{error}");
+            assert!(!error.to_string().contains(SAVED_KEY));
+            assert_eq!(std::fs::read_to_string(&path).expect("read"), before);
+        }
+        assert!(matches!(store_slots(&path, &[]), Err(Error::Invalid(_))));
         std::fs::remove_dir_all(&home).expect("cleanup");
     }
 

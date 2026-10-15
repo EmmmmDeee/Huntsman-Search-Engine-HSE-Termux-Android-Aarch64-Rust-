@@ -92,6 +92,7 @@ ip_cli	runtime	ip lookup front-end reached from ip, scan -k ip and /api/lookup
 ipinfo	adapter	IPinfo leg reached through indicator_legs from ip, scan and /api/lookup
 ipqs	adapter	IPQualityScore IP leg reached through indicator_legs from ip, scan -k ip and /api/lookup when its key is set
 json	exporter	canonical JSON support
+key_import	adapter	Spiderfoot SpiderFoot.cfg and keys-file key import reached through serve's POST /api/settings/keys (Settings, Import API keys)
 keys	leaf	credential file handling
 kickbox	adapter	Kickbox disposable-domain leg reached through indicator_legs from email, scan -k email and /api/lookup
 leads	runtime	lead ranking through intelligence report

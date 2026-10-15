@@ -102,6 +102,7 @@ pub mod ip_cli;
 pub mod ipinfo;
 pub mod ipqs;
 pub mod json;
+pub mod key_import;
 pub mod keys;
 pub mod kickbox;
 pub mod leads;
