@@ -142,6 +142,7 @@ runtime	runtime	high-level investigation composition root
 scan_api	runtime	Spiderfoot-shaped saved-scan API router reached through scans and serve
 scan_artifact	exporter	versioned re-loadable scan results and correlation rerun
 scan_batch	leaf	bounded ordered scan seed-list parsing
+scan_compare	runtime	what changed between two saved scans, reached through scans compare and the scan API
 scan_export	exporter	Spiderfoot-layout CSV, TSV, Excel, JSON and GEXF exports of saved scans through scans export and the scan API
 scan_route	runtime	deterministic lookup-front-end selector routing
 scan_service	runtime	saved-scan runner reached through scans run and the scan API

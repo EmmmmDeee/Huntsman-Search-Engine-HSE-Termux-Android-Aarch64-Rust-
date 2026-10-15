@@ -194,6 +194,11 @@ pub struct Evidence {
     pub is_inferred: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ancestry_node: Option<EvidenceNodeId>,
+    /// The provenance of every other observation merged into this record, in merge order. Two
+    /// records of one source saying the same thing about one entity merge into one, and this keeps
+    /// the scan and time of each observation the first record alone would have hidden.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merged_provenance: Vec<EvidenceProvenance>,
 }
 
 impl Evidence {
@@ -206,6 +211,7 @@ impl Evidence {
             verification: None,
             is_inferred: false,
             ancestry_node: None,
+            merged_provenance: Vec::new(),
         }
     }
 
@@ -667,6 +673,22 @@ fn merge_evidence(existing: &mut Evidence, incoming: Evidence) {
     if existing.ancestry_node.is_none() {
         existing.ancestry_node = incoming.ancestry_node;
     }
+    keep_observations(existing, incoming.provenance, incoming.merged_provenance);
+}
+
+/// Keeps every observation a merge brings in: the incoming record's own provenance, then any it
+/// already carried from its merges. An observation the record already holds is not kept twice.
+fn keep_observations(
+    existing: &mut Evidence,
+    incoming: EvidenceProvenance,
+    earlier: Vec<EvidenceProvenance>,
+) {
+    for observation in std::iter::once(incoming).chain(earlier) {
+        if observation != existing.provenance && !existing.merged_provenance.contains(&observation)
+        {
+            existing.merged_provenance.push(observation);
+        }
+    }
 }
 
 impl fmt::Display for Entity {
@@ -691,6 +713,89 @@ mod tests {
 
     fn evidence(source: &str, summary: &str) -> Evidence {
         Evidence::new(EvidenceProvenance::for_scan(source, "scan-1"), summary)
+    }
+
+    /// A record of one scan that a later scan re-finds merges into one record. The later scan's
+    /// observation must survive in the saved entity, not vanish with the merge.
+    #[test]
+    fn a_merged_observation_keeps_its_scan_and_time() {
+        let first = Evidence::new(
+            EvidenceProvenance {
+                recorded_at_unix: 100,
+                ..EvidenceProvenance::for_scan("hunter", "scan-1")
+            },
+            "domain seen",
+        );
+        let mut entity = Entity::new(EntityKind::Domain, "example.com", 0.6, "scan-1");
+        entity.add_evidence(first);
+        let mut later = Entity::new(EntityKind::Domain, "example.com", 0.6, "scan-2");
+        later.add_evidence(Evidence::new(
+            EvidenceProvenance {
+                recorded_at_unix: 200,
+                ..EvidenceProvenance::for_scan("hunter", "scan-2")
+            },
+            "domain seen",
+        ));
+        entity.absorb(later);
+
+        assert_eq!(entity.evidence.len(), 1);
+        assert_eq!(
+            entity.evidence[0].provenance.scan_id.as_deref(),
+            Some("scan-1")
+        );
+        assert_eq!(entity.evidence[0].provenance.recorded_at_unix, 100);
+        let saved = serde_json::to_string(&entity).unwrap();
+        assert!(
+            saved.contains("scan-2"),
+            "the second observation was dropped: {saved}"
+        );
+    }
+
+    /// An observation is kept once however often it merges, and a record that already holds
+    /// merged observations passes all of them on when it is merged into another.
+    #[test]
+    fn observations_are_kept_once_and_pass_on_through_a_later_merge() {
+        let observed = |scan: &str, at: u64| {
+            Evidence::new(
+                EvidenceProvenance {
+                    recorded_at_unix: at,
+                    ..EvidenceProvenance::for_scan("hunter", scan)
+                },
+                "domain seen",
+            )
+        };
+        let entity = |scan: &str, at: u64| {
+            let mut entity = Entity::new(EntityKind::Domain, "example.com", 0.6, scan);
+            entity.add_evidence(observed(scan, at));
+            entity
+        };
+
+        let mut first = entity("scan-1", 100);
+        first.absorb(entity("scan-2", 200));
+        first.absorb(entity("scan-2", 200));
+        assert_eq!(first.evidence[0].merged_provenance.len(), 1);
+
+        let mut newest = entity("scan-9", 900);
+        newest.absorb(first);
+        let record = &newest.evidence[0];
+        assert_eq!(record.provenance.scan_id.as_deref(), Some("scan-9"));
+        let kept: Vec<_> = record
+            .merged_provenance
+            .iter()
+            .filter_map(|observation| observation.scan_id.as_deref())
+            .collect();
+        assert_eq!(kept, ["scan-1", "scan-2"]);
+    }
+
+    /// A record with no merges keeps its saved form exactly, and a saved record from before the
+    /// field existed still loads.
+    #[test]
+    fn a_record_without_merges_keeps_its_saved_form() {
+        let record = evidence("hunter", "domain seen");
+        let saved = serde_json::to_value(&record).unwrap();
+        assert!(saved.get("merged_provenance").is_none(), "{saved}");
+        let restored: Evidence = serde_json::from_value(saved).unwrap();
+        assert!(restored.merged_provenance.is_empty());
     }
 
     #[test]
