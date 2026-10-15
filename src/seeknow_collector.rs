@@ -292,23 +292,52 @@ fn append_row(
 fn row_entities(row: &SeekNowRow) -> Vec<(EntityKind, String)> {
     let mut values = BTreeSet::<(EntityKind, String)>::new();
     for (key, value) in &row.fields {
-        let kind = match key.trim().to_ascii_lowercase().as_str() {
-            "email" | "email_address" => Some(EntityKind::Email),
-            "phone" | "phone_number" | "mobile" => Some(EntityKind::Phone),
-            "username" | "user" | "handle" => Some(EntityKind::Username),
-            "ip" | "ip_address" => Some(EntityKind::IpAddress),
-            "domain" | "hostname" => Some(EntityKind::Domain),
-            "name" | "full_name" | "fullname" => Some(EntityKind::Person),
-            "url" | "website" => Some(EntityKind::Url),
-            "machine_id" | "machineid" | "hwid" | "hardware_id" => Some(EntityKind::DeviceId),
-            "address" | "street_address" => Some(EntityKind::Address),
-            _ => None,
-        };
-        if let Some(kind) = kind {
+        if let Some(kind) = entity_kind_for_field(key) {
             values.insert((kind, value.clone()));
         }
     }
     values.into_iter().collect()
+}
+
+/// The entity kind a field name maps to, or `None` when the field carries no entity.
+///
+/// A trailing `_<digits>` index is stripped before matching, because one `SeekNow` record
+/// commonly packs several contacts under enumerated keys (`email_1`, `name_2`, `phone_1`).
+/// Without this, every such packed identifier is silently dropped and a record that holds
+/// only `email_1`+`email_2` yields no entities at all. Stripping only a purely numeric
+/// trailing segment leaves real names intact: `email_address`, `street_address`,
+/// `machine_id` and `postal_code_11_characters` keep their non-numeric final segment.
+fn entity_kind_for_field(key: &str) -> Option<EntityKind> {
+    let key = key.trim().to_ascii_lowercase();
+    let base = strip_numeric_index(&key);
+    match base {
+        "email" | "email_address" => Some(EntityKind::Email),
+        "phone" | "phone_number" | "mobile" => Some(EntityKind::Phone),
+        "username" | "user" | "handle" => Some(EntityKind::Username),
+        "ip" | "ip_address" => Some(EntityKind::IpAddress),
+        "domain" | "hostname" => Some(EntityKind::Domain),
+        "name" | "full_name" | "fullname" => Some(EntityKind::Person),
+        "url" | "website" => Some(EntityKind::Url),
+        "machine_id" | "machineid" | "hwid" | "hardware_id" => Some(EntityKind::DeviceId),
+        "address" | "street_address" => Some(EntityKind::Address),
+        _ => None,
+    }
+}
+
+/// `key` with one trailing `_<digits>` segment removed, when present; otherwise `key`.
+/// The segment after the final `_` must be non-empty and all ASCII digits, and removing
+/// it must leave a non-empty base.
+fn strip_numeric_index(key: &str) -> &str {
+    match key.rsplit_once('_') {
+        Some((base, index))
+            if !base.is_empty()
+                && !index.is_empty()
+                && index.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => key,
+    }
 }
 
 fn evidence_from_row(row: &SeekNowRow, row_index: usize, scan_id: &str, now_unix: u64) -> Evidence {
