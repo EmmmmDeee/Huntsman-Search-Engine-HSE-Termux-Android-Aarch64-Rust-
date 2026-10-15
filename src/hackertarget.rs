@@ -256,11 +256,16 @@ mod tests {
 
     #[test]
     fn every_host_is_kept_and_counted_once() {
-        let mut body = String::new();
-        for n in 0..300 {
-            body.push_str(&format!("host-{n}.example.com,192.0.2.{}\n", n % 200));
-            body.push_str(&format!("HOST-{n}.example.com,192.0.2.{}\n", n % 200));
-        }
+        let lines: Vec<String> = (0..300)
+            .flat_map(|n| {
+                let address = n % 200;
+                [
+                    format!("host-{n}.example.com,192.0.2.{address}"),
+                    format!("HOST-{n}.example.com,192.0.2.{address}"),
+                ]
+            })
+            .collect();
+        let body = lines.join("\n");
         let f = decode(body.as_bytes(), Indicator::Domain("example.com"))
             .ok()
             .flatten()

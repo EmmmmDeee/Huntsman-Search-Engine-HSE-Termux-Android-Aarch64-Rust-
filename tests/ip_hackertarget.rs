@@ -10,7 +10,8 @@ use huntsman_recon::source_outcome::SourceOutcomeKind;
 
 /// Sixty domains on `93.184.215.14`, one per line, as `reverseiplookup` answers.
 fn reverse_ip_answer() -> String {
-    (0..60).map(|n| format!("shop-{n}.example.org\n")).collect()
+    let lines: Vec<String> = (0..60).map(|n| format!("shop-{n}.example.org")).collect();
+    lines.join("\n")
 }
 
 struct OnlyHackerTarget;
