@@ -4,7 +4,9 @@
 //! the abuse.ch key in the `Auth-Key` header, run whenever `HUNTSMAN_ABUSECH_KEY` is set (the same
 //! free abuse.ch Auth-Key `ThreatFox` uses). `no_results` is a valid zero; any other status than
 //! `ok` is an error, never a zero. An `ok` answer must name the host it is about and list its URLs;
-//! one that does not is drift, never a finding.
+//! one that does not is drift, never a finding. Everything an answer lists is kept: every hosted
+//! URL with its id, `URLhaus` page, status, threat, tags, reporter and dates, the host's page and
+//! every blocklist verdict, and the whole answer as `raw_answer`.
 
 use serde::Deserialize;
 
@@ -32,14 +34,13 @@ pub const INTEL: Source = Source {
     kinds: &[IndicatorKind::Ip, IndicatorKind::Domain],
     lookup,
 };
-/// Most threat and tag names kept in one attribute.
-const MAX_NAMES: usize = 10;
-
 #[derive(Deserialize)]
 struct Body {
     query_status: String,
     #[serde(default)]
     host: Option<String>,
+    #[serde(default)]
+    urlhaus_reference: Option<String>,
     #[serde(default)]
     firstseen: Option<String>,
     #[serde(default)]
@@ -52,6 +53,14 @@ struct Body {
 
 #[derive(Deserialize)]
 struct Hosted {
+    #[serde(default)]
+    id: Option<serde_json::Value>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    urlhaus_reference: Option<String>,
+    #[serde(default)]
+    reporter: Option<String>,
     #[serde(default)]
     url_status: Option<String>,
     #[serde(default)]
@@ -88,7 +97,7 @@ pub fn lookup(
 fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for value in values.filter_map(|v| api_leg::clean(Some(v))) {
-        if !out.contains(&value) && out.len() < MAX_NAMES {
+        if !out.contains(&value) {
             out.push(value);
         }
     }
@@ -101,6 +110,7 @@ fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
 /// [`LegError::Decode`] for another shape, another or no host, no URL list, or a status other
 /// than `ok` or `no_results`.
 pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, LegError> {
+    let whole: serde_json::Value = api_leg::decode(body)?;
     let body: Body = api_leg::decode(body)?;
     match body.query_status.as_str() {
         "ok" => {}
@@ -144,17 +154,55 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         .filter(|(_, v)| v.as_str().is_some_and(|s| s != "not listed"))
         .map(|(k, _)| k.clone())
         .collect();
-    Ok(Some(
-        Finding::new(format!("URLhaus: {count} malware URL(s), {online} online"))
-            .attr("url_count", count.to_string())
-            .attr("online_urls", online.to_string())
-            .list_attr("threats", &threats)
-            .list_attr("malware_tags", &malware)
-            .list_attr("blocklists", &listed)
-            .opt_attr("first_seen", body.firstseen.as_deref())
-            .opt_attr("last_added", last)
-            .tag(tags::MALICIOUS),
-    ))
+    let verdicts: Vec<String> = body
+        .blacklists
+        .iter()
+        .flatten()
+        .filter_map(|(list, verdict)| Some(format!("{list}: {}", verdict.as_str()?)))
+        .collect();
+    let ids = distinct_owned(urls.iter().filter_map(|u| match u.id.as_ref()? {
+        serde_json::Value::String(id) => Some(id.clone()),
+        serde_json::Value::Number(id) => Some(id.to_string()),
+        _ => None,
+    }));
+    let first_added = urls.iter().filter_map(|u| u.date_added.as_deref()).min();
+    let mut finding = Finding::new(format!("URLhaus: {count} malware URL(s), {online} online"))
+        .attr("url_count", count.to_string())
+        .attr("online_urls", online.to_string())
+        .list_attr("threats", &threats)
+        .list_attr("malware_tags", &malware)
+        .list_attr("blocklists", &listed)
+        .list_attr("url_ids", &ids)
+        .list_attr(
+            "reporters",
+            &distinct(urls.iter().filter_map(|u| u.reporter.as_deref())),
+        )
+        .opt_attr("first_seen", body.firstseen.as_deref())
+        .opt_attr("first_added", first_added)
+        .opt_attr("last_added", last)
+        .opt_attr("reference", body.urlhaus_reference.as_deref())
+        .tag(tags::MALICIOUS);
+    for verdict in &verdicts {
+        finding = finding.attr("blocklist_verdicts", verdict);
+    }
+    // A URL can hold a comma, so each is its own value rather than a joined list.
+    for url in distinct(urls.iter().filter_map(|u| u.url.as_deref())) {
+        finding = finding.attr("urls", url);
+    }
+    for page in distinct(urls.iter().filter_map(|u| u.urlhaus_reference.as_deref())) {
+        finding = finding.attr("url_references", page);
+    }
+    Ok(Some(finding.attr("raw_answer", whole.to_string())))
+}
+
+fn distinct_owned(values: impl Iterator<Item = String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for value in values {
+        if !out.contains(&value) {
+            out.push(value);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
