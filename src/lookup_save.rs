@@ -146,6 +146,7 @@ pub const USERNAME_EXPOSURE_POLICY: SavePolicy = SavePolicy {
 fn domain_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "crtsh" => ("crtsh", "src/crtsh.rs"),
+        "certspotter" => ("certspotter", "src/certspotter.rs"),
         "dns" => ("dns", "src/dns.rs"),
         "virustotal" => ("virustotal", "src/virustotal.rs"),
         "hunter" => ("hunter", "src/hunter.rs"),

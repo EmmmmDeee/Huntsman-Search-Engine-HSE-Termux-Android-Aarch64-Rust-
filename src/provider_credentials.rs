@@ -307,6 +307,12 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::THREATFOX_KEY_ENV],
     },
     Provider {
+        name: "Cert Spotter (SSLMate)",
+        get_key_url: "https://sslmate.com/account/api_credentials",
+        free_tier: "free key; works keyless at a lower limit",
+        slots: &[crate::environment::CERTSPOTTER_KEY_ENV],
+    },
+    Provider {
         name: "Netlas",
         get_key_url: "https://app.netlas.io/profile/",
         free_tier: "free Community key; works keyless at a lower limit",

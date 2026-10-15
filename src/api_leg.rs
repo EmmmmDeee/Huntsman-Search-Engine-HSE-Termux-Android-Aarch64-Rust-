@@ -38,6 +38,8 @@ pub enum KeyPlace {
     /// A query parameter of this name, added only as the request is sent (see
     /// [`AuthStyle::Query`]); the URL a provider module builds never holds the key.
     Query(&'static str),
+    /// `Authorization: Bearer <key>`.
+    Bearer,
 }
 
 /// How a provider takes its key.
@@ -299,6 +301,7 @@ fn credential(
     let style = match key.place {
         KeyPlace::Header(name) => AuthStyle::Header(name.into()),
         KeyPlace::Query(name) => AuthStyle::Query(name.into()),
+        KeyPlace::Bearer => AuthStyle::Bearer,
     };
     Credential::new(authority, secret, style)
         .map(|c| c.only_for_origin(api.origin))

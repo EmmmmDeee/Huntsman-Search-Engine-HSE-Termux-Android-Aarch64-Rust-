@@ -721,6 +721,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "certificate-transparency lookup",
     },
     ReachableModule {
+        name: "certspotter",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1596.003"],
+        description: "Cert Spotter: every certificate logged for a domain and its subdomains, in full (optional free key)",
+    },
+    ReachableModule {
         name: "dns",
         command: "recon dns TARGET",
         access: "keyless",
