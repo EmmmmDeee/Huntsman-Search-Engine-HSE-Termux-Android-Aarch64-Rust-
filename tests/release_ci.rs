@@ -395,8 +395,14 @@ fn per_commit_publish_anchors_the_tag_before_creating_the_draft() {
             && create_release < reads[1],
         "the tag must be verified before and after draft creation"
     );
+    let pre_check = step
+        .find("if superseded; then")
+        .expect("publish must ask whether a newer build supersedes it before creating the tag");
+    let post_check = step
+        .find("|| superseded; then")
+        .expect("publish must ask again after creating the draft");
     assert!(
-        step.matches("git/ref/heads/main").count() >= 2,
+        pre_check < create_ref && create_release < post_check,
         "live main must be checked both immediately before tag creation and again before publication"
     );
     assert!(
@@ -3209,6 +3215,344 @@ fn publish_fails_at_once_on_any_other_tag_read_error() {
         "{}",
         run.calls
     );
+}
+
+/// A 40-character object name of a commit other than the build's.
+fn other_sha(c: char) -> String {
+    c.to_string().repeat(40)
+}
+
+/// Fake answer: main's head is `sha`.
+fn main_head(sha: &str) -> Answer {
+    (
+        "git_ref_heads_main".to_owned(),
+        200,
+        format!("{{\"object\":{{\"sha\":\"{sha}\"}}}}"),
+    )
+}
+
+/// Fake answer: comparing the build's commit with `head` gives `status` and `commits`.
+fn compare_to(head: &str, status: &str, commits: &[&str]) -> Answer {
+    let commits: Vec<String> = commits
+        .iter()
+        .map(|c| format!("{{\"sha\":\"{c}\"}}"))
+        .collect();
+    (
+        format!("compare_{}...{head}", step_sha()),
+        200,
+        format!(
+            "{{\"status\":\"{status}\",\"commits\":[{}]}}",
+            commits.join(",")
+        ),
+    )
+}
+
+/// The fixture key of the release builds of main pushes, as the workflow asks for them.
+const RUNS_KEY: &str = "actions_workflows_release.yml_runs?branch=main&event=push&per_page=100";
+
+/// Fake answer: the release builds of main pushes, each as (head sha, status, conclusion).
+fn release_runs(runs: &[(&str, &str, &str)]) -> Answer {
+    let runs: Vec<String> = runs
+        .iter()
+        .map(|(sha, status, conclusion)| {
+            let conclusion = if conclusion.is_empty() {
+                "null".to_owned()
+            } else {
+                format!("\"{conclusion}\"")
+            };
+            format!(
+                "{{\"head_sha\":\"{sha}\",\"status\":\"{status}\",\"conclusion\":{conclusion}}}"
+            )
+        })
+        .collect();
+    (
+        RUNS_KEY.to_owned(),
+        200,
+        format!("{{\"workflow_runs\":[{}]}}", runs.join(",")),
+    )
+}
+
+/// Runs the head check with the fake `gh`.
+fn head_run(case: &str, fixtures: &[Answer]) -> StepRun {
+    run_step(
+        &format!("head-{case}"),
+        &step_script("Check whether a newer main build supersedes this commit"),
+        fixtures,
+        &[],
+    )
+}
+
+/// Runs the publish step with main moved on to `newer`, which the build's commit precedes,
+/// and `runs` as the release builds of main pushes.
+fn publish_run_moved(case: &str, newer: &str, runs: &[(&str, &str, &str)]) -> StepRun {
+    let tag = (
+        format!("git_ref_tags_{STEP_TAG}"),
+        200,
+        format!(
+            "{{\"object\":{{\"type\":\"commit\",\"sha\":\"{}\"}}}}",
+            step_sha()
+        ),
+    );
+    run_step_with(
+        &format!("publish-{case}"),
+        &step_script("Publish pre-release "),
+        &[
+            main_head(newer),
+            tag,
+            compare_to(newer, "ahead", &[newer]),
+            release_runs(runs),
+        ],
+        &[],
+        &[
+            ("GITHUB_SERVER_URL", "https://github.com"),
+            ("GITHUB_RUN_ID", "1"),
+        ],
+    )
+}
+
+/// The decision whether a newer main build supersedes this one is one function, inlined in
+/// the head check and in the publish step (which checks out nothing), byte for byte.
+#[test]
+fn the_superseding_build_check_is_inlined_identically_in_the_head_and_publish_steps() {
+    let head = step_script("Check whether a newer main build supersedes this commit");
+    let publish = step_script("Publish pre-release ");
+    let block = |script: &str| -> String {
+        let from = script
+            .find("newer_build() {")
+            .expect("newer_build must be defined");
+        let end = script[from..]
+            .find("superseded() {")
+            .expect("superseded must follow newer_build")
+            + from;
+        let end = script[end..].find("\n}\n").expect("superseded must end") + end + 3;
+        script[from..end].to_owned()
+    };
+    assert_eq!(
+        block(&head),
+        block(&publish),
+        "the head check and the publish step must carry the same decision"
+    );
+    for required in [
+        "current=\"$(gh api \"$api/git/ref/heads/main\" --jq .object.sha)\" || return 2",
+        "[ \"$current\" != \"$GITHUB_SHA\" ] || return 1",
+        "compare/${GITHUB_SHA}...${current}",
+        "--jq '.status, .commits[].sha'",
+        "actions/workflows/release.yml/runs?branch=main&event=push&per_page=100",
+        ".status == \"queued\" or .status == \"in_progress\" or .status == \"waiting\" or .status == \"pending\" or .status == \"requested\" or (.status == \"completed\" and .conclusion == \"success\")",
+        "[ \"${cmp%%$'\\n'*}\" = \"ahead\" ] || { NEWER=\"$current\"; return 0; }",
+        "grep -qxF \"$sha\" <<<\"$live\"",
+        "refusing to decide publication\"; exit 1",
+    ] {
+        assert!(
+            block(&head).contains(required),
+            "the decision must keep {required:?}:\n{}",
+            block(&head)
+        );
+    }
+}
+
+/// A build whose commit main has moved past still publishes unless a newer commit has a
+/// release build of its own that is queued, running or succeeded. Before this, any movement of
+/// main skipped publication, so a push that touched no release path (which starts no build) or
+/// a newer build that failed left the prebuilt behind main until the next release push.
+#[test]
+fn a_moved_main_skips_publication_only_for_a_newer_commit_with_a_live_or_successful_build() {
+    if !jq_present() {
+        return;
+    }
+    let (newer, mid, elsewhere) = (other_sha('1'), other_sha('2'), other_sha('3'));
+
+    let run = head_run("still-head", &[main_head(&step_sha())]);
+    assert_eq!(run.code, Some(0), "{}", run.text);
+    assert_eq!(run.output, "publish=true\n", "{}", run.text);
+    assert_eq!(
+        run.calls.trim(),
+        "GET repos/owner/repo/git/ref/heads/main",
+        "a build at main's head asks nothing more"
+    );
+
+    let cases: Vec<(&str, Vec<(&str, &str, &str)>, bool, &str)> = vec![
+        (
+            "newer-running",
+            vec![(&newer, "in_progress", "")],
+            false,
+            &newer,
+        ),
+        ("newer-queued", vec![(&newer, "queued", "")], false, &newer),
+        (
+            "newer-succeeded",
+            vec![(&newer, "completed", "success")],
+            false,
+            &newer,
+        ),
+        ("newer-without-build", vec![], true, ""),
+        (
+            "newer-failed",
+            vec![(&newer, "completed", "failure")],
+            true,
+            "",
+        ),
+        (
+            "newer-cancelled",
+            vec![(&newer, "completed", "cancelled")],
+            true,
+            "",
+        ),
+        (
+            "build-of-another-commit",
+            vec![(&elsewhere, "in_progress", "")],
+            true,
+            "",
+        ),
+    ];
+    for (case, runs, publishes, names) in cases {
+        let run = head_run(
+            case,
+            &[
+                main_head(&newer),
+                compare_to(&newer, "ahead", &[&newer]),
+                release_runs(&runs),
+            ],
+        );
+        assert_eq!(run.code, Some(0), "{case}: {}", run.text);
+        let expected = if publishes {
+            "publish=true\n"
+        } else {
+            "publish=false\n"
+        };
+        assert_eq!(run.output, expected, "{case}: {}", run.text);
+        if !names.is_empty() {
+            assert!(
+                run.text.contains(&format!("main advanced to {names}")),
+                "{case} must name the superseding commit: {}",
+                run.text
+            );
+        }
+        assert_eq!(
+            count_calls(&run, "GET repos/owner/repo/git/ref/heads/main"),
+            1,
+            "{case}"
+        );
+        assert!(
+            run.calls.contains("GET repos/owner/repo/actions/workflows/release.yml/runs?branch=main&event=push&per_page=100"),
+            "{case}: {}",
+            run.calls
+        );
+    }
+
+    // A commit between the build's and main's head with a successful build supersedes it, even
+    // though main's head itself has none (a docs-only push after a release push).
+    let run = head_run(
+        "intermediate-succeeded",
+        &[
+            main_head(&newer),
+            compare_to(&newer, "ahead", &[&mid, &newer]),
+            release_runs(&[(&mid, "completed", "success")]),
+        ],
+    );
+    assert_eq!(run.output, "publish=false\n", "{}", run.text);
+    assert!(
+        run.text.contains(&format!("main advanced to {mid}")),
+        "{}",
+        run.text
+    );
+
+    // A main that no longer descends from the build's commit never publishes it.
+    let run = head_run(
+        "diverged",
+        &[
+            main_head(&newer),
+            compare_to(&newer, "diverged", &[]),
+            release_runs(&[]),
+        ],
+    );
+    assert_eq!(run.output, "publish=false\n", "{}", run.text);
+    assert!(
+        run.text.contains(&format!("main advanced to {newer}")),
+        "{}",
+        run.text
+    );
+}
+
+/// GitHub being unreadable fails the head check rather than deciding either way.
+#[test]
+fn the_head_check_fails_rather_than_guess_when_github_cannot_be_read() {
+    if !jq_present() {
+        return;
+    }
+    let newer = other_sha('1');
+    let unreadable: Vec<(&str, Vec<Answer>)> = vec![
+        (
+            "head",
+            vec![("git_ref_heads_main".to_owned(), 502, "{}".to_owned())],
+        ),
+        (
+            "compare",
+            vec![
+                main_head(&newer),
+                (
+                    format!("compare_{}...{newer}", step_sha()),
+                    502,
+                    "{}".to_owned(),
+                ),
+            ],
+        ),
+        (
+            "runs",
+            vec![
+                main_head(&newer),
+                compare_to(&newer, "ahead", &[&newer]),
+                (RUNS_KEY.to_owned(), 502, "{}".to_owned()),
+            ],
+        ),
+    ];
+    for (case, fixtures) in unreadable {
+        let run = head_run(&format!("unreadable-{case}"), &fixtures);
+        assert_eq!(run.code, Some(1), "{case}: {}", run.text);
+        assert_eq!(run.output, "", "{case} must decide nothing: {}", run.text);
+        assert!(
+            run.text.contains("refusing to decide publication"),
+            "{case}: {}",
+            run.text
+        );
+    }
+}
+
+/// The publish step applies the same rule immediately before creating the tag: main having
+/// moved on to a commit with no build of its own still publishes, and a newer live build
+/// stops the step before any persistent write.
+#[test]
+fn publish_applies_the_same_rule_before_creating_the_tag() {
+    if !jq_present() {
+        return;
+    }
+    let newer = other_sha('1');
+    let run = publish_run_moved("moved-without-build", &newer, &[]);
+    assert_eq!(run.code, Some(0), "{}\n{}", run.text, run.calls);
+    assert_eq!(run.output, "published=true\n", "{}", run.text);
+    assert_eq!(
+        count_calls(&run, "POST repos/owner/repo/git/refs"),
+        1,
+        "{}",
+        run.calls
+    );
+    assert!(run.calls.contains("release edit "), "{}", run.calls);
+    assert!(!run.calls.contains("DELETE"), "{}", run.calls);
+
+    let run = publish_run_moved("moved-with-build", &newer, &[(&newer, "in_progress", "")]);
+    assert_eq!(run.code, Some(0), "{}\n{}", run.text, run.calls);
+    assert_eq!(run.output, "published=false\n", "{}", run.text);
+    assert!(
+        run.text.contains(&format!("main advanced to {newer}")),
+        "{}",
+        run.text
+    );
+    assert!(
+        !run.calls.contains("POST "),
+        "no persistent write: {}",
+        run.calls
+    );
+    assert!(!run.calls.contains("release create"), "{}", run.calls);
 }
 
 /// FTBB N4: every step that writes a release, a tag or an attestation runs
