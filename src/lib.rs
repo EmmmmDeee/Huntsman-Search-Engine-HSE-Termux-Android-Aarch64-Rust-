@@ -40,6 +40,7 @@ pub mod collection;
 pub mod collector;
 pub mod commercial_readiness;
 pub mod community;
+pub mod concurrent;
 pub mod confidence;
 pub mod coref;
 pub mod correlator;
