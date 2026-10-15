@@ -268,9 +268,78 @@ fn answer(api: &ScanApi, path: &str) -> serde_json::Value {
     serde_json::from_str(&response.body).expect("JSON")
 }
 
-#[test]
-fn the_page_reads_the_fields_the_scan_api_answers() {
-    let dir = std::env::temp_dir().join(format!("hse-web-ui-scan-{}", std::process::id()));
+/// Each field a scan API answer carries that the page shows, and how the page reads it: the
+/// answer, a JSON pointer into it, and the page's read. A renamed field fails here instead of
+/// leaving a blank column on the phone.
+const PAGE_READS: &[(&str, &str, &str)] = &[
+    ("list", "/0/id", "s.id"),
+    ("list", "/0/name", "s.name||s.target"),
+    ("list", "/0/started", "when(s.started||s.created)"),
+    ("list", "/0/ended", "when(s.ended)"),
+    ("list", "/0/status", "s.status"),
+    ("list", "/0/elements", "s.elements"),
+    ("list", "/0/correlations/high", "risks(s.correlations)"),
+    ("scan", "/target_type", "s.target_type"),
+    ("scan", "/options/usecase", "o.usecase"),
+    ("scan", "/options/modules", "list(o.modules)"),
+    ("scan", "/options/types", "list(o.types)"),
+    ("scan", "/honoured/modules", "s.honoured"),
+    ("scan", "/modules_run", "list(s.modules_run)"),
+    ("scan", "/report", "s.report"),
+    ("scan", "/errors", "errors(scan)"),
+    ("scan", "/correlations/info", "scan.correlations[k]"),
+    ("scan", "/sources/0/module", "o.module"),
+    ("scan", "/sources/0/outcome", "o.outcome"),
+    ("scan", "/sources/0/found", "o.found"),
+    ("scan", "/sources/1/http_status", "o.http_status"),
+    ("scan", "/sources/1/retry_after_secs", "o.retry_after_secs"),
+    ("scan", "/sources/1/detail", "o.detail"),
+    ("summary", "/0/type", "t.type"),
+    ("summary", "/0/description", "t.description||t.type"),
+    ("summary", "/0/total", "t.total"),
+    ("summary", "/0/unique", "t.unique"),
+    ("summary", "/0/last", "when(t.last)"),
+    ("elements", "/0/id", "x.id"),
+    ("elements", "/0/type", "x.type"),
+    ("elements", "/0/description", "x.description||x.type"),
+    ("elements", "/0/data", "x.data"),
+    ("elements", "/0/source", "e.source"),
+    ("elements", "/0/source_data", "x.source_data"),
+    ("elements", "/0/module", "x.module"),
+    ("elements", "/0/confidence", "x.confidence"),
+    ("elements", "/0/created", "when(x.created)"),
+    ("elements", "/0/fp", "x.fp"),
+    ("elements", "/0/entity", "x.entity"),
+    ("elements", "/0/raw", "x.raw"),
+    ("correlation", "/rule", "c.rule"),
+    ("correlation", "/title", "c.title||c.rule"),
+    ("correlation", "/risk", "c.risk"),
+    ("correlation", "/description", "c.description"),
+    ("correlation", "/elements", "c.elements"),
+    ("log", "/0/time", "when(x.time)"),
+    ("log", "/0/component", "x.component"),
+    ("log", "/0/level", "x.level"),
+    ("log", "/0/message", "x.message"),
+    ("graph", "/nodes/0/id", "n.id"),
+    ("graph", "/nodes/0/type", "n.type"),
+    ("graph", "/nodes/0/data", "n.data"),
+    ("graph", "/edges/0/source", "e.source"),
+    ("graph", "/edges/0/target", "e.target"),
+    ("eventtypes", "/0/type", "t.type"),
+    ("eventtypes", "/0/description", "t.description||t.type"),
+    ("settings", "/modules/0/name", "m.name"),
+    ("settings", "/modules/0/access", "m.access"),
+    ("settings", "/modules/0/key_env", "m.key_env"),
+    ("settings", "/modules/0/configured", "m.configured"),
+    ("settings", "/global/0/key", "g.key"),
+    ("settings", "/global/0/description", "g.description"),
+    ("settings", "/global/0/value", "g.value"),
+];
+
+/// A scan API over a fresh store in a scratch directory, holding one finished scan of a phone
+/// number whose lookup found it and was rate-limited by one source; and that scan's API path.
+fn contract_scan(tag: &str) -> (ScanApi, String, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("hse-web-ui-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     let lookup = Arc::new(|_kind: ScanKind, selector: &str| {
         let evidence = Evidence::new(EvidenceProvenance::for_scan("phone_intl", "s"), "Australia")
@@ -313,6 +382,12 @@ fn the_page_reads_the_fields_the_scan_api_answers() {
         })
         .expect("scan");
     let root = format!("/api/scans/{}", record.id);
+    (api, root, dir)
+}
+
+#[test]
+fn the_page_reads_the_fields_the_scan_api_answers() {
+    let (api, root, dir) = contract_scan("fields");
     let correlation = serde_json::to_value(ScanCorrelation {
         id: "c".into(),
         rule: "rule".into(),
@@ -333,7 +408,30 @@ fn the_page_reads_the_fields_the_scan_api_answers() {
         ("settings", answer(&api, "/api/settings")),
         ("correlation", correlation),
     ];
-    // Every export the page offers is one the API writes, so no menu item answers with an error.
+    let _ = fs::remove_dir_all(&dir);
+    let script = inline("script");
+    for &(name, pointer, read) in PAGE_READS {
+        let value = &answers
+            .iter()
+            .find(|(answered, _)| *answered == name)
+            .expect(name)
+            .1;
+        assert!(
+            value.pointer(pointer).is_some(),
+            "{name} has no {pointer}: {value}"
+        );
+        assert!(
+            script.contains(read),
+            "the page never reads {name} {pointer} ({read})"
+        );
+    }
+    // Spiderfoot's risk levels, in its order, as the API counts them.
+    assert!(script.contains("const RISK=[['high','High','bad'],['medium','Medium','warn'],['low','Low','info'],['info','Info','ok']];"));
+}
+
+#[test]
+fn every_export_the_page_offers_is_one_the_api_writes() {
+    let (api, root, dir) = contract_scan("exports");
     let formats: Vec<&str> = PAGE
         .split("data-format=\"")
         .skip(1)
@@ -356,89 +454,6 @@ fn the_page_reads_the_fields_the_scan_api_answers() {
         );
     }
     let _ = fs::remove_dir_all(&dir);
-    let script = inline("script");
-    // Each field an answer carries that the page shows, and how the page reads it. A renamed
-    // field fails here instead of leaving a blank column on the phone.
-    for (name, pointer, read) in [
-        ("list", "/0/id", "s.id"),
-        ("list", "/0/name", "s.name||s.target"),
-        ("list", "/0/started", "when(s.started||s.created)"),
-        ("list", "/0/ended", "when(s.ended)"),
-        ("list", "/0/status", "s.status"),
-        ("list", "/0/elements", "s.elements"),
-        ("list", "/0/correlations/high", "risks(s.correlations)"),
-        ("scan", "/target_type", "s.target_type"),
-        ("scan", "/options/usecase", "o.usecase"),
-        ("scan", "/options/modules", "list(o.modules)"),
-        ("scan", "/options/types", "list(o.types)"),
-        ("scan", "/honoured/modules", "s.honoured"),
-        ("scan", "/modules_run", "list(s.modules_run)"),
-        ("scan", "/report", "s.report"),
-        ("scan", "/errors", "errors(scan)"),
-        ("scan", "/correlations/info", "scan.correlations[k]"),
-        ("scan", "/sources/0/module", "o.module"),
-        ("scan", "/sources/0/outcome", "o.outcome"),
-        ("scan", "/sources/0/found", "o.found"),
-        ("scan", "/sources/1/http_status", "o.http_status"),
-        ("scan", "/sources/1/retry_after_secs", "o.retry_after_secs"),
-        ("scan", "/sources/1/detail", "o.detail"),
-        ("summary", "/0/type", "t.type"),
-        ("summary", "/0/description", "t.description||t.type"),
-        ("summary", "/0/total", "t.total"),
-        ("summary", "/0/unique", "t.unique"),
-        ("summary", "/0/last", "when(t.last)"),
-        ("elements", "/0/id", "x.id"),
-        ("elements", "/0/type", "x.type"),
-        ("elements", "/0/description", "x.description||x.type"),
-        ("elements", "/0/data", "x.data"),
-        ("elements", "/0/source", "e.source"),
-        ("elements", "/0/source_data", "x.source_data"),
-        ("elements", "/0/module", "x.module"),
-        ("elements", "/0/confidence", "x.confidence"),
-        ("elements", "/0/created", "when(x.created)"),
-        ("elements", "/0/fp", "x.fp"),
-        ("elements", "/0/entity", "x.entity"),
-        ("elements", "/0/raw", "x.raw"),
-        ("correlation", "/rule", "c.rule"),
-        ("correlation", "/title", "c.title||c.rule"),
-        ("correlation", "/risk", "c.risk"),
-        ("correlation", "/description", "c.description"),
-        ("correlation", "/elements", "c.elements"),
-        ("log", "/0/time", "when(x.time)"),
-        ("log", "/0/component", "x.component"),
-        ("log", "/0/level", "x.level"),
-        ("log", "/0/message", "x.message"),
-        ("graph", "/nodes/0/id", "n.id"),
-        ("graph", "/nodes/0/type", "n.type"),
-        ("graph", "/nodes/0/data", "n.data"),
-        ("graph", "/edges/0/source", "e.source"),
-        ("graph", "/edges/0/target", "e.target"),
-        ("eventtypes", "/0/type", "t.type"),
-        ("eventtypes", "/0/description", "t.description||t.type"),
-        ("settings", "/modules/0/name", "m.name"),
-        ("settings", "/modules/0/access", "m.access"),
-        ("settings", "/modules/0/key_env", "m.key_env"),
-        ("settings", "/modules/0/configured", "m.configured"),
-        ("settings", "/global/0/key", "g.key"),
-        ("settings", "/global/0/description", "g.description"),
-        ("settings", "/global/0/value", "g.value"),
-    ] {
-        let value = &answers
-            .iter()
-            .find(|(answered, _)| *answered == name)
-            .expect(name)
-            .1;
-        assert!(
-            value.pointer(pointer).is_some(),
-            "{name} has no {pointer}: {value}"
-        );
-        assert!(
-            script.contains(read),
-            "the page never reads {name} {pointer} ({read})"
-        );
-    }
-    // Spiderfoot's risk levels, in its order, as the API counts them.
-    assert!(script.contains("const RISK=[['high','High','bad'],['medium','Medium','warn'],['low','Low','info'],['info','Info','ok']];"));
 }
 
 #[test]

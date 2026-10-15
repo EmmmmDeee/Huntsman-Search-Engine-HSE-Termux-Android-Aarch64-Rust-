@@ -134,6 +134,24 @@ fn token_note(addr: std::net::SocketAddr, needs_token: bool, supplied: bool) -> 
     }
 }
 
+/// `serve --history DIR`, loaded before the listener binds, so a bad directory stops `serve` at
+/// startup instead of failing each analysis. The exit codes match `correlate --history`.
+fn serve_history(dir: &str) -> Result<std::sync::Arc<ArtifactHistory>, ExitCode> {
+    match ArtifactHistory::open(Path::new(dir)) {
+        Ok(history) => {
+            eprintln!(
+                "serve: {} saved scan(s) in {dir} bridge the analysis",
+                history.scan_count()
+            );
+            Ok(std::sync::Arc::new(history))
+        }
+        Err(ArtifactError::Io(error)) => {
+            Err(fail(EX_NOINPUT, &format!("serve --history: {error}")))
+        }
+        Err(error) => Err(fail(EX_DATAERR, &format!("serve --history: {error}"))),
+    }
+}
+
 pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     let hse_bind = env::var("HSE_BIND").ok();
     let railway_port = env::var("PORT").ok();
@@ -179,23 +197,9 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         }
     }
 
-    // Load the history before the listener binds, so a bad directory stops `serve` at startup
-    // instead of failing each analysis. The exit codes match `correlate --history`.
-    let history = match history_dir {
-        Some(dir) => match ArtifactHistory::open(Path::new(&dir)) {
-            Ok(history) => {
-                eprintln!(
-                    "serve: {} saved scan(s) in {dir} bridge the analysis",
-                    history.scan_count()
-                );
-                Some(std::sync::Arc::new(history))
-            }
-            Err(ArtifactError::Io(error)) => {
-                return fail(EX_NOINPUT, &format!("serve --history: {error}"));
-            }
-            Err(error) => return fail(EX_DATAERR, &format!("serve --history: {error}")),
-        },
-        None => None,
+    let history = match history_dir.map(|dir| serve_history(&dir)).transpose() {
+        Ok(history) => history,
+        Err(code) => return code,
     };
 
     let token = env::var(SERVE_TOKEN_ENV).ok();
