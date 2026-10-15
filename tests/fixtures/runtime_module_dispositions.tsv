@@ -138,7 +138,7 @@ runtime	runtime	high-level investigation composition root
 scan_api	runtime	Spiderfoot-shaped saved-scan API router reached through scans and serve
 scan_artifact	exporter	versioned re-loadable scan results and correlation rerun
 scan_batch	leaf	bounded ordered scan seed-list parsing
-scan_export	exporter	Spiderfoot-layout CSV, TSV, JSON and GEXF exports of saved scans through scans export and the scan API
+scan_export	exporter	Spiderfoot-layout CSV, TSV, Excel, JSON and GEXF exports of saved scans through scans export and the scan API
 scan_route	runtime	deterministic lookup-front-end selector routing
 scan_service	runtime	saved-scan runner reached through scans run and the scan API
 scan_store	runtime	private on-disk saved-scan store with crash recovery read by scans and the scan API
@@ -188,5 +188,6 @@ web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
 whoxy	adapter	Whoxy WHOIS leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set
 wigle	adapter	WiGLE network-search leg reached through network_cli from network, scan -k network and /api/lookup
+xlsx	exporter	dependency-free Excel workbook writer behind scan_export's xlsx exports
 xposedornot	adapter	XposedOrNot breach-name leg reached through indicator_legs from email, scan and /api/lookup
 yaml_lite	leaf	dependency-free YAML subset reader for Spiderfoot correlation rules
