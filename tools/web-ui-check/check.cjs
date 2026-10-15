@@ -7,8 +7,9 @@
 // the scan API holds in its Summary, Browse, Correlations, Graph, Scan Settings and Log sections,
 // marks a false positive, searches, exports, clones, re-runs, compares and deletes a scan,
 // searches every scan, starts a scan of a value it found, keeps its place across a reload, asks
-// only for health when a tab with nothing running comes back, says what to do when the server
-// stops, notices when it is back, and finds the saved scans still there after the restart.
+// only for health when a tab with nothing running comes back, keeps a big scan's Graph answering
+// on a throttled CPU, says what to do when the server stops, notices when it is back, and finds
+// the saved scans still there after the restart.
 //
 // It never spends a key: the server runs with a scratch HOME and none of the caller's
 // HUNTSMAN_*, HSE_* or *_KEY variables, and its scans target a phone number, which is offline.
@@ -81,6 +82,10 @@ async function fits(page, where) {
 async function audit(page, where) { await axe(page, where); await fits(page, where); }
 const SEEDS = ['alice@example.com', 'example.com', '@alice', '+61412345678', 'Alice Smith', '203.0.113.7'].join('\n');
 const LH = { 'X-Huntsman-Lookup': '1' };
+// The Graph draws each element as a dot, a round-capped subpath of no length, in its data type's
+// path; the rim under them and the chosen element's ring are drawn again and not counted. Answers
+// the count, or with `want` whether the count is that.
+const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not(.grim,.gring,.gpick)')].reduce((n, p) => n + ((p.getAttribute('d') || '').match(/M/g) || []).length, 0); return want === undefined ? n : n === want; };
 
 (async () => {
   const base = await serve('127.0.0.1:0');
@@ -255,9 +260,20 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       const [cdownload] = await Promise.all([page.waitForEvent('download', { timeout: 10000 }), page.click('#cexport button[data-cformat=csv]')]);
       check(`${scheme}: correlations export as CSV`, cdownload.suggestedFilename().endsWith('.csv') && fs.readFileSync(await cdownload.path(), 'utf8').startsWith('Rule Name,Correlation,Risk'), cdownload.suggestedFilename());
       await page.click('#sctabs a[data-tab=graph]');
-      await page.waitForSelector('#gnodes circle', { timeout: 5000 }).catch(() => {});
-      check(`${scheme}: Graph draws every node`, (await page.$$('#gnodes circle')).length === graph.nodes.length, `${(await page.$$('#gnodes circle')).length} of ${graph.nodes.length}`);
+      await page.waitForFunction(DOTS, graph.nodes.length, { timeout: 5000 }).catch(() => {});
+      const dots = await page.evaluate(DOTS);
+      check(`${scheme}: Graph draws every node`, dots === graph.nodes.length, `${dots} of ${graph.nodes.length}`);
+      // Tapping the target's dot, once the layout has settled, says what it is.
+      await page.waitForFunction(() => raf === 0, null, { timeout: 25000 }).catch(() => {});
+      await page.locator('#gsvg').scrollIntoViewIfNeeded();
+      const spot = await page.evaluate(() => { const p = document.querySelector('#gnodes path.groot'), [x, y] = p.getAttribute('d').slice(1).split('h')[0].split(' ').map(Number), m = p.getScreenCTM(); return { x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f }; });
+      await page.touchscreen.tap(spot.x, spot.y);
+      check(`${scheme}: tapping an element in the Graph says what it is`, (await page.textContent('#ginfo')).startsWith('ROOT: ' + TARGET), await page.textContent('#ginfo'));
       await audit(page, `${scheme} graph`);
+      // Save image keeps every element and how each is drawn, without the page's styles.
+      const [image] = await Promise.all([page.waitForEvent('download', { timeout: 10000 }), page.click('#gsave')]);
+      const svgText = fs.readFileSync(await image.path(), 'utf8');
+      check(`${scheme}: Save image keeps every element as a dot`, image.suggestedFilename().endsWith('.svg') && (svgText.match(/h0/g) || []).length >= graph.nodes.length && svgText.includes('stroke-linecap="round"') && !svgText.includes('class='), image.suggestedFilename());
       await page.click('#sctabs a[data-tab=settings]');
       await page.waitForFunction(t => document.getElementById('meta').textContent.includes(t), TARGET, { timeout: 3000 }).catch(() => {});
       check(`${scheme}: Scan Settings names the target`, (await page.textContent('#meta')).includes(TARGET), await page.textContent('#meta'));
@@ -418,6 +434,49 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       check(`${scheme}: no console errors`, errors.length === 0, errors);
       kept = (await api(page, '/api/scans')).length;
       await ctx.close();
+    }
+
+    // A big scan, as a crawl of a large domain leaves one, on a phone's CPU: its Graph draws every
+    // node and keeps the page answering while it arranges them, and leaving the Graph stops the
+    // arranging and lets its nodes go. The scan is written into the store from one the check ran.
+    {
+      const store = path.join(home, '.huntsman', 'scans');
+      const from = path.join(store, fs.readdirSync(store)[0]);
+      const id = 'b16b16b16b16b16b', dir = path.join(store, id), BIG = 3000;
+      const row = JSON.parse(fs.readFileSync(path.join(from, 'scan.json'), 'utf8'));
+      const results = JSON.parse(fs.readFileSync(path.join(from, 'results.json'), 'utf8'));
+      const root = results.elements.find(e => !e.source);
+      const eid = i => 'c' + i.toString(16).padStart(15, '0');
+      const kinds = ['INTERNET_NAME', 'IP_ADDRESS', 'EMAILADDR', 'LINKED_URL_INTERNAL', 'RAW_RIR_DATA'];
+      results.scan_id = id;
+      results.elements = [root, ...Array.from({ length: BIG }, (_, i) => ({ id: eid(i), type: kinds[i % kinds.length], data: `host-${i}.example.com`, source: i < 3 ? root.id : eid(Math.floor(i / 3) - 1), module: 'check', confidence: 90, created: row.created + i, fp: false }))];
+      Object.assign(row, { id, name: 'big graph', elements: BIG + 1, unique: BIG + 1 });
+      fs.mkdirSync(dir, { mode: 0o700 });
+      fs.writeFileSync(path.join(dir, 'scan.json'), JSON.stringify(row), { mode: 0o600 });
+      fs.writeFileSync(path.join(dir, 'results.json'), JSON.stringify(results), { mode: 0o600 });
+      fs.copyFileSync(path.join(from, 'log.jsonl'), path.join(dir, 'log.jsonl'));
+      const ctx = await browser.newContext(PHONE);
+      const page = await ctx.newPage();
+      const errors = [];
+      page.on('pageerror', e => errors.push(String(e)));
+      await (await ctx.newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: 4 });
+      const frames = ms => page.evaluate(ms => new Promise(done => { let n = 0; const t0 = performance.now(); requestAnimationFrame(function tick() { n++; if (performance.now() - t0 < ms) requestAnimationFrame(tick); else done(n); }); }), ms);
+      await page.goto(base + '/#/scan/' + id + '/graph', { waitUntil: 'networkidle' });
+      await page.waitForFunction(DOTS, BIG + 1, { timeout: 30000 }).catch(() => {});
+      const drawn = await page.evaluate(DOTS);
+      const arranging = await frames(2000);
+      const t = Date.now();
+      await page.click('#sctabs a[data-tab=log]');
+      await page.waitForSelector('#log tr', { timeout: 30000 }).catch(() => {});
+      const logMs = Date.now() - t;
+      const after = await frames(1000), remaining = await page.evaluate(() => document.querySelectorAll('#gnodes path').length);
+      metrics.bigGraph = { nodes: BIG + 1, drawn, framesIn2s: arranging, logMs, framesIn1sAfter: after, nodesLeft: remaining };
+      check('a big scan\'s Graph draws every node', drawn === BIG + 1, `${drawn} of ${BIG + 1}`);
+      check('a big scan\'s Graph keeps the page answering while it arranges', arranging >= 30, `${arranging} frames in 2 s at 4x CPU throttling`);
+      check('leaving a big scan\'s Graph stops its arranging and lets its nodes go', logMs < 3000 && after >= 30 && remaining === 0, metrics.bigGraph);
+      check('no console errors on a big scan', errors.length === 0, errors);
+      await ctx.close();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
 
     // A stopped server is named, with the command that starts it; its return is noticed without
