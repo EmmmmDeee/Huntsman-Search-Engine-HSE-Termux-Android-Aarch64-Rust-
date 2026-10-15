@@ -26,10 +26,11 @@ use crate::scan_route::{
     inferred_people_is_name, parse_kind,
 };
 use crate::scan_store::{
-    FORMAT_VERSION, LogEntry, LogLevel, RiskCounts, ScanCorrelation, ScanOptions, ScanRecord,
+    FORMAT_VERSION, LogEntry, LogLevel, Risk, RiskCounts, ScanCorrelation, ScanOptions, ScanRecord,
     ScanResults, ScanStatus, ScanStore, StoreError, new_id,
 };
-use crate::sf_elements::{self, Target};
+use crate::sf_correlate::{self, Rule, RuleError};
+use crate::sf_elements::{self, DataElement, Target};
 use crate::sf_types;
 use crate::source_outcome::SourceExecutionOutcome;
 
@@ -246,18 +247,36 @@ struct State {
 pub struct ScanService {
     store: ScanStore,
     lookup: ScanLookup,
+    rules: Vec<Rule>,
+    rule_errors: Vec<RuleError>,
     state: Mutex<State>,
     freed: Condvar,
     sequence: AtomicU64,
 }
 
 impl ScanService {
-    /// A service over `store`. Run [`ScanStore::recover`] before the first scan starts.
+    /// A service over `store` whose scans run Spiderfoot's shipped correlation rules beside
+    /// Huntsman's own. Run [`ScanStore::recover`] before the first scan starts.
     #[must_use]
     pub fn new(store: ScanStore, lookup: ScanLookup) -> Arc<Self> {
+        Self::with_rules(store, lookup, sf_correlate::shipped().to_vec(), Vec::new())
+    }
+
+    /// A service whose scans run `rules` (see [`sf_correlate::with_dir`]) beside Huntsman's own.
+    /// `rule_errors` are the rule files that could not be read: each scan logs them, so a broken
+    /// rule is seen where its results would have been.
+    #[must_use]
+    pub fn with_rules(
+        store: ScanStore,
+        lookup: ScanLookup,
+        rules: Vec<Rule>,
+        rule_errors: Vec<RuleError>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             store,
             lookup,
+            rules,
+            rule_errors,
             state: Mutex::new(State {
                 running: 0,
                 aborts: BTreeSet::new(),
@@ -270,6 +289,91 @@ impl ScanService {
     #[must_use]
     pub fn store(&self) -> &ScanStore {
         &self.store
+    }
+
+    /// The Spiderfoot-format rules each scan runs.
+    #[must_use]
+    pub fn rules(&self) -> &[Rule] {
+        &self.rules
+    }
+
+    /// The rule files that could not be read.
+    #[must_use]
+    pub fn rule_errors(&self) -> &[RuleError] {
+        &self.rule_errors
+    }
+
+    /// Every correlation over a scan's entities and elements: Huntsman's rules, then the
+    /// Spiderfoot-format ones, with the count at each risk.
+    fn correlate_all(
+        &self,
+        id: &str,
+        entities: &[Entity],
+        elements: &[DataElement],
+    ) -> (Vec<ScanCorrelation>, RiskCounts) {
+        for failure in &self.rule_errors {
+            self.log(id, "huntsman", LogLevel::Warning, failure.to_string());
+        }
+        let mut correlations: Vec<ScanCorrelation> = evaluate_rules(entities, &[], id)
+            .iter()
+            .map(|correlation| ScanCorrelation::from_rule(correlation, elements))
+            .collect();
+        correlations.extend(
+            sf_correlate::run(&self.rules, elements)
+                .into_iter()
+                .map(ScanCorrelation::from_finding),
+        );
+        let mut risks = RiskCounts::default();
+        for correlation in &correlations {
+            match correlation.risk {
+                Risk::High => risks.high += 1,
+                Risk::Medium => risks.medium += 1,
+                Risk::Low => risks.low += 1,
+                Risk::Info => risks.info += 1,
+            }
+        }
+        self.log(
+            id,
+            "huntsman",
+            LogLevel::Info,
+            format!(
+                "{} correlations from {} rules: high={} medium={} low={} info={}",
+                correlations.len(),
+                crate::correlator::rule_catalog().len() + self.rules.len(),
+                risks.high,
+                risks.medium,
+                risks.low,
+                risks.info
+            ),
+        );
+        (correlations, risks)
+    }
+
+    /// Run every rule again over a finished scan's saved results, as `sf.py -C` does: after
+    /// flagging false positives or adding a rule. Returns the scan's new correlations.
+    ///
+    /// # Errors
+    /// [`ServiceError::NotFound`] for no such scan or no saved results,
+    /// [`ServiceError::Conflict`] while it runs.
+    pub fn correlate(&self, id: &str) -> Result<Vec<ScanCorrelation>, ServiceError> {
+        let mut record = self.store.get(id)?;
+        if record.status.is_active() {
+            return Err(ServiceError::Conflict(format!(
+                "scan {id} is {}; correlate it when it ends",
+                record.status.as_str()
+            )));
+        }
+        let Some(mut results) = self.store.results(id)? else {
+            return Err(ServiceError::NotFound(format!(
+                "scan {id} has no saved results"
+            )));
+        };
+        let (correlations, risks) = self.correlate_all(id, &results.entities, &results.elements);
+        results.correlations.clone_from(&correlations);
+        self.store.save_results(&results)?;
+        record.correlations = risks;
+        self.store.update(&record)?;
+        Ok(correlations)
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -578,19 +682,7 @@ impl ScanService {
                     || keep.contains(element.kind.as_str())
             });
         }
-        let correlations: Vec<ScanCorrelation> = evaluate_rules(&found.entities, &[], id)
-            .iter()
-            .map(|correlation| ScanCorrelation::from_rule(correlation, &elements))
-            .collect();
-        let mut risks = RiskCounts::default();
-        for correlation in &correlations {
-            match correlation.risk {
-                crate::scan_store::Risk::High => risks.high += 1,
-                crate::scan_store::Risk::Medium => risks.medium += 1,
-                crate::scan_store::Risk::Low => risks.low += 1,
-                crate::scan_store::Risk::Info => risks.info += 1,
-            }
-        }
+        let (correlations, risks) = self.correlate_all(id, &found.entities, &elements);
         let modules_run: Vec<String> = found
             .outcomes
             .iter()
@@ -783,6 +875,72 @@ mod tests {
             ScanService::new(ScanStore::open(&dir).unwrap(), lookup),
             dir,
         )
+    }
+
+    #[test]
+    fn spiderfoot_rules_correlate_a_scan_and_again_after_a_false_positive() {
+        let dir = scratch("rules");
+        let rule = Rule::parse(
+            "open_port",
+            "id: open_port\nversion: 1\nmeta:\n  name: Open port\n  description: Any open port.\n  risk: MEDIUM\ncollections:\n  - collect:\n      - method: exact\n        field: type\n        value: TCP_PORT_OPEN\naggregation:\n  field: data\nheadline: \"Open port: {data}\"\n",
+            "mine.yaml",
+        )
+        .unwrap();
+        let broken = RuleError {
+            rule: "broken".into(),
+            reason: "not a mapping".into(),
+        };
+        let service = ScanService::with_rules(
+            ScanStore::open(&dir).unwrap(),
+            Arc::new(|kind: ScanKind, selector: &str| Ok(found(kind, selector))),
+            vec![rule],
+            vec![broken],
+        );
+        let record = service
+            .run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let mine = |correlations: &[ScanCorrelation]| -> Vec<String> {
+            correlations
+                .iter()
+                .filter(|correlation| correlation.origin == "mine.yaml")
+                .map(|correlation| correlation.title.clone())
+                .collect()
+        };
+        let mut results = service.store().results(&record.id).unwrap().unwrap();
+        assert_eq!(
+            mine(&results.correlations),
+            ["Open port: 1.1.1.1:22", "Open port: 1.1.1.1:443"]
+        );
+        let medium = |correlations: &[ScanCorrelation]| {
+            correlations
+                .iter()
+                .filter(|correlation| correlation.risk == Risk::Medium)
+                .count()
+        };
+        assert_eq!(record.correlations.medium, medium(&results.correlations));
+        let log = service.store().log(&record.id).unwrap();
+        assert!(log.iter().any(|entry| entry.level == LogLevel::Warning
+            && entry.message == "correlation rule broken: not a mapping"));
+        for element in &mut results.elements {
+            element.fp |= element.data == "1.1.1.1:22";
+        }
+        service.store().save_results(&results).unwrap();
+        let again = service.correlate(&record.id).unwrap();
+        assert_eq!(mine(&again), ["Open port: 1.1.1.1:443"]);
+        let saved = service.store().results(&record.id).unwrap().unwrap();
+        assert_eq!(saved.correlations, again);
+        assert_eq!(
+            service.store().get(&record.id).unwrap().correlations.medium,
+            medium(&again)
+        );
+        assert!(matches!(
+            service.correlate("nope"),
+            Err(ServiceError::NotFound(_))
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -22,13 +22,11 @@ name: Release (prebuilt Termux aarch64 binary)
 # GitHub's "Latest release". This workflow never creates, edits or deletes a
 # stable release: it has no tag trigger and no stable code path.
 #
-# Publish gate: the build must run on GitHub Actions with HSE_RELEASE=1, every
-# build-time embed file must be empty, the key scan of the exact artifacts
-# must report zero findings, and the binary must get a build provenance
-# attestation (a required step, never optional). Otherwise nothing is
-# published. build.rs registers HSE_RELEASE, HUNTSMAN_HIBP_NO_EMBED,
-# HIBP_API_KEY and HUNTSMAN_BUILD_SHA for rebuilds (not CI, not a key file),
-# reads none of them, and writes an empty HIBP embed file on every build.
+# Publish gate: the build must run on GitHub Actions with HSE_RELEASE=1, the
+# key scan of the exact artifacts must report zero findings, and the binary
+# must get a build provenance attestation (a required step, never optional).
+# Otherwise nothing is published. No build reads a key: HIBP keys are read at
+# run time only, so the scan is the proof that none is in the published files.
 # See docs/RELEASING.md.
 #
 # Privilege split (same shape as HSE-BLE-API- release.yml):
@@ -68,7 +66,6 @@ on:
       - ".railway/**"
       - "Dockerfile"
       - ".dockerignore"
-      - "build.rs"
       - "Cargo.toml"
       - "Cargo.lock"
       - "capabilities.json"
@@ -80,15 +77,14 @@ on:
       - ".cargo/**"
       - "scripts/validate-railway-iac.sh"
   workflow_dispatch:
-  # Dry run on PRs that touch the release path: same build, embed check and
-  # key scan, nothing published, no write token requested.
+  # Dry run on PRs that touch the release path: same build and key scan,
+  # nothing published, no write token requested.
   pull_request:
     paths:
       - ".github/workflows/release.yml"
       - ".github/scripts/scan-for-keys.sh"
       - ".github/scripts/install-termux.sh"
       - ".github/actions/setup-ndk-aarch64/**"
-      - "build.rs"
       - "Cargo.toml"
       - "Cargo.lock"
       - "capabilities.json"
@@ -109,7 +105,6 @@ permissions:
 
 env:
   HSE_RELEASE: "1"
-  HUNTSMAN_HIBP_NO_EMBED: "1"
   HUNTSMAN_BUILD_SHA: ${{ github.sha }}
   ASSET: huntsman-recon-aarch64-linux-android
   # Exact benign hex values the key scan deletes before its hex-run rule (see
@@ -149,7 +144,7 @@ jobs:
           publish=true
           if [ "$GH_EVENT_NAME" = "pull_request" ]; then
             publish=false
-            echo "Pull request: dry run (build + embed check + key scan), nothing is published." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Pull request: dry run (build + key scan), nothing is published." | tee -a "$GITHUB_STEP_SUMMARY"
           elif [ "$GH_REF" != "refs/heads/main" ]; then
             echo "::error::main-channel releases are built from refs/heads/main only (got ${GH_REF})"
             exit 1
@@ -298,16 +293,6 @@ jobs:
       - name: Build aarch64 Android release binary
         run: cargo build --release --locked --target aarch64-linux-android
 
-      - name: Require empty build-time key embed
-        run: |
-          set -euo pipefail
-          mapfile -t embeds < <(find target/aarch64-linux-android/release/build -path '*/out/hibp_embedded_key.txt' -type f)
-          [ "${#embeds[@]}" -gt 0 ] || { echo "::error::no hibp_embedded_key.txt found; cannot prove the embed is empty"; exit 1; }
-          for f in "${embeds[@]}"; do
-            [ ! -s "$f" ] || { echo "::error file=${f}::build-time HIBP key embed is NOT empty; refusing to publish"; exit 1; }
-            echo "empty: ${f}"
-          done
-
       - name: Verify Android ELF, strip and stage
         run: |
           set -euo pipefail
@@ -388,7 +373,6 @@ jobs:
             echo "commit: ${GITHUB_SHA}"
             echo "release_tag: ${TAG}"
             echo "run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            echo "build_time_hibp_embed: empty (checked)"
             cat "$RUNNER_TEMP/identity.txt"
             [ "$HUNTSMAN_BUILD_SHA" = "$GITHUB_SHA" ] || { echo "::error::HUNTSMAN_BUILD_SHA is not github.sha"; exit 1; }
             # Known value from the checkout (the provenance names this digest).
@@ -907,19 +891,55 @@ jobs:
           fi
           echo "exists=${exists}" >> "$GITHUB_OUTPUT"
 
-      - name: Check whether this commit is still main head
+      - name: Check whether a newer main build supersedes this commit
         id: head
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          current="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
-          if [ "$current" = "$GITHUB_SHA" ]; then
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "main head still matches ${GITHUB_SHA}; publication may proceed."
-          else
+          api="repos/${GITHUB_REPOSITORY}"
+          # Sets NEWER to the newest commit main has gained since this one whose
+          # own build supersedes this publication and returns 0; returns 1 when
+          # this build is the one to publish; returns 2 when GitHub could not be
+          # read, so the caller fails rather than guess. main moving on is not by
+          # itself a reason to publish nothing: a push that touches no release
+          # path starts no build, and a failed or cancelled build publishes
+          # nothing, so when every newer commit is such a commit the prebuilt
+          # would lag behind main until the next release push. Only a queued,
+          # running or successful build of a newer commit supersedes this one;
+          # a main that no longer descends from this commit always does.
+          newer_build() {
+            local current cmp live sha
+            NEWER=""
+            current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)" || return 2
+            [ "$current" != "$GITHUB_SHA" ] || return 1
+            cmp="$(gh api "$api/compare/${GITHUB_SHA}...${current}" --jq '.status, .commits[].sha')" || return 2
+            live="$(gh api "$api/actions/workflows/release.yml/runs?branch=main&event=push&per_page=100" \
+              --jq '.workflow_runs[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending" or .status == "requested" or (.status == "completed" and .conclusion == "success")) | .head_sha')" || return 2
+            [ "${cmp%%$'\n'*}" = "ahead" ] || { NEWER="$current"; return 0; }
+            for sha in ${cmp#*$'\n'}; do
+              if grep -qxF "$sha" <<<"$live"; then
+                NEWER="$sha"
+                return 0
+              fi
+            done
+            return 1
+          }
+          # 0 when a newer build supersedes this one (NEWER names its commit), 1
+          # when this build publishes. GitHub being unreadable fails the step.
+          superseded() {
+            newer_build && return 0
+            case $? in
+              1) return 1 ;;
+              *) echo "::error::could not read main's head, its new commits or their release builds; refusing to decide publication"; exit 1 ;;
+            esac
+          }
+          if superseded; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "main advanced to ${current}; ${GITHUB_SHA} remains a verified Actions artifact and will not mint a historical release tag." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "main advanced to ${NEWER}, which publishes a build of its own; ${GITHUB_SHA} remains a verified Actions artifact and will not mint a historical release tag." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "no newer main commit publishes a build of its own; ${GITHUB_SHA} publishes." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       # Required, never optional: a build that cannot be attested is not
@@ -970,6 +990,42 @@ jobs:
         run: |
           set -euo pipefail
           api="repos/${GITHUB_REPOSITORY}"
+          # Sets NEWER to the newest commit main has gained since this one whose
+          # own build supersedes this publication and returns 0; returns 1 when
+          # this build is the one to publish; returns 2 when GitHub could not be
+          # read, so the caller fails rather than guess. main moving on is not by
+          # itself a reason to publish nothing: a push that touches no release
+          # path starts no build, and a failed or cancelled build publishes
+          # nothing, so when every newer commit is such a commit the prebuilt
+          # would lag behind main until the next release push. Only a queued,
+          # running or successful build of a newer commit supersedes this one;
+          # a main that no longer descends from this commit always does.
+          newer_build() {
+            local current cmp live sha
+            NEWER=""
+            current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)" || return 2
+            [ "$current" != "$GITHUB_SHA" ] || return 1
+            cmp="$(gh api "$api/compare/${GITHUB_SHA}...${current}" --jq '.status, .commits[].sha')" || return 2
+            live="$(gh api "$api/actions/workflows/release.yml/runs?branch=main&event=push&per_page=100" \
+              --jq '.workflow_runs[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending" or .status == "requested" or (.status == "completed" and .conclusion == "success")) | .head_sha')" || return 2
+            [ "${cmp%%$'\n'*}" = "ahead" ] || { NEWER="$current"; return 0; }
+            for sha in ${cmp#*$'\n'}; do
+              if grep -qxF "$sha" <<<"$live"; then
+                NEWER="$sha"
+                return 0
+              fi
+            done
+            return 1
+          }
+          # 0 when a newer build supersedes this one (NEWER names its commit), 1
+          # when this build publishes. GitHub being unreadable fails the step.
+          superseded() {
+            newer_build && return 0
+            case $? in
+              1) return 1 ;;
+              *) echo "::error::could not read main's head, its new commits or their release builds; refusing to decide publication"; exit 1 ;;
+            esac
+          }
           files=("dist/$ASSET" "dist/$ASSET.sha256" "dist/$ASSET.provenance.json" "dist/key-scan-report.txt" "dist/install-termux.sh")
           cat > notes.md <<NOTES
           **In-progress replacement with rebuilt lookup paths.** This is a main-channel **pre-release** of \`huntsman-recon\`, the reconstructed crate, for aarch64 Android/Termux. It includes rebuilt people, email, username, and offline phone paths. It does not yet cover the complete legacy \`hse\` capability surface, so the legacy \`hse\` channel stays available as an explicit opt-in.
@@ -1000,7 +1056,7 @@ jobs:
 
           Authenticity (optional): \`gh attestation verify ${ASSET} --repo ${GITHUB_REPOSITORY}\`.
 
-          Built with HSE_RELEASE=1 (no build-time key embedding). \`key-scan-report.txt\` is the zero-finding key scan of these exact files. No Termux handset run is claimed.
+          Built with HSE_RELEASE=1; no build reads a key. \`key-scan-report.txt\` is the zero-finding key scan of these exact files. No Termux handset run is claimed.
           NOTES
           candidate_tag=false
           candidate_release=false
@@ -1041,14 +1097,13 @@ jobs:
             return 1
           }
 
-          # Re-check the live head immediately before creating any persistent
-          # ref. The earlier gate runs before attestation and artifact handoff;
-          # main may advance during that interval. A superseded build remains a
+          # Re-check live main immediately before creating any persistent ref.
+          # The earlier gate runs before attestation and artifact handoff; main
+          # may advance during that interval. A superseded build remains a
           # verified Actions artifact and must create no transient historical tag.
-          current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)"
-          if [ "$current" != "$GITHUB_SHA" ]; then
+          if superseded; then
             echo "published=false" >> "$GITHUB_OUTPUT"
-            echo "${TAG}: main advanced to ${current} before tag creation; retaining only the verified Actions artifact." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "${TAG}: main advanced to ${NEWER}, which publishes a build of its own, before tag creation; retaining only the verified Actions artifact." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -1078,9 +1133,8 @@ jobs:
           # the already-verified Actions artifact.
           read_tag
           read -r type actual <<<"$ref"
-          current="$(gh api "$api/git/ref/heads/main" --jq .object.sha)"
-          if [ "$type" != "commit" ] || [ "$actual" != "$GITHUB_SHA" ] || [ "$current" != "$GITHUB_SHA" ]; then
-            echo "::warning::publication race detected: tag=${type} ${actual}, main=${current}, build=${GITHUB_SHA}. Discarding the unpublished candidate."
+          if [ "$type" != "commit" ] || [ "$actual" != "$GITHUB_SHA" ] || superseded; then
+            echo "::warning::publication race detected: tag=${type} ${actual}, newer build=${NEWER:-none}, build=${GITHUB_SHA}. Discarding the unpublished candidate."
             cleanup_candidate
             candidate_release=false
             candidate_tag=false

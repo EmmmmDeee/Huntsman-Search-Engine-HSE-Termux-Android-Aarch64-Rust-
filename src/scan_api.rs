@@ -1,6 +1,7 @@
 //! Spiderfoot's web API for saved scans, as one router the embedded server delegates to.
 //!
-//! [`ScanApi::handle`] answers `/api/scans...`, `/api/eventtypes` and `/api/settings` from a
+//! [`ScanApi::handle`] answers `/api/scans...`, `/api/eventtypes`, `/api/correlationrules` and
+//! `/api/settings` from a
 //! method, a path and a query string, and knows nothing of sockets: the server applies its own
 //! guards (same-origin, the `X-Huntsman-Lookup` header, the bearer token on a public bind) and
 //! writes the [`ApiResponse`]. Every answer is JSON except exports. State changes are `POST` with
@@ -13,7 +14,9 @@
 //! | `scanstatus` | `GET /api/scans/ID` |
 //! | `scansummary` | `GET /api/scans/ID/summary` |
 //! | `scaneventresults`, `scaneventresultsunique` | `GET /api/scans/ID/elements[?type=T][&unique=1][&hidefp=1][&correlation=C]` |
-//! | `scancorrelations` | `GET /api/scans/ID/correlations` |
+//! | `scancorrelations`, `scancorrelationsexport` | `GET /api/scans/ID/correlations[?format=csv|tsv|json]` |
+//! | `sf.py -C` | `POST /api/scans/ID/correlate` |
+//! | `correlationrules` | `GET /api/correlationrules` |
 //! | `scanlog`, `scanerrors` | `GET /api/scans/ID/log[?level=ERROR]` |
 //! | `scanviz` | `GET /api/scans/ID/graph` |
 //! | `scaneventresultexport`, `scanexportjsonmulti`, `scanviz?gexf=1` | `GET /api/scans/ID/export?format=csv|tsv|json|gexf[&type=T]`, `GET /api/scans/export?ids=A,B` |
@@ -28,10 +31,12 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use crate::api_leg::Api;
+use crate::correlator::rule_catalog;
 use crate::module::reachable_modules;
 use crate::scan_export;
 use crate::scan_service::{MAX_RUNNING, ScanRequest, ScanService, ServiceError};
-use crate::scan_store::{LogLevel, ScanOptions, ScanRecord, ScanResults, ScanStatus};
+use crate::scan_store::{LogLevel, Risk, ScanOptions, ScanRecord, ScanResults, ScanStatus};
+use crate::sf_correlate::Rule;
 use crate::sf_elements::{self, DataElement};
 use crate::sf_types;
 use crate::value_syntax::form_pairs;
@@ -170,6 +175,7 @@ impl ScanApi {
         path == "/api/scans"
             || path.starts_with("/api/scans/")
             || path == "/api/eventtypes"
+            || path == "/api/correlationrules"
             || path == "/api/settings"
     }
 
@@ -193,6 +199,7 @@ impl ScanApi {
             .collect();
         match (segments.as_slice(), write) {
             (["eventtypes"], false) => event_types(),
+            (["correlationrules"], false) => self.correlation_rules(),
             (["settings"], false) => self.settings(),
             (["scans"], false) => self.list(),
             (["scans"], true) => self.start(&param),
@@ -200,7 +207,11 @@ impl ScanApi {
             (["scans", id], false) => self.status(id),
             (["scans", id, "summary"], false) => self.summary(id),
             (["scans", id, "elements"], false) => self.elements(id, &param),
-            (["scans", id, "correlations"], false) => self.correlations(id),
+            (["scans", id, "correlations"], false) => self.correlations(id, param.get("format")),
+            (["scans", id, "correlate"], true) => match self.service.correlate(id) {
+                Ok(correlations) => ok(200, &json!(correlations)),
+                Err(failure) => service_error(&failure),
+            },
             (["scans", id, "log"], false) => self.log(id, param.get("level")),
             (["scans", id, "graph"], false) => self.graph(id),
             (["scans", id, "export"], false) => self.export(id, &param),
@@ -439,18 +450,28 @@ impl ScanApi {
         ok(200, &Value::Array(rows))
     }
 
-    fn correlations(&self, id: &str) -> ApiResponse {
-        match self.results(id) {
-            Ok((_, results)) => ok(
-                200,
-                &json!(
-                    results
-                        .map(|results| results.correlations)
-                        .unwrap_or_default()
-                ),
-            ),
-            Err(response) => response,
+    fn correlations(&self, id: &str, format: Option<&str>) -> ApiResponse {
+        let (record, results) = match self.results(id) {
+            Ok(found) => found,
+            Err(response) => return response,
+        };
+        let results = results.unwrap_or_else(|| empty_results(&record));
+        let Some(format) = format.filter(|format| !format.is_empty()) else {
+            return ok(200, &json!(results.correlations));
+        };
+        match scan_export::render_correlations(&record, &results, format) {
+            Ok(export) => ApiResponse {
+                status: 200,
+                content_type: export.content_type,
+                body: export.body,
+                filename: Some(export.filename),
+            },
+            Err(message) => error(400, &message),
         }
+    }
+
+    fn correlation_rules(&self) -> ApiResponse {
+        ok(200, &correlation_rules(self.service.rules()))
     }
 
     fn log(&self, id: &str, level: Option<&str>) -> ApiResponse {
@@ -612,17 +633,48 @@ impl ScanApi {
     }
 }
 
+/// Spiderfoot's `correlationrules` (id, name, descr, risk) for every rule a scan runs:
+/// Huntsman's own, then `rules`, each with where it came from and, for those, the rule as
+/// written (`logic`).
+#[must_use]
+pub fn correlation_rules(rules: &[Rule]) -> Value {
+    let mut rows: Vec<Value> = rule_catalog()
+        .into_iter()
+        .map(|rule| {
+            json!({
+                "id": rule.id,
+                "name": rule.name.replace('_', " "),
+                "descr": rule.description,
+                "risk": Risk::of(rule.severity).as_str(),
+                "origin": "huntsman",
+                "logic": "",
+            })
+        })
+        .collect();
+    rows.extend(rules.iter().map(|rule| {
+        json!({
+            "id": rule.id,
+            "name": rule.name,
+            "descr": rule.description,
+            "risk": rule.risk.as_str(),
+            "origin": rule.origin,
+            "logic": rule.yaml,
+        })
+    }));
+    Value::Array(rows)
+}
+
 /// Whether a path is answered under `POST` (`write`) or `GET`: the other method gets 405, not 404.
 fn route_exists(segments: &[&str], write: bool) -> bool {
     if write {
         matches!(
             segments,
-            ["scans"] | ["scans", _, "stop" | "delete" | "rerun" | "fp"]
+            ["scans"] | ["scans", _, "stop" | "delete" | "rerun" | "fp" | "correlate"]
         )
     } else {
         matches!(
             segments,
-            ["eventtypes" | "settings" | "scans"]
+            ["eventtypes" | "correlationrules" | "settings" | "scans"]
                 | ["scans", _]
                 | [
                     "scans",
@@ -680,7 +732,7 @@ mod tests {
         let lookup = Arc::new(|_kind: ScanKind, selector: &str| {
             let evidence = Evidence::new(EvidenceProvenance::for_scan("internetdb", "s"), "ports")
                 .with_attr("ports", "22,443")
-                .with_attr("vulns", "CVE-2021-44228");
+                .with_attr("vulns", "CVE-2021-44228,CVE-2014-0160");
             Ok(LookupOutput {
                 text: "report".into(),
                 entities: vec![
@@ -708,6 +760,81 @@ mod tests {
             })
             .unwrap()
             .id
+    }
+
+    #[test]
+    fn correlation_rules_are_listed_rerun_and_exported() {
+        let (api, dir) = api("correlate");
+        assert!(ScanApi::handles("/api/correlationrules"));
+        let rules = body(&api.handle("GET", "/api/correlationrules", ""));
+        let rules = rules.as_array().unwrap();
+        assert_eq!(rules.len(), rule_catalog().len() + 37);
+        assert_eq!(rules[0]["origin"], "huntsman");
+        assert!(
+            rules
+                .iter()
+                .all(|rule| !rule["descr"].as_str().unwrap().is_empty())
+        );
+        let database = rules
+            .iter()
+            .find(|rule| rule["id"] == "database_exposed")
+            .unwrap();
+        assert_eq!(database["risk"], "HIGH");
+        assert_eq!(database["origin"], "spiderfoot");
+        assert!(
+            database["logic"]
+                .as_str()
+                .unwrap()
+                .starts_with("id: database_exposed\n")
+        );
+        let id = finished(&api);
+        let saved = body(&api.handle("GET", &format!("/api/scans/{id}/correlations"), ""));
+        let titles: Vec<&str> = saved
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|correlation| correlation["title"].as_str().unwrap())
+            .collect();
+        assert!(
+            titles.contains(&"Multiple medium/low vulnerabilities found on 1.1.1.1"),
+            "{titles:?}"
+        );
+        let rerun = api.handle("POST", &format!("/api/scans/{id}/correlate"), "");
+        assert_eq!(rerun.status, 200, "{}", rerun.body);
+        assert_eq!(body(&rerun), saved);
+        let csv = api.handle(
+            "GET",
+            &format!("/api/scans/{id}/correlations"),
+            "format=csv",
+        );
+        assert_eq!(csv.status, 200);
+        assert!(
+            csv.body
+                .starts_with("Rule Name,Correlation,Risk,Description,Rule,Origin,Elements\r\n")
+        );
+        assert_eq!(csv.body.matches("\r\n").count(), titles.len() + 1);
+        assert!(
+            csv.filename
+                .unwrap()
+                .ends_with("-Huntsman-correlations.csv")
+        );
+        let refused =
+            |method: &str, path: &str, query: &str| api.handle(method, path, query).status;
+        assert_eq!(
+            refused(
+                "GET",
+                &format!("/api/scans/{id}/correlations"),
+                "format=xlsx"
+            ),
+            400
+        );
+        assert_eq!(
+            refused("GET", &format!("/api/scans/{id}/correlate"), ""),
+            405
+        );
+        assert_eq!(refused("POST", "/api/correlationrules", ""), 405);
+        assert_eq!(refused("POST", "/api/scans/nope/correlate", ""), 404);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

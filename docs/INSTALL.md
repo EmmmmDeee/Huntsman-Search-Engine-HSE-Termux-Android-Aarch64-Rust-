@@ -54,9 +54,8 @@ verification pass.
 Last, it sets up the web UI as a background service that restarts on its own;
 see [Keep serve running on Android](#keep-serve-running-on-android).
 
-The crate MSRV remains Rust 1.87. For a source build, `HUNTSMAN_HIBP_NO_EMBED=1`
-is exported by the installer so build-time key embedding stays disabled; runtime key use remains
-available.
+The crate MSRV remains Rust 1.87. No build reads a key: keys are read at run
+time only, from the environment or a key file such as `~/.huntsman.env`.
 
 Start with:
 
@@ -288,7 +287,7 @@ See [`RAILWAY.md`](RAILWAY.md) for the complete deployment contract.
 Install Rust 1.87 or newer, then from a checkout:
 
 ```sh
-HUNTSMAN_HIBP_NO_EMBED=1 cargo install --path . --locked
+cargo install --path . --locked
 ```
 
 This places the binary in Cargo's configured install directory (usually
@@ -296,7 +295,7 @@ This places the binary in Cargo's configured install directory (usually
 default branch without cloning first:
 
 ```sh
-HUNTSMAN_HIBP_NO_EMBED=1 cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git --locked huntsman-recon
+cargo install --git https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-.git --locked huntsman-recon
 ```
 
 ## Build, test, and run from a checkout

@@ -326,7 +326,6 @@ fn origin_label(origin: &KeyOrigin) -> String {
         KeyOrigin::Env(name) => format!("env:{name}"),
         KeyOrigin::HuntsmanSlot => "slot:HUNTSMAN_HIBP_KEY".into(),
         KeyOrigin::File(path) => format!("file:{}", path.display()),
-        KeyOrigin::Embedded => "embedded".into(),
         KeyOrigin::Provided => "provided".into(),
     }
 }
