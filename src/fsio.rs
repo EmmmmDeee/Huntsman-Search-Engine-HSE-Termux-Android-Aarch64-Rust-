@@ -88,7 +88,8 @@ pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
 /// Replace `path` atomically and durably. A symlink at `path` or at its parent directory is
 /// refused. The bytes are flushed before the rename and the directory after it: on ext4 and
 /// f2fs (Android's data partition) a rename whose directory was not flushed can be lost to a
-/// power cut or a low-memory kill, leaving the old file or none.
+/// power cut or a kernel crash, leaving the old file or none. (A killed process, such as one
+/// Android's low-memory killer ends, loses nothing: the kernel still writes the rename back.)
 ///
 /// # Errors
 /// `Error::Store` on a symlink, a body over `max` bytes, or IO failure.

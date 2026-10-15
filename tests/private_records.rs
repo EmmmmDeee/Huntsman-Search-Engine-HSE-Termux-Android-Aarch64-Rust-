@@ -25,8 +25,14 @@ fn mode(path: &Path) -> u32 {
         & 0o777
 }
 
+/// Run the binary under `umask 022`. The test runner's own umask is not known: under `umask
+/// 077` (Android app processes, the Railway entrypoint) a plain write also comes out 0600, and
+/// the assertions below would hold without the private writer.
 fn recon(dir: &Path, args: &[&str]) {
-    let out = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg("umask 022 && exec \"$0\" \"$@\"")
+        .arg(env!("CARGO_BIN_EXE_huntsman-recon"))
         .args(args)
         .current_dir(dir)
         .output()
@@ -47,6 +53,11 @@ fn a_ledger_is_private_even_over_an_older_readable_one() {
     fs::set_permissions(&ledger, fs::Permissions::from_mode(0o644)).unwrap();
     recon(&dir, &["check"]);
     assert_eq!(mode(&ledger), 0o600, "{}", ledger.display());
+    // The control: `check` also writes the navigator layer through the ordinary writer, and
+    // under the pinned umask that file is readable. So the 0600 above came from the ledger's
+    // writer, not from the environment.
+    let navigator = dir.join("var/navigator.json");
+    assert_eq!(mode(&navigator), 0o644, "{}", navigator.display());
     fs::remove_dir_all(dir).unwrap();
 }
 

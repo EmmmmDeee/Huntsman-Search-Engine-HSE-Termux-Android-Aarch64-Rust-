@@ -125,6 +125,7 @@ before using credentials or network access.
 | `docs/ARCHIVE_PROVENANCE.md` | SHA-256 and Git identities of the historical source archives, which are absent from the active tree and recoverable from Git history. |
 | `.github/` | `workflows/ci.yml` (tests on Rust 1.87 and stable; aarch64 Android cross-build), `workflows/release.yml` (`main-<sha7>` pre-releases of `huntsman-recon`), `scripts/` (`scan-for-keys.sh`, `install-termux.sh`) and `actions/setup-ndk-aarch64` (NDK compiler and linker environment). |
 | `CHANGELOG.md` | Notable changes, Keep a Changelog format. |
+| `changelog.d/` | One fragment per change (`<slug>.<section>.md`), checked by every gate mode and assembled into `CHANGELOG.md` by `cargo run --locked -p xtask -- changelog assemble` when a version heading is cut. |
 | `docs/COMMERCIAL_READINESS.md` | Buyer/client due-diligence index: reusable assets, proof boundaries, commercial-readiness gates, and value-maximizing engineering sequence. |
 
 ## Which binary to use
@@ -189,6 +190,7 @@ cargo run -- investigate "mail ada@example.com visit https://example.org"  # off
 cargo run -- plan ada@example.com example.com  # offline spine: entities, relations, planned routes; nothing fetched
 cargo run -- query "OpenAI research"          # network: Bing/Brave/Mojeek subset
 cargo run -- sf -M                         # SpiderFoot-style reachable-module listing; offline
+cargo run -- scans types                   # Spiderfoot 4.0's 172 data-element types plus Huntsman's own; offline
 cargo run -- serve --help                    # embedded UI/API command options; does not start a listener
 cargo run -- modules --json               # only modules currently reachable from the binary
 cargo run -- attack status --json          # offline ATT&CK Reconnaissance capability posture
@@ -423,7 +425,13 @@ live receipt. Live ASIC Connect is WAF-blocked.
 
 ### SpiderFoot-compatible front end
 
-`sf` restores a tested subset of the legacy SpiderFoot 4.0-compatible command line. `sf -M`, `sf -T`, and `sf -V` are offline; `sf -s TARGET` currently executes rebuilt name, email, username, and phone paths and formats rows as tab, CSV, or JSON. `-u all|footprint|investigate|passive`, `-t TYPE[,TYPE...]`, `-r`, and `-q` are parsed. Passive execution is currently available only where the rebuilt path is entirely offline (phone); unsupported target classes fail explicitly instead of silently changing semantics. The remaining SpiderFoot flags, full event taxonomy, stored-scan correlation, listener mode, and complete legacy differential remain outstanding.
+`sf` restores a tested subset of the legacy SpiderFoot 4.0-compatible command line. `sf -M`, `sf -T`, and `sf -V` are offline; `sf -s TARGET` currently executes rebuilt name, email, username, and phone paths and formats rows as tab, CSV, or JSON. `-u all|footprint|investigate|passive`, `-t TYPE[,TYPE...]`, `-r`, and `-q` are parsed. Passive execution is currently available only where the rebuilt path is entirely offline (phone); unsupported target classes fail explicitly instead of silently changing semantics. `sf -T` lists Spiderfoot 4.0's full 172-type event taxonomy plus Huntsman's own `HSE_` types, `-t` accepts any of them, and `sf -s` rows are the same typed data elements a saved scan keeps. The remaining SpiderFoot flags, listener mode, and complete legacy differential remain outstanding.
+
+### Saved scans
+
+`scans` keeps scans the way Spiderfoot does: `scans run TARGET` routes the target exactly as `scan` does (a domain, IP address, email, phone, username, name, BSSID or `LAT,LON`; `-k` picks the lookup), runs every source of that lookup, and saves everything it found under an id: the lookup's report, every entity with its evidence, every source outcome, the typed Spiderfoot data elements (`IP_ADDRESS`, `CO_HOSTED_SITE`, `TCP_PORT_OPEN`, `VULNERABILITY_CVE_*`, `MALICIOUS_IPADDR`, `EMAILADDR_COMPROMISED`, and the rest of `scans types`) linked to the element they came from, and the correlations with Spiderfoot's HIGH/MEDIUM/LOW/INFO risk. Nothing is redacted or dropped; `-t` keeps only the element types named. An email scan also runs the keyed breach lookup unless `-u passive` is given.
+
+`scans list`, `show`, `summary`, `elements [-t TYPE] [--unique] [--hide-fp]`, `correlations` and `log [--level ERROR]` read a saved scan; `scans export ID [-f csv|tsv|json|gexf] [-o FILE]` writes it in Spiderfoot's export layout (`Updated,Type,Module,Source,F/P,Data`; several comma-separated ids give one JSON export); `scans fp ID ELEMENT[,ELEMENT...] [--unset]` flags false positives; `scans rerun ID` runs a scan again with its target and options; `scans delete ID` removes it. Scans live in `$HUNTSMAN_HOME/scans`, else `~/.huntsman/scans` (each row and result file is private to you), or under `--dir DIR`. A scan whose process stopped mid-run reads `ABORTED` the next time the store opens; one another live process is still running is left alone. The same store answers `serve`'s `/api/scans` API (`scan_api`), so the web UI lists, starts and reads these scans too.
 
 
 ### Embedded Web UI and HTTP API

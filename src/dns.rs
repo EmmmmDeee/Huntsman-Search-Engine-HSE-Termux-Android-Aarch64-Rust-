@@ -864,7 +864,8 @@ mod tests {
         }
     }
 
-    /// SERVFAIL and REFUSED are about the resolver, not the zone, so the next one is asked.
+    /// SERVFAIL and REFUSED are about the resolver, not the zone, so the next one is asked;
+    /// when every resolver answers so, the result is a resolver failure, not "no such record".
     #[test]
     fn a_resolver_failure_code_fails_over() {
         for status in [2, 5] {
@@ -885,6 +886,18 @@ mod tests {
             assert_eq!(answer.server.provider, "DNS.SB");
             assert_eq!(transport.seen.borrow().len(), 2);
         }
+        let transport = FakeTransport::new(vec![Ok(doh(br#"{"Status":2}"#)); 3]);
+        let error = resolve_with_pool(
+            &transport,
+            &ResolveQuery {
+                name: "example.com".into(),
+                record_type: RecordType::A,
+            },
+        )
+        .expect_err("every resolver failed");
+        assert_eq!(error.kind, ResolveErrorKind::Upstream);
+        assert_eq!(error.detail, "dns status 2");
+        assert_eq!(transport.seen.borrow().len(), 3);
     }
 
     /// A 200 JSON body with no `Status` is not a DNS answer (a captive portal's page, a
