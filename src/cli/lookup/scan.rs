@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 
-use crate::cli::{MAX_ARTIFACT_BYTES, fail};
+use crate::cli::{MAX_PLAIN_FILE_BYTES, fail};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
@@ -108,7 +108,7 @@ pub(in crate::cli) fn scan_cmd(args: &[String]) -> ExitCode {
 }
 
 fn scan_batch_file(path: &str, kind: Option<&str>, save_dir: Option<&str>) -> ExitCode {
-    let bytes = match read_bounded(Path::new(path), MAX_ARTIFACT_BYTES) {
+    let bytes = match read_bounded(Path::new(path), MAX_PLAIN_FILE_BYTES) {
         Ok(bytes) => bytes,
         Err(Error::Store(message)) => return fail(EX_NOINPUT, &message),
         Err(error) => return fail(EX_DATAERR, &error.to_string()),

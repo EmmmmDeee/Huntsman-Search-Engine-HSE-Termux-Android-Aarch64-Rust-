@@ -68,7 +68,9 @@ Run `huntsman-recon <COMMAND> --help` for command details.
 Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
 `seeknow`, `people`, `email`, `exposure`, `username`, `domain`, `network`, `query`, `dehashed`, networked `sf -s` lookups and `scans run` make HTTP requests; `serve` accepts inbound HTTP connections; their default
 egress policy is public-only.";
-const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
+/// The largest plain file a command reads or writes: a seed list, or a self-check scratch file.
+/// A saved artifact has its own ceiling, `scan_artifact::MAX_ARTIFACT_BYTES`.
+const MAX_PLAIN_FILE_BYTES: u64 = 1_048_576;
 mod credentials;
 mod doctor;
 mod help;
