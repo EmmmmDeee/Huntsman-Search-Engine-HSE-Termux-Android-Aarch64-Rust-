@@ -123,6 +123,7 @@ provider_credentials	leaf	provider credential completeness manifest
 pulsedive	adapter	Pulsedive leg reached through indicator_legs from ip, domain, scan and /api/lookup
 radar	leaf	radar model utility
 recon	leaf	host reconnaissance helpers
+recursion	runtime	bounded fetch-expand-fetch crawl orchestration and termination
 redact	leaf	secret and location redaction
 relation	runtime	structural relation derivation
 resolve	leaf	conservative automatic merge application for supplied decisions
@@ -133,9 +134,13 @@ robtex	adapter	Robtex leg reached through indicator_legs from ip, domain, scan a
 roi	runtime	dispatch utility scoring
 run_history	leaf	durable test-run history and regression verdict
 runtime	runtime	high-level investigation composition root
+scan_api	runtime	Spiderfoot-shaped saved-scan API router reached through scans and serve
 scan_artifact	exporter	versioned re-loadable scan results and correlation rerun
 scan_batch	leaf	bounded ordered scan seed-list parsing
+scan_export	exporter	Spiderfoot-layout CSV, TSV, JSON and GEXF exports of saved scans through scans export and the scan API
 scan_route	runtime	deterministic lookup-front-end selector routing
+scan_service	runtime	saved-scan runner reached through scans run and the scan API
+scan_store	runtime	private on-disk saved-scan store with crash recovery read by scans and the scan API
 scraper_health	diagnostic	source drift diagnostics
 search	diagnostic	local search utility
 securitytrails	adapter	SecurityTrails subdomain leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set
@@ -146,6 +151,8 @@ serve_probe	diagnostic	loopback probe of a running serve called by doctor and do
 service_defs	adapter	keyed-provider service registry
 session	exporter	auditable execution session
 sf_compat	diagnostic	SpiderFoot-compatible front end over rebuilt lookup paths
+sf_elements	runtime	entities as typed Spiderfoot data elements for saved scans and sf -s rows
+sf_types	runtime	Spiderfoot 4.0 data-element type catalogue read by sf -T, scans and /api/eventtypes
 sha256	leaf	SHA-256 primitive
 shadow_assessment	leaf	shadow-mode claim assessment reporting
 shodan	adapter	Shodan host and DNS leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
