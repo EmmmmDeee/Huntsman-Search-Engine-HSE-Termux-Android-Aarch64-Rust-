@@ -1,10 +1,12 @@
 //! Saved scans as files, in Spiderfoot's export layouts.
 //!
-//! CSV and TSV have Spiderfoot's columns (`Updated`, `Type`, `Module`, `Source`, `F/P`, `Data`)
-//! and JSON its `scanexportjsonmulti` objects, so a script written for Spiderfoot's exports reads
-//! these unchanged. GEXF is the element graph: each element a node, each edge from the element it
-//! was found from. Every element's data is written whole; only the root, which repeats the target,
-//! is left out, as Spiderfoot leaves it out.
+//! CSV, TSV and Excel have Spiderfoot's columns (`Updated`, `Type`, `Module`, `Source`, `F/P`,
+//! `Data`), the workbook with a sheet per data type as Spiderfoot's `buildExcel` lays it out, and
+//! JSON its `scanexportjsonmulti` objects, so a script written for Spiderfoot's exports reads
+//! these unchanged. Several scans export together with `Scan Name` first, as Spiderfoot's
+//! `scaneventresultexportmulti` does. GEXF is the element graph: each element a node, each edge
+//! from the element it was found from. Every element's data is written whole; only the root,
+//! which repeats the target, is left out, as Spiderfoot leaves it out.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -15,14 +17,36 @@ use crate::gexf::escape_xml;
 use crate::scan_store::{ScanRecord, ScanResults};
 use crate::sf_elements::DataElement;
 use crate::timefmt::civil_from_days;
+use crate::xlsx::{self, Sheet};
 
-/// The formats [`render`] writes.
-pub const FORMATS: [&str; 4] = ["csv", "tsv", "json", "gexf"];
+/// The formats [`render`] writes. `excel` is taken for `xlsx`, as Spiderfoot takes it.
+pub const FORMATS: [&str; 5] = ["csv", "tsv", "xlsx", "json", "gexf"];
+
+/// The formats several scans export together in, with [`render_many`].
+pub const MANY_FORMATS: [&str; 4] = ["csv", "tsv", "xlsx", "json"];
+
+/// The formats [`render_correlations`] writes.
+pub const CORRELATION_FORMATS: [&str; 4] = ["csv", "tsv", "xlsx", "json"];
+
+/// Spiderfoot's columns for a scan's elements.
+const ELEMENT_COLUMNS: [&str; 6] = ["Updated", "Type", "Module", "Source", "F/P", "Data"];
+
+/// Spiderfoot's `scancorrelationsexport` columns, then the rule id, where the rule came from
+/// and the ids of the elements each correlation is about.
+const CORRELATION_COLUMNS: [&str; 7] = [
+    "Rule Name",
+    "Correlation",
+    "Risk",
+    "Description",
+    "Rule",
+    "Origin",
+    "Elements",
+];
 
 /// A rendered export: its bytes, media type and a file name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Export {
-    pub body: String,
+    pub body: Vec<u8>,
     pub content_type: &'static str,
     pub filename: String,
 }
@@ -41,9 +65,19 @@ pub fn timestamp(ms: u64) -> String {
     )
 }
 
+/// A format name as given, in lower case, with Spiderfoot's `excel` read as `xlsx`.
+fn format_name(format: &str) -> String {
+    let format = format.trim().to_ascii_lowercase();
+    if format == "excel" {
+        "xlsx".to_owned()
+    } else {
+        format
+    }
+}
+
 /// A spreadsheet would run a cell starting `=`, `@`, or a sign followed by anything but a number,
 /// as a formula. Such a cell gets a leading `'`; a signed number such as `+61412345678` is left
-/// as it is.
+/// as it is. A workbook needs none of this: its cells are text, never formulas.
 fn guard(cell: &str) -> String {
     let risky = match cell.chars().next() {
         Some('=' | '@' | '\t' | '\r') => true,
@@ -100,6 +134,18 @@ fn rows<'a>(results: &'a ScanResults, kind: Option<&str>) -> Vec<(&'a DataElemen
         .collect()
 }
 
+/// One element as a line under [`ELEMENT_COLUMNS`].
+fn element_line(element: &DataElement, source: &str) -> Vec<String> {
+    vec![
+        timestamp(element.created),
+        element.kind.clone(),
+        element.module.clone(),
+        source.to_owned(),
+        u8::from(element.fp).to_string(),
+        element.data.clone(),
+    ]
+}
+
 fn file_name(scan: &ScanRecord, extension: &str) -> String {
     let safe: String = scan
         .name
@@ -122,11 +168,7 @@ fn file_name(scan: &ScanRecord, extension: &str) -> String {
 }
 
 /// A CSV (`csv`) or TSV table with `header`, and its media type.
-fn table(
-    csv: bool,
-    header: &[&str],
-    lines: impl Iterator<Item = Vec<String>>,
-) -> (String, &'static str) {
+fn table(csv: bool, header: &[&str], lines: Vec<Vec<String>>) -> (String, &'static str) {
     let (separator, cell, content_type): (&str, fn(&str) -> String, _) = if csv {
         (",", csv_cell, "text/csv; charset=utf-8")
     } else {
@@ -146,61 +188,91 @@ fn table(
     (body, content_type)
 }
 
-/// A scan's correlations as `csv`, `tsv` or `json`: Spiderfoot's `scancorrelationsexport`
-/// columns (Rule Name, Correlation, Risk, Description), then the rule id, where the rule came
-/// from and the ids of the elements each is about.
+/// A workbook as Spiderfoot's `buildExcel` makes one: a sheet for each value of column
+/// `sheet_by`, named after it and without that column, headed by `header`, sheets in name order.
+fn workbook(header: &[&str], lines: Vec<Vec<String>>, sheet_by: usize) -> Vec<u8> {
+    let mut header: Vec<String> = header.iter().map(|&column| column.to_owned()).collect();
+    header.remove(sheet_by);
+    let mut sheets: BTreeMap<String, Vec<Vec<String>>> = BTreeMap::new();
+    for mut line in lines {
+        let name = line.remove(sheet_by);
+        sheets
+            .entry(name)
+            .or_insert_with(|| vec![header.clone()])
+            .push(line);
+    }
+    let sheets: Vec<Sheet> = sheets
+        .into_iter()
+        .map(|(name, rows)| Sheet { name, rows })
+        .collect();
+    xlsx::workbook(&sheets)
+}
+
+/// `lines` under `header` as `format` (`csv`, `tsv` or `xlsx`, a sheet per value of column
+/// `sheet_by`) with its media type and file extension, or `None` for another format.
+fn tabular(
+    format: &str,
+    header: &[&str],
+    lines: Vec<Vec<String>>,
+    sheet_by: usize,
+) -> Option<(Vec<u8>, &'static str)> {
+    match format {
+        "csv" | "tsv" => {
+            let (body, content_type) = table(format == "csv", header, lines);
+            Some((body.into_bytes(), content_type))
+        }
+        "xlsx" => Some((workbook(header, lines, sheet_by), xlsx::CONTENT_TYPE)),
+        _ => None,
+    }
+}
+
+/// A scan's correlations as `csv`, `tsv`, `xlsx` (a sheet per rule, as Spiderfoot's) or `json`:
+/// Spiderfoot's `scancorrelationsexport` columns (Rule Name, Correlation, Risk, Description),
+/// then the rule id, where the rule came from and the ids of the elements each is about.
 ///
 /// # Errors
-/// The format name, when it is not one of those three.
+/// The format name, when it is not one of [`CORRELATION_FORMATS`].
 pub fn render_correlations(
     scan: &ScanRecord,
     results: &ScanResults,
     format: &str,
 ) -> Result<Export, String> {
-    let filename = |extension: &str| {
-        file_name(scan, extension).replacen("-Huntsman.", "-Huntsman-correlations.", 1)
-    };
-    match format {
-        "csv" | "tsv" => {
-            let lines = results.correlations.iter().map(|correlation| {
-                vec![
-                    correlation.name.clone(),
-                    correlation.title.clone(),
-                    correlation.risk.as_str().to_owned(),
-                    correlation.description.clone(),
-                    correlation.rule.clone(),
-                    correlation.origin.clone(),
-                    correlation.elements.join(" "),
-                ]
-            });
-            let (body, content_type) = table(
-                format == "csv",
-                &[
-                    "Rule Name",
-                    "Correlation",
-                    "Risk",
-                    "Description",
-                    "Rule",
-                    "Origin",
-                    "Elements",
-                ],
-                lines,
-            );
-            Ok(Export {
-                body,
-                content_type,
-                filename: filename(format),
-            })
-        }
-        "json" => Ok(Export {
-            body: serde_json::to_string(&results.correlations).unwrap_or_else(|_| "[]".to_owned()),
+    let format = format_name(format);
+    let filename = file_name(scan, &format).replacen("-Huntsman.", "-Huntsman-correlations.", 1);
+    if format == "json" {
+        return Ok(Export {
+            body: serde_json::to_vec(&results.correlations).unwrap_or_else(|_| b"[]".to_vec()),
             content_type: "application/json; charset=utf-8",
-            filename: filename("json"),
-        }),
-        other => Err(format!(
-            "unknown correlation export format {other}; choose csv, tsv or json"
-        )),
+            filename,
+        });
     }
+    let lines = results
+        .correlations
+        .iter()
+        .map(|correlation| {
+            vec![
+                correlation.name.clone(),
+                correlation.title.clone(),
+                correlation.risk.as_str().to_owned(),
+                correlation.description.clone(),
+                correlation.rule.clone(),
+                correlation.origin.clone(),
+                correlation.elements.join(" "),
+            ]
+        })
+        .collect();
+    let (body, content_type) =
+        tabular(&format, &CORRELATION_COLUMNS, lines, 0).ok_or_else(|| {
+            format!(
+                "unknown correlation export format {format}; choose {}",
+                CORRELATION_FORMATS.join(", ")
+            )
+        })?;
+    Ok(Export {
+        body,
+        content_type,
+        filename,
+    })
 }
 
 /// One scan as `format`, optionally only elements of one type.
@@ -213,44 +285,83 @@ pub fn render(
     format: &str,
     kind: Option<&str>,
 ) -> Result<Export, String> {
-    match format {
-        "csv" | "tsv" => {
-            let lines = rows(results, kind).into_iter().map(|(element, source)| {
-                vec![
-                    timestamp(element.created),
-                    element.kind.clone(),
-                    element.module.clone(),
-                    source.to_owned(),
-                    u8::from(element.fp).to_string(),
-                    element.data.clone(),
-                ]
-            });
-            let (body, content_type) = table(
-                format == "csv",
-                &["Updated", "Type", "Module", "Source", "F/P", "Data"],
-                lines,
-            );
-            Ok(Export {
-                body,
-                content_type,
-                filename: file_name(scan, format),
-            })
+    let format = format_name(format);
+    let filename = file_name(scan, &format);
+    let (body, content_type) = match format.as_str() {
+        "json" => (
+            json_rows(&[(scan, results)], kind).to_string().into_bytes(),
+            "application/json; charset=utf-8",
+        ),
+        "gexf" => (
+            gexf(scan, results).into_bytes(),
+            "application/gexf+xml; charset=utf-8",
+        ),
+        _ => {
+            let lines = rows(results, kind)
+                .into_iter()
+                .map(|(element, source)| element_line(element, source))
+                .collect();
+            tabular(&format, &ELEMENT_COLUMNS, lines, 1).ok_or_else(|| {
+                format!(
+                    "unknown export format {format}; choose {}",
+                    FORMATS.join(", ")
+                )
+            })?
         }
-        "json" => Ok(Export {
-            body: json_rows(&[(scan, results)], kind).to_string(),
+    };
+    Ok(Export {
+        body,
+        content_type,
+        filename,
+    })
+}
+
+/// Several scans as one `format` file (`csv`, `tsv`, `xlsx` or `json`), optionally only elements
+/// of one type: Spiderfoot's `scaneventresultexportmulti` columns, `Scan Name` then the element
+/// columns, the workbook with a sheet per type; JSON is [`json_rows`].
+///
+/// # Errors
+/// The format name, when it is not one of [`MANY_FORMATS`].
+pub fn render_many(
+    scans: &[(&ScanRecord, &ScanResults)],
+    format: &str,
+    kind: Option<&str>,
+) -> Result<Export, String> {
+    let format = format_name(format);
+    let filename = match scans {
+        [(scan, _)] => file_name(scan, &format),
+        _ => format!("Huntsman.{format}"),
+    };
+    if format == "json" {
+        return Ok(Export {
+            body: json_rows(scans, kind).to_string().into_bytes(),
             content_type: "application/json; charset=utf-8",
-            filename: file_name(scan, "json"),
-        }),
-        "gexf" => Ok(Export {
-            body: gexf(scan, results),
-            content_type: "application/gexf+xml; charset=utf-8",
-            filename: file_name(scan, "gexf"),
-        }),
-        other => Err(format!(
-            "unknown export format {other}; choose {}",
-            FORMATS.join(", ")
-        )),
+            filename,
+        });
     }
+    let mut header = vec!["Scan Name"];
+    header.extend(ELEMENT_COLUMNS);
+    let lines = scans
+        .iter()
+        .flat_map(|(scan, results)| {
+            rows(results, kind).into_iter().map(|(element, source)| {
+                let mut line = vec![scan.name.clone()];
+                line.extend(element_line(element, source));
+                line
+            })
+        })
+        .collect();
+    let (body, content_type) = tabular(&format, &header, lines, 2).ok_or_else(|| {
+        format!(
+            "unknown export format {format} for several scans; choose {}",
+            MANY_FORMATS.join(", ")
+        )
+    })?;
+    Ok(Export {
+        body,
+        content_type,
+        filename,
+    })
 }
 
 /// Spiderfoot's `scanexportjsonmulti` rows for several scans, each element with its raw evidence
@@ -325,6 +436,11 @@ mod tests {
     use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
     use crate::scan_store::{FORMAT_VERSION, RiskCounts, ScanOptions, ScanStatus};
     use crate::sf_elements::{Target, elements};
+    use crate::xlsx::tests::{cells, part, sheet_names};
+
+    fn text(export: &Export) -> String {
+        String::from_utf8(export.body.clone()).unwrap()
+    }
 
     fn scan() -> (ScanRecord, ScanResults) {
         let mut evidence = Evidence::new(EvidenceProvenance::for_scan("crtsh", "s"), "seen")
@@ -394,21 +510,48 @@ mod tests {
             });
         let csv = render_correlations(&scan, &results, "csv").unwrap();
         assert_eq!(
-            csv.body,
+            text(&csv),
             "Rule Name,Correlation,Risk,Description,Rule,Origin,Elements\r\nDatabase server exposed to the Internet,Database server exposed to the Internet: 1.1.1.1:3306,HIGH,\"A database, \"\"open\"\".\",database_exposed,spiderfoot,e1 e2\r\n"
         );
         assert!(csv.filename.ends_with("-Huntsman-correlations.csv"));
         let json = render_correlations(&scan, &results, "json").unwrap();
-        let rows: serde_json::Value = serde_json::from_str(&json.body).unwrap();
+        let rows: serde_json::Value = serde_json::from_slice(&json.body).unwrap();
         assert_eq!(rows[0]["logic"], "id: database_exposed");
         assert!(render_correlations(&scan, &results, "gexf").is_err());
+        // A workbook has a sheet per rule, as Spiderfoot's has, the rule name its title.
+        let book = render_correlations(&scan, &results, "XLSX").unwrap();
+        assert_eq!(book.content_type, xlsx::CONTENT_TYPE);
+        assert!(book.filename.ends_with("-Huntsman-correlations.xlsx"));
+        assert_eq!(sheet_names(&book.body), ["Database server exposed to the"]);
+        assert_eq!(
+            cells(&part(&book.body, "xl/worksheets/sheet1.xml")),
+            [
+                vec![
+                    "Correlation",
+                    "Risk",
+                    "Description",
+                    "Rule",
+                    "Origin",
+                    "Elements"
+                ],
+                vec![
+                    "Database server exposed to the Internet: 1.1.1.1:3306",
+                    "HIGH",
+                    "A database, \"open\".",
+                    "database_exposed",
+                    "spiderfoot",
+                    "e1 e2",
+                ],
+            ]
+        );
     }
 
     #[test]
     fn csv_has_spiderfoots_columns_and_every_element_but_the_root() {
         let (record, results) = scan();
         let export = render(&record, &results, "csv", None).unwrap();
-        let lines: Vec<&str> = export.body.lines().collect();
+        let body = text(&export);
+        let lines: Vec<&str> = body.lines().collect();
         assert_eq!(lines[0], "Updated,Type,Module,Source,F/P,Data");
         assert_eq!(lines.len(), results.elements.len());
         assert!(
@@ -430,7 +573,8 @@ mod tests {
     fn a_type_filter_keeps_only_that_type() {
         let (record, results) = scan();
         let export = render(&record, &results, "tsv", Some("tcp_port_open")).unwrap();
-        let lines: Vec<&str> = export.body.lines().collect();
+        let body = text(&export);
+        let lines: Vec<&str> = body.lines().collect();
         assert_eq!(lines[0], "Updated\tType\tModule\tSource\tF/P\tData");
         assert_eq!(lines.len(), 3);
         assert!(
@@ -444,7 +588,7 @@ mod tests {
     fn json_rows_are_spiderfoots_objects_with_the_raw_evidence() {
         let (record, results) = scan();
         let export = render(&record, &results, "json", None).unwrap();
-        let rows: Vec<Value> = serde_json::from_str(&export.body).unwrap();
+        let rows: Vec<Value> = serde_json::from_slice(&export.body).unwrap();
         let www = rows
             .iter()
             .find(|row| row["data"] == "www.example.com")
@@ -461,7 +605,7 @@ mod tests {
     fn gexf_is_well_formed_with_a_node_per_element_and_an_edge_per_source() {
         let (mut record, results) = scan();
         record.name = "a<b & \"c\"".into();
-        let body = render(&record, &results, "gexf", None).unwrap().body;
+        let body = text(&render(&record, &results, "gexf", None).unwrap());
         assert_eq!(body.matches("<node ").count(), results.elements.len());
         assert_eq!(body.matches("<edge ").count(), results.elements.len() - 1);
         assert!(body.contains("value=\"TCP_PORT_OPEN\""));
@@ -469,6 +613,67 @@ mod tests {
             body.contains("<description>a&lt;b &amp; &quot;c&quot; (example.com)</description>")
         );
         assert!(render(&record, &results, "pdf", None).is_err());
+    }
+
+    #[test]
+    fn a_workbook_has_a_sheet_per_type_with_every_value_unguarded() {
+        let (record, results) = scan();
+        let export = render(&record, &results, "excel", None).unwrap();
+        assert_eq!(export.filename, "my_scan_1-Huntsman.xlsx");
+        assert_eq!(export.content_type, xlsx::CONTENT_TYPE);
+        let names = sheet_names(&export.body);
+        let mut types: Vec<&str> = results
+            .elements
+            .iter()
+            .map(|element| element.kind.as_str())
+            .filter(|&kind| kind != "ROOT")
+            .collect();
+        types.sort_unstable();
+        types.dedup();
+        assert_eq!(names, types, "a sheet per type, in name order");
+        let at = names
+            .iter()
+            .position(|name| name == "INTERNET_NAME")
+            .unwrap()
+            + 1;
+        let sheet = cells(&part(&export.body, &format!("xl/worksheets/sheet{at}.xml")));
+        assert_eq!(sheet[0], ["Updated", "Module", "Source", "F/P", "Data"]);
+        assert!(sheet.contains(&vec![
+            "2023-11-14 22:13:20".to_owned(),
+            "crtsh".into(),
+            "example.com".into(),
+            "0".into(),
+            "www.example.com".into(),
+        ]));
+        // A cell is text, so the data is kept as it is, with no guard.
+        assert!(sheet.iter().any(|row| row[4] == "=cmd.example.com"));
+        let ports = render(&record, &results, "xlsx", Some("TCP_PORT_OPEN")).unwrap();
+        assert_eq!(sheet_names(&ports.body), ["TCP_PORT_OPEN"]);
+    }
+
+    #[test]
+    fn several_scans_export_together_with_the_scan_name_first() {
+        let (record, results) = scan();
+        let mut other = record.clone();
+        other.name = "second".into();
+        let both = [(&record, &results), (&other, &results)];
+        let csv = render_many(&both, "csv", Some("TCP_PORT_OPEN")).unwrap();
+        assert_eq!(csv.filename, "Huntsman.csv");
+        let body = text(&csv);
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines[0], "Scan Name,Updated,Type,Module,Source,F/P,Data");
+        assert_eq!(lines.len(), 5);
+        assert!(lines[1].starts_with("my scan/1,2023-11-14 22:13:20,TCP_PORT_OPEN,crtsh,"));
+        assert!(lines[4].starts_with("second,"));
+        let book = render_many(&both, "xlsx", None).unwrap();
+        let first = cells(&part(&book.body, "xl/worksheets/sheet1.xml"));
+        assert_eq!(
+            first[0],
+            ["Scan Name", "Updated", "Module", "Source", "F/P", "Data"]
+        );
+        let json = render_many(&both[..1], "json", None).unwrap();
+        assert_eq!(json.filename, "my_scan_1-Huntsman.json");
+        assert!(render_many(&both, "gexf", None).is_err());
     }
 
     #[test]

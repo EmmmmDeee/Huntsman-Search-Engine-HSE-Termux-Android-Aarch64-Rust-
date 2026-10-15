@@ -264,8 +264,8 @@ fn every_scan_call_carries_the_lookup_header_and_provider_text_stays_text() {
 /// A scan API answer, parsed.
 fn answer(api: &ScanApi, path: &str) -> serde_json::Value {
     let response = api.handle("GET", path, "");
-    assert_eq!(response.status, 200, "{path}: {}", response.body);
-    serde_json::from_str(&response.body).expect("JSON")
+    assert_eq!(response.status, 200, "{path}: {}", response.text());
+    serde_json::from_slice(&response.body).expect("JSON")
 }
 
 /// Each field a scan API answer carries that the page shows, and how the page reads it: the
@@ -450,7 +450,7 @@ fn every_export_the_page_offers_is_one_the_api_writes() {
             &format!("{root}/export"),
             &format!("format={format}"),
         );
-        assert_eq!(export.status, 200, "{format}: {}", export.body);
+        assert_eq!(export.status, 200, "{format}: {}", export.text());
         assert!(
             export.filename.is_some(),
             "{format} export has no file name"
