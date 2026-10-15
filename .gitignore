@@ -31,3 +31,6 @@ __pycache__/
 key-scan-report.txt
 /dist/
 /*.log
+
+# The web UI check's two pinned npm packages install next to it (tools/web-ui-check/package.json).
+/tools/web-ui-check/node_modules/

@@ -13,7 +13,7 @@ use crate::cli::fail;
 use huntsman_recon::api_leg;
 use huntsman_recon::dehashed::{self, client::DehashedClient};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
-use huntsman_recon::entity::Entity;
+use huntsman_recon::entity::{Entity, EntityKind, merge_by_uid};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::exposure_cli::{EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
@@ -92,9 +92,19 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
     match kind {
         ScanKind::People => {
             let transport = UreqTransport::new(&TransportConfig::default());
+            let keys = Keys::from_env();
             match people_cli::run(&transport, selector, now) {
                 PeopleRun::Printed { text, report } => {
-                    Ok(done(text, report.entities, report.outcomes, PEOPLE_POLICY))
+                    let (text, entities, outcomes) = with_seeknow_leg(
+                        EntityKind::Person,
+                        selector,
+                        &keys,
+                        now,
+                        text,
+                        report.entities,
+                        report.outcomes,
+                    )?;
+                    Ok(done(text, entities, outcomes, PEOPLE_POLICY))
                 }
                 PeopleRun::Network(m) => Err(Refused::Network(m)),
                 PeopleRun::Failed(m) => Err(Refused::Unavailable(m)),
@@ -105,7 +115,16 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
             let transport = UreqTransport::new(&api_leg::transport_config());
             match huntsman_recon::email_cli::run_keyed(&transport, &keys, selector, now) {
                 EmailRun::Printed { text, report } => {
-                    Ok(done(text, report.entities, report.outcomes, EMAIL_POLICY))
+                    let (text, entities, outcomes) = with_seeknow_leg(
+                        EntityKind::Email,
+                        selector,
+                        &keys,
+                        now,
+                        text,
+                        report.entities,
+                        report.outcomes,
+                    )?;
+                    Ok(done(text, entities, outcomes, EMAIL_POLICY))
                 }
                 EmailRun::Network(m) => Err(Refused::Network(m)),
                 EmailRun::Failed(m) => Err(Refused::Unavailable(m)),
@@ -116,12 +135,18 @@ pub(in crate::cli) fn collect(kind: ScanKind, selector: &str) -> Result<Collecte
             let transport = UreqTransport::new(&TransportConfig::default());
             let keys = Keys::from_env();
             match huntsman_recon::username_cli::run(&transport, &keys, selector, now) {
-                UsernameRun::Printed { text, report } => Ok(done(
-                    text,
-                    report.entities,
-                    report.outcomes,
-                    USERNAME_POLICY,
-                )),
+                UsernameRun::Printed { text, report } => {
+                    let (text, entities, outcomes) = with_seeknow_leg(
+                        EntityKind::Username,
+                        selector,
+                        &keys,
+                        now,
+                        text,
+                        report.entities,
+                        report.outcomes,
+                    )?;
+                    Ok(done(text, entities, outcomes, USERNAME_POLICY))
+                }
                 UsernameRun::Failed(m) => Err(Refused::Unavailable(m)),
             }
         }
@@ -184,6 +209,37 @@ fn free_tier(kind: ScanKind, selector: &str, now: u64) -> Result<Collected, Refu
             }
         }
     }
+}
+
+/// Append a `SeekNow` leg to a lookup's report when `HUNTSMAN_SEEKNOW_KEY` is configured.
+///
+/// With no key, the leg makes no request and the report is returned unchanged, byte for byte.
+/// With the key set, `SeekNow`'s entities are merged into the report by uid, its source outcome
+/// is appended, and the report text is re-rendered so the console shows the merged result. A
+/// `SeekNow` failure is reported as one outcome row, never an abort of the lookup.
+fn with_seeknow_leg(
+    kind: EntityKind,
+    selector: &str,
+    keys: &Keys,
+    now: u64,
+    text: String,
+    entities: Vec<Entity>,
+    outcomes: Vec<SourceExecutionOutcome>,
+) -> Result<(String, Vec<Entity>, Vec<SourceExecutionOutcome>), Refused> {
+    let transport = UreqTransport::new(&TransportConfig::default());
+    let Some(leg) = huntsman_recon::seeknow_collector::collect_for_lookup(
+        &transport, kind, selector, keys, now,
+    ) else {
+        return Ok((text, entities, outcomes));
+    };
+    let mut entities = entities;
+    let mut outcomes = outcomes;
+    entities.extend(leg.entities);
+    merge_by_uid(&mut entities);
+    outcomes.extend(leg.outcomes);
+    let text = huntsman_recon::lookup_report::render(&entities, &outcomes)
+        .map_err(Refused::Unavailable)?;
+    Ok((text, entities, outcomes))
 }
 
 /// The `exposure` leg of [`collect`]: every configured breach source.
