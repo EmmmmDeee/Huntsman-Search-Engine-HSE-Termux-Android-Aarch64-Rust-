@@ -5,8 +5,9 @@
 
 use huntsman_recon::entity::{Entity, EntityKind, Evidence};
 use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
-use huntsman_recon::ip_cli::{IpRun, run};
+use huntsman_recon::ip_cli::{IpRun, Report, run};
 use huntsman_recon::keys::Keys;
+
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
 /// `8.8.8.8` as `RIPEstat` answered it on 2026-10-15, with ten origin AS numbers, as a prefix
@@ -21,15 +22,27 @@ fn ripestat_answer() -> String {
     )
 }
 
+/// An address no AS announces, in a registry block `RIPEstat` names.
+const UNANNOUNCED: &str = r#"{"status":"ok","data":{"is_less_specific":false,"announced":false,"asns":[],"related_prefixes":[],"resource":"44.31.0.1","type":"prefix","block":{"resource":"44.0.0.0/8","desc":"ARDC (Status: ALLOCATED)","name":"IANA IPv4 Address Space Registry"}}}"#;
+
 struct OnlyRipestat;
 
 impl Transport for OnlyRipestat {
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-        if request.url == "https://stat.ripe.net/data/prefix-overview/data.json?resource=8.8.8.8" {
+        let body = match request.url.as_str() {
+            "https://stat.ripe.net/data/prefix-overview/data.json?resource=8.8.8.8" => {
+                ripestat_answer()
+            }
+            "https://stat.ripe.net/data/prefix-overview/data.json?resource=44.31.0.1" => {
+                UNANNOUNCED.to_owned()
+            }
+            _ => String::new(),
+        };
+        if !body.is_empty() {
             return Ok(Response {
                 status: 200,
                 headers: Vec::new(),
-                body: ripestat_answer().into_bytes(),
+                body: body.into_bytes(),
                 truncated: false,
             });
         }
@@ -41,17 +54,25 @@ impl Transport for OnlyRipestat {
     }
 }
 
-fn entities() -> Vec<Entity> {
-    match run(&OnlyRipestat, &Keys::default(), "8.8.8.8", 1_760_000_000) {
-        IpRun::Printed { report, .. } => report.entities,
-        IpRun::Network(why) | IpRun::Failed(why) => panic!("ip 8.8.8.8 did not print: {why}"),
+fn report(ip: &str) -> Report {
+    match run(&OnlyRipestat, &Keys::default(), ip, 1_760_000_000) {
+        IpRun::Printed { report, .. } => report,
+        IpRun::Network(why) | IpRun::Failed(why) => panic!("ip {ip} did not print: {why}"),
     }
 }
 
+fn entities() -> Vec<Entity> {
+    report("8.8.8.8").entities
+}
+
 fn ripestat(entities: &[Entity]) -> Evidence {
+    ripestat_on(entities, "8.8.8.8")
+}
+
+fn ripestat_on(entities: &[Entity], ip: &str) -> Evidence {
     entities
         .iter()
-        .find(|e| e.kind == EntityKind::IpAddress && e.value == "8.8.8.8")
+        .find(|e| e.kind == EntityKind::IpAddress && e.value == ip)
         .and_then(|e| {
             e.evidence
                 .iter()
@@ -99,4 +120,20 @@ fn the_related_prefixes_registry_block_and_whole_answer_reach_the_address() {
         "{:?}",
         evidence.attributes
     );
+}
+
+#[test]
+fn an_unannounced_address_keeps_the_registry_block_that_holds_it() {
+    let report = report("44.31.0.1");
+    let evidence = ripestat_on(&report.entities, "44.31.0.1");
+    assert_eq!(evidence.summary, "Not announced; registry block 44.0.0.0/8");
+    let value = |key: &str| evidence.attributes.get(key).map(String::as_str);
+    assert_eq!(value("announced"), Some("false"));
+    assert_eq!(value("registry_block"), Some("ARDC (Status: ALLOCATED)"));
+    let outcome = report
+        .outcomes
+        .iter()
+        .find(|o| o.module == "ripestat")
+        .unwrap_or_else(|| panic!("no RIPEstat outcome: {:?}", report.outcomes));
+    assert_eq!(outcome.kind, SourceOutcomeKind::Success);
 }
