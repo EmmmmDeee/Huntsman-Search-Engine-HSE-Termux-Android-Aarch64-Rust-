@@ -175,14 +175,16 @@ dd dl{margin:0}
 .graph{height:62vh;min-height:300px;margin:0 0 10px;background:var(--el);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 .graph svg{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
 #gedges path{fill:none;stroke:var(--line2);stroke-width:1;vector-effect:non-scaling-stroke}
-#gnodes circle{r:calc(5px / var(--k,1));stroke:var(--el);stroke-width:1;vector-effect:non-scaling-stroke}
-#gnodes circle.groot{r:calc(9px / var(--k,1))}
-#gnodes circle.sel{stroke:var(--fg);stroke-width:3}
-.groot{fill:var(--fg)}
-.g0{fill:var(--g0);background:var(--g0)}.g1{fill:var(--g1);background:var(--g1)}.g2{fill:var(--g2);background:var(--g2)}.g3{fill:var(--g3);background:var(--g3)}.g4{fill:var(--g4);background:var(--g4)}.g5{fill:var(--g5);background:var(--g5)}.g6{fill:var(--g6);background:var(--g6)}.g7{fill:var(--g7);background:var(--g7)}.g8{fill:var(--g8);background:var(--g8)}.g9{fill:var(--g9);background:var(--g9)}
+#gnodes path{fill:none;stroke:currentColor;stroke-width:10px;stroke-linecap:round;vector-effect:non-scaling-stroke}
+#gnodes .grim{color:var(--el);stroke-width:12px}
+#gnodes .groot{stroke-width:18px}
+#gnodes .gring{color:var(--fg);stroke-width:16px}
+#gnodes .gring.groot{stroke-width:24px}
+.groot{color:var(--fg)}
+.g0{color:var(--g0)}.g1{color:var(--g1)}.g2{color:var(--g2)}.g3{color:var(--g3)}.g4{color:var(--g4)}.g5{color:var(--g5)}.g6{color:var(--g6)}.g7{color:var(--g7)}.g8{color:var(--g8)}.g9{color:var(--g9)}
 .legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 14px;font-size:12px;color:var(--muted)}
 .legend span{display:inline-flex;align-items:center;gap:6px}
-.legend i{display:inline-block;width:10px;height:10px;border-radius:50%}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;background:currentColor}
 @media (max-width:420px){.brand-sub{display:none}}
 @media (max-width:767px){
 .table-wrap table,.table-wrap tbody,.table-wrap tr,.table-wrap td{display:block;width:auto}
@@ -933,17 +935,20 @@ function drawGraph(g,layout){
   const at=new Map(nodes.map(n=>[n.id,n])),counts=new Map();
   for(const n of nodes)counts.set(n.type,(counts.get(n.type)||0)+1);
   const types=[...counts.keys()].sort((a,b)=>counts.get(b)-counts.get(a)),cls=new Map(types.map((t,i)=>[t,'g'+i%10]));
-  // Every link is one segment of a single path, so a big graph adds one element for its links.
-  const edges=[],E=$('gedges'),N=$('gnodes'),links=document.createElementNS(NS,'path'),dots=document.createDocumentFragment();
-  E.replaceChildren(links);N.replaceChildren();
+  // Every link is one segment of a single path, and every element is a dot, a round-capped
+  // stretch of no length, in the one path of its data type: however big the graph, the page holds
+  // a few paths for it, so moving every element restyles a few paths, not thousands of circles.
+  const path=c=>{const p=document.createElementNS(NS,'path');if(c)p.setAttribute('class',c);return p};
+  const edges=[],links=path(),rim=path('grim'),ring=[path('gring'),path('gpick')],layers=new Map();
   for(const e of g.edges||[]){const a=at.get(e.source),b=at.get(e.target);if(a&&b&&a!==b)edges.push([a,b])}
   const linked=new Set();for(const [a,b] of edges){linked.add(b)}
   for(const n of nodes){
-    n.root=n.type==='ROOT'||(!linked.has(n)&&scan&&n.data===scan.target);
-    const c=document.createElementNS(NS,'circle');c.setAttribute('r',n.root?9:5);c.setAttribute('class',n.root?'groot':cls.get(n.type));c.node=n;n.el=c;dots.append(c);
+    n.root=n.type==='ROOT'||(!linked.has(n)&&scan&&n.data===scan.target);n.cls=n.root?'groot':cls.get(n.type);
+    if(!layers.has(n.cls))layers.set(n.cls,{el:path(n.cls),nodes:[]});
+    layers.get(n.cls).nodes.push(n);
   }
-  N.append(dots);
-  G={nodes,edges,links,k:1,tx:0,ty:0,sel:null};
+  $('gedges').replaceChildren(links);$('gnodes').replaceChildren(rim,...[...layers.values()].map(l=>l.el),...ring);
+  G={nodes,edges,links,rim,ring,layers:[...layers.values()],k:1,tx:0,ty:0,sel:null};
   svg.setAttribute('aria-label','Graph of '+nodes.length+' data elements and '+edges.length+' links');
   const lg=$('glegend');lg.replaceChildren();
   for(const t of types.slice(0,20)){const s=el('span'),i=el('i',cls.get(t));s.append(i,t+' ('+counts.get(t)+')');lg.append(s)}
@@ -995,12 +1000,29 @@ function settle(alpha){
   for(const [a,b] of G.edges){const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1,f=alpha*.15*(d-40)/d;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f}
   for(const p of G.nodes){if(p.fixed){p.vx=p.vy=0;continue}p.vx=(p.vx-p.x*alpha*.005)*.6;p.vy=(p.vy-p.y*alpha*.005)*.6;p.x+=Math.max(-25,Math.min(25,p.vx));p.y+=Math.max(-25,Math.min(25,p.vy))}
 }
+const dot=n=>'M'+n.x.toFixed(1)+' '+n.y.toFixed(1)+'h0';
 function render(){
-  for(const n of G.nodes){n.el.setAttribute('cx',n.x.toFixed(1));n.el.setAttribute('cy',n.y.toFixed(1))}
-  let d='';for(const [a,b] of G.edges)d+='M'+a.x.toFixed(1)+' '+a.y.toFixed(1)+'L'+b.x.toFixed(1)+' '+b.y.toFixed(1);
+  let d='',rim='';
+  for(const n of G.nodes)n.at=n.x.toFixed(1)+' '+n.y.toFixed(1);
+  for(const [a,b] of G.edges)d+='M'+a.at+'L'+b.at;
   G.links.setAttribute('d',d);
+  for(const l of G.layers){d='';for(const n of l.nodes)d+='M'+n.at+'h0';l.el.setAttribute('d',d);if(!l.nodes[0].root)rim+=d}
+  G.rim.setAttribute('d',rim);
+  ring();
 }
-function place(){$('gview').style.setProperty('--k',G.k.toFixed(4));$('gview').setAttribute('transform','translate('+G.tx.toFixed(1)+' '+G.ty.toFixed(1)+') scale('+G.k.toFixed(4)+')')}
+// The chosen element is drawn again on top, ringed.
+function ring(){
+  const n=G.sel,[r,c]=G.ring,d=n?dot(n):'';
+  r.setAttribute('class',n&&n.root?'gring groot':'gring');c.setAttribute('class',n?'gpick '+n.cls:'gpick');r.setAttribute('d',d);c.setAttribute('d',d);
+}
+// The element drawn under a point of the screen, the nearest if dots overlap there.
+function nodeAt(cx,cy){
+  const r=svg.getBoundingClientRect(),x=(cx-r.left-G.tx)/G.k,y=(cy-r.top-G.ty)/G.k;
+  let best=null,near=Infinity;
+  for(const n of G.nodes){const dx=n.x-x,dy=n.y-y,d=dx*dx+dy*dy,reach=((n.root?9:5)+3)/G.k;if(d<=reach*reach&&d<near){near=d;best=n}}
+  return best;
+}
+function place(){$('gview').setAttribute('transform','translate('+G.tx.toFixed(1)+' '+G.ty.toFixed(1)+') scale('+G.k.toFixed(4)+')')}
 function fit(){
   if(!G||!G.nodes.length)return;
   let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
@@ -1009,9 +1031,8 @@ function fit(){
   G.k=Math.max(.02,k);G.tx=r.width/2-(x0+x1)/2*G.k;G.ty=r.height/2-(y0+y1)/2*G.k;place();
 }
 function pick(n){
-  if(G.sel)G.sel.el.classList.remove('sel');G.sel=n;
+  G.sel=n;ring();
   if(!n)return;
-  n.el.classList.add('sel');
   const near=G.edges.filter(([a,b])=>a===n||b===n).length;
   $('ginfo').textContent=n.type+': '+n.data+' · '+near+' link'+(near===1?'':'s');
 }
@@ -1021,7 +1042,7 @@ function pick(n){
   svg.addEventListener('pointerdown',e=>{
     if(!G)return;
     svg.setPointerCapture(e.pointerId);pts.set(e.pointerId,{x:e.clientX,y:e.clientY});moved=false;
-    drag=pts.size===1&&e.target.node?e.target.node:null;
+    drag=pts.size===1?nodeAt(e.clientX,e.clientY):null;
     if(pts.size===2){const [a,b]=[...pts.values()];pinch={d:Math.hypot(a.x-b.x,a.y-b.y)||1,k:G.k};drag=null}
   });
   svg.addEventListener('pointermove',e=>{
@@ -1031,7 +1052,7 @@ function pick(n){
     else if(drag){drag.x+=dx/G.k;drag.y+=dy/G.k;drag.fixed=true;drag.vx=drag.vy=0;render()}
     else if(pts.size===1){G.tx+=dx;G.ty+=dy;place()}
   });
-  const up=e=>{if(!pts.delete(e.pointerId))return;if(pts.size<2)pinch=null;if(!moved&&e.type==='pointerup'&&G)pick(e.target.node||null);drag=null};
+  const up=e=>{if(!pts.delete(e.pointerId))return;if(pts.size<2)pinch=null;if(!moved&&e.type==='pointerup'&&G)pick(nodeAt(e.clientX,e.clientY));drag=null};
   svg.addEventListener('pointerup',up);svg.addEventListener('pointercancel',up);
   svg.addEventListener('wheel',e=>{if(!G)return;e.preventDefault();zoom(G.k*Math.exp(-e.deltaY*.0015),e.clientX,e.clientY)},{passive:false});
 }
@@ -1041,8 +1062,9 @@ $('gsave').onclick=()=>{
   const copy=svg.cloneNode(true),r=svg.getBoundingClientRect(),bg=document.createElementNS(NS,'rect'),fills=new Map();
   copy.setAttribute('xmlns',NS);copy.setAttribute('width',Math.round(r.width));copy.setAttribute('height',Math.round(r.height));copy.removeAttribute('role');
   bg.setAttribute('width','100%');bg.setAttribute('height','100%');bg.setAttribute('fill',getComputedStyle(svg.parentNode).backgroundColor);copy.insertBefore(bg,copy.firstChild);
-  const was=[...svg.querySelectorAll('circle,path')];
-  [...copy.querySelectorAll('circle,path')].forEach((c,i)=>{const k=was[i].getAttribute('class')||was[i].tagName;if(!fills.has(k)){const s=getComputedStyle(was[i]);fills.set(k,[s.fill,s.stroke])}const [f,s]=fills.get(k);c.setAttribute('fill',f);c.setAttribute('stroke',s);c.removeAttribute('class')});
+  // The page's styles do not travel with the file, so each path carries how it is drawn.
+  const was=[...svg.querySelectorAll('path')],drawn=['fill','stroke','stroke-width','stroke-linecap','vector-effect'];
+  [...copy.querySelectorAll('path')].forEach((c,i)=>{const k=was[i].getAttribute('class')||'';if(!fills.has(k)){const s=getComputedStyle(was[i]);fills.set(k,drawn.map(p=>s.getPropertyValue(p)))}fills.get(k).forEach((v,j)=>c.setAttribute(drawn[j],v));c.removeAttribute('class')});
   download(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml'}),'huntsman-'+sid+'-graph.svg');
 };
 // Two saved scans side by side, which Spiderfoot cannot do: what the later scan found that the
