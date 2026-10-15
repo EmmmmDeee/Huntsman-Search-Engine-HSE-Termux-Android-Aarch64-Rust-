@@ -608,6 +608,18 @@ fn render_oathnet(breaches: Option<&[oathnet::Breach]>) -> String {
             ),
         ];
         push_row(&mut out, &row);
+        for (field, values) in &breach.values {
+            for value in values {
+                push_row(
+                    &mut out,
+                    &[
+                        "oathnet_value".to_owned(),
+                        escape_controls(&breach.dbname),
+                        format!("{}={}", escape_controls(field), escape_controls(value)),
+                    ],
+                );
+            }
+        }
     }
     out
 }
@@ -848,6 +860,13 @@ fn oathnet_entities(
         }
         if let Some(count) = breach.pwn_count {
             evidence = evidence.with_attr("pwn_count", count.to_string());
+        }
+        // The de-redacted payload: every non-credential value each exposed field held (cleartext
+        // passwords, hashes and salts are held back in `oathnet.rs`), keyed `value_<field>` so it
+        // cannot clobber the metadata attributes above.
+        for (field, values) in &breach.values {
+            let joined = values.iter().cloned().collect::<Vec<_>>().join(", ");
+            evidence = evidence.with_attr(format!("value_{field}"), joined);
         }
         entity.add_evidence(evidence);
         entities.push(entity);
@@ -1706,7 +1725,7 @@ mod tests {
     }
 
     #[test]
-    fn oathnet_breaches_are_exposure_metadata_on_the_email_and_never_values() {
+    fn oathnet_breaches_surface_values_but_not_cleartext_credentials() {
         let body = serde_json::json!({"success": true, "data": {
             "items": [
                 {"email": "ada@example.com", "username": "ada99", "password": "hunter2-secret",
@@ -1786,11 +1805,33 @@ mod tests {
             ),
             "{text}"
         );
+        // Non-credential record values are surfaced, not reduced to field names: the phone number
+        // a record held appears as its own row.
+        assert!(
+            text.contains("oathnet_value\tacme_forum\tphone_number=+15555550100\n"),
+            "{text}"
+        );
+        // A cleartext credential is never emitted: the password is reported as exposed (the
+        // `password_exposed=true` and `fields=…,password,…` above), but its value appears nowhere.
+        assert!(
+            !text.contains("oathnet_value\tlinkedin_2012\tpassword="),
+            "the cleartext password value must not be emitted: {text}"
+        );
+        assert!(
+            !text.contains("hunter2-secret"),
+            "the cleartext password value must not be emitted: {text}"
+        );
         let saved = serde_json::to_string(&report.entities).unwrap_or_default();
-        for secret in ["hunter2-secret", "+15555550100"] {
-            assert!(!text.contains(secret), "{secret} in text: {text}");
-            assert!(!saved.contains(secret), "{secret} in entities: {saved}");
+        for value in ["+15555550100", "ada99"] {
+            assert!(
+                saved.contains(value),
+                "{value} missing from entities: {saved}"
+            );
         }
+        assert!(
+            !saved.contains("hunter2-secret"),
+            "the cleartext password value must not reach the entities: {saved}"
+        );
     }
 
     #[test]

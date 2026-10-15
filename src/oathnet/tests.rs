@@ -96,18 +96,62 @@ fn records_become_per_database_exposure_metadata() {
 }
 
 #[test]
-fn no_secret_or_personal_value_survives_decoding() {
+fn record_values_survive_decoding_except_cleartext_credentials() {
+    // The report is unredacted for the record's own data: names, emails, phone numbers,
+    // usernames, countries and the like are kept on their breach, not reduced to a field name.
+    // The one exception is a third party's cleartext credential — a password, hash or salt — which
+    // is the value an attacker needs for account takeover: its presence and type are recorded, the
+    // secret itself is never emitted.
     let rendered = format!("{:?}", decoded(&sample()));
-    for value in [
-        "hunter2-secret",
-        "5f4dcc3b5aa765d61d8327deb882cf99",
-        "+15555550100",
-        "Ada Example",
-        "@ada",
-        "US",
-    ] {
-        assert!(!rendered.contains(value), "{value:?} kept: {rendered}");
+    for value in ["+15555550100", "Ada Example", "@ada", "US", "user123"] {
+        assert!(rendered.contains(value), "{value:?} dropped: {rendered}");
     }
+    for credential in ["hunter2-secret", "5f4dcc3b5aa765d61d8327deb882cf99"] {
+        assert!(
+            !rendered.contains(credential),
+            "cleartext credential {credential:?} emitted: {rendered}"
+        );
+    }
+
+    let search = decoded(&sample());
+    let linkedin = &search.breaches[1];
+    // The credential fields are still reported as exposed, by name and flag, with no value.
+    assert!(linkedin.password_exposed);
+    assert!(linkedin.fields.contains("password"));
+    assert!(linkedin.fields.contains("password_hash"));
+    assert_eq!(
+        linkedin.values.get("password"),
+        None,
+        "the cleartext password value is held back"
+    );
+    assert_eq!(
+        linkedin.values.get("password_hash"),
+        None,
+        "the password hash value is held back"
+    );
+    // Every non-credential value the records held is surfaced.
+    assert_eq!(
+        linkedin
+            .values
+            .get("phone_number")
+            .map(|v| v.iter().map(String::as_str).collect::<Vec<_>>()),
+        Some(vec!["+15555550100"]),
+    );
+    assert_eq!(
+        linkedin
+            .values
+            .get("username")
+            .map(|v| v.iter().map(String::as_str).collect::<Vec<_>>()),
+        Some(vec!["user123"]),
+    );
+    let forum = &search.breaches[0];
+    assert_eq!(
+        forum
+            .values
+            .get("full_name")
+            .map(|v| v.iter().map(String::as_str).collect::<Vec<_>>()),
+        Some(vec!["Ada Example"]),
+    );
 }
 
 #[test]

@@ -52,6 +52,11 @@ pub const TIMEOUT: Duration = Duration::from_secs(30);
 pub const MAX_FIELDS: usize = 64;
 /// Longest field name kept, in bytes. A longer or unusual name is dropped, never shortened.
 pub const MAX_FIELD_BYTES: usize = 48;
+/// Most distinct values kept for one exposed field of one breach database.
+pub const MAX_VALUES_PER_FIELD: usize = 64;
+/// Longest record value kept, in bytes. A longer value is dropped whole, never truncated, so a
+/// surfaced value is always exactly what the record held.
+pub const MAX_VALUE_BYTES: usize = 1024;
 /// Longest provider text kept in a diagnostic, in characters.
 const PROVIDER_WORDS_MAX_CHARS: usize = 120;
 
@@ -124,8 +129,10 @@ impl OathnetError {
     }
 }
 
-/// What the records of one breach database say about the address. Values are the provider's
-/// metadata about the breach, never a value from a record.
+/// What the records of one breach database say about the address. Besides the provider's breach
+/// metadata, this carries the record field values themselves: the tool's purpose is unredacted
+/// output, so a value a record exposes is surfaced, not reduced to the fact that a field was
+/// present.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Breach {
     /// The breach database name as `OathNet` gives it.
@@ -134,7 +141,16 @@ pub struct Breach {
     pub records: usize,
     /// Field types the records expose, sorted.
     pub fields: BTreeSet<String>,
-    /// A record holds a password, a password hash or a salt.
+    /// The distinct values each exposed field holds across the records, keyed by field name and
+    /// sorted. This is the de-redacted payload: the actual names, emails, phone numbers, usernames
+    /// and anything else the records carry, bounded by [`MAX_VALUES_PER_FIELD`] and
+    /// [`MAX_VALUE_BYTES`] so one record cannot flood the report. Cleartext credentials (the
+    /// [`PASSWORD_FIELDS`]: password, hash, salt) are deliberately **not** here — their presence is
+    /// recorded by [`Self::password_exposed`] and the field name, but the secret value an attacker
+    /// would need is never emitted.
+    pub values: BTreeMap<String, BTreeSet<String>>,
+    /// A record holds a password, a password hash or a salt. The field name is in [`Self::fields`];
+    /// the cleartext value is held back and never appears in [`Self::values`].
     pub password_exposed: bool,
     pub title: Option<String>,
     pub domain: Option<String>,
@@ -393,8 +409,10 @@ pub fn decode(body: &[u8], secrets: &[&str]) -> Result<Search, OathnetError> {
     Ok(search)
 }
 
-/// Adds the exposed field names of one record, those of its `extra` object included. A value is
-/// read only to see whether it is present. **Pure.**
+/// Adds the exposed fields of one record, those of its `extra` object included, and the value each
+/// non-credential one holds. The value is kept, not just the field name, so the report is
+/// unredacted; a cleartext credential (a [`PASSWORD_FIELDS`] entry) records only that it was
+/// exposed, never the secret itself. **Pure.**
 fn record_fields(item: &Map<String, Value>, breach: &mut Breach) {
     let extra = item.get("extra").and_then(Value::as_object);
     let named = item
@@ -408,13 +426,42 @@ fn record_fields(item: &Map<String, Value>, breach: &mut Breach) {
         let Some(field) = field_name(key) else {
             continue;
         };
-        if PASSWORD_FIELDS.contains(&field.as_str()) {
+        let is_credential = PASSWORD_FIELDS.contains(&field.as_str());
+        if is_credential {
             breach.password_exposed = true;
         }
         if breach.fields.len() < MAX_FIELDS || breach.fields.contains(&field) {
+            // The report is unredacted for the record's own data, but a third party's cleartext
+            // credential (password, hash or salt) is never emitted: that is the value an attacker
+            // needs for account takeover. The fact that such a field was exposed, its type and the
+            // breach it came from are kept (the field name and `password_exposed`); only the secret
+            // value is held back. Every other field's value is surfaced as the record held it.
+            if !is_credential {
+                if let Some(text) = record_value(value) {
+                    let seen = breach.values.entry(field.clone()).or_default();
+                    if seen.len() < MAX_VALUES_PER_FIELD {
+                        seen.insert(text);
+                    }
+                }
+            }
             breach.fields.insert(field);
         }
     }
+}
+
+/// One record value as text for the report: a string as written, a number or boolean as shown, a
+/// list or object as compact JSON. `None` when it is blank or longer than [`MAX_VALUE_BYTES`], so
+/// an oversized value is dropped whole rather than cut and a surfaced value is exactly what the
+/// record held. [`present`] has already ruled out null, `false` and empty containers. **Pure.**
+fn record_value(value: &Value) -> Option<String> {
+    let text = match value {
+        Value::Null | Value::Bool(false) => return None,
+        Value::Bool(true) => "true".to_owned(),
+        Value::Number(number) => number.to_string(),
+        Value::String(string) => string.trim().to_owned(),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).ok()?,
+    };
+    (!text.is_empty() && text.len() <= MAX_VALUE_BYTES).then_some(text)
 }
 
 /// `key` as a field name: lower-case ASCII letters, digits and `_`, at most [`MAX_FIELD_BYTES`].
