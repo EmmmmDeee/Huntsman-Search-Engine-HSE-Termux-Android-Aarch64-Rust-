@@ -46,6 +46,8 @@ differential	diagnostic	legacy no-regression entity comparator and oracle manife
 directive_lock	diagnostic	canonical repository directive verification and mirror synchronization
 dmarc	leaf	DMARC parser
 dns	adapter	DNS source client
+dns_filter	adapter	filtering-resolver checks (AdGuard, CleanBrowsing, Cloudflare, Comodo, DNS for Family, OpenDNS, Quad9, Yandex) reached through domain_cli from domain, scan and /api/lookup
+dns_wire	leaf	RFC 1035 wire-form DNS query writer and answer reader behind dns_filter
 dnsbl	adapter	DNS blocklist checks (Spamhaus, SpamCop, UCEPROTECT, DroneBL, SORBS, SURBL) reached through ip_cli and domain_cli from ip, domain, scan and /api/lookup
 doctor	diagnostic	doctor and fix checks and reversible repairs called by src/cli/doctor.rs
 domain_cli	diagnostic	domain recon command front-end over crtsh and dns

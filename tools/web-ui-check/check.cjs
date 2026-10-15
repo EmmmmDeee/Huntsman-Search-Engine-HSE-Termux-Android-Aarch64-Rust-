@@ -7,9 +7,10 @@
 // the scan API holds in its Summary, Browse, Correlations, Graph, Scan Settings and Log sections,
 // marks a false positive, searches, exports, clones, re-runs, compares and deletes a scan,
 // searches every scan, starts a scan of a value it found, keeps its place across a reload, asks
-// only for health when a tab with nothing running comes back, keeps a big scan's Graph answering
-// on a throttled CPU, says what to do when the server stops, notices when it is back, and finds
-// the saved scans still there after the restart.
+// only for health when a tab with nothing running comes back, asks to be reloaded when the
+// server was upgraded under it, keeps a big scan's Graph answering on a throttled CPU, says what
+// to do when the server stops, notices when it is back, and finds the saved scans still there
+// after the restart.
 //
 // It never spends a key: the server runs with a scratch HOME and none of the caller's
 // HUNTSMAN_*, HSE_* or *_KEY variables, and its scans target a phone number, which is offline.
@@ -164,6 +165,30 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       // The old addresses still land somewhere: #/lookup is New Scan, #/status is About.
       await page.goto(base + '/#/lookup', { waitUntil: 'networkidle' });
       check('#/lookup opens New Scan', await page.isVisible('#view-newscan'), 'hidden');
+      await ctx.close();
+    }
+
+    // A tab open across an upgrade: once health names another page than the one the tab loaded,
+    // the page asks to be reloaded, and Reload brings the page the server now serves.
+    {
+      const ctx = await browser.newContext(PHONE);
+      const page = await ctx.newPage();
+      await page.goto(base + '/', { waitUntil: 'networkidle' });
+      const own = await page.evaluate(() => document.querySelector('meta[name=huntsman-page]').content);
+      const served = (await api(page, '/api/health')).page;
+      check('the page carries the page id health names', /^[0-9a-f]{16}$/.test(own) && own === served, { own, served });
+      check('a tab on the page the server serves does not ask to reload', await page.isHidden('#upgraded'), 'shown');
+      await page.route('**/api/health', async route => {
+        const answer = await route.fetch();
+        await route.fulfill({ response: answer, json: { ...(await answer.json()), page: '0000000000000000' } });
+      });
+      await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
+      await page.waitForSelector('#upgraded:not([hidden])', { timeout: 5000 }).catch(() => {});
+      check('a tab whose server was upgraded asks to reload', await page.isVisible('#upgraded'), 'hidden');
+      await audit(page, 'upgraded tab');
+      await page.unroute('**/api/health');
+      await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle' }), page.click('#reload')]);
+      check('Reload brings the page the server serves', await page.isHidden('#upgraded'), 'still shown');
       await ctx.close();
     }
 
@@ -496,6 +521,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await serve(new URL(base).host);
       await page.waitForFunction(() => document.getElementById('state').textContent === 'online', null, { timeout: 9000 }).catch(() => {});
       check('the page notices the server is back', (await page.textContent('#state')) === 'online', await page.textContent('#state'));
+      check('a server started again on the same build does not ask to reload', await page.isHidden('#upgraded'), 'shown');
       await page.click('#srefresh');
       await page.waitForFunction(() => document.getElementById('serror').hidden, null, { timeout: 5000 }).catch(() => {});
       check('saved scans survive a server restart', (await page.$$('#scans tr')).length === kept && kept > 0, `${(await page.$$('#scans tr')).length} of ${kept}`);

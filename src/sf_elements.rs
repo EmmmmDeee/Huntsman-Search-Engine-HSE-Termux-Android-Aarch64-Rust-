@@ -473,6 +473,18 @@ fn identity_descriptors(
         if let Some(kind) = malicious_type(&entity.kind) {
             out.push((kind, data));
         }
+    } else if let Some(reason) = attr("dns_filter") {
+        // A filtering resolver's block, as Spiderfoot's DNS-filter modules write it: always the
+        // blacklisted element, and the malicious one too when the filter blocks threats.
+        let data = format!("{reason} [{host}]");
+        if let Some(kind) = blacklisted_type(&entity.kind) {
+            out.push((kind, data.clone()));
+        }
+        if attr("dns_filter_threat").is_some_and(positive) {
+            if let Some(kind) = malicious_type(&entity.kind) {
+                out.push((kind, data));
+            }
+        }
     } else if says_malicious(evidence) {
         if let Some(kind) = malicious_type(&entity.kind) {
             out.push((kind, format!("{} [{host}]", evidence.provenance.source)));
