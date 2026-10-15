@@ -713,6 +713,7 @@ fn is_internet_name(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
     use crate::phone_cli::{self, PhoneRun};
     use crate::scan_route::canonical_selector;
     use crate::scan_service::target_type;
@@ -865,6 +866,36 @@ mod tests {
             entity: None,
             raw: serde_json::Value::Null,
         }
+    }
+
+    /// Every evidence record an entity carries prints its own row, named for the module that made
+    /// it, so a second module's finding never drops out of `sf` output.
+    #[test]
+    fn every_evidence_record_of_an_entity_prints_its_own_row() {
+        let mut entity = Entity::new(EntityKind::Domain, "a.example.com", 0.9, "scan");
+        entity.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("crtsh", "scan"),
+            "certificate",
+        ));
+        entity.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("robtex", "scan"),
+            "passive dns",
+        ));
+        let target = Target {
+            value: "example.com",
+            kind: "INTERNET_NAME",
+        };
+        let saved = elements(target, &[entity], 1);
+        let rendered = render(&output("json"), &saved).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        let modules: Vec<&str> = value
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["module"].as_str())
+            .collect();
+        assert!(modules.contains(&"crtsh"), "{rendered}");
+        assert!(modules.contains(&"robtex"), "{rendered}");
     }
 
     /// The rows are a saved scan's elements, the root left out, each with the data of the

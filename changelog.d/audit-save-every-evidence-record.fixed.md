@@ -1,0 +1,2 @@
+- A lookup's `--save` ledger keeps every evidence record behind an entity, each with the module that made it, and every attribute of each record. It used to keep only the first record, so a second module's finding was missing from the saved ledger.
+- Each saved claim is now the whole record it names, as JSON, including a source outcome's HTTP status, retry delay and observation time. An upstream 4xx or 5xx outcome is saved as `upstream4xx` or `upstream5xx`, the same wire label the report prints.

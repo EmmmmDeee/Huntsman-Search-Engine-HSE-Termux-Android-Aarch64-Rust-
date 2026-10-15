@@ -134,12 +134,26 @@ impl Target<'_> {
 fn entity_type(entity: &Entity, target: Target<'_>) -> &'static str {
     let value = entity.value.as_str();
     match entity.kind {
-        EntityKind::Domain => match target.domain() {
-            Some(domain) if is_or_subdomain_of(value, domain) => "INTERNET_NAME",
-            Some(_) => "AFFILIATE_INTERNET_NAME",
-            None if target.is_ip() => "CO_HOSTED_SITE",
-            None => "INTERNET_NAME",
-        },
+        EntityKind::Domain => {
+            let unresolved = entity.has_tag(tags::UNRESOLVED);
+            match target.domain() {
+                Some(domain) if is_or_subdomain_of(value, domain) => {
+                    if unresolved {
+                        "INTERNET_NAME_UNRESOLVED"
+                    } else {
+                        "INTERNET_NAME"
+                    }
+                }
+                Some(_) if unresolved => "AFFILIATE_INTERNET_NAME_UNRESOLVED",
+                Some(_) => "AFFILIATE_INTERNET_NAME",
+                // The address's own reverse zone names it: Spiderfoot takes such a name as the
+                // target's alias. Any other name on the address is a site hosted there.
+                None if target.is_ip() && entity.has_tag(tags::PTR) => "INTERNET_NAME",
+                None if target.is_ip() => "CO_HOSTED_SITE",
+                None if unresolved => "INTERNET_NAME_UNRESOLVED",
+                None => "INTERNET_NAME",
+            }
+        }
         EntityKind::Email => match (target.domain(), value.rsplit_once('@')) {
             (Some(domain), Some((_, host))) if !is_or_subdomain_of(host, domain) => {
                 "AFFILIATE_EMAILADDR"
@@ -920,6 +934,34 @@ mod tests {
         assert_eq!(www.source.as_deref(), Some(found[1].id.as_str()));
         assert_eq!(www.created, 1_700_000_000_000);
         assert_eq!(www.confidence, 80);
+    }
+
+    /// A name tagged unresolved is Spiderfoot's unresolved type, inside the target or out.
+    #[test]
+    fn a_name_that_does_not_resolve_is_an_unresolved_internet_name() {
+        let mut inside = entity(EntityKind::Domain, "old.example.com", "dnsresolve", &[]);
+        inside.tag(tags::UNRESOLVED);
+        let mut outside = entity(EntityKind::Domain, "old.example.net", "robtex", &[]);
+        outside.tag(tags::UNRESOLVED);
+        let found = elements(DOMAIN, &[inside.clone(), outside], 1_700_000_000);
+        assert_eq!(
+            of_type(&found, "INTERNET_NAME_UNRESOLVED")[0].data,
+            "old.example.com"
+        );
+        assert_eq!(
+            of_type(&found, "AFFILIATE_INTERNET_NAME_UNRESOLVED")[0].data,
+            "old.example.net"
+        );
+        // A name with no domain target is still unresolved.
+        let found = elements(
+            Target {
+                value: "ops@example.org",
+                kind: "EMAILADDR",
+            },
+            &[inside],
+            1_700_000_000,
+        );
+        assert_eq!(of_type(&found, "INTERNET_NAME_UNRESOLVED").len(), 1);
     }
 
     #[test]
