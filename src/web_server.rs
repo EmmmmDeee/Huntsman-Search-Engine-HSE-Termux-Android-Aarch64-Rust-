@@ -1663,16 +1663,16 @@ mod tests {
 
     /// The page is laid out as Spiderfoot 4.0's: an app bar with the locator mark, the theme switch
     /// and About, Spiderfoot's New Scan, Scans and Settings plus Analyze as tabs (a bottom tab bar
-    /// on a phone, a top nav on a wider screen), one scan's sections under `#/scan/ID`, and a
-    /// view for each.
+    /// on a phone, a top nav on a wider screen), one scan's sections under `#/scan/ID`, two scans
+    /// compared under `#/compare/A/B`, and a view for each.
     #[test]
     fn the_page_is_the_console_shell_with_a_tab_per_view() {
         assert!(INDEX_HTML.contains(r#"<header class="appbar">"#));
         assert!(INDEX_HTML.contains(r#"<nav class="navbar" aria-label="Primary">"#));
         let script = inline_block(INDEX_HTML, "script");
-        assert!(
-            script.contains("const VIEWS=['scans','newscan','scan','analyze','settings','about'];")
-        );
+        assert!(script.contains(
+            "const VIEWS=['scans','newscan','scan','compare','analyze','settings','about'];"
+        ));
         for view in ["newscan", "scans", "analyze", "settings"] {
             assert!(
                 INDEX_HTML.contains(&format!(
@@ -1682,7 +1682,9 @@ mod tests {
             );
         }
         assert!(INDEX_HTML.contains(r##"<a class="iconbtn" id="nav-about" href="#/about""##));
-        for view in ["scans", "newscan", "scan", "analyze", "settings", "about"] {
+        for view in [
+            "scans", "newscan", "scan", "compare", "analyze", "settings", "about",
+        ] {
             assert!(
                 INDEX_HTML.contains(&format!(r#"<section id="view-{view}" hidden>"#)),
                 "{view}"

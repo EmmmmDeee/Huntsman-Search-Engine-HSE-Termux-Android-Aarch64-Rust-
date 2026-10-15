@@ -1,7 +1,8 @@
 //! End-to-end front-end for `huntsman-recon ip` and the ip arm of `scan`.
 //!
 //! Runs the IP legs in order for one public address: reverse DNS (the PTR records of the address,
-//! as Spiderfoot's `sfp_dnsresolve` asks), Shodan `InternetDB` (open ports, hostnames,
+//! as Spiderfoot's `sfp_dnsresolve` asks), the network's RDAP registration (see
+//! [`crate::rdap_legs`]), Shodan `InternetDB` (open ports, hostnames,
 //! CPEs, known CVEs), `RIPEstat` (covering prefix and origin AS), `GreyNoise` Community (internet
 //! scanner or benign service), then the keyed legs whose key is configured: `AbuseIPDB` (abuse
 //! reports) and `VirusTotal` (engine verdicts), then every IP source in
@@ -39,7 +40,7 @@ use crate::virustotal;
 pub const IP_USAGE: &str = "usage: huntsman-recon ip ADDRESS [--save FILE]";
 pub const IP_HELP: &str = "\
 ip ADDRESS [--save FILE]
-Look up one public IPv4 or IPv6 address: the names its PTR records carry, open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat, internet-scanner status from GreyNoise Community threat risk from Pulsedive, scan data from Netlas, threat pulses from AlienVault OTX, public page scans from urlscan.io, hostname, network and city from IPinfo, the route and passive DNS names from Robtex, domains hosted on the address from HackerTarget and forum-spam reports from StopForumSpam, all keyless. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs, and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY, HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
+Look up one public IPv4 or IPv6 address: the names its PTR records carry, its network's RDAP registration (range, holder, contacts and the record as published), open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat, internet-scanner status from GreyNoise Community threat risk from Pulsedive, scan data from Netlas, threat pulses from AlienVault OTX, public page scans from urlscan.io, hostname, network and city from IPinfo, the route and passive DNS names from Robtex, domains hosted on the address from HackerTarget and forum-spam reports from StopForumSpam, all keyless. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs, and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY, HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
 
 /// Confidence of the queried address itself.
 const SEED_CONFIDENCE: f64 = 0.90;
@@ -170,6 +171,9 @@ pub fn run<T: Transport + ?Sized>(transport: &T, keys: &Keys, ip: &str, now_unix
     };
 
     ptr_leg(transport, &mut lookup);
+    let registration = crate::rdap_legs::ip(transport, &ip, &scan_id, now_unix);
+    lookup.report.entities.extend(registration.entities);
+    lookup.report.outcomes.extend(registration.outcome);
     match internetdb::lookup(transport, &ip, now_unix) {
         Ok(Some(host)) => internetdb_leg(&mut lookup, &host),
         Ok(None) => lookup.nothing(&internetdb::API),
