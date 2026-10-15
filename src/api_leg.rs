@@ -111,6 +111,9 @@ pub enum LegError {
     NotAnAnswer(SourceOutcomeKind),
     #[error("{0}")]
     Decode(String),
+    /// The answer was longer than the transport's body limit, so it was not read whole.
+    #[error("response exceeds the body limit")]
+    TooLarge,
 }
 
 fn describe_retry(retry_after: Option<u64>) -> String {
@@ -129,7 +132,7 @@ impl LegError {
             Self::BadRequest(_) | Self::Unexpected(_) => SourceOutcomeKind::Upstream4xx,
             Self::Server(_) => SourceOutcomeKind::Upstream5xx,
             Self::Transport(kind) | Self::NotAnAnswer(kind) => *kind,
-            Self::Decode(_) => SourceOutcomeKind::SchemaDrift,
+            Self::Decode(_) | Self::TooLarge => SourceOutcomeKind::SchemaDrift,
             Self::Refused(_) => SourceOutcomeKind::Inconclusive,
         }
     }
@@ -279,7 +282,7 @@ fn send<T: Transport + ?Sized>(
         return Err(LegError::NotAnAnswer(fetched.outcome.kind));
     }
     if response.truncated {
-        return Err(LegError::Decode("response exceeds the body limit".into()));
+        return Err(LegError::TooLarge);
     }
     Ok(Answer::Body(response.body))
 }
@@ -585,6 +588,27 @@ mod tests {
             Ok(Answer::NotFound(
                 b"{\"detail\":\"No information available\"}".to_vec()
             ))
+        );
+    }
+
+    #[test]
+    fn an_answer_cut_at_the_body_limit_is_too_large() {
+        struct Cut;
+        impl Transport for Cut {
+            fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
+                Ok(Response {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: br#"{"data":[{"port":80},"#.to_vec(),
+                    truncated: true,
+                })
+            }
+        }
+        let result = get(&Cut, &KEYLESS, &Keys::default(), URL, 1);
+        assert_eq!(result, Err(LegError::TooLarge));
+        assert_eq!(
+            LegError::TooLarge.outcome_kind(),
+            SourceOutcomeKind::SchemaDrift
         );
     }
 
