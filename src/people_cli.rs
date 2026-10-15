@@ -232,6 +232,7 @@ mod tests {
 
     use crate::asic_persons::{ADVISER_RES, BANNED_RES, CREDIT_RES};
     use crate::http::{Request, Response, TransportFailure};
+    use crate::relation::{self, RelationKind};
     use crate::source_outcome::SourceOutcomeKind;
     const BANNED: &str = r##"{
   "BD_PER_NAME":"ABBOTT, BILL","BD_PER_TYPE":"Banned Securities",
@@ -394,6 +395,97 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    const ADVISER_LINKED: &str = r#"{
+  "ADV_NAME":"POPOV, MARSEL","ADV_ROLE":"Authorised Representative","ADV_ROLE_STATUS":"Current",
+  "OVERALL_REGISTRATION_STATUS":"Registered",
+  "LICENCE_NAME":"VIRIDIAN ADVISORY PTY LTD","LICENCE_NUMBER":"34605438042",
+  "LICENCE_CONTROLLED_BY":"NATIONAL AUSTRALIA BANK LIMITED [Date Ceased: 21/08/2023] ~ MLC WEALTH LIMITED ~ MELISSA  GOODIN",
+  "REP_APPOINTED_BY":"VIRIDIAN FINANCIAL GROUP LTD","REP_APPOINTED_NUM":"000315094"}"#;
+
+    /// The relations the analysis derives from one adviser record, as `(from, kind, to)` over
+    /// the entities' display values.
+    fn adviser_relations(record: &str) -> Vec<(String, RelationKind, String)> {
+        let mut script = empty_script();
+        script.insert(
+            ADVISER_RES.into(),
+            Ok(json_ok(&format!(
+                r#"{{"success":true,"result":{{"records":[{record}]}}}}"#
+            ))),
+        );
+        let report = match run(&Fake::new(script), "Marsel Popov", 1) {
+            PeopleRun::Printed { report, .. } => report,
+            other => panic!("{other:?}"),
+        };
+        let name = |uid: &str| {
+            report
+                .entities
+                .iter()
+                .find(|entity| entity.uid == uid)
+                .map(|entity| entity.raw_value.to_ascii_uppercase())
+                .expect("relation endpoint is an entity of the report")
+        };
+        relation::derive_all(&report.entities, "scan")
+            .into_iter()
+            .filter(|edge| {
+                matches!(
+                    edge.kind,
+                    RelationKind::MemberOf | RelationKind::ControlledBy
+                )
+            })
+            .map(|edge| (name(&edge.from_uid), edge.kind, name(&edge.to_uid)))
+            .collect()
+    }
+
+    #[test]
+    fn an_advisers_licensee_appointing_firm_and_controller_are_relations() {
+        let mut relations = adviser_relations(ADVISER_LINKED);
+        relations.sort();
+        let edge = |from: &str, kind, to: &str| (from.to_owned(), kind, to.to_owned());
+        assert_eq!(
+            relations,
+            vec![
+                edge(
+                    "MARSEL POPOV",
+                    RelationKind::MemberOf,
+                    "VIRIDIAN ADVISORY PTY LTD"
+                ),
+                edge(
+                    "MARSEL POPOV",
+                    RelationKind::MemberOf,
+                    "VIRIDIAN FINANCIAL GROUP LTD"
+                ),
+                edge(
+                    "VIRIDIAN ADVISORY PTY LTD",
+                    RelationKind::ControlledBy,
+                    "MLC WEALTH LIMITED"
+                ),
+            ],
+            "the controller whose control ceased, and the person who controls the licensee, are \
+             entities but not control relations"
+        );
+    }
+
+    #[test]
+    fn a_ceased_authorisation_is_evidence_but_not_a_membership() {
+        let ceased = ADVISER_LINKED.replace(
+            r#""ADV_ROLE_STATUS":"Current""#,
+            r#""ADV_ROLE_STATUS":"Ceased""#,
+        );
+        let relations = adviser_relations(&ceased);
+        assert!(
+            !relations
+                .iter()
+                .any(|(_, kind, _)| *kind == RelationKind::MemberOf),
+            "{relations:?}"
+        );
+        assert!(
+            relations
+                .iter()
+                .any(|(_, kind, _)| *kind == RelationKind::ControlledBy),
+            "the licensee's own control does not depend on the adviser's role: {relations:?}"
+        );
     }
 
     #[test]
