@@ -235,6 +235,14 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       await page.waitForSelector('#corrs tr');
       check(`${scheme}: Correlations lists every correlation`, correlations.length ? (await page.$$('#corrs details')).length === correlations.length : (await page.$$('#corrs td.none')).length === 1, correlations.length);
       await audit(page, `${scheme} correlations`);
+      // Spiderfoot's sf.py -C from the page: every rule again over the saved elements.
+      await page.click('#recorrelate');
+      await page.waitForFunction(() => /re-run/i.test(document.getElementById('cnote').textContent), null, { timeout: 10000 }).catch(() => {});
+      const rerun = await api(page, root + '/correlations');
+      check(`${scheme}: Re-run Correlations reruns the rules`, (await page.textContent('#cnote')).includes(`${rerun.length} found`), await page.textContent('#cnote'));
+      await page.click('#cexport summary');
+      const [cdownload] = await Promise.all([page.waitForEvent('download', { timeout: 10000 }), page.click('#cexport button[data-cformat=csv]')]);
+      check(`${scheme}: correlations export as CSV`, cdownload.suggestedFilename().endsWith('.csv') && fs.readFileSync(await cdownload.path(), 'utf8').startsWith('Rule Name,Correlation,Risk'), cdownload.suggestedFilename());
       await page.click('#sctabs a[data-tab=graph]');
       await page.waitForSelector('#gnodes circle', { timeout: 5000 }).catch(() => {});
       check(`${scheme}: Graph draws every node`, (await page.$$('#gnodes circle')).length === graph.nodes.length, `${(await page.$$('#gnodes circle')).length} of ${graph.nodes.length}`);
@@ -245,7 +253,9 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       await audit(page, `${scheme} scan settings`);
       await page.click('#sctabs a[data-tab=log]');
       await page.waitForSelector('#log tr');
-      check(`${scheme}: Log shows every entry`, (await page.$$('#log tr')).length === Math.max(1, log.length), log.length);
+      // Read again: re-running the correlations logged an entry of its own.
+      const logged = await api(page, root + '/log');
+      check(`${scheme}: Log shows every entry`, logged.length > log.length && (await page.$$('#log tr')).length === logged.length, `${(await page.$$('#log tr')).length} of ${logged.length}`);
       await audit(page, `${scheme} log`);
 
       // Search across the scan, Spiderfoot's wildcard form, for the middle of an element it holds.
@@ -302,6 +312,9 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       await page.goto(base + '/#/settings', { waitUntil: 'networkidle' });
       await page.waitForSelector('#mods tr');
       check(`${scheme}: Settings lists every module`, (await page.$$('#mods tr')).length === modules.length, (await page.$$('#mods tr')).length);
+      const rules = await api(page, '/api/correlationrules');
+      await page.waitForSelector('#rules tr', { timeout: 5000 }).catch(() => {});
+      check(`${scheme}: Settings lists every correlation rule`, rules.length > 0 && (await page.$$('#rules tr')).length === rules.length, `${(await page.$$('#rules tr')).length} of ${rules.length}`);
       await audit(page, `${scheme} settings`);
       await page.goto(base + '/#/about', { waitUntil: 'networkidle' });
       await audit(page, `${scheme} about`);
