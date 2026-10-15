@@ -638,9 +638,29 @@ fn same_evidence_identity(left: &Evidence, right: &Evidence) -> bool {
     left.provenance.source == right.provenance.source && left.summary == right.summary
 }
 
+/// Whether `value` is one JSON document, an object or a list, such as a source's raw answer
+/// (`raw_answer`, `raw_pulses`). **Pure.**
+fn is_json_document(value: &str) -> bool {
+    matches!(value.trim_start().as_bytes().first(), Some(b'{' | b'['))
+        && serde_json::from_str::<serde::de::IgnoredAny>(value).is_ok()
+}
+
+/// Folds `incoming` into `existing`, two records of one source saying the same thing about one
+/// entity. A listed attribute keeps every value either record gives. A JSON document is one
+/// answer, and its text can hold `; ` anywhere, so it is never split: it is kept whole, and
+/// replaced whole by `incoming`'s when `incoming` was recorded later than `existing`.
 fn merge_evidence(existing: &mut Evidence, incoming: Evidence) {
+    let incoming_is_later =
+        incoming.provenance.recorded_at_unix > existing.provenance.recorded_at_unix;
     for (key, value) in incoming.attributes {
         match existing.attributes.get_mut(&key) {
+            Some(current)
+                if current != &value && (is_json_document(current) || is_json_document(&value)) =>
+            {
+                if incoming_is_later {
+                    *current = value;
+                }
+            }
             Some(current) if current != &value => {
                 let mut merged = current
                     .split("; ")
