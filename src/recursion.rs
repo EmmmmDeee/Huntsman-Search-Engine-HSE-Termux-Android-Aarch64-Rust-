@@ -14,7 +14,7 @@
 
 use std::collections::BTreeSet;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::entity::{Entity, EntityKind, merge_by_uid};
 use crate::pipeline_limits::PipelineLimits;
@@ -50,6 +50,12 @@ pub struct Step {
 /// Performs one live lookup. The driver owns the recursion; the collector owns the I/O.
 pub trait SelectorCollector {
     fn collect(&mut self, target: &Target) -> Step;
+
+    /// Whether the operator asked the crawl to stop. Checked before every dispatch: the crawl
+    /// then stops as `Cancelled`, keeping everything found so far.
+    fn cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// Bounds for one recursive crawl. Defaults are the shared [`PipelineLimits`], so the recursion
@@ -98,7 +104,7 @@ pub struct GenerationStat {
 /// reconstructs the crawl's pivot tree — which lookup surfaced which finding, generation by
 /// generation — the linkage a recursive OSINT crawl exists to produce. An entity reached by more
 /// than one lookup contributes one edge per lookup, so shared findings are visible, not collapsed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PivotEdge {
     /// The dispatched lookup's kind, as its stable command word.
     pub from_kind: String,
@@ -243,6 +249,7 @@ struct CrawlState {
     generations: Vec<GenerationStat>,
     dispatches: usize,
     resource_limited: bool,
+    cancelled: bool,
 }
 
 impl CrawlState {
@@ -263,6 +270,12 @@ impl CrawlState {
 
         let mut remaining = frontier.into_iter();
         for target in remaining.by_ref() {
+            if collector.cancelled() {
+                self.cancelled = true;
+                stopped = true;
+                next.push(target);
+                break;
+            }
             if !self.visited.insert(target.owned_key()) {
                 continue;
             }
@@ -334,7 +347,37 @@ pub fn run<C: SelectorCollector>(
     policy: &RecursionPolicy,
     collector: &mut C,
 ) -> RecursionReport {
-    let (accepted_seeds, rejected_seeds, mut frontier) = seed_frontier(seeds);
+    let (accepted_seeds, rejected_seeds, frontier) = seed_frontier(seeds);
+    crawl(accepted_seeds, rejected_seeds, frontier, policy, collector)
+}
+
+/// [`run`] from targets already routed, such as a saved scan's target under the kind its operator
+/// chose. Duplicate targets are dispatched once.
+pub fn run_targets<C: SelectorCollector>(
+    targets: Vec<Target>,
+    policy: &RecursionPolicy,
+    collector: &mut C,
+) -> RecursionReport {
+    let mut frontier = Frontier::default();
+    for target in &targets {
+        frontier.push(target.clone());
+    }
+    crawl(
+        targets,
+        Vec::new(),
+        frontier.into_queue(),
+        policy,
+        collector,
+    )
+}
+
+fn crawl<C: SelectorCollector>(
+    accepted_seeds: Vec<Target>,
+    rejected_seeds: Vec<String>,
+    mut frontier: Vec<Target>,
+    policy: &RecursionPolicy,
+    collector: &mut C,
+) -> RecursionReport {
     let mut state = CrawlState::default();
     let mut generation = 0u32;
     let mut max_depth = false;
@@ -358,6 +401,7 @@ pub fn run<C: SelectorCollector>(
         ..FrontierState::default()
     };
     let signals = TerminationSignals {
+        cancelled: state.cancelled,
         resource_limit_reached: state.resource_limited,
         max_depth_reached: max_depth,
         ..TerminationSignals::default()
@@ -368,7 +412,7 @@ pub fn run<C: SelectorCollector>(
     RecursionReport {
         accepted_seeds,
         rejected_seeds,
-        truncated: state.resource_limited || max_depth,
+        truncated: state.resource_limited || max_depth || state.cancelled,
         visited: state.visited.len(),
         entities: state.entities,
         edges: state.edges,
@@ -433,6 +477,57 @@ mod tests {
 
     fn policy() -> RecursionPolicy {
         RecursionPolicy::default()
+    }
+
+    /// Asks to stop once `limit` lookups have run, as an operator's stop would.
+    struct StopAfter {
+        inner: Scripted,
+        limit: usize,
+    }
+
+    impl SelectorCollector for StopAfter {
+        fn collect(&mut self, target: &Target) -> Step {
+            self.inner.collect(target)
+        }
+
+        fn cancelled(&self) -> bool {
+            self.inner.calls.len() >= self.limit
+        }
+    }
+
+    #[test]
+    fn a_cancelled_crawl_stops_before_the_next_dispatch_and_keeps_what_it_found() {
+        let inner = Scripted::new().on(
+            ScanKind::Domain,
+            "example.org",
+            vec![
+                ent(EntityKind::IpAddress, "203.0.113.9", 0.9),
+                ent(EntityKind::Domain, "www.example.org", 0.9),
+            ],
+        );
+        let mut collector = StopAfter { inner, limit: 1 };
+        let report = run(&["example.org".to_owned()], &policy(), &mut collector);
+        assert_eq!(report.termination, TerminationReason::Cancelled);
+        assert!(report.truncated);
+        assert_eq!(report.dispatches, 1);
+        assert_eq!(report.entities.len(), 2);
+        assert_eq!(report.edges.len(), 2);
+    }
+
+    #[test]
+    fn routed_targets_keep_the_kind_they_were_given_and_run_once() {
+        let target = Target {
+            kind: ScanKind::Username,
+            selector: "example.org".to_owned(),
+        };
+        let mut collector = Scripted::new();
+        let report = run_targets(vec![target.clone(), target], &policy(), &mut collector);
+        assert_eq!(
+            collector.calls,
+            [("username".to_owned(), "example.org".to_owned())]
+        );
+        assert_eq!(report.termination, TerminationReason::FixedPoint);
+        assert_eq!(report.accepted_seeds.len(), 2);
     }
 
     #[test]
