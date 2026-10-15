@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 use super::doctor::DOCTOR_HELP;
+use super::scans::SCANS_HELP;
 use super::{HELP, RECON_USAGE, USAGE, fail};
 use huntsman_recon::dehashed::cli::DEHASHED_USAGE;
 use huntsman_recon::email_cli::EMAIL_HELP;
@@ -89,7 +90,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         }
         "ip" => huntsman_recon::ip_cli::IP_HELP,
         "scan" => {
-            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|network] [--save-dir DIR]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends; a domain routes to domain, and a BSSID or LAT,LON to network. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only; --save-dir DIR writes one ledger per batch seed, numbered by its position."
+            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|network] [--save-dir DIR] | scan --recurse SELECTOR [SELECTOR ...] [--max-generations N] [--expand-floor F]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends; a domain routes to domain, and a BSSID or LAT,LON to network. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only; --save-dir DIR writes one ledger per batch seed, numbered by its position. --recurse runs a bounded fetch-expand-fetch crawl: each lookup's pivotable findings (e-mail, username, domain, phone, plus a public IP or BSSID) become the next generation's seeds, de-duplicated and capped by the shared limits (default up to 4 hops beyond the seeds, expansion confidence floor 0.5), and it prints the full linkage, every source outcome, and the termination reason. Makes network requests."
         }
         "investigate" => {
             "investigate TEXT... | investigate --file FILE\nExtract actionable entities from local text. --file refuses symlinks and files over 1 MiB."
@@ -101,6 +102,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
             "query QUERY...\nQuery the rebuilt keyless Bing, Brave, and Mojeek subset through the shared fetch boundary; provider failures remain independent."
         }
         "sf" => SF_USAGE,
+        "scans" => SCANS_HELP,
         "serve" => {
             "serve [--bind ADDR] [--history DIR]\nStart the embedded Web UI and JSON API, including GET /api/lookup (needs the X-Huntsman-Lookup: 1 header) and GET /api/analyze?seeds=... (offline multi-hop analysis, one seed per line, no network request). With --history DIR, each analysis also bridges its seeds to the saved scan artifacts in DIR, as correlate --history does, and reports the bridges as cross_scan; a directory that cannot be read, or holds a malformed artifact, stops serve at startup. Default: 127.0.0.1:8080. HSE_BIND supplies the default bind. A loopback bind needs no token; an explicit non-loopback bind requires HSE_AUTH_TOKEN."
         }

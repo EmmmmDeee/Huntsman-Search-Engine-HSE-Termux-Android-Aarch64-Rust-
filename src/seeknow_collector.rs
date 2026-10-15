@@ -9,14 +9,16 @@ use crate::collector::{
     CollectionBatch, CollectionLimits, CollectionOutcome, CollectorError, CollectorPivot,
     ObservationReceipt,
 };
+use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
-use crate::fetch::Credential;
+use crate::fetch::{AuthStyle, Credential};
 use crate::http::Transport;
+use crate::keys::Keys;
 use crate::seeknow::{
-    SEARCH_LIMIT_MAX, SeekNowQueryType, SeekNowRow, SeekNowSearch, SeekNowSearchResult,
+    KEY_SLOT, SEARCH_LIMIT_MAX, SeekNowQueryType, SeekNowRow, SeekNowSearch, SeekNowSearchResult,
     search_deep, search_fast,
 };
-use crate::source_outcome::SourceOutcomeKind;
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const COLLECTOR_ID: &str = "seeknow";
 const ENTITY_CONFIDENCE: f64 = 0.60;
@@ -166,6 +168,92 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
 
     batch.pivots.truncate(limits.max_pivots);
     Ok(batch)
+}
+
+/// Entities and source outcomes from running `SeekNow` as one leg of a lookup.
+#[derive(Debug, Default)]
+pub struct LookupLeg {
+    pub entities: Vec<Entity>,
+    pub outcomes: Vec<SourceExecutionOutcome>,
+}
+
+/// The operator-approved `SeekNow` credential built from `keys`.
+///
+/// This is the single builder for both the `seeknow` command and the lookup leg, so the
+/// credential's authority and wire form have one definition. `provenance` records which path
+/// approved it.
+///
+/// # Errors
+/// [`String`] when the key slot is unset, or the authority or credential cannot be built.
+pub fn operator_credential(
+    keys: &Keys,
+    now_unix: u64,
+    provenance: &str,
+) -> Result<Credential, String> {
+    let secret = keys
+        .get(KEY_SLOT)
+        .ok_or_else(|| format!("credential {KEY_SLOT} is not configured"))?;
+    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
+        provider_id: "seeknow".into(),
+        credential_slot: KEY_SLOT.into(),
+        approved_at_unix: now_unix,
+        approval_provenance: provenance.into(),
+    })
+    .map_err(|error| error.to_string())?;
+    Credential::new(authority, secret, AuthStyle::Header("X-API-Key".into()))
+        .map_err(|error| error.to_string())
+}
+
+/// Run `SeekNow` as one keyed leg of a `kind` lookup for `value`.
+///
+/// Returns `None` when `HUNTSMAN_SEEKNOW_KEY` is not configured or the kind is not one
+/// `SeekNow` accepts, so a lookup without the key is unchanged and makes no request. When the
+/// key is set, the leg always runs, as the project requires of a configured keyed source.
+///
+/// A transport or provider failure is reported as one outcome, never an abort: the leg returns
+/// whatever entities it gathered together with the failing source's outcome, so the rest of the
+/// lookup still renders. The caller merges `entities` into the report (by uid) and appends
+/// `outcomes` to the report's outcomes.
+#[must_use]
+pub fn collect_for_lookup<T: Transport + ?Sized>(
+    transport: &T,
+    kind: EntityKind,
+    value: &str,
+    keys: &Keys,
+    now_unix: u64,
+) -> Option<LookupLeg> {
+    if keys.get(KEY_SLOT).is_none() || !SeekNowCollector.accepts(&kind) {
+        return None;
+    }
+    let credential = operator_credential(keys, now_unix, "huntsman-recon lookup").ok()?;
+    let scan_id = crate::entity::scan_id(&kind.to_string(), value);
+    let selector = Entity::new(kind, value, 1.0, scan_id);
+    let limits = CollectionLimits::default();
+    match collect_with_credential(
+        &selector,
+        transport,
+        &credential,
+        &limits,
+        SeekNowCollectionMode::Adaptive,
+        now_unix,
+    ) {
+        Ok(batch) => Some(LookupLeg {
+            outcomes: batch
+                .receipts
+                .iter()
+                .map(|receipt| receipt.outcome.clone())
+                .collect(),
+            entities: batch.entities,
+        }),
+        Err(error) => Some(LookupLeg {
+            entities: Vec::new(),
+            outcomes: vec![SourceExecutionOutcome::inconclusive(
+                COLLECTOR_ID,
+                now_unix,
+                error.to_string(),
+            )],
+        }),
+    }
 }
 
 fn validate_selector(selector: &Entity) -> Result<(), CollectorError> {

@@ -1,9 +1,11 @@
 use huntsman_recon::collector::{CollectionLimits, CollectionOutcome};
 use huntsman_recon::entity::{Entity, EntityKind};
 use huntsman_recon::fetch::Credential;
+use huntsman_recon::keys::Keys;
 use huntsman_recon::lineage::Lineage;
 use huntsman_recon::seeknow_collector::{
-    SeekNowCollectionMode, SeekNowCollector, collect_with_credential, plan_selector,
+    SeekNowCollectionMode, SeekNowCollector, collect_for_lookup, collect_with_credential,
+    plan_selector,
 };
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
@@ -410,5 +412,97 @@ fn non_identifier_numeric_suffixed_fields_stay_unmapped() {
             .entities
             .iter()
             .any(|entity| entity.value == "12345678901")
+    );
+}
+
+fn keyed() -> Keys {
+    Keys::parse("HUNTSMAN_SEEKNOW_KEY=dummy-seeknow-key-for-tests\n").unwrap()
+}
+
+#[test]
+fn collect_for_lookup_without_key_makes_no_request() {
+    // A lookup with no SeekNow key is unchanged: the leg returns None and sends nothing.
+    let transport = ScriptedTransport::new(Vec::new());
+    let leg = collect_for_lookup(
+        &transport,
+        EntityKind::Email,
+        "alice@example.com",
+        &Keys::default(),
+        30,
+    );
+    assert!(leg.is_none());
+    assert_eq!(transport.request_count(), 0);
+}
+
+#[test]
+fn collect_for_lookup_rejects_unsupported_kind_without_request() {
+    // A kind SeekNow does not accept yields None even with a key set, and sends nothing.
+    let transport = ScriptedTransport::new(Vec::new());
+    let leg = collect_for_lookup(
+        &transport,
+        EntityKind::Coordinates,
+        "-37.8,144.9",
+        &keyed(),
+        30,
+    );
+    assert!(leg.is_none());
+    assert_eq!(transport.request_count(), 0);
+}
+
+#[test]
+fn collect_for_lookup_with_key_runs_and_returns_entities_and_outcome() {
+    // With the key set the leg always runs, returns the response entities, and records at
+    // least one source outcome for the report.
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[{"email":"found@example.com","dbname":"Dataset A"}]}"#,
+    )]);
+    let leg = collect_for_lookup(
+        &transport,
+        EntityKind::Email,
+        "found@example.com",
+        &keyed(),
+        30,
+    )
+    .expect("key configured runs the leg");
+    assert!(transport.request_count() >= 1);
+    assert!(
+        leg.entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Email && entity.value == "found@example.com")
+    );
+    let outcome_count = leg.outcomes.len();
+    assert!(
+        outcome_count >= 1,
+        "keyed SeekNow records at least one source outcome"
+    );
+}
+
+#[test]
+fn collect_for_lookup_runs_person_scan_selector() {
+    // The headline `scan NAME` path routes to ScanKind::People, which maps to EntityKind::Person.
+    // With the key set that selector must run SeekNow like email and username, not sit dead.
+    let transport = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":true,"data":[{"name":"Alice Example","dbname":"Dataset A"}]}"#,
+    )]);
+    let leg = collect_for_lookup(
+        &transport,
+        EntityKind::Person,
+        "Alice Example",
+        &keyed(),
+        30,
+    )
+    .expect("person scan with a key runs the leg");
+    assert!(transport.request_count() >= 1);
+    assert!(
+        leg.entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Person)
+    );
+    let outcome_count = leg.outcomes.len();
+    assert!(
+        outcome_count >= 1,
+        "keyed SeekNow records at least one source outcome"
     );
 }
