@@ -1,7 +1,6 @@
 *
 !Cargo.toml
 !Cargo.lock
-!build.rs
 !capabilities.json
 !benchmarks.json
 !HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md

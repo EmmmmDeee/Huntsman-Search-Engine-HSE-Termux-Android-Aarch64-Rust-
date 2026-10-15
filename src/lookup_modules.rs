@@ -1,0 +1,149 @@
+//! Which modules each lookup kind may ask, by the names a scan chooses them by, so a scan that
+//! chose modules runs only the lookups that ask one of them, and refuses a target none of them
+//! looks up, as Spiderfoot runs no module that does not take a target's type.
+//!
+//! The lists are built from the same tables the lookups run (the DNS blocklist zones, the
+//! filtering resolvers, the threat feeds and the indicator sources), and the tests hold each
+//! lookup to its list: every module a lookup asks is on it, and a lookup that asks none of the
+//! chosen modules sends nothing.
+
+use crate::dns_filter;
+use crate::dnsbl::{self, Takes};
+use crate::indicator_legs;
+use crate::indicator_sources::IndicatorKind;
+use crate::module_selection::Selection;
+use crate::scan_route::ScanKind;
+use crate::threat_feeds;
+use crate::{
+    abuseipdb, bluesky_user, certspotter, dehashed, duolingo, exposure_cli, github_user, gravatar,
+    greynoise, hunter, internetdb, numverify, oathnet, openpgp_keys, rdap, ripestat,
+    seeknow_collector, virustotal, wigle,
+};
+
+/// The breach legs an email address's lookup folds in.
+const BREACH: [&str; 4] = [
+    exposure_cli::HIBP_MODULE,
+    exposure_cli::STOLEN_TAX_SOURCE,
+    oathnet::SOURCE,
+    dehashed::COLLECTOR_ID,
+];
+
+/// Every module `kind`'s lookup may ask, each once, in the order it asks them. **Pure.**
+#[must_use]
+pub fn modules(kind: ScanKind) -> Vec<&'static str> {
+    let mut modules: Vec<&'static str> = match kind {
+        ScanKind::Ip => {
+            let mut ip = vec![
+                crate::dns::RESOLVE_SOURCE,
+                rdap::SOURCE,
+                internetdb::SOURCE,
+                ripestat::SOURCE,
+                greynoise::SOURCE,
+            ];
+            ip.extend(zones(|takes| takes != Takes::Domains));
+            ip.extend([abuseipdb::SOURCE, virustotal::SOURCE]);
+            ip.extend(indicators(IndicatorKind::Ip));
+            ip.extend(feeds());
+            ip
+        }
+        ScanKind::Domain => {
+            let mut domain = vec!["crtsh", certspotter::SOURCE, "dns", rdap::SOURCE];
+            domain.extend(zones(|takes| {
+                matches!(takes, Takes::Domains | Takes::Ipv4AndDomains)
+            }));
+            domain.extend(dns_filter::FILTERS.iter().map(|filter| filter.source));
+            domain.extend([virustotal::SOURCE, hunter::SOURCE]);
+            domain.extend(indicators(IndicatorKind::Domain));
+            domain.push(crate::dns::RESOLVE_SOURCE);
+            domain.extend(feeds());
+            domain
+        }
+        ScanKind::Netblock => {
+            let mut netblock = vec![rdap::SOURCE, ripestat::SOURCE, crate::dns::RESOLVE_SOURCE];
+            netblock.extend(feeds());
+            netblock
+        }
+        ScanKind::Asn => vec![rdap::SOURCE, ripestat::SOURCE],
+        ScanKind::Email => {
+            let mut email = vec![gravatar::SRC, duolingo::SRC, openpgp_keys::SRC];
+            email.extend(indicators(IndicatorKind::Email));
+            email.push(seeknow_collector::COLLECTOR_ID);
+            email.extend(BREACH);
+            email
+        }
+        ScanKind::Username => vec![
+            github_user::SRC,
+            bluesky_user::SRC,
+            seeknow_collector::COLLECTOR_ID,
+            exposure_cli::STOLEN_TAX_SOURCE,
+            oathnet::SOURCE,
+        ],
+        ScanKind::Phone => {
+            let mut phone = vec![numverify::SOURCE];
+            phone.extend(indicators(IndicatorKind::Phone));
+            phone
+        }
+        ScanKind::People => vec![
+            "asic_persons",
+            "asic_director",
+            seeknow_collector::COLLECTOR_ID,
+        ],
+        ScanKind::Network => vec![wigle::SOURCE],
+        ScanKind::Exposure => BREACH.to_vec(),
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    modules.retain(|module| seen.insert(*module));
+    modules
+}
+
+/// Whether `kind`'s lookup asks any module `selection` runs. **Pure.**
+#[must_use]
+pub fn asks_any(kind: ScanKind, selection: &Selection) -> bool {
+    modules(kind).iter().any(|module| selection.runs(module))
+}
+
+/// The lookup kinds that ask `module`, by their commands (`ip`, `domain`), in [`ScanKind`]'s
+/// order: what a New Scan page shows each module looks up. **Pure.**
+#[must_use]
+pub fn lookups_asking(module: &str) -> Vec<&'static str> {
+    KINDS
+        .iter()
+        .filter(|kind| modules(**kind).contains(&module))
+        .map(|kind| kind.command())
+        .collect()
+}
+
+/// Every lookup kind, in the order [`ScanKind`] lists them.
+pub const KINDS: [ScanKind; 10] = [
+    ScanKind::People,
+    ScanKind::Email,
+    ScanKind::Exposure,
+    ScanKind::Username,
+    ScanKind::Phone,
+    ScanKind::Domain,
+    ScanKind::Ip,
+    ScanKind::Netblock,
+    ScanKind::Asn,
+    ScanKind::Network,
+];
+
+fn zones(asked: impl Fn(Takes) -> bool) -> impl Iterator<Item = &'static str> {
+    dnsbl::ZONES
+        .iter()
+        .filter(move |zone| asked(zone.takes))
+        .map(|zone| zone.source)
+}
+
+fn indicators(kind: IndicatorKind) -> impl Iterator<Item = &'static str> {
+    indicator_legs::SOURCES
+        .iter()
+        .filter(move |source| source.kinds.contains(&kind))
+        .map(|source| source.api.source)
+}
+
+fn feeds() -> impl Iterator<Item = &'static str> {
+    threat_feeds::FEEDS.iter().map(|feed| feed.source)
+}
+
+#[cfg(test)]
+mod tests;

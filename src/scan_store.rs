@@ -18,11 +18,15 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::correlator::{Correlation, Severity};
+use crate::correlator::{Correlation, rule_catalog};
 use crate::entity::Entity;
+use crate::recursion::PivotEdge;
+use crate::sf_correlate::Finding;
+pub use crate::sf_correlate::Risk;
 use crate::sf_elements::DataElement;
 use crate::sha256::{hex32, sha256};
 use crate::source_outcome::SourceExecutionOutcome;
+use crate::termination::TerminationReason;
 
 /// The only format this build reads and writes.
 pub const FORMAT_VERSION: u32 = 1;
@@ -115,6 +119,11 @@ pub struct ScanOptions {
     /// Data types asked for; empty means every type.
     #[serde(default)]
     pub types: Vec<String>,
+    /// How many hops past the target the scan follows what it finds, as Spiderfoot hands every
+    /// event to the modules that take it: each email, username, domain, phone, IP address and
+    /// BSSID a lookup finds is looked up in turn. 0 runs the target's own lookup only.
+    #[serde(default)]
+    pub depth: u32,
 }
 
 /// Correlation results per Spiderfoot risk level.
@@ -124,28 +133,6 @@ pub struct RiskCounts {
     pub medium: usize,
     pub low: usize,
     pub info: usize,
-}
-
-/// Spiderfoot's correlation risk levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Risk {
-    High,
-    Medium,
-    Low,
-    Info,
-}
-
-impl Risk {
-    /// The risk a Huntsman rule's severity reads as: Spiderfoot has no level above HIGH.
-    #[must_use]
-    pub const fn of(severity: Severity) -> Self {
-        match severity {
-            Severity::Critical | Severity::High => Self::High,
-            Severity::Medium => Self::Medium,
-            Severity::Low => Self::Low,
-        }
-    }
 }
 
 /// One scan's row: Spiderfoot's `tbl_scan_instance` plus the counts its scan list shows.
@@ -185,19 +172,31 @@ pub struct ScanRecord {
     pub owner: Option<u32>,
 }
 
-/// One correlation on a saved scan, with the elements it is about.
+/// One correlation on a saved scan, with the elements it is about: a row of Spiderfoot's
+/// `tbl_scan_correlation_results`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScanCorrelation {
     pub id: String,
     pub rule: String,
+    /// The rule's name.
+    #[serde(default)]
+    pub name: String,
+    /// The headline naming what this result found.
     pub title: String,
     pub risk: Risk,
+    /// What the rule looks for.
     pub description: String,
+    /// `huntsman` for Huntsman's own rules, `spiderfoot` for Spiderfoot's, else the rule's file.
+    #[serde(default)]
+    pub origin: String,
+    /// The rule as written (Spiderfoot's `rule_logic`); empty for a built-in Huntsman rule.
+    #[serde(default)]
+    pub logic: String,
     pub elements: Vec<String>,
 }
 
 impl ScanCorrelation {
-    /// A correlator result as a scan correlation, naming the elements of its entities.
+    /// A Huntsman correlator result as a scan correlation, naming the elements of its entities.
     #[must_use]
     pub fn from_rule(correlation: &Correlation, elements: &[DataElement]) -> Self {
         let ids: Vec<String> = correlation
@@ -215,13 +214,40 @@ impl ScanCorrelation {
             key.push(0);
             key.extend_from_slice(uid.as_bytes());
         }
+        let name = correlation.rule_name.replace('_', " ");
+        let description = rule_catalog()
+            .into_iter()
+            .find(|rule| rule.id == correlation.rule_id)
+            .map_or_else(
+                || correlation.description.clone(),
+                |rule| rule.description.to_owned(),
+            );
         Self {
             id: hex32(&sha256(&key))[..ID_LEN].to_owned(),
             rule: correlation.rule_id.clone(),
-            title: correlation.rule_name.replace('_', " "),
+            title: format!("{name}: {}", correlation.description),
+            name,
             risk: Risk::of(correlation.severity),
-            description: correlation.description.clone(),
+            description,
+            origin: "huntsman".to_owned(),
+            logic: String::new(),
             elements: ids,
+        }
+    }
+
+    /// A Spiderfoot-rule result as a scan correlation.
+    #[must_use]
+    pub fn from_finding(finding: Finding) -> Self {
+        Self {
+            id: finding.id,
+            rule: finding.rule,
+            name: finding.name,
+            title: finding.title,
+            risk: finding.risk,
+            description: finding.description,
+            origin: finding.origin,
+            logic: finding.logic,
+            elements: finding.elements,
         }
     }
 }
@@ -238,6 +264,12 @@ pub struct ScanResults {
     pub outcomes: Vec<SourceExecutionOutcome>,
     pub elements: Vec<DataElement>,
     pub correlations: Vec<ScanCorrelation>,
+    /// Which lookup found which entity, generation by generation: the scan's discovery tree.
+    #[serde(default)]
+    pub lineage: Vec<PivotEdge>,
+    /// Why the scan stopped following what it found.
+    #[serde(default)]
+    pub termination: Option<TerminationReason>,
 }
 
 /// A log entry's level.
@@ -247,6 +279,18 @@ pub enum LogLevel {
     Info,
     Warning,
     Error,
+}
+
+impl LogLevel {
+    /// Its name as the log shows it: `INFO`, `WARNING` or `ERROR`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "INFO",
+            Self::Warning => "WARNING",
+            Self::Error => "ERROR",
+        }
+    }
 }
 
 /// One line of a scan's log: Spiderfoot's Time, Component, Type and Event columns.
@@ -703,6 +747,8 @@ mod tests {
             outcomes: Vec::new(),
             elements: Vec::new(),
             correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
         };
         store.save_results(&results).unwrap();
         assert_eq!(store.results(&row.id).unwrap(), Some(results));
