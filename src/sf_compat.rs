@@ -10,13 +10,14 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::email_cli::{self, EmailRun};
-use crate::entity::{Entity, EntityKind};
 use crate::error::Error;
 use crate::http::Transport;
 use crate::keys::Keys;
 use crate::module::reachable_modules;
 use crate::people_cli::{self, PeopleRun};
 use crate::phone_cli::{self, PhoneRun};
+use crate::sf_elements::{self, DataElement, Target};
+use crate::sf_types;
 use crate::textnorm::{escape_controls, is_escaped};
 use crate::username_cli::{self, UsernameRun};
 
@@ -128,7 +129,7 @@ impl SfArgs {
             )));
         }
         for kind in &parsed.types {
-            if !known_type(kind) {
+            if sf_types::find(kind).is_none() {
                 return Err(Error::Invalid(format!("unknown sf event type {kind}")));
             }
         }
@@ -243,9 +244,16 @@ pub fn type_listing(quiet: bool) -> String {
     if !quiet {
         out.push_str("[INFO] Types available:\n");
     }
-    for (code, description, kinds) in type_table() {
-        writeln!(&mut out, "{code:45} {description} (hse: {kinds})")
-            .expect("writing to String cannot fail");
+    for kind in sf_types::all() {
+        match sf_types::base_kind(kind.code) {
+            Some(entity) => writeln!(
+                &mut out,
+                "{:45} {} (hse: {entity})",
+                kind.code, kind.description
+            ),
+            None => writeln!(&mut out, "{:45} {}", kind.code, kind.description),
+        }
+        .expect("writing to String cannot fail");
     }
     out
 }
@@ -296,41 +304,49 @@ pub fn run_scan<T: Transport + ?Sized>(
         }
     };
 
-    let mut rows: Vec<Row> = entities.iter().map(Row::from_entity).collect();
+    let target = Target {
+        value: &scan.target,
+        kind: scan.target_type,
+    };
+    let elements = sf_elements::elements(target, &entities, now_unix);
+    let mut rows: Vec<Row> = elements
+        .iter()
+        .filter(|element| element.kind != "ROOT")
+        .map(|element| Row::from_element(element, &elements))
+        .collect();
     if !scan.types.is_empty() {
         rows.retain(|row| {
             scan.types
                 .iter()
-                .any(|wanted| wanted.eq_ignore_ascii_case(row.event_type))
+                .any(|wanted| wanted.eq_ignore_ascii_case(&row.event_type))
         });
     }
     render_rows(&rows, &scan.format, scan.include_source)
 }
 
+/// One printed row: the saved scan's data element, in Spiderfoot's CLI columns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct Row {
     source: String,
-    event_type: &'static str,
-    type_description: &'static str,
+    event_type: String,
+    type_description: String,
     source_data: String,
     data: String,
 }
 
 impl Row {
-    fn from_entity(entity: &Entity) -> Self {
-        let (event_type, type_description) = sf_type(&entity.kind);
-        let evidence = entity.evidence.first();
+    fn from_element(element: &DataElement, elements: &[DataElement]) -> Self {
         Self {
-            source: evidence
-                .map(|item| item.provenance.source.clone())
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "huntsman".into()),
-            event_type,
-            type_description,
-            source_data: evidence
-                .map(|item| item.summary.clone())
+            source: element.module.clone(),
+            event_type: element.kind.clone(),
+            type_description: sf_types::describe(&element.kind).to_owned(),
+            source_data: element
+                .source
+                .as_deref()
+                .and_then(|source| elements.iter().find(|item| item.id == source))
+                .map(|source| source.data.clone())
                 .unwrap_or_default(),
-            data: entity.raw_value.clone(),
+            data: element.data.clone(),
         }
     }
 }
@@ -376,7 +392,7 @@ fn render_tab(rows: &[Row], include_source: bool) -> String {
                 &mut out,
                 "{}\t{}\t{}\t{}",
                 one_line(&row.source),
-                one_line(row.type_description),
+                one_line(&row.type_description),
                 one_line(&row.source_data),
                 one_line(&row.data)
             )
@@ -386,7 +402,7 @@ fn render_tab(rows: &[Row], include_source: bool) -> String {
                 &mut out,
                 "{}\t{}\t{}",
                 one_line(&row.source),
-                one_line(row.type_description),
+                one_line(&row.type_description),
                 one_line(&row.data)
             )
             .expect("writing to String cannot fail");
@@ -406,14 +422,14 @@ fn render_csv(rows: &[Row], include_source: bool) -> String {
         let fields: Vec<String> = if include_source {
             vec![
                 csv_cell(&row.source),
-                csv_cell(row.type_description),
+                csv_cell(&row.type_description),
                 csv_cell(&row.source_data),
                 csv_cell(&row.data),
             ]
         } else {
             vec![
                 csv_cell(&row.source),
-                csv_cell(row.type_description),
+                csv_cell(&row.type_description),
                 csv_cell(&row.data),
             ]
         };
@@ -530,82 +546,6 @@ fn is_internet_name(value: &str) -> bool {
         })
 }
 
-#[must_use]
-pub fn type_table() -> &'static [(&'static str, &'static str, &'static str)] {
-    &[
-        ("BGP_AS_OWNER", "BGP AS Ownership", "asn"),
-        ("COMPANY_NAME", "Company Name", "organisation"),
-        ("DOMAIN_NAME", "Domain Name", "domain"),
-        ("EMAILADDR", "Email Address", "email"),
-        ("HUMAN_NAME", "Human Name", "person"),
-        ("INTERNET_NAME", "Internet Name", "domain"),
-        ("IPV6_ADDRESS", "IPv6 Address", "ip_address"),
-        ("IP_ADDRESS", "IP Address", "ip_address"),
-        ("LINKED_URL_EXTERNAL", "Linked URL - External", "url"),
-        ("NETBLOCK_OWNER", "Netblock Ownership", "cidr"),
-        ("NETBLOCKV6_OWNER", "IPv6 Netblock Ownership", "cidr"),
-        ("PHONE_NUMBER", "Phone Number", "phone"),
-        ("PHYSICAL_ADDRESS", "Physical Address", "address"),
-        (
-            "PHYSICAL_COORDINATES",
-            "Physical Coordinates",
-            "coordinates",
-        ),
-        ("USERNAME", "Username", "username"),
-        ("WEB_ANALYTICS_ID", "Web Analytics", "tracking_id"),
-        (
-            "HSE_COMPANY_REGISTRATION",
-            "Company Registration Number (HSE)",
-            "abn_acn",
-        ),
-        (
-            "HSE_CRYPTO_ADDRESS",
-            "Crypto Address (HSE)",
-            "crypto_address",
-        ),
-        ("HSE_DOCUMENT", "Document (HSE)", "document"),
-        ("HSE_DEVICE_ID", "Device Identifier (HSE)", "device_id"),
-        ("HSE_MAC_ADDRESS", "MAC Address (HSE)", "mac_address"),
-        ("HSE_OTHER", "Other (HSE)", "other"),
-        ("HSE_WIFI_SSID", "Wi-Fi Network Name (HSE)", "ssid"),
-    ]
-}
-
-fn known_type(value: &str) -> bool {
-    type_table()
-        .iter()
-        .any(|(code, _, _)| code.eq_ignore_ascii_case(value))
-}
-
-fn sf_type(kind: &EntityKind) -> (&'static str, &'static str) {
-    match kind {
-        EntityKind::Person => ("HUMAN_NAME", "Human Name"),
-        EntityKind::Organisation => ("COMPANY_NAME", "Company Name"),
-        EntityKind::Email => ("EMAILADDR", "Email Address"),
-        EntityKind::Phone => ("PHONE_NUMBER", "Phone Number"),
-        EntityKind::Username => ("USERNAME", "Username"),
-        EntityKind::Domain => ("DOMAIN_NAME", "Domain Name"),
-        EntityKind::Url => ("LINKED_URL_EXTERNAL", "Linked URL - External"),
-        EntityKind::IpAddress => ("IP_ADDRESS", "IP Address"),
-        EntityKind::Coordinates => ("PHYSICAL_COORDINATES", "Physical Coordinates"),
-        EntityKind::Address => ("PHYSICAL_ADDRESS", "Physical Address"),
-        EntityKind::Credential | EntityKind::ApiKey | EntityKind::Other => {
-            ("HSE_OTHER", "Other (HSE)")
-        }
-        EntityKind::Document => ("HSE_DOCUMENT", "Document (HSE)"),
-        EntityKind::CryptoAddress => ("HSE_CRYPTO_ADDRESS", "Crypto Address (HSE)"),
-        EntityKind::DeviceId => ("HSE_DEVICE_ID", "Device Identifier (HSE)"),
-        EntityKind::Ssid => ("HSE_WIFI_SSID", "Wi-Fi Network Name (HSE)"),
-        EntityKind::TrackingId => ("WEB_ANALYTICS_ID", "Web Analytics"),
-        EntityKind::AbnAcn => (
-            "HSE_COMPANY_REGISTRATION",
-            "Company Registration Number (HSE)",
-        ),
-        EntityKind::MacAddress => ("HSE_MAC_ADDRESS", "MAC Address (HSE)"),
-        EntityKind::Asn => ("BGP_AS_OWNER", "BGP AS Ownership"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,6 +634,8 @@ mod tests {
         let types = type_listing(true);
         assert!(types.contains("EMAILADDR"));
         assert!(types.contains("HUMAN_NAME"));
+        assert!(types.contains("TCP_PORT_OPEN"));
+        assert_eq!(types.lines().count(), sf_types::all().count());
     }
 
     #[test]
@@ -709,9 +651,16 @@ mod tests {
         };
         let rendered = run_scan(&fake, &Keys::default(), &scan, 1).unwrap();
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(value.as_array().map(Vec::len), Some(1));
         assert_eq!(value[0]["event_type"], "PHONE_NUMBER");
         assert_eq!(value[0]["data"], "+61412345678");
+        assert_eq!(value[0]["source_data"], "+61412345678");
+        assert!(
+            value
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["event_type"] != "ROOT")
+        );
     }
 
     #[test]
@@ -733,8 +682,8 @@ mod tests {
     fn csv_rows_quote_and_guard_special_cells() {
         let rows = [Row {
             source: "=source".into(),
-            event_type: "EMAILADDR",
-            type_description: "Email Address",
+            event_type: "EMAILADDR".into(),
+            type_description: "Email Address".into(),
             source_data: "a,b".into(),
             data: "jane@example.org".into(),
         }];
@@ -749,8 +698,8 @@ mod tests {
         let hostile = "Jane\u{1b}]0;x\u{7}\u{9b}2J\u{7f}\nforged\tcolumn\u{2028}";
         let rows = [Row {
             source: hostile.into(),
-            event_type: "HUMAN_NAME",
-            type_description: "Human Name",
+            event_type: "HUMAN_NAME".into(),
+            type_description: "Human Name".into(),
             source_data: hostile.into(),
             data: hostile.into(),
         }];
