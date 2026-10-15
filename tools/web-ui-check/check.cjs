@@ -5,10 +5,10 @@
 // violation, fits the screen with 44 px targets, passes axe-core's WCAG 2.2 AA rules in every
 // view of both themes, runs a scan one hop deep from New Scan to FINISHED and shows exactly what
 // the scan API holds in its Summary, Browse, Correlations, Graph, Scan Settings and Log sections,
-// marks a false positive, searches, exports, clones, re-runs and deletes a scan, starts a scan of
-// a value it found, keeps its place across a reload, asks only for health when a tab with nothing
-// running comes back, says what to do when the server stops, notices when it is back, and finds
-// the saved scans still there after the restart.
+// marks a false positive, searches, exports, clones, re-runs, compares and deletes a scan, starts
+// a scan of a value it found, keeps its place across a reload, asks only for health when a tab
+// with nothing running comes back, says what to do when the server stops, notices when it is
+// back, and finds the saved scans still there after the restart.
 //
 // It never spends a key: the server runs with a scratch HOME and none of the caller's
 // HUNTSMAN_*, HSE_* or *_KEY variables, and its scans target a phone number, which is offline.
@@ -34,7 +34,7 @@ const AXE = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
 const bin = process.argv[2];
 if (!bin || !fs.existsSync(bin)) { process.stderr.write('usage: node check.cjs path/to/huntsman-recon\n'); process.exit(64); }
 const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true };
-const PAGE_BUDGET = 96 * 1024;
+const PAGE_BUDGET = 112 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -365,6 +365,28 @@ const LH = { 'X-Huntsman-Lookup': '1' };
         await page.waitForFunction(() => ['FINISHED', 'ABORTED', 'ERROR-FAILED'].includes(document.getElementById('scstatus').textContent), null, { timeout: 90000 }).catch(() => {});
         const rerun = await api(page, '/api/scans/' + encodeURIComponent(again));
         check('Re-run makes a new scan of the same target', again !== id && rerun.target === TARGET && rerun.status === 'FINISHED' && rerun.options.depth === 1, rerun);
+        // Compare, which Spiderfoot lacks: from the re-run, the scan of the same target before it.
+        await page.click('#sccompare');
+        await page.waitForFunction(() => !document.getElementById('view-compare').hidden && !/^Comparing/.test(document.getElementById('cmpmeta').textContent), null, { timeout: 10000 }).catch(() => {});
+        const pair = encodeURIComponent(id) + '/' + encodeURIComponent(again);
+        const compared = await api(page, '/api/scans/compare?ids=' + encodeURIComponent(id + ',' + again));
+        const shownCompare = await page.evaluate(() => ({ hash: location.hash, meta: document.getElementById('cmpmeta').textContent, types: document.querySelectorAll('#cmptypes tr').length, added: document.getElementById('cmpadd-n').textContent, removed: document.getElementById('cmprem-n').textContent }));
+        check('Compare opens on the earlier scan of the same target', shownCompare.hash === '#/compare/' + pair, shownCompare.hash);
+        check('Compare shows what the API compares', shownCompare.types === Math.max(1, compared.types.length) && shownCompare.added === String(compared.added.length) && shownCompare.removed === String(compared.removed.length) && shownCompare.meta.includes('No change') === compared.unchanged, { shownCompare, types: compared.types.length, added: compared.added.length, removed: compared.removed.length, unchanged: compared.unchanged });
+        await audit(page, 'dark compare');
+        await page.click('#cmpexport summary');
+        const [xdownload] = await Promise.all([page.waitForEvent('download', { timeout: 10000 }), page.click('#cmpexport button[data-xformat=csv]')]);
+        check('a comparison exports as CSV', xdownload.suggestedFilename().endsWith('.csv') && fs.readFileSync(await xdownload.path(), 'utf8').startsWith('Change,Scan Name,Updated,Type'), xdownload.suggestedFilename());
+        // From Scans: two selected scans compare, the earlier first whatever the order picked.
+        await page.goto(base + '/#/scans', { waitUntil: 'networkidle' });
+        await page.waitForSelector('#scans tr');
+        for (const pick of [again, id]) await page.locator('#scans span.pick', { has: page.locator(`a[href="#/scan/${encodeURIComponent(pick)}"]`) }).locator('input').check();
+        check('Compare needs exactly two scans selected', await page.isEnabled('#scompare'), 'disabled with two selected');
+        await page.click('#scompare');
+        await page.waitForFunction(() => location.hash.startsWith('#/compare/'), null, { timeout: 5000 }).catch(() => {});
+        check('Scans compares the two selected, the earlier first', (await page.evaluate(() => location.hash)) === '#/compare/' + pair, await page.evaluate(() => location.hash));
+        await page.goto(base + '/#/scan/' + encodeURIComponent(again) + '/summary', { waitUntil: 'networkidle' });
+        await page.waitForFunction(() => document.getElementById('scstatus').textContent === 'FINISHED', null, { timeout: 5000 }).catch(() => {});
         await page.click('#scdelete');
         await page.waitForFunction(() => location.hash === '#/scans', null, { timeout: 10000 }).catch(() => {});
         const left = await api(page, '/api/scans');

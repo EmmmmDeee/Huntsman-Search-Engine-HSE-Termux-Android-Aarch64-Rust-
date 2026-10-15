@@ -21,6 +21,7 @@
 //! | `scanviz` | `GET /api/scans/ID/graph` |
 //! | `scaneventresultexport`, `scanviz?gexf=1` | `GET /api/scans/ID/export?format=csv|tsv|xlsx|json|gexf[&type=T]` |
 //! | `scaneventresultexportmulti`, `scanexportjsonmulti` | `GET /api/scans/export?ids=A,B[&format=json|csv|tsv|xlsx][&type=T]` |
+//! | (none: Spiderfoot cannot compare scans) | `GET /api/scans/compare?ids=EARLIER,LATER[&format=json|csv|tsv|xlsx]` |
 //! | `stopscan`, `scandelete`, `rerunscan` | `POST /api/scans/ID/stop|delete|rerun` |
 //! | `resultsetfp` | `POST /api/scans/ID/fp?ids=A,B&fp=1|0` |
 //! | `eventtypes` | `GET /api/eventtypes` |
@@ -35,6 +36,7 @@ use serde_json::{Value, json};
 use crate::api_leg::Api;
 use crate::correlator::rule_catalog;
 use crate::module::reachable_modules;
+use crate::scan_compare;
 use crate::scan_export;
 use crate::scan_service::{MAX_RUNNING, ScanRequest, ScanService, ServiceError};
 use crate::scan_store::{LogLevel, Risk, ScanOptions, ScanRecord, ScanResults, ScanStatus};
@@ -224,6 +226,7 @@ impl ScanApi {
             (["scans"], false) => self.list(),
             (["scans"], true) => self.start(&param),
             (["scans", "export"], false) => self.export_many(&param),
+            (["scans", "compare"], false) => self.compare(&param),
             (["scans", id], false) => self.status(id),
             (["scans", id, "summary"], false) => self.summary(id),
             (["scans", id, "elements"], false) => self.elements(id, &param),
@@ -473,21 +476,68 @@ impl ScanApi {
             let mut seen = BTreeSet::new();
             chosen.retain(|element| seen.insert((element.kind.as_str(), element.data.as_str())));
         }
-        let rows: Vec<Value> = chosen
-            .into_iter()
-            .map(|element| {
-                let source_data = element
-                    .source
-                    .as_deref()
-                    .and_then(|source| results.elements.iter().find(|item| item.id == source))
-                    .map_or("", |source| source.data.as_str());
-                let mut row = json!(element);
-                row["description"] = Value::String(sf_types::describe(&element.kind).to_owned());
-                row["source_data"] = Value::String(source_data.to_owned());
-                row
-            })
+        ok(200, &Value::Array(element_rows(&results, chosen)))
+    }
+
+    /// `GET /api/scans/compare?ids=EARLIER,LATER`: what the later scan found that the earlier did
+    /// not, what it no longer finds, the change in each data type and the correlations each has
+    /// that the other lacks ([`scan_compare`]). JSON by default; `csv`, `tsv` and `xlsx` are the
+    /// added and removed elements as a file. A scan with no results yet compares as empty.
+    fn compare(&self, param: &Params) -> ApiResponse {
+        let ids: Vec<&str> = param
+            .get("ids")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
             .collect();
-        ok(200, &Value::Array(rows))
+        let &[earlier, later] = ids.as_slice() else {
+            return error(400, "compare takes two scan ids: ids=EARLIER,LATER");
+        };
+        let mut scans = Vec::with_capacity(2);
+        for id in [earlier, later] {
+            match self.results(id) {
+                Ok((record, results)) => {
+                    let results = results.unwrap_or_else(|| empty_results(&record));
+                    scans.push((record, results));
+                }
+                Err(response) => return response,
+            }
+        }
+        let [(base, base_results), (other, other_results)] = [&scans[0], &scans[1]];
+        let comparison = scan_compare::compare(base_results, other_results);
+        let format = param.get("format").filter(|format| !format.is_empty());
+        if let Some(format) = format.filter(|format| !format.eq_ignore_ascii_case("json")) {
+            return match scan_compare::render(
+                [(base, base_results), (other, other_results)],
+                &comparison,
+                format,
+            ) {
+                Ok(export) => ApiResponse::export(export),
+                Err(message) => error(400, &message),
+            };
+        }
+        let value = json!({
+            "base": base,
+            "other": other,
+            "unchanged": comparison.unchanged(),
+            "types": comparison.types,
+            "added": element_rows(other_results, comparison.added.iter().copied()),
+            "removed": element_rows(base_results, comparison.removed.iter().copied()),
+            "correlations": {
+                "added": comparison.correlations_added,
+                "removed": comparison.correlations_removed,
+            },
+        });
+        if format.is_none() {
+            return ok(200, &value);
+        }
+        // Asked for as a file: the same answer, under the comparison's file name.
+        ApiResponse::export(scan_export::Export {
+            body: value.to_string().into_bytes(),
+            content_type: "application/json; charset=utf-8",
+            filename: format!("{}-vs-{}-Huntsman.json", base.id, other.id),
+        })
     }
 
     fn correlations(&self, id: &str, format: Option<&str>) -> ApiResponse {
@@ -728,6 +778,29 @@ fn event_types() -> ApiResponse {
     ok(200, &Value::Array(types))
 }
 
+/// Elements as `/elements` answers them: each as saved, with its type's description and the data
+/// of the element it was found from in `results`.
+fn element_rows<'a>(
+    results: &ScanResults,
+    chosen: impl IntoIterator<Item = &'a DataElement>,
+) -> Vec<Value> {
+    let sources = scan_compare::source_data(results);
+    chosen
+        .into_iter()
+        .map(|element| {
+            let source_data = element
+                .source
+                .as_deref()
+                .and_then(|source| sources.get(source).copied())
+                .unwrap_or("");
+            let mut row = json!(element);
+            row["description"] = Value::String(sf_types::describe(&element.kind).to_owned());
+            row["source_data"] = Value::String(source_data.to_owned());
+            row
+        })
+        .collect()
+}
+
 fn empty_results(record: &ScanRecord) -> ScanResults {
     ScanResults {
         format_version: crate::scan_store::FORMAT_VERSION,
@@ -791,6 +864,126 @@ mod tests {
             })
             .unwrap()
             .id
+    }
+
+    #[test]
+    fn two_scans_compare_by_value_and_export_their_changes() {
+        let (api, dir) = api("compare");
+        let earlier = finished(&api);
+        let later = api
+            .service()
+            .run(&ScanRequest {
+                target: "8.8.8.8".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap()
+            .id;
+        let answer = api.handle(
+            "GET",
+            "/api/scans/compare",
+            &format!("ids={earlier},{later}"),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.text());
+        let compared = body(&answer);
+        assert_eq!(compared["base"]["id"], earlier.as_str());
+        assert_eq!(compared["other"]["id"], later.as_str());
+        assert_eq!(compared["unchanged"], false);
+        let data = |list: &Value| -> Vec<String> {
+            list.as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["data"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        // Each address is its own scan's; the vulnerabilities both found are kept, not listed.
+        assert!(data(&compared["added"]).contains(&"8.8.8.8".to_owned()));
+        assert!(data(&compared["removed"]).contains(&"1.1.1.1".to_owned()));
+        assert!(
+            !data(&compared["added"])
+                .iter()
+                .any(|value| value.starts_with("CVE-"))
+        );
+        let types = compared["types"].as_array().unwrap();
+        let ip = types
+            .iter()
+            .find(|row| row["type"] == "IP_ADDRESS")
+            .unwrap();
+        assert_eq!(
+            (
+                ip["added"].as_u64(),
+                ip["removed"].as_u64(),
+                ip["kept"].as_u64()
+            ),
+            (Some(1), Some(1), Some(0))
+        );
+        assert!(
+            types.iter().any(|row| row["kept"].as_u64() > Some(0)),
+            "{types:?}"
+        );
+        // Rows carry what /elements carries, so the page shows them alike.
+        let row = &compared["added"][0];
+        assert!(
+            row["description"].is_string()
+                && row["source_data"].is_string()
+                && row.get("raw").is_some(),
+            "{row}"
+        );
+        assert!(compared["correlations"]["added"].is_array());
+        let csv = api.handle(
+            "GET",
+            "/api/scans/compare",
+            &format!("ids={earlier},{later}&format=csv"),
+        );
+        assert_eq!(csv.status, 200, "{}", csv.text());
+        assert!(
+            csv.text()
+                .starts_with("Change,Scan Name,Updated,Type,Module,Source,F/P,Data\r\n")
+        );
+        assert_eq!(
+            csv.filename.as_deref(),
+            Some(format!("{earlier}-vs-{later}-Huntsman.csv").as_str())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_comparison_takes_two_saved_scans_and_a_table_format() {
+        let (api, dir) = api("compare-refused");
+        let earlier = finished(&api);
+        let later = finished(&api);
+        assert_eq!(
+            api.handle("GET", "/api/scans/compare", &format!("ids={earlier}"))
+                .status,
+            400
+        );
+        assert_eq!(
+            api.handle(
+                "GET",
+                "/api/scans/compare",
+                &format!("ids={earlier},{later}&format=gexf")
+            )
+            .status,
+            400
+        );
+        assert_eq!(
+            api.handle(
+                "GET",
+                "/api/scans/compare",
+                &format!("ids={earlier},0000000000000000")
+            )
+            .status,
+            404
+        );
+        assert_eq!(
+            api.handle(
+                "POST",
+                "/api/scans/compare",
+                &format!("ids={earlier},{later}")
+            )
+            .status,
+            405
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
