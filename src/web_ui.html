@@ -144,6 +144,7 @@ details[open] summary{border-bottom:1px solid var(--line)}
 .corr summary{font-weight:600}
 .filter{padding:8px 14px;border-bottom:1px solid var(--line)}
 .ent-b{padding:4px 0 8px 15px;font-size:12.5px}
+.ent-b .pivot{margin-top:8px}
 .ent-m{margin:0 0 6px;color:var(--muted)}
 dl{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:2px 10px;margin:4px 0 0;font-size:12px}
 dt{color:var(--dim);overflow-wrap:break-word}
@@ -732,6 +733,7 @@ function rawView(x){
   if(x.confidence!=null)meta.push('confidence '+x.confidence);
   if(x.entity)meta.push('entity '+show(x.entity));
   b.append(el('p','ent-m',meta.join(' · ')),value(x.raw));
+  if(PIVOT.has(x.type))b.append(button('New Scan of this',()=>pivot(x),'pivot'));
   return b;
 }
 function elemRow(x,withType,select){
@@ -981,12 +983,12 @@ function stopped(s){
   const why=t==='max_depth'?(d?'depth '+d+' reached; a deeper scan would look up more of its findings':'depth 0 follows nothing it finds; a deeper scan would look up its findings in turn'):STOP[t];
   return why?t+': '+why:t;
 }
-// Spiderfoot's Clone: New Scan filled in from this scan, to change before it runs.
-async function clone(s){
-  if(!s)return;
-  const o=s.options||{},types=o.types||[];
-  $('sname').value=s.name||s.target;$('starget').value=s.target;$('skind').value=s.kind||'auto';if(!$('skind').value)$('skind').value='auto';$('sdepth').value=String(o.depth||0);
-  const uc=document.querySelector('input[name=usecase][value="'+CSS.escape(o.usecase||'all')+'"]');if(uc)uc.checked=true;
+// New Scan filled in, to change before it runs: Spiderfoot's Clone of a scan, or a scan of a value
+// a scan found.
+async function prefill(f){
+  const types=f.types||[];
+  $('sname').value=f.name;$('starget').value=f.target;$('skind').value=f.kind||'auto';if(!$('skind').value)$('skind').value='auto';$('sdepth').value=String(f.depth||0);
+  const uc=document.querySelector('input[name=usecase][value="'+CSS.escape(f.usecase||'all')+'"]');if(uc)uc.checked=true;
   ntab='usecase';
   if(types.length){
     if(!loaded.types)await loadTypes();
@@ -995,6 +997,12 @@ async function clone(s){
   }
   $('nerror').hidden=true;location.hash='#/newscan';
 }
+const clone=s=>s&&prefill({...s.options,name:s.name||s.target,target:s.target,kind:s.kind});
+// Spiderfoot types whose value is itself a scan target. An element of one starts New Scan on that
+// value, with the use case and depth of the scan that found it, as Spiderfoot hands each event to
+// the modules that take it.
+const PIVOT=new Set(['INTERNET_NAME','DOMAIN_NAME','DOMAIN_NAME_PARENT','AFFILIATE_INTERNET_NAME','AFFILIATE_DOMAIN_NAME','CO_HOSTED_SITE','CO_HOSTED_SITE_DOMAIN','SIMILARDOMAIN','IP_ADDRESS','IPV6_ADDRESS','AFFILIATE_IPADDR','AFFILIATE_IPV6_ADDRESS','EMAILADDR','EMAILADDR_GENERIC','AFFILIATE_EMAILADDR','PHONE_NUMBER','USERNAME','HUMAN_NAME','HSE_MAC_ADDRESS']);
+const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:'auto',usecase:o.usecase,depth:o.depth})};
 function scanSettings(){
   const s=scan,o=s.options||{},list=v=>Array.isArray(v)?v.join(', '):v;
   kv('meta',[['Name',s.name],['Internal ID',s.id],['Target',s.target],['Target type',s.target_type],['Lookup',s.kind],['Created',when(s.created)],['Started',when(s.started)],['Completed',when(s.ended)],['Status',s.status],['Data elements',s.elements]]);
