@@ -228,7 +228,7 @@ struct Verification {
 
 /// One public page Hunter found the address on.
 #[derive(Deserialize)]
-struct Page {
+struct SourcePage {
     #[serde(default)]
     uri: Option<String>,
     #[serde(default)]
@@ -241,7 +241,7 @@ struct Page {
     still_on_page: Option<bool>,
 }
 
-impl Page {
+impl SourcePage {
     /// `uri | first seen D | last seen D | still on the page`, a part the answer leaves out left
     /// out. **Pure.**
     fn row(&self) -> Option<String> {
@@ -324,10 +324,11 @@ pub fn decode_verification(body: &[u8], email: &str) -> Result<Finding, LegError
         finding = finding.opt_attr(check, value.map(|v| v.to_string()));
     }
     // A page is read on its own, so one Hunter writes in another shape costs only itself.
-    let pages = data
-        .sources
-        .iter()
-        .filter_map(|page| serde_json::from_value::<Page>(page.clone()).ok()?.row());
+    let pages = data.sources.iter().filter_map(|page| {
+        serde_json::from_value::<SourcePage>(page.clone())
+            .ok()?
+            .row()
+    });
     for page in pages {
         finding = finding.attr("source_pages", page);
     }
