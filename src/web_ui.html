@@ -2,14 +2,15 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0a0d11">
+<meta name="theme-color" content="#11151b" id="themecolor">
 <meta name="color-scheme" content="dark light">
 <meta name="referrer" content="no-referrer">
 <title>Huntsman Search Engine</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
-:root{--bg:#0a0d11;--el:#11151b;--el2:#171d25;--hover:#1e2530;--line:#232a35;--line2:#333d4d;--fg:#e4e8ef;--muted:#8b94a3;--dim:#5f6b7d;--acc:#1cb8f5;--acc2:#5ed0ff;--accd:rgba(28,184,245,.15);--acct:#04303f;--ok:#2bbf6a;--okd:rgba(43,191,106,.15);--warn:#d9a441;--warnd:rgba(217,164,65,.15);--bad:#e0554f;--badd:rgba(224,85,79,.15);--sh:0 1px 2px rgba(0,0,0,.5);--r:6px;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;color-scheme:dark}
-:root.light{--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#838da0;--acc:#0a86bf;--acc2:#066a99;--accd:rgba(10,134,191,.1);--acct:#fff;--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}
+:root{--bg:#0a0d11;--el:#11151b;--el2:#171d25;--hover:#1e2530;--line:#232a35;--line2:#333d4d;--fg:#e4e8ef;--muted:#8b94a3;--dim:#7a879a;--acc:#1cb8f5;--acc2:#5ed0ff;--accd:rgba(28,184,245,.15);--acct:#04303f;--ok:#2bbf6a;--okd:rgba(43,191,106,.15);--warn:#d9a441;--warnd:rgba(217,164,65,.15);--bad:#e6736e;--badd:rgba(230,115,110,.15);--sh:0 1px 2px rgba(0,0,0,.5);--r:6px;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;color-scheme:dark}
+:root.light{--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#626c80;--acc:#086996;--acc2:#05587f;--accd:rgba(8,105,150,.1);--acct:#fff;--ok:#186c3c;--okd:rgba(24,108,60,.12);--warn:#7a5818;--warnd:rgba(122,88,24,.12);--bad:#b1251f;--badd:rgba(177,37,31,.1);--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}
+@media (prefers-color-scheme:light){:root:not(.dark){--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#626c80;--acc:#086996;--acc2:#05587f;--accd:rgba(8,105,150,.1);--acct:#fff;--ok:#186c3c;--okd:rgba(24,108,60,.12);--warn:#7a5818;--warnd:rgba(122,88,24,.12);--bad:#b1251f;--badd:rgba(177,37,31,.1);--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}}
 *,*::before,*::after{box-sizing:border-box}
 [hidden]{display:none!important}
 html{-webkit-text-size-adjust:100%}
@@ -56,6 +57,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc);box
 .btn-primary{background:var(--acc);border-color:var(--acc);color:var(--acct);font-weight:600}
 .btn-primary:hover{background:var(--acc2);border-color:var(--acc2)}
 .btn-ghost{border-color:transparent;background:none;color:var(--acc);font-size:12.5px}
+#run{min-width:8.5em;font-variant-numeric:tabular-nums}
 .stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:0 0 14px}
 @media (min-width:768px){.stats{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .stat{min-width:0;padding:10px 14px;background:var(--el);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh)}
@@ -64,6 +66,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc);box
 .val.ok{color:var(--ok)}.val.bad{color:var(--bad)}.val.warn{color:var(--warn)}
 .alert{margin:0 0 14px;padding:10px 14px;border:1px solid var(--bad);border-radius:var(--r);background:var(--badd);color:var(--bad);font-size:13px;overflow-wrap:anywhere}
 .alert.warn{border-color:var(--warn);background:var(--warnd);color:var(--warn)}
+.when{margin:-4px 0 14px;color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}
 .table-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
 th{padding:8px 12px;text-align:left;background:var(--el2);color:var(--dim);border-bottom:1px solid var(--line);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
@@ -71,13 +74,31 @@ td{padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top;overf
 tbody tr:nth-child(even){background:var(--el2)}
 tbody tr:last-child td{border-bottom:0}
 td.none{color:var(--dim)}
-.label{display:inline-block;padding:2px 7px;border-radius:3px;background:var(--line2);color:var(--muted);font:600 10.5px/1.5 var(--mono)}
+.label{display:inline-block;padding:2px 7px;border-radius:3px;background:var(--hover);color:var(--muted);font:600 10.5px/1.5 var(--mono)}
 .label.ok{background:var(--okd);color:var(--ok)}.label.info{background:var(--accd);color:var(--acc)}.label.warn{background:var(--warnd);color:var(--warn)}.label.bad{background:var(--badd);color:var(--bad)}
 pre{margin:0;padding:12px 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 var(--mono);color:var(--fg)}
 .note{margin:0;padding:8px 14px;color:var(--muted);font-size:12px;border-top:1px solid var(--line)}
 .note:empty{display:none}
 details summary{cursor:pointer;min-height:44px;display:flex;align-items:center;padding:0 14px;font-size:12.5px;font-weight:600;background:var(--el2)}
 details[open] summary{border-bottom:1px solid var(--line)}
+.filter{padding:8px 14px;border-bottom:1px solid var(--line)}
+.ent{border-bottom:1px solid var(--line)}
+.ent:last-child{border-bottom:0}
+.ent summary{gap:8px;padding:6px 14px;background:none;font-weight:400;list-style:none}
+.ent[open] summary{border-bottom:0}
+.ent summary::-webkit-details-marker{display:none}
+.ent summary::before{content:"";flex:none;width:7px;height:7px;margin-right:2px;border:solid var(--dim);border-width:0 2px 2px 0;transform:rotate(-45deg)}
+.ent[open] summary::before{transform:rotate(45deg)}
+.ent-v{flex:1 1 auto;min-width:0;font:13px var(--mono);overflow-wrap:anywhere}
+.ent-c{flex:none;font:600 11px var(--mono);color:var(--muted)}
+.ent-b{padding:0 14px 12px 31px;font-size:12.5px}
+.ent-m{margin:0 0 6px;color:var(--muted)}
+.tags{display:flex;flex-wrap:wrap;gap:4px;margin:0 0 8px}
+.ev{margin:0 0 8px;overflow-wrap:anywhere}
+.ev-s{margin-right:6px;font:600 11px var(--mono);color:var(--acc)}
+dl{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:2px 10px;margin:4px 0 0;font-size:12px}
+dt{color:var(--dim);overflow-wrap:anywhere}
+dd{margin:0;font-family:var(--mono);overflow-wrap:anywhere}
 @media (max-width:420px){.brand-sub{display:none}}
 @media (max-width:767px){
 .table-wrap table,.table-wrap tbody,.table-wrap tr,.table-wrap td{display:block;width:auto}
@@ -121,7 +142,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <input id="q" required maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="name, email, @handle, phone, domain, IP or BSSID" aria-label="selector">
 <button class="btn btn-primary" id="run" type="submit">Look up</button>
 </form>
-<p class="help">Runs one lookup through the same front-ends as the CLI. It makes network requests; exposure and network spend operator keys, and phone, domain and ip use the free-tier keys you have set.</p>
+<p class="help">Runs one lookup through the same front-ends as the CLI. It makes network requests; exposure and network spend operator keys, and phone, domain and ip use the free-tier keys you have set. Press the button again while it runs to stop waiting.</p>
 </div></div>
 <p class="alert" id="lerror" role="alert" hidden></p>
 <div id="result" hidden>
@@ -131,9 +152,13 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="stat"><div class="lab">sources answered</div><div class="val" id="lsources"></div></div>
 <div class="stat"><div class="lab">time</div><div class="val" id="status"></div></div>
 </div>
-<div class="panel"><div class="panel-heading">Sources <span class="badge" id="outcomes-n"></span><button class="btn btn-ghost" id="download" type="button">Download JSON</button></div>
-<div class="table-wrap"><table><thead><tr><th>source</th><th>outcome</th><th>found</th></tr></thead><tbody id="outcomes"></tbody></table></div></div>
-<div class="panel"><div class="panel-heading">Report</div><pre id="text"></pre></div>
+<p class="when" id="lwhen" role="status"></p>
+<div class="panel"><div class="panel-heading">Findings <span class="badge" id="findings-n"></span><button class="btn btn-ghost" id="download" type="button">Download JSON</button></div>
+<div class="filter" hidden><input id="ffilter" type="search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Filter findings" aria-label="Filter findings"></div>
+<div id="findings"></div></div>
+<div class="panel"><div class="panel-heading">Sources <span class="badge" id="outcomes-n"></span></div>
+<div class="table-wrap"><table><thead><tr><th>source</th><th>outcome</th><th>found</th><th>detail</th></tr></thead><tbody id="outcomes"></tbody></table></div></div>
+<details class="panel"><summary>Text report</summary><pre id="text"></pre></details>
 </div>
 </section>
 <section id="view-analyze" hidden>
@@ -153,7 +178,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="stat"><div class="lab">links</div><div class="val" id="alinks"></div></div>
 <div class="stat"><div class="lab">seeds linked</div><div class="val" id="alinked"></div></div>
 </div>
-<div class="panel"><div class="panel-heading">Summary<button class="btn btn-ghost" id="adownload" type="button">Download JSON</button></div><p class="note" id="astatus"></p></div>
+<div class="panel"><div class="panel-heading">Summary<button class="btn btn-ghost" id="adownload" type="button">Download JSON</button></div><p class="note" id="astatus" role="status"></p></div>
 <div class="panel"><div class="panel-heading">Entities <span class="badge" id="aentities-n"></span></div>
 <div class="table-wrap"><table><thead><tr><th>kind</th><th>value</th><th>confidence</th></tr></thead><tbody id="aentities"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Links <span class="badge" id="arelations-n"></span></div>
@@ -194,9 +219,23 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <script>
 const $=id=>document.getElementById(id);
 const root=document.documentElement;
-const store={get(k){try{return localStorage.getItem(k)||''}catch(_){return ''}},set(k,v){try{if(v)localStorage.setItem(k,v);else localStorage.removeItem(k)}catch(_){}}};
-if(store.get('hse-theme')==='light') root.classList.add('light');
-$('theme').onclick=()=>store.set('hse-theme',root.classList.toggle('light')?'light':'');
+// Per-viewer conveniences only. Storage can be missing or refuse a write (private tabs, a full
+// quota), so every access is guarded and the page works without it; a write that fails removes
+// the old value rather than leave it standing for the new one.
+const keep=area=>({get(k){try{return area().getItem(k)||''}catch(_){return ''}},set(k,v){try{if(v)area().setItem(k,v);else area().removeItem(k)}catch(_){try{area().removeItem(k)}catch(_){}}}});
+const store=keep(()=>localStorage),sess=keep(()=>sessionStorage);
+// The theme follows the phone's light or dark setting until the toggle picks one, and the
+// browser's own bar takes the app bar's colour.
+const sys=matchMedia('(prefers-color-scheme: light)');
+let isLight=false;
+function theme(){
+  const t=store.get('hse-theme');isLight=t?t==='light':sys.matches;
+  root.classList.toggle('light',t==='light');root.classList.toggle('dark',t==='dark');
+  $('themecolor').content=isLight?'#ffffff':'#11151b';
+}
+theme();
+if(sys.addEventListener)sys.addEventListener('change',theme);
+$('theme').onclick=()=>{store.set('hse-theme',isLight?'dark':'light');theme()};
 // Only a public bind needs a token. A loopback server, as on the phone, never asks, so the
 // token panel stays hidden there and no call carries one.
 let token=store.get('hse-token'),needsToken=false;
@@ -206,41 +245,66 @@ let token=store.get('hse-token'),needsToken=false;
   $('token').value=token;
 }
 $('token').oninput=()=>{token=$('token').value.trim();store.set('hse-token',token)};
-$('token').onchange=()=>refresh();
+$('token').onchange=()=>health();
 function headers(extra){const h=Object.assign({},extra);if(needsToken&&token)h.Authorization='Bearer '+token;return h}
-async function call(path,extra){const r=await fetch(path,{headers:headers(extra),cache:'no-store'});const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}return {r,text,body}}
+async function call(path,extra,opts){const r=await fetch(path,Object.assign({headers:headers(extra),cache:'no-store'},opts));const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}return {r,text,body}}
 const reason=({text,body})=>(body&&body.error)||text.trim();
+// fetch rejects only when nothing answered: the server stopped (Android ends Termux's background
+// processes) or the address changed. Say so, and watch for it to come back.
+const unreachable=e=>{health();return 'Huntsman did not answer at '+location.host+' ('+e.message+'). On the phone, start it in Termux with: huntsman start'};
 function askToken(){
   needsToken=true;$('tokenpanel').hidden=false;$('authnote').hidden=false;
   $('authnote').textContent=token?'The server refused this token. Enter the exact HSE_AUTH_TOKEN under Status.':'This server is on a public address and needs its HSE_AUTH_TOKEN. Enter it under Status.';
 }
 const refused=res=>{if(res.r.status===401){askToken();return true}return false};
 const views=['lookup','analyze','status'];
+let detailed=false;
 function route(){
   const m=/^#\/(\w+)/.exec(location.hash),view=m&&views.includes(m[1])?m[1]:'lookup';
   for(const v of views){$('view-'+v).hidden=v!==view;$('nav-'+v).classList.toggle('active',v===view);if(v===view)$('nav-'+v).setAttribute('aria-current','page');else $('nav-'+v).removeAttribute('aria-current')}
+  if(view==='status'&&!detailed)details();
 }
 addEventListener('hashchange',route);route();
 function pill(text,tone){$('state').textContent=text;$('state').className='pill '+tone;$('sstate').textContent=text;$('sstate').className='val '+tone}
-async function refresh(){
-  let open=true,online=true;
-  for(const [id,path] of [['health','/api/health'],['modules','/api/modules'],['command','/api/command']]){
-    try{
-      const res=await call(path);$(id).textContent=res.text;
-      if(id==='health'&&res.body){
-        $('ver').textContent='v'+res.body.version;$('sversion').textContent=res.body.version;
-        $('sauth').textContent=res.body.auth==='token'?'token':'none';
-        if(res.body.auth==='token'){needsToken=true;$('tokenpanel').hidden=false;if(!token){askToken();open=false}}
-        else{needsToken=false;token='';store.set('hse-token','');$('tokenpanel').hidden=true}
+let retry=0;
+// Health is all a page that comes back into view asks for. The module list and the command
+// contract do not change while a server runs, so they load when Status first opens and on
+// Refresh, not on every return to the tab.
+async function health(){
+  clearTimeout(retry);
+  let open=true;
+  try{
+    const res=await call('/api/health'),b=res.body;$('health').textContent=res.text;
+    if(b){
+      $('ver').textContent='v'+b.version;$('sversion').textContent=b.version;
+      $('sauth').textContent=b.auth==='token'?'token':'none';
+      if(b.auth==='token'){
+        needsToken=true;$('tokenpanel').hidden=false;
+        // A stored token is tried with HEAD, which answers 401 or 200 and carries no body.
+        if(!token){askToken();open=false}else if(refused(await call('/api/command',{},{method:'HEAD'})))open=false;
       }
-      if(id==='modules'&&res.body)$('smodules').textContent=res.body.count;
-      if(refused(res))open=false;
-    }catch(e){$(id).textContent=String(e);online=false}
+      else{needsToken=false;token='';store.set('hse-token','');$('tokenpanel').hidden=true}
+    }
+  }catch(e){
+    $('health').textContent=String(e);pill('offline','bad');
+    if(!document.hidden)retry=setTimeout(health,5000);
+    return;
   }
-  if(!online)pill('offline','bad');else if(!open)pill('token','warn');else pill('online','ok');
+  pill(open?'online':'token',open?'ok':'warn');
   if(open)$('authnote').hidden=true;
 }
-function cell(row,text,label){const td=document.createElement('td');td.textContent=text==null?'':String(text);if(label)td.dataset.label=label;row.appendChild(td);return td}
+async function details(){
+  detailed=true;
+  await Promise.all([['modules','/api/modules'],['command','/api/command']].map(async([id,path])=>{
+    try{
+      const res=await call(path);$(id).textContent=res.text;
+      if(id==='modules'&&res.body)$('smodules').textContent=res.body.count;
+      if(refused(res))pill('token','warn');
+    }catch(e){$(id).textContent=String(e);detailed=false}
+  }));
+}
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=String(text);return e}
+function cell(row,text,label){const td=el('td','',text==null?'':text);if(label)td.dataset.label=label;row.appendChild(td);return td}
 function fill(id,items,cols){
   const tb=$(id),heads=[...tb.parentNode.querySelectorAll('th')].map(th=>th.textContent);tb.replaceChildren();
   for(const it of items){const tr=document.createElement('tr');cols(it).forEach((c,i)=>cell(tr,c,heads[i]));tb.appendChild(tr)}
@@ -249,64 +313,127 @@ function fill(id,items,cols){
 }
 function fail(id,text){$(id).hidden=false;$(id).textContent=text}
 function save(body,name){
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([JSON.stringify(body,null,2)],{type:'application/json'}));
-  a.download=name+'-'+Date.now()+'.json';a.click();URL.revokeObjectURL(a.href);
+  const a=document.createElement('a'),url=URL.createObjectURL(new Blob([JSON.stringify(body,null,2)],{type:'application/json'}));
+  a.href=url;a.download=name+'-'+Date.now()+'.json';a.click();
+  // Revoked at once, a phone's browser can lose the file before it has read the blob.
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
 }
+const show=v=>v==null?'':typeof v==='object'?JSON.stringify(v):String(v);
 const tone={success:'ok',valid_zero:'info',auth_required:'warn',auth_rejected:'warn',entitlement_denied:'warn',quota_exhausted:'warn',rate_limited:'warn'};
+const why=o=>[o.http_status?'HTTP '+o.http_status:'',o.retry_after_secs?'retry after '+o.retry_after_secs+'s':'',o.detail||''].filter(Boolean).join(' · ');
+// A row per entity: what was found and how sure. Its tags, evidence and attributes are built the
+// first time the row opens, so a lookup that finds hundreds of entities stays cheap on a phone.
+function entityBody(e){
+  const b=el('div','ent-b'),meta=[];
+  if(e.raw_value&&e.raw_value!==e.value)meta.push('as found: '+e.raw_value);
+  if(e.corroboration>1)meta.push('corroborated by '+e.corroboration+' sources');
+  if(meta.length)b.append(el('p','ent-m',meta.join(' · ')));
+  if(e.tags&&e.tags.length){const t=el('div','tags');for(const g of e.tags)t.append(el('span','label',g));b.append(t)}
+  for(const v of e.evidence||[]){
+    const x=el('div','ev');
+    x.append(el('span','ev-s',v.provenance&&v.provenance.source),v.summary||'');
+    if(v.is_inferred)x.append(' ',el('span','label','inferred'));
+    const attrs=Object.entries(v.attributes||{});
+    if(attrs.length){const dl=el('dl');for(const [k,val] of attrs)dl.append(el('dt','',k),el('dd','',val));x.append(dl)}
+    b.append(x);
+  }
+  return b;
+}
+function findings(entities){
+  const list=$('findings');list.replaceChildren();
+  for(const e of entities){
+    const d=el('details','ent'),s=el('summary');
+    s.append(el('span','label info',show(e.kind)),el('span','ent-v',e.value),el('span','ent-c',Number(e.confidence).toFixed(2)));
+    d.append(s);
+    d.hay=[show(e.kind),e.value,show(e.raw_value),...(e.tags||[]),...(e.evidence||[]).map(v=>show(v.provenance&&v.provenance.source)+' '+show(v.summary)+' '+Object.values(v.attributes||{}).join(' '))].join(' ').toLowerCase();
+    d.addEventListener('toggle',()=>{if(d.open&&d.childElementCount===1)d.append(entityBody(e))});
+    list.append(d);
+  }
+  if(entities.length<=3)for(const d of list.children)d.open=true;
+  if(!entities.length)list.append(el('p','note','No entity was found.'));
+  $('findings-n').textContent=entities.length;
+  $('ffilter').value='';$('ffilter').parentNode.hidden=entities.length<9;
+}
+$('ffilter').oninput=()=>{const f=$('ffilter').value.trim().toLowerCase();for(const d of $('findings').children)if(d.hay!=null)d.hidden=!!f&&!d.hay.includes(f)};
 let last=null;
+function showLookup(saved){
+  const body=saved.body,answered=body.outcomes.filter(o=>o.kind==='success'||o.kind==='valid_zero').length;
+  last=body;$('result').hidden=false;
+  $('route').textContent=body.route;$('lentities').textContent=body.entities.length;$('status').textContent=saved.secs;
+  $('lsources').textContent=answered+' / '+body.outcomes.length;
+  const n=body.entities.length;
+  $('lwhen').textContent=saved.q+' · '+new Date(saved.at).toLocaleTimeString()+' · '+n+(n===1?' entity, ':' entities, ')+answered+' of '+body.outcomes.length+' sources answered';
+  findings(body.entities);
+  fill('outcomes',body.outcomes,o=>[o.module,'',o.found,why(o)]);
+  [...$('outcomes').rows].forEach((tr,i)=>{const o=body.outcomes[i];if(!o)return;tr.cells[1].replaceChildren(el('span','label '+(tone[o.kind]||'bad'),o.kind))});
+  $('text').textContent=body.text;
+}
+let ctl=null;
 $('lookup').onsubmit=async ev=>{
   ev.preventDefault();
-  const q=$('q').value.trim(); if(!q) return;
-  const params=new URLSearchParams({kind:$('kind').value,q});
-  $('run').disabled=true;$('lerror').hidden=true;$('result').hidden=true;last=null;
-  $('run').textContent='Running…';
-  const started=Date.now();
+  // Pressed again while a lookup runs, the button stops the wait. The server still finishes the
+  // lookup it started and keeps its place until then.
+  if(ctl){ctl.abort();return}
+  const q=$('q').value.trim(),kind=$('kind').value; if(!q) return;
+  $('q').blur();
+  const params=new URLSearchParams({kind,q}),run=$('run'),started=Date.now();
+  const secs=()=>((Date.now()-started)/1000).toFixed(1)+'s';
+  const ticking=()=>{run.textContent='Cancel · '+Math.floor((Date.now()-started)/1000)+'s'};
+  $('lerror').hidden=true;$('result').hidden=true;last=null;sess.set('hse-lookup','');
+  ctl=new AbortController();run.classList.remove('btn-primary');ticking();
+  const tick=setInterval(ticking,1000);
   try{
-    const res=await call('/api/lookup?'+params,{'X-Huntsman-Lookup':'1'}),body=res.body;
-    const secs=((Date.now()-started)/1000).toFixed(1)+'s';
-    if(!res.r.ok||!body){refused(res);fail('lerror','HTTP '+res.r.status+' · '+secs+' · '+reason(res));return}
-    last=body;$('result').hidden=false;
-    $('route').textContent=body.route;$('lentities').textContent=body.entities.length;$('status').textContent=secs;
-    $('lsources').textContent=body.outcomes.filter(o=>o.kind==='success'||o.kind==='valid_zero').length+' / '+body.outcomes.length;
-    fill('outcomes',body.outcomes,o=>[o.module,'',o.found]);
-    [...$('outcomes').rows].forEach((tr,i)=>{const o=body.outcomes[i];if(!o)return;const s=document.createElement('span');s.className='label '+(tone[o.kind]||'bad');s.textContent=o.kind;tr.cells[1].replaceChildren(s)});
-    $('text').textContent=body.text;
-  }catch(e){fail('lerror',String(e))}finally{$('run').disabled=false;$('run').textContent='Look up'}
+    const res=await call('/api/lookup?'+params,{'X-Huntsman-Lookup':'1'},{signal:ctl.signal}),body=res.body;
+    if(!res.r.ok||!body){refused(res);fail('lerror','HTTP '+res.r.status+' · '+secs()+' · '+reason(res));return}
+    const saved={kind,q,secs:secs(),at:Date.now(),body};
+    showLookup(saved);sess.set('hse-lookup',JSON.stringify(saved));
+  }catch(e){fail('lerror',e.name==='AbortError'?'Stopped waiting after '+secs()+'. The server still finishes this lookup, so the next one may wait for its place.':unreachable(e))}
+  finally{clearInterval(tick);ctl=null;run.classList.add('btn-primary');run.textContent='Look up'}
 };
 $('download').onclick=()=>{if(last)save(last,'huntsman-'+last.route)};
 let alast=null;
-const show=v=>v==null?'':typeof v==='object'?JSON.stringify(v):String(v);
+function showAnalysis(saved){
+  const body=saved.body;
+  alast=body;$('aresult').hidden=false;
+  const names=new Map(body.entities.map(e=>[e.uid,show(e.kind)+': '+e.value]));
+  const who=uid=>names.get(uid)||uid;
+  $('aseeds').textContent=body.accepted.length;$('aentities-c').textContent=body.entities.length;
+  $('alinks').textContent=body.relations.length;$('alinked').textContent=body.gaps.linked_seeds+' / '+body.gaps.total_seeds;
+  $('astatus').textContent=body.accepted.length+' seeds · '+body.entities.length+' entities · '+body.relations.length+' links · '+show(body.termination)+' · '+new Date(saved.at).toLocaleTimeString();
+  fill('aentities',body.entities,e=>[show(e.kind),e.value,Number(e.confidence).toFixed(2)]);
+  fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind),who(x.to_uid)]);
+  fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,p.articulation?'yes':'']);
+  fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,c.entity_uids.map(who).join(', ')]);
+  $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';
+  const cross=body.cross_scan;
+  $('ascan').textContent=cross==null?'No saved scans were given to this server.':cross==='None'?'No saved scan shares an entity with these seeds.':'';
+  const bridged=cross&&cross!=='None'?(cross.Transitive?cross.Transitive.links.map(l=>[who(l.via_entity_uid),show(l.tier),l.origin_scan_id+' -> '+l.target_scan_id]):(cross.Historical||cross.Relation).matches.map(b=>[who(b.entity.uid),show(b.tier),b.overlapping_scans.join(', ')])):[];
+  fill('ascans',bridged,r=>r);
+  fill('agaps',body.gaps.orphans,o=>[who(o.uid),show(o.isolation),o.action]);
+  fill('aplanned',body.planned,p=>[show(p.kind)+': '+p.value,p.source,p.url||'',p.utility==null?'':Number(p.utility).toFixed(2)]);
+  fill('arejected',body.rejected,x=>[x.seed,x.reason]);
+}
 $('analyze').onsubmit=async ev=>{
   ev.preventDefault();
   const seeds=$('seeds').value.trim(); if(!seeds) return;
-  $('arun').disabled=true;$('aerror').hidden=true;$('aresult').hidden=true;alast=null;
+  $('arun').disabled=true;$('aerror').hidden=true;$('aresult').hidden=true;alast=null;sess.set('hse-analysis','');
   $('arun').textContent='Analyzing…';
   try{
     const res=await call('/api/analyze?'+new URLSearchParams({seeds})),body=res.body;
     if(!res.r.ok||!body){refused(res);fail('aerror','HTTP '+res.r.status+' · '+reason(res));return}
-    alast=body;$('aresult').hidden=false;
-    const names=new Map(body.entities.map(e=>[e.uid,show(e.kind)+': '+e.value]));
-    const who=uid=>names.get(uid)||uid;
-    $('aseeds').textContent=body.accepted.length;$('aentities-c').textContent=body.entities.length;
-    $('alinks').textContent=body.relations.length;$('alinked').textContent=body.gaps.linked_seeds+' / '+body.gaps.total_seeds;
-    $('astatus').textContent=body.accepted.length+' seeds · '+body.entities.length+' entities · '+body.relations.length+' links · '+show(body.termination);
-    fill('aentities',body.entities,e=>[show(e.kind),e.value,Number(e.confidence).toFixed(2)]);
-    fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind),who(x.to_uid)]);
-    fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,p.articulation?'yes':'']);
-    fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,c.entity_uids.map(who).join(', ')]);
-    $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';
-    const cross=body.cross_scan;
-    $('ascan').textContent=cross==null?'No saved scans were given to this server.':cross==='None'?'No saved scan shares an entity with these seeds.':'';
-    const bridged=cross&&cross!=='None'?(cross.Transitive?cross.Transitive.links.map(l=>[who(l.via_entity_uid),show(l.tier),l.origin_scan_id+' -> '+l.target_scan_id]):(cross.Historical||cross.Relation).matches.map(b=>[who(b.entity.uid),show(b.tier),b.overlapping_scans.join(', ')])):[];
-    fill('ascans',bridged,r=>r);
-    fill('agaps',body.gaps.orphans,o=>[who(o.uid),show(o.isolation),o.action]);
-    fill('aplanned',body.planned,p=>[show(p.kind)+': '+p.value,p.source,p.url||'',p.utility==null?'':Number(p.utility).toFixed(2)]);
-    fill('arejected',body.rejected,x=>[x.seed,x.reason]);
-  }catch(e){fail('aerror',String(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
+    const saved={seeds,at:Date.now(),body};
+    showAnalysis(saved);sess.set('hse-analysis',JSON.stringify(saved));
+  }catch(e){fail('aerror',unreachable(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
 };
 $('adownload').onclick=()=>{if(alast)save(alast,'huntsman-analysis')};
-$('refresh').onclick=refresh;refresh();
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});
+// Android discards a background tab and reloads it when it is opened again. This tab's last
+// lookup and analysis come back with it, instead of having to be run, and paid for, again.
+for(const [key,view,restore] of [['hse-lookup','result',s=>{$('kind').value=s.kind;$('q').value=s.q;showLookup(s)}],['hse-analysis','aresult',s=>{$('seeds').value=s.seeds;showAnalysis(s)}]]){
+  const raw=sess.get(key);
+  if(raw)try{restore(JSON.parse(raw))}catch(_){sess.set(key,'');$(view).hidden=true}
+}
+$('refresh').onclick=()=>{health();details()};
+health();
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)health()});
 </script>
 </html>
