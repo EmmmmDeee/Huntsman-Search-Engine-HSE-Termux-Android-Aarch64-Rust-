@@ -118,6 +118,7 @@ pub mod maltiverse;
 pub mod md5;
 pub mod meta_plan;
 pub mod metrics;
+pub mod mnemonic;
 pub mod module;
 pub mod module_selection;
 pub mod navigator;

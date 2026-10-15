@@ -143,6 +143,11 @@ pub fn run<T: Transport + ?Sized + Sync>(
     if let Some(outcome) = registration.outcome {
         found.leg(outcome);
     }
+    let seen = crate::mnemonic::domain(transport, &domain, &scan_id, now_unix);
+    found.entities.extend(seen.entities);
+    if let Some(outcome) = seen.outcome {
+        found.leg(outcome);
+    }
     let (listed, rows) = dnsbl::check(transport, Subject::Domain(&domain), &scan_id, now_unix);
     found.entities.extend(listed);
     found.outcomes.extend(rows);
