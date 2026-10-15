@@ -2,7 +2,8 @@
 //!
 //! A domain is one `GET https://api.hackertarget.com/hostsearch/?q={domain}`, answering
 //! `host,address` lines; an address is one `GET https://api.hackertarget.com/reverseiplookup/?q={ip}`,
-//! answering one host per line. Both answer without a key at a small daily limit; with
+//! answering one host per line; it refuses an IPv6 address ("error check your search parameter"),
+//! so the source answers for IPv4 addresses only. Both answer without a key at a small daily limit; with
 //! `HUNTSMAN_HACKERTARGET_KEY` set, the key goes in the `apikey` query parameter (added as the
 //! request is sent) and the membership limit applies. Kept: how many hosts there are, and up to
 //! [`MAX_NAMES`] of them (and, for a domain, their distinct addresses), each also a pivot. The
@@ -28,7 +29,7 @@ pub const API: Api = Api {
 };
 pub const INTEL: Source = Source {
     api: &API,
-    kinds: &[IndicatorKind::Domain, IndicatorKind::Ip],
+    kinds: &[IndicatorKind::Domain, IndicatorKind::Ipv4],
     lookup,
 };
 

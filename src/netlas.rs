@@ -1,6 +1,7 @@
 //! Netlas: what Netlas's internet scans hold for one IP or domain.
 //!
-//! One lookup is one `GET https://app.netlas.io/api/host/{indicator}/`. Netlas answers without a
+//! One lookup is one `GET https://app.netlas.io/api/host/{indicator}/`, for a domain or an IPv4
+//! address: given an IPv6 address the endpoint answers about netlas.io itself. Netlas answers without a
 //! key at a low daily limit; with `HUNTSMAN_NETLAS_KEY` set (a free Community key) the key goes in
 //! the `X-API-Key` header and the limit is the account's. An address gives open ports, software,
 //! reverse DNS, domains seen on it, privacy flags (VPN, proxy, Tor), IOC listings and the WHOIS
@@ -28,7 +29,7 @@ pub const API: Api = Api {
 };
 pub const INTEL: Source = Source {
     api: &API,
-    kinds: &[IndicatorKind::Ip, IndicatorKind::Domain],
+    kinds: &[IndicatorKind::Ipv4, IndicatorKind::Domain],
     lookup,
 };
 /// Most distinct names kept in one attribute.
