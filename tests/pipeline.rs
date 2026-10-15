@@ -236,3 +236,48 @@ fn observation_normalization_wires_structural_relations() {
             && relation.kind == huntsman_recon::graph::RelationKind::AssociatedWith
     }));
 }
+
+#[test]
+fn a_controlled_organisation_is_owned_by_its_controller_in_the_graph() {
+    let mut licensee = observation(
+        "registry",
+        Some(origin("registry", "licence")),
+        EntityKind::Organisation,
+        "Licensee Pty Ltd",
+    );
+    licensee.attributes.insert(
+        "controlled_by".to_string(),
+        "Parent Holdings Ltd".to_string(),
+    );
+    let snapshot = normalize_observations(
+        batch(vec![
+            licensee,
+            observation(
+                "registry",
+                Some(origin("registry", "licence")),
+                EntityKind::Organisation,
+                "Parent Holdings Ltd",
+            ),
+        ]),
+        &PipelineLimits::default(),
+    )
+    .expect("snapshot");
+    let uid = |name: &str| {
+        snapshot
+            .entities
+            .iter()
+            .find(|entity| entity.value.eq_ignore_ascii_case(name))
+            .map_or_else(
+                || panic!("{name} is an entity"),
+                |entity| entity.uid.clone(),
+            )
+    };
+    let (parent, licensee) = (uid("Parent Holdings Ltd"), uid("Licensee Pty Ltd"));
+    let owns: Vec<(&str, &str)> = snapshot
+        .relations
+        .iter()
+        .filter(|relation| relation.kind == huntsman_recon::graph::RelationKind::Owns)
+        .map(|relation| (relation.from_uid.as_str(), relation.to_uid.as_str()))
+        .collect();
+    assert_eq!(owns, [(parent.as_str(), licensee.as_str())]);
+}

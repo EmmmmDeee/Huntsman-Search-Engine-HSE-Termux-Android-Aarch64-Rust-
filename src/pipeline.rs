@@ -314,16 +314,22 @@ fn graph_kind(kind: DomainRelationKind) -> GraphRelationKind {
     }
 }
 
+/// Whether the graph names a relation's endpoints the other way round: "A is controlled by B" is
+/// the graph's "B owns A". **Pure.**
+const fn owner_first(kind: DomainRelationKind) -> bool {
+    matches!(kind, DomainRelationKind::ControlledBy)
+}
+
 fn derive_relations(entities: &[Entity], scan_id: &str) -> Vec<EntityRelation> {
     let mut relations = relation::derive_all(entities, scan_id)
         .into_iter()
         .map(|relation| {
-            EntityRelation::new(
-                relation.from_uid,
-                relation.to_uid,
-                graph_kind(relation.kind),
-                relation.confidence,
-            )
+            let (from, to) = if owner_first(relation.kind) {
+                (relation.to_uid, relation.from_uid)
+            } else {
+                (relation.from_uid, relation.to_uid)
+            };
+            EntityRelation::new(from, to, graph_kind(relation.kind), relation.confidence)
         })
         .collect::<Vec<_>>();
     relations.sort_by(|left, right| {
