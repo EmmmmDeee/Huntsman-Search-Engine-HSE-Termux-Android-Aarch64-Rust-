@@ -16,15 +16,16 @@ use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::{Entity, EntityKind, merge_by_uid};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
-use huntsman_recon::exposure_cli::{EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
+use huntsman_recon::exposure_cli::{self, EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
 use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
 use huntsman_recon::hibp::key::KeyLoader;
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
 use huntsman_recon::ip_cli::{IP_USAGE, IpArgs, IpRun};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
-    self, DOMAIN_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, IP_POLICY, NETWORK_POLICY, PEOPLE_POLICY,
-    PHONE_POLICY, SavePolicy, USERNAME_POLICY,
+    self, DOMAIN_POLICY, EMAIL_EXPOSURE_POLICY, EMAIL_POLICY, EXPOSURE_POLICY, IP_POLICY,
+    NETWORK_POLICY, PEOPLE_POLICY, PHONE_POLICY, SavePolicy, USERNAME_EXPOSURE_POLICY,
+    USERNAME_POLICY,
 };
 use huntsman_recon::network_cli::{NETWORK_USAGE, NetworkArgs, NetworkRun};
 use huntsman_recon::oathnet;
@@ -151,6 +152,8 @@ fn email(selector: &str, now: u64) -> Result<Collected, Refused> {
     let transport = UreqTransport::new(&api_leg::transport_config());
     match huntsman_recon::email_cli::run_keyed(&transport, &keys, selector, now) {
         EmailRun::Printed { text, report } => {
+            // Compose both legs on the address: the `SeekNow` identity leg first, then the breach
+            // and exposure legs fold onto the combined result.
             let (text, entities, outcomes) = with_seeknow_leg(
                 EntityKind::Email,
                 selector,
@@ -160,7 +163,12 @@ fn email(selector: &str, now: u64) -> Result<Collected, Refused> {
                 report.entities,
                 report.outcomes,
             )?;
-            Ok(done(text, entities, outcomes, EMAIL_POLICY))
+            Ok(with_exposure(
+                selector,
+                now,
+                done(text, entities, outcomes, EMAIL_POLICY),
+                EMAIL_EXPOSURE_POLICY,
+            ))
         }
         EmailRun::Network(m) => Err(Refused::Network(m)),
         EmailRun::Failed(m) => Err(Refused::Unavailable(m)),
@@ -200,6 +208,23 @@ fn with_seeknow_leg(
 
 /// The breach and exposure legs for a selector, each keyed leg built only when its key is configured.
 fn exposure(selector: &str, now: u64) -> Result<Collected, Refused> {
+    match exposure_legs(selector, now, false) {
+        Some(ExposureRun::Printed { text, report }) => Ok(done(
+            text,
+            report.entities,
+            report.outcomes,
+            EXPOSURE_POLICY,
+        )),
+        Some(ExposureRun::Network(m)) => Err(Refused::Network(m)),
+        Some(ExposureRun::Failed(m)) => Err(Refused::Unavailable(m)),
+        None => Err(Refused::Unavailable("no exposure leg ran".into())),
+    }
+}
+
+/// Run the keyed exposure legs for `selector`, each built only when its key is configured. With
+/// `only_if_reachable`, `None` when no configured leg can search `selector`, so a lookup with no
+/// keys set sends nothing more and prints what it did before.
+fn exposure_legs(selector: &str, now: u64, only_if_reachable: bool) -> Option<ExposureRun> {
     let client = KeyLoader::default_chain(None)
         .load()
         .map(|(key, _)| HibpClient::production(Auth::ApiKey(key), HibpConfig::default()));
@@ -226,16 +251,35 @@ fn exposure(selector: &str, now: u64) -> Result<Collected, Refused> {
             .then_some((&oathnet_transport as &dyn Transport, &keys)),
         dehashed: dehashed_client.as_ref(),
     };
-    match huntsman_recon::exposure_cli::run(sources, selector, now) {
-        ExposureRun::Printed { text, report } => Ok(done(
-            text,
-            report.entities,
-            report.outcomes,
-            EXPOSURE_POLICY,
-        )),
-        ExposureRun::Network(m) => Err(Refused::Network(m)),
-        ExposureRun::Failed(m) => Err(Refused::Unavailable(m)),
+    if only_if_reachable && !sources.reach(selector) {
+        return None;
     }
+    Some(exposure_cli::run(sources, selector, now))
+}
+
+/// An email or username lookup with every configured paid breach leg folded in: a keyed source
+/// that can search the selector always runs, never only when `exposure` is asked for by name.
+/// The report then saves under `policy`, which names each leg's own module. An exposure run that
+/// gave no report leaves the lookup as it was, plus one `exposure=unavailable` line.
+fn with_exposure(selector: &str, now: u64, mut found: Collected, policy: SavePolicy) -> Collected {
+    let reason = match exposure_legs(selector, now, true) {
+        None => return found,
+        Some(ExposureRun::Printed { report, .. }) => {
+            match exposure_cli::fold_into(&mut found.entities, &mut found.outcomes, report) {
+                Ok(text) => {
+                    found.text = text;
+                    found.policy = policy;
+                    return found;
+                }
+                Err(m) => m,
+            }
+        }
+        Some(ExposureRun::Network(m) | ExposureRun::Failed(m)) => m,
+    };
+    found
+        .text
+        .push_str(&exposure_cli::unavailable_line(&reason));
+    found
 }
 
 /// The username sources for a handle, with the `SeekNow` leg when its key is configured.
@@ -244,6 +288,8 @@ fn username(selector: &str, now: u64) -> Result<Collected, Refused> {
     let keys = Keys::from_env();
     match huntsman_recon::username_cli::run(&transport, &keys, selector, now) {
         UsernameRun::Printed { text, report } => {
+            // Compose both legs on the handle: the `SeekNow` identity leg first, then the breach
+            // and exposure legs fold onto the combined result.
             let (text, entities, outcomes) = with_seeknow_leg(
                 EntityKind::Username,
                 selector,
@@ -253,7 +299,12 @@ fn username(selector: &str, now: u64) -> Result<Collected, Refused> {
                 report.entities,
                 report.outcomes,
             )?;
-            Ok(done(text, entities, outcomes, USERNAME_POLICY))
+            Ok(with_exposure(
+                selector,
+                now,
+                done(text, entities, outcomes, USERNAME_POLICY),
+                USERNAME_EXPOSURE_POLICY,
+            ))
         }
         UsernameRun::Failed(m) => Err(Refused::Unavailable(m)),
     }
@@ -273,7 +324,7 @@ fn phone(selector: &str, now: u64) -> Result<Collected, Refused> {
 }
 
 /// The ip sources for an address. Its keyed legs read keys from the environment only, as the
-/// other free-tier legs do.
+/// other keyed lookups do.
 fn ip(selector: &str, now: u64) -> Result<Collected, Refused> {
     let keys = Keys::from_env();
     let transport = UreqTransport::new(&api_leg::transport_config());
@@ -383,7 +434,7 @@ pub(in crate::cli) fn email_cmd(args: &[String]) -> ExitCode {
 
 pub(in crate::cli) fn exposure_cmd(args: &[String]) -> ExitCode {
     match ExposureArgs::parse(args) {
-        Ok(p) => finish(ScanKind::Exposure, &p.email, p.save.as_deref()),
+        Ok(p) => finish(ScanKind::Exposure, &p.selector, p.save.as_deref()),
         Err(e) => usage_failure(&e, EXPOSURE_USAGE),
     }
 }
