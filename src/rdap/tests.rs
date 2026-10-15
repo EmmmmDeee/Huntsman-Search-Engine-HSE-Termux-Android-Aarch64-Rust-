@@ -4,6 +4,11 @@ use crate::test_support::RoutedTransport as Registry;
 pub(crate) const DNS_BOOTSTRAP: &str = r#"{"services":[[["com","net"],["https://rdap.verisign.com/com/v1/"]],[["uk"],["https://rdap.nominet.uk/uk/"]],[["co.uk"],["http://only-http.test/couk","https://example.test/couk"]]]}"#;
 pub(crate) const IPV4_BOOTSTRAP: &str = r#"{"services":[[["1.0.0.0/8"],["https://rdap.apnic.net/"]],[["1.1.0.0/16"],["https://specific.test"]],[["93.0.0.0/8"],["https://rdap.db.ripe.net/"]]]}"#;
 
+pub(crate) const ASN_BOOTSTRAP: &str = r#"{"services":[[["4608-4865","7467-7722"],["https://rdap.apnic.net/"]],[["1-1876","13312-15359"],["https://rdap.arin.net/registry/","http://rdap.arin.net/registry/"]],[["13335"],["https://specific.test/"]],[["2043"],["https://rdap.db.ripe.net/"]]]}"#;
+/// Trimmed from ARIN's `AS13335` answer of 2026-10-15: the registrant with its abuse and
+/// administrative contacts nested, a top-level abuse contact, events, status and remarks.
+pub(crate) const CLOUDFLARE_AS: &str = r#"{"objectClassName":"autnum","handle":"AS13335","name":"CLOUDFLARENET","startAutnum":13335,"endAutnum":13335,"status":["active"],"port43":"whois.arin.net","events":[{"eventAction":"last changed","eventDate":"2017-02-17T18:04:32-05:00"},{"eventAction":"registration","eventDate":"2010-07-14T18:35:57-04:00"}],"remarks":[{"title":"Registration Comments","description":["All Cloudflare abuse reporting can be done via https://www.cloudflare.com/abuse"]}],"entities":[{"handle":"CLOUD14","roles":["registrant"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Cloudflare, Inc."],["adr",{"label":"101 Townsend Street\nSan Francisco\nCA\n94107\nUnited States"},"text",["","","","","","",""]],["kind",{},"text","org"]]],"entities":[{"handle":"ABUSE2916-ARIN","roles":["abuse"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Abuse"],["org",{},"text","Cloudflare, Inc."],["kind",{},"text","group"],["email",{},"text","abuse@cloudflare.com"],["tel",{"type":["work","voice"]},"text","+1-650-319-8930"]]]},{"handle":"ADMIN2521-ARIN","roles":["administrative","technical"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Admin"],["org",{},"text","Cloudflare, Inc."],["kind",{},"text","group"],["email",{},"text","rir@cloudflare.com"],["tel",{"type":["work","voice"]},"text","+1-650-319-8930"]]]}]},{"handle":"ABUSE2916-ARIN","roles":["abuse"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Abuse"],["org",{},"text","Cloudflare, Inc."],["kind",{},"text","group"],["email",{},"text","abuse@cloudflare.com"],["tel",{"type":["work","voice"]},"text","+1-650-319-8930"]]]}]}"#;
+
 /// Trimmed from Verisign's `github.com` answer: the registrar with its IANA id and nested abuse
 /// contact, name servers, events and status, and a registrant a registry redacts.
 pub(crate) const GITHUB: &str = r#"{"objectClassName":"domain","handle":"1264983250_DOMAIN_COM-VRSN","ldhName":"GITHUB.COM",
@@ -61,6 +66,63 @@ fn the_bootstrap_picks_the_longest_tld_and_the_longest_block() {
         Some("https://rdap.apnic.net/")
     );
     assert_eq!(service_for_ip(&ips, ip("9.9.9.9")), None);
+}
+
+/// An AS number's service is the narrowest bootstrap range that holds it; a single number is a
+/// range of one.
+#[test]
+fn an_as_number_is_looked_up_at_the_registry_for_its_range() {
+    let asns: Bootstrap = serde_json::from_str(ASN_BOOTSTRAP).expect("bootstrap");
+    assert_eq!(
+        service_for_asn(&asns, 13335).as_deref(),
+        Some("https://specific.test/")
+    );
+    assert_eq!(
+        service_for_asn(&asns, 13336).as_deref(),
+        Some("https://rdap.arin.net/registry/")
+    );
+    assert_eq!(
+        service_for_asn(&asns, 4608).as_deref(),
+        Some("https://rdap.apnic.net/")
+    );
+    assert_eq!(
+        service_for_asn(&asns, 2043).as_deref(),
+        Some("https://rdap.db.ripe.net/")
+    );
+    assert_eq!(service_for_asn(&asns, 1877), None);
+}
+
+#[test]
+fn an_as_record_keeps_its_range_name_and_contacts() {
+    let registry = Registry::new(&[
+        ("https://data.iana.org/rdap/asn.json", 200, ASN_BOOTSTRAP),
+        ("https://specific.test/autnum/13335", 200, CLOUDFLARE_AS),
+    ]);
+    let record = registered(lookup_asn(&registry, 13335));
+    assert_eq!(record.handle.as_deref(), Some("AS13335"));
+    assert_eq!(record.name.as_deref(), Some("CLOUDFLARENET"));
+    assert_eq!(record.autnums, Some((13335, 13335)));
+    assert_eq!(record.raw, CLOUDFLARE_AS);
+    assert_eq!(
+        record.event("registration"),
+        Some("2010-07-14T18:35:57-04:00")
+    );
+    let abuse: Vec<&Contact> = record.with_role("abuse").collect();
+    assert!(
+        abuse
+            .iter()
+            .all(|contact| contact.emails == ["abuse@cloudflare.com"])
+    );
+    let registrant = record.with_role("registrant").next().expect("registrant");
+    assert_eq!(registrant.name.as_deref(), Some("Cloudflare, Inc."));
+
+    let unserved = Registry::new(&[("https://data.iana.org/rdap/asn.json", 200, ASN_BOOTSTRAP)]);
+    assert!(matches!(
+        lookup_asn(&unserved, 1877),
+        Ok(Answer::NoService(why)) if why == "the IANA bootstrap names no RDAP service for AS1877"
+    ));
+    // A registry that writes the range as strings is read the same.
+    assert_eq!(autnum(Some(&serde_json::json!("AS64500"))), Some(64500));
 }
 
 /// A domain record keeps everything it publishes: the body as published, the events, status,

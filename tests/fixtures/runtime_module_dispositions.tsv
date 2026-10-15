@@ -7,6 +7,7 @@ archive_bridge	adapter	archive records into collection observations
 artifacts	exporter	bounded shared-state artifact renderer
 asic_director	adapter	ASIC director source client
 asic_persons	adapter	ASIC people source client
+asn_cli	runtime	AS lookup front-end reached from asn, scan -k asn, scans run and /api/lookup
 atproto	adapter	ATProto source adapter
 attack	leaf	ATT&CK model utility
 attack_catalog	leaf	ATT&CK catalogue

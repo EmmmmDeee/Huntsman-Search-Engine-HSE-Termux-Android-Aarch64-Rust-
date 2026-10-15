@@ -1,9 +1,9 @@
 //! Registration data over RDAP (RFC 9082/9083), the registries' JSON successor to WHOIS, as
 //! Spiderfoot's `sfp_whois` reads WHOIS: keyless and from the registry itself.
 //!
-//! The IANA bootstrap registry (RFC 9224, `data.iana.org/rdap/{dns,ipv4,ipv6}.json`) names the
-//! RDAP service for a domain's TLD or an address's block; the record is then
-//! `GET {service}domain/{name}` or `{service}ip/{address}`. The bootstrap is fetched with
+//! The IANA bootstrap registry (RFC 9224, `data.iana.org/rdap/{dns,ipv4,ipv6,asn}.json`) names
+//! the RDAP service for a domain's TLD, an address's block or an AS number's range; the record is
+//! then `GET {service}domain/{name}`, `{service}ip/{address}` or `{service}autnum/{number}`. The bootstrap is fetched with
 //! redirects off; a registry's answer may redirect, as a regional registry refers an address
 //! another one holds, and the referral is followed. Everything the record publishes is kept: its
 //! body as published, its events, status, name servers, network range and every contact's
@@ -26,6 +26,7 @@ pub const SOURCE: &str = "rdap";
 const BOOTSTRAP_DNS: &str = "https://data.iana.org/rdap/dns.json";
 const BOOTSTRAP_IPV4: &str = "https://data.iana.org/rdap/ipv4.json";
 const BOOTSTRAP_IPV6: &str = "https://data.iana.org/rdap/ipv6.json";
+const BOOTSTRAP_ASN: &str = "https://data.iana.org/rdap/asn.json";
 const TIMEOUT: Duration = Duration::from_secs(20);
 const RDAP_ACCEPT: &str = "application/rdap+json, application/json";
 
@@ -75,6 +76,8 @@ pub struct Record {
     pub end_address: Option<String>,
     /// The network's blocks in CIDR form.
     pub cidrs: Vec<String>,
+    /// An AS number record's range, first and last number.
+    pub autnums: Option<(u32, u32)>,
     /// The network's type, such as `ASSIGNED PA` or `DIRECT ALLOCATION`.
     pub kind: Option<String>,
     pub parent_handle: Option<String>,
@@ -158,6 +161,10 @@ struct Object {
     end_address: Option<String>,
     #[serde(default)]
     cidr0_cidrs: Vec<Cidr0>,
+    #[serde(rename = "startAutnum", default)]
+    start_autnum: Option<Value>,
+    #[serde(rename = "endAutnum", default)]
+    end_autnum: Option<Value>,
     #[serde(rename = "type", default)]
     kind: Option<String>,
     #[serde(rename = "parentHandle", default)]
@@ -253,6 +260,21 @@ pub fn lookup_netblock<T: Transport + ?Sized>(
     network(transport, block.network(), &block.to_string())
 }
 
+/// Look up the registration of AS number `asn`, from the registry the bootstrap names for its
+/// range.
+///
+/// # Errors
+/// [`Failure`] when the bootstrap or the registry gave no usable answer.
+pub fn lookup_asn<T: Transport + ?Sized>(transport: &T, asn: u32) -> Result<Answer, Failure> {
+    let bootstrap = bootstrap(transport, BOOTSTRAP_ASN)?;
+    let Some(service) = service_for_asn(&bootstrap, asn) else {
+        return Ok(Answer::NoService(format!(
+            "the IANA bootstrap names no RDAP service for AS{asn}"
+        )));
+    };
+    object(transport, &format!("{service}autnum/{asn}"))
+}
+
 fn network<T: Transport + ?Sized>(
     transport: &T,
     first: IpAddr,
@@ -303,6 +325,28 @@ fn service_for_ip(bootstrap: &Bootstrap, ip: IpAddr) -> Option<String> {
             };
             if held.is_some_and(|bits| best.is_none_or(|(current, _)| bits > current)) {
                 best = held.map(|bits| (bits, urls.as_slice()));
+            }
+        }
+    }
+    best.and_then(|(_, urls)| base_url(urls))
+}
+
+/// The service for `asn`: the bootstrap range (`first-last`, or one number) holding it, the
+/// narrowest if several do. **Pure.**
+fn service_for_asn(bootstrap: &Bootstrap, asn: u32) -> Option<String> {
+    let mut best: Option<(u32, &[String])> = None;
+    for (ranges, urls) in &bootstrap.services {
+        for range in ranges {
+            let (first, last) = range
+                .split_once('-')
+                .unwrap_or((range.as_str(), range.as_str()));
+            let (Ok(first), Ok(last)) = (first.trim().parse::<u32>(), last.trim().parse::<u32>())
+            else {
+                continue;
+            };
+            let width = last.saturating_sub(first);
+            if (first..=last).contains(&asn) && best.is_none_or(|(current, _)| width < current) {
+                best = Some((width, urls.as_slice()));
             }
         }
     }
@@ -450,9 +494,24 @@ fn record(object: Object, url: &str, raw: String) -> Record {
                 Some(format!("{network}/{}", cidr.length))
             })
             .collect(),
+        autnums: autnum(object.start_autnum.as_ref())
+            .map(|first| (first, autnum(object.end_autnum.as_ref()).unwrap_or(first))),
         kind: object.kind,
         parent_handle: object.parent_handle,
         port43: object.port43,
+    }
+}
+
+/// An AS number as a registry writes it: a JSON number, or a string of one. **Pure.**
+fn autnum(value: Option<&Value>) -> Option<u32> {
+    match value? {
+        Value::Number(number) => number.as_u64().and_then(|n| u32::try_from(n).ok()),
+        Value::String(text) => text
+            .trim()
+            .trim_start_matches(['A', 'S', 'a', 's'])
+            .parse()
+            .ok(),
+        _ => None,
     }
 }
 

@@ -1,7 +1,8 @@
-//! The RDAP leg of the domain and IP front-ends: a registration record as entities, as
-//! Spiderfoot's `sfp_whois` reports a WHOIS record.
+//! The RDAP leg of the domain, IP, netblock and AS front-ends: a registration record as
+//! entities, as Spiderfoot's `sfp_whois` reports a WHOIS record.
 //!
-//! The record's subject (the domain, or the address whose network it is) carries one evidence
+//! The record's subject (the domain, the address or block whose network it is, or the AS number)
+//! carries one evidence
 //! record with everything the registry published: the record as published under `whois`
 //! (Spiderfoot's `DOMAIN_WHOIS` or `NETBLOCK_WHOIS`), the registrar under `registrar`
 //! (`DOMAIN_REGISTRAR`), every event date, status, name server and network block, and each
@@ -94,6 +95,21 @@ pub fn netblock<T: Transport + ?Sized>(
             subject.entities(record)
         },
     )
+}
+
+/// The registration of AS number `asn`, from the registry that assigned it.
+#[must_use]
+pub fn asn<T: Transport + ?Sized>(transport: &T, asn: u32, scan_id: &str, now_unix: u64) -> Leg {
+    let value = format!("AS{asn}");
+    leg(rdap::lookup_asn(transport, asn), now_unix, |record| {
+        let subject = Subject {
+            kind: EntityKind::Asn,
+            value: &value,
+            parent_attr: "asn",
+            scan_id,
+        };
+        subject.entities(record)
+    })
 }
 
 fn leg(
@@ -204,6 +220,8 @@ impl Subject<'_> {
         if !record.cidrs.is_empty() {
             let name = record.name.as_deref().unwrap_or("network");
             let _ = write!(summary, ", {name} {}", record.cidrs.join(" "));
+        } else if let (Some(name), Some(_)) = (record.name.as_deref(), record.autnums) {
+            let _ = write!(summary, ", {name}");
         }
         if let Some(registrant) = registrant {
             let _ = write!(summary, ", registrant {registrant}");
@@ -239,6 +257,14 @@ impl Subject<'_> {
         }
         for block in &record.cidrs {
             evidence = evidence.with_attr("prefix", block.as_str());
+        }
+        if let Some((first, last)) = record.autnums {
+            let range = if first == last {
+                format!("AS{first}")
+            } else {
+                format!("AS{first}-AS{last}")
+            };
+            evidence = evidence.with_attr("autnum_range", range);
         }
         for contact in &record.contacts {
             evidence = contact_attrs(evidence, contact);

@@ -17,6 +17,7 @@ pub mod archive_bridge;
 pub mod artifacts;
 pub mod asic_director;
 pub mod asic_persons;
+pub mod asn_cli;
 pub mod atproto;
 pub mod attack;
 pub mod attack_catalog;
