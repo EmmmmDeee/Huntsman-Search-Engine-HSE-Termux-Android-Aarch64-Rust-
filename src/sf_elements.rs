@@ -362,13 +362,18 @@ fn identity_descriptors(
             out.push((kind, format!("{host} [{breach}]")));
         }
     }
-    if let Some(password) = attr("password").filter(|value| !is_flag(value)) {
-        out.push(("PASSWORD_COMPROMISED", format!("{host}:{password}")));
+    // That a password or its hash was exposed, and where; never the credential itself, so a
+    // third party's breached login is not handed on in a report.
+    let source = &evidence.provenance.source;
+    if attr("password_exposed").is_some_and(positive) || attr("password").is_some_and(exposed) {
+        out.push(("PASSWORD_COMPROMISED", format!("{host} [{source}]")));
     }
-    for key in ["password_hash", "hashed_password"] {
-        if let Some(hash) = attr(key).filter(|value| !is_flag(value)) {
-            out.push(("HASH_COMPROMISED", format!("{host}:{hash}")));
-        }
+    if ["password_hash", "hashed_password"]
+        .iter()
+        .any(|key| attr(key).is_some_and(exposed))
+    {
+        let kind = attr("hash_type").map_or(String::new(), |kind| format!(" ({kind})"));
+        out.push(("HASH_COMPROMISED", format!("{host}{kind} [{source}]")));
     }
     if says_malicious(evidence) {
         if let Some(kind) = malicious_type(&entity.kind) {
@@ -377,10 +382,11 @@ fn identity_descriptors(
     }
 }
 
-fn is_flag(value: &str) -> bool {
-    matches!(
+/// Whether a credential attribute says one was exposed: a value, or a flag that is not negative.
+fn exposed(value: &str) -> bool {
+    !matches!(
         value.trim().to_ascii_lowercase().as_str(),
-        "true" | "false" | "yes" | "no" | "1" | "0"
+        "false" | "no" | "0" | "none" | "null"
     )
 }
 
@@ -833,7 +839,12 @@ mod tests {
             EntityKind::Email,
             "jane@example.org",
             "xposed_or_not",
-            &[("breaches", "Adobe; LinkedIn"), ("password", "hunter2")],
+            &[
+                ("breaches", "Adobe; LinkedIn"),
+                ("password", "hunter2"),
+                ("password_hash", "5f4dcc3b5aa765d61d8327deb882cf99"),
+                ("hash_type", "md5"),
+            ],
         );
         email.add_evidence(
             Evidence::new(EvidenceProvenance::for_scan("ipqs", "scan"), "verdict")
@@ -855,9 +866,41 @@ mod tests {
             breaches,
             ["jane@example.org [Adobe]", "jane@example.org [LinkedIn]"]
         );
+        // The exposure and where it was seen, never the password or hash.
         assert_eq!(
             of_type(&found, "PASSWORD_COMPROMISED")[0].data,
-            "jane@example.org:hunter2"
+            "jane@example.org [xposed_or_not]"
+        );
+        assert_eq!(
+            of_type(&found, "HASH_COMPROMISED")[0].data,
+            "jane@example.org (md5) [xposed_or_not]"
+        );
+        let descriptors: Vec<&DataElement> = found
+            .iter()
+            .filter(|element| element.raw.is_null())
+            .collect();
+        assert!(
+            descriptors.iter().all(
+                |element| !element.data.contains("hunter2") && !element.data.contains("5f4dcc")
+            ),
+            "{descriptors:?}"
+        );
+        let flagged = elements(
+            Target {
+                value: "jane@example.org",
+                kind: "EMAILADDR",
+            },
+            &[entity(
+                EntityKind::Email,
+                "jane@example.org",
+                "oathnet",
+                &[("password_exposed", "true")],
+            )],
+            1_700_000_000,
+        );
+        assert_eq!(
+            of_type(&flagged, "PASSWORD_COMPROMISED")[0].data,
+            "jane@example.org [oathnet]"
         );
         let malicious = of_type(&found, "MALICIOUS_EMAILADDR");
         assert_eq!(malicious.len(), 1);
