@@ -122,9 +122,66 @@ fn apex_base_extracts_the_true_host_for_each_seed_kind() {
 
 #[test]
 fn parse_dn_org_extracts_first_nonempty_o_field() {
-    assert_eq!(parse_dn_org("C=US, O=Acme CA, CN=x"), Some("Acme CA"));
-    assert_eq!(parse_dn_org("CN=foo, O=, O=Second"), Some("Second"));
+    assert_eq!(
+        parse_dn_org("C=US, O=Acme CA, CN=x").as_deref(),
+        Some("Acme CA")
+    );
+    assert_eq!(
+        parse_dn_org("CN=foo, O=, O=Second").as_deref(),
+        Some("Second")
+    );
     assert_eq!(parse_dn_org("CN=No Org"), None);
+}
+
+#[test]
+fn a_quoted_or_escaped_comma_stays_inside_the_organisation() {
+    // crt.sh quotes a value that holds a comma; splitting on every comma left `"CLOUDFLARE`,
+    // which no public-CA prefix matched, so Cloudflare became an "enterprise PKI" pivot.
+    assert_eq!(
+        parse_dn_org(r#"C=US, O="CLOUDFLARE, INC.", CN=Cloudflare TLS Issuing ECC CA 1"#)
+            .as_deref(),
+        Some("CLOUDFLARE, INC.")
+    );
+    assert_eq!(
+        parse_dn_org(r#"C=US, O="thawte, Inc.", CN=thawte SSL CA - G2"#).as_deref(),
+        Some("thawte, Inc.")
+    );
+    assert_eq!(
+        parse_dn_org(r"O=Acme\, Inc, CN=x").as_deref(),
+        Some("Acme, Inc")
+    );
+    assert_eq!(
+        parse_dn_org(r#"O="Acme \"Labs\", Ltd", CN=x"#).as_deref(),
+        Some(r#"Acme "Labs", Ltd"#)
+    );
+    assert_eq!(
+        dn_attributes("CN=a + OU=b, O=c"),
+        [("CN", "a"), ("OU", "b"), ("O", "c")].map(|(k, v)| (k.to_owned(), v.to_owned()))
+    );
+}
+
+#[test]
+fn a_quoted_public_ca_is_not_an_enterprise_issuer() {
+    let entries = [
+        CrtEntry {
+            name_value: Some("a.example.com".into()),
+            issuer_name: Some(
+                r#"C=US, O="CLOUDFLARE, INC.", CN=Cloudflare TLS Issuing ECC CA 1"#.into(),
+            ),
+            ..CrtEntry::default()
+        },
+        CrtEntry {
+            name_value: Some("b.example.com".into()),
+            issuer_name: Some(r#"C=US, O="Acme Holdings, Ltd", CN=Acme Issuing CA"#.into()),
+            ..CrtEntry::default()
+        },
+    ];
+    let orgs: Vec<String> = build_entities(&entries, "example.com", "s")
+        .into_iter()
+        .filter(|e| e.kind == EntityKind::Organisation)
+        .map(|e| e.raw_value)
+        .collect();
+    assert_eq!(orgs, ["Acme Holdings, Ltd"]);
 }
 
 #[test]
