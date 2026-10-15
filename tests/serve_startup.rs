@@ -46,10 +46,15 @@ fn a_taken_port_is_named_with_what_to_pass_instead() {
     );
 }
 
-/// Starts `serve` on a free port with `envs`; returns its first stdout line and everything it
-/// wrote to stderr before it answered a request.
+/// Starts `serve` on a free loopback port with `envs`; returns its first stdout line and everything
+/// it wrote to stderr before it answered a request.
 fn startup(envs: &[(&str, &str)]) -> (String, String) {
-    let mut child = serve(&["--bind", "127.0.0.1:0"], envs)
+    startup_on("127.0.0.1:0", envs)
+}
+
+/// [`startup`] on `bind`.
+fn startup_on(bind: &str, envs: &[(&str, &str)]) -> (String, String) {
+    let mut child = serve(&["--bind", bind], envs)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -164,16 +169,35 @@ fn the_install_doc_has_the_section_the_hint_names() {
     }
 }
 
-/// With `HSE_AUTH_TOKEN` set, every API call but health needs the token, and the page only said
-/// `unauthorized` (seen on a phone, 2026-10-14). `serve` now says so when it starts, names where
-/// the value goes, and never prints the value.
+/// The phone's service still exports the token an earlier installer wrote. A loopback `serve`
+/// needs none, says so, and never prints the value.
 #[test]
-fn with_a_token_serve_says_the_page_needs_it_without_printing_it() {
+fn on_loopback_serve_says_the_token_is_not_needed_without_printing_it() {
     let value = "TEST-ONLY-serve-token-7f3a";
     let (first, stderr) = startup(&[("HSE_AUTH_TOKEN", value), ("PREFIX", "/usr")]);
     assert!(first.starts_with("serving=http://127.0.0.1:"), "{first}");
     assert!(
-        stderr.contains("HSE_AUTH_TOKEN is set")
+        stderr.contains("a loopback bind needs no token") && !stderr.contains("token field"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains(value) && !first.contains(value),
+        "{stderr}"
+    );
+}
+
+/// On a public bind every API call but health needs the token. `serve` says so when it starts,
+/// names where the value goes, and never prints the value.
+#[test]
+fn on_a_public_bind_serve_says_the_page_needs_the_token_without_printing_it() {
+    let value = "TEST-ONLY-serve-token-7f3a";
+    let (first, stderr) = startup_on(
+        "0.0.0.0:0",
+        &[("HSE_AUTH_TOKEN", value), ("PREFIX", "/usr")],
+    );
+    assert!(first.starts_with("serving=http://0.0.0.0:"), "{first}");
+    assert!(
+        stderr.contains("this public bind needs HSE_AUTH_TOKEN")
             && stderr.contains("token field")
             && stderr.contains("/#token=VALUE"),
         "{stderr}"
