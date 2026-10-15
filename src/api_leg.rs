@@ -27,8 +27,9 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 /// Ceiling for one leg's one request.
 pub const TIMEOUT: Duration = Duration::from_secs(20);
-/// Longest provider text kept in a diagnostic or an attribute, in characters.
-pub const MAX_TEXT_CHARS: usize = 160;
+/// Longest reason a failed leg's diagnostic keeps, in characters. Only diagnostics are cut:
+/// provider text in a finding is kept whole (see [`clean`]).
+pub const MAX_DIAGNOSTIC_CHARS: usize = 320;
 
 /// Where a provider takes its key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,7 +156,7 @@ impl LegError {
             now_unix,
             self.outcome_kind(),
             self.http_status(),
-            format!("{}: {self}", api.source),
+            format!("{}: {}", api.source, diagnostic(&self.to_string())),
         );
         match self {
             Self::RateLimited {
@@ -343,8 +344,9 @@ pub fn decode<D: serde::de::DeserializeOwned>(body: &[u8]) -> Result<D, LegError
     })
 }
 
-/// Provider text as an attribute or diagnostic may keep it: trimmed, control characters
-/// replaced, at most [`MAX_TEXT_CHARS`] characters, `None` when blank. **Pure.**
+/// Provider text as a finding keeps it: trimmed, control characters replaced, `None` when
+/// blank. Never shortened: an attribute, a summary or a pivot holds all the provider said.
+/// **Pure.**
 #[must_use]
 pub fn clean(text: Option<&str>) -> Option<String> {
     let text = text?.trim();
@@ -353,10 +355,21 @@ pub fn clean(text: Option<&str>) -> Option<String> {
     }
     Some(
         text.chars()
-            .take(MAX_TEXT_CHARS)
             .map(|c| if c.is_control() { '\u{fffd}' } else { c })
             .collect(),
     )
+}
+
+/// `reason` as a failed leg's diagnostic keeps it: at most [`MAX_DIAGNOSTIC_CHARS`] characters,
+/// ending in `…` when cut. **Pure.**
+fn diagnostic(reason: &str) -> String {
+    let mut chars = reason.chars();
+    let kept: String = chars.by_ref().take(MAX_DIAGNOSTIC_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{kept}…")
+    } else {
+        kept
+    }
 }
 
 #[cfg(test)]
@@ -598,13 +611,29 @@ mod tests {
     }
 
     #[test]
-    fn provider_text_is_trimmed_capped_and_has_no_controls() {
+    fn provider_text_is_trimmed_kept_whole_and_has_no_controls() {
         assert_eq!(clean(Some("  ")), None);
         assert_eq!(clean(None), None);
         assert_eq!(clean(Some(" a\u{1b}b ")).as_deref(), Some("a\u{fffd}b"));
+        let long = "x".repeat(5_000);
+        assert_eq!(clean(Some(&long)).as_deref(), Some(long.as_str()));
+    }
+
+    #[test]
+    fn only_a_failed_legs_diagnostic_is_cut() {
+        let reason = format!("Example: {}", "y".repeat(1_000));
+        let outcome = LegError::Decode(reason).outcome(&KEYLESS, 1);
+        let detail = outcome.detail.as_deref().unwrap_or_default();
+        assert!(detail.starts_with("fixture: Example: yyy"), "{detail}");
+        assert!(detail.ends_with('…'), "{detail}");
         assert_eq!(
-            clean(Some(&"x".repeat(500))).map(|s| s.chars().count()),
-            Some(MAX_TEXT_CHARS)
+            detail.chars().count(),
+            "fixture: ".len() + MAX_DIAGNOSTIC_CHARS + 1
+        );
+        let short = LegError::Decode("Example: invalid ip".into()).outcome(&KEYLESS, 1);
+        assert_eq!(
+            short.detail.as_deref(),
+            Some("fixture: Example: invalid ip")
         );
     }
 }
