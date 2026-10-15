@@ -43,6 +43,9 @@ pub fn domain<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Leg {
+    if !transport.runs_module(SOURCE) {
+        return Leg::default();
+    }
     let registered = crate::domains::registrable_domain(domain).unwrap_or_else(|| domain.into());
     let answer = rdap::lookup_domain(transport, &registered);
     leg(answer, now_unix, |record| {
@@ -59,6 +62,9 @@ pub fn domain<T: Transport + ?Sized>(
 /// The registration of the network that holds `ip`, from its regional registry.
 #[must_use]
 pub fn ip<T: Transport + ?Sized>(transport: &T, ip: &str, scan_id: &str, now_unix: u64) -> Leg {
+    if !transport.runs_module(SOURCE) {
+        return Leg::default();
+    }
     let Ok(address) = ip.parse::<IpAddr>() else {
         return Leg::default();
     };
@@ -81,6 +87,9 @@ pub fn netblock<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Leg {
+    if !transport.runs_module(SOURCE) {
+        return Leg::default();
+    }
     let value = block.to_string();
     leg(
         rdap::lookup_netblock(transport, block),
@@ -100,6 +109,9 @@ pub fn netblock<T: Transport + ?Sized>(
 /// The registration of AS number `asn`, from the registry that assigned it.
 #[must_use]
 pub fn asn<T: Transport + ?Sized>(transport: &T, asn: u32, scan_id: &str, now_unix: u64) -> Leg {
+    if !transport.runs_module(SOURCE) {
+        return Leg::default();
+    }
     let value = format!("AS{asn}");
     leg(rdap::lookup_asn(transport, asn), now_unix, |record| {
         let subject = Subject {

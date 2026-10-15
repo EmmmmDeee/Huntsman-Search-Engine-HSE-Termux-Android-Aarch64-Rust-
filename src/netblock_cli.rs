@@ -82,7 +82,8 @@ pub enum NetblockRun {
 }
 
 /// Look up `netblock`, then check it and every address and name found in it against the threat
-/// `feeds`.
+/// `feeds`. Each leg runs only when the transport's lookup asks its module
+/// ([`Transport::runs_module`]).
 #[must_use]
 pub fn run<T: Transport + ?Sized + Sync>(
     transport: &T,
@@ -101,21 +102,25 @@ pub fn run<T: Transport + ?Sized + Sync>(
     let registration = rdap_legs::netblock(transport, block, &scan_id, now_unix);
     report.entities.extend(registration.entities);
     report.outcomes.extend(registration.outcome);
-    match ripestat::lookup(transport, &value, now_unix) {
-        Ok(routing) if routing.origins.is_empty() => report.outcomes.push(
-            SourceExecutionOutcome::valid_zero(ripestat::SOURCE, now_unix),
-        ),
-        Ok(routing) => routing_leg(&mut report, &value, &scan_id, &routing, now_unix),
-        Err(err) => {
-            if let LegError::Transport(_) = err {
-                network = Some(format!("{}: {err}", ripestat::SOURCE));
+    if transport.runs_module(ripestat::SOURCE) {
+        match ripestat::lookup(transport, &value, now_unix) {
+            Ok(routing) if routing.origins.is_empty() => report.outcomes.push(
+                SourceExecutionOutcome::valid_zero(ripestat::SOURCE, now_unix),
+            ),
+            Ok(routing) => routing_leg(&mut report, &value, &scan_id, &routing, now_unix),
+            Err(err) => {
+                if let LegError::Transport(_) = err {
+                    network = Some(format!("{}: {err}", ripestat::SOURCE));
+                }
+                report.outcomes.push(err.outcome(&ripestat::API, now_unix));
             }
-            report.outcomes.push(err.outcome(&ripestat::API, now_unix));
         }
     }
-    let swept = sweep(transport, block, &scan_id, now_unix);
-    report.entities.extend(swept.entities);
-    report.outcomes.push(swept.outcome);
+    if transport.runs_module(RESOLVE_SOURCE) {
+        let swept = sweep(transport, block, &scan_id, now_unix);
+        report.entities.extend(swept.entities);
+        report.outcomes.push(swept.outcome);
+    }
     threat_feeds::check_found(
         feeds,
         threat_feeds::Subject::Block(block),

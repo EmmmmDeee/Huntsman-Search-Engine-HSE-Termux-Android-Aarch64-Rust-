@@ -99,12 +99,14 @@ leakix	adapter	LeakIX leg reached through indicator_legs from ip, domain, scan a
 ledger	exporter	hash-chained verified-claim ledger
 lineage	leaf	lineage-aware candidate resolution helper
 lookup_args	leaf	lookup option grammar shared by the front-ends
+lookup_modules	runtime	the modules each lookup kind asks, reached through scans run -m, sf -m, the New Scan page's modules and /api/settings
 lookup_report	leaf	shared text report of an identifier lookup
 lookup_save	exporter	shared unverified lookup ledger persistence
 md5	leaf	MD5 primitive for protocols that require public MD5 identifiers
 meta_plan	runtime	meta-plan validation consumed by the runtime
 metrics	runtime	shared scan metrics
 module	runtime	provider economics metadata
+module_selection	runtime	the chosen modules carried on the transport, reached through every lookup a scan with modules runs
 navigator	exporter	ATT&CK Navigator output from admitted claims
 netblock	runtime	CIDR address-block parsing, containment and listing shared by spf, rdap and netblock_cli
 netblock_cli	runtime	netblock lookup front-end reached from netblock, scan -k netblock, sf -s and /api/lookup

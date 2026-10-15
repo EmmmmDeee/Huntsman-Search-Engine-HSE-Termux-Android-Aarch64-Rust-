@@ -287,6 +287,7 @@ impl ScanApi {
                     "description": module.description,
                     "key_env": key_env,
                     "configured": configured,
+                    "lookups": crate::lookup_modules::lookups_asking(module.name),
                 })
             })
             .collect();
@@ -421,7 +422,7 @@ impl ScanApi {
         value["honoured"] = json!({
             "usecase": "passive skips the keyed breach lookup of every email; the other use cases run every source of each lookup",
             "types": true,
-            "modules": record.options.modules.is_empty(),
+            "modules": true,
             "depth": true,
         });
         ok(200, &value)
@@ -946,6 +947,7 @@ fn empty_results(record: &ScanRecord) -> ScanResults {
 mod tests {
     use super::*;
     use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+    use crate::module_selection::Selection;
     use crate::scan_route::ScanKind;
     use crate::scan_service::LookupOutput;
     use crate::scan_store::ScanStore;
@@ -960,7 +962,7 @@ mod tests {
 
     fn api(tag: &str) -> (ScanApi, PathBuf) {
         let dir = scratch(tag);
-        let lookup = Arc::new(|_kind: ScanKind, selector: &str| {
+        let lookup = Arc::new(|_kind: ScanKind, selector: &str, _: &Selection| {
             let evidence = Evidence::new(EvidenceProvenance::for_scan("internetdb", "s"), "ports")
                 .with_attr("ports", "22,443")
                 .with_attr("vulns", "CVE-2021-44228,CVE-2014-0160");
@@ -1291,6 +1293,43 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_scan_started_with_modules_keeps_them_and_refuses_what_none_of_them_takes() {
+        let (api, dir) = api("modules");
+        let unknown = api.handle("POST", "/api/scans", "target=1.1.1.1&modules=nonesuch");
+        assert_eq!(unknown.status, 400, "{}", unknown.text());
+        assert!(
+            unknown.text().contains("no module is named nonesuch"),
+            "{}",
+            unknown.text()
+        );
+        let unasked = api.handle("POST", "/api/scans", "target=1.1.1.1&modules=sfp_gravatar");
+        assert_eq!(unasked.status, 400, "{}", unasked.text());
+        assert!(
+            unasked
+                .text()
+                .contains("none of the chosen modules (sfp_gravatar)"),
+            "{}",
+            unasked.text()
+        );
+        let started = api.handle("POST", "/api/scans", "target=1.1.1.1&modules=sfp_ripe,RDAP");
+        assert_eq!(started.status, 202, "{}", started.text());
+        assert_eq!(
+            body(&started)["options"]["modules"],
+            json!(["sfp_ripe", "rdap"])
+        );
+        let id = body(&started)["id"].as_str().unwrap().to_owned();
+        for _ in 0..200 {
+            if !api.service().store().get(&id).unwrap().status.is_active() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let shown = body(&api.handle("GET", &format!("/api/scans/{id}"), ""));
+        assert_eq!(shown["honoured"]["modules"], true);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1629,6 +1668,14 @@ mod tests {
         assert_eq!(robtex["key_env"], json!([]));
         assert_eq!(robtex["configured"], Value::Null);
         assert!(settings["global"].as_array().unwrap().len() >= 3);
+        // Each module names the lookups that ask it, as New Scan's By Module list shows.
+        let modules = settings["modules"].as_array().unwrap();
+        assert!(modules.iter().all(|module| module["lookups"].is_array()));
+        let ripestat = modules.iter().find(|module| module["name"] == "ripestat");
+        assert_eq!(
+            ripestat.unwrap()["lookups"],
+            json!(["ip", "netblock", "asn"])
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

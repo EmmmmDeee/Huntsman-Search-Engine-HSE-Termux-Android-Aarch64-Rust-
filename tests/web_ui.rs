@@ -10,6 +10,7 @@ use std::fs;
 use std::sync::Arc;
 
 use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+use huntsman_recon::module_selection::Selection;
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_route::ScanKind;
 use huntsman_recon::scan_service::{LookupOutput, ScanRequest, ScanService};
@@ -382,7 +383,7 @@ const PAGE_READS: &[(&str, &str, &str)] = &[
 fn contract_scan(tag: &str) -> (ScanApi, String, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("hse-web-ui-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    let lookup = Arc::new(|_kind: ScanKind, selector: &str| {
+    let lookup = Arc::new(|_kind: ScanKind, selector: &str, _: &Selection| {
         let evidence = Evidence::new(EvidenceProvenance::for_scan("phone_intl", "s"), "Australia")
             .with_attr("country_iso", "AU");
         Ok(LookupOutput {

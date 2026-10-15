@@ -19,7 +19,7 @@ use crate::sf_elements::DataElement;
 use crate::sf_types;
 use crate::textnorm::{escape_controls, is_escaped};
 
-pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -l IP:PORT | -C SCAN_ID | -s TARGET [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...] [-f] [-x]] [-F TYPE[,TYPE...]] [--depth N] [-o tab|csv|json] [-H] [-n] [-r] [-S LENGTH] [-D DELIMITER] [-d] [-q]";
+pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -l IP:PORT | -C SCAN_ID | -s TARGET [-u all|footprint|investigate|passive] [-m MODULE[,MODULE...]] [-t TYPE[,TYPE...] [-f] [-x]] [-F TYPE[,TYPE...]] [--depth N] [-o tab|csv|json] [-H] [-n] [-r] [-S LENGTH] [-D DELIMITER] [-d] [-q]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SfMode {
@@ -49,6 +49,9 @@ pub struct SfArgs {
     pub strict: bool,
     /// `--depth N`: how many hops past the target the scan follows, as `scans run --depth`.
     pub depth: u32,
+    /// `-m`: the only modules the scan asks, by Huntsman or Spiderfoot (`sfp_*`) name; empty
+    /// asks every module the use case takes.
+    pub modules: Vec<String>,
     pub include_source: bool,
     /// `-H`: no header line.
     pub no_headers: bool,
@@ -79,6 +82,7 @@ impl Default for SfArgs {
             only_requested: false,
             strict: false,
             depth: 0,
+            modules: Vec::new(),
             include_source: false,
             no_headers: false,
             strip_newlines: false,
@@ -123,6 +127,7 @@ impl SfArgs {
             "-S" => self.max_length = Some(number(value(args, index, flag)?, flag)?),
             "-D" => self.delimiter = Some(value(args, index, flag)?.to_owned()),
             "--depth" => self.depth = number(value(args, index, flag)?, flag)?,
+            "-m" => self.modules.extend(module_list(value(args, index, flag)?)),
             "-C" | "--correlate" => {
                 self.scan_id = Some(value(args, index, flag)?.to_owned());
                 self.set_mode(SfMode::Correlate)?;
@@ -193,6 +198,15 @@ impl SfArgs {
         if (self.only_requested || self.strict) && self.types.is_empty() {
             return Err(Error::Invalid("sf -f and -x need -t TYPE[,TYPE...]".into()));
         }
+        if self.strict && !self.modules.is_empty() {
+            return Err(Error::Invalid(
+                "sf -x picks the modules that take the target, so it takes no -m".into(),
+            ));
+        }
+        if !self.modules.is_empty() {
+            crate::module::selection(&self.modules)
+                .map_err(|error| Error::Invalid(format!("sf -m: {error}")))?;
+        }
         if self.strict && self.depth > 0 {
             return Err(Error::Invalid(
                 "sf -x runs only the lookups that take the target, so it takes no --depth".into(),
@@ -233,6 +247,14 @@ fn type_list(value: &str) -> impl Iterator<Item = String> + '_ {
         .map(str::trim)
         .filter(|item| !item.is_empty())
         .map(str::to_ascii_uppercase)
+}
+
+fn module_list(value: &str) -> impl Iterator<Item = String> + '_ {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_ascii_lowercase)
 }
 
 fn number<T: std::str::FromStr>(value: &str, flag: &str) -> Result<T, Error> {
@@ -284,6 +306,8 @@ pub struct SfScan {
     /// The types the saved scan keeps; empty keeps them all.
     pub types: Vec<String>,
     pub depth: u32,
+    /// The only modules the saved scan asks; empty asks every one the use case takes.
+    pub modules: Vec<String>,
     pub output: SfOutput,
     pub debug: bool,
     pub quiet: bool,
@@ -336,6 +360,7 @@ pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
         use_case: args.use_case.clone(),
         types: args.types.clone(),
         depth: args.depth,
+        modules: args.modules.clone(),
         output: SfOutput {
             format: args.format.clone(),
             show,
@@ -1031,6 +1056,20 @@ mod tests {
         assert_eq!(shaped.output.max_length, Some(40));
         assert!(shaped.output.strip_newlines && shaped.output.no_headers && shaped.debug);
         assert_eq!(shaped.depth, 2);
+        // -m picks the modules the saved scan asks, by Huntsman or Spiderfoot name.
+        assert_eq!(
+            scan(&[
+                "-s",
+                "example.org",
+                "-m",
+                "sfp_dnsresolve, CRTSH",
+                "-m",
+                "rdap"
+            ])
+            .modules,
+            ["sfp_dnsresolve", "crtsh", "rdap"]
+        );
+        assert!(scan(&["-s", "example.org"]).modules.is_empty());
         assert_eq!(
             scan(&["-s", "example.org", "-S", "0"]).output.max_length,
             None
@@ -1056,7 +1095,9 @@ mod tests {
             &["-s", "example.org", "-F", "NOT_A_TYPE"],
             &["-l", "127.0.0.1:5001", "-s", "example.org"],
             &["-l", "127.0.0.1:5001", "-M"],
-            &["-s", "example.org", "-m", "sfp_dnsresolve"],
+            &["-s", "example.org", "-m", "sfp_not_a_module"],
+            &["-s", "example.org", "-m", "nonesuch"],
+            &["-s", "example.org", "-t", "IP_ADDRESS", "-x", "-m", "dns"],
         ] {
             assert!(args(refused).is_err(), "{refused:?}");
         }

@@ -282,7 +282,8 @@ enum Verdict {
     Untrusted(SourceOutcomeKind, String),
 }
 
-/// What the lists say about `subject`: its listings as evidence on it, and one row per list.
+/// What the lists say about `subject`: its listings as evidence on it, and one row per list the
+/// transport's lookup asks.
 #[must_use]
 pub fn check<T: Transport + ?Sized>(
     transport: &T,
@@ -290,7 +291,10 @@ pub fn check<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> (Vec<Entity>, Vec<SourceExecutionOutcome>) {
-    let zones: Vec<&Zone> = ZONES.iter().filter(|zone| subject.asked_by(zone)).collect();
+    let zones: Vec<&Zone> = ZONES
+        .iter()
+        .filter(|zone| subject.asked_by(zone) && transport.runs_module(zone.source))
+        .collect();
     let verdicts: Vec<(&Zone, Verdict)> = zones
         .iter()
         .map(|zone| (*zone, ask(transport, zone, subject)))

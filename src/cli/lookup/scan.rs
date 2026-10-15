@@ -9,6 +9,7 @@ use crate::cli::{MAX_PLAIN_FILE_BYTES, fail};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
+use huntsman_recon::module_selection::Selection;
 use huntsman_recon::scan_batch::parse_seed_list;
 use huntsman_recon::scan_route::{
     ScanKind, canonical_selector, explicit_people_is_name, infer_kind, inferred_people_is_name,
@@ -257,7 +258,7 @@ struct LiveCollector;
 
 impl SelectorCollector for LiveCollector {
     fn collect(&mut self, target: &Target) -> Step {
-        match collect(target.kind, &target.selector) {
+        match collect(target.kind, &target.selector, &Selection::all()) {
             Ok(collected) => Step {
                 entities: collected.entities,
                 outcomes: collected.outcomes,

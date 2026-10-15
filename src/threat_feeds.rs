@@ -337,7 +337,7 @@ pub fn check_found(
 }
 
 /// What the feeds say about `subjects`: each listing as evidence on its subject, and one row per
-/// source. With [`Feeds::none`], nothing.
+/// source the feeds' transport asks. With [`Feeds::none`], nothing.
 #[must_use]
 pub fn check(
     feeds: &Feeds,
@@ -348,14 +348,18 @@ pub fn check(
     let Some(transport) = feeds.transport.as_deref() else {
         return (Vec::new(), Vec::new());
     };
+    let asked: Vec<&Feed> = FEEDS
+        .iter()
+        .filter(|feed| transport.runs_module(feed.source))
+        .collect();
     let read = crate::dns::ask_all(
-        FEEDS,
+        &asked,
         |feed| read_feed(transport, feeds.dir.as_deref(), feed, subjects, now_unix),
         |result| matches!(result, Err((kind, _)) if unreachable(*kind)),
     );
     let mut entities = Vec::new();
     let mut said = Vec::new();
-    for (feed, result) in FEEDS.iter().zip(read) {
+    for (feed, result) in asked.into_iter().zip(read) {
         let result = result.unwrap_or_else(|| {
             Err((
                 SourceOutcomeKind::Inconclusive,

@@ -783,13 +783,34 @@ fn sf_takes_sf_py_output_flags_debug_and_listen() {
     assert!(stderr.contains("[INFO] huntsman: scan created"), "{stderr}");
     assert_eq!(String::from_utf8_lossy(&debug.stdout).lines().count(), 2);
 
+    // -m picks the modules the saved scan asks, and a target none of them looks up is bad data.
+    let chosen = run(&[
+        "sf",
+        "-s",
+        "+61412345678",
+        "-m",
+        "sfp_numverify",
+        "-F",
+        "PHONE_NUMBER",
+    ]);
+    let stderr = String::from_utf8_lossy(&chosen.stderr);
+    assert_eq!(chosen.status.code(), Some(0), "{stderr}");
+    assert_eq!(String::from_utf8_lossy(&chosen.stdout).lines().count(), 2);
+    let unasked = run(&["sf", "-s", "+61412345678", "-m", "sfp_gravatar"]);
+    let stderr = String::from_utf8_lossy(&unasked.stderr);
+    assert_eq!(unasked.status.code(), Some(65), "{stderr}");
+    assert!(
+        stderr.contains("none of the chosen modules (sfp_gravatar) looks up the target"),
+        "{stderr}"
+    );
+
     let listen = run(&["sf", "-l", "not-a-socket"]);
     assert_eq!(listen.status.code(), Some(65));
     assert!(String::from_utf8_lossy(&listen.stderr).contains("invalid serve bind"));
     for refused in [
         &["sf", "-s", "example.org", "-f"][..],
         &["sf", "-s", "example.org", "-D", ";"],
-        &["sf", "-s", "example.org", "-m", "sfp_dnsresolve"],
+        &["sf", "-s", "example.org", "-m", "sfp_not_a_module"],
     ] {
         let out = run(refused);
         assert_eq!(out.status.code(), Some(64), "{refused:?}");

@@ -21,6 +21,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::correlator::evaluate_rules;
 use crate::entity::Entity;
+use crate::lookup_modules;
+use crate::module_selection::Selection;
 use crate::recursion::{
     self, PivotEdge, RecursionPolicy, RecursionReport, SelectorCollector, Step,
     Target as CrawlTarget,
@@ -60,9 +62,11 @@ pub struct LookupOutput {
     pub outcomes: Vec<SourceExecutionOutcome>,
 }
 
-/// Runs one lookup of a kind for a canonical selector. Installed by the binary, which owns
-/// transports and keys. The error is a message safe to log.
-pub type ScanLookup = Arc<dyn Fn(ScanKind, &str) -> Result<LookupOutput, String> + Send + Sync>;
+/// Runs one lookup of a kind for a canonical selector, asking only the modules the selection
+/// runs. Installed by the binary, which owns transports and keys. The error is a message safe to
+/// log.
+pub type ScanLookup =
+    Arc<dyn Fn(ScanKind, &str, &Selection) -> Result<LookupOutput, String> + Send + Sync>;
 
 /// Why a scan could not be started, stopped, rerun or deleted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,17 +241,25 @@ fn validate_options(options: &ScanOptions) -> Result<ScanOptions, ServiceError> 
             .ok_or_else(|| ServiceError::BadRequest(format!("unknown data type {code}")))?;
         types.push(kind.code.to_owned());
     }
+    let mut modules: Vec<String> = Vec::new();
+    for module in &options.modules {
+        let module = module.trim().to_ascii_lowercase();
+        if !module.is_empty() && !modules.contains(&module) {
+            modules.push(module);
+        }
+    }
+    crate::module::selection(&modules).map_err(ServiceError::BadRequest)?;
     Ok(ScanOptions {
         usecase,
-        modules: options
-            .modules
-            .iter()
-            .map(|module| module.trim().to_owned())
-            .filter(|module| !module.is_empty())
-            .collect(),
+        modules,
         types,
         depth: options.depth,
     })
+}
+
+/// The modules a scan with `options` asks: the ones it chose, else every one.
+fn chosen(options: &ScanOptions) -> Result<Selection, ServiceError> {
+    crate::module::selection(&options.modules).map_err(ServiceError::BadRequest)
 }
 
 struct State {
@@ -261,12 +273,14 @@ struct Crawl {
     termination: TerminationReason,
 }
 
-/// The crawl's lookups: each one logged and run through the installed lookup, a stop honoured
-/// before the next, and an email's breach lookup skipped when its email lookup already ran a
-/// breach source, so a keyed breach source is never skipped and never asked twice.
+/// The crawl's lookups: each one logged and run through the installed lookup asking only the
+/// chosen modules, a stop honoured before the next, a lookup that asks none of them skipped, and
+/// an email's breach lookup skipped when its email lookup already ran a breach source, so a keyed
+/// breach source is never skipped and never asked twice.
 struct ScanCollector<'a> {
     service: &'a ScanService,
     id: &'a str,
+    chosen: &'a Selection,
     text: String,
     ran: usize,
     errors: usize,
@@ -275,17 +289,32 @@ struct ScanCollector<'a> {
 
 impl SelectorCollector for ScanCollector<'_> {
     fn collect(&mut self, target: &CrawlTarget) -> Step {
+        let skip = Step {
+            entities: Vec::new(),
+            outcomes: Vec::new(),
+        };
         if target.kind == ScanKind::Exposure && self.breach_checked.contains(&target.selector) {
-            return Step {
-                entities: Vec::new(),
-                outcomes: Vec::new(),
-            };
+            return skip;
+        }
+        if !lookup_modules::asks_any(target.kind, self.chosen) {
+            self.service.log(
+                self.id,
+                "huntsman",
+                LogLevel::Info,
+                format!(
+                    "no chosen module looks up {}, so {} was not looked up",
+                    target.kind.command(),
+                    target.selector
+                ),
+            );
+            return skip;
         }
         let mut found = LookupOutput::default();
-        match self
-            .service
-            .lookup_into(self.id, target.kind, &target.selector, &mut found)
-        {
+        match self.service.lookup_into(
+            self.id,
+            (target.kind, &target.selector, self.chosen),
+            &mut found,
+        ) {
             Some(failed) => {
                 self.ran += 1;
                 self.errors += failed;
@@ -473,6 +502,14 @@ impl ScanService {
     fn create(&self, request: &ScanRequest) -> Result<(ScanRecord, ScanPlan), ServiceError> {
         let plan = plan(&request.target, request.kind.as_deref())?;
         let options = validate_options(&request.options)?;
+        if !lookup_modules::asks_any(plan.kind, &chosen(&options)?) {
+            return Err(ServiceError::BadRequest(format!(
+                "none of the chosen modules ({}) looks up the target: the {} lookup asks {}",
+                options.modules.join(", "),
+                plan.kind.command(),
+                lookup_modules::modules(plan.kind).join(", ")
+            )));
+        }
         let name = request
             .name
             .as_deref()
@@ -678,6 +715,14 @@ impl ScanService {
             .get(id)
             .map(|record| record.options)
             .unwrap_or_default();
+        let chosen = match chosen(&options) {
+            Ok(chosen) => chosen,
+            Err(error) => {
+                self.log(id, "huntsman", LogLevel::Error, error.to_string());
+                self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+                return;
+            }
+        };
         let passive = options.usecase == "passive";
         let mut targets = vec![CrawlTarget {
             kind: plan.kind,
@@ -699,6 +744,7 @@ impl ScanService {
         let mut collector = ScanCollector {
             service: self,
             id,
+            chosen: &chosen,
             text: String::new(),
             ran: 0,
             errors: 0,
@@ -784,8 +830,7 @@ impl ScanService {
     fn lookup_into(
         &self,
         id: &str,
-        kind: ScanKind,
-        target: &str,
+        (kind, target, chosen): (ScanKind, &str, &Selection),
         found: &mut LookupOutput,
     ) -> Option<usize> {
         self.log(
@@ -794,7 +839,7 @@ impl ScanService {
             LogLevel::Info,
             format!("running the {} lookup on {target}", kind.command()),
         );
-        match (self.lookup)(kind, target) {
+        match (self.lookup)(kind, target, chosen) {
             Ok(output) => {
                 let mut failed = 0;
                 for outcome in &output.outcomes {
@@ -1067,7 +1112,7 @@ mod tests {
         };
         let service = ScanService::with_rules(
             ScanStore::open(&dir).unwrap(),
-            Arc::new(|kind: ScanKind, selector: &str| Ok(found(kind, selector))),
+            Arc::new(|kind: ScanKind, selector: &str, _: &Selection| Ok(found(kind, selector))),
             vec![rule],
             vec![broken],
         );
@@ -1119,12 +1164,89 @@ mod tests {
     }
 
     #[test]
+    fn a_scan_asks_only_the_modules_chosen_and_skips_lookups_that_ask_none() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&calls);
+        let (service, dir) = with_lookup(
+            "modules",
+            Arc::new(move |kind: ScanKind, selector: &str, chosen: &Selection| {
+                let asked: Vec<&str> = ["crtsh", "spamhaus", "shodan"]
+                    .into_iter()
+                    .filter(|module| chosen.runs(module))
+                    .collect();
+                seen.lock().unwrap().push(format!(
+                    "{} {selector} asks {}",
+                    kind.command(),
+                    asked.join(",")
+                ));
+                let address = Entity::builder(EntityKind::IpAddress, "8.8.8.8", 0.9, "s")
+                    .evidence(Evidence::new(
+                        EvidenceProvenance::for_scan("crtsh", "s"),
+                        "found",
+                    ))
+                    .build();
+                Ok(LookupOutput {
+                    text: format!("{} {selector}\n", kind.command()),
+                    entities: vec![address],
+                    outcomes: vec![SourceExecutionOutcome::success("crtsh", 1, 1)],
+                })
+            }),
+        );
+        let scan = |target: &str, modules: &[&str]| {
+            service.run(&ScanRequest {
+                target: target.into(),
+                options: ScanOptions {
+                    modules: modules.iter().map(|module| (*module).to_owned()).collect(),
+                    depth: 1,
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+        };
+        // Only crt.sh: the domain's lookup asks it alone, and no chosen module looks up the
+        // address it found, so that lookup is skipped, not failed.
+        let record = scan("example.org", &[" CRTSH "]).unwrap();
+        assert_eq!(record.status, ScanStatus::Finished);
+        assert_eq!(record.options.modules, ["crtsh"]);
+        assert_eq!(record.errors, 0);
+        assert_eq!(*calls.lock().unwrap(), ["domain example.org asks crtsh"]);
+        let log = service.store().log(&record.id).unwrap();
+        assert!(log.iter().any(|entry| entry.level == LogLevel::Info
+            && entry.message == "no chosen module looks up ip, so 8.8.8.8 was not looked up"));
+        // A Spiderfoot name chooses the module doing its work, which also looks up addresses.
+        calls.lock().unwrap().clear();
+        let record = scan("example.org", &["SFP_SPAMHAUS"]).unwrap();
+        assert_eq!(record.options.modules, ["sfp_spamhaus"]);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [
+                "domain example.org asks spamhaus",
+                "ip 8.8.8.8 asks spamhaus"
+            ]
+        );
+        // A name no module answers to, and a target none of the chosen modules looks up, are
+        // refused before the scan is saved.
+        let unknown = scan("example.org", &["crtsh", "sfp_spider"]).unwrap_err();
+        assert!(
+            matches!(&unknown, ServiceError::BadRequest(why) if why.starts_with("no module is named sfp_spider;")),
+            "{unknown:?}"
+        );
+        let elsewhere = scan("1.1.1.1", &["crtsh"]).unwrap_err();
+        assert!(
+            matches!(&elsewhere, ServiceError::BadRequest(why) if why.starts_with("none of the chosen modules (crtsh) looks up the target: the ip lookup asks dnsresolve, rdap,")),
+            "{elsewhere:?}"
+        );
+        assert_eq!(service.store().list().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_deeper_scan_looks_up_what_it_finds_and_links_each_element_to_its_finder() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&calls);
         let (service, dir) = with_lookup(
             "depth",
-            Arc::new(move |kind: ScanKind, selector: &str| {
+            Arc::new(move |kind: ScanKind, selector: &str, _: &Selection| {
                 seen.lock()
                     .unwrap()
                     .push(format!("{} {selector}", kind.command()));
@@ -1217,7 +1339,7 @@ mod tests {
     fn a_run_saves_elements_counts_log_and_finishes() {
         let (service, dir) = with_lookup(
             "run",
-            Arc::new(|kind: ScanKind, selector: &str| Ok(found(kind, selector))),
+            Arc::new(|kind: ScanKind, selector: &str, _: &Selection| Ok(found(kind, selector))),
         );
         let record = service
             .run(&ScanRequest {
@@ -1257,7 +1379,7 @@ mod tests {
         let seen = Arc::clone(&calls);
         let (service, dir) = with_lookup(
             "email",
-            Arc::new(move |kind: ScanKind, _selector: &str| {
+            Arc::new(move |kind: ScanKind, _selector: &str, _: &Selection| {
                 seen.lock().unwrap().push(kind.command());
                 Ok(LookupOutput::default())
             }),
@@ -1274,7 +1396,7 @@ mod tests {
             "email2",
             Arc::new({
                 let seen = Arc::clone(&calls);
-                move |kind: ScanKind, _selector: &str| {
+                move |kind: ScanKind, _selector: &str, _: &Selection| {
                     seen.lock().unwrap().push(kind.command());
                     Ok(LookupOutput {
                         outcomes: vec![SourceExecutionOutcome::valid_zero("hibp", 1)],
@@ -1298,7 +1420,9 @@ mod tests {
     fn a_lookup_that_cannot_run_fails_the_scan_with_the_reason_logged() {
         let (service, dir) = with_lookup(
             "fail",
-            Arc::new(|_kind: ScanKind, _selector: &str| Err("egress refused".to_owned())),
+            Arc::new(|_kind: ScanKind, _selector: &str, _: &Selection| {
+                Err("egress refused".to_owned())
+            }),
         );
         let record = service
             .run(&ScanRequest {
@@ -1319,7 +1443,7 @@ mod tests {
     fn bad_targets_kinds_and_options_are_refused_before_anything_is_saved() {
         let (service, dir) = with_lookup(
             "bad",
-            Arc::new(|kind: ScanKind, selector: &str| Ok(found(kind, selector))),
+            Arc::new(|kind: ScanKind, selector: &str, _: &Selection| Ok(found(kind, selector))),
         );
         for request in [
             ScanRequest::default(),
@@ -1358,7 +1482,7 @@ mod tests {
     fn requested_types_keep_only_those_elements_and_the_target() {
         let (service, dir) = with_lookup(
             "types",
-            Arc::new(|kind: ScanKind, selector: &str| Ok(found(kind, selector))),
+            Arc::new(|kind: ScanKind, selector: &str, _: &Selection| Ok(found(kind, selector))),
         );
         let record = service
             .run(&ScanRequest {
@@ -1392,7 +1516,7 @@ mod tests {
         let entered_tx = Mutex::new(entered_tx);
         let (service, dir) = with_lookup(
             "stop",
-            Arc::new(move |kind: ScanKind, selector: &str| {
+            Arc::new(move |kind: ScanKind, selector: &str, _: &Selection| {
                 entered_tx.lock().unwrap().send(()).unwrap();
                 release_rx.lock().unwrap().recv().unwrap();
                 Ok(found(kind, selector))
@@ -1450,7 +1574,7 @@ mod tests {
     fn a_rerun_is_a_new_scan_with_the_same_target_and_options() {
         let (service, dir) = with_lookup(
             "rerun",
-            Arc::new(|kind: ScanKind, selector: &str| Ok(found(kind, selector))),
+            Arc::new(|kind: ScanKind, selector: &str, _: &Selection| Ok(found(kind, selector))),
         );
         let first = service
             .run(&ScanRequest {
@@ -1482,7 +1606,7 @@ mod tests {
         let (service, dir) = with_lookup(
             "panic",
             Arc::new(
-                |_kind: ScanKind, _selector: &str| -> Result<LookupOutput, String> {
+                |_kind: ScanKind, _selector: &str, _: &Selection| -> Result<LookupOutput, String> {
                     panic!("lookup bug")
                 },
             ),
