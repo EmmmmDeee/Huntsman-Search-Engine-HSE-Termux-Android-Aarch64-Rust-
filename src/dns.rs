@@ -19,6 +19,10 @@ use crate::{
     tlsrpt,
 };
 
+/// The module name of resolving a name or an address another source found, forward (A and
+/// AAAA) or reverse (PTR), as Spiderfoot's `sfp_dnsresolve` does: on outcome rows and evidence.
+pub const RESOLVE_SOURCE: &str = "dnsresolve";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordType {
     A,
