@@ -8,7 +8,9 @@
 //! (NS, MX, CNAME) it has resolved to, each also a pivot. An address with no route or names, or
 //! a domain with no records, is a valid zero. Robtex answers both with `200`
 //! (`{"status":"ok","act":[]}`, `[]`) and gives a `404` only for an endpoint it does not have
-//! (checked 2026-10-15): a `404` is not an answer.
+//! (checked 2026-10-15): a `404` is not an answer. An address goes into the path as written,
+//! colons included: Robtex does not decode `%3A` there, and answered an IPv6 address written
+//! that way as one it knew nothing about (checked 2026-10-15).
 
 use serde::Deserialize;
 
@@ -67,10 +69,10 @@ struct Record {
 #[must_use]
 pub fn url(indicator: Indicator<'_>) -> Option<String> {
     match indicator {
-        Indicator::Ip(ip) => Some(format!(
-            "https://freeapi.robtex.com/ipquery/{}",
-            percent_encode_component(ip)
-        )),
+        Indicator::Ip(ip) => ip
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .map(|ip| format!("https://freeapi.robtex.com/ipquery/{ip}")),
         Indicator::Domain(domain) => Some(format!(
             "https://freeapi.robtex.com/pdns/forward/{}",
             percent_encode_component(domain)
@@ -325,6 +327,43 @@ mod tests {
         // What Robtex answers for an address it knows nothing about, recorded the same day.
         let unseen = br#"{"status":"ok","act":[]}"#;
         assert!(matches!(decode_ip(unseen), Ok(None)));
+    }
+
+    /// Answers as Robtex did on 2026-10-15: the record for `2606:4700:4700::1111` written as is
+    /// (shortened), and "nothing known" for anything else, such as that address with its colons
+    /// percent-encoded.
+    struct AsRobtexAnswered;
+
+    impl Transport for AsRobtexAnswered {
+        fn send(
+            &self,
+            request: &crate::http::Request,
+        ) -> Result<crate::http::Response, crate::http::TransportFailure> {
+            let body = if request.url == "https://freeapi.robtex.com/ipquery/2606:4700:4700::1111" {
+                r#"{"status":"ok","city":"","country":"US","as":13335,"bgproute":"2606:4700:4700::/48","asname":"Cloudflare","asdesc":"CLOUDFLARENET","whoisdesc":"Cloudflare, Inc.","routedesc":"Cloudflare","pas":[{"o":"yoctianos.ca","t":1792058298}]}"#
+            } else {
+                r#"{"status":"ok","act":[]}"#
+            };
+            Ok(crate::test_support::json_ok(body))
+        }
+    }
+
+    #[test]
+    fn an_ipv6_address_is_looked_up_as_written() {
+        let looked_up = lookup(
+            &AsRobtexAnswered,
+            &Keys::default(),
+            Indicator::Ip("2606:4700:4700::1111"),
+            1,
+        );
+        let f = looked_up
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("Robtex knows the address"));
+        assert_eq!(
+            f.summary,
+            "Robtex: 2606:4700:4700::/48 via AS13335 Cloudflare"
+        );
     }
 
     #[test]
