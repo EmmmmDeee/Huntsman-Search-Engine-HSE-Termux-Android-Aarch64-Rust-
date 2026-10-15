@@ -20,8 +20,21 @@ pub const MIRRORS: [&str; 6] = [
     ".github/copilot-instructions.md",
 ];
 
+/// A file error as this module reports it. An `fsio` message already names the path it is about
+/// (the file, its temp file or its parent directory), so it is passed through; any other error
+/// gets the path.
+fn describe(path: &Path, error: &crate::error::Error) -> String {
+    if let crate::error::Error::Store(message) = error {
+        message.clone()
+    } else {
+        format!("{}: {error}", path.display())
+    }
+}
+
+/// Read the canonical file or a mirror through `fsio::read_bounded`: a symlink, a non-file or a
+/// file over [`MIRROR_MAX_BYTES`] is refused, naming the path. Reads and writes share the cap.
 fn read(path: &Path) -> Result<Vec<u8>, String> {
-    fs::read(path).map_err(|error| format!("{}: {error}", path.display()))
+    crate::fsio::read_bounded(path, MIRROR_MAX_BYTES).map_err(|error| describe(path, &error))
 }
 
 /// Verify the canonical directive embedded into an installed binary at build time.
@@ -59,6 +72,12 @@ pub fn verify_at(root: &Path) -> Result<(), String> {
     let canonical = canonical_bytes(root)?;
     for mirror in MIRRORS {
         let path = root.join(mirror);
+        if matches!(fs::symlink_metadata(&path), Err(ref error) if error.kind() == std::io::ErrorKind::NotFound)
+        {
+            return Err(format!(
+                "{mirror}: missing; run huntsman-recon directive sync from the repository root"
+            ));
+        }
         let bytes = read(&path)?;
         if bytes != canonical {
             return Err(format!(
@@ -135,6 +154,121 @@ mod tests {
         sync_at(&root).unwrap();
         verify_at(&root).unwrap();
         assert_eq!(fs::read(root.join(CANONICAL)).unwrap(), canonical);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// An empty root holding a copy of the repository's canonical file; its bytes.
+    fn fresh_root_with_canonical() -> (PathBuf, Vec<u8>) {
+        let root = unique_root();
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let canonical = fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(CANONICAL)).unwrap();
+        fs::write(root.join(CANONICAL), &canonical).unwrap();
+        (root, canonical)
+    }
+
+    fn write_mirrors(root: &Path, bytes: &[u8]) {
+        for mirror in MIRRORS {
+            let path = root.join(mirror);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn sync_creates_a_missing_mirror_directory() {
+        let (root, canonical) = fresh_root_with_canonical();
+        assert!(!root.join(".github").exists());
+        let error = verify_at(&root).expect_err("a missing mirror must be refused");
+        assert!(
+            error.contains("AGENTS.md: missing; run huntsman-recon directive sync"),
+            "{error}"
+        );
+        sync_at(&root).unwrap();
+        assert_eq!(
+            fs::read(root.join(".github/copilot-instructions.md")).unwrap(),
+            canonical
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_mirror_is_refused_by_verify_and_by_sync() {
+        let (root, canonical) = fresh_root_with_canonical();
+        write_mirrors(&root, &canonical);
+        verify_at(&root).unwrap();
+
+        // Replace one mirror with a link to a copy of the canonical text: a check that followed
+        // the link would pass, and a sync that wrote through it would land in the link's target.
+        let target = root.join("elsewhere.md");
+        fs::write(&target, &canonical).unwrap();
+        let link = root.join("CLAUDE.md");
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let shown = link.display().to_string();
+
+        let error = verify_at(&root).expect_err("a symlinked mirror must be refused by verify");
+        assert!(error.contains(&shown), "{error}");
+        assert!(error.contains("refusing symlink"), "{error}");
+        let error = sync_at(&root).expect_err("a symlinked mirror must be refused by sync");
+        assert!(error.contains(&shown), "{error}");
+        assert!(error.contains("refusing symlink"), "{error}");
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "sync must leave the link in place rather than replace it"
+        );
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            canonical,
+            "the link's target is untouched"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_mirror_directory_is_refused_by_sync() {
+        let (root, canonical) = fresh_root_with_canonical();
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let linked_dir = root.join(".github");
+        std::os::unix::fs::symlink(&elsewhere, &linked_dir).unwrap();
+
+        let error = sync_at(&root).expect_err("a symlinked mirror directory must be refused");
+        assert!(error.contains(&linked_dir.display().to_string()), "{error}");
+        assert!(error.contains("refusing symlink"), "{error}");
+        assert!(
+            !elsewhere.join("copilot-instructions.md").exists(),
+            "sync must not write through the linked directory"
+        );
+        assert_eq!(fs::read(root.join(CANONICAL)).unwrap(), canonical);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_mirror_over_the_cap_is_refused_naming_the_cap() {
+        let (root, canonical) = fresh_root_with_canonical();
+        write_mirrors(&root, &canonical);
+        verify_at(&root).unwrap();
+
+        let huge = root.join("RULE.md");
+        let mut body = canonical;
+        body.resize(usize::try_from(MIRROR_MAX_BYTES).unwrap() + 1, b'#');
+        fs::write(&huge, &body).unwrap();
+
+        let error = verify_at(&root).expect_err("a mirror over the cap must be refused");
+        assert!(error.contains(&huge.display().to_string()), "{error}");
+        assert!(
+            error.contains(&format!("exceeds {MIRROR_MAX_BYTES} bytes")),
+            "{error}"
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
