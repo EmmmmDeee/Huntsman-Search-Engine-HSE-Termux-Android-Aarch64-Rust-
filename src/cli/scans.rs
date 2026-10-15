@@ -24,8 +24,8 @@ use huntsman_recon::sf_types;
 use huntsman_recon::textnorm::escape_controls;
 use serde_json::Value;
 
-pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [--json] | scans list [--json] | scans show ID | scans summary ID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans export ID|ID,ID... [-f csv|tsv|json|gexf] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans rules [--json] | scans types
-Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read, and scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. -t keeps only those element types; -u passive skips the keyed breach lookup of an email. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); several ids give one JSON export. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
+pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [--depth N] [--json] | scans list [--json] | scans show ID | scans summary ID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans export ID|ID,ID... [-f csv|tsv|json|gexf] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans rules [--json] | scans types
+Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read, and scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. --depth N follows what the scan finds, as Spiderfoot does: each email, username, domain, phone, IP address and BSSID a lookup finds is looked up in turn, N hops past the target (0, the default, runs the target's lookup only), under the shared lookup and entity budgets; each element then names the element it was found from, so the elements form the scan's discovery tree. -t keeps only those element types; -u passive skips the keyed breach lookup of every email. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); several ids give one JSON export. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
 
 /// The synopsis line of [`SCANS_HELP`], for a usage error.
 fn usage() -> &'static str {
@@ -95,8 +95,9 @@ pub(super) fn open_api(dir: &Path, rules_dir: Option<&Path>) -> Result<ScanApi, 
 }
 
 /// Options that take a value, by every spelling, and the name each is read back by.
-const VALUED: [(&str, &str); 15] = [
+const VALUED: [(&str, &str); 16] = [
     ("--dir", "dir"),
+    ("--depth", "depth"),
     ("--rules", "rules"),
     ("-k", "kind"),
     ("--kind", "kind"),
@@ -532,6 +533,11 @@ fn run(api: &ScanApi, parsed: &Parsed, rest: &[&str]) -> ExitCode {
             .map(str::to_owned)
             .collect()
     };
+    let depth = match parsed.value("depth").map(str::parse::<u32>) {
+        None => 0,
+        Some(Ok(depth)) => depth,
+        Some(Err(_)) => return fail(EX_USAGE, "scans run --depth takes a whole number of hops"),
+    };
     let request = ScanRequest {
         target: (*target).to_owned(),
         name: parsed.owned("name"),
@@ -540,6 +546,7 @@ fn run(api: &ScanApi, parsed: &Parsed, rest: &[&str]) -> ExitCode {
             usecase: parsed.owned("usecase").unwrap_or_else(|| "all".into()),
             modules: Vec::new(),
             types: list(parsed.value("types")),
+            depth,
         },
     };
     match api.service().run(&request) {

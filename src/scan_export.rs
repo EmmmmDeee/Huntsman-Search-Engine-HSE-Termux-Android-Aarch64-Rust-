@@ -372,6 +372,8 @@ mod tests {
             entities,
             outcomes: Vec::new(),
             correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
         };
         (record, results)
     }
