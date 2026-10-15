@@ -333,10 +333,10 @@ export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android24-clang"
 export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
-HUNTSMAN_HIBP_NO_EMBED=1 cargo build --release --locked --target aarch64-linux-android
+cargo build --release --locked --target aarch64-linux-android
 ```
 
-The reference NDK is 27.3.13750724. CI uses the runner's `ANDROID_NDK_LATEST_HOME` and does not pin an NDK version. The link asks for 16 KiB page alignment, which devices with 16 KiB pages (Android 15 and later on recent hardware) require and which NDK r27 does not give by default; both CI cross-builds refuse a binary whose LOAD segments are aligned to less (`tests/android_ci.rs`). Set `HUNTSMAN_HIBP_NO_EMBED=1` (CI does) for any binary that leaves your machine, so no key is embedded (see below).
+The reference NDK is 27.3.13750724. CI uses the runner's `ANDROID_NDK_LATEST_HOME` and does not pin an NDK version. The link asks for 16 KiB page alignment, which devices with 16 KiB pages (Android 15 and later on recent hardware) require and which NDK r27 does not give by default; both CI cross-builds refuse a binary whose LOAD segments are aligned to less (`tests/android_ci.rs`). No build reads a key: HIBP keys are read at run time only (see "Opt-in HIBP library" below).
 
 ### Downloads
 
