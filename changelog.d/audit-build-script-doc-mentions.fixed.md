@@ -1,0 +1,1 @@
+- README's Android build paragraph and ARCHITECTURE's gate list no longer describe the removed build-time HIBP key embed (`HUNTSMAN_HIBP_NO_EMBED`) or `tests/hibp_build.rs`.

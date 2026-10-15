@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::profiles::Refused;
 use crate::cli::{MAX_ARTIFACT_BYTES, fail};
 use huntsman_recon::classifier::{self, classify as classify_indicator};
 use huntsman_recon::entity;
@@ -11,7 +12,6 @@ use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::{TransportConfig, UreqTransport};
-use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_report::{entity_row, evidence_row};
 use huntsman_recon::search::{Document, load_dir, search, tokenize};
 use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
@@ -104,14 +104,22 @@ pub(in crate::cli) fn sf_cmd(args: &[String]) -> ExitCode {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |duration| duration.as_secs());
             let transport = UreqTransport::new(&TransportConfig::default());
-            match sf_compat::run_scan(&transport, &Keys::from_env(), &scan, now) {
+            match sf_compat::run_scan(
+                &transport,
+                &crate::cli::credentials::lookup_keys(),
+                &scan,
+                now,
+            ) {
                 Ok(body) => {
                     print!("{body}");
                     ExitCode::SUCCESS
                 }
-                Err(Error::Network(message)) => fail(EX_UNAVAILABLE, &message),
-                Err(Error::Invalid(message)) => fail(EX_DATAERR, &message),
-                Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
+                // The plain lookups' one status table (`Refused::exit_status`): `sf -s` exits as
+                // `email`, `people`, `username` or `phone` would for the same outcome.
+                Err(refused) => {
+                    let refused = Refused::from(refused);
+                    fail(refused.exit_status(), refused.message())
+                }
             }
         }
     }
