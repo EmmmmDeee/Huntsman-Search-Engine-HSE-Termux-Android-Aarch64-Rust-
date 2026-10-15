@@ -872,9 +872,9 @@ mod tests {
     fn a_scan_started_with_a_depth_keeps_it_and_a_bad_depth_is_refused() {
         let (api, dir) = api("depth");
         let bad = api.handle("POST", "/api/scans", "target=1.1.1.1&depth=deep");
-        assert_eq!(bad.status, 400, "{}", bad.body);
+        assert_eq!(bad.status, 400, "{}", bad.text());
         let started = api.handle("POST", "/api/scans", "target=1.1.1.1&depth=2");
-        assert_eq!(started.status, 202, "{}", started.body);
+        assert_eq!(started.status, 202, "{}", started.text());
         assert_eq!(body(&started)["options"]["depth"], 2);
         let id = body(&started)["id"].as_str().unwrap().to_owned();
         for _ in 0..200 {
