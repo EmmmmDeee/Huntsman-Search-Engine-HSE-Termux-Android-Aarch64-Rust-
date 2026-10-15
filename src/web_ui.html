@@ -171,6 +171,7 @@ dd dl{margin:0}
 .help.pad{margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
 .uc label{display:block;cursor:pointer}
 .uc b{display:block}
+.uc label .help{display:block;margin:4px 0 0}
 .spin{width:16px;height:16px;border:2px solid var(--line2);border-top-color:var(--acc);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin{animation:none}}
@@ -276,7 +277,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <tr><td><label class="cb"><input type="radio" name="usecase" value="passive" id="uc-passive"></label></td><td><label for="uc-passive"><b>Passive</b>When you don't want the target to even suspect they are being investigated. Only modules that do not touch the target or its affiliates are enabled.</label></td></tr>
 </tbody></table></div>
 <div class="panel" id="np-types" role="tabpanel" aria-labelledby="nt-types" hidden><div class="panel-body"><div class="checks" id="typelist"></div></div></div>
-<div class="panel" id="np-modules" role="tabpanel" aria-labelledby="nt-modules" hidden><p class="help pad">Choosing modules is not applied yet: a scan runs every module its target's lookup uses. These are the modules, with the ones that need a key marked.</p><table class="uc"><tbody id="modlist"></tbody></table></div>
+<div class="panel" id="np-modules" role="tabpanel" aria-labelledby="nt-modules" hidden><p class="help pad">Choose the modules the scan asks, as Spiderfoot's By Module scan does. A module is asked only by the lookups listed under it, for the target and for what the scan follows; one that no scan lookup asks runs as its own command and cannot be chosen here.</p><table class="uc"><tbody id="modlist"></tbody></table></div>
 <p class="alert" id="nerror" role="alert" hidden></p>
 <div><button class="btn btn-primary" id="runscan" type="submit">Run Scan Now</button></div>
 </form>
@@ -636,7 +637,7 @@ const loaded={};
 function newTab(t){
   ntab=t;
   for(const x of ['usecase','types','modules']){$('nt-'+x).setAttribute('aria-selected',String(x===t));$('nt-'+x).tabIndex=x===t?0:-1;$('np-'+x).hidden=x!==t}
-  $('nselectors').hidden=t!=='types';
+  $('nselectors').hidden=t==='usecase';
   if(t!=='usecase'&&!loaded[t])(t==='types'?loadTypes:loadMods)();
 }
 for(const x of ['usecase','types','modules'])$('nt-'+x).onclick=()=>newTab(x);
@@ -647,18 +648,25 @@ async function loadTypes(){
   catch(e){box.replaceChildren(el('p','help',e.message))}
 }
 async function moduleList(){if(!modules){const b=await api('/api/modules');modules=b.modules||[]}return modules}
+// Each module with the lookups that ask it, from the scan API's settings; a server without them
+// lists /api/modules, every module open to choose.
 async function loadMods(){
   const tb=$('modlist');tb.replaceChildren();
   try{
-    for(const m of await moduleList()){
-      const tr=el('tr'),text=el('span'),name=el('b','',m.name);
+    let list;try{list=(await api('/api/settings')).modules}catch(_){list=await moduleList()}
+    const kinds=Object.fromEntries([...$('skind').options].map(o=>[o.value,o.textContent]));
+    for(const m of list){
+      const tr=el('tr'),i=el('input'),box=el('label','cb'),text=el('label'),name=el('b','',m.name),asks=m.lookups,open=!asks||asks.length>0;
+      i.type='checkbox';i.value=m.name;i.id='mod-'+m.name;i.checked=open;i.disabled=!open;i.dataset.names=(m.spiderfoot||[m.name]).join(' ');text.htmlFor=i.id;
       if(m.access==='operator_key')name.append(' ',el('span','label warn','key'));
-      text.append(name,m.description);put(tr,'',text);tb.append(tr);
+      text.append(name,m.description);
+      if(asks)text.append(el('span','help',asks.length?'Asked by: '+asks.map(k=>kinds[k]||k).join(', ')+(m.configured===false?'. Its key is not set, so it is skipped until one is.':''):'Runs as its own command'+(m.command?' (huntsman '+m.command+')':'')+'; no scan lookup asks it.'));
+      box.append(i);put(tr,'',box);put(tr,'',text);tb.append(tr);
     }
     loaded.modules=true;
   }catch(e){none(tb,e.message,2)}
 }
-function setAll(on){for(const i of $('np-'+ntab).querySelectorAll('input[type=checkbox]'))i.checked=on}
+function setAll(on){for(const i of $('np-'+ntab).querySelectorAll('input[type=checkbox]'))if(!i.disabled)i.checked=on}
 $('nall').onclick=()=>setAll(true);$('nnone').onclick=()=>setAll(false);
 $('newscan').onsubmit=async ev=>{
   ev.preventDefault();
@@ -668,9 +676,9 @@ $('newscan').onsubmit=async ev=>{
   if($('sdepth').validity.badInput||!/^\d+$/.test(depth)){fail('nerror','Recursion depth is a whole number of hops, 0 or more.');$('sdepth').focus();return}
   const p=new URLSearchParams({target,name:$('sname').value.trim()||target,kind:$('skind').value,depth});
   if(ntab==='usecase')p.set('usecase',document.querySelector('input[name=usecase]:checked').value);
-  else if(ntab==='types'){
+  else{
     const on=[...$('np-'+ntab).querySelectorAll('input:checked')].map(i=>i.value);
-    if(!on.length){fail('nerror','Select at least one data type.');return}
+    if(!on.length){fail('nerror',ntab==='types'?'Select at least one data type.':'Select at least one module.');return}
     p.set(ntab,on.join(','));
   }
   const b=$('runscan');b.disabled=true;$('nerror').hidden=true;
@@ -1112,7 +1120,7 @@ function stopped(s){
 // New Scan filled in, to change before it runs: Spiderfoot's Clone of a scan, or a scan of a value
 // a scan found.
 async function prefill(f){
-  const types=f.types||[];
+  const types=f.types||[],mods=(f.modules||[]).map(m=>String(m).toLowerCase());
   $('sname').value=f.name;$('starget').value=f.target;$('skind').value=f.kind||'auto';if(!$('skind').value)$('skind').value='auto';$('sdepth').value=String(f.depth||0);
   const uc=document.querySelector('input[name=usecase][value="'+CSS.escape(f.usecase||'all')+'"]');if(uc)uc.checked=true;
   ntab='usecase';
@@ -1120,6 +1128,12 @@ async function prefill(f){
     if(!loaded.types)await loadTypes();
     for(const i of $('typelist').querySelectorAll('input'))i.checked=types.includes(i.value);
     ntab='types';
+  }
+  // A scan may have chosen a module by a Spiderfoot name standing for several (sfp_whois).
+  if(mods.length){
+    if(!loaded.modules)await loadMods();
+    for(const i of $('modlist').querySelectorAll('input'))i.checked=(i.dataset.names||i.value).split(' ').some(n=>mods.includes(n));
+    ntab='modules';
   }
   $('nerror').hidden=true;location.hash='#/newscan';
 }

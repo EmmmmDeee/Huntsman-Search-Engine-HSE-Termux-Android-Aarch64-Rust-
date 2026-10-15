@@ -288,6 +288,7 @@ impl ScanApi {
                     "key_env": key_env,
                     "configured": configured,
                     "lookups": crate::lookup_modules::lookups_asking(module.name),
+                    "spiderfoot": crate::module::spiderfoot_names(module.name),
                 })
             })
             .collect();
@@ -1676,6 +1677,23 @@ mod tests {
             ripestat.unwrap()["lookups"],
             json!(["ip", "netblock", "asn"])
         );
+        // And every name a scan may choose it by, so Clone can restore a scan that chose a
+        // Spiderfoot module: `sfp_whois` stands for both RDAP and Whoxy.
+        assert_eq!(
+            ripestat.unwrap()["spiderfoot"],
+            json!(["ripestat", "sfp_ripestat", "sfp_ripe"])
+        );
+        let whois: Vec<&Value> = modules
+            .iter()
+            .filter(|module| {
+                module["spiderfoot"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("sfp_whois"))
+            })
+            .map(|module| &module["name"])
+            .collect();
+        assert_eq!(whois, [&json!("whoxy"), &json!("rdap")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
