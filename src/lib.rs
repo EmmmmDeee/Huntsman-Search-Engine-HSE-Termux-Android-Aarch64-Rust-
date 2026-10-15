@@ -55,6 +55,8 @@ pub mod differential;
 pub mod directive_lock;
 pub mod dmarc;
 pub mod dns;
+pub mod dns_filter;
+pub mod dns_wire;
 pub mod dnsbl;
 pub mod doctor;
 pub mod domain_cli;
