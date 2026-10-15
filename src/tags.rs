@@ -37,3 +37,9 @@ pub const SOURCE_DOCUMENT: &str = "source-document";
 pub const GEOINT: &str = "geoint";
 pub const COARSE: &str = "coarse";
 pub const HOSTING: &str = "hosting";
+/// The organisation a registration record names as the registrar.
+pub const REGISTRAR: &str = "registrar";
+/// A mailbox or telephone a registration record names for abuse reports.
+pub const ABUSE_CONTACT: &str = "abuse-contact";
+/// A mailbox or telephone a registration record names for another contact role.
+pub const WHOIS_CONTACT: &str = "whois-contact";

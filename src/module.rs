@@ -721,6 +721,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "A and AAAA records of every subdomain a domain lookup finds, PTR records of an address",
     },
     ReachableModule {
+        name: "rdap",
+        command: "domain DOMAIN | ip ADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1596.002"],
+        description: "RDAP registration of a domain or an address's network, from the registry the IANA bootstrap names",
+    },
+    ReachableModule {
         name: "stolen_tax",
         command: "recon stolen-tax QUERY",
         access: "operator_key",

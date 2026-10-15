@@ -133,6 +133,8 @@ pub mod proof;
 pub mod provider_credentials;
 pub mod pulsedive;
 pub mod radar;
+pub mod rdap;
+pub mod rdap_legs;
 pub mod recon;
 pub mod recursion;
 pub mod redact;

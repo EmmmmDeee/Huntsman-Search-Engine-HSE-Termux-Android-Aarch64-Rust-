@@ -86,6 +86,16 @@ impl Transport for Routes {
 fn keyless() -> Routes {
     Routes::new(vec![
         ("https://cloudflare-dns.com/", 200, PTR),
+        (
+            "https://data.iana.org/rdap/ipv4.json",
+            200,
+            r#"{"services":[[["1.0.0.0/8"],["https://rdap.apnic.net/"]]]}"#,
+        ),
+        (
+            "https://rdap.apnic.net/ip/1.1.1.1",
+            200,
+            crate::rdap::tests::APNIC,
+        ),
         ("https://internetdb.shodan.io/", 200, INTERNETDB),
         ("https://stat.ripe.net/", 200, RIPESTAT),
         ("https://api.greynoise.io/", 404, GREYNOISE_UNSEEN),
@@ -155,6 +165,8 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
         transport.hosts(),
         [
             "cloudflare-dns.com",
+            "data.iana.org",
+            "rdap.apnic.net",
             "internetdb.shodan.io",
             "stat.ripe.net",
             "api.greynoise.io",
@@ -180,7 +192,8 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
         assert_eq!(outcome(&report, source), SourceOutcomeKind::ValidZero);
     }
     assert_eq!(outcome(&report, RESOLVE_SOURCE), SourceOutcomeKind::Success);
-    assert_eq!(report.outcomes.len(), 12, "an unkeyed leg reports nothing");
+    assert_eq!(outcome(&report, "rdap"), SourceOutcomeKind::Success);
+    assert_eq!(report.outcomes.len(), 13, "an unkeyed leg reports nothing");
 
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
     assert!(ip.has_tag(tags::VULNERABLE));

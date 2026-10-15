@@ -364,6 +364,14 @@ fn identity_descriptors(
     if let Some(registrar) = attr("registrar") {
         out.push(("DOMAIN_REGISTRAR", registrar.to_owned()));
     }
+    // A registration record as published: an address's is its network's.
+    if let Some(whois) = attr("whois") {
+        let kind = match entity.kind {
+            EntityKind::IpAddress | EntityKind::Asn => "NETBLOCK_WHOIS",
+            _ => "DOMAIN_WHOIS",
+        };
+        out.push((kind, whois.to_owned()));
+    }
     if let Some(carrier) = attr("carrier") {
         out.push(("PROVIDER_TELCO", carrier.to_owned()));
     }

@@ -1,7 +1,8 @@
 //! End-to-end front-end for `huntsman-recon domain` and the domain arm of `scan`.
 //!
-//! Runs crt.sh certificate transparency and DNS record lookups in sequence for a
-//! single domain, then the keyed legs whose key is configured: `VirusTotal` reputation
+//! Runs crt.sh certificate transparency, DNS record and RDAP registration lookups (see
+//! [`crate::rdap_legs`]) in sequence for a single domain, then the keyed legs whose key is
+//! configured: `VirusTotal` reputation
 //! (`HUNTSMAN_VIRUSTOTAL_KEY`) and Hunter.io published addresses (`HUNTSMAN_HUNTER_KEY`), then
 //! every domain source in [`crate::indicator_legs::SOURCES`] (Shodan DNS, Pulsedive, Netlas, OTX, urlscan.io, Robtex,
 //! `HackerTarget`, `LeakIX`, `URLhaus`, `SecurityTrails`,
@@ -129,6 +130,11 @@ pub fn run<T: Transport + ?Sized + Sync>(
         }
     }
 
+    let registration = crate::rdap_legs::domain(transport, &domain, &scan_id, now_unix);
+    found.entities.extend(registration.entities);
+    if let Some(outcome) = registration.outcome {
+        found.leg(outcome);
+    }
     keyed_legs(transport, keys, &domain, &scan_id, now_unix, &mut found);
     let hosts = resolve::hosts(&found.entities, &domain);
     if resolvers_up && !hosts.is_empty() {
