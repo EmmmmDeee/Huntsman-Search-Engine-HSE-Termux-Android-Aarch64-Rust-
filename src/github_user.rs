@@ -288,6 +288,14 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
             str::to_owned,
         );
     let profile_evidence = evidence(user, &profile_url, scan_id);
+    let person = person_name(user);
+    // The relation builders read `owner` on a handle or an address. The login is the named
+    // person's account and GitHub shows only a verified address as the public one, so both are
+    // owned; the X handle and the blog are only what the profile says.
+    let owned = person.map_or_else(
+        || profile_evidence.clone(),
+        |name| profile_evidence.clone().with_attr("owner", name),
+    );
     let mut entities = Vec::new();
 
     push_entity(
@@ -296,7 +304,7 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
         &user.login,
         USERNAME_CONF,
         scan_id,
-        profile_evidence.clone(),
+        owned.clone(),
         &["github", "public-profile"],
     );
     push_entity(
@@ -308,31 +316,56 @@ fn build_entities(user: &GhUser, scan_id: &str) -> Vec<Entity> {
         profile_evidence.clone(),
         &["github", "public-profile"],
     );
-    add_identity_fields(user, scan_id, &profile_evidence, &mut entities);
+    add_identity_fields(
+        user,
+        person,
+        scan_id,
+        &profile_evidence,
+        &owned,
+        &mut entities,
+    );
     add_social_fields(user, scan_id, &profile_evidence, &mut entities);
     add_blog(user, scan_id, &profile_evidence, &mut entities);
     entities
 }
 
-fn add_identity_fields(
-    user: &GhUser,
-    scan_id: &str,
-    profile_evidence: &Evidence,
-    entities: &mut Vec<Entity>,
-) {
-    if let Some(name) = user
-        .name
+/// The profile's name, when it is a person's: two or more words.
+fn person_name(user: &GhUser) -> Option<&str> {
+    user.name
         .as_deref()
         .map(str::trim)
         .filter(|name| name.split_whitespace().count() >= 2)
-    {
+}
+
+/// The person, the public address, the company and the location. The person's evidence names
+/// the company (`employer`) and the location's names the person (`resident`), which is what the
+/// relation builders read for employment and residence.
+fn add_identity_fields(
+    user: &GhUser,
+    person: Option<&str>,
+    scan_id: &str,
+    profile_evidence: &Evidence,
+    owned: &Evidence,
+    entities: &mut Vec<Entity>,
+) {
+    let company = user
+        .company
+        .as_deref()
+        .map(str::trim)
+        .map(|company| company.trim_start_matches('@'))
+        .filter(|company| company.len() >= 2);
+    if let Some(name) = person {
+        let mut person_evidence = profile_evidence.clone();
+        if let Some(company) = company {
+            person_evidence = person_evidence.with_attr("employer", company);
+        }
         push_entity(
             entities,
             EntityKind::Person,
             name,
             PERSON_CONF,
             scan_id,
-            profile_evidence.clone(),
+            person_evidence,
             &["github", "public-profile"],
         );
     }
@@ -348,17 +381,11 @@ fn add_identity_fields(
             email,
             EMAIL_CONF,
             scan_id,
-            profile_evidence.clone(),
+            owned.clone(),
             &["github", "public-profile"],
         );
     }
-    if let Some(company) = user
-        .company
-        .as_deref()
-        .map(str::trim)
-        .map(|company| company.trim_start_matches('@'))
-        .filter(|company| company.len() >= 2)
-    {
+    if let Some(company) = company {
         push_entity(
             entities,
             EntityKind::Organisation,
@@ -375,13 +402,17 @@ fn add_identity_fields(
         .map(str::trim)
         .filter(|location| location.len() >= 3)
     {
+        let mut location_evidence = profile_evidence.clone();
+        if let Some(name) = person {
+            location_evidence = location_evidence.with_attr("resident", name);
+        }
         push_entity(
             entities,
             EntityKind::Address,
             location,
             ADDRESS_CONF,
             scan_id,
-            profile_evidence.clone(),
+            location_evidence,
             &["github", "self-reported"],
         );
     }
@@ -448,6 +479,7 @@ fn add_blog(user: &GhUser, scan_id: &str, profile_evidence: &Evidence, entities:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relation::{self, RelationKind};
     use crate::test_support::OneResponse;
 
     #[test]
@@ -567,6 +599,67 @@ mod tests {
                 "missing {kind}"
             );
         }
+    }
+
+    /// The relations the analysis derives from one profile, as `(from, kind, to)` over the
+    /// entities' values.
+    fn profile_relations(body: &str) -> Vec<(String, RelationKind, String)> {
+        let report = lookup(
+            &OneResponse::with_headers(200, &[("content-type", "application/json")], body),
+            &Keys::default(),
+            "octocat",
+            "scan",
+            1,
+        )
+        .unwrap();
+        let value = |uid: &str| {
+            report
+                .entities
+                .iter()
+                .find(|entity| entity.uid == uid)
+                .map(|entity| entity.value.clone())
+                .expect("relation endpoint is an entity of the report")
+        };
+        let mut relations: Vec<_> = relation::derive_all(&report.entities, "scan")
+            .into_iter()
+            .filter(|edge| {
+                matches!(
+                    edge.kind,
+                    RelationKind::IdentifiedBy | RelationKind::EmployedBy | RelationKind::LocatedAt
+                )
+            })
+            .map(|edge| (value(&edge.from_uid), edge.kind, value(&edge.to_uid)))
+            .collect();
+        relations.sort();
+        relations
+    }
+
+    #[test]
+    fn the_person_a_profile_names_owns_its_login_and_address_works_for_its_company_and_lives_there()
+    {
+        let body = r#"{
+          "login":"octocat","id":1,"name":"Mona Lisa Octocat","company":"@github",
+          "location":"San Francisco","twitter_username":"someone_else",
+          "email":"octocat@example.org","blog":"https://example.org/"
+        }"#;
+        let mona = |kind, to: &str| ("mona lisa octocat".to_owned(), kind, to.to_owned());
+        assert_eq!(
+            profile_relations(body),
+            vec![
+                mona(RelationKind::IdentifiedBy, "octocat"),
+                mona(RelationKind::IdentifiedBy, "octocat@example.org"),
+                mona(RelationKind::LocatedAt, "san francisco"),
+                mona(RelationKind::EmployedBy, "github"),
+            ],
+            "the X handle a profile names is its claim, not the person's"
+        );
+    }
+
+    #[test]
+    fn a_profile_whose_name_is_not_a_persons_links_nothing_to_one() {
+        let body = r#"{"login":"octocat","id":1,"name":"Octocat","company":"GitHub",
+          "location":"San Francisco","email":"octocat@example.org"}"#;
+        assert_eq!(profile_relations(body), Vec::new());
     }
 
     #[test]
