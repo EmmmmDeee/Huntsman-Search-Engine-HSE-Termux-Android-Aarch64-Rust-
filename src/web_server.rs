@@ -1027,8 +1027,10 @@ fn lookup_response(
         .name("serve-lookup".into())
         .stack_size(LOOKUP_STACK_BYTES)
         .spawn(move || {
-            let _slot = slot;
             let outcome = catch_unwind(AssertUnwindSafe(|| handler(&query)));
+            // Free the place before answering: a client that has its answer may ask again at
+            // once, and must not find its own finished lookup still counted.
+            drop(slot);
             let _ = sender.send(outcome);
         });
     if worker.is_err() {
@@ -2416,13 +2418,24 @@ mod tests {
                 Some(&lookups),
             )
         };
-        assert!(ask("refused").starts_with("HTTP/1.1 422"));
         assert!(ask("boom").starts_with("HTTP/1.1 500"));
         assert_eq!(
             lookups.live.load(Ordering::Acquire),
             0,
             "a panic frees its slot"
         );
+        // A client that has its answer can ask again at once: the slot is free before the answer
+        // is sent, never a moment after it.
+        for round in 0..500 {
+            for (q, status) in [("refused", "HTTP/1.1 422"), ("a", "HTTP/1.1 200")] {
+                assert!(ask(q).starts_with(status));
+                assert_eq!(
+                    lookups.live.load(Ordering::Acquire),
+                    0,
+                    "the answered lookup {q:?} still held its slot in round {round}"
+                );
+            }
+        }
         assert!(ask("").starts_with("HTTP/1.1 400"));
         assert!(ask(&"a".repeat(MAX_SELECTOR_BYTES + 1)).starts_with("HTTP/1.1 400"));
         lookups.live.store(MAX_LOOKUPS, Ordering::Release);
