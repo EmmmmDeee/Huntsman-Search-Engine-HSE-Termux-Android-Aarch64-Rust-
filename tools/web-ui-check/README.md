@@ -66,3 +66,19 @@ one JSON object of measurements and exits 1 when any check fails, naming each.
 | DCL / FCP, 4x CPU throttle, median of 15 | 106 / 112 ms | 114 / 116 ms |
 | 16-seed analysis, submit to rendered, median of 24 | 14.8 ms | 14.7 ms |
 | Lighthouse mobile (performance / accessibility / best practices) | 100 / 95 / 100 | 100 / 100 / 100 |
+
+## Spiderfoot layout (2026-10-15)
+
+`main` at 91352e8 against the Spiderfoot-layout page, the same browser and phone size:
+
+| | before | after |
+|---|---|---|
+| Views | Lookup, Analyze, Status | Scans, New Scan, a scan's Summary, Correlations, Browse (full, unique, discovery path), Graph, Scan Settings and Log, Settings, Analyze, About |
+| Results | the last lookup, in this tab only | every saved scan, on the server, across restarts |
+| Exports | none | CSV, TSV, JSON and GEXF per scan or data type; JSON for several scans |
+| Requests on a cold load | 3 (page, health, icon) | 4 (page, health, scan list, icon) |
+| Requests each time the tab comes back, no scan running | 1 | 1 |
+| A started scan shown FINISHED | not applicable | 1.1 s (polled at 1, 2, 4 then 5 s) |
+| axe-core violations in every view, both themes | 0 | 0 |
+| Page weight | 34.3 KB | 82.8 KB |
+| DCL / FCP, 4x CPU throttle, median of 15 | 123 / 108 ms | 180 / 116 ms |
