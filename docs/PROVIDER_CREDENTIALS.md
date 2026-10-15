@@ -13,8 +13,8 @@ these slots without printing their values.
 | --- | --- | --- |
 | WiGLE | `HUNTSMAN_WIGLE_USER`, `HUNTSMAN_WIGLE_TOKEN` | used by `network` (CLI, `scan -k network`, web UI) when both are set in `~/.huntsman.env` or the environment: the API Name and API Token from https://wigle.net/account (not the encoded value); one daily WiGLE query per search (a BSSID or LAT,LON searches WiFi and Bluetooth, so two); `credential-status --probe` checks the pair without spending a query |
 | Brave Search | `HUNTSMAN_BRAVE_KEY` | owned credential material located; validate/reissue before production use if historical exposure applies |
-| Shodan | `HUNTSMAN_SHODAN_KEY` | private stored credential located; validity unverified |
-| Whoxy | `HUNTSMAN_WHOXY_KEY` | private stored credential located; validity unverified |
+| Shodan | `HUNTSMAN_SHODAN_KEY` | used by `ip` (host, no query credits) and `domain` (DNS, one query credit) whenever set; private stored credential located; validity unverified |
+| Whoxy | `HUNTSMAN_WHOXY_KEY` | used by `domain` (live WHOIS, one credit each) and `email` (reverse WHOIS, one reverse credit a page) whenever set; an empty balance is reported as a plan refusal; private stored credential located; validity unverified |
 | HIBP | `HUNTSMAN_HIBP_KEY` | owned subscription/key history; clean current credential required |
 | SeekNow | `HUNTSMAN_SEEKNOW_KEY` | historical credential only; clean current credential required |
 | OathNet | `HUNTSMAN_OATHNET_KEY` | used by `exposure` (CLI, `scan -k exposure`, web UI) when set in the environment; one daily lookup per search; validity unverified until a live search |
@@ -22,7 +22,22 @@ these slots without printing their values.
 | OpenRouter | `HUNTSMAN_OPENROUTER_KEY` | account confirmed; current credential not recovered |
 | Google Gemini | `HUNTSMAN_GEMINI_KEY` | provider key existence confirmed; current value requires provider account |
 | GitHub | `HUNTSMAN_GITHUB_TOKEN` | token lifecycle confirmed; current credential requires provider account |
-| VirusTotal | `HUNTSMAN_VIRUSTOTAL_KEY` | account/API relationship supported; current credential not recovered |
+| VirusTotal | `HUNTSMAN_VIRUSTOTAL_KEY` | used by `domain` and `ip` (CLI, `scan`, web UI) when set in the environment; free: 4 lookups/min, 500/day |
+| AbuseIPDB | `HUNTSMAN_ABUSEIPDB_KEY` | used by `ip` when set in the environment; free: 1,000 checks/day |
+| GreyNoise | `HUNTSMAN_GREYNOISE_KEY` | optional for `ip`: the Community API answers without a key at a lower limit; a free Community key raises it |
+| Hunter.io | `HUNTSMAN_HUNTER_KEY` | used by `domain` (domain search) and `email` (verifier) when set in the environment; free: 25 searches and 50 verifications/month |
+| Numverify (APILayer) | `HUNTSMAN_NUMVERIFY_KEY` | used by `phone` when set in the environment; APILayer marketplace key (`api.apilayer.com`), free: 100 lookups/month |
+| LeakIX | `HUNTSMAN_LEAKIX_KEY` | used by `ip` and `domain` when set in the environment; free account key |
+| Pulsedive | `HUNTSMAN_PULSEDIVE_KEY` | optional for `ip` and `domain`: Pulsedive answers without a key at a lower limit; a free key raises it |
+| IPQualityScore | `HUNTSMAN_IPQS_KEY` | used by `ip`, `email` and `phone` when set in the environment; free: 1,000 lookups/month |
+| ThreatFox (abuse.ch) | `HUNTSMAN_THREATFOX_KEY` | used by `ip` and `domain` when set in the environment; free abuse.ch Auth-Key |
+| Netlas | `HUNTSMAN_NETLAS_KEY` | optional for `ip` and `domain`: Netlas answers without a key at a lower limit; a free Community key raises it |
+| SecurityTrails | `HUNTSMAN_SECTRAILS_KEY` | used by `domain` when set in the environment; free: 50 queries/month |
+| URLhaus (abuse.ch) | `HUNTSMAN_ABUSECH_KEY` | used by `ip` and `domain` when set in the environment; the same free abuse.ch Auth-Key as `HUNTSMAN_THREATFOX_KEY` |
+| AlienVault OTX | `HUNTSMAN_OTX_KEY` | optional for `ip` and `domain`: OTX answers without a key at a lower limit; a free key raises it |
+| urlscan.io | `HUNTSMAN_URLSCAN_KEY` | optional for `ip` and `domain`: searches work without a key at a lower quota; a free key raises it |
+| IPinfo | `HUNTSMAN_IPINFO_KEY` | optional for `ip`: IPinfo answers without a token at a lower limit; a free token gives 50,000 lookups/month |
+| HackerTarget | `HUNTSMAN_HACKERTARGET_KEY` | optional for `ip` and `domain`: HackerTarget answers without a key at 50 queries a day; a membership key raises it |
 | Censys | `HUNTSMAN_CENSYS_ID`, `HUNTSMAN_CENSYS_SECRET` | do not assume usable; provider access must be revalidated |
 
 ## Private runtime template
@@ -44,6 +59,21 @@ HUNTSMAN_OPENROUTER_KEY=
 HUNTSMAN_GEMINI_KEY=
 HUNTSMAN_GITHUB_TOKEN=
 HUNTSMAN_VIRUSTOTAL_KEY=
+HUNTSMAN_ABUSEIPDB_KEY=
+HUNTSMAN_GREYNOISE_KEY=
+HUNTSMAN_HUNTER_KEY=
+HUNTSMAN_NUMVERIFY_KEY=
+HUNTSMAN_LEAKIX_KEY=
+HUNTSMAN_PULSEDIVE_KEY=
+HUNTSMAN_IPQS_KEY=
+HUNTSMAN_THREATFOX_KEY=
+HUNTSMAN_NETLAS_KEY=
+HUNTSMAN_SECTRAILS_KEY=
+HUNTSMAN_ABUSECH_KEY=
+HUNTSMAN_OTX_KEY=
+HUNTSMAN_URLSCAN_KEY=
+HUNTSMAN_IPINFO_KEY=
+HUNTSMAN_HACKERTARGET_KEY=
 HUNTSMAN_CENSYS_ID=
 HUNTSMAN_CENSYS_SECRET=
 ```
