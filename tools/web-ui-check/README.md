@@ -10,21 +10,29 @@ It is not part of `huntsman-recon`: the engine ships no browser or JavaScript ru
 ## What it checks
 
 - The page loads with no console error and no Content-Security-Policy violation, fits 360 px with
-  no horizontal scroll, every control is at least 44 px, and it weighs at most 40 KiB.
-- A cold load asks only for the page, `/api/health` and the icon; a tab that comes back into view
-  asks only for `/api/health`; Status loads the module list and command contract once.
+  no horizontal scroll in every view, every control is at least 44 px (a checkbox or radio counts
+  as the label that holds it), and it weighs at most 96 KiB.
+- A cold load asks only for the page, `/api/health`, the scan list and the icon, and opens on
+  Scans; a tab that comes back into view with no scan running asks only for `/api/health`; About
+  loads the module list and command contract once; the old `#/lookup` address opens New Scan.
 - Both system themes: the page follows the phone's light or dark setting, the browser bar takes
   the app bar's colour, the toggle overrides and is remembered, and axe-core finds no WCAG 2.2 AA
   or best-practice violation in any view, before or after the toggle.
-- A phone lookup through the form lists every entity, every piece of evidence and its attributes,
-  and every source with a detail column; Download JSON saves that report.
-- After a reload (Android discarding the tab) the last lookup and analysis are back.
-- A slow lookup shows its running time and can be stopped; with the server killed, the page says
-  so with the command that starts it, and it shows `online` again once the server is back.
+- New Scan lists every module and every data type the server has. A scan started there runs to
+  FINISHED, and each section shows what the scan API holds: Summary's counters and a bar per data
+  type, Browse's data types and every element of a type with its raw record, a false positive
+  marked on the server, every correlation, a graph node per element, Scan Settings naming the
+  target, every log entry, a wildcard search, and CSV and JSON exports that hold the elements.
+- A reload (Android discarding the tab) returns to the same section of the same scan and keeps
+  the toggled theme; the last analysis comes back too.
+- The scan list shows every saved scan with its element count; Settings lists every module;
+  Re-run makes a new scan of the same target and Delete removes it.
+- With the server killed, the page says so with the command that starts it and shows `offline`;
+  it shows `online` again once the server is back, and the saved scans are all still there.
 
 It never spends a key: the server runs with a scratch `HOME` and none of the caller's
-`HUNTSMAN_*`, `HSE_*`, `*_KEY`, token or secret variables, and its one lookup is an offline phone
-classification.
+`HUNTSMAN_*`, `HSE_*`, `*_KEY`, token or secret variables, and its scans target a phone number,
+which is classified offline.
 
 ## Running it
 
