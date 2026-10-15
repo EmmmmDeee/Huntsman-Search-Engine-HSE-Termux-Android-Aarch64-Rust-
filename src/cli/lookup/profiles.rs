@@ -35,6 +35,7 @@ use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
 use huntsman_recon::scan_route::ScanKind;
 use huntsman_recon::source_outcome::SourceExecutionOutcome;
 use huntsman_recon::stolen_tax;
+use huntsman_recon::threat_feeds::{self, Feeds};
 use huntsman_recon::username_cli::{USERNAME_USAGE, UsernameArgs, UsernameRun};
 use huntsman_recon::wigle;
 
@@ -310,12 +311,21 @@ fn phone(selector: &str, now: u64) -> Result<Collected, Refused> {
     }
 }
 
+/// The threat feeds a lookup reads, downloaded over their own transport and kept in
+/// `$HUNTSMAN_HOME/feeds`, else `~/.huntsman/feeds`, so a lookup within a feed's age reads its copy.
+fn feeds() -> Feeds {
+    Feeds::new(
+        Box::new(UreqTransport::new(&threat_feeds::transport_config())),
+        crate::cli::scans::default_feed_dir(),
+    )
+}
+
 /// The ip sources for an address. Its keyed legs read keys from the default file or the
 /// environment, as the other keyed lookups do.
 fn ip(selector: &str, now: u64) -> Result<Collected, Refused> {
     let keys = crate::cli::credentials::lookup_keys();
     let transport = UreqTransport::new(&api_leg::transport_config());
-    match huntsman_recon::ip_cli::run(&transport, &keys, selector, now) {
+    match huntsman_recon::ip_cli::run(&transport, &keys, &feeds(), selector, now) {
         IpRun::Printed { text, report } => {
             Ok(done(text, report.entities, report.outcomes, IP_POLICY))
         }
@@ -327,7 +337,7 @@ fn ip(selector: &str, now: u64) -> Result<Collected, Refused> {
 /// The address-block sources for a CIDR block.
 fn netblock(selector: &str, now: u64) -> Result<Collected, Refused> {
     let transport = UreqTransport::new(&api_leg::transport_config());
-    match huntsman_recon::netblock_cli::run(&transport, selector, now) {
+    match huntsman_recon::netblock_cli::run(&transport, &feeds(), selector, now) {
         NetblockRun::Printed { text, report } => Ok(done(
             text,
             report.entities,
@@ -359,7 +369,7 @@ fn asn(selector: &str, now: u64) -> Result<Collected, Refused> {
 fn domain(selector: &str, now: u64) -> Result<Collected, Refused> {
     let keys = crate::cli::credentials::lookup_keys();
     let transport = UreqTransport::new(&huntsman_recon::domain_cli::transport_config());
-    match huntsman_recon::domain_cli::run(&transport, &keys, selector, now) {
+    match huntsman_recon::domain_cli::run(&transport, &keys, &feeds(), selector, now) {
         huntsman_recon::domain_cli::DomainRun::Printed { text, report } => {
             Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
         }

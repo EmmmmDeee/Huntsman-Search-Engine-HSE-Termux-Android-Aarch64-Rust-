@@ -36,12 +36,13 @@ use crate::lookup_report;
 use crate::ripestat;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::tags;
+use crate::threat_feeds::{self, Feeds};
 use crate::virustotal;
 
 pub const IP_USAGE: &str = "usage: huntsman-recon ip ADDRESS [--save FILE]";
 pub const IP_HELP: &str = "\
 ip ADDRESS [--save FILE]
-Look up one public IPv4 or IPv6 address: the names its PTR records carry, its network's RDAP registration (range, holder, contacts and the record as published), open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat, internet-scanner status from GreyNoise Community threat risk from Pulsedive, scan data from Netlas, threat pulses from AlienVault OTX, public page scans from urlscan.io, hostname, network and city from IPinfo, the route and passive DNS names from Robtex, domains hosted on the address from HackerTarget, forum-spam reports from StopForumSpam, and listings on the Spamhaus ZEN, SpamCop, UCEPROTECT, DroneBL, SORBS and SURBL blocklists over the system resolver, all keyless. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs, and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY, HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
+Look up one public IPv4 or IPv6 address: the names its PTR records carry, its network's RDAP registration (range, holder, contacts and the record as published), open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat, internet-scanner status from GreyNoise Community threat risk from Pulsedive, scan data from Netlas, threat pulses from AlienVault OTX, public page scans from urlscan.io, hostname, network and city from IPinfo, the route and passive DNS names from Robtex, domains hosted on the address from HackerTarget, forum-spam reports from StopForumSpam, and listings on the Spamhaus ZEN, SpamCop, UCEPROTECT, DroneBL, SORBS and SURBL blocklists over the system resolver, all keyless. The address and every name the lookup found are checked against the threat feeds Spiderfoot downloads (abuse.ch Feodo Tracker and URLhaus, AlienVault IP Reputation, blocklist.de, botvrij.eu, CINS Army, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black's hosts, Tor's exit relays, VoIPBL and VXVault), each downloaded once and kept in $HUNTSMAN_HOME/feeds, else ~/.huntsman/feeds, until it is older than Spiderfoot keeps it. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs, and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY, HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
 
 /// Confidence of the queried address itself.
 const SEED_CONFIDENCE: f64 = 0.90;
@@ -156,9 +157,16 @@ impl Lookup<'_> {
     }
 }
 
-/// Run every IP leg for `ip`. Keyed legs run only when `keys` holds their key.
+/// Run every IP leg for `ip`, then check it and everything the legs found against the threat
+/// `feeds`. Keyed legs run only when `keys` holds their key.
 #[must_use]
-pub fn run<T: Transport + ?Sized>(transport: &T, keys: &Keys, ip: &str, now_unix: u64) -> IpRun {
+pub fn run<T: Transport + ?Sized>(
+    transport: &T,
+    keys: &Keys,
+    feeds: &Feeds,
+    ip: &str,
+    now_unix: u64,
+) -> IpRun {
     let Some(ip) = canonical_ip(ip) else {
         return IpRun::Failed("not a public IP address".into());
     };
@@ -218,6 +226,16 @@ pub fn run<T: Transport + ?Sized>(transport: &T, keys: &Keys, ip: &str, now_unix
     report.entities.extend(legs.entities);
     report.outcomes.extend(legs.outcomes);
     network = network.or(legs.network);
+    if let Ok(address) = ip.parse() {
+        threat_feeds::check_found(
+            feeds,
+            threat_feeds::Subject::Address(address),
+            &mut report.entities,
+            &mut report.outcomes,
+            &scan_id,
+            now_unix,
+        );
+    }
     merge_by_uid(&mut report.entities);
     let collected = report.outcomes.iter().any(|o| o.kind.is_accepted());
     if !collected {

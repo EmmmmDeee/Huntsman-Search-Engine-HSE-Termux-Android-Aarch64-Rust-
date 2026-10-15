@@ -78,6 +78,11 @@ pub(super) fn default_scan_dir() -> Option<PathBuf> {
     state_dir().map(|state| state.join("scans"))
 }
 
+/// `$HUNTSMAN_HOME/feeds`, else `~/.huntsman/feeds`: the threat feeds' downloaded copies.
+pub(in crate::cli) fn default_feed_dir() -> Option<PathBuf> {
+    state_dir().map(|state| state.join("feeds"))
+}
+
 /// `$HUNTSMAN_HOME/correlations`, else `~/.huntsman/correlations`: the operator's own
 /// Spiderfoot-format correlation rules.
 pub(super) fn default_rules_dir() -> Option<PathBuf> {

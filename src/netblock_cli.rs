@@ -30,11 +30,12 @@ use crate::rdap_legs;
 use crate::ripestat;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::tags;
+use crate::threat_feeds::{self, Feeds};
 
 pub const NETBLOCK_USAGE: &str = "usage: huntsman-recon netblock CIDR [--save FILE]";
 pub const NETBLOCK_HELP: &str = "\
 netblock CIDR [--save FILE]
-Look up one public IPv4 or IPv6 address block, written ADDRESS/PREFIX (host bits are cleared, so 1.1.1.7/24 is 1.1.1.0/24): its RDAP registration (the network that holds it, its holder, contacts and the record as published), the announced prefix covering it and its origin AS from RIPEstat, and the PTR records of every address in a block of at most 256 addresses (a /24 or an IPv6 /120, Spiderfoot's limits), all keyless. A block whose first address is private, loopback, documentation or otherwise non-public is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
+Look up one public IPv4 or IPv6 address block, written ADDRESS/PREFIX (host bits are cleared, so 1.1.1.7/24 is 1.1.1.0/24): its RDAP registration (the network that holds it, its holder, contacts and the record as published), the announced prefix covering it and its origin AS from RIPEstat, and the PTR records of every address in a block of at most 256 addresses (a /24 or an IPv6 /120, Spiderfoot's limits), all keyless. The block and every address and name found in it are checked against the threat feeds Spiderfoot downloads (abuse.ch Feodo Tracker and URLhaus, AlienVault IP Reputation, blocklist.de, botvrij.eu, CINS Army, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black's hosts, Tor's exit relays, VoIPBL and VXVault): a block is listed by every listed address or block inside or around it. Each feed is downloaded once and kept in $HUNTSMAN_HOME/feeds, else ~/.huntsman/feeds, until it is older than Spiderfoot keeps it. A block whose first address is private, loopback, documentation or otherwise non-public is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
 
 /// Host bits of the largest block whose addresses are swept: 256 addresses, Spiderfoot's
 /// `sfp_dnsresolve` defaults (`maxnetblock` 24, `maxv6netblock` 120).
@@ -80,10 +81,12 @@ pub enum NetblockRun {
     Failed(String),
 }
 
-/// Look up `netblock`.
+/// Look up `netblock`, then check it and every address and name found in it against the threat
+/// `feeds`.
 #[must_use]
 pub fn run<T: Transport + ?Sized + Sync>(
     transport: &T,
+    feeds: &Feeds,
     netblock: &str,
     now_unix: u64,
 ) -> NetblockRun {
@@ -113,6 +116,14 @@ pub fn run<T: Transport + ?Sized + Sync>(
     let swept = sweep(transport, block, &scan_id, now_unix);
     report.entities.extend(swept.entities);
     report.outcomes.push(swept.outcome);
+    threat_feeds::check_found(
+        feeds,
+        threat_feeds::Subject::Block(block),
+        &mut report.entities,
+        &mut report.outcomes,
+        &scan_id,
+        now_unix,
+    );
 
     merge_by_uid(&mut report.entities);
     if !report.outcomes.iter().any(|o| o.kind.is_accepted()) {

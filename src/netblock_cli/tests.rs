@@ -3,6 +3,11 @@ use crate::rdap::tests::{APNIC, IPV4_BOOTSTRAP};
 use crate::sf_elements::{DataElement, Target, elements};
 use crate::test_support::RoutedTransport;
 
+/// The netblock lookup, with no threat feed consulted: the feeds' own tests cover them.
+fn run<T: Transport + ?Sized + Sync>(transport: &T, netblock: &str, now_unix: u64) -> NetblockRun {
+    super::run(transport, &Feeds::none(), netblock, now_unix)
+}
+
 const RIPESTAT: &str = r#"{"status":"ok","data":{"announced":true,"asns":[{"asn":13335,"holder":"CLOUDFLARENET - Cloudflare, Inc."}],"resource":"1.1.1.0/24","block":{"desc":"APNIC (Status: ALLOCATED)"}}}"#;
 /// The one address of the block whose reverse zone names it.
 const NAMED: &str = r#"{"Status":0,"Answer":[{"name":"1.1.1.1.in-addr.arpa.","type":12,"data":"one.one.one.one."}]}"#;

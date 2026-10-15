@@ -194,6 +194,7 @@ pub mod store;
 pub mod tags;
 pub mod termination;
 pub mod textnorm;
+pub mod threat_feeds;
 pub mod threatfox;
 pub mod timefmt;
 pub mod timeline;
