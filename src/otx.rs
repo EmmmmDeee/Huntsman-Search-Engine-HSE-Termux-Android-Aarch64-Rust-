@@ -5,7 +5,9 @@
 //! header and the account's limit applies. Kept: how many pulses name the indicator, their names
 //! and tags, the malware families and adversaries they attribute, the industries they target,
 //! OTX's own validations (allow-listed, Tor exit and the like), and for an address its AS and
-//! country. No pulse and no validation is a valid zero.
+//! country. No pulse and no validation is a valid zero. OTX answers an indicator it has never
+//! seen with `200` and a `pulse_info` whose count is 0, and gives a 404 only for a path it does
+//! not have (both checked 2026-10-15): an answer without `pulse_info`, and a 404, are drift.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -43,13 +45,12 @@ struct Body {
     asn: Option<String>,
     #[serde(default)]
     country_code: Option<String>,
-    #[serde(default)]
-    pulse_info: Option<PulseInfo>,
+    pulse_info: PulseInfo,
     #[serde(default)]
     validation: Vec<Validation>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 struct PulseInfo {
     #[serde(default)]
     count: u64,
@@ -129,7 +130,7 @@ pub fn lookup(
     };
     match api_leg::get(transport, &API, keys, &url, now_unix)? {
         Answer::Body(body) => decode(&body, indicator),
-        Answer::NotFound(_) => Ok(None),
+        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
     }
 }
 
@@ -162,7 +163,7 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
     if !body.indicator.eq_ignore_ascii_case(indicator.value()) {
         return Err(LegError::Decode("answer names another indicator".into()));
     }
-    let info = body.pulse_info.unwrap_or_default();
+    let info = body.pulse_info;
     if info.count == 0 && body.validation.is_empty() {
         return Ok(None);
     }
@@ -288,6 +289,40 @@ mod tests {
             Ok(None)
         );
         assert!(decode(ALLOWLISTED.as_bytes(), Indicator::Domain("other.example")).is_err());
+    }
+
+    #[test]
+    fn an_answer_without_pulse_info_is_drift_not_a_zero() {
+        for body in [
+            r#"{"indicator":"zz.example"}"#,
+            r#"{"indicator":"zz.example","validation":[]}"#,
+            r#"{"indicator":"zz.example","pulse_info":null,"validation":[]}"#,
+        ] {
+            let decoded = decode(body.as_bytes(), Indicator::Domain("zz.example"));
+            assert!(
+                matches!(decoded, Err(LegError::Decode(_))),
+                "{body}: {decoded:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_404_is_a_path_otx_lacks_not_an_unseen_indicator() {
+        let transport = crate::test_support::OneResponse::with_headers(
+            404,
+            &[("content-type", "text/html")],
+            "<h1>Not Found</h1>",
+        );
+        let looked_up = lookup(
+            &transport,
+            &Keys::default(),
+            Indicator::Domain("zz.example"),
+            1,
+        );
+        assert!(
+            matches!(looked_up, Err(LegError::Unexpected(404))),
+            "{looked_up:?}"
+        );
     }
 
     #[test]
