@@ -133,6 +133,7 @@ pub mod provider_credentials;
 pub mod pulsedive;
 pub mod radar;
 pub mod recon;
+pub mod recursion;
 pub mod redact;
 pub mod relation;
 pub mod resolve;
