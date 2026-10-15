@@ -2638,6 +2638,7 @@ mod tests {
                     usecase: "all".into(),
                     modules: Vec::new(),
                     types: Vec::new(),
+                    depth: 0,
                 },
             })
             .unwrap()

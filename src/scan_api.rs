@@ -10,7 +10,7 @@
 //! | Spiderfoot | here |
 //! | --- | --- |
 //! | `scanlist` | `GET /api/scans` |
-//! | `startscan` | `POST /api/scans?target=T[&name=N][&kind=K][&usecase=U][&modules=a,b][&types=A,B]` |
+//! | `startscan` | `POST /api/scans?target=T[&name=N][&kind=K][&usecase=U][&modules=a,b][&types=A,B][&depth=D]` |
 //! | `scanstatus` | `GET /api/scans/ID` |
 //! | `scansummary` | `GET /api/scans/ID/summary` |
 //! | `scaneventresults`, `scaneventresultsunique` | `GET /api/scans/ID/elements[?type=T][&unique=1][&hidefp=1][&correlation=C]` |
@@ -332,6 +332,17 @@ impl ScanApi {
                 .map(str::to_owned)
                 .collect()
         };
+        let depth = match param
+            .get("depth")
+            .map(str::trim)
+            .filter(|depth| !depth.is_empty())
+        {
+            None => 0,
+            Some(depth) => match depth.parse::<u32>() {
+                Ok(depth) => depth,
+                Err(_) => return error(400, "depth is a whole number of hops, 0 or more"),
+            },
+        };
         let request = ScanRequest {
             target: param.get("target").unwrap_or_default().to_owned(),
             name: param.get("name").map(str::to_owned),
@@ -340,6 +351,7 @@ impl ScanApi {
                 usecase: param.get("usecase").unwrap_or("all").to_owned(),
                 modules: list("modules"),
                 types: list("types"),
+                depth,
             },
         };
         match self.service.start(&request) {
@@ -391,12 +403,20 @@ impl ScanApi {
             .unwrap_or_default();
         let mut value = json!(record);
         value["sources"] = Value::Array(sources);
+        value["termination"] = json!(results.as_ref().and_then(|results| results.termination));
+        value["lineage"] = json!(
+            results
+                .as_ref()
+                .map(|results| results.lineage.as_slice())
+                .unwrap_or_default()
+        );
         value["report"] = results.map_or(Value::Null, |results| Value::String(results.text));
         // What the runner does with each New Scan option, so the page never shows a dead control.
         value["honoured"] = json!({
-            "usecase": "passive skips the keyed breach lookup of an email; the other use cases run every source of the target's lookup",
+            "usecase": "passive skips the keyed breach lookup of every email; the other use cases run every source of each lookup",
             "types": true,
             "modules": record.options.modules.is_empty(),
+            "depth": true,
         });
         ok(200, &value)
     }
@@ -717,6 +737,8 @@ fn empty_results(record: &ScanRecord) -> ScanResults {
         outcomes: Vec::new(),
         elements: Vec::new(),
         correlations: Vec::new(),
+        lineage: Vec::new(),
+        termination: None,
     }
 }
 
@@ -843,6 +865,24 @@ mod tests {
         );
         assert_eq!(refused("POST", "/api/correlationrules", ""), 405);
         assert_eq!(refused("POST", "/api/scans/nope/correlate", ""), 404);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_scan_started_with_a_depth_keeps_it_and_a_bad_depth_is_refused() {
+        let (api, dir) = api("depth");
+        let bad = api.handle("POST", "/api/scans", "target=1.1.1.1&depth=deep");
+        assert_eq!(bad.status, 400, "{}", bad.text());
+        let started = api.handle("POST", "/api/scans", "target=1.1.1.1&depth=2");
+        assert_eq!(started.status, 202, "{}", started.text());
+        assert_eq!(body(&started)["options"]["depth"], 2);
+        let id = body(&started)["id"].as_str().unwrap().to_owned();
+        for _ in 0..200 {
+            if !api.service().store().get(&id).unwrap().status.is_active() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

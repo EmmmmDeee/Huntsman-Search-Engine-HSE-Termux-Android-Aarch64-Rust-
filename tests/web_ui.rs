@@ -387,6 +387,7 @@ fn contract_scan(tag: &str) -> (ScanApi, String, std::path::PathBuf) {
                 usecase: "all".into(),
                 modules: Vec::new(),
                 types: Vec::new(),
+                depth: 0,
             },
         })
         .expect("scan");

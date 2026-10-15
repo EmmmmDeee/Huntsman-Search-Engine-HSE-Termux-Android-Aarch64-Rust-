@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 
 use crate::domains::is_or_subdomain_of;
 use crate::entity::{Entity, EntityKind, Evidence};
+use crate::recursion::PivotEdge;
 use crate::sf_types::{self, base_type};
 use crate::sha256::{hex32, sha256};
 use crate::tags;
@@ -453,8 +454,44 @@ fn confidence(entity: &Entity) -> u8 {
 /// stamps the root and target.
 #[must_use]
 pub fn elements(target: Target<'_>, entities: &[Entity], now_unix: u64) -> Vec<DataElement> {
+    elements_with_lineage(target, entities, &Lineage::new(), now_unix)
+}
+
+/// Where a scan that followed its findings found each entity: an entity's lowercased value to
+/// the lowercased selector of the first lookup that found it. That selector's element becomes the
+/// entity's source, as a Spiderfoot event's source is the event its module was handed.
+pub type Lineage = BTreeMap<String, String>;
+
+/// The [`Lineage`] of a crawl's discovery edges: each entity's earliest lookup, other than a
+/// lookup of the entity itself.
+#[must_use]
+pub fn lineage(edges: &[PivotEdge]) -> Lineage {
+    let mut sorted: Vec<&PivotEdge> = edges.iter().collect();
+    sorted.sort_by_key(|edge| edge.generation);
+    let mut out = Lineage::new();
+    for edge in sorted {
+        let child = edge.to_value.to_ascii_lowercase();
+        let parent = edge.from_selector.to_ascii_lowercase();
+        if child != parent {
+            out.entry(child).or_insert(parent);
+        }
+    }
+    out
+}
+
+/// [`elements`] for a scan that followed its findings: an entity whose records name no indicator
+/// it was found from takes the element of the lookup `lineage` says found it as its source, so
+/// the elements form the scan's discovery tree. Entities are placed generation by generation, so
+/// each source element exists before the elements found from it.
+#[must_use]
+pub fn elements_with_lineage(
+    target: Target<'_>,
+    entities: &[Entity],
+    lineage: &Lineage,
+    now_unix: u64,
+) -> Vec<DataElement> {
     let mut walk = Walk::new(target, entities, now_unix);
-    let made = walk.entities(entities);
+    let made = walk.entities(entities, lineage);
     for (entity_index, entity) in entities.iter().enumerate() {
         walk.descriptors(entity_index, entity, &made);
     }
@@ -531,7 +568,7 @@ impl<'a> Walk<'a> {
 
     /// One element per entity and evidence record, other than the target's own; returns each
     /// one's `(entity index, evidence index, element id)`.
-    fn entities(&mut self, entities: &[Entity]) -> Vec<(usize, usize, String)> {
+    fn entities(&mut self, entities: &[Entity], lineage: &Lineage) -> Vec<(usize, usize, String)> {
         let now_ms = self.now_unix.saturating_mul(1000);
         let mut pending: Vec<(usize, usize, &'static str)> = Vec::new();
         for (entity_index, entity) in entities.iter().enumerate() {
@@ -543,6 +580,7 @@ impl<'a> Walk<'a> {
                 pending.push((entity_index, evidence_index, kind));
             }
         }
+        pending.sort_by_key(|(entity_index, _, _)| entities[*entity_index].generation);
         let mut made = Vec::new();
         for (entity_index, evidence_index, kind) in pending {
             let entity = &entities[entity_index];
@@ -556,6 +594,11 @@ impl<'a> Walk<'a> {
                                 .filter(|_| !value.eq_ignore_ascii_case(&entity.value))
                         })
                     })
+                })
+                .or_else(|| {
+                    lineage
+                        .get(&entity.value.to_ascii_lowercase())
+                        .and_then(|parent| self.by_value.get(parent))
                 })
                 .cloned()
                 .unwrap_or_else(|| self.target_id.clone());
