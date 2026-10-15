@@ -274,13 +274,15 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       check(`${scheme}: a wildcard search finds the element`, (await page.$$('#sresults tbody tr')).length > 0, `${probe}: ${await page.textContent('#shits')}`);
       await audit(page, `${scheme} search`);
 
-      // Export: CSV as Spiderfoot names it, and JSON with every element.
+      // Export: CSV as Spiderfoot names it, an Excel workbook, and JSON with every element.
       await page.click('#sctabs a[data-tab=summary]');
-      for (const format of ['csv', 'json']) {
+      for (const format of ['csv', 'xlsx', 'json']) {
         await page.click('#scexport summary');
         const [download] = await Promise.all([page.waitForEvent('download', { timeout: 10000 }), page.click(`#scexport button[data-format=${format}]`)]);
-        const body = fs.readFileSync(await download.path(), 'utf8');
-        if (format === 'csv') check(`${scheme}: CSV export saves the elements`, download.suggestedFilename().endsWith('.csv') && body.split('\n').filter(Boolean).length > elements.length, download.suggestedFilename());
+        const body = fs.readFileSync(await download.path(), format === 'xlsx' ? 'latin1' : 'utf8');
+        // An Excel workbook is a zip: it opens with the local file header's PK signature.
+        if (format === 'xlsx') check(`${scheme}: Excel export saves a workbook`, download.suggestedFilename().endsWith('.xlsx') && body.startsWith('PK\x03\x04'), download.suggestedFilename());
+        else if (format === 'csv') check(`${scheme}: CSV export saves the elements`, download.suggestedFilename().endsWith('.csv') && body.split('\n').filter(Boolean).length > elements.length, download.suggestedFilename());
         else { let parsed = null; try { parsed = JSON.parse(body); } catch (_) {} check(`${scheme}: JSON export saves the scan`, parsed !== null && download.suggestedFilename().endsWith('.json'), download.suggestedFilename()); }
       }
 
@@ -316,6 +318,14 @@ const LH = { 'X-Huntsman-Lookup': '1' };
       await page.waitForSelector('#scans tr');
       const listed = await api(page, '/api/scans');
       check(`${scheme}: the scan list shows every saved scan`, (await page.$$('#scans tr')).length === listed.length && listed.some(s => s.id === id && s.elements === elements.length), listed.map(s => [s.id, s.status, s.elements]));
+      // Every scan selected, then Spiderfoot's multi-scan export as one workbook.
+      await page.check('#sall');
+      await page.click('#sexport summary');
+      const menu = await page.evaluate(() => { const r = document.querySelector('#sexport .menu-list').getBoundingClientRect(); return { left: r.left, right: r.right, width: document.documentElement.clientWidth }; });
+      check(`${scheme}: an open export menu stays on the screen`, menu.left >= 0 && menu.right <= menu.width, menu);
+      const [many] = await Promise.all([page.waitForEvent('download', { timeout: 10000 }), page.click('#sexport button[data-mformat=xlsx]')]);
+      check(`${scheme}: the selected scans export as one workbook`, many.suggestedFilename().endsWith('.xlsx') && fs.readFileSync(await many.path(), 'latin1').startsWith('PK\x03\x04'), many.suggestedFilename());
+      await page.uncheck('#sall');
       await audit(page, `${scheme} scans`);
       await page.goto(base + '/#/settings', { waitUntil: 'networkidle' });
       await page.waitForSelector('#mods tr');
