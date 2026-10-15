@@ -101,6 +101,8 @@ pub(in crate::cli) fn sf_cmd(args: &[String]) -> ExitCode {
         // `sf.py -C ID` is `scans correlate ID`, over the same saved scans.
         SfAction::Correlate(id) => crate::cli::scans::scans_cmd(&["correlate".to_owned(), id]),
         SfAction::Scan(scan) => crate::cli::scans::sf_scan(&scan),
+        // `sf.py -l IP:PORT` starts its web UI there; `serve` is Huntsman's.
+        SfAction::Listen(bind) => crate::cli::service::serve_cmd(&["--bind".to_owned(), bind]),
     }
 }
 
