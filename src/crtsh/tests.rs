@@ -528,3 +528,95 @@ fn domain_query_uses_canonical_host_seed() {
         );
     }
 }
+
+fn cert(id: u64, names: &str, issuer: &str, not_before: &str, not_after: &str) -> CrtEntry {
+    CrtEntry {
+        id: Some(id),
+        issuer_ca_id: Some(id % 7),
+        common_name: names.split('\n').next().map(str::to_owned),
+        name_value: Some(names.into()),
+        issuer_name: Some(issuer.into()),
+        not_before: Some(not_before.into()),
+        not_after: Some(not_after.into()),
+        entry_timestamp: Some(format!("{not_before}.5")),
+        serial_number: Some(format!("{id:x}")),
+    }
+}
+
+#[test]
+fn a_name_on_several_certificates_keeps_every_one_once() {
+    let entries = [
+        cert(
+            30,
+            "api.example.com",
+            "C=US, O=Let's Encrypt, CN=R10",
+            "2026-05-01T00:00:00",
+            "2026-08-01T00:00:00",
+        ),
+        cert(
+            31,
+            "api.example.com\nAPI.example.com",
+            "C=US, O=\"Cloudflare, Inc.\", CN=Cloudflare TLS",
+            "2026-01-01T00:00:00",
+            "2027-01-01T00:00:00",
+        ),
+    ];
+    let out = build_entities(&entries, "example.com", "s");
+    assert_eq!(values(&out), ["api.example.com"]);
+    let ev = &out[0].evidence;
+    assert_eq!(ev.len(), 1);
+    let attr = |key: &str| ev[0].attributes.get(key).map(String::as_str);
+    assert_eq!(attr("certificates"), Some("2"), "{:?}", ev[0].attributes);
+    assert_eq!(attr("cert_ids"), Some("30,31"));
+    assert_eq!(attr("cert_serials"), Some("1e,1f"));
+    assert_eq!(attr("issuer_ca_ids"), Some("2,3"));
+    assert_eq!(attr("common_names"), Some("api.example.com"));
+    assert_eq!(
+        ev[0].attr_values("issuers").collect::<Vec<_>>(),
+        [
+            "C=US, O=Let's Encrypt, CN=R10",
+            "C=US, O=\"Cloudflare, Inc.\", CN=Cloudflare TLS"
+        ]
+    );
+    assert_eq!(attr("first_not_before"), Some("2026-01-01T00:00:00"));
+    assert_eq!(attr("last_not_after"), Some("2027-01-01T00:00:00"));
+    assert_eq!(attr("first_logged"), Some("2026-01-01T00:00:00.5"));
+    assert_eq!(attr("last_logged"), Some("2026-05-01T00:00:00.5"));
+    // The first certificate's own fields stay as they were.
+    assert_eq!(attr("issuer"), Some("C=US, O=Let's Encrypt, CN=R10"));
+    assert_eq!(attr("not_before"), Some("2026-05-01T00:00:00"));
+    assert_eq!(attr("cert_serial"), Some("1e"));
+}
+
+#[test]
+fn an_enterprise_issuer_keeps_every_certificate_and_name_it_signed() {
+    let entries = [
+        cert(
+            40,
+            "vpn.example.com",
+            "O=Acme Issuing CA",
+            "2026-01-01T00:00:00",
+            "2026-06-01T00:00:00",
+        ),
+        cert(
+            41,
+            "intranet.example.com\n*.intranet.example.com",
+            "O=Acme Issuing CA",
+            "2026-02-01T00:00:00",
+            "2026-07-01T00:00:00",
+        ),
+    ];
+    let out = build_entities(&entries, "example.com", "s");
+    let org = out
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .unwrap_or_else(|| panic!("no issuer organisation: {out:?}"));
+    let attr = |key: &str| org.evidence[0].attributes.get(key).map(String::as_str);
+    assert_eq!(attr("certificates"), Some("2"));
+    assert_eq!(attr("cert_ids"), Some("40,41"));
+    assert_eq!(
+        attr("signed_names"),
+        Some("vpn.example.com,intranet.example.com,*.intranet.example.com")
+    );
+    assert_eq!(attr("issuer_dn"), Some("O=Acme Issuing CA"));
+}
