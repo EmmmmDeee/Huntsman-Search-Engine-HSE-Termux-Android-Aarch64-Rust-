@@ -121,6 +121,7 @@ CURRENT:
 - `unsafe_code` is forbidden and clippy `pedantic` is warn, both set in `[lints]` in `Cargo.toml`; CI denies warnings.
 - A challenge page is never a result. A self-labelled ATT&CK technique never enters Navigator or STIX (`check` gates).
 - `check` regenerates `var/*.json` byte-identically. Every `gate` mode runs `check` and refuses the run if it changes any tracked or untracked content, or if a commit moves HEAD during the run (`xtask/src/gate.rs`, `baseline` and `drift`).
+- Every gate mode first validates the changelog fragments under `changelog.d/` (`xtask/src/changelog.rs`, `check`): a fragment is `<slug>.<section>.md` holding Markdown bullets, assembled into `CHANGELOG.md` by `changelog assemble` when a version heading is cut, so pull requests never edit the same changelog lines.
 - A gate run holds `target/repair-gate/gate.lock` for its checkout. A second run in that checkout is refused while the first holds the lock. A lock left by an exited process is taken over (`xtask/src/proc.rs`, `GateLock`).
 - `tests/repository_hygiene.rs` forbids opaque archive snapshots at the repository root from returning; the historical archives' SHA-256/Git identities and a recoverable commit are recorded in `docs/ARCHIVE_PROVENANCE.md` and Git history.
 - The README examples, usage line, exit codes and gate range match the binary (`tests/readme.rs`); this file's module map, dependency claims and capability rows match `src/` (`tests/architecture_doc.rs`).
@@ -166,8 +167,8 @@ PLANNED: a source failure is recorded per source with its outcome and does not a
 
 ## VERIFICATION
 
-CURRENT gates (CI `ci.yml`, toolchains 1.87 and stable, owned by VERIFICATION LEAD):
-- `cargo fmt --check` and `cargo clippy --all-targets --locked -- -D warnings` (stable).
+CURRENT gates (CI `ci.yml`, toolchains 1.87 and the pinned stable 1.99, owned by VERIFICATION LEAD):
+- `cargo fmt --check` and `cargo clippy --all-targets --locked -- -D warnings` (pinned stable).
 - `cargo test --locked`: unit tests plus integration suites including `accept.rs`, `cli.rs`, `http_local.rs` (loopback sockets only), `differential_harness.rs`, `readme.rs`, `android_ci.rs`, `hibp_build.rs`, `hibp_cli.rs`, `architecture_doc.rs`, `architecture_boundaries.rs`, `corroboration_key.rs`, `lineage_merge_rule.rs`, `lineage_legacy.rs`, `lineage_independence_adversarial.rs`, `release_ci.rs`, `env_autoload.rs`, `source_registry_cli.rs`, `source_registry_metadata.rs` and `termux_runtime_acceptance.rs`.
 - `cargo run --locked -p xtask -- gate full` and `gate msrv` run `cargo run --locked -- check` and refuse the run if it changes any tracked or untracked content or moves HEAD. That is the `var/*.json` drift check; there is no separate `git diff --exit-code -- var/` step.
 - The Android aarch64 cross-build.

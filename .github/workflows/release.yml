@@ -211,7 +211,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
         with:
-          toolchain: "1.99"
+          toolchain: "1.99" # the pinned stable release; tests/ci_toolchains.rs holds the pin
           components: clippy, rustfmt
       - name: Run shared host repair acceptance
         run: cargo run --locked -p xtask -- gate full
