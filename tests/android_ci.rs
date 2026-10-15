@@ -35,7 +35,6 @@ fn ci_cross_builds_the_actual_termux_target() {
         "aarch64-linux-android",
         "./.github/actions/setup-ndk-aarch64",
         "cargo build --release --locked --target aarch64-linux-android",
-        "HUNTSMAN_HIBP_NO_EMBED",
         "HUNTSMAN_BUILD_SHA: ${{ github.sha }}",
         "llvm-readelf",
         "/system/bin/linker64",
