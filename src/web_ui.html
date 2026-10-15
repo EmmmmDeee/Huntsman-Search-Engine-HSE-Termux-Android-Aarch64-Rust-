@@ -230,7 +230,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel" id="sempty" hidden><div class="panel-body"><b>No scan history</b><p class="help">There is currently no history of previously run scans. Start one from <a class="link" href="#/newscan">New Scan</a>.</p></div></div>
 <div id="slist" hidden>
 <div class="toolbar"><label class="chk"><input type="checkbox" id="sall">All</label><select id="sfilter" aria-label="Filter scans"><option value="">Filter: None</option><option value="running">Filter: Running</option><option value="finished">Filter: Finished</option><option value="failed">Filter: Failed/Aborted</option></select><button class="btn" id="srefresh" type="button">Refresh</button></div>
-<div class="toolbar" id="sbulk" hidden><span class="when" id="snsel"></span><button class="btn" id="sstop" type="button">Stop</button><button class="btn" id="srerun" type="button">Re-run</button><details class="menu" id="sexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-mformat="csv">CSV</button><button type="button" data-mformat="xlsx">Excel</button><button type="button" data-mformat="json">JSON</button><button type="button" data-mformat="tsv">TSV</button></div></details><button class="btn btn-danger" id="sdelete" type="button">Delete</button></div>
+<div class="toolbar" id="sbulk" hidden><span class="when" id="snsel"></span><button class="btn" id="sstop" type="button">Stop</button><button class="btn" id="srerun" type="button">Re-run</button><button class="btn" id="scompare" type="button">Compare</button><details class="menu" id="sexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-mformat="csv">CSV</button><button type="button" data-mformat="xlsx">Excel</button><button type="button" data-mformat="json">JSON</button><button type="button" data-mformat="tsv">TSV</button></div></details><button class="btn btn-danger" id="sdelete" type="button">Delete</button></div>
 <div class="panel"><div class="table-wrap"><table class="sortable"><thead><tr><th>Name</th><th>Target</th><th>Started</th><th>Finished</th><th>Status</th><th>Elements</th><th>Correlations</th><th>Action</th></tr></thead><tbody id="scans"></tbody></table></div></div>
 </div>
 </section>
@@ -282,6 +282,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="xlsx">Excel</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button></div></details>
 <button class="btn" id="scstop" type="button" hidden>Stop</button>
 <button class="btn" id="screrun" type="button">Re-run</button>
+<button class="btn" id="sccompare" type="button">Compare</button>
 <button class="btn" id="scclone" type="button">Clone</button>
 <button class="btn btn-danger" id="scdelete" type="button">Delete</button>
 </div>
@@ -328,6 +329,17 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <p class="crumbs"><a class="link" id="sback">Browse</a><span aria-hidden="true">›</span><span id="shits"></span></p>
 <div class="panel" id="sresults"></div>
 </div>
+</section>
+<section id="view-compare" hidden>
+<p class="crumbs"><a class="link" href="#/scans">Scans</a><span aria-hidden="true">›</span><span>Compare</span></p>
+<h1>Compare Scans</h1>
+<p class="when" id="cmpmeta"></p>
+<div class="toolbar"><button class="btn" id="cmpswap" type="button">Swap</button><details class="menu" id="cmpexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-xformat="csv">CSV</button><button type="button" data-xformat="xlsx">Excel</button><button type="button" data-xformat="json">JSON</button><button type="button" data-xformat="tsv">TSV</button></div></details></div>
+<p class="alert" id="cmperror" role="alert" hidden></p>
+<div class="panel"><div class="panel-heading">Data Types</div><div class="table-wrap"><table class="sortable"><thead><tr><th>Type</th><th>Earlier</th><th>Later</th><th>Added</th><th>Removed</th><th>Kept</th></tr></thead><tbody id="cmptypes"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Correlations <span class="badge" id="cmpcorr-n"></span></div><div class="table-wrap"><table><thead><tr><th>Change</th><th>Risk</th><th>Correlation</th></tr></thead><tbody id="cmpcorr"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Added <span class="badge" id="cmpadd-n"></span></div><p class="help pad">Found by the later scan and not by the earlier one.</p><div id="cmpadd"></div></div>
+<div class="panel"><div class="panel-heading">Removed <span class="badge" id="cmprem-n"></span></div><p class="help pad">Found by the earlier scan and no longer by the later one.</p><div id="cmprem"></div></div>
 </section>
 <section id="view-analyze" hidden>
 <h1>Multi-hop analysis</h1>
@@ -485,20 +497,21 @@ const riskTone=r=>(RISK.find(x=>x[0]===String(r||'').toLowerCase())||[0,0,''])[2
 function risks(c){const w=el('span','risks');for(const [k,name,t] of RISK){const b=el('span','label '+t,(c&&c[k])||0);b.append(el('span','sr',' '+name));w.append(b)}return w}
 // One view at a time. A view's loads carry the generation they started in, so an answer that
 // arrives after the operator moved on is dropped, and its follow-up poll never starts.
-const VIEWS=['scans','newscan','scan','analyze','settings','about'];
+const VIEWS=['scans','newscan','scan','compare','analyze','settings','about'];
 let view='',gen=0,timer=0,resume=null,detailed=false;
 function later(fn,ms=5000){clearTimeout(timer);const g=gen;resume=fn;timer=setTimeout(()=>{if(g===gen&&!document.hidden)fn()},ms)}
 function route(){
   const parts=location.hash.replace(/^#\/?/,'').split('/').map(p=>{try{return decodeURIComponent(p)}catch(_){return p}});
   let v=({lookup:'newscan',status:'about'})[parts[0]]||parts[0];
-  if(!VIEWS.includes(v)||(v==='scan'&&!parts[1]))v='scans';
+  if(!VIEWS.includes(v)||(v==='scan'&&!parts[1])||(v==='compare'&&!parts[2]))v='scans';
   gen++;clearTimeout(timer);resume=null;view=v;
   for(const x of VIEWS)$('view-'+x).hidden=x!==v;
-  const nav=v==='scan'?'scans':v;
+  const nav=v==='scan'||v==='compare'?'scans':v;
   for(const a of document.querySelectorAll('.navlink,#nav-about')){const on=(a.dataset.view||'about')===nav;a.classList.toggle('active',on);if(on)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current')}
   if(v==='scans')loadScans();
   else if(v==='newscan')newTab(ntab);
   else if(v==='scan')openScan(parts.slice(1));
+  else if(v==='compare')openCompare(parts.slice(1,3));
   else if(v==='settings')loadSettings();
   else if(v==='about'&&!detailed)details();
 }
@@ -571,6 +584,7 @@ function showScans(){
 function bulk(){
   const n=picked.size;$('snsel').textContent=n+' selected';$('sbulk').hidden=!n;
   for(const id of ['sstop','srerun','sdelete'])$(id).disabled=!n;
+  $('scompare').disabled=n!==2;
   if(!n)$('sexport').open=false;
   $('sall').checked=n>0&&n===scans.length;
 }
@@ -590,6 +604,7 @@ async function act1(action,ids){
 }
 $('sstop').onclick=()=>act1('stop',[...picked].filter(id=>scans.some(s=>s.id===id&&live(s.status))));
 $('srerun').onclick=()=>act1('rerun',[...picked]);
+$('scompare').onclick=()=>{const two=scans.filter(s=>picked.has(s.id)).sort((a,b)=>(a.created||0)-(b.created||0));if(two.length===2)compareScans(two[0].id,two[1].id)};
 $('sdelete').onclick=()=>act1('delete',[...picked]);
 // The selected scans in one file, Spiderfoot's multi-scan export: a Scan Name column leads each row.
 $('sexport').addEventListener('click',e=>{
@@ -696,6 +711,14 @@ $('screfresh').onclick=()=>{cache={};loadScan(true)};
 $('scstop').onclick=()=>act1('stop',[sid]);
 $('screrun').onclick=()=>act1('rerun',[sid]);
 $('scclone').onclick=()=>clone(scan);
+// This scan against the last scan of the same target before it: what a re-run changed.
+$('sccompare').onclick=async()=>{
+  try{
+    const list=await api('/api/scans'),s=scan;if(!s)return;
+    const prev=list.filter(x=>x.target===s.target&&x.id!==s.id&&(x.created||0)<(s.created||0)).sort((a,b)=>(b.created||0)-(a.created||0))[0];
+    if(prev)compareScans(prev.id,s.id);else fail('scerror','No earlier scan of '+s.target+' to compare with. Re-run this scan, then compare the two.');
+  }catch(e){fail('scerror',e.message)}
+};
 $('scdelete').onclick=()=>act1('delete',[sid]);
 const errors=s=>Array.isArray(s.errors)?s.errors.length:(s.errors||0);
 // A source's outcome as the scan saved it: what it found, its HTTP status, when to retry, and why.
@@ -973,6 +996,30 @@ $('gsave').onclick=()=>{
   [...copy.querySelectorAll('circle,line')].forEach((c,i)=>{const k=was[i].getAttribute('class')||was[i].tagName;if(!fills.has(k)){const s=getComputedStyle(was[i]);fills.set(k,[s.fill,s.stroke])}const [f,s]=fills.get(k);c.setAttribute('fill',f);c.setAttribute('stroke',s);c.removeAttribute('class')});
   download(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml'}),'huntsman-'+sid+'-graph.svg');
 };
+// Two saved scans side by side, which Spiderfoot cannot do: what the later scan found that the
+// earlier did not, what it no longer finds, and the correlations each has that the other lacks.
+let cmp=[];
+const compareScans=(a,b)=>{location.hash='#/compare/'+enc(a)+'/'+enc(b)};
+async function openCompare(ids){
+  const g=gen;cmp=ids;$('cmperror').hidden=true;$('cmpexport').open=false;$('cmpmeta').textContent='Comparing…';
+  try{
+    const c=await api('/api/scans/compare?'+new URLSearchParams({ids:cmp.join(',')}));if(g!==gen)return;
+    const side=(label,s)=>label+': '+(s.name||s.target)+' ('+s.target+', '+when(s.started||s.created)+')';
+    $('cmpmeta').textContent=[side('Earlier',c.base),side('Later',c.other),c.unchanged&&'No change'].filter(Boolean).join(' · ');
+    fill('cmptypes',c.types,t=>[t.description||t.type,t.base,t.other,t.added,t.removed,t.kept]);
+    const cs=c.correlations.added.map(x=>['Added',x]).concat(c.correlations.removed.map(x=>['Removed',x]));
+    fill('cmpcorr',cs,([k,x])=>[k,'',x.title||x.name||x.rule]);$('cmpcorr-n').textContent=cs.length;
+    [...$('cmpcorr').rows].forEach((tr,i)=>{const x=cs[i]&&cs[i][1];if(x)tr.cells[1].replaceChildren(el('span','label '+riskTone(x.risk),x.risk))});
+    $('cmpadd-n').textContent=c.added.length;$('cmpadd').replaceChildren(elemTable(c.added,true));
+    $('cmprem-n').textContent=c.removed.length;$('cmprem').replaceChildren(elemTable(c.removed,true));
+  }catch(e){if(g===gen){fail('cmperror',e.message);$('cmpmeta').textContent=''}}
+}
+$('cmpswap').onclick=()=>compareScans(cmp[1],cmp[0]);
+$('cmpexport').addEventListener('click',async e=>{
+  const b=e.target.closest('button[data-xformat]');if(!b)return;
+  $('cmpexport').open=false;
+  try{await fetchFile('/api/scans/compare?'+new URLSearchParams({ids:cmp.join(','),format:b.dataset.xformat}),'huntsman-compare.'+b.dataset.xformat)}catch(err){fail('cmperror',err.message)}
+});
 // Why a scan stopped following what it found: the crawl's own reason, and what it means.
 const STOP={fixed_point:'nothing new was left to look up',resource_limit:'the lookup or entity budget ran out with findings left to follow',cancelled:'stop requested; the lookups still queued did not run',time_limit:'the time limit ran out',request_budget:'the request budget ran out',provider_budget:'a provider\'s request budget ran out',marginal_gain_limit:'new lookups had stopped finding anything new',fatal_error:'a lookup failed and the crawl could not go on'};
 function stopped(s){

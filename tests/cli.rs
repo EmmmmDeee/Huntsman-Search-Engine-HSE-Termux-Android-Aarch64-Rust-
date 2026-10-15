@@ -582,6 +582,83 @@ fn sf_scan_is_a_saved_scan_that_scans_reads_and_sf_correlates() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// `scans compare` sets a later scan against an earlier one: the change per type, then what was
+/// added and removed, or the same as a file.
+#[test]
+fn scans_compare_lists_what_a_later_scan_added_and_removed() {
+    let home = scratch("scans-compare");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let id = |args: &[&str]| {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+    let earlier = id(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+    let later = id(&["scans", "run", "+61412345679", "-u", "passive", "--json"]);
+
+    let table = run(&["scans", "compare", &earlier, &later]);
+    let stdout = String::from_utf8_lossy(&table.stdout);
+    assert_eq!(
+        table.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&table.stderr)
+    );
+    assert!(
+        stdout.starts_with(&format!("earlier={earlier} ")),
+        "{stdout}"
+    );
+    assert!(stdout.contains(&format!("\nlater={later} ")), "{stdout}");
+    assert!(
+        stdout.contains("\nTYPE\tEARLIER\tLATER\tADDED\tREMOVED\tKEPT\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("\nPHONE_NUMBER\t1\t1\t1\t1\t0\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("+\tPHONE_NUMBER\t") && line.ends_with("\t+61412345679")),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("-\tPHONE_NUMBER\t") && line.ends_with("\t+61412345678")),
+        "{stdout}"
+    );
+
+    let json = run(&["scans", "compare", &earlier, &later, "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(json["unchanged"], false);
+    let same = run(&["scans", "compare", &earlier, &earlier, "--json"]);
+    let same: serde_json::Value = serde_json::from_slice(&same.stdout).unwrap();
+    assert_eq!(same["unchanged"], true);
+
+    let csv = run(&["scans", "compare", &earlier, &later, "-f", "csv"]);
+    assert_eq!(csv.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&csv.stdout)
+            .starts_with("Change,Scan Name,Updated,Type,Module,Source,F/P,Data\r\n")
+    );
+    assert_eq!(run(&["scans", "compare", &earlier]).status.code(), Some(64));
+    assert_eq!(
+        run(&["scans", "compare", &earlier, "0000000000000000"])
+            .status
+            .code(),
+        Some(66)
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
 #[test]
 fn sf_refuses_a_target_no_lookup_can_take() {
     let home = scratch("sf-refuses");
