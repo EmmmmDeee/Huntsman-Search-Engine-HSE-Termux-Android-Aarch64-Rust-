@@ -688,10 +688,17 @@ pub(super) fn sf_scan(scan: &SfScan) -> ExitCode {
         options: ScanOptions {
             usecase: scan.use_case.clone(),
             types: scan.types.clone(),
+            depth: scan.depth,
             ..ScanOptions::default()
         },
     };
-    let record = match api.service().run(&request) {
+    let record = api.service().run(&request);
+    if scan.debug {
+        if let Ok(record) = &record {
+            print_log(api.service().store(), &record.id);
+        }
+    }
+    let record = match record {
         Ok(record) => record,
         // A target the lookup cannot take is bad data, as `sf.py` treats an unusable target.
         Err(error) if error.status() == 400 => return fail(EX_DATAERR, &format!("sf: {error}")),
@@ -714,7 +721,7 @@ pub(super) fn sf_scan(scan: &SfScan) -> ExitCode {
         Ok(results) => results.map(|results| results.elements).unwrap_or_default(),
         Err(error) => return fail(EX_IOERR, &format!("sf: {error}")),
     };
-    match sf_compat::render(scan, &elements) {
+    match sf_compat::render(&scan.output, &elements) {
         Ok(body) => {
             print!("{body}");
             if !scan.quiet {
@@ -726,6 +733,18 @@ pub(super) fn sf_scan(scan: &SfScan) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => fail(EX_DATAERR, &error.to_string()),
+    }
+}
+
+/// `sf -d`: the scan's log on stderr, a line per entry, as `sf.py -d` logs as it runs.
+fn print_log(store: &ScanStore, id: &str) {
+    for entry in store.log(id).unwrap_or_default() {
+        eprintln!(
+            "[{}] {}: {}",
+            entry.level.as_str(),
+            one_line(&entry.component),
+            one_line(&entry.message)
+        );
     }
 }
 

@@ -5,10 +5,10 @@
 // violation, fits the screen with 44 px targets, passes axe-core's WCAG 2.2 AA rules in every
 // view of both themes, runs a scan one hop deep from New Scan to FINISHED and shows exactly what
 // the scan API holds in its Summary, Browse, Correlations, Graph, Scan Settings and Log sections,
-// marks a false positive, searches, exports, clones, re-runs, compares and deletes a scan, keeps
-// its place across a reload, asks only for health when a tab with nothing running comes back,
-// says what to do when the server stops, notices when it is back, and finds the saved scans
-// still there after the restart.
+// marks a false positive, searches, exports, clones, re-runs, compares and deletes a scan, starts
+// a scan of a value it found, keeps its place across a reload, asks only for health when a tab
+// with nothing running comes back, says what to do when the server stops, notices when it is
+// back, and finds the saved scans still there after the restart.
 //
 // It never spends a key: the server runs with a scratch HOME and none of the caller's
 // HUNTSMAN_*, HSE_* or *_KEY variables, and its scans target a phone number, which is offline.
@@ -347,6 +347,17 @@ const LH = { 'X-Huntsman-Lookup': '1' };
         const cloned = await page.evaluate(() => ({ name: document.getElementById('sname').value, target: document.getElementById('starget').value, kind: document.getElementById('skind').value, depth: document.getElementById('sdepth').value, usecase: document.querySelector('input[name=usecase]:checked').value }));
         check('Clone fills New Scan from the scan', cloned.name === row.name && cloned.target === TARGET && cloned.kind === row.kind && cloned.depth === '1' && cloned.usecase === row.options.usecase, cloned);
         await audit(page, 'dark cloned new scan');
+        // A value the scan found that is itself a target opens New Scan on it.
+        const found = elements.find(e => e.type === 'PHONE_NUMBER');
+        await page.goto(base + '/#/scan/' + encodeURIComponent(id) + '/browse/PHONE_NUMBER', { waitUntil: 'networkidle' });
+        await page.waitForSelector('#bbody details.raw summary', { timeout: 5000 }).catch(() => {});
+        await page.click('#bbody details.raw summary >> nth=0');
+        await page.waitForSelector('#bbody details.raw[open] .pivot', { timeout: 3000 }).catch(() => {});
+        await audit(page, 'dark element with New Scan of this');
+        await page.click('#bbody details.raw[open] .pivot');
+        await page.waitForSelector('#view-newscan:not([hidden])', { timeout: 5000 }).catch(() => {});
+        const pivoted = await page.evaluate(() => ({ target: document.getElementById('starget').value, kind: document.getElementById('skind').value, depth: document.getElementById('sdepth').value }));
+        check('an element opens New Scan on its value', !!found && pivoted.target === String(found.data) && pivoted.kind === 'auto' && pivoted.depth === '1', { found: found && found.data, pivoted });
         await page.goto(base + '/#/scan/' + encodeURIComponent(id) + '/summary', { waitUntil: 'networkidle' });
         await page.click('#screrun');
         await page.waitForFunction(was => location.hash.split('/')[2] && decodeURIComponent(location.hash.split('/')[2]) !== was, id, { timeout: 10000 }).catch(() => {});

@@ -16,6 +16,7 @@ use huntsman_recon::scan_service::{LookupOutput, ScanRequest, ScanService};
 use huntsman_recon::scan_store::{Risk, ScanCorrelation, ScanOptions, ScanStore};
 use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use huntsman_recon::termination::TerminationReason;
+use huntsman_recon::{sf_compat, sf_types};
 
 const PAGE: &str = include_str!("../src/web_ui.html");
 /// The most the page may weigh. It is read from loopback on a phone, but every byte is parsed on
@@ -580,6 +581,51 @@ fn new_scan_sends_the_depth_the_api_takes() {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// The Spiderfoot types whose elements open New Scan on their value. Each is a type the catalogue
+/// knows; every type a scan target can be is one of them; and so is the type of every entity a
+/// deeper scan follows (an email, username, domain, phone, IP address or BSSID), so any value the
+/// engine would look up in turn can be scanned on its own from the page.
+#[test]
+fn every_value_a_scan_could_follow_can_start_a_scan_of_its_own() {
+    let script = inline("script");
+    let set = script
+        .split("const PIVOT=new Set([")
+        .nth(1)
+        .and_then(|rest| rest.split("]);").next())
+        .expect("the page lists the types it scans from");
+    let offered: Vec<&str> = set.split(',').map(|code| code.trim_matches('\'')).collect();
+    for code in &offered {
+        assert!(
+            sf_types::find(code).is_some(),
+            "{code} is not a Spiderfoot type"
+        );
+    }
+    for kind in sf_types::all() {
+        if sf_compat::scan_kind(kind.code).is_some() {
+            assert!(
+                offered.contains(&kind.code),
+                "a {} target cannot be scanned from an element",
+                kind.code
+            );
+        }
+    }
+    for kind in [
+        EntityKind::Email,
+        EntityKind::Username,
+        EntityKind::Domain,
+        EntityKind::Phone,
+        EntityKind::IpAddress,
+        EntityKind::MacAddress,
+    ] {
+        let code = sf_types::base_type(&kind);
+        assert!(
+            offered.contains(&code),
+            "a {code} element cannot start a scan"
+        );
+    }
+    assert!(script.contains("if(PIVOT.has(x.type))b.append(button('New Scan of this'"));
 }
 
 #[test]

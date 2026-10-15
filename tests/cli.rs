@@ -659,6 +659,58 @@ fn scans_compare_lists_what_a_later_scan_added_and_removed() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// `sf.py`'s output flags shape the rows, `-d` prints the scan's log, `-l` is `serve --bind`,
+/// and the combinations `sf.py` refuses are refused before any request.
+#[test]
+fn sf_takes_sf_py_output_flags_debug_and_listen() {
+    let home = scratch("sf-flags");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let csv = run(&[
+        "sf",
+        "-q",
+        "-s",
+        "+61412345678",
+        "-o",
+        "csv",
+        "-D",
+        ";",
+        "-H",
+        "-r",
+    ]);
+    assert_eq!(
+        csv.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&csv.stderr)
+    );
+    let csv = String::from_utf8_lossy(&csv.stdout);
+    let first = csv.lines().next().unwrap();
+    assert!(!first.starts_with("Source"), "{csv}");
+    assert_eq!(first.matches(';').count(), 3, "{csv}");
+    // A CSV cell a spreadsheet would read as a formula keeps its leading quote guard.
+    assert!(first.ends_with(";'+61412345678"), "{csv}");
+
+    let debug = run(&["sf", "-s", "+61412345678", "-d", "-F", "PHONE_NUMBER"]);
+    let stderr = String::from_utf8_lossy(&debug.stderr);
+    assert_eq!(debug.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("[INFO] huntsman: scan created"), "{stderr}");
+    assert_eq!(String::from_utf8_lossy(&debug.stdout).lines().count(), 2);
+
+    let listen = run(&["sf", "-l", "not-a-socket"]);
+    assert_eq!(listen.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&listen.stderr).contains("invalid serve bind"));
+    for refused in [
+        &["sf", "-s", "example.org", "-f"][..],
+        &["sf", "-s", "example.org", "-D", ";"],
+        &["sf", "-s", "example.org", "-m", "sfp_dnsresolve"],
+    ] {
+        let out = run(refused);
+        assert_eq!(out.status.code(), Some(64), "{refused:?}");
+        assert!(out.stdout.is_empty(), "{refused:?}");
+    }
+    let _ = fs::remove_dir_all(&home);
+}
+
 #[test]
 fn sf_refuses_a_target_no_lookup_can_take() {
     let home = scratch("sf-refuses");
