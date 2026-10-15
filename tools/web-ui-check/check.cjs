@@ -215,6 +215,10 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await page.waitForSelector('#modlist tr');
       const modules = (await api(page, '/api/modules')).modules;
       check(`${scheme}: By Module lists every module`, (await page.$$('#modlist tr')).length === modules.length, `${(await page.$$('#modlist tr')).length} of ${modules.length}`);
+      const asked = (await api(page, '/api/settings')).modules;
+      const boxes = await page.$$eval('#modlist input', l => l.map(i => ({ name: i.value, checked: i.checked, disabled: i.disabled })));
+      const misticked = boxes.filter(b => { const m = asked.find(x => x.name === b.name); return !m || b.checked !== m.lookups.length > 0 || b.disabled !== !m.lookups.length; });
+      check(`${scheme}: By Module ticks each module a scan lookup asks and closes the rest`, boxes.length === asked.length && boxes.some(b => b.checked) && !misticked.length, misticked.slice(0, 5));
       await audit(page, `${scheme} new scan by module`);
       await page.click('#nt-types');
       await page.waitForSelector('#typelist label');
@@ -517,6 +521,62 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         await page.waitForFunction(() => location.hash === '#/scans', null, { timeout: 10000 }).catch(() => {});
         const left = await api(page, '/api/scans');
         check('Delete removes the scan', !left.some(s => s.id === again) && left.some(s => s.id === id), left.map(s => s.id));
+
+        // By Module: only the ticked modules are asked. Nothing ticked, or only modules the
+        // target's lookup does not ask, is refused before a scan is saved.
+        const phone = asked.filter(m => m.lookups.includes('phone')).map(m => m.name);
+        const one = phone.includes('numverify') ? 'numverify' : phone[0];
+        const elsewhere = asked.find(m => m.lookups.length && !m.lookups.includes('phone'));
+        const box = name => `#modlist input[value="${name}"]`;
+        await page.goto(base + '/#/newscan', { waitUntil: 'networkidle' });
+        await page.click('#nt-modules');
+        await page.waitForSelector('#modlist input');
+        await page.fill('#starget', TARGET);
+        await page.fill('#sname', 'check by module');
+        await page.fill('#sdepth', '0');
+        await page.click('#nnone');
+        check('De-Select All clears every module', (await page.$$('#modlist input:checked')).length === 0, (await page.$$('#modlist input:checked')).length);
+        await page.click('#runscan');
+        check('a by-module scan with no module ticked is refused on the page', (await page.textContent('#nerror')) === 'Select at least one module.', await page.textContent('#nerror'));
+        const before = (await api(page, '/api/scans')).length;
+        await page.check(box(elsewhere.name));
+        const quiet = errors.length;
+        await page.click('#runscan');
+        await page.waitForFunction(() => /none of the chosen modules/.test(document.getElementById('nerror').textContent), null, { timeout: 5000 }).catch(() => {});
+        // The browser logs the refused request; that 400 is the one console error expected here.
+        const refusal = errors.splice(quiet);
+        check('the refused by-module scan logs nothing but its 400', refusal.every(e => e.includes('status of 400')), refusal);
+        check('a by-module scan whose modules do not look up the target shows why and saves nothing', (await page.textContent('#nerror')).includes(`none of the chosen modules (${elsewhere.name})`) && (await api(page, '/api/scans')).length === before, { error: await page.textContent('#nerror'), module: elsewhere.name });
+        await audit(page, 'dark new scan by module refused');
+        await page.uncheck(box(elsewhere.name));
+        await page.check(box(one));
+        await page.click('#runscan');
+        await page.waitForFunction(() => /^#\/scan\/[^/]+/.test(location.hash) && !document.getElementById('view-scan').hidden, null, { timeout: 10000 }).catch(() => {});
+        const picked = decodeURIComponent((await page.evaluate(() => location.hash)).split('/')[2] || '');
+        await page.waitForFunction(() => ['FINISHED', 'ABORTED', 'ERROR-FAILED'].includes(document.getElementById('scstatus').textContent), null, { timeout: 90000 }).catch(() => {});
+        const byModule = await api(page, '/api/scans/' + encodeURIComponent(picked));
+        check('a by-module scan asks only the ticked module', byModule.status === 'FINISHED' && JSON.stringify(byModule.options.modules) === JSON.stringify([one]) && byModule.honoured.modules === true && !(byModule.modules_run || []).some(m => m !== one && phone.includes(m)), { status: byModule.status, modules: byModule.options && byModule.options.modules, honoured: byModule.honoured, run: byModule.modules_run });
+        await page.click('#sctabs a[data-tab=settings]');
+        await page.waitForFunction(() => /Modules applied/.test(document.getElementById('opts').textContent), null, { timeout: 5000 }).catch(() => {});
+        const opts = await page.textContent('#opts');
+        check('the scan\'s Settings show the chosen module, applied', opts.includes(one) && !opts.includes('not applied yet: every module'), opts.slice(0, 300));
+        await page.click('#scclone');
+        await page.waitForSelector('#view-newscan:not([hidden])', { timeout: 5000 }).catch(() => {});
+        await page.waitForSelector('#modlist input', { timeout: 5000 }).catch(() => {});
+        const recloned = await page.evaluate(() => ({ tab: document.getElementById('nt-modules').getAttribute('aria-selected'), shown: !document.getElementById('np-modules').hidden, ticked: [...document.querySelectorAll('#modlist input:checked')].map(i => i.value) }));
+        check('Clone of a by-module scan ticks its modules', recloned.tab === 'true' && recloned.shown && JSON.stringify(recloned.ticked) === JSON.stringify([one]), recloned);
+        await audit(page, 'dark cloned by-module scan');
+        // A scan that chose a module by its Spiderfoot name, in any case, clones to that module.
+        const sfName = asked.find(m => m.name === one).spiderfoot.find(n => n.startsWith('sfp_'));
+        const started = await page.request.post(base + '/api/scans?' + new URLSearchParams({ target: TARGET, name: 'check Spiderfoot name', modules: sfName.toUpperCase() }), { headers: LH });
+        const sfScan = await started.json();
+        await page.goto(base + '/#/scan/' + encodeURIComponent(sfScan.id) + '/summary', { waitUntil: 'networkidle' });
+        await page.waitForFunction(() => ['FINISHED', 'ABORTED', 'ERROR-FAILED'].includes(document.getElementById('scstatus').textContent), null, { timeout: 90000 }).catch(() => {});
+        await page.click('#scclone');
+        await page.waitForSelector('#view-newscan:not([hidden])', { timeout: 5000 }).catch(() => {});
+        const sfTicked = await page.$$eval('#modlist input:checked', l => l.map(i => i.value));
+        check('Clone of a scan that chose a Spiderfoot module name ticks the module doing its work', started.status() === 202 && JSON.stringify(sfTicked) === JSON.stringify([one]), { status: started.status(), sfName, sfTicked });
+        await page.click('#nt-usecase');
       }
       check(`${scheme}: no console errors`, errors.length === 0, errors);
       kept = (await api(page, '/api/scans')).length;

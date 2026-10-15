@@ -373,6 +373,13 @@ const PAGE_READS: &[(&str, &str, &str)] = &[
     ("settings", "/modules/0/access", "m.access"),
     ("settings", "/modules/0/key_env", "m.key_env"),
     ("settings", "/modules/0/configured", "m.configured"),
+    ("settings", "/modules/0/lookups", "asks=m.lookups"),
+    (
+        "settings",
+        "/modules/0/spiderfoot",
+        "m.spiderfoot||[m.name]",
+    ),
+    ("settings", "/modules/0/command", "m.command"),
     ("settings", "/global/0/key", "g.key"),
     ("settings", "/global/0/description", "g.description"),
     ("settings", "/global/0/value", "g.value"),
@@ -578,6 +585,54 @@ fn new_scan_sends_the_depth_the_api_takes() {
     assert_eq!(started["options"]["depth"], 2, "{started}");
     let id = started["id"].as_str().expect("id");
     // The scan runs on its own thread; it finishes before its directory goes.
+    for _ in 0..400 {
+        if !api
+            .service()
+            .store()
+            .get(id)
+            .expect("scan")
+            .status
+            .is_active()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn new_scan_by_module_sends_the_ticked_modules_by_the_names_the_api_takes() {
+    let script = inline("script");
+    // Each tick box carries the module's own name, the one `modules=` takes, and the names a
+    // saved scan may have chosen it by, which Clone matches.
+    assert!(
+        script.contains("i.value=m.name"),
+        "a module box has no name"
+    );
+    assert!(script.contains("i.dataset.names=(m.spiderfoot||[m.name]).join(' ')"));
+    assert!(
+        script.contains("p.set(ntab,on.join(','))"),
+        "New Scan does not send the ticked boxes"
+    );
+    assert!(script.contains("for(const x of ['usecase','types','modules'])"));
+    assert!(
+        !PAGE.contains("not applied yet: a scan runs every module"),
+        "By Module still says choosing modules is not applied"
+    );
+    let (api, _root, dir) = contract_scan("modules");
+    let started = api.handle(
+        "POST",
+        "/api/scans",
+        "target=%2B61412345678&modules=numverify",
+    );
+    assert_eq!(started.status, 202, "{}", started.text());
+    let started: serde_json::Value = serde_json::from_slice(&started.body).expect("JSON");
+    assert_eq!(
+        started["options"]["modules"],
+        serde_json::json!(["numverify"])
+    );
+    let id = started["id"].as_str().expect("id");
     for _ in 0..400 {
         if !api
             .service()
