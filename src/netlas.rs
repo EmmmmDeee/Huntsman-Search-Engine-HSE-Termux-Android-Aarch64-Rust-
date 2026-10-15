@@ -5,7 +5,9 @@
 //! the `X-API-Key` header and the limit is the account's. An address gives open ports, software,
 //! reverse DNS, domains seen on it, privacy flags (VPN, proxy, Tor), IOC listings and the WHOIS
 //! AS and network; a domain gives its DNS records, ports, software, IOC listings and subdomains.
-//! WHOIS contact phones and postal addresses are not decoded.
+//! WHOIS contact phones and postal addresses are not decoded. Netlas answers a domain it has
+//! never scanned with `200` and only the name, a valid zero, and gives a `404` only for a path it
+//! does not have (both checked 2026-10-15): a `404` is not an answer.
 
 use serde::Deserialize;
 
@@ -182,12 +184,15 @@ fn distinct(values: impl Iterator<Item = String>) -> Vec<String> {
 /// [`LegError::Decode`] for a body that is not the documented shape or is about something else.
 pub fn decode(answer: Answer, indicator: Indicator<'_>) -> Result<Option<Finding>, LegError> {
     let body = match answer {
-        Answer::NotFound(_) => return Ok(None),
+        Answer::NotFound(_) => return Err(LegError::Unexpected(404)),
         Answer::Body(body) => body,
     };
     let mut body: Body = api_leg::decode(&body)?;
     if !is_about(&body, indicator) {
         return Err(LegError::Decode("answer names another indicator".into()));
+    }
+    if holds_nothing(&body) {
+        return Ok(None);
     }
     let mut ports: Vec<u16> = body.ports.iter().map(|p| p.port).collect();
     ports.sort_unstable();
@@ -281,6 +286,34 @@ fn is_about(body: &Body, indicator: Indicator<'_>) -> bool {
     }
 }
 
+/// Whether an answer about the indicator holds nothing to report: no port, software, name,
+/// listing, WHOIS network, DNS record or privacy flag. **Pure.**
+fn holds_nothing(body: &Body) -> bool {
+    let no_dns = body
+        .dns
+        .as_ref()
+        .is_none_or(|d| d.a.is_empty() && d.aaaa.is_empty() && d.mx.is_empty() && d.ns.is_empty());
+    let no_whois = body
+        .whois
+        .as_ref()
+        .is_none_or(|w| w.asn.is_none() && w.net.is_none());
+    let no_flag = body
+        .privacy
+        .as_ref()
+        .is_none_or(|p| !(p.is_vpn || p.is_proxy || p.is_tor));
+    body.ports.is_empty()
+        && body.software.is_empty()
+        && body.ptr.is_empty()
+        && body.domains.is_empty()
+        && body.domains_count.unwrap_or(0) == 0
+        && body.ioc.is_empty()
+        && body.related_domains.is_empty()
+        && body.related_domains_count.unwrap_or(0) == 0
+        && no_dns
+        && no_whois
+        && no_flag
+}
+
 /// `finding` with the names and addresses Netlas records for the indicator. **Pure.**
 fn record_pivots(mut finding: Finding, body: &Body, dns: &Dns) -> Finding {
     for name in &body.ptr {
@@ -367,12 +400,42 @@ mod tests {
     }
 
     #[test]
-    fn another_subject_is_refused_and_404_is_a_zero() {
+    fn another_subject_is_refused() {
         assert!(decode(Answer::Body(IP.into()), Indicator::Ip("8.8.8.8")).is_err());
         assert!(decode(Answer::Body(DOMAIN.into()), Indicator::Ip("1.1.1.1")).is_err());
-        assert_eq!(
-            decode(Answer::NotFound(Vec::new()), Indicator::Ip("1.1.1.1")),
-            Ok(None)
+    }
+
+    #[test]
+    fn a_404_is_a_path_netlas_lacks_not_a_zero() {
+        // Recorded for `https://app.netlas.io/api/nosuchpath/1.1.1.1/` on 2026-10-15.
+        let page = "<!doctype html>\n<html lang=\"en\">\n<head>\n  <title>Not Found</title>\n</head>\n<body>\n  <h1>Not Found</h1><p>The requested resource was not found on this server.</p>\n</body>\n</html>\n";
+        let transport = crate::test_support::OneResponse::with_headers(
+            404,
+            &[("content-type", "text/html")],
+            page,
         );
+        let looked_up = lookup(&transport, &Keys::default(), Indicator::Ip("1.1.1.1"), 1);
+        assert!(
+            matches!(looked_up, Err(LegError::Unexpected(404))),
+            "{looked_up:?}"
+        );
+    }
+
+    #[test]
+    fn a_domain_netlas_never_scanned_is_a_zero_not_an_empty_finding() {
+        // Recorded without a key on 2026-10-15 for a name no one has registered.
+        let unseen = r#"{"related_domains_count":0,"related_domains_query":"(domain:*.huntsman-nonexistent-zz9q4.com AND NOT domain:huntsman-nonexistent-zz9q4.com)","domain":"huntsman-nonexistent-zz9q4.com","type":"domain","source":[]}"#;
+        let decoded = decode(
+            Answer::Body(unseen.into()),
+            Indicator::Domain("huntsman-nonexistent-zz9q4.com"),
+        );
+        assert!(matches!(decoded, Ok(None)), "{decoded:?}");
+        // An address Netlas only has WHOIS for is still reported: the network is a finding.
+        let whois_only = r#"{"ip":"223.255.255.1","type":"ip","domains":[],"domains_count":0,"privacy":{"is_vpn":false,"is_proxy":false,"is_tor":false},"whois":{"net":{"name":"Debogon-prefix","country":"AU","range":"223.255.255.0 - 223.255.255.255"}}}"#;
+        let decoded = decode(
+            Answer::Body(whois_only.into()),
+            Indicator::Ip("223.255.255.1"),
+        );
+        assert!(matches!(decoded, Ok(Some(_))), "{decoded:?}");
     }
 }
