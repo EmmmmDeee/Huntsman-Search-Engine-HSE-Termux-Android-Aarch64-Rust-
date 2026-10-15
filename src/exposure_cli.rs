@@ -2549,7 +2549,15 @@ mod tests {
             panic!("the exposure ledger must save and reload");
         };
         assert_eq!(loaded, saved);
-        assert_eq!(saved.len(), report.outcomes.len() + report.entities.len());
+        let evidence: usize = report
+            .entities
+            .iter()
+            .map(|entity| entity.evidence.len())
+            .sum();
+        assert_eq!(
+            saved.len(),
+            report.outcomes.len() + report.entities.len() + evidence
+        );
     }
 
     #[test]
