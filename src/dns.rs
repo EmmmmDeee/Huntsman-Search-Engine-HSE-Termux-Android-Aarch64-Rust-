@@ -19,6 +19,10 @@ use crate::{
     tlsrpt,
 };
 
+/// The module name of resolving a name or an address another source found, forward (A and
+/// AAAA) or reverse (PTR), as Spiderfoot's `sfp_dnsresolve` does: on outcome rows and evidence.
+pub const RESOLVE_SOURCE: &str = "dnsresolve";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordType {
     A,
@@ -27,6 +31,7 @@ pub enum RecordType {
     Ns,
     Soa,
     Txt,
+    Ptr,
 }
 
 impl RecordType {
@@ -39,6 +44,7 @@ impl RecordType {
             Self::Ns => "NS",
             Self::Soa => "SOA",
             Self::Txt => "TXT",
+            Self::Ptr => "PTR",
         }
     }
 
@@ -52,6 +58,7 @@ impl RecordType {
             Self::Ns => 2,
             Self::Soa => 6,
             Self::Mx => 15,
+            Self::Ptr => 12,
             Self::Txt => 16,
             Self::Aaaa => 28,
         }
@@ -111,6 +118,17 @@ impl ResolveErrorKind {
             Self::BotWaf => "bot_waf",
             Self::RateLimited => "rate_limited",
             Self::Truncated => "truncated",
+        }
+    }
+
+    /// The outcome kind of a query no resolver answered with this error. **Pure.**
+    #[must_use]
+    pub const fn outcome_kind(self) -> SourceOutcomeKind {
+        match self {
+            Self::Timeout => SourceOutcomeKind::TtfbTimeout,
+            Self::RateLimited => SourceOutcomeKind::RateLimited,
+            Self::BotWaf => SourceOutcomeKind::BotWaf,
+            Self::Upstream | Self::Truncated | Self::Empty => SourceOutcomeKind::Inconclusive,
         }
     }
 }
@@ -314,7 +332,7 @@ fn interpret_fetched(
                 .unwrap_or_else(|| "no HTTP response".into()),
         });
     };
-    if crate::classify::is_challenge(&response.text()) {
+    if crate::classify::is_challenge(&response.text_view()) {
         return Err(ResolveError {
             kind: ResolveErrorKind::BotWaf,
             detail: "challenge page".into(),
@@ -453,6 +471,47 @@ pub fn soa_rname_to_email(rname: &str) -> String {
         cursor += 1;
     }
     String::new()
+}
+
+/// The `in-addr.arpa` name (IPv4, RFC 1035) or nibble-format `ip6.arpa` name (IPv6, RFC 3596)
+/// whose PTR records name `ip`. **Pure.**
+#[must_use]
+pub fn reverse_name(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, c, d] = v4.octets();
+            format!("{d}.{c}.{b}.{a}.in-addr.arpa")
+        }
+        IpAddr::V6(v6) => {
+            let mut name = String::with_capacity(72);
+            for byte in v6.octets().iter().rev() {
+                for nibble in [byte & 0x0f, byte >> 4] {
+                    name.push(char::from_digit(u32::from(nibble), 16).unwrap_or('0'));
+                    name.push('.');
+                }
+            }
+            name.push_str("ip6.arpa");
+            name
+        }
+    }
+}
+
+/// The PTR records of `ip` over the `DoH` pool, as published (a trailing root dot kept).
+///
+/// # Errors
+/// [`ResolveErrorKind::Empty`] when the zone has no PTR record for the address; any other kind
+/// when no resolver answered.
+pub fn lookup_ptr<T: Transport + ?Sized>(
+    transport: &T,
+    ip: IpAddr,
+) -> Result<ResolveAnswer, ResolveError> {
+    resolve_with_pool(
+        transport,
+        &ResolveQuery {
+            name: reverse_name(ip),
+            record_type: RecordType::Ptr,
+        },
+    )
 }
 
 /// Canonical DNS name for a domain, URL or email selector. Nothing is sent.
@@ -829,6 +888,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reverse_names_follow_rfc_1035_and_rfc_3596() {
+        assert_eq!(
+            reverse_name(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))),
+            "4.3.2.1.in-addr.arpa"
+        );
+        let v6 = IpAddr::V6(std::net::Ipv6Addr::new(
+            0x2001, 0xdb8, 0, 0, 0, 0, 0x567, 0x89ab,
+        ));
+        assert_eq!(
+            reverse_name(v6),
+            "b.a.9.8.7.6.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
+        );
+    }
+
+    /// A PTR lookup asks for the reverse name's PTR records and keeps only those, as published;
+    /// a CNAME in the chain (RFC 2317 classless delegation) is not a PTR answer.
+    #[test]
+    fn a_ptr_lookup_asks_the_reverse_name_and_keeps_its_ptr_records() {
+        let transport = FakeTransport::new(vec![Ok(doh(
+            br#"{"Status":0,"Answer":[{"type":5,"data":"4.0-25.3.2.1.in-addr.arpa."},{"type":12,"data":"One.One.One.One."}]}"#,
+        ))]);
+        let answer = lookup_ptr(&transport, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(answer.records, ["One.One.One.One."]);
+        let seen = transport.seen.borrow();
+        assert!(
+            seen[0].url.contains("name=1.1.1.1.in-addr.arpa"),
+            "{}",
+            seen[0].url
+        );
+        assert!(seen[0].url.contains("type=PTR"), "{}", seen[0].url);
+    }
+
     /// NXDOMAIN and "no record of this type" come from the zone, so the first resolver's
     /// answer is final: asking DNS.SB and Google again only costs two more round trips and
     /// tells two more providers the name being looked up.
@@ -864,7 +957,8 @@ mod tests {
         }
     }
 
-    /// SERVFAIL and REFUSED are about the resolver, not the zone, so the next one is asked.
+    /// SERVFAIL and REFUSED are about the resolver, not the zone, so the next one is asked;
+    /// when every resolver answers so, the result is a resolver failure, not "no such record".
     #[test]
     fn a_resolver_failure_code_fails_over() {
         for status in [2, 5] {
@@ -885,6 +979,18 @@ mod tests {
             assert_eq!(answer.server.provider, "DNS.SB");
             assert_eq!(transport.seen.borrow().len(), 2);
         }
+        let transport = FakeTransport::new(vec![Ok(doh(br#"{"Status":2}"#)); 3]);
+        let error = resolve_with_pool(
+            &transport,
+            &ResolveQuery {
+                name: "example.com".into(),
+                record_type: RecordType::A,
+            },
+        )
+        .expect_err("every resolver failed");
+        assert_eq!(error.kind, ResolveErrorKind::Upstream);
+        assert_eq!(error.detail, "dns status 2");
+        assert_eq!(transport.seen.borrow().len(), 3);
     }
 
     /// A 200 JSON body with no `Status` is not a DNS answer (a captive portal's page, a

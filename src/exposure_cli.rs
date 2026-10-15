@@ -2,7 +2,7 @@
 //!
 //! The address is canonicalised once, then the account-keyed legs of
 //! [`breach_hybrid::exposure_order`] run in that order: HIBP `breachedaccount`,
-//! then the stolen.tax cascade, then `OathNet` breach search, then `DeHashed` exact-match search.
+//! then the stolen.tax cascade, then `OathNet` breach search, then `DeHashed` exact-match search (addresses only).
 //! The keyless legs (Pwned Passwords, the HIBP
 //! catalogue) are not keyed on an address and are not run here. Each HIBP breach
 //! becomes evidence on the seed email entity, tagged `breach` or `stealer-log`;
@@ -48,10 +48,10 @@ use crate::stolen_tax::{self, StolenTaxError};
 use crate::tags;
 use crate::textnorm::{decode_html_entities, escape_controls, is_escaped};
 
-pub const EXPOSURE_USAGE: &str = "usage: huntsman-recon exposure ADDR [--save FILE]";
+pub const EXPOSURE_USAGE: &str = "usage: huntsman-recon exposure ADDR|HANDLE [--save FILE]";
 pub const EXPOSURE_HELP: &str = "\
-exposure ADDR [--save FILE]
-Canonicalise ADDR and run the keyed breach legs in order: HIBP breached-account, then the stolen.tax cascade, then OathNet breach search. A leg without its key makes no request and reports auth_required. Results are lineage-rendered entities. Then incidents=N (none when HIBP gave no answer) and, per HIBP breach sorted by name (a name the source repeats is shown once, keeping every flag any of its records sets): an incident row (title, breach and added dates, domain, account count, verified, flags), a caution row for a fabricated or spam-list breach, its summary, data classes, attribution, and the reference links its own description gives. This is public context about each breach, not a finding about the person. Then oathnet_breaches=N (none when OathNet gave no answer) and one oathnet_breach row per breach database: records, breach date, indexed range, whether a password or hash is exposed, and the exposed field types. Then dehashed_breaches=N (none when DeHashed gave no answer) and one dehashed_breach row per breach database: records and whether a password or hash is exposed. No record value other than a username or address is shown or kept. --save FILE writes an unverified ledger that verify can reload.";
+exposure ADDR|HANDLE [--save FILE]
+Canonicalise the email address ADDR or the username HANDLE and run the keyed breach legs in order: HIBP breached-account (addresses only), then the stolen.tax cascade, then OathNet breach search, then DeHashed exact-match search (addresses only). A leg without its key makes no request and reports auth_required. Results are lineage-rendered entities. Then incidents=N (none when HIBP gave no answer) and, per HIBP breach sorted by name (a name the source repeats is shown once, keeping every flag any of its records sets): an incident row (title, breach and added dates, domain, account count, verified, flags), a caution row for a fabricated or spam-list breach, its summary, data classes, attribution, and the reference links its own description gives. This is public context about each breach, not a finding about the person. Then oathnet_breaches=N (none when OathNet gave no answer) and one oathnet_breach row per breach database: records, breach date, indexed range, whether a password or hash is exposed, and the exposed field types. Then dehashed_breaches=N (none when DeHashed gave no answer) and one dehashed_breach row per breach database: records and whether a password or hash is exposed. No record value other than a username or address is shown or kept. --save FILE writes an unverified ledger that verify can reload.";
 
 /// Source label for the HIBP breached-account leg.
 pub const SOURCE: &str = "hibp_account";
@@ -322,6 +322,59 @@ pub struct Sources<'a> {
     pub dehashed: Option<&'a DehashedClient>,
 }
 
+impl Sources<'_> {
+    /// Whether a lookup of `selector` would reach at least one keyed leg: HIBP or `DeHashed` for
+    /// an address, stolen.tax or `OathNet` for either. Another lookup of the same selector runs exposure when
+    /// this holds, so a configured paid source is never left out of it.
+    #[must_use]
+    pub fn reach(&self, selector: &str) -> bool {
+        let email = canonical_email(selector).is_some();
+        let email_only = email && (self.hibp.is_some() || self.dehashed.is_some());
+        canonical_selector(selector).is_some()
+            && (email_only || self.stolen_tax.is_some() || self.oathnet.is_some())
+    }
+}
+
+/// Fold an exposure `report` into another lookup's `entities` and `outcomes` for the same
+/// selector, and render the combined report: one entity and outcome table, then the incidents
+/// `OathNet` and `DeHashed` sections. The seed entity both lookups emit is merged by uid. On an error,
+/// `entities` and `outcomes` are left as they were.
+///
+/// # Errors
+/// The report renderer's error.
+pub fn fold_into(
+    entities: &mut Vec<Entity>,
+    outcomes: &mut Vec<SourceExecutionOutcome>,
+    report: Report,
+) -> Result<String, String> {
+    let Report {
+        entities: found,
+        outcomes: ran,
+        incidents,
+        oathnet,
+        dehashed,
+    } = report;
+    let mut all_entities = entities.clone();
+    all_entities.extend(found);
+    merge_by_uid(&mut all_entities);
+    let mut all_outcomes = outcomes.clone();
+    all_outcomes.extend(ran);
+    let mut text = lookup_report::render(&all_entities, &all_outcomes)?;
+    text.push_str(&render_incidents(incidents.as_deref()));
+    text.push_str(&render_oathnet(oathnet.as_deref()));
+    text.push_str(&render_dehashed(dehashed.as_deref()));
+    *entities = all_entities;
+    *outcomes = all_outcomes;
+    Ok(text)
+}
+
+/// The line that stands for an exposure run that gave no report, so the lookup it rode along
+/// with still says the keyed legs were tried: `exposure=unavailable reason=...`.
+#[must_use]
+pub fn unavailable_line(reason: &str) -> String {
+    format!("exposure=unavailable reason={}\n", escape_controls(reason))
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
     pub entities: Vec<Entity>,
@@ -341,7 +394,8 @@ pub struct Report {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExposureArgs {
-    pub email: String,
+    /// A canonical email address or username, as [`canonical_selector`] gives it.
+    pub selector: String,
     pub save: Option<PathBuf>,
 }
 
@@ -353,9 +407,9 @@ impl ExposureArgs {
         if positional.len() != 1 {
             return Err(Error::Invalid("exposure needs exactly one ADDR".into()));
         }
-        let email = canonical_email(&positional[0])
-            .ok_or_else(|| Error::invalid_value("invalid email address"))?;
-        Ok(Self { email, save })
+        let selector = canonical_selector(&positional[0])
+            .ok_or_else(|| Error::invalid_value("not an email address or username"))?;
+        Ok(Self { selector, save })
     }
 }
 
@@ -366,15 +420,30 @@ pub enum ExposureRun {
     Failed(String),
 }
 
-/// Run every configured account-keyed breach leg for `email`.
+/// The selector an exposure lookup is keyed on: a canonical email address, else a username by
+/// the `username` command's rule. An address always wins, so `a@b.com` is never a handle.
 #[must_use]
-pub fn run(sources: Sources<'_>, email: &str, now_unix: u64) -> ExposureRun {
-    let Some(email) = canonical_email(email) else {
-        return ExposureRun::Failed("invalid email address".into());
+pub fn canonical_selector(raw: &str) -> Option<String> {
+    canonical_email(raw).or_else(|| crate::username_cli::canonical_username(raw).ok())
+}
+
+/// Run every configured account-keyed breach leg for `selector`, an email address or a
+/// username. HIBP searches addresses only, so a username skips it without a request or an
+/// outcome; stolen.tax and `OathNet` search either.
+#[must_use]
+pub fn run(sources: Sources<'_>, selector: &str, now_unix: u64) -> ExposureRun {
+    let Some(value) = canonical_selector(selector) else {
+        return ExposureRun::Failed("not an email address or username".into());
     };
-    let scan_id = crate::entity::scan_id("exposure", &email);
+    let kind = if canonical_email(&value).is_some() {
+        EntityKind::Email
+    } else {
+        EntityKind::Username
+    };
+    let seed = value.as_str();
+    let scan_id = crate::entity::scan_id("exposure", &value);
     let mut report = Report {
-        entities: vec![seed_entity(&email, &scan_id)],
+        entities: vec![seed_entity(&kind, &value, &scan_id)],
         outcomes: Vec::new(),
         incidents: None,
         oathnet: None,
@@ -385,21 +454,18 @@ pub fn run(sources: Sources<'_>, email: &str, now_unix: u64) -> ExposureRun {
     for leg in breach_hybrid::exposure_order(true) {
         let outcome = match leg {
             BreachLeg::PwnedPasswords | BreachLeg::HibpCatalog => continue,
+            // HIBP and DeHashed search addresses only; a username lookup sends them nothing.
+            BreachLeg::HibpAccount | BreachLeg::DeHashed if kind != EntityKind::Email => continue,
             BreachLeg::HibpAccount => match sources.hibp {
                 None => missing_key(SOURCE, now_unix),
-                Some(client) => hibp_leg(
-                    client,
-                    &email,
-                    &scan_id,
-                    now_unix,
-                    &mut report,
-                    &mut network,
-                ),
+                Some(client) => {
+                    hibp_leg(client, seed, &scan_id, now_unix, &mut report, &mut network)
+                }
             },
             BreachLeg::StolenTax => match sources.stolen_tax {
                 None => missing_key(STOLEN_TAX_SOURCE, now_unix),
                 Some((transport, keys)) => {
-                    stolen_tax_leg(transport, keys, &email, &scan_id, now_unix, &mut report)
+                    stolen_tax_leg(transport, keys, seed, &scan_id, now_unix, &mut report)
                 }
             },
             BreachLeg::OathNet => match sources.oathnet {
@@ -407,7 +473,7 @@ pub fn run(sources: Sources<'_>, email: &str, now_unix: u64) -> ExposureRun {
                 Some((transport, keys)) => oathnet_leg(
                     transport,
                     keys,
-                    &email,
+                    (&kind, seed),
                     &scan_id,
                     now_unix,
                     &mut report,
@@ -416,14 +482,9 @@ pub fn run(sources: Sources<'_>, email: &str, now_unix: u64) -> ExposureRun {
             },
             BreachLeg::DeHashed => match sources.dehashed {
                 None => missing_key(DEHASHED_SOURCE, now_unix),
-                Some(client) => dehashed_leg(
-                    client,
-                    &email,
-                    &scan_id,
-                    now_unix,
-                    &mut report,
-                    &mut network,
-                ),
+                Some(client) => {
+                    dehashed_leg(client, seed, &scan_id, now_unix, &mut report, &mut network)
+                }
             },
         };
         report.outcomes.push(outcome);
@@ -547,6 +608,18 @@ fn render_oathnet(breaches: Option<&[oathnet::Breach]>) -> String {
             ),
         ];
         push_row(&mut out, &row);
+        for (field, values) in &breach.values {
+            for value in values {
+                push_row(
+                    &mut out,
+                    &[
+                        "oathnet_value".to_owned(),
+                        escape_controls(&breach.dbname),
+                        format!("{}={}", escape_controls(field), escape_controls(value)),
+                    ],
+                );
+            }
+        }
     }
     out
 }
@@ -690,17 +763,22 @@ fn stolen_tax_leg(
 fn oathnet_leg(
     transport: &dyn Transport,
     keys: &Keys,
-    email: &str,
+    seed: (&EntityKind, &str),
     scan_id: &str,
     now_unix: u64,
     report: &mut Report,
     network: &mut Option<String>,
 ) -> SourceExecutionOutcome {
-    match oathnet::search_email(transport, keys, email, now_unix) {
+    let query = if *seed.0 == EntityKind::Email {
+        oathnet::Query::Email(seed.1)
+    } else {
+        oathnet::Query::Username(seed.1)
+    };
+    match oathnet::search(transport, keys, query, now_unix) {
         Ok(search) => {
             report
                 .entities
-                .extend(oathnet_entities(email, scan_id, &search));
+                .extend(oathnet_entities(seed, scan_id, &search));
             let outcome = if search.records == 0 {
                 SourceExecutionOutcome::valid_zero(OATHNET_SOURCE, now_unix)
             } else {
@@ -742,13 +820,17 @@ fn oathnet_leg(
     }
 }
 
-/// One email entity per `OathNet` breach database, carrying that breach's exposure metadata, then
-/// one pivot per distinct username and per other address in the records. A record value other
-/// than a username or address never reaches an entity: [`oathnet::decode`] keeps none.
-fn oathnet_entities(email: &str, scan_id: &str, search: &oathnet::Search) -> Vec<Entity> {
+/// One seed entity per `OathNet` breach database, carrying that breach's exposure metadata, then
+/// one pivot per distinct username and address in the records other than the seed. A record value
+/// other than a username or address never reaches an entity: [`oathnet::decode`] keeps none.
+fn oathnet_entities(
+    (seed_kind, seed): (&EntityKind, &str),
+    scan_id: &str,
+    search: &oathnet::Search,
+) -> Vec<Entity> {
     let mut entities = Vec::new();
     for breach in &search.breaches {
-        let mut entity = Entity::new(EntityKind::Email, email, 0.85, scan_id);
+        let mut entity = Entity::new(seed_kind.clone(), seed, 0.85, scan_id);
         entity.tag(tags::BREACH);
         if breach.password_exposed {
             entity.tag(tags::PASSWORD_AT_RISK);
@@ -779,17 +861,28 @@ fn oathnet_entities(email: &str, scan_id: &str, search: &oathnet::Search) -> Vec
         if let Some(count) = breach.pwn_count {
             evidence = evidence.with_attr("pwn_count", count.to_string());
         }
+        // The de-redacted payload: every non-credential value each exposed field held (cleartext
+        // passwords, hashes and salts are held back in `oathnet.rs`), keyed `value_<field>` so it
+        // cannot clobber the metadata attributes above.
+        for (field, values) in &breach.values {
+            let joined = values.iter().cloned().collect::<Vec<_>>().join(", ");
+            evidence = evidence.with_attr(format!("value_{field}"), joined);
+        }
         entity.add_evidence(evidence);
         entities.push(entity);
     }
     let pivot_note = "Seen in an OathNet breach record that holds the queried address";
+    // The seed itself is not a pivot. Records quote it as stored, so compare canonical forms.
+    let is_seed = |kind: &EntityKind, value: &str| {
+        kind == seed_kind && canonical_selector(value).as_deref() == Some(seed)
+    };
     let others = search
         .emails
         .iter()
-        .filter(|other| canonical_email(other).as_deref() != Some(email))
-        .map(|other| (EntityKind::Email, other));
-    let usernames = search.usernames.iter().map(|u| (EntityKind::Username, u));
-    for (kind, value) in others.chain(usernames) {
+        .map(|other| (EntityKind::Email, other))
+        .chain(search.usernames.iter().map(|u| (EntityKind::Username, u)))
+        .filter(|(kind, value)| !is_seed(kind, value));
+    for (kind, value) in others {
         let mut entity = Entity::new(kind, value, 0.50, scan_id);
         entity.add_evidence(Evidence::new(
             EvidenceProvenance::for_scan(OATHNET_SOURCE, scan_id),
@@ -944,12 +1037,17 @@ fn outcome_kind(err: &HibpError) -> SourceOutcomeKind {
     }
 }
 
-fn seed_entity(email: &str, scan_id: &str) -> Entity {
-    let mut entity = Entity::new(EntityKind::Email, email, 0.99, scan_id);
+fn seed_entity(kind: &EntityKind, value: &str, scan_id: &str) -> Entity {
+    let mut entity = Entity::new(kind.clone(), value, 0.99, scan_id);
     entity.tag("seed");
+    let what = if *kind == EntityKind::Email {
+        "operator-supplied email selector"
+    } else {
+        "operator-supplied username selector"
+    };
     entity.add_evidence(Evidence::new(
         EvidenceProvenance::for_scan("seed", scan_id),
-        "operator-supplied email selector",
+        what,
     ));
     entity
 }
@@ -1379,15 +1477,255 @@ mod tests {
     }
 
     #[test]
-    fn invalid_address_fails() {
-        assert!(matches!(
-            run(Sources::default(), "not-an-email", 7),
-            ExposureRun::Failed(_)
-        ));
+    fn a_selector_that_is_neither_an_address_nor_a_username_fails() {
+        for bad in ["not an email", "ada@", "", "ünï"] {
+            assert!(
+                matches!(run(Sources::default(), bad, 7), ExposureRun::Failed(_)),
+                "{bad:?} accepted"
+            );
+        }
     }
 
     #[test]
-    fn oathnet_breaches_are_exposure_metadata_on_the_email_and_never_values() {
+    fn an_address_is_never_read_as_a_handle() {
+        assert_eq!(
+            canonical_selector(" Ada@Example.com ").as_deref(),
+            Some("ada@example.com")
+        );
+        assert_eq!(canonical_selector("@Ada_99").as_deref(), Some("ada_99"));
+    }
+
+    fn oathnet_only<'a>(transport: &'a dyn Transport, keys: &'a Keys) -> Sources<'a> {
+        Sources {
+            oathnet: Some((transport, keys)),
+            ..Sources::default()
+        }
+    }
+
+    fn oathnet_keys() -> Keys {
+        Keys::parse(&format!(
+            "{}=on-test-key-0123456789abcdef\n",
+            oathnet::KEY_SLOT
+        ))
+        .unwrap_or_else(|e| panic!("fixture keys: {e}"))
+    }
+
+    #[test]
+    fn a_configured_keyed_leg_reaches_every_selector_it_can_search() {
+        let transport = crate::test_support::OneResponse::json(404, "");
+        let keys = oathnet_keys();
+        assert!(
+            !Sources::default().reach("ada@example.com"),
+            "no key, no leg"
+        );
+        let sources = oathnet_only(&transport, &keys);
+        assert!(sources.reach("ada@example.com"));
+        assert!(sources.reach("@Ada_99"), "OathNet searches a username too");
+        assert!(!sources.reach("two words"), "not a selector");
+    }
+
+    /// Counts requests and answers each with a 404, so a test can prove a leg sent nothing.
+    #[derive(Default)]
+    struct Counting(std::sync::Mutex<usize>);
+
+    impl Transport for Counting {
+        fn send(
+            &self,
+            _: &crate::http::Request,
+        ) -> Result<crate::http::Response, crate::http::TransportFailure> {
+            *self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+            Ok(crate::http::Response {
+                status: 404,
+                headers: Vec::new(),
+                body: Vec::new(),
+                truncated: false,
+            })
+        }
+    }
+
+    #[test]
+    fn dehashed_searches_an_address_and_never_a_username() {
+        let counting = std::sync::Arc::new(Counting::default());
+        let secret = crate::keys::Secret::new("dh-test-key-0123456789".to_owned())
+            .unwrap_or_else(|e| panic!("fixture secret: {e}"));
+        let client = DehashedClient::new(counting.clone(), secret);
+        let sources = Sources {
+            dehashed: Some(&client),
+            ..Sources::default()
+        };
+        assert!(sources.reach("ada@example.com"));
+        assert!(
+            !sources.reach("@Ada_99"),
+            "DeHashed alone cannot search a username"
+        );
+        let ExposureRun::Printed { report, .. } = run(sources, "@Ada_99", 7) else {
+            panic!("expected a printed report");
+        };
+        assert_eq!(
+            *counting
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            0
+        );
+        assert!(
+            report.outcomes.iter().all(|o| o.module != DEHASHED_SOURCE),
+            "a username lookup records no DeHashed leg: {:?}",
+            report.outcomes
+        );
+        assert_eq!(report.dehashed, None);
+    }
+
+    #[test]
+    fn an_email_lookup_folds_in_the_keyed_legs_under_one_report() {
+        // Gravatar, Duolingo and keys.openpgp.org each find nothing.
+        let reply = |status: u16, body: &str| {
+            Ok(crate::http::Response {
+                status,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: body.as_bytes().to_vec(),
+                truncated: false,
+            })
+        };
+        let email_sources = crate::test_support::ScriptedTransport::new(vec![
+            reply(404, ""),
+            reply(200, r#"{"users":[]}"#),
+            reply(404, "No key found"),
+        ]);
+        let crate::email_cli::EmailRun::Printed { report: email, .. } =
+            crate::email_cli::run(&email_sources, "ada@example.com", 7)
+        else {
+            panic!("expected an email report");
+        };
+        let body = serde_json::json!({"success": true, "data": {
+            "items": [{"email": "ada@example.com", "password": "hunter2", "dbname": "acme_forum"}],
+            "meta": {"total": 1, "has_more": false}
+        }});
+        let transport = FakeHibp {
+            body: body.to_string(),
+            urls: std::sync::Mutex::default(),
+        };
+        let keys = oathnet_keys();
+        let ExposureRun::Printed { report, .. } =
+            run(oathnet_only(&transport, &keys), "ada@example.com", 7)
+        else {
+            panic!("expected an exposure report");
+        };
+        let (mut entities, mut outcomes) = (email.entities, email.outcomes);
+        let before = outcomes.len();
+        let text = match fold_into(&mut entities, &mut outcomes, report) {
+            Ok(text) => text,
+            Err(m) => panic!("fold failed: {m}"),
+        };
+        let legs: Vec<&str> = outcomes[before..]
+            .iter()
+            .map(|o| o.module.as_str())
+            .collect();
+        assert_eq!(
+            legs,
+            [SOURCE, STOLEN_TAX_SOURCE, OATHNET_SOURCE, DEHASHED_SOURCE]
+        );
+        assert_eq!(text.matches("entities=").count(), 1, "{text}");
+        assert!(text.contains("oathnet_breaches=1"), "{text}");
+        assert!(text.contains("dehashed_breaches=none"), "{text}");
+        assert!(!text.contains("hunter2"), "{text}");
+        let seeds = entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email && e.raw_value == "ada@example.com")
+            .count();
+        assert_eq!(seeds, 1, "the seed both lookups emit is merged");
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.raw_value == "ada@example.com"
+                    && e.tags.iter().any(|t| t == tags::BREACH)),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn an_unavailable_exposure_line_cannot_forge_a_row() {
+        assert_eq!(
+            unavailable_line("refused\nentities=9"),
+            "exposure=unavailable reason=refused\\nentities=9\n"
+        );
+    }
+
+    #[test]
+    fn a_username_skips_hibp_and_searches_oathnet_by_username() {
+        let body = serde_json::json!({"success": true, "data": {
+            "items": [
+                {"email": "ada@example.com", "username": "Ada_99", "password_hash": "deadbeef",
+                 "dbname": "acme_forum"},
+                {"email": "a.l@example.org", "username": "ada_99", "dbname": "acme_forum"}
+            ],
+            "meta": {"total": 2, "has_more": false}
+        }});
+        let transport = FakeHibp {
+            body: body.to_string(),
+            urls: std::sync::Mutex::default(),
+        };
+        let keys = Keys::parse(&format!(
+            "{}=on-test-key-0123456789abcdef\n",
+            oathnet::KEY_SLOT
+        ))
+        .unwrap_or_else(|e| panic!("fixture keys: {e}"));
+        let sources = Sources {
+            oathnet: Some((&transport, &keys)),
+            ..Sources::default()
+        };
+        let ExposureRun::Printed { text, report } = run(sources, "@Ada_99", 7) else {
+            panic!("expected a printed report");
+        };
+        let urls = transport
+            .urls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(urls.len(), 1, "{urls:?}");
+        assert!(urls[0].contains("username%5B%5D=ada_99"), "{urls:?}");
+
+        let legs: Vec<&str> = report.outcomes.iter().map(|o| o.module.as_str()).collect();
+        assert_eq!(
+            legs,
+            [STOLEN_TAX_SOURCE, OATHNET_SOURCE],
+            "HIBP is email-only"
+        );
+
+        let seed = report
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.raw_value == "ada_99")
+            .unwrap_or_else(|| panic!("no username seed: {text}"));
+        assert!(seed.tags.iter().any(|t| t == tags::BREACH), "{text}");
+        assert!(
+            seed.tags.iter().any(|t| t == tags::PASSWORD_AT_RISK),
+            "{text}"
+        );
+        let emails: Vec<&str> = report
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| e.raw_value.as_str())
+            .collect();
+        assert_eq!(emails, ["a.l@example.org", "ada@example.com"], "{text}");
+        assert_eq!(
+            report
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Username)
+                .count(),
+            1,
+            "the seed's own spelling in a record is not a second username: {text}"
+        );
+        assert!(!text.contains("deadbeef"), "{text}");
+    }
+
+    #[test]
+    fn oathnet_breaches_surface_values_but_not_cleartext_credentials() {
         let body = serde_json::json!({"success": true, "data": {
             "items": [
                 {"email": "ada@example.com", "username": "ada99", "password": "hunter2-secret",
@@ -1467,11 +1805,33 @@ mod tests {
             ),
             "{text}"
         );
+        // Non-credential record values are surfaced, not reduced to field names: the phone number
+        // a record held appears as its own row.
+        assert!(
+            text.contains("oathnet_value\tacme_forum\tphone_number=+15555550100\n"),
+            "{text}"
+        );
+        // A cleartext credential is never emitted: the password is reported as exposed (the
+        // `password_exposed=true` and `fields=…,password,…` above), but its value appears nowhere.
+        assert!(
+            !text.contains("oathnet_value\tlinkedin_2012\tpassword="),
+            "the cleartext password value must not be emitted: {text}"
+        );
+        assert!(
+            !text.contains("hunter2-secret"),
+            "the cleartext password value must not be emitted: {text}"
+        );
         let saved = serde_json::to_string(&report.entities).unwrap_or_default();
-        for secret in ["hunter2-secret", "+15555550100"] {
-            assert!(!text.contains(secret), "{secret} in text: {text}");
-            assert!(!saved.contains(secret), "{secret} in entities: {saved}");
+        for value in ["+15555550100", "ada99"] {
+            assert!(
+                saved.contains(value),
+                "{value} missing from entities: {saved}"
+            );
         }
+        assert!(
+            !saved.contains("hunter2-secret"),
+            "the cleartext password value must not reach the entities: {saved}"
+        );
     }
 
     #[test]

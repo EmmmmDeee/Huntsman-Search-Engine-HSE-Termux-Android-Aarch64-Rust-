@@ -290,12 +290,12 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
     },
     ReachableModule {
         name: "sf_compat",
-        command: "sf [-M|-T|-V] | -s TARGET [options]",
+        command: "sf [-M|-T|-V] | -C SCAN_ID | -s TARGET [options]",
         access: "mixed",
         network: true,
         category: ModuleCategory::Other,
         attack_techniques: &[],
-        description: "SpiderFoot-compatible front end over rebuilt lookup paths",
+        description: "SpiderFoot-compatible sf.py front end over saved scans",
     },
     ReachableModule {
         name: "classify_module",
@@ -710,6 +710,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         category: ModuleCategory::DnsRecon,
         attack_techniques: &["T1590.001"],
         description: "DNS and mail-policy lookup",
+    },
+    ReachableModule {
+        name: "dnsresolve",
+        command: "domain DOMAIN | ip ADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1590.002"],
+        description: "A and AAAA records of every subdomain a domain lookup finds, PTR records of an address",
     },
     ReachableModule {
         name: "stolen_tax",
