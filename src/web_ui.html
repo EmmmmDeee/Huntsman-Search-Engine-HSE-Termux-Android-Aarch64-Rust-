@@ -295,13 +295,13 @@ async function health(){
 }
 async function details(){
   detailed=true;
-  for(const [id,path] of [['modules','/api/modules'],['command','/api/command']]){
+  await Promise.all([['modules','/api/modules'],['command','/api/command']].map(async([id,path])=>{
     try{
       const res=await call(path);$(id).textContent=res.text;
       if(id==='modules'&&res.body)$('smodules').textContent=res.body.count;
       if(refused(res))pill('token','warn');
     }catch(e){$(id).textContent=String(e);detailed=false}
-  }
+  }));
 }
 function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=String(text);return e}
 function cell(row,text,label){const td=el('td','',text==null?'':text);if(label)td.dataset.label=label;row.appendChild(td);return td}

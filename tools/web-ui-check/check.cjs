@@ -77,6 +77,8 @@ const SEEDS = ['alice@example.com', 'example.com', '@alice', '+61412345678', 'Al
       page.on('request', r => paths.push(new URL(r.url()).pathname));
       await page.addInitScript(() => document.addEventListener('securitypolicyviolation', e => (window.__csp = window.__csp || []).push(e.violatedDirective)));
       await page.goto(base + '/', { waitUntil: 'networkidle' });
+      // The page's own health call settles the pill; a browser can go network-idle just before.
+      await page.waitForFunction(() => document.getElementById('state').textContent !== 'connecting', null, { timeout: 5000 }).catch(() => {});
       const m = await page.evaluate(() => {
         const n = performance.getEntriesByType('navigation')[0], f = performance.getEntriesByName('first-contentful-paint')[0];
         const controls = [...document.querySelectorAll('button,input,select,textarea,a,summary')].filter(e => e.getBoundingClientRect().width > 0);
@@ -96,9 +98,10 @@ const SEEDS = ['alice@example.com', 'example.com', '@alice', '+61412345678', 'Al
       check('cold load asks only for the page, health and icon', paths.every(p => ['/', '/api/health', '/favicon.svg'].includes(p)), paths);
       check('server shown online', m.pill === 'online', m.pill);
 
-      // A tab that comes back into view asks for health and nothing else.
+      // A tab that comes back into view asks for health and nothing else. The browser's own
+      // late icon fetch is not the page's.
       const again = [];
-      page.on('request', r => again.push(new URL(r.url()).pathname));
+      page.on('request', r => { const p = new URL(r.url()).pathname; if (p.startsWith('/api/')) again.push(p); });
       for (let i = 0; i < 3; i++) {
         await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }); document.dispatchEvent(new Event('visibilitychange')); });
         await page.waitForTimeout(200);
@@ -109,6 +112,7 @@ const SEEDS = ['alice@example.com', 'example.com', '@alice', '+61412345678', 'Al
       // Status loads the module list and the command contract once.
       again.length = 0;
       await page.goto(base + '/#/status', { waitUntil: 'networkidle' });
+      await page.waitForFunction(() => ['modules', 'command'].every(id => document.getElementById(id).textContent !== '…'), null, { timeout: 5000 }).catch(() => {});
       await page.goto(base + '/#/lookup', { waitUntil: 'networkidle' });
       await page.goto(base + '/#/status', { waitUntil: 'networkidle' });
       check('status loads its details once', again.filter(p => p === '/api/modules').length === 1 && again.filter(p => p === '/api/command').length === 1, again);
