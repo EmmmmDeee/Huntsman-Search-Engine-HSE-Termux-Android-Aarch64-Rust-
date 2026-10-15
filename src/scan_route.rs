@@ -13,8 +13,8 @@ use crate::canonical::{
 pub enum ScanKind {
     People,
     Email,
-    /// Keyed breach exposure for an email. Never inferred: it spends operator keys, so it runs
-    /// only when asked for by name.
+    /// Keyed breach exposure for an email or username. Not inferred as a kind of its own: an
+    /// `email` or `username` lookup already runs every exposure leg whose key is configured.
     Exposure,
     Username,
     Phone,
@@ -149,7 +149,8 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
 #[must_use]
 pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
     match kind {
-        ScanKind::Email | ScanKind::Exposure => canonical_email(raw),
+        ScanKind::Email => canonical_email(raw),
+        ScanKind::Exposure => crate::exposure_cli::canonical_selector(raw),
         ScanKind::Username => canonical_handle(raw),
         ScanKind::Phone => canonical_phone(raw),
         ScanKind::Domain => canonical_domain(raw),
@@ -279,6 +280,20 @@ mod tests {
         assert_eq!(infer_kind("-27.4698,153.0251"), ScanKind::Network);
         // An SSID is free text: inferring it would turn every word into a WiGLE query.
         assert_eq!(infer_kind("HomeWiFi"), ScanKind::People);
+    }
+
+    #[test]
+    fn an_exposure_route_takes_an_address_or_a_username() {
+        assert_eq!(
+            canonical_selector(ScanKind::Exposure, "Ada@Example.com").as_deref(),
+            Some("ada@example.com")
+        );
+        assert_eq!(
+            canonical_selector(ScanKind::Exposure, "@Ada_99").as_deref(),
+            Some("ada_99")
+        );
+        assert_eq!(canonical_selector(ScanKind::Exposure, "two words"), None);
+        assert_eq!(canonical_selector(ScanKind::Email, "@Ada_99"), None);
     }
 
     #[test]

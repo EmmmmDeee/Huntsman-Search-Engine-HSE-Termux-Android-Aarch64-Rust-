@@ -5,12 +5,23 @@ use std::fmt::Write;
 use crate::entity::Entity;
 use crate::graph::{EntityRelation, Graph};
 
-fn escape_xml(raw: &str) -> String {
-    raw.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+/// Text as XML character data or an attribute value. XML 1.0 cannot carry most C0 controls even
+/// escaped, so those become U+FFFD and the file stays well formed.
+#[must_use]
+pub fn escape_xml(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            c if (c as u32) < 0x20 && !matches!(c, '\t' | '\n' | '\r') => out.push('\u{fffd}'),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[must_use]
@@ -79,5 +90,10 @@ mod tests {
         );
         assert!(xml.contains("&amp;"));
         assert!(xml.contains("edge"));
+    }
+
+    #[test]
+    fn controls_that_xml_cannot_carry_become_replacement_characters() {
+        assert_eq!(escape_xml("a\u{1}b\tc'"), "a\u{fffd}b\tc&apos;");
     }
 }

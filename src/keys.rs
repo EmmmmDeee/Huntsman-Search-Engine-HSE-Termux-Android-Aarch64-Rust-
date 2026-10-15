@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use crate::credential_origin::CredentialFingerprint;
 use crate::environment;
 use crate::error::Error;
-use crate::fsio::read_bounded;
+use crate::fsio::{read_bounded, same_inode};
 
 const MAX_KEYS_FILE_BYTES: u64 = 64 * 1024;
 
@@ -477,18 +477,6 @@ pub(crate) fn read_private_file(
         )));
     }
     Ok(Some(Ok(bytes)))
-}
-
-/// Did `open` reach the inode `lstat` described (not a replacement or a link)?
-#[cfg(unix)]
-fn same_inode(linked: &Metadata, opened: &Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    (linked.dev(), linked.ino()) == (opened.dev(), opened.ino())
-}
-
-#[cfg(not(unix))]
-fn same_inode(_linked: &Metadata, _opened: &Metadata) -> bool {
-    true
 }
 
 /// The permission bits (`mode & 0o777`) when group or others have any access to
