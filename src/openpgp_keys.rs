@@ -210,23 +210,40 @@ fn build_entities(key: &Key, queried: &str, scan_id: &str, entities: &mut Vec<En
     if let Some(created) = key.created {
         evidence = evidence.with_attr("key_created_unix", created.to_string());
     }
-    for uid in &key.uids {
-        let (name, address) = split_uid(uid);
-        if let Some(address) = address.filter(|address| address != queried) {
+    let uids = key
+        .uids
+        .iter()
+        .map(|uid| split_uid(uid))
+        .collect::<Vec<_>>();
+    // One key has one holder, and every address on it was confirmed by mail, so each name on
+    // the key owns each of its addresses, the one looked up included. `owner` is the attribute
+    // the relation builders read for that.
+    let names = uids
+        .iter()
+        .filter_map(|(name, _)| name.as_deref())
+        .collect::<Vec<_>>();
+    let owned = names.iter().fold(evidence.clone(), |owned, name| {
+        owned.with_attr("owner", *name)
+    });
+    for (name, address) in &uids {
+        if let Some(address) = address
+            .as_deref()
+            .filter(|address| *address != queried || !names.is_empty())
+        {
             add_entity(
                 entities,
                 EntityKind::Email,
-                &address,
+                address,
                 CONF_EMAIL,
                 scan_id,
-                &evidence,
+                &owned,
             );
         }
         if let Some(name) = name {
             add_entity(
                 entities,
                 EntityKind::Person,
-                &name,
+                name,
                 CONF_PERSON,
                 scan_id,
                 &evidence,
@@ -253,6 +270,7 @@ fn add_entity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relation::{self, RelationKind};
     use crate::test_support::{OneResponse, ScriptedTransport, json_ok};
 
     // Recorded from the live endpoint on 2026-10-14 for a key whose holder publishes it.
@@ -296,12 +314,20 @@ uid:Neal%20H.%20Walfield%20%3Cneal@walfield.org%3E:1780676673::\n";
             .filter(|e| e.kind == EntityKind::Email)
             .map(|e| e.value.as_str())
             .collect();
-        assert_eq!(emails.len(), 3, "{emails:?}");
-        assert!(
-            !emails.contains(&"neal@walfield.org"),
-            "the queried address is not new"
-        );
+        assert_eq!(emails.len(), 4, "{emails:?}");
         assert!(emails.contains(&"neal@gnupg.org"));
+        let queried = report
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "neal@walfield.org")
+            .expect("the address looked up carries who owns it");
+        assert_eq!(
+            queried.evidence[0]
+                .attributes
+                .get("owner")
+                .map(String::as_str),
+            Some("Neal H. Walfield")
+        );
         let person = report
             .entities
             .iter()
@@ -317,6 +343,62 @@ uid:Neal%20H.%20Walfield%20%3Cneal@walfield.org%3E:1780676673::\n";
             attrs.get("key_created_unix").map(String::as_str),
             Some("1428396777")
         );
+    }
+
+    /// The ownership relations the analysis derives from one key index, as `(person, address)`.
+    fn owned_addresses(body: &str, queried: &str) -> Vec<(String, String)> {
+        let report = lookup(&text(200, body), queried, "s", 1).unwrap();
+        let value = |uid: &str| {
+            report
+                .entities
+                .iter()
+                .find(|entity| entity.uid == uid)
+                .map(|entity| entity.raw_value.clone())
+                .expect("relation endpoint is an entity of the report")
+        };
+        let mut owned: Vec<_> = relation::derive_all(&report.entities, "s")
+            .into_iter()
+            .filter(|edge| edge.kind == RelationKind::IdentifiedBy)
+            .map(|edge| (value(&edge.from_uid), value(&edge.to_uid)))
+            .collect();
+        owned.sort();
+        owned
+    }
+
+    #[test]
+    fn each_name_on_a_key_owns_every_address_on_it_the_looked_up_one_included() {
+        let person = "Neal H. Walfield".to_owned();
+        assert_eq!(
+            owned_addresses(RECORDED, "neal@walfield.org"),
+            [
+                (person.clone(), "neal@gnupg.org".to_owned()),
+                (person.clone(), "neal@pep-project.org".to_owned()),
+                (person.clone(), "neal@sequoia-pgp.org".to_owned()),
+                (person, "neal@walfield.org".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_key_that_names_no_one_links_its_addresses_to_no_one() {
+        let body = "info:1:1\n\
+pub:8F17777118A33DDA9BA48E62AACB3243630052D9:1:3744:1428396777::\n\
+uid:jane%40example.org::\n\
+uid:Jane%20%3Cjane.doe@example.net%3E::\n";
+        let report = lookup(&text(200, body), "jane@example.org", "s", 1).unwrap();
+        let emails: Vec<&str> = report
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(
+            emails,
+            ["jane.doe@example.net"],
+            "the address looked up is not new"
+        );
+        assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Person));
+        assert!(owned_addresses(body, "jane@example.org").is_empty());
     }
 
     #[test]
