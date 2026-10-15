@@ -2468,7 +2468,11 @@ mod tests {
         );
         assert!(record.starts_with("HTTP/1.1 200"), "{record}");
         assert!(record.contains(r#""status":"FINISHED""#), "{record}");
-        let listed = scans_request(&routes, None, &format!("GET /api/scans HTTP/1.1\r\n{HEADER}\r\n"));
+        let listed = scans_request(
+            &routes,
+            None,
+            &format!("GET /api/scans HTTP/1.1\r\n{HEADER}\r\n"),
+        );
         assert!(listed.contains(&id), "{listed}");
         // A target the scan cannot route is refused before any scan is kept.
         let bad = scans_request(
@@ -2512,7 +2516,11 @@ mod tests {
             .wait(&id, Instant::now() + Duration::from_secs(10))
             .unwrap();
         assert_eq!(done.status, ScanStatus::Finished);
-        assert_eq!(calls.load(Ordering::Acquire), 1, "one lookup ran for both requests");
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            1,
+            "one lookup ran for both requests"
+        );
         let results = service.store().results(&id).unwrap().unwrap();
         assert_eq!(results.entities.len(), 1, "what it found was kept");
         // Once it has ended, the same lookup is a new scan.
