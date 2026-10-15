@@ -27,7 +27,7 @@
 //! | `opts` (status only) | `GET /api/settings` |
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -645,21 +645,87 @@ impl ScanApi {
         let Some(mut results) = results else {
             return error(404, "this scan saved no results");
         };
+        let named = results
+            .elements
+            .iter()
+            .filter(|element| ids.contains(element.id.as_str()) && element.kind != "ROOT")
+            .count();
+        if named != ids.len() {
+            return error(404, "an id names no element of this scan");
+        }
+        let affected = with_descendants(&results.elements, &ids);
+        if !flag {
+            if let Some(blocked) = unflag_blocked(&results.elements, &ids, &affected) {
+                return error(
+                    409,
+                    &format!(
+                        "element {blocked} was found from an element that is still a false \
+                         positive: unset that one, which unsets everything found from it"
+                    ),
+                );
+            }
+        }
+        let affected: BTreeSet<String> = affected.into_iter().map(str::to_owned).collect();
         let mut changed = Vec::new();
         for element in &mut results.elements {
-            if ids.contains(element.id.as_str()) && element.kind != "ROOT" {
+            if affected.contains(&element.id) && element.kind != "ROOT" {
                 element.fp = flag;
                 changed.push(element.id.clone());
             }
-        }
-        if changed.len() != ids.len() {
-            return error(404, "an id names no element of this scan");
         }
         match self.service.store().save_results(&results) {
             Ok(()) => ok(200, &json!({ "fp": flag, "ids": changed })),
             Err(failure) => service_error(&failure.into()),
         }
     }
+}
+
+/// The elements `ids` name and every element found from them, at any depth: what Spiderfoot's
+/// `resultsetfp` flags or unflags, since whatever a false positive led to is no finding either.
+fn with_descendants<'a>(elements: &'a [DataElement], ids: &BTreeSet<&str>) -> BTreeSet<&'a str> {
+    let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for element in elements {
+        if let Some(source) = element.source.as_deref() {
+            children.entry(source).or_default().push(&element.id);
+        }
+    }
+    let mut affected = BTreeSet::new();
+    let mut queue: Vec<&str> = elements
+        .iter()
+        .map(|element| element.id.as_str())
+        .filter(|id| ids.contains(id))
+        .collect();
+    while let Some(id) = queue.pop() {
+        if affected.insert(id) {
+            queue.extend(children.get(id).into_iter().flatten().copied());
+        }
+    }
+    affected
+}
+
+/// The first element of `ids` whose source is a false positive this change leaves flagged, as
+/// Spiderfoot refuses to unflag an element under a flagged parent. Unflagging the parent in the
+/// same request unflags the child with it, so that is allowed.
+fn unflag_blocked<'a>(
+    elements: &[DataElement],
+    ids: &BTreeSet<&'a str>,
+    affected: &BTreeSet<&str>,
+) -> Option<&'a str> {
+    let flagged: BTreeSet<&str> = elements
+        .iter()
+        .filter(|element| element.fp)
+        .map(|element| element.id.as_str())
+        .collect();
+    elements
+        .iter()
+        .filter(|element| ids.contains(element.id.as_str()))
+        .find(|element| {
+            element
+                .source
+                .as_deref()
+                .is_some_and(|source| flagged.contains(source) && !affected.contains(source))
+        })
+        .and_then(|element| ids.get(element.id.as_str()).copied())
 }
 
 /// Spiderfoot's `correlationrules` (id, name, descr, risk) for every rule a scan runs:
@@ -998,6 +1064,89 @@ mod tests {
             .status,
             404
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Spiderfoot's `resultsetfp`: flagging an element flags every element found from it, and an
+    /// element under a flagged parent cannot be unflagged on its own.
+    #[test]
+    fn a_false_positive_carries_to_everything_found_from_it() {
+        let (api, dir) = api("fp-tree");
+        let id = finished(&api);
+        let graph = || body(&api.handle("GET", &format!("/api/scans/{id}/graph"), ""));
+        let edges: Vec<(String, String)> = graph()["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|edge| {
+                (
+                    edge["source"].as_str().unwrap().to_owned(),
+                    edge["target"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let root = graph()["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["type"] == "ROOT")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // An element below the root that others were found from, and everything below it.
+        let parent = edges
+            .iter()
+            .map(|(source, _)| source)
+            .find(|source| **source != root)
+            .unwrap()
+            .clone();
+        let mut below = BTreeSet::new();
+        let mut queue = vec![parent.clone()];
+        while let Some(next) = queue.pop() {
+            for (source, target) in &edges {
+                if *source == next && below.insert(target.clone()) {
+                    queue.push(target.clone());
+                }
+            }
+        }
+        let child = below.iter().next().unwrap().clone();
+        let flagged = || -> BTreeSet<String> {
+            graph()["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|node| node["fp"] == true)
+                .map(|node| node["id"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let fp = |ids: &str, on: &str| {
+            api.handle(
+                "POST",
+                &format!("/api/scans/{id}/fp"),
+                &format!("ids={ids}&fp={on}"),
+            )
+        };
+        let set = fp(&parent, "1");
+        assert_eq!(set.status, 200, "{}", set.text());
+        let mut subtree = below.clone();
+        subtree.insert(parent.clone());
+        assert_eq!(flagged(), subtree);
+        assert_eq!(body(&set)["ids"].as_array().unwrap().len(), subtree.len());
+        // The child cannot leave its flagged parent behind, and nothing changes.
+        let refused = fp(&child, "0");
+        assert_eq!(refused.status, 409, "{}", refused.text());
+        assert!(refused.text().contains(&child), "{}", refused.text());
+        assert_eq!(flagged(), subtree);
+        // Unflagging the parent, alone or with the child, unflags the whole branch.
+        let both = fp(&format!("{parent},{child}"), "0");
+        assert_eq!(both.status, 200, "{}", both.text());
+        assert!(flagged().is_empty());
+        assert_eq!(fp(&parent, "1").status, 200);
+        assert_eq!(fp(&parent, "0").status, 200);
+        assert!(flagged().is_empty());
+        // The root is the target, never a false positive.
+        assert_eq!(fp(&root, "1").status, 404);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
