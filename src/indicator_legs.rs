@@ -14,7 +14,7 @@ use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Sour
 use crate::keys::Keys;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::{
-    hackertarget, submd, hunter, ipinfo, ipqs, isc, kickbox, leakix, maltiverse, netlas, otx, phishstats,
+    hackertarget, submd, opencellid, mozilla_location, hunter, ipinfo, ipqs, isc, kickbox, leakix, maltiverse, netlas, otx, phishstats,
     pulsedive, robtex, securitytrails, shodan, stopforumspam, threatfox, urlhaus, urlscan, whoxy,
     xposedornot,
 };
@@ -30,6 +30,8 @@ pub const SOURCES: &[Source] = &[
     robtex::INTEL,
     hackertarget::INTEL,
     submd::INTEL,
+    opencellid::INTEL,
+    mozilla_location::INTEL,
     stopforumspam::INTEL,
     isc::INTEL,
     maltiverse::INTEL,
@@ -140,6 +142,8 @@ fn fold(
         Indicator::Domain(_) => (EntityKind::Domain, "domain"),
         Indicator::Email(_) => (EntityKind::Email, "email"),
         Indicator::Phone(_) => (EntityKind::Phone, "phone"),
+        Indicator::Cell(_) => (EntityKind::Other, "cell"),
+        Indicator::MacAddress(_) => (EntityKind::MacAddress, "mac"),
     };
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(source, scan_id),
@@ -257,6 +261,8 @@ mod tests {
             IndicatorKind::Domain,
             IndicatorKind::Email,
             IndicatorKind::Phone,
+            IndicatorKind::Cell,
+            IndicatorKind::MacAddress,
         ] {
             let indicator = sample(kind);
             let legs = run(&Offline::default(), &keys, indicator, "s", 1);
@@ -303,6 +309,8 @@ mod tests {
             IndicatorKind::Domain => Indicator::Domain("example.com"),
             IndicatorKind::Email => Indicator::Email("ada@example.com"),
             IndicatorKind::Phone => Indicator::Phone("+61412345678"),
+            IndicatorKind::Cell => Indicator::Cell("505:1:1000:12345"),
+            IndicatorKind::MacAddress => Indicator::MacAddress("aa:bb:cc:dd:ee:ff"),
         }
     }
 
