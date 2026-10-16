@@ -3,7 +3,8 @@
 //! One lookup is one form `POST https://urlhaus-api.abuse.ch/v1/host/` with `host={indicator}` and
 //! the abuse.ch key in the `Auth-Key` header, run whenever `HUNTSMAN_ABUSECH_KEY` is set (the same
 //! free abuse.ch Auth-Key `ThreatFox` uses). `no_results` is a valid zero; any other status than
-//! `ok` is an error, never a zero.
+//! `ok` is an error, never a zero. An `ok` answer must name the host it is about and list its URLs;
+//! one that does not is drift, never a finding.
 
 use serde::Deserialize;
 
@@ -46,7 +47,7 @@ struct Body {
     #[serde(default)]
     blacklists: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(default)]
-    urls: Vec<Hosted>,
+    urls: Option<Vec<Hosted>>,
 }
 
 #[derive(Deserialize)]
@@ -97,8 +98,8 @@ fn distinct<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
 /// One answer body for `indicator`. **Pure.**
 ///
 /// # Errors
-/// [`LegError::Decode`] for another shape, another host, or a status other than `ok` or
-/// `no_results`.
+/// [`LegError::Decode`] for another shape, another or no host, no URL list, or a status other
+/// than `ok` or `no_results`.
 pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, LegError> {
     let body: Body = api_leg::decode(body)?;
     match body.query_status.as_str() {
@@ -111,36 +112,31 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
             )));
         }
     }
-    if body
-        .host
-        .as_deref()
-        .is_some_and(|h| !h.eq_ignore_ascii_case(indicator.value()))
-    {
-        return Err(LegError::Decode("answer names another host".into()));
+    match body.host.as_deref() {
+        Some(host) if host.eq_ignore_ascii_case(indicator.value()) => {}
+        Some(_) => return Err(LegError::Decode("answer names another host".into())),
+        None => return Err(LegError::Decode("an ok answer names no host".into())),
     }
+    let Some(urls) = body.urls else {
+        return Err(LegError::Decode("an ok answer lists no urls".into()));
+    };
     let count = match &body.url_count {
         Some(serde_json::Value::String(s)) => s.parse::<u64>().ok(),
         Some(serde_json::Value::Number(n)) => n.as_u64(),
         _ => None,
     }
-    .unwrap_or(body.urls.len() as u64);
-    let online = body
-        .urls
+    .unwrap_or(urls.len() as u64);
+    let online = urls
         .iter()
         .filter(|u| u.url_status.as_deref() == Some("online"))
         .count();
-    let threats = distinct(body.urls.iter().filter_map(|u| u.threat.as_deref()));
+    let threats = distinct(urls.iter().filter_map(|u| u.threat.as_deref()));
     let malware = distinct(
-        body.urls
-            .iter()
+        urls.iter()
             .flat_map(|u| u.tags.iter().flatten())
             .map(String::as_str),
     );
-    let last = body
-        .urls
-        .iter()
-        .filter_map(|u| u.date_added.as_deref())
-        .max();
+    let last = urls.iter().filter_map(|u| u.date_added.as_deref()).max();
     let listed: Vec<String> = body
         .blacklists
         .iter()
@@ -192,5 +188,18 @@ mod tests {
             .is_err()
         );
         assert!(decode(DOCUMENTED.as_bytes(), Indicator::Domain("example.com")).is_err());
+    }
+
+    #[test]
+    fn an_ok_answer_without_its_host_or_urls_is_drift_not_a_malicious_finding() {
+        for body in [
+            r#"{"query_status":"ok"}"#,
+            r#"{"query_status":"ok","urls":[]}"#,
+            r#"{"query_status":"ok","host":"vektorex.com"}"#,
+            r#"{"query_status":"ok","host":"vektorex.com","urls":null}"#,
+        ] {
+            let got = decode(body.as_bytes(), Indicator::Domain("vektorex.com"));
+            assert!(matches!(got, Err(LegError::Decode(_))), "{body}: {got:?}");
+        }
     }
 }
