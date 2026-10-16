@@ -7,9 +7,15 @@
 //! request is sent) and the membership limit applies. Kept: how many hosts there are, and up to
 //! [`MAX_NAMES`] of them (and, for a domain, their distinct addresses), each also a pivot. The
 //! service answers its errors as text with status 200: a spent quota is a rate limit, and "no
-//! records" or an unresolvable host is a valid zero.
+//! records" or an unresolvable host is a valid zero. Anything else must be the list itself: a
+//! `host,address` line per host for a domain, a domain name per line for an address. A body
+//! with no such line (an HTML or JSON page, or nothing at all) is drift, and so is a 404, which
+//! the service gives only for a path it does not have (checked 2026-10-15), never "not found".
+
+use std::net::IpAddr;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::canonical::canonical_domain;
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
@@ -64,15 +70,15 @@ pub fn lookup(
     };
     match api_leg::get(transport, &API, keys, &url, now_unix)? {
         Answer::Body(body) => decode(&body, indicator),
-        Answer::NotFound(_) => Ok(None),
+        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
     }
 }
 
 /// One answer body for `indicator`. **Pure.**
 ///
 /// # Errors
-/// [`LegError::RateLimited`] for a spent quota; [`LegError::Decode`] for any other error text
-/// or a body that is not UTF-8.
+/// [`LegError::RateLimited`] for a spent quota; [`LegError::Decode`] for any other error text,
+/// a body that is not UTF-8, or one with no host line.
 pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, LegError> {
     let text = std::str::from_utf8(body)
         .map_err(|_| LegError::Decode("answer is not UTF-8".into()))?
@@ -83,7 +89,10 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
-    if first.is_empty() || first.starts_with("no ") || first == "error invalid host" {
+    if first.is_empty() {
+        return Err(LegError::Decode("HackerTarget: empty answer".into()));
+    }
+    if first.starts_with("no ") || first == "error invalid host" {
         return Ok(None);
     }
     if first.starts_with("api count exceeded") {
@@ -97,10 +106,14 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         return Ok(None);
     };
     let mut total = 0usize;
+    let mut records = 0usize;
     let mut hosts: Vec<String> = Vec::new();
     let mut addresses: Vec<String> = Vec::new();
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        let (host, address) = line.split_once(',').unwrap_or((line, ""));
+        let Some((host, address)) = record(line, indicator) else {
+            continue;
+        };
+        records += 1;
         if let Some(host) = api_leg::clean(Some(host)).filter(|h| !h.eq_ignore_ascii_case(own)) {
             if !hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {
                 total += 1;
@@ -114,6 +127,11 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
                 addresses.push(address);
             }
         }
+    }
+    if records == 0 {
+        return Err(LegError::Decode(
+            "HackerTarget: the answer is not a host list".into(),
+        ));
     }
     if total == 0 && addresses.is_empty() {
         return Ok(None);
@@ -141,6 +159,19 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         );
     }
     Ok(Some(finding))
+}
+
+/// One line of the list as `(host, address)`, or `None` when it is not one: for a domain a
+/// `host,address` line whose address is an IP address, for an address a domain name. **Pure.**
+fn record<'a>(line: &'a str, indicator: Indicator<'_>) -> Option<(&'a str, &'a str)> {
+    match indicator {
+        Indicator::Domain(_) => {
+            let (host, address) = line.split_once(',')?;
+            (!host.trim().is_empty() && address.trim().parse::<IpAddr>().is_ok())
+                .then_some((host, address))
+        }
+        _ => canonical_domain(line).map(|_| (line, "")),
+    }
 }
 
 #[cfg(test)]
@@ -199,6 +230,61 @@ mod tests {
             decode(b"error check your search parameter", d),
             Err(LegError::Decode(_))
         ));
+    }
+
+    /// The page the service gives for a path it does not have, recorded 2026-10-15.
+    const NOT_FOUND_PAGE: &str = "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>\n<h1>Not Found</h1>\n<p>The requested URL was not found on the server. If you entered the URL manually please check your spelling and try again.</p>\n";
+
+    #[test]
+    fn a_page_that_is_not_a_host_list_is_drift_never_hosts_or_a_zero() {
+        for indicator in [
+            Indicator::Domain("example.com"),
+            Indicator::Ip("93.184.215.14"),
+        ] {
+            for body in [
+                NOT_FOUND_PAGE,
+                "{\"error\": \"maintenance\"}",
+                "Service temporarily unavailable, please retry",
+                "",
+                " \n",
+            ] {
+                let decoded = decode(body.as_bytes(), indicator);
+                assert!(
+                    matches!(decoded, Err(LegError::Decode(_))),
+                    "{indicator:?} {body:?}: {decoded:?}"
+                );
+            }
+        }
+        // A line that is not a record does not void the records beside it.
+        let mixed = "www.example.com,172.66.147.243\n<!-- cached -->\n";
+        let f = decode(mixed.as_bytes(), Indicator::Domain("example.com"))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("the record line must decode"));
+        assert_eq!(f.summary, "HackerTarget: 1 host");
+    }
+
+    #[test]
+    fn a_404_is_a_path_the_service_lacks_not_an_empty_answer() {
+        let transport = crate::test_support::OneResponse::with_headers(
+            404,
+            &[("content-type", "text/html; charset=utf-8")],
+            NOT_FOUND_PAGE,
+        );
+        let looked_up = lookup(
+            &transport,
+            &Keys::default(),
+            Indicator::Domain("example.com"),
+            1,
+        );
+        assert!(
+            matches!(looked_up, Err(LegError::Unexpected(404))),
+            "{looked_up:?}"
+        );
+        assert_eq!(
+            LegError::Unexpected(404).outcome_kind(),
+            crate::source_outcome::SourceOutcomeKind::Upstream4xx
+        );
     }
 
     #[test]
