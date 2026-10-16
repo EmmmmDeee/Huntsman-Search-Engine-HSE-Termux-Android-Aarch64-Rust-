@@ -4,8 +4,10 @@
 //! numbers, resolves country metadata, and enriches Australian numbers with the
 //! numbering-plan line type and coarse allocation region, all offline ([`run`]). With
 //! `HUNTSMAN_NUMVERIFY_KEY` set, [`run_keyed`] then asks Numverify for the carrier, line type
-//! and location, and every indicator source for a number whose key is set (`IPQualityScore` with
-//! `HUNTSMAN_IPQS_KEY`); without a key it makes no request and is exactly [`run`].
+//! and location. For US numbers it also asks USACallerLookup (keyless) for the NANPA carrier,
+//! location and FTC complaint profile. Every indicator source for a number whose key is set
+//! (`IPQualityScore` with `HUNTSMAN_IPQS_KEY`) also runs; without a key it makes no request and
+//! is exactly [`run`].
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -22,11 +24,12 @@ use crate::lookup_report::{entity_row, evidence_row, outcome_row};
 use crate::numverify;
 use crate::phone_intl;
 use crate::source_outcome::SourceExecutionOutcome;
+use crate::usacallerlookup;
 
 pub const PHONE_USAGE: &str = "usage: huntsman-recon phone NUMBER [--save FILE]";
 pub const PHONE_HELP: &str = "\
 phone NUMBER [--save FILE]
-Canonicalise a phone number offline, resolve its international dialling prefix, and enrich Australian numbers with numbering-plan line type and coarse region. With HUNTSMAN_NUMVERIFY_KEY set it also asks Numverify (APILayer) for the carrier, line type and location, and with HUNTSMAN_IPQS_KEY set IPQualityScore for line type, carrier and fraud score; without a key no request is made. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise a phone number offline, resolve its international dialling prefix, and enrich Australian numbers with numbering-plan line type and coarse region. With HUNTSMAN_NUMVERIFY_KEY set it also asks Numverify (APILayer) for the carrier, line type and location. For US numbers it asks USACallerLookup (keyless) for the NANPA carrier, location and FTC complaint profile. With HUNTSMAN_IPQS_KEY set IPQualityScore for line type, carrier and fraud score. --save FILE writes an unverified ledger that verify can reload.";
 
 const PHONE_CONFIDENCE: f64 = 0.90;
 
@@ -117,8 +120,8 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
     }
 }
 
-/// [`run`], then the Numverify leg and every indicator source for the number that `keys` enables
-/// and the transport's lookup asks ([`Transport::runs_module`]).
+/// [`run`], then the Numverify leg, USACallerLookup for US numbers, and every indicator source
+/// for the number that `keys` enables and the transport's lookup asks ([`Transport::runs_module`]).
 #[must_use]
 pub fn run_keyed<T: Transport + ?Sized>(
     transport: &T,
@@ -137,7 +140,8 @@ pub fn run_keyed<T: Transport + ?Sized>(
     let (canonical, scan_id) = (entity.raw_value.clone(), entity.scan_id.clone());
     let indicator = Indicator::Phone(&canonical);
     let numverify_wanted = numverify::API.runs(transport, keys);
-    if !numverify_wanted && indicator_legs::planned(indicator, keys).is_empty() {
+    let ucl_wanted = transport.runs_module(usacallerlookup::SOURCE) && usacallerlookup::url(&canonical).is_some();
+    if !numverify_wanted && !ucl_wanted && indicator_legs::planned(indicator, keys).is_empty() {
         return match render(&report) {
             Ok(text) => PhoneRun::Printed { text, report },
             Err(message) => PhoneRun::Failed(message),
@@ -153,6 +157,24 @@ pub fn run_keyed<T: Transport + ?Sized>(
             Err(err) => err.outcome(api, now_unix),
         };
         report.outcomes.push(outcome);
+    }
+    if ucl_wanted {
+        match usacallerlookup::lookup(transport, &canonical, now_unix) {
+            Ok(Some(profile)) => {
+                usacallerlookup_evidence(entity, &profile);
+                report.outcomes.push(
+                    SourceExecutionOutcome::success(usacallerlookup::SOURCE, now_unix, 1)
+                        .with_http_status(200),
+                );
+            }
+            Ok(None) => report.outcomes.push(SourceExecutionOutcome::valid_zero(
+                usacallerlookup::SOURCE,
+                now_unix,
+            )),
+            Err(err) => report
+                .outcomes
+                .push(err.outcome(&usacallerlookup::API, now_unix)),
+        }
     }
     let legs = indicator_legs::run(transport, keys, indicator, &scan_id, now_unix);
     report.entities.extend(legs.entities);
@@ -192,6 +214,38 @@ fn numverify_evidence(entity: &mut Entity, v: &numverify::Verification) {
         ("international_format", v.international_format.as_deref()),
     ])
     .with_attr("raw_answer", v.raw_answer.as_str());
+    entity.add_evidence(evidence);
+}
+
+fn usacallerlookup_evidence(entity: &mut Entity, p: &usacallerlookup::Profile) {
+    if p.toll_free {
+        entity.tag("toll-free");
+    }
+    if p.complaint_total > 0 {
+        entity.tag("ftc-complaints");
+    }
+    let summary = match (p.carrier.as_deref(), p.complaint_total) {
+        (Some(carrier), n) if n > 0 => {
+            format!("USACallerLookup: {carrier}, {n} FTC complaint(s)")
+        }
+        (Some(carrier), _) => format!("USACallerLookup: {carrier}"),
+        (None, n) if n > 0 => format!("USACallerLookup: {n} FTC complaint(s)"),
+        _ => "USACallerLookup: no carrier or complaints".to_owned(),
+    };
+    let evidence = Evidence::new(
+        EvidenceProvenance::for_scan(usacallerlookup::SOURCE, &entity.scan_id),
+        summary,
+    )
+    .with_optional_attrs([
+        ("carrier", p.carrier.as_deref()),
+        ("city", p.city.as_deref()),
+        ("state", p.state.as_deref()),
+        ("first_complaint", p.first_complaint.as_deref()),
+        ("last_complaint", p.last_complaint.as_deref()),
+    ])
+    .with_attr("complaint_total", p.complaint_total.to_string())
+    .with_attr("robocall_total", p.robocall_total.to_string())
+    .with_attr("raw_answer", p.raw_answer.as_str());
     entity.add_evidence(evidence);
 }
 
