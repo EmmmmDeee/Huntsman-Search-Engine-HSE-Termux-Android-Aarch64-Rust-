@@ -8,6 +8,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// OTX's answer for `45.155.205.233`: its place as recorded, and twelve pulses in the recorded
 /// pulse shape.
@@ -47,7 +48,13 @@ impl Transport for OnlyOtx {
 }
 
 fn entities() -> Vec<Entity> {
-    match run(&OnlyOtx, &Keys::default(), "45.155.205.233", 1_760_000_000) {
+    match run(
+        &OnlyOtx,
+        &Keys::default(),
+        &Feeds::none(),
+        "45.155.205.233",
+        1_760_000_000,
+    ) {
         IpRun::Printed { report, .. } => report.entities,
         IpRun::Network(why) | IpRun::Failed(why) => {
             panic!("ip 45.155.205.233 did not print: {why}")
