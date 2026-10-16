@@ -215,6 +215,9 @@ pub fn parse_timestamp(raw: &str) -> Option<i64> {
 /// RFC 850 year more than 50 years ahead of `now_unix` is read as the previous century.
 #[must_use]
 pub fn parse_http_date(raw: &str, now_unix: u64) -> Option<i64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     let raw = raw.trim();
     let (weekday, rest) = raw.split_once([',', ' '])?;
     if weekday.len() < 3 || !weekday.bytes().all(|b| b.is_ascii_alphabetic()) {
@@ -245,9 +248,6 @@ pub fn parse_http_date(raw: &str, now_unix: u64) -> Option<i64> {
         }
         _ => return None,
     };
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
     let month = u32::try_from(MONTHS.iter().position(|m| *m == month)? + 1).ok()?;
     if day.is_empty() || day.len() > 2 || !day.bytes().all(|b| b.is_ascii_digit()) {
         return None;
