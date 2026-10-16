@@ -8,6 +8,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// Twelve IOCs on `94.103.84.81`, one port each, in the documented `search_ioc` record shape.
 fn threatfox_answer() -> String {
@@ -46,7 +47,13 @@ impl Transport for OnlyThreatFox {
 fn entities() -> Vec<Entity> {
     let keys = Keys::parse("HUNTSMAN_THREATFOX_KEY=threatfox-test-key-0815")
         .unwrap_or_else(|e| panic!("{e}"));
-    match run(&OnlyThreatFox, &keys, "94.103.84.81", 1_760_000_000) {
+    match run(
+        &OnlyThreatFox,
+        &keys,
+        &Feeds::none(),
+        "94.103.84.81",
+        1_760_000_000,
+    ) {
         IpRun::Printed { report, .. } => report.entities,
         IpRun::Network(why) | IpRun::Failed(why) => panic!("ip 94.103.84.81 did not print: {why}"),
     }
