@@ -231,6 +231,11 @@ fn record_name_matches(rec: &Map<String, Value>, name_field: &str, full_name: &s
     whole_word_token_match(&name, full_name)
 }
 
+/// Whether the register says this adviser's role has ended.
+fn role_ceased(rec: &Map<String, Value>) -> bool {
+    field(rec, "ADV_ROLE_STATUS").is_some_and(|status| status.eq_ignore_ascii_case("ceased"))
+}
+
 fn norm_name(s: &str) -> String {
     s.split_whitespace()
         .collect::<Vec<_>>()
@@ -330,6 +335,7 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, out: &mut Vec<Entity>) 
     .with_attr("matched_name", &raw_name);
     for (key, attr) in [
         ("ADV_ROLE", "adviser_role"),
+        ("ADV_ROLE_STATUS", "role_status"),
         ("OVERALL_REGISTRATION_STATUS", "registration_status"),
         ("ADV_NUMBER", "adviser_number"),
         ("ADV_FIRST_PROVIDED_ADVICE", "first_advice"),
@@ -346,6 +352,26 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, out: &mut Vec<Entity>) 
         }
     }
 
+    let licensee = field(rec, "LICENCE_NAME");
+    let appointer = field(rec, "REP_APPOINTED_BY").filter(|appby| {
+        let n = norm_name(appby);
+        n != norm_name(&raw_name)
+            && licensee.as_deref().is_none_or(|l| n != norm_name(l))
+            && looks_like_company(appby)
+    });
+    let controllers = field(rec, "LICENCE_CONTROLLED_BY")
+        .map(|raw| parse_controllers(&raw))
+        .unwrap_or_default();
+
+    // The relation builders read these attributes: a current authorisation makes the adviser a
+    // member of its licensee and appointing firm, and the licensee is controlled by each company
+    // that controls it now. A ceased role or control stays evidence, not a relation.
+    if !role_ceased(rec) {
+        for firm in licensee.iter().chain(appointer.iter()) {
+            ev = ev.with_attr("affiliated_with", firm);
+        }
+    }
+
     let mut person = Entity::new(EntityKind::Person, &person_name, CONF_PERSON, scan_id);
     person.tag("au");
     person.tag("asic");
@@ -357,7 +383,6 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, out: &mut Vec<Entity>) 
     person.add_evidence(ev);
     out.push(person);
 
-    let licensee = field(rec, "LICENCE_NAME");
     if let Some(licensee) = &licensee {
         let mut org = Entity::new(EntityKind::Organisation, licensee, CONF_LICENSEE, scan_id);
         org.tag("au");
@@ -371,57 +396,55 @@ fn emit_adviser(rec: &Map<String, Value>, scan_id: &str, out: &mut Vec<Entity>) 
         if let Some(no) = field(rec, "LICENCE_NUMBER") {
             oev = oev.with_attr("afs_licence_no", no);
         }
+        for (name, _) in controllers.iter().filter(|(_, ceased)| ceased.is_none()) {
+            if let (EntityKind::Organisation, value) = classify_linked(name) {
+                oev = oev.with_attr("controlled_by", value);
+            }
+        }
         org.add_evidence(oev);
         out.push(org);
     }
 
-    if let Some(raw) = field(rec, "LICENCE_CONTROLLED_BY") {
-        for (name, ceased) in parse_controllers(&raw) {
-            let (kind, value) = classify_linked(&name);
-            let mut ent = Entity::new(kind, &value, CONF_CONTROLLER, scan_id);
-            ent.tag("au");
-            ent.tag("asic");
-            ent.tag("afs-licensee-controller");
-            let mut cev = Evidence::new(
-                provenance(scan_id),
-                format!(
-                    "Controls AFS licensee {} (adviser {person_name})",
-                    licensee.as_deref().unwrap_or("(unknown)")
-                ),
-            )
-            .with_attr("relationship", "licence_controlled_by");
-            if let Some(licensee) = &licensee {
-                cev = cev.with_attr("controls_licensee", licensee);
-            }
-            if let Some(date) = ceased {
-                ent.tag("ceased");
-                cev = cev.with_attr("date_ceased", date);
-            }
-            ent.add_evidence(cev);
-            out.push(ent);
+    for (name, ceased) in controllers {
+        let (kind, value) = classify_linked(&name);
+        let mut ent = Entity::new(kind, &value, CONF_CONTROLLER, scan_id);
+        ent.tag("au");
+        ent.tag("asic");
+        ent.tag("afs-licensee-controller");
+        let mut cev = Evidence::new(
+            provenance(scan_id),
+            format!(
+                "Controls AFS licensee {} (adviser {person_name})",
+                licensee.as_deref().unwrap_or("(unknown)")
+            ),
+        )
+        .with_attr("relationship", "licence_controlled_by");
+        if let Some(licensee) = &licensee {
+            cev = cev.with_attr("controls_licensee", licensee);
         }
+        if let Some(date) = ceased {
+            ent.tag("ceased");
+            cev = cev.with_attr("date_ceased", date);
+        }
+        ent.add_evidence(cev);
+        out.push(ent);
     }
 
-    if let Some(appby) = field(rec, "REP_APPOINTED_BY") {
-        let n = norm_name(&appby);
-        let is_self = n == norm_name(&raw_name);
-        let is_licensee = licensee.as_deref().is_some_and(|l| n == norm_name(l));
-        if !is_self && !is_licensee && looks_like_company(&appby) {
-            let mut org = Entity::new(EntityKind::Organisation, &appby, CONF_PERSON, scan_id);
-            org.tag("au");
-            org.tag("asic");
-            org.tag("authorised-rep-firm");
-            let mut aev = Evidence::new(
-                provenance(scan_id),
-                format!("Appointed {person_name} as authorised rep"),
-            )
-            .with_attr("relationship", "rep_appointed_by");
-            if let Some(num) = field(rec, "REP_APPOINTED_NUM") {
-                aev = aev.with_attr("authorised_rep_no", num);
-            }
-            org.add_evidence(aev);
-            out.push(org);
+    if let Some(appby) = &appointer {
+        let mut org = Entity::new(EntityKind::Organisation, appby, CONF_PERSON, scan_id);
+        org.tag("au");
+        org.tag("asic");
+        org.tag("authorised-rep-firm");
+        let mut aev = Evidence::new(
+            provenance(scan_id),
+            format!("Appointed {person_name} as authorised rep"),
+        )
+        .with_attr("relationship", "rep_appointed_by");
+        if let Some(num) = field(rec, "REP_APPOINTED_NUM") {
+            aev = aev.with_attr("authorised_rep_no", num);
         }
+        org.add_evidence(aev);
+        out.push(org);
     }
 
     for (key, label) in [
