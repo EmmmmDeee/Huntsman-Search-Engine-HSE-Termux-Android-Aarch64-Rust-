@@ -254,7 +254,7 @@ fn a_coordinate_selector_searches_the_box_around_it() {
 }
 
 #[test]
-fn a_failed_request_is_reported_and_a_network_failure_with_nothing_else_is_refused() {
+fn a_request_wigle_answered_with_an_error_is_a_row_of_the_report() {
     let limited = Canned {
         answer: Ok(Response {
             status: 429,
@@ -271,24 +271,43 @@ fn a_failed_request_is_reported_and_a_network_failure_with_nothing_else_is_refus
         Some(SourceOutcomeKind::RateLimited)
     );
     assert!(text.ends_with("wigle_networks=none\n"), "{text}");
+}
 
-    let offline = Canned {
+/// A transport whose every request fails the same way.
+fn failing(blocked: bool) -> Canned {
+    Canned {
         answer: Err(TransportFailure {
             kind: SourceOutcomeKind::TtfbTimeout,
             detail: "timed out".into(),
-            blocked: false,
+            blocked,
         }),
         urls: Mutex::default(),
-    };
-    assert!(matches!(
-        run(Some((&offline, &keys)), "Cafe Guest", 7),
-        NetworkRun::Network(_)
-    ));
-    // A BSSID still has its offline classification, so it prints.
-    assert!(matches!(
-        run(Some((&offline, &keys)), "3c:5a:b4:01:02:03", 7),
-        NetworkRun::Printed { .. }
-    ));
+    }
+}
+
+/// The CLI's exit codes: no usable response is 69 (`Failed`), a refusal by the egress policy 77
+/// (`Network`). A timeout is not a refusal.
+#[test]
+fn with_nothing_answered_no_response_is_unavailable_and_a_refusal_is_refused() {
+    let keys = keys();
+    match run(Some((&failing(false), &keys)), "Cafe Guest", 7) {
+        NetworkRun::Failed(why) => assert!(
+            why.starts_with("no source answered the network lookup: wigle: no response"),
+            "{why}"
+        ),
+        other => panic!("a search that got no response is unavailable, got {other:?}"),
+    }
+    match run(Some((&failing(true), &keys)), "Cafe Guest", 7) {
+        NetworkRun::Network(why) => assert!(why.starts_with("wigle: request refused"), "{why}"),
+        other => panic!("a search the egress policy refused is a refusal, got {other:?}"),
+    }
+    // A BSSID still has its offline classification, so it prints either way.
+    for blocked in [false, true] {
+        assert!(matches!(
+            run(Some((&failing(blocked), &keys)), "3c:5a:b4:01:02:03", 7),
+            NetworkRun::Printed { .. }
+        ));
+    }
 }
 
 #[test]

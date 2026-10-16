@@ -10,6 +10,13 @@
 //! Each network `WiGLE` returns becomes a BSSID entity carrying what `WiGLE` records about it,
 //! and its SSID and trilaterated position become pivots. Everything flows through
 //! `merge_by_uid`, `lookup_report` (lineage) and `lookup_save`.
+//!
+//! A lookup nothing answered is not printed when a search was refused or got no response: a
+//! search refused before sending (by the egress policy, or a credential that cannot be sent)
+//! is [`NetworkRun::Network`] (exit 77), and one that got no response is
+//! [`NetworkRun::Failed`] (exit 69), as the CLI's exit codes say. A search `WiGLE` answered
+//! with an error (a rate limit, a rejected key) or that had no credentials to send is a row of
+//! the printed report.
 
 use std::path::PathBuf;
 
@@ -68,6 +75,13 @@ impl NetworkArgs {
     }
 }
 
+/// The first `WiGLE` search refused before sending, and the first that got no response.
+#[derive(Debug, Default)]
+struct Unanswered {
+    refused: Option<String>,
+    no_response: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum NetworkRun {
     Printed { text: String, report: Report },
@@ -94,7 +108,7 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
             .outcomes
             .push(oui_leg(bssid, &scan_id, now_unix, &mut report.entities));
     }
-    let mut network = None;
+    let mut unanswered = Unanswered::default();
     for &database in Database::for_selector(&selector) {
         let outcome = match wigle {
             Some((transport, _)) if !transport.runs_module(wigle::SOURCE) => continue,
@@ -106,7 +120,7 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
                 &scan_id,
                 now_unix,
                 &mut report,
-                &mut network,
+                &mut unanswered,
             ),
             _ => SourceExecutionOutcome::failed(
                 database.source(),
@@ -124,9 +138,13 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
     }
     merge_by_uid(&mut report.entities);
 
-    let collected = report.outcomes.iter().any(|o| o.kind.is_accepted());
-    if let (false, Some(msg)) = (collected, network) {
-        return NetworkRun::Network(msg);
+    if !report.outcomes.iter().any(|o| o.kind.is_accepted()) {
+        if let Some(message) = unanswered.refused {
+            return NetworkRun::Network(message);
+        }
+        if let Some(why) = unanswered.no_response {
+            return NetworkRun::Failed(format!("no source answered the network lookup: {why}"));
+        }
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(mut text) => {
@@ -203,7 +221,7 @@ fn wigle_leg(
     scan_id: &str,
     now_unix: u64,
     report: &mut Report,
-    network: &mut Option<String>,
+    unanswered: &mut Unanswered,
 ) -> SourceExecutionOutcome {
     let source = database.source();
     match wigle::search(transport, keys, database, selector, now_unix) {
@@ -235,8 +253,13 @@ fn wigle_leg(
             }
         }
         Err(err) => {
-            if let WigleError::Transport(_) = &err {
-                network.get_or_insert_with(|| err.to_string());
+            let first = match &err {
+                WigleError::Refused(_) => Some(&mut unanswered.refused),
+                WigleError::Transport(_) => Some(&mut unanswered.no_response),
+                _ => None,
+            };
+            if let Some(first) = first {
+                first.get_or_insert_with(|| err.to_string());
             }
             let outcome = SourceExecutionOutcome::failed(
                 source,
