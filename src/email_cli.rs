@@ -428,7 +428,7 @@ mod tests {
         );
     }
 
-    fn reply(status: u17, body: &str) -> Response {
+    fn reply(status: u16, body: &str) -> Response {
         Response {
             status,
             headers: vec![("content-type".into(), "application/json".into())],
