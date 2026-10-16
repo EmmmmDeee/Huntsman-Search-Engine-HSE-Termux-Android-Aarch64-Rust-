@@ -955,13 +955,14 @@ pub const fn base_type(kind: &EntityKind) -> &'static str {
         EntityKind::AbnAcn => "HSE_COMPANY_REGISTRATION",
         EntityKind::MacAddress => "HSE_MAC_ADDRESS",
         EntityKind::Asn => "BGP_AS_MEMBER",
+        EntityKind::Netblock => "NETBLOCK_MEMBER",
     }
 }
 
 /// The entity kind each type is the base type of, for `sf -T`.
 #[must_use]
 pub fn base_kind(code: &str) -> Option<&'static str> {
-    const KINDS: [EntityKind; 21] = [
+    const KINDS: [EntityKind; 22] = [
         EntityKind::Person,
         EntityKind::Organisation,
         EntityKind::Email,
@@ -982,6 +983,7 @@ pub fn base_kind(code: &str) -> Option<&'static str> {
         EntityKind::ApiKey,
         EntityKind::MacAddress,
         EntityKind::Asn,
+        EntityKind::Netblock,
         EntityKind::Other,
     ];
     KINDS

@@ -19,10 +19,13 @@
 //! A loopback bind answers only requests whose `Host` is a loopback authority,
 //! which blocks a browser DNS-rebinding attack from reaching the local API.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -33,10 +36,17 @@ use crate::base64;
 use crate::engineering_command;
 use crate::entity::Entity;
 use crate::error::Error;
+use crate::key_import;
+use crate::keys::{self, Keys};
 use crate::module::reachable_modules;
+use crate::provider_credentials::PROVIDERS;
 use crate::scan_api::ScanApi;
+use crate::scan_route::{self, ScanKind};
+use crate::scan_service::{ScanRequest, ScanService};
+use crate::scan_store::{LogLevel, ScanStatus};
 use crate::sha256::sha256;
 use crate::source_outcome::SourceExecutionOutcome;
+use crate::value_syntax::form_pairs;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 
@@ -101,6 +111,11 @@ const MAX_LOOKUPS: usize = 2;
 /// A lookup does TLS and JSON decoding, which the small connection stack is not sized for, so it
 /// runs on its own thread with this stack.
 const LOOKUP_STACK_BYTES: usize = 4 * 1024 * 1024;
+/// The longest `/api/lookup` waits for its lookup: the two minutes a lookup may hold its
+/// providers, and time to wait for a place behind the scans already running. A lookup still
+/// running then is answered `504` with the saved scan it runs as, which goes on and keeps what it
+/// finds; a phone that reloads mid-lookup waits on that same scan instead of starting another.
+const LOOKUP_WAIT: Duration = Duration::from_secs(150);
 /// Longest decoded `q` accepted by `/api/lookup`, and longest seed accepted by `/api/analyze`.
 const MAX_SELECTOR_BYTES: usize = 512;
 /// Seeds in one `/api/analyze` request. The spine is offline and bounded by its own limits; this
@@ -115,6 +130,12 @@ const ANALYZE_STACK_BYTES: usize = 4 * 1024 * 1024;
 /// like an analysis, it runs on its own thread with a stack sized for that. Starting a scan only
 /// saves its row: the scan itself runs on the service's own thread.
 const SCANS_STACK_BYTES: usize = 4 * 1024 * 1024;
+/// The longest request body the server reads: a Settings page key save (`slot` and `value`) or
+/// key import (`import`, a whole `SpiderFoot.cfg` or keys file), form-encoded, in what a request
+/// leaves past its head (25 KiB). Every other route takes its parameters in the query string.
+const MAX_FORM_BYTES: usize = MAX_REQUEST_BYTES - HEADER_ALLOWANCE;
+/// The Settings page's provider keys: which may be saved, and one save.
+const KEYS_PATH: &str = "/api/settings/keys";
 /// The header a lookup request must carry. Its presence forces a CORS preflight from any other
 /// origin, and this server answers no preflight.
 pub const LOOKUP_HEADER: &str = "x-huntsman-lookup";
@@ -133,6 +154,14 @@ pub struct LookupReport {
     pub text: String,
     pub entities: Vec<Entity>,
     pub outcomes: Vec<SourceExecutionOutcome>,
+    /// The saved scan the lookup ran as, which `/api/scans/ID` reads again; absent when the
+    /// server keeps no saved scans.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scan: Option<String>,
+    /// How that scan ended: `FINISHED`, or `ABORTED` when it was stopped under Scans, so the
+    /// report holds what it had found by then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<&'static str>,
 }
 
 /// Why a lookup produced no report: the HTTP status and a message safe to show.
@@ -150,6 +179,8 @@ pub type LookupHandler =
 struct Lookups {
     handler: LookupHandler,
     live: Arc<AtomicUsize>,
+    /// [`LOOKUP_WAIT`], shorter in tests.
+    wait: Duration,
 }
 
 /// Runs the offline multi-hop analysis of the seeds and returns its report as JSON. Installed by
@@ -163,6 +194,8 @@ struct Routes {
     lookups: Option<Lookups>,
     analyze: Option<AnalyzeHandler>,
     scans: Option<Arc<ScanApi>>,
+    /// The home whose keys file every lookup reads, for [`KEYS_PATH`].
+    keys_home: Option<PathBuf>,
 }
 
 /// Where `serve` listens and the token its API needs. Only [`ServeConfig::parse`] builds one, so a
@@ -252,6 +285,7 @@ impl Server {
         self.routes.lookups = Some(Lookups {
             handler,
             live: Arc::new(AtomicUsize::new(0)),
+            wait: LOOKUP_WAIT,
         });
         self
     }
@@ -268,6 +302,14 @@ impl Server {
     #[must_use]
     pub fn with_scans(mut self, api: Arc<ScanApi>) -> Self {
         self.routes.scans = Some(api);
+        self
+    }
+
+    /// Serve `/api/settings/keys` over the keys file in `home` (`~/.huntsman.env`), the one every
+    /// lookup reads. Without this the route answers `404`.
+    #[must_use]
+    pub fn with_keys_home(mut self, home: PathBuf) -> Self {
+        self.routes.keys_home = Some(home);
         self
     }
 
@@ -612,6 +654,8 @@ fn handle_stream_with(
 fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Error> {
     let mut bytes = Vec::with_capacity(1024);
     let mut chunk = [0_u8; 1024];
+    // Once the head is in: the whole request's length, the head and the form body it announces.
+    let mut whole = None;
 
     while bytes.len() < MAX_REQUEST_BYTES {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -645,10 +689,16 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
         // the head: scanning the whole buffer after every read was quadratic in its length.
         let scan_from = bytes.len().saturating_sub(3);
         bytes.extend_from_slice(&chunk[..read]);
-        if bytes[scan_from..]
-            .windows(4)
-            .any(|window| window == b"\r\n\r\n")
-        {
+        if whole.is_none() {
+            if let Some(at) = bytes[scan_from..]
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+            {
+                let head = scan_from + at + 4;
+                whole = Some(head + form_body_len(&bytes[..head]));
+            }
+        }
+        if whole.is_some_and(|whole| bytes.len() >= whole) {
             break;
         }
     }
@@ -662,11 +712,21 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// The body to read after a request's `head`: the `Content-Length` it announces, when that is at
+/// most [`MAX_FORM_BYTES`]. A larger body is not read; the route answers without it.
+fn form_body_len(head: &[u8]) -> usize {
+    parse_request(&String::from_utf8_lossy(head))
+        .and_then(|parsed| parsed.content_length)
+        .filter(|length| *length <= MAX_FORM_BYTES)
+        .unwrap_or(0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Method {
     Get,
     Head,
-    /// Only the scan API takes it: a state change with its parameters in the query string.
+    /// A state change: the scan API's, with its parameters in the query string, and a key save,
+    /// with its form in the body.
     Post,
     Other,
 }
@@ -693,6 +753,10 @@ struct ParsedRequest<'a> {
     sec_fetch_site: Option<&'a str>,
     /// A request body was announced: a non-zero `Content-Length` or any `Transfer-Encoding`.
     has_body: bool,
+    /// The `Content-Length`, when it is a number.
+    content_length: Option<usize>,
+    /// What followed the head, as far as it was read.
+    body: &'a str,
 }
 
 fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
@@ -712,6 +776,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
     let mut lookup_header = false;
     let mut sec_fetch_site = None;
     let mut has_body = false;
+    let mut content_length = None;
 
     // The head ends at the first blank line; anything after it is body, never a header.
     for line in lines.take_while(|line| !line.is_empty()) {
@@ -732,6 +797,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
             sec_fetch_site = Some(value.trim());
         } else if name.eq_ignore_ascii_case("content-length") {
             has_body |= value.trim() != "0";
+            content_length = value.trim().parse().ok();
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             has_body = true;
         }
@@ -746,6 +812,8 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
         lookup_header,
         sec_fetch_site,
         has_body,
+        content_length,
+        body: request.split_once("\r\n\r\n").map_or("", |(_, body)| body),
     })
 }
 
@@ -788,6 +856,9 @@ struct Health<'a> {
     status: &'a str,
     name: &'a str,
     version: &'a str,
+    /// The page this server serves, as [`PAGE_ID`]. A tab whose page names another was loaded
+    /// from an earlier build and asks to be reloaded.
+    page: &'a str,
     /// `token` when every endpoint other than health and the page needs the bearer token, `none`
     /// otherwise. The page reads it to ask for the token before a call is refused.
     auth: &'a str,
@@ -852,9 +923,10 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
         .into_bytes();
     }
 
-    // Only the scan API changes state, so only it takes POST.
+    // Only the scan API and the key save change state, so only they take POST.
     if parsed.method == Method::Other
-        || parsed.method == Method::Post && !ScanApi::handles(parsed.path)
+        || parsed.method == Method::Post
+            && !(ScanApi::handles(parsed.path) || parsed.path == KEYS_PATH)
     {
         return response(
             405,
@@ -868,7 +940,7 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
     let head = parsed.method == Method::Head;
     let protected = matches!(
         parsed.path,
-        "/api/modules" | "/api/command" | "/api/lookup" | "/api/analyze"
+        "/api/modules" | "/api/command" | "/api/lookup" | "/api/analyze" | KEYS_PATH
     ) || ScanApi::handles(parsed.path);
     if protected
         && bearer_token.is_some_and(|expected| !bearer_matches(parsed.authorization, expected))
@@ -880,12 +952,13 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
         return scans_response(&parsed, routes.scans.as_ref());
     }
     let text = match parsed.path {
-        "/" | "/index.html" => response(200, "text/html; charset=utf-8", INDEX_HTML, head),
+        "/" | "/index.html" => response(200, "text/html; charset=utf-8", &PAGE, head),
         "/api/health" => {
             let body = serde_json::to_string_pretty(&Health {
                 status: "ok",
                 name: "huntsman-recon",
                 version: env!("CARGO_PKG_VERSION"),
+                page: &PAGE_ID,
                 auth: if bearer_token.is_some() {
                     "token"
                 } else {
@@ -912,8 +985,9 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
                 head,
             ),
         },
-        "/api/lookup" => lookup_response(&parsed, routes.lookups.as_ref()),
+        "/api/lookup" => lookup_response(&parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
         "/api/analyze" => analyze_response(&parsed, routes.analyze.as_ref()),
+        KEYS_PATH => keys_response(&parsed, routes.keys_home.as_deref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
@@ -948,7 +1022,16 @@ fn json_ok(body: &str, head: bool) -> String {
     )
 }
 
-fn lookup_response(parsed: &ParsedRequest<'_>, lookups: Option<&Lookups>) -> String {
+/// `GET /api/lookup`: one lookup, answered with its report. With saved scans on, the lookup runs
+/// as a saved scan, so it is kept, listed under Scans, can be stopped there, and reads `ABORTED`
+/// after a server that stopped mid-lookup starts again; the answer names it. Without them the
+/// installed handler runs it and nothing is kept, as there is nowhere to keep it. Either way the
+/// request waits at most [`Lookups::wait`] and then answers `504`.
+fn lookup_response(
+    parsed: &ParsedRequest<'_>,
+    lookups: Option<&Lookups>,
+    scans: Option<&Arc<ScanApi>>,
+) -> String {
     let Some(lookups) = lookups else {
         return json_error(404, "lookups are not enabled on this server");
     };
@@ -970,28 +1053,119 @@ fn lookup_response(parsed: &ParsedRequest<'_>, lookups: Option<&Lookups>) -> Str
         Ok(query) => query,
         Err(message) => return json_error(400, message),
     };
+    let until = Instant::now() + lookups.wait;
+    if let Some(scans) = scans {
+        let service = Arc::clone(scans.service());
+        // Reading and encoding the saved report needs more stack than a connection has.
+        let worker = thread::Builder::new()
+            .name("serve-lookup".into())
+            .stack_size(LOOKUP_STACK_BYTES)
+            .spawn(move || saved_lookup(&service, &query, until));
+        return match worker.map(thread::JoinHandle::join) {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(_)) => json_error(500, "lookup failed unexpectedly"),
+            Err(_) => json_error(503, "could not start a lookup worker"),
+        };
+    }
     let Some(slot) = Slot::take_of(&lookups.live, MAX_LOOKUPS) else {
         return json_error(503, "lookup capacity in use; retry shortly");
     };
     let handler = Arc::clone(&lookups.handler);
+    let (sender, receiver) = sync_channel(1);
     let worker = thread::Builder::new()
         .name("serve-lookup".into())
         .stack_size(LOOKUP_STACK_BYTES)
         .spawn(move || {
-            let _slot = slot;
-            handler(&query)
+            let outcome = catch_unwind(AssertUnwindSafe(|| handler(&query)));
+            // Free the place before answering: a client that has its answer may ask again at
+            // once, and must not find its own finished lookup still counted.
+            drop(slot);
+            let _ = sender.send(outcome);
         });
-    let outcome = match worker {
-        Ok(worker) => worker.join(),
-        Err(_) => return json_error(503, "could not start a lookup worker"),
-    };
-    match outcome {
-        Ok(Ok(report)) => match serde_json::to_string(&report) {
+    if worker.is_err() {
+        return json_error(503, "could not start a lookup worker");
+    }
+    match receiver.recv_timeout(until.saturating_duration_since(Instant::now())) {
+        Ok(Ok(Ok(report))) => match serde_json::to_string(&report) {
             Ok(body) => json_ok(&body, false),
             Err(_) => json_error(500, "report could not be encoded"),
         },
-        Ok(Err(error)) => json_error(error.status, &error.message),
-        Err(_) => json_error(500, "lookup failed unexpectedly"),
+        Ok(Ok(Err(error))) => json_error(error.status, &error.message),
+        Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
+            json_error(500, "lookup failed unexpectedly")
+        }
+        Err(RecvTimeoutError::Timeout) => json_error(
+            504,
+            "the lookup is still running and this server keeps no saved scans, so its result \
+             will not be kept; set HOME or HUNTSMAN_HOME to keep lookups as saved scans",
+        ),
+    }
+}
+
+/// One `/api/lookup` as a saved scan of the target: started, or joined when the same lookup is
+/// already under way, then waited on until `until`. A scan that has not ended by then is answered
+/// `504` and runs on; one that ended with nothing saved is answered `502` with the reason its log
+/// gives. Each answer names the scan.
+fn saved_lookup(service: &Arc<ScanService>, query: &LookupQuery, until: Instant) -> String {
+    let request = ScanRequest {
+        target: query.selector.clone(),
+        kind: Some(query.kind.clone()),
+        ..ScanRequest::default()
+    };
+    let record = match service
+        .start_or_join(&request)
+        .and_then(|record| service.wait(&record.id, until))
+    {
+        Ok(record) => record,
+        Err(failure) => return json_error(failure.status(), &failure.to_string()),
+    };
+    let failed = |status: u16, error: String| {
+        let body = serde_json::json!({ "error": error, "scan": record.id });
+        response(
+            status,
+            "application/json; charset=utf-8",
+            &format!("{body}\n"),
+            false,
+        )
+    };
+    if record.status.is_active() {
+        return failed(
+            504,
+            format!(
+                "the lookup is still running as saved scan {}; it goes on and keeps what it finds \
+                 at /api/scans/{} and under Scans",
+                record.id, record.id
+            ),
+        );
+    }
+    let saved = match service.store().results(&record.id) {
+        Ok(saved) => saved.filter(|_| record.status != ScanStatus::ErrorFailed),
+        Err(failure) => return json_error(500, &failure.to_string()),
+    };
+    let Some(results) = saved else {
+        let log = service.store().log(&record.id).unwrap_or_default();
+        let why = log
+            .iter()
+            .rev()
+            .find(|entry| entry.level == LogLevel::Error)
+            .or_else(|| log.last())
+            .map_or_else(
+                || "the lookup saved nothing".to_owned(),
+                |entry| entry.message.clone(),
+            );
+        return failed(502, why);
+    };
+    let report = LookupReport {
+        route: scan_route::parse_kind(&record.kind).map_or("scan", ScanKind::command),
+        text: results.text,
+        entities: results.entities,
+        outcomes: results.outcomes,
+        scan: Some(record.id.clone()),
+        status: Some(record.status.as_str()),
+    };
+    match serde_json::to_string(&report) {
+        Ok(body) => json_ok(&body, false),
+        Err(_) => json_error(500, "report could not be encoded"),
     }
 }
 
@@ -1099,6 +1273,178 @@ fn parse_lookup_query(raw: &str) -> Result<LookupQuery, &'static str> {
         .filter(|k| !k.is_empty())
         .unwrap_or_else(|| "auto".into());
     Ok(LookupQuery { kind, selector })
+}
+
+/// `GET` and `POST /api/settings/keys`: the provider keys the Settings page may save, and one save.
+/// Spiderfoot keeps its modules' API keys in its settings. Here they live in the keys file every
+/// lookup reads (`~/.huntsman.env`), so the next lookup uses a saved key without a restart. A save
+/// sends `slot` and `value` as a form body, never in the URL, and an empty `value` removes the
+/// slot. No answer carries a value: only whether each slot is set and whether the file sets it.
+/// It changes what every lookup spends, so it is guarded as the scan API is: refused cross-site or
+/// same-site, it needs the lookup header, and on a public bind the bearer token.
+fn keys_response(parsed: &ParsedRequest<'_>, home: Option<&Path>) -> String {
+    let Some(home) = home else {
+        return json_error(
+            404,
+            "this server keeps no keys file: start it with HOME set to an absolute directory",
+        );
+    };
+    if parsed
+        .sec_fetch_site
+        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
+    {
+        return json_error(403, "cross-site key request refused");
+    }
+    if !parsed.lookup_header {
+        return json_error(403, "the key settings need the X-Huntsman-Lookup: 1 header");
+    }
+    // A URL is kept in history and logs, so a key must not reach this route in one, even beside
+    // a form that would be saved.
+    if !parsed.query.is_empty() {
+        return json_error(
+            400,
+            "the key settings take no query string: send a form body",
+        );
+    }
+    if parsed.method == Method::Post {
+        return match save_key(parsed, &home.join(keys::DEFAULT_KEYS_FILE)) {
+            Ok(imported) => key_slots(home, false, imported.as_ref()),
+            Err(refused) => refused,
+        };
+    }
+    if parsed.has_body {
+        return json_error(400, "only a key save sends a body");
+    }
+    key_slots(home, parsed.method == Method::Head, None)
+}
+
+/// What a key import saved: the slots, and what it left out, by name.
+struct Imported {
+    slots: Vec<&'static str>,
+    unused: Vec<String>,
+    settings: usize,
+}
+
+/// One key save from the form in `parsed`'s body: `slot`, a slot of a provider in the credential
+/// catalogue, and `value`, the key, or empty to remove the slot; or a key import, `import`, the
+/// text of a file holding keys. The refusal is the answer to send.
+fn save_key(parsed: &ParsedRequest<'_>, file: &Path) -> Result<Option<Imported>, String> {
+    if parsed.content_length != Some(parsed.body.len()) {
+        return Err(json_error(
+            400,
+            &format!("send the form as a body of at most {MAX_FORM_BYTES} bytes"),
+        ));
+    }
+    let Some(form) = form_pairs(parsed.body) else {
+        return Err(json_error(
+            400,
+            "the form is not valid percent-encoded UTF-8",
+        ));
+    };
+    let field = |name: &str| {
+        form.iter()
+            .rev()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    };
+    if let Some(text) = field("import") {
+        if field("slot").is_some() || field("value").is_some() {
+            return Err(json_error(
+                400,
+                "send either slot and value, or import, not both",
+            ));
+        }
+        return import_keys(file, text).map(Some);
+    }
+    let slot = field("slot").unwrap_or_default();
+    if !PROVIDERS
+        .iter()
+        .any(|provider| provider.slots.contains(&slot))
+    {
+        return Err(json_error(400, "slot is not a provider key slot"));
+    }
+    let value = field("value").filter(|value| !value.trim().is_empty());
+    keys::store_slot(file, slot, value).map_err(store_refusal)?;
+    Ok(None)
+}
+
+/// Every key `text` holds that a Huntsman source takes, saved in one rewrite of the keys file:
+/// the text of a Spiderfoot settings export (`SpiderFoot.cfg`) or of a keys file. A line that
+/// cannot be read saves nothing, and neither does a file that sets no key a source takes.
+fn import_keys(file: &Path, text: &str) -> Result<Imported, String> {
+    let plan = key_import::plan(text);
+    if !plan.refused.is_empty() {
+        return Err(json_error(
+            422,
+            &format!("nothing was imported: {}", plan.refused.join("; ")),
+        ));
+    }
+    if plan.saves.is_empty() {
+        let unused = if plan.unused.is_empty() {
+            String::new()
+        } else {
+            format!(" (no Huntsman source takes {})", plan.unused.join(", "))
+        };
+        return Err(json_error(
+            422,
+            &format!("the file sets no key a Huntsman source takes{unused}"),
+        ));
+    }
+    let changes: Vec<(&str, Option<&str>)> = plan
+        .saves
+        .iter()
+        .map(|(slot, secret)| (*slot, Some(secret.expose())))
+        .collect();
+    keys::store_slots(file, &changes).map_err(store_refusal)?;
+    Ok(Imported {
+        slots: plan.saves.iter().map(|(slot, _)| *slot).collect(),
+        unused: plan.unused,
+        settings: plan.settings,
+    })
+}
+
+/// The answer to a key save the keys file refused: 422 for a value or file it cannot hold, 500
+/// for one it cannot read or write.
+fn store_refusal(error: Error) -> String {
+    match error {
+        Error::Invalid(message) => json_error(422, &message),
+        other => json_error(500, &other.to_string()),
+    }
+}
+
+/// Every provider key slot in the credential catalogue: its provider, whether a lookup would find
+/// it set (in the keys file or the environment), and whether the keys file sets it. With the file,
+/// and the warning a lookup would print when it cannot read the file. After an import, what it
+/// saved and left out.
+fn key_slots(home: &Path, head: bool, imported: Option<&Imported>) -> String {
+    let resolved = Keys::for_lookup(Some(home.as_os_str()));
+    let saved: BTreeSet<&str> = resolved.keys.slots().into_iter().collect();
+    let slots: Vec<serde_json::Value> = PROVIDERS
+        .iter()
+        .flat_map(|provider| {
+            provider.slots.iter().map(|slot| {
+                serde_json::json!({
+                    "provider": provider.name,
+                    "slot": slot,
+                    "set": resolved.keys.get(slot).is_some(),
+                    "saved": saved.contains(slot),
+                })
+            })
+        })
+        .collect();
+    let mut body = serde_json::json!({
+        "file": home.join(keys::DEFAULT_KEYS_FILE).display().to_string(),
+        "warning": resolved.warning,
+        "slots": slots,
+    });
+    if let Some(imported) = imported {
+        body["imported"] = serde_json::json!({
+            "slots": imported.slots,
+            "unused": imported.unused,
+            "settings": imported.settings,
+        });
+    }
+    json_ok(&body.to_string(), head)
 }
 
 /// `GET /api/analyze?seeds=…`: the offline multi-hop analysis of up to [`MAX_ANALYZE_SEEDS`]
@@ -1334,6 +1680,25 @@ fn response_head(status: u16, content_type: &str, content_length: usize, extra: 
 /// the HSE console's look (app bar, bottom tabs on a phone, panels), over this server's routes.
 const INDEX_HTML: &str = include_str!("web_ui.html");
 
+/// The empty page id [`PAGE`] fills in, in the page's head and outside its script and style, so
+/// filling it leaves the hashes [`PAGE_POLICY`] lists unchanged.
+const PAGE_ID_SLOT: &str = r#"<meta name="huntsman-page" content="">"#;
+
+/// The first 16 hex digits of the SHA-256 of the page this build embeds. Every page an upgrade
+/// changes gets a new id, a build without provenance metadata included.
+static PAGE_ID: LazyLock<String> =
+    LazyLock::new(|| crate::sha256::hex32(&sha256(INDEX_HTML.as_bytes()))[..16].to_owned());
+
+/// The page as served: [`INDEX_HTML`] carrying its [`PAGE_ID`], which the page compares with
+/// the one every health answer names.
+static PAGE: LazyLock<String> = LazyLock::new(|| {
+    INDEX_HTML.replacen(
+        PAGE_ID_SLOT,
+        &format!(r#"<meta name="huntsman-page" content="{}">"#, *PAGE_ID),
+        1,
+    )
+});
+
 /// The console's locator mark, as the tab icon. It is a file of its own because the page policy
 /// loads images only from this server.
 const FAVICON_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"6\" fill=\"#0a0d11\"/><circle cx=\"16\" cy=\"16\" r=\"8\" fill=\"none\" stroke=\"#1cb8f5\" stroke-width=\"2\"/><circle cx=\"16\" cy=\"16\" r=\"2.4\" fill=\"#1cb8f5\"/><path d=\"M16 2v6M16 24v6M2 16h6M24 16h6\" stroke=\"#1cb8f5\" stroke-width=\"2\"/></svg>\n";
@@ -1517,6 +1882,7 @@ mod tests {
                     lookups: Some(lookups.clone()),
                     analyze: echo_seeds().analyze,
                     scans: None,
+                    keys_home: None,
                 };
                 let ask = |path: &str| {
                     text(respond(
@@ -1567,6 +1933,41 @@ mod tests {
         );
         assert!(allowed.starts_with("HTTP/1.1 200"));
         assert!(allowed.contains("\"modules\""));
+    }
+
+    /// A tab open across an upgrade notices it: the page is served with the id of the page this
+    /// build embeds, health names the same id, and filling it in leaves the policy's hashes valid.
+    #[test]
+    fn the_page_and_health_name_one_page_id_and_the_policy_still_matches() {
+        assert!(
+            PAGE_ID.len() == 16 && PAGE_ID.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{}",
+            *PAGE_ID
+        );
+        assert!(INDEX_HTML.contains(PAGE_ID_SLOT), "the page keeps the slot");
+        let page = response_for_request("GET / HTTP/1.1\r\n\r\n", None, loopback_bind());
+        let body = page.split("\r\n\r\n").nth(1).unwrap_or_default();
+        assert!(
+            body.contains(&format!(
+                r#"<meta name="huntsman-page" content="{}">"#,
+                *PAGE_ID
+            )),
+            "the served page carries its id"
+        );
+        assert_eq!(
+            inline_block(body, "script"),
+            inline_block(INDEX_HTML, "script")
+        );
+        assert_eq!(
+            inline_block(body, "style"),
+            inline_block(INDEX_HTML, "style")
+        );
+        let health =
+            response_for_request("GET /api/health HTTP/1.1\r\n\r\n", None, loopback_bind());
+        let health = health.split("\r\n\r\n").nth(1).unwrap_or_default();
+        let health: serde_json::Value = serde_json::from_str(health.trim_end())
+            .unwrap_or_else(|e| panic!("health is not JSON: {e}"));
+        assert_eq!(health["page"], PAGE_ID.as_str());
     }
 
     /// Every `200 OK` JSON answer shares one content type and ends in exactly one newline,
@@ -1663,16 +2064,16 @@ mod tests {
 
     /// The page is laid out as Spiderfoot 4.0's: an app bar with the locator mark, the theme switch
     /// and About, Spiderfoot's New Scan, Scans and Settings plus Analyze as tabs (a bottom tab bar
-    /// on a phone, a top nav on a wider screen), one scan's sections under `#/scan/ID`, and a
-    /// view for each.
+    /// on a phone, a top nav on a wider screen), one scan's sections under `#/scan/ID`, two scans
+    /// compared under `#/compare/A/B`, and a view for each.
     #[test]
     fn the_page_is_the_console_shell_with_a_tab_per_view() {
         assert!(INDEX_HTML.contains(r#"<header class="appbar">"#));
         assert!(INDEX_HTML.contains(r#"<nav class="navbar" aria-label="Primary">"#));
         let script = inline_block(INDEX_HTML, "script");
-        assert!(
-            script.contains("const VIEWS=['scans','newscan','scan','analyze','settings','about'];")
-        );
+        assert!(script.contains(
+            "const VIEWS=['scans','newscan','scan','compare','analyze','settings','about'];"
+        ));
         for view in ["newscan", "scans", "analyze", "settings"] {
             assert!(
                 INDEX_HTML.contains(&format!(
@@ -1682,7 +2083,9 @@ mod tests {
             );
         }
         assert!(INDEX_HTML.contains(r##"<a class="iconbtn" id="nav-about" href="#/about""##));
-        for view in ["scans", "newscan", "scan", "analyze", "settings", "about"] {
+        for view in [
+            "scans", "newscan", "scan", "compare", "analyze", "settings", "about",
+        ] {
             assert!(
                 INDEX_HTML.contains(&format!(r#"<section id="view-{view}" hidden>"#)),
                 "{view}"
@@ -2113,14 +2516,20 @@ mod tests {
                         message: "no".into(),
                     });
                 }
+                if query.selector == "slow" {
+                    thread::sleep(Duration::from_secs(1));
+                }
                 Ok(LookupReport {
                     route: "email",
                     text: format!("{}|{}", query.kind, query.selector),
                     entities: Vec::new(),
                     outcomes: Vec::new(),
+                    scan: None,
+                    status: None,
                 })
             }),
             live: Arc::new(AtomicUsize::new(0)),
+            wait: Duration::from_secs(10),
         }
     }
 
@@ -2129,6 +2538,7 @@ mod tests {
             lookups: lookups.cloned(),
             analyze: None,
             scans: None,
+            keys_home: None,
         };
         text(respond(
             request,
@@ -2231,19 +2641,215 @@ mod tests {
                 Some(&lookups),
             )
         };
-        assert!(ask("refused").starts_with("HTTP/1.1 422"));
         assert!(ask("boom").starts_with("HTTP/1.1 500"));
         assert_eq!(
             lookups.live.load(Ordering::Acquire),
             0,
             "a panic frees its slot"
         );
+        // A client that has its answer can ask again at once: the slot is free before the answer
+        // is sent, never a moment after it.
+        for round in 0..500 {
+            for (q, status) in [("refused", "HTTP/1.1 422"), ("a", "HTTP/1.1 200")] {
+                assert!(ask(q).starts_with(status));
+                assert_eq!(
+                    lookups.live.load(Ordering::Acquire),
+                    0,
+                    "the answered lookup {q:?} still held its slot in round {round}"
+                );
+            }
+        }
         assert!(ask("").starts_with("HTTP/1.1 400"));
         assert!(ask(&"a".repeat(MAX_SELECTOR_BYTES + 1)).starts_with("HTTP/1.1 400"));
         lookups.live.store(MAX_LOOKUPS, Ordering::Release);
         assert!(ask("a").starts_with("HTTP/1.1 503"));
         lookups.live.store(0, Ordering::Release);
         assert!(ask("a").starts_with("HTTP/1.1 200"));
+    }
+
+    #[test]
+    fn a_lookup_without_saved_scans_answers_504_when_its_wait_runs_out() {
+        let lookups = Lookups {
+            wait: Duration::from_millis(100),
+            ..echo_lookups()
+        };
+        let got = lookup(
+            &format!("GET /api/lookup?q=slow HTTP/1.1\r\n{HEADER}\r\n"),
+            None,
+            Some(&lookups),
+        );
+        assert!(got.starts_with("HTTP/1.1 504"), "{got}");
+        assert!(got.contains("keeps no saved scans"), "{got}");
+        // The request is answered; the lookup holds its place until it ends, then frees it.
+        assert_eq!(lookups.live.load(Ordering::Acquire), 1);
+        let freed = Instant::now() + Duration::from_secs(5);
+        while lookups.live.load(Ordering::Acquire) != 0 {
+            assert!(Instant::now() < freed, "the slot was never freed");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// A server with lookups and saved scans over `lookup` in a scratch store, waiting `wait`.
+    fn saved_lookup_routes(
+        tag: &str,
+        lookup: crate::scan_service::ScanLookup,
+        wait: Duration,
+    ) -> (Routes, std::path::PathBuf) {
+        use crate::scan_store::ScanStore;
+        let dir =
+            std::env::temp_dir().join(format!("hse-serve-lookup-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let api = ScanApi::new(
+            ScanService::new(ScanStore::open(&dir).unwrap(), lookup),
+            None,
+        );
+        let routes = Routes {
+            lookups: Some(Lookups {
+                wait,
+                ..echo_lookups()
+            }),
+            analyze: None,
+            scans: Some(Arc::new(api)),
+            keys_home: None,
+        };
+        (routes, dir)
+    }
+
+    fn found_phone(selector: &str) -> crate::scan_service::LookupOutput {
+        crate::scan_service::LookupOutput {
+            text: format!("report on {selector}"),
+            entities: vec![
+                crate::entity::Entity::builder(
+                    crate::entity::EntityKind::Phone,
+                    selector,
+                    0.9,
+                    "s",
+                )
+                .build(),
+            ],
+            outcomes: Vec::new(),
+        }
+    }
+
+    fn scan_of(answer: &str) -> String {
+        let body = &answer[answer.find("\r\n\r\n").unwrap() + 4..];
+        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+        value["scan"].as_str().unwrap().to_owned()
+    }
+
+    const PHONE_LOOKUP: &str = "GET /api/lookup?kind=phone&q=%2B61412345678 HTTP/1.1\r\n";
+
+    #[test]
+    fn a_lookup_with_saved_scans_is_kept_as_a_scan_and_names_it() {
+        let lookup: crate::scan_service::ScanLookup = Arc::new(
+            |_kind, selector: &str, _: &crate::module_selection::Selection| {
+                Ok(found_phone(selector))
+            },
+        );
+        let (routes, dir) = saved_lookup_routes("kept", lookup, Duration::from_secs(10));
+        let got = scans_request(&routes, None, &format!("{PHONE_LOOKUP}{HEADER}\r\n"));
+        assert!(got.starts_with("HTTP/1.1 200"), "{got}");
+        // The report the legacy handler gave, with the scan it ran as.
+        for part in [
+            r#""route":"phone""#,
+            r#""value":"+61412345678""#,
+            r#""text":"report on +61412345678""#,
+            r#""status":"FINISHED""#,
+        ] {
+            assert!(got.contains(part), "{part} in {got}");
+        }
+        let id = scan_of(&got);
+        let record = scans_request(
+            &routes,
+            None,
+            &format!("GET /api/scans/{id} HTTP/1.1\r\n{HEADER}\r\n"),
+        );
+        assert!(record.starts_with("HTTP/1.1 200"), "{record}");
+        assert!(record.contains(r#""status":"FINISHED""#), "{record}");
+        let listed = scans_request(
+            &routes,
+            None,
+            &format!("GET /api/scans HTTP/1.1\r\n{HEADER}\r\n"),
+        );
+        assert!(listed.contains(&id), "{listed}");
+        // A target the scan cannot route is refused before any scan is kept.
+        let bad = scans_request(
+            &routes,
+            None,
+            &format!("GET /api/lookup?kind=ip&q=nope HTTP/1.1\r\n{HEADER}\r\n"),
+        );
+        assert!(bad.starts_with("HTTP/1.1 400"), "{bad}");
+        let api = routes.scans.as_ref().unwrap();
+        assert_eq!(api.service().store().list().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_lookup_past_its_wait_answers_504_and_its_scan_runs_on_and_is_joined() {
+        let gate = Arc::new(Mutex::new(()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let lookup: crate::scan_service::ScanLookup = {
+            let (gate, calls) = (Arc::clone(&gate), Arc::clone(&calls));
+            Arc::new(
+                move |_kind, selector: &str, _: &crate::module_selection::Selection| {
+                    calls.fetch_add(1, Ordering::AcqRel);
+                    drop(gate.lock().unwrap_or_else(PoisonError::into_inner));
+                    Ok(found_phone(selector))
+                },
+            )
+        };
+        let (routes, dir) = saved_lookup_routes("wait", lookup, Duration::from_millis(150));
+        let held = gate.lock().unwrap();
+        let ask = || scans_request(&routes, None, &format!("{PHONE_LOOKUP}{HEADER}\r\n"));
+        let first = ask();
+        assert!(first.starts_with("HTTP/1.1 504"), "{first}");
+        let id = scan_of(&first);
+        assert!(first.contains(&format!("/api/scans/{id}")), "{first}");
+        // A reload while it runs waits on the same scan instead of starting another.
+        let reload = ask();
+        assert!(reload.starts_with("HTTP/1.1 504"), "{reload}");
+        assert_eq!(scan_of(&reload), id);
+        let service = Arc::clone(routes.scans.as_ref().unwrap().service());
+        assert_eq!(service.store().list().unwrap().len(), 1);
+        drop(held);
+        let done = service
+            .wait(&id, Instant::now() + Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(done.status, ScanStatus::Finished);
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            1,
+            "one lookup ran for both requests"
+        );
+        let results = service.store().results(&id).unwrap().unwrap();
+        assert_eq!(results.entities.len(), 1, "what it found was kept");
+        // Once it has ended, the same lookup is a new scan, given the time to run this time.
+        let mut routes = routes;
+        routes.lookups.as_mut().unwrap().wait = Duration::from_secs(10);
+        let again = scans_request(&routes, None, &format!("{PHONE_LOOKUP}{HEADER}\r\n"));
+        assert!(again.starts_with("HTTP/1.1 200"), "{again}");
+        assert_ne!(scan_of(&again), id);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_saved_lookup_that_finds_nothing_answers_502_with_its_reason_and_scan() {
+        let lookup: crate::scan_service::ScanLookup = Arc::new(
+            |_kind, _selector: &str, _: &crate::module_selection::Selection| {
+                Err("every source failed".to_owned())
+            },
+        );
+        let (routes, dir) = saved_lookup_routes("failed", lookup, Duration::from_secs(10));
+        let got = scans_request(&routes, None, &format!("{PHONE_LOOKUP}{HEADER}\r\n"));
+        assert!(got.starts_with("HTTP/1.1 502"), "{got}");
+        assert!(got.contains("every source failed"), "{got}");
+        let id = scan_of(&got);
+        let api = routes.scans.as_ref().unwrap();
+        assert_eq!(
+            api.service().store().get(&id).unwrap().status,
+            ScanStatus::ErrorFailed
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2415,6 +3021,7 @@ mod tests {
             lookups: None,
             analyze: Some(Arc::new(handler)),
             scans: None,
+            keys_home: None,
         }
     }
 
@@ -2609,21 +3216,25 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("hse-serve-scans-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let lookup = Arc::new(|_kind: crate::scan_route::ScanKind, selector: &str| {
-            Ok(LookupOutput {
-                text: "report".into(),
-                entities: vec![
-                    crate::entity::Entity::builder(
-                        crate::entity::EntityKind::Phone,
-                        selector,
-                        0.9,
-                        "s",
-                    )
-                    .build(),
-                ],
-                outcomes: Vec::new(),
-            })
-        });
+        let lookup = Arc::new(
+            |_kind: crate::scan_route::ScanKind,
+             selector: &str,
+             _: &crate::module_selection::Selection| {
+                Ok(LookupOutput {
+                    text: "report".into(),
+                    entities: vec![
+                        crate::entity::Entity::builder(
+                            crate::entity::EntityKind::Phone,
+                            selector,
+                            0.9,
+                            "s",
+                        )
+                        .build(),
+                    ],
+                    outcomes: Vec::new(),
+                })
+            },
+        );
         let api = ScanApi::new(
             ScanService::new(ScanStore::open(&dir).unwrap(), lookup),
             None,
@@ -2796,5 +3407,394 @@ mod tests {
         assert_eq!(header_filename("a\"b\r\nX: y.csv"), "a_b__X__y.csv");
         assert_eq!(header_filename("t1-Huntsman.csv"), "t1-Huntsman.csv");
         assert_eq!(header_filename(""), "export");
+    }
+
+    // --- The Settings page's provider keys ---
+
+    const TEST_KEY: &str = "TEST_ONLY_SETTINGS_KEY_51c0";
+
+    fn key_home(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hse-serve-keys-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn key_routes(home: &Path) -> Routes {
+        Routes {
+            keys_home: Some(home.to_path_buf()),
+            ..Routes::default()
+        }
+    }
+
+    fn key_save(routes: &Routes, form: &str, extra: &str) -> String {
+        scans_request(
+            routes,
+            None,
+            &format!(
+                "POST /api/settings/keys HTTP/1.1\r\n{HEADER}{extra}Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{form}",
+                form.len()
+            ),
+        )
+    }
+
+    fn answer_json(answer: &str) -> serde_json::Value {
+        let (_, body) = answer.split_once("\r\n\r\n").unwrap();
+        serde_json::from_str(body).unwrap_or_else(|error| panic!("{error}: {body}"))
+    }
+
+    fn slot_state(answer: &serde_json::Value, slot: &str) -> (bool, bool) {
+        let row = answer["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["slot"] == slot)
+            .unwrap_or_else(|| panic!("{slot} is not listed"));
+        (
+            row["set"].as_bool().unwrap(),
+            row["saved"].as_bool().unwrap(),
+        )
+    }
+
+    #[test]
+    fn the_key_settings_list_every_catalogue_slot_and_a_save_reaches_the_keys_file_only() {
+        let home = key_home("save");
+        let routes = key_routes(&home);
+        let file = home.join(keys::DEFAULT_KEYS_FILE);
+        let listed = scans_request(
+            &routes,
+            None,
+            &format!("GET /api/settings/keys HTTP/1.1\r\n{HEADER}\r\n"),
+        );
+        assert!(listed.starts_with("HTTP/1.1 200"), "{listed}");
+        let listed = answer_json(&listed);
+        let catalogue: usize = PROVIDERS.iter().map(|provider| provider.slots.len()).sum();
+        assert_eq!(listed["slots"].as_array().unwrap().len(), catalogue);
+        assert_eq!(listed["file"], file.display().to_string());
+        assert!(
+            listed["slots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["saved"] == false)
+        );
+
+        let saved = key_save(
+            &routes,
+            &format!("slot=HUNTSMAN_SHODAN_KEY&value={TEST_KEY}"),
+            "Sec-Fetch-Site: same-origin\r\n",
+        );
+        assert!(saved.starts_with("HTTP/1.1 200"), "{saved}");
+        assert!(!saved.contains(TEST_KEY), "an answer never carries a key");
+        assert_eq!(
+            slot_state(&answer_json(&saved), "HUNTSMAN_SHODAN_KEY"),
+            (true, true)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            format!("HUNTSMAN_SHODAN_KEY='{TEST_KEY}'\n")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        // What a lookup reads is what was saved.
+        let keys = Keys::for_lookup(Some(home.as_os_str())).keys;
+        assert_eq!(keys.get("HUNTSMAN_SHODAN_KEY").unwrap().expose(), TEST_KEY);
+
+        // An empty value removes the slot.
+        let removed = key_save(&routes, "slot=HUNTSMAN_SHODAN_KEY&value=", "");
+        assert!(removed.starts_with("HTTP/1.1 200"), "{removed}");
+        assert!(!slot_state(&answer_json(&removed), "HUNTSMAN_SHODAN_KEY").1);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Spiderfoot's Settings → Import API Keys: a whole `SpiderFoot.cfg`, saved in one rewrite.
+    #[test]
+    fn a_spiderfoot_key_export_is_imported_into_the_keys_file_in_one_save() {
+        let home = key_home("import");
+        let routes = key_routes(&home);
+        let file = home.join(keys::DEFAULT_KEYS_FILE);
+        std::fs::write(&file, "# mine\nHUNTSMAN_SHODAN_KEY=old-key-1234\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let wigle = base64::standard(b"TEST_ONLY_WIGLE_AID:TEST_ONLY_WIGLE_TOKEN");
+        let export = format!(
+            "sfp_abstractapi:phonevalidation_api_key=\nsfp_fullhunt:api_key=TEST_ONLY_UNUSED\n\
+             sfp_shodan:api_key={TEST_KEY}\nsfp_spider:maxpages=100\n\
+             sfp_virustotal:api_key=TEST_ONLY_VT_KEY\nsfp_wigle:api_key_encoded={wigle}\n"
+        );
+        let form = format!("import={}", crate::http::percent_encode_component(&export));
+        let imported = key_save(&routes, &form, "Sec-Fetch-Site: same-origin\r\n");
+        assert!(imported.starts_with("HTTP/1.1 200"), "{imported}");
+        for value in [
+            TEST_KEY,
+            "TEST_ONLY_VT_KEY",
+            "TEST_ONLY_WIGLE_TOKEN",
+            "TEST_ONLY_UNUSED",
+        ] {
+            assert!(!imported.contains(value), "an answer never carries a key");
+        }
+        let answer = answer_json(&imported);
+        assert_eq!(
+            answer["imported"],
+            serde_json::json!({
+                "slots": [
+                    "HUNTSMAN_SHODAN_KEY",
+                    "HUNTSMAN_VIRUSTOTAL_KEY",
+                    "HUNTSMAN_WIGLE_USER",
+                    "HUNTSMAN_WIGLE_TOKEN"
+                ],
+                "unused": ["sfp_fullhunt:api_key"],
+                "settings": 1,
+            })
+        );
+        assert_eq!(slot_state(&answer, "HUNTSMAN_VIRUSTOTAL_KEY"), (true, true));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            format!(
+                "# mine\nHUNTSMAN_SHODAN_KEY='{TEST_KEY}'\nHUNTSMAN_VIRUSTOTAL_KEY='TEST_ONLY_VT_KEY'\n\
+                 HUNTSMAN_WIGLE_USER='TEST_ONLY_WIGLE_AID'\nHUNTSMAN_WIGLE_TOKEN='TEST_ONLY_WIGLE_TOKEN'\n"
+            )
+        );
+
+        // One unreadable line saves nothing; nor does a file with no key a source takes.
+        let before = std::fs::read_to_string(&file).unwrap();
+        for (text, fragment) in [
+            (
+                "sfp_hunter:api_key=TEST_ONLY_NEW\nmy shodan key TEST_ONLY_PASTED\n",
+                "nothing was imported: line 2",
+            ),
+            (
+                "sfp_fullhunt:api_key=TEST_ONLY_UNUSED\n",
+                "no Huntsman source takes sfp_fullhunt:api_key",
+            ),
+            ("sfp_shodan:api_key=\n", "sets no key"),
+        ] {
+            let form = format!("import={}", crate::http::percent_encode_component(text));
+            let refused = key_save(&routes, &form, "");
+            assert!(refused.starts_with("HTTP/1.1 422"), "{refused}");
+            assert!(refused.contains(fragment), "{refused}");
+            assert!(!refused.contains("TEST_ONLY_NEW") && !refused.contains("TEST_ONLY_PASTED"));
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+        }
+        let both = key_save(&routes, "import=x&slot=HUNTSMAN_SHODAN_KEY&value=y", "");
+        assert!(both.starts_with("HTTP/1.1 400"), "{both}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_key_save_is_refused_off_the_page_in_the_url_or_for_a_slot_outside_the_catalogue() {
+        let home = key_home("refused");
+        let routes = key_routes(&home);
+        let form = format!("slot=HUNTSMAN_SHODAN_KEY&value={TEST_KEY}");
+        let status = |answer: &str| answer.split(' ').nth(1).unwrap_or_default().to_owned();
+        for site in ["cross-site", "same-site"] {
+            let answer = key_save(&routes, &form, &format!("Sec-Fetch-Site: {site}\r\n"));
+            assert_eq!(status(&answer), "403", "{answer}");
+        }
+        let unheaded = scans_request(
+            &routes,
+            None,
+            &format!(
+                "POST /api/settings/keys HTTP/1.1\r\nContent-Length: {}\r\n\r\n{form}",
+                form.len()
+            ),
+        );
+        assert_eq!(status(&unheaded), "403", "{unheaded}");
+        let in_the_url = scans_request(
+            &routes,
+            None,
+            &format!("POST /api/settings/keys?{form} HTTP/1.1\r\n{HEADER}\r\n"),
+        );
+        assert_eq!(status(&in_the_url), "400", "{in_the_url}");
+        let beside_a_form = scans_request(
+            &routes,
+            None,
+            &format!(
+                "POST /api/settings/keys?{form} HTTP/1.1\r\n{HEADER}Content-Length: {}\r\n\r\n{form}",
+                form.len()
+            ),
+        );
+        assert_eq!(status(&beside_a_form), "400", "{beside_a_form}");
+        assert!(!beside_a_form.contains(TEST_KEY));
+        for (form, want) in [
+            (format!("slot=HOME&value={TEST_KEY}"), "400"),
+            (format!("slot=HUNTSMAN_NOT_A_SLOT&value={TEST_KEY}"), "400"),
+            ("slot=HUNTSMAN_SHODAN_KEY&value=changeme".to_owned(), "422"),
+            ("slot=HUNTSMAN_SHODAN_KEY&value=%ZZ".to_owned(), "400"),
+        ] {
+            let answer = key_save(&routes, &form, "");
+            assert_eq!(status(&answer), want, "{form}: {answer}");
+            assert!(!answer.contains(TEST_KEY) && !answer.contains("changeme"));
+        }
+        let got_with_a_body = scans_request(
+            &routes,
+            None,
+            &format!("GET /api/settings/keys HTTP/1.1\r\n{HEADER}Content-Length: 3\r\n\r\na=b"),
+        );
+        assert_eq!(status(&got_with_a_body), "400", "{got_with_a_body}");
+        assert!(
+            !home.join(keys::DEFAULT_KEYS_FILE).exists(),
+            "nothing was saved"
+        );
+
+        // On a public bind the token is needed; without a home there is no keys file.
+        let public = text(respond(
+            &format!(
+                "POST /api/settings/keys HTTP/1.1\r\n{HEADER}Content-Length: {}\r\n\r\n{form}",
+                form.len()
+            ),
+            &test_config(public_bind(), Some("tok")),
+            &routes,
+        ));
+        assert_eq!(status(&public), "401", "{public}");
+        let homeless = key_save(&Routes::default(), &form, "");
+        assert_eq!(status(&homeless), "404", "{homeless}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A browser may send the form after its head, in a later packet; the server reads it whole.
+    /// A body past the form bound is not read, and the save is refused at once.
+    #[test]
+    fn a_form_body_that_follows_its_head_is_read_whole_and_a_larger_one_is_refused_unread() {
+        let home = key_home("socket");
+        let server = Server::bind(ServeConfig::parse("127.0.0.1:0", None).unwrap())
+            .unwrap()
+            .with_keys_home(home.clone());
+        let addr = server.local_addr().unwrap();
+        let handle = thread::spawn(move || server.run_n(2).unwrap());
+        let send = |head: String, body: &[u8]| {
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            client.write_all(head.as_bytes()).unwrap();
+            client.flush().unwrap();
+            thread::sleep(Duration::from_millis(100));
+            let _ = client.write_all(body);
+            let mut answer = String::new();
+            let _ = client.read_to_string(&mut answer);
+            answer
+        };
+        let form = format!("slot=HUNTSMAN_SHODAN_KEY&value={TEST_KEY}");
+        let saved = send(
+            format!(
+                "POST /api/settings/keys HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: {}\r\n\r\n",
+                form.len()
+            ),
+            form.as_bytes(),
+        );
+        assert!(saved.starts_with("HTTP/1.1 200"), "{saved}");
+        let big = vec![b'a'; MAX_FORM_BYTES + 1];
+        let started = Instant::now();
+        let refused = send(
+            format!(
+                "POST /api/settings/keys HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: {}\r\n\r\n",
+                big.len()
+            ),
+            &big,
+        );
+        assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "answered without waiting"
+        );
+        handle.join().unwrap();
+        let keys = Keys::for_lookup(Some(home.as_os_str())).keys;
+        assert_eq!(keys.get("HUNTSMAN_SHODAN_KEY").unwrap().expose(), TEST_KEY);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Every keyed module the Settings page lists has a slot it can save, so no key field is shown
+    /// that the server would refuse.
+    #[test]
+    fn every_keyed_module_on_the_settings_page_has_a_slot_it_can_save() {
+        let (routes, _, dir) = scan_routes("keyslots");
+        let settings = answer_json(&scans_request(
+            &routes,
+            None,
+            &format!("GET /api/settings HTTP/1.1\r\n{HEADER}\r\n"),
+        ));
+        let saveable: BTreeSet<&str> = PROVIDERS
+            .iter()
+            .flat_map(|provider| provider.slots.iter().copied())
+            .collect();
+        let mut keyed = 0;
+        for module in settings["modules"].as_array().unwrap() {
+            let slots: Vec<&str> = module["key_env"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|slot| slot.as_str().unwrap())
+                .collect();
+            if slots.is_empty() {
+                continue;
+            }
+            keyed += 1;
+            assert!(
+                slots.iter().any(|slot| saveable.contains(slot)),
+                "{} lists {slots:?}, none of which the credential catalogue names",
+                module["name"]
+            );
+        }
+        assert!(keyed > 20, "the settings list its keyed modules: {keyed}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The page reads the key answer by these names, so a renamed field fails here rather than
+    /// leaving the Settings page without its key fields.
+    #[test]
+    fn the_page_reads_the_key_answer_by_its_field_names() {
+        let home = key_home("reads");
+        let answer = answer_json(&scans_request(
+            &key_routes(&home),
+            None,
+            &format!("GET /api/settings/keys HTTP/1.1\r\n{HEADER}\r\n"),
+        ));
+        for field in ["file", "warning", "slots"] {
+            assert!(answer.get(field).is_some(), "the answer has no {field}");
+        }
+        for field in ["slot", "set", "saved", "provider"] {
+            assert!(
+                answer["slots"][0].get(field).is_some(),
+                "a slot row has no {field}"
+            );
+        }
+        for read in [
+            "api('/api/settings/keys')",
+            "keyslots.file",
+            "keyslots.warning",
+            "keyslots.slots.find(k=>k.slot===s)",
+            "k.saved",
+            "k.set",
+            "method:'POST',body:new URLSearchParams({slot,value})",
+            "method:'POST',body:new URLSearchParams({import:text})",
+            "keyslots.imported",
+            "i.slots",
+            "i.unused",
+            "i.settings",
+        ] {
+            assert!(INDEX_HTML.contains(read), "the page no longer reads {read}");
+        }
+        // An import answers with the same fields, and with what it imported.
+        let imported = answer_json(&key_save(
+            &key_routes(&home),
+            &format!("import=sfp_shodan%3Aapi_key%3D{TEST_KEY}"),
+            "",
+        ));
+        for field in ["slots", "unused", "settings"] {
+            assert!(
+                imported["imported"].get(field).is_some(),
+                "an import's answer has no imported.{field}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

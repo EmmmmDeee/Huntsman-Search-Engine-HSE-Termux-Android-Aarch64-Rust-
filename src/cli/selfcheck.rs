@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use super::{MAX_ARTIFACT_BYTES, fail};
+use super::{MAX_PLAIN_FILE_BYTES, fail};
 use huntsman_recon::au_id::is_valid_abn;
 use huntsman_recon::classify::classify_response;
 use huntsman_recon::confidence::{Classification, effective};
@@ -135,7 +135,7 @@ fn run_check() -> Result<f64, (u8, String)> {
         ("var/stix-bundle.json", &stix),
     ] {
         let body = serde_json::to_vec_pretty(value).map_err(|e| (EX_IOERR, e.to_string()))?;
-        write_atomic(Path::new(name), &body, MAX_ARTIFACT_BYTES)
+        write_atomic(Path::new(name), &body, MAX_PLAIN_FILE_BYTES)
             .map_err(|e| (EX_IOERR, e.to_string()))?;
     }
     Ok(meters)
