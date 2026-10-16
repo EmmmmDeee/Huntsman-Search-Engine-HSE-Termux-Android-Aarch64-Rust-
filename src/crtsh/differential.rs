@@ -3,9 +3,11 @@
 //! `tests/fixtures/legacy_764ce8e/crtsh_expected.json` was recorded by running the
 //! old-tree implementation (restore commit `1dfb5c9d` merged onto `98c77fd`) on
 //! `crtsh_cases.json`. This port must reproduce it: same records, same values,
-//! confidence, tags and evidence, nothing dropped, nothing capped. The one
-//! deliberate difference is ordering *within* a confidence tie, which follows each
-//! crate's own uid derivation; the confidence order itself is identical.
+//! confidence, tags and evidence, nothing dropped, nothing capped. The deliberate
+//! differences: ordering *within* a confidence tie follows each crate's own uid
+//! derivation (the confidence order itself is identical), and evidence gains the
+//! attributes the legacy code dropped, covering every certificate that names an entity
+//! ([`ADDED`]); every legacy attribute is still compared exactly.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -58,14 +60,45 @@ fn kind_of(debug_name: &str) -> EntityKind {
     serde_json::from_value(Value::String(debug_name.to_ascii_lowercase())).unwrap()
 }
 
-/// The comparable view of one entity, keyed by its identity in the new crate.
+/// Evidence attributes the legacy code never wrote: what every certificate naming an
+/// entity says, not only the first.
+const ADDED: &[&str] = &[
+    "certificates",
+    "cert_ids",
+    "cert_serials",
+    "issuers",
+    "issuer_ca_ids",
+    "common_names",
+    "first_not_before",
+    "last_not_after",
+    "first_logged",
+    "last_logged",
+    "signed_names",
+];
+
+/// The comparable view of one entity, keyed by its identity in the new crate: its
+/// evidence without the [`ADDED`] attributes, each of which carries at least one
+/// certificate.
 fn view(e: &Entity) -> Value {
     let mut tags = e.tags.clone();
     tags.sort();
     let evidence: Vec<Value> = e
         .evidence
         .iter()
-        .map(|ev| json!({"source": ev.provenance.source, "summary": ev.summary, "attributes": ev.attributes}))
+        .map(|ev| {
+            assert!(
+                ev.attributes
+                    .get("certificates")
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .is_some_and(|n| n >= 1),
+                "{}: {:?}",
+                e.value,
+                ev.attributes
+            );
+            let mut attributes = ev.attributes.clone();
+            attributes.retain(|key, _| !ADDED.contains(&key.as_str()));
+            json!({"source": ev.provenance.source, "summary": ev.summary, "attributes": attributes})
+        })
         .collect();
     json!({
         "raw_value": e.raw_value,
