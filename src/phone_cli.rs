@@ -117,7 +117,8 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
     }
 }
 
-/// [`run`], then the Numverify leg and every indicator source for the number that `keys` enables.
+/// [`run`], then the Numverify leg and every indicator source for the number that `keys` enables
+/// and the transport's lookup asks ([`Transport::runs_module`]).
 #[must_use]
 pub fn run_keyed<T: Transport + ?Sized>(
     transport: &T,
@@ -135,7 +136,7 @@ pub fn run_keyed<T: Transport + ?Sized>(
     };
     let (canonical, scan_id) = (entity.raw_value.clone(), entity.scan_id.clone());
     let indicator = Indicator::Phone(&canonical);
-    let numverify_wanted = numverify::API.wanted(keys);
+    let numverify_wanted = numverify::API.runs(transport, keys);
     if !numverify_wanted && indicator_legs::planned(indicator, keys).is_empty() {
         return match render(&report) {
             Ok(text) => PhoneRun::Printed { text, report },

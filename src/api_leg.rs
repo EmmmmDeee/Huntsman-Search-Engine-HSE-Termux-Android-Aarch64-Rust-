@@ -38,6 +38,8 @@ pub enum KeyPlace {
     /// A query parameter of this name, added only as the request is sent (see
     /// [`AuthStyle::Query`]); the URL a provider module builds never holds the key.
     Query(&'static str),
+    /// `Authorization: Bearer <key>`.
+    Bearer,
 }
 
 /// How a provider takes its key.
@@ -73,6 +75,13 @@ impl Api {
             None => true,
             Some(key) => !key.required || keys.get(key.slot).is_some(),
         }
+    }
+
+    /// Whether this leg runs in the lookup `transport` serves: [`Api::wanted`] for `keys`, and
+    /// asked by the lookup (see [`Transport::runs_module`]).
+    #[must_use]
+    pub fn runs<T: Transport + ?Sized>(&self, transport: &T, keys: &Keys) -> bool {
+        self.wanted(keys) && transport.runs_module(self.source)
     }
 }
 
@@ -299,6 +308,7 @@ fn credential(
     let style = match key.place {
         KeyPlace::Header(name) => AuthStyle::Header(name.into()),
         KeyPlace::Query(name) => AuthStyle::Query(name.into()),
+        KeyPlace::Bearer => AuthStyle::Bearer,
     };
     Credential::new(authority, secret, style)
         .map(|c| c.only_for_origin(api.origin))

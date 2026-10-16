@@ -808,9 +808,9 @@ fn scripted(clock: &FakeClock, t: &Script<'_>) -> Result<StolenTaxReport, Stolen
 }
 
 #[test]
-fn retry_pause_reads_retry_after_like_the_monolith() {
-    // parse_retry_after_secs(value, 4, 4): delta-seconds, else 4; never above 4.
-    let secs = |v: Option<&str>| retry_pause(v).as_secs();
+fn retry_pause_reads_delta_seconds_and_http_dates() {
+    // Delta-seconds or an HTTP-date, else 4; never above 4.
+    let secs = |v: Option<&str>| retry_pause(v, 1_445_412_478).as_secs();
     assert_eq!(secs(None), 4);
     assert_eq!(secs(Some("0")), 0);
     assert_eq!(secs(Some("2")), 2);
@@ -819,7 +819,10 @@ fn retry_pause_reads_retry_after_like_the_monolith() {
     assert_eq!(secs(Some("30")), 4);
     assert_eq!(secs(Some("-1")), 4);
     assert_eq!(secs(Some("1.5")), 4);
-    assert_eq!(secs(Some("Wed, 21 Oct 2015 07:28:00 GMT")), 4);
+    assert_eq!(secs(Some("Wed, 21 Oct 2015 07:28:00 GMT")), 2);
+    assert_eq!(secs(Some("Wed, 21 Oct 2015 07:29:00 GMT")), 4);
+    assert_eq!(secs(Some("Wed, 21 Oct 2015 07:27:00 GMT")), 0);
+    assert_eq!(secs(Some("Wed, 21 Oct 2015")), 4);
     assert_eq!(ATTEMPTS_PER_PATH, 3);
 }
 
