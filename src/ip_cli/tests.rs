@@ -198,7 +198,7 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "api.stopforumspam.org",
             "isc.sans.edu",
             "api.maltiverse.com",
-            "api.phishstats.info"
+            "api.phishstats.info",
             "ip-api.com",
         ]
     );

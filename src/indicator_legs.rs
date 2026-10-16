@@ -248,7 +248,7 @@ mod tests {
                 "stopforumspam",
                 "isc",
                 "maltiverse",
-                "phishstats"
+                "phishstats",
                 "ipapi",
             ]
         );
