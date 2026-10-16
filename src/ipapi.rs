@@ -63,8 +63,8 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     if value.get("status").and_then(|v| v.as_str()) != Some("success") {
         return Ok(None);
     }
-    let lat = value.get("lat").and_then(|v| v.as_f64());
-    let lon = value.get("lon").and_then(|v| v.as_f64());
+    let lat = value.get("lat").and_then(serde_json::Value::as_f64);
+    let lon = value.get("lon").and_then(serde_json::Value::as_f64);
     let country = value.get("country").and_then(|v| v.as_str()).unwrap_or("");
     let city = value.get("city").and_then(|v| v.as_str()).unwrap_or("");
     let mut finding = Finding::new(format!("ip-api: {city}, {country}"))

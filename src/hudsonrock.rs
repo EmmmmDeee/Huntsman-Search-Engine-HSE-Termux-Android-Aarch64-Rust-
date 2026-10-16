@@ -64,11 +64,11 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
         serde_json::from_str(text).map_err(|_| LegError::Decode("answer is not JSON".into()))?;
     let employees = value
         .get("total_employees")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let users = value
         .get("total_users")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     if employees == 0 && users == 0 {
         return Ok(None);
@@ -91,7 +91,7 @@ mod tests {
     fn a_count_is_kept() {
         let body = br#"{"total_employees":5,"total_users":10,"stealers":[]}"#;
         let f = decode(body).unwrap().unwrap();
-        assert!(f.summary.contains("5"));
+        assert!(f.summary.contains('5'));
     }
 
     #[test]

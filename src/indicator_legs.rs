@@ -42,6 +42,11 @@ pub const SOURCES: &[Source] = &[
     whoxy::INTEL,
     securitytrails::INTEL,
     hunter::VERIFY,
+    hudsonrock::INTEL,
+    ipapi::INTEL,
+    mozilla_location::INTEL,
+    opencellid::INTEL,
+    submd::INTEL,
 ];
 
 /// Confidence of the queried indicator.

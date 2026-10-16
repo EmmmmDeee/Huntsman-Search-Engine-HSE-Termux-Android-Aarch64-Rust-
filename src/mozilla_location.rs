@@ -1,11 +1,11 @@
-//! Mozilla Location Service: keyed geolocation by WiFi BSSID or cell.
+//! Mozilla Location Service: keyed geolocation by `WiFi BSSID` or cell.
 //!
 //! One lookup is one `POST https://location.services.mozilla.com/v1/geolocate?key={key}`
 //! with a JSON body of `wifiAccessPoints` or `cellTowers`. Requires `HUNTSMAN_MOZILLA_LOCATION_KEY`.
 //! Returns lat, lng, accuracy. A missing result is HTTP 404.
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
-use crate::http::{Transport, percent_encode_component};
+use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
 
@@ -66,15 +66,19 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|_| LegError::Decode("answer is not JSON".into()))?;
     let location = value.get("location");
-    let lat = location.and_then(|l| l.get("lat")).and_then(|v| v.as_f64());
-    let lng = location.and_then(|l| l.get("lng")).and_then(|v| v.as_f64());
+    let lat = location
+        .and_then(|l| l.get("lat"))
+        .and_then(serde_json::Value::as_f64);
+    let lng = location
+        .and_then(|l| l.get("lng"))
+        .and_then(serde_json::Value::as_f64);
     let Some((lat, lng)) = lat.zip(lng) else {
         return Ok(None);
     };
     let mut finding = Finding::new(format!("Mozilla Location: {lat:.4},{lng:.4}"))
         .attr("position", format!("{lat:.6},{lng:.6}"))
         .attr("raw_answer", text);
-    if let Some(accuracy) = value.get("accuracy").and_then(|v| v.as_f64()) {
+    if let Some(accuracy) = value.get("accuracy").and_then(serde_json::Value::as_f64) {
         finding = finding.attr("accuracy", format!("{accuracy:.1}"));
     }
     Ok(Some(finding))
@@ -97,6 +101,6 @@ mod tests {
 
     #[test]
     fn a_missing_location_is_none() {
-        assert!(decode(br#"{}"#).unwrap().is_none());
+        assert!(decode(br"{}").unwrap().is_none());
     }
 }

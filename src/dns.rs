@@ -812,6 +812,18 @@ impl DomainDns {
     }
 }
 
+/// Whether the answer carried DNSSEC records. **Pure.**
+#[must_use]
+pub fn dnssec_present(answers: &[DnsJsonAnswer]) -> bool {
+    answers
+        .iter()
+        .any(|a| matches!(a.rtype, DNSKEY | DS | RRSIG))
+}
+/// DNSSEC record type codes.
+pub const DNSKEY: u16 = 48;
+pub const DS: u16 = 43;
+pub const RRSIG: u16 = 46;
+
 #[cfg(test)]
 mod tests {
     use std::{cell::RefCell, collections::VecDeque};
@@ -1405,17 +1417,4 @@ mod tests {
         assert!(report.tlsrpt.is_none());
         assert!(report.render().contains("answers=0 failed=7"));
     }
-}
-
-/// DNSSEC record type codes.
-pub const DNSKEY: u16 = 48;
-pub const DS: u16 = 43;
-pub const RRSIG: u16 = 46;
-
-/// Whether the answer carried DNSSEC records. **Pure.**
-#[must_use]
-pub fn dnssec_present(answers: &[DnsJsonAnswer]) -> bool {
-    answers
-        .iter()
-        .any(|a| matches!(a.rtype, DNSKEY | DS | RRSIG))
 }
