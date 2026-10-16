@@ -5,7 +5,7 @@
 //! Returns lat, lng, accuracy. A missing result is HTTP 404.
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
-use crate::http::{Transport, percent_encode_component};
+use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
 
