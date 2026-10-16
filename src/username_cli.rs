@@ -12,13 +12,14 @@ use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::source_outcome::SourceExecutionOutcome;
+use crate::username_sites;
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
 
 pub const USERNAME_USAGE: &str = "usage: huntsman-recon username HANDLE [--save FILE]";
 pub const USERNAME_HELP: &str = "\
 username HANDLE [--save FILE]
-Derive deterministic handle variants and query keyless public GitHub and Bluesky profiles. --save FILE writes an unverified ledger that verify can reload.";
+Derive deterministic handle variants and query keyless public GitHub, Bluesky and additional site profiles. --save FILE writes an unverified ledger that verify can reload.";
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -51,7 +52,7 @@ pub enum UsernameRun {
     Failed(String),
 }
 
-/// Run deterministic variants and the two keyless public-profile collectors, each when the
+/// Run deterministic variants and the keyless public-profile collectors, each when the
 /// transport's lookup asks its module ([`Transport::runs_module`]).
 #[must_use]
 pub fn run<T: Transport + ?Sized>(
@@ -76,11 +77,34 @@ pub fn run<T: Transport + ?Sized>(
     if transport.runs_module(bluesky_user::SRC) {
         collect_bluesky(transport, &username, &scan_id, now_unix, &mut report);
     }
+    if transport.runs_module(username_sites::SOURCE) {
+        collect_sites(transport, &username, &scan_id, now_unix, &mut report);
+    }
     merge_by_uid(&mut report.entities);
 
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => UsernameRun::Printed { text, report },
         Err(message) => UsernameRun::Failed(message),
+    }
+}
+
+fn collect_sites<T: Transport + ?Sized>(
+    transport: &T,
+    username: &str,
+    scan_id: &str,
+    now_unix: u64,
+    report: &mut Report,
+) {
+    match username_sites::lookup(transport, username, now_unix) {
+        Ok(hits) => {
+            report.entities.extend(username_sites::entities(&hits, username, scan_id));
+            report.outcomes.push(username_sites::outcome(&hits, now_unix));
+        }
+        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
+            username_sites::SOURCE,
+            now_unix,
+            error.to_string(),
+        )),
     }
 }
 
