@@ -606,7 +606,13 @@ mod tests {
         ]);
         match run_keyed(&unkeyed, &Keys::default(), "ada@example.com", 1) {
             EmailRun::Printed { text, .. } => {
-                for source in ["stopforumspam", "kickbox", "xposed_or_not"] {
+                for source in [
+                    "stopforumspam",
+                    "kickbox",
+                    "xposed_or_not",
+                    "hudsonrock",
+                    "hudsonrock",
+                ] {
                     assert!(text.contains(&format!("{source}\tvalid_zero")), "{text}");
                 }
             }
@@ -615,7 +621,7 @@ mod tests {
         let seen = unkeyed.seen.borrow();
         assert_eq!(
             seen.len(),
-            6,
+            7,
             "no key: only the keyless StopForumSpam, Kickbox and XposedOrNot checks are added"
         );
         assert_eq!(
@@ -664,6 +670,7 @@ mod tests {
             "stopforumspam",
             "kickbox",
             "xposed_or_not",
+            "hudsonrock",
             "ipqs",
             "whoxy",
             "hunter",

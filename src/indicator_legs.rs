@@ -14,9 +14,9 @@ use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Sour
 use crate::keys::Keys;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::{
-    hackertarget, hunter, ipinfo, ipqs, isc, kickbox, leakix, maltiverse, netlas, otx, phishstats,
-    pulsedive, robtex, securitytrails, shodan, stopforumspam, threatfox, urlhaus, urlscan, whoxy,
-    xposedornot,
+    hackertarget, hudsonrock, hunter, ipapi, ipinfo, ipqs, isc, kickbox, leakix, maltiverse,
+    mozilla_location, netlas, opencellid, otx, phishstats, pulsedive, robtex, securitytrails,
+    shodan, stopforumspam, submd, threatfox, urlhaus, urlscan, whoxy, xposedornot,
 };
 
 /// Every indicator source, in the order a lookup runs them.
@@ -42,6 +42,11 @@ pub const SOURCES: &[Source] = &[
     whoxy::INTEL,
     securitytrails::INTEL,
     hunter::VERIFY,
+    hudsonrock::INTEL,
+    ipapi::INTEL,
+    mozilla_location::INTEL,
+    opencellid::INTEL,
+    submd::INTEL,
 ];
 
 /// Confidence of the queried indicator.
@@ -139,6 +144,8 @@ fn fold(
         Indicator::Domain(_) => (EntityKind::Domain, "domain"),
         Indicator::Email(_) => (EntityKind::Email, "email"),
         Indicator::Phone(_) => (EntityKind::Phone, "phone"),
+        Indicator::Cell(_) => (EntityKind::Other, "cell"),
+        Indicator::MacAddress(_) => (EntityKind::MacAddress, "mac"),
     };
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(source, scan_id),
@@ -241,11 +248,12 @@ mod tests {
                 "stopforumspam",
                 "isc",
                 "maltiverse",
-                "phishstats"
+                "phishstats",
+                "ipapi",
             ]
         );
         assert!(legs.network.is_some());
-        assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 11);
+        assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 12);
     }
 
     #[test]
@@ -256,6 +264,8 @@ mod tests {
             IndicatorKind::Domain,
             IndicatorKind::Email,
             IndicatorKind::Phone,
+            IndicatorKind::Cell,
+            IndicatorKind::MacAddress,
         ] {
             let indicator = sample(kind);
             let legs = run(&Offline::default(), &keys, indicator, "s", 1);
@@ -302,6 +312,8 @@ mod tests {
             IndicatorKind::Domain => Indicator::Domain("example.com"),
             IndicatorKind::Email => Indicator::Email("ada@example.com"),
             IndicatorKind::Phone => Indicator::Phone("+61412345678"),
+            IndicatorKind::Cell => Indicator::Cell("505:1:1000:12345"),
+            IndicatorKind::MacAddress => Indicator::MacAddress("aa:bb:cc:dd:ee:ff"),
         }
     }
 
