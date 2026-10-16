@@ -100,7 +100,10 @@ pub fn url(indicator: Indicator<'_>) -> Option<String> {
     match indicator {
         Indicator::Ip(ip) => Some(format!("https://leakix.net/host/{ip}")),
         Indicator::Domain(domain) => Some(format!("https://leakix.net/domain/{domain}")),
-        Indicator::Email(_) | Indicator::Phone(_) | Indicator::Cell(_) | Indicator::MacAddress(_) => None,
+        Indicator::Email(_)
+        | Indicator::Phone(_)
+        | Indicator::Cell(_)
+        | Indicator::MacAddress(_) => None,
     }
 }
 

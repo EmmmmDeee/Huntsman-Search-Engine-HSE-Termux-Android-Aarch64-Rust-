@@ -91,12 +91,19 @@ pub fn decode(body: &[u8], domain: &str) -> Result<Option<Finding>, LegError> {
     if total == 0 {
         return Ok(None);
     }
-    let mut finding = Finding::new(format!("sub.md: {total} subdomain{}", if total == 1 { "" } else { "s" }))
-        .attr("hosts", total.to_string())
-        .list_attr("names", &hosts)
-        .tag_if(total > hosts.len(), "truncated");
+    let mut finding = Finding::new(format!(
+        "sub.md: {total} subdomain{}",
+        if total == 1 { "" } else { "s" }
+    ))
+    .attr("hosts", total.to_string())
+    .list_attr("names", &hosts)
+    .tag_if(total > hosts.len(), "truncated");
     for host in &hosts {
-        finding = finding.pivot(PivotKind::Domain, host, "Subdomain sub.md finds under the domain");
+        finding = finding.pivot(
+            PivotKind::Domain,
+            host,
+            "Subdomain sub.md finds under the domain",
+        );
     }
     finding = finding.attr("raw_answer", text);
     Ok(Some(finding))
@@ -111,7 +118,11 @@ mod tests {
         let body = b"www.example.com\napi.example.com\nmail.example.com\n";
         let f = decode(body, "example.com").unwrap().unwrap();
         assert!(f.summary.contains("3"));
-        assert!(f.attrs.iter().any(|(k, v)| *k == "raw_answer" && v.contains("www.example.com")));
+        assert!(
+            f.attrs
+                .iter()
+                .any(|(k, v)| *k == "raw_answer" && v.contains("www.example.com"))
+        );
     }
 
     #[test]

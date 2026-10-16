@@ -87,10 +87,10 @@ pub fn lookup(
 /// # Errors
 /// [`LegError::Decode`] for a body that is not UTF-8 or not the expected shape.
 pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
-    let text = std::str::from_utf8(body)
-        .map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|_| LegError::Decode("answer is not JSON".into()))?;
+    let text =
+        std::str::from_utf8(body).map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| LegError::Decode("answer is not JSON".into()))?;
     if value.get("error").is_some() {
         return Ok(None);
     }
@@ -119,7 +119,11 @@ mod tests {
     fn a_position_is_kept() {
         let body = br#"{"lat":51.0,"lon":-0.1,"range":1000,"samples":5}"#;
         let f = decode(body).unwrap().unwrap();
-        assert!(f.attrs.iter().any(|(k, v)| *k == "position" && v.starts_with("51")));
+        assert!(
+            f.attrs
+                .iter()
+                .any(|(k, v)| *k == "position" && v.starts_with("51"))
+        );
     }
 
     #[test]
@@ -149,19 +153,35 @@ pub struct AreaCell {
 
 /// Decode an area answer. **Pure.**
 pub fn decode_area(body: &[u8]) -> Result<Vec<AreaCell>, LegError> {
-    let text = std::str::from_utf8(body)
-        .map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|_| LegError::Decode("answer is not JSON".into()))?;
-    let cells = value.get("cells").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let text =
+        std::str::from_utf8(body).map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| LegError::Decode("answer is not JSON".into()))?;
+    let cells = value
+        .get("cells")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     let mut out = Vec::new();
     for cell in cells {
-        let Some(mcc) = cell.get("mcc").and_then(|v| v.as_u64()) else { continue };
-        let Some(mnc) = cell.get("mnc").and_then(|v| v.as_u64()) else { continue };
-        let Some(lac) = cell.get("lac").and_then(|v| v.as_u64()) else { continue };
-        let Some(cellid) = cell.get("cellid").and_then(|v| v.as_u64()) else { continue };
-        let Some(lat) = cell.get("lat").and_then(|v| v.as_f64()) else { continue };
-        let Some(lon) = cell.get("lon").and_then(|v| v.as_f64()) else { continue };
+        let Some(mcc) = cell.get("mcc").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let Some(mnc) = cell.get("mnc").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let Some(lac) = cell.get("lac").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let Some(cellid) = cell.get("cellid").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let Some(lat) = cell.get("lat").and_then(|v| v.as_f64()) else {
+            continue;
+        };
+        let Some(lon) = cell.get("lon").and_then(|v| v.as_f64()) else {
+            continue;
+        };
         out.push(AreaCell {
             mcc: mcc as u16,
             mnc: mnc as u16,

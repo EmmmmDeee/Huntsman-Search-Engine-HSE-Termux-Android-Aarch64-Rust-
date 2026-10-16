@@ -43,7 +43,12 @@ impl Indicator<'_> {
     #[must_use]
     pub const fn value(&self) -> &str {
         match self {
-            Self::Ip(v) | Self::Domain(v) | Self::Email(v) | Self::Phone(v) | Self::Cell(v) | Self::MacAddress(v) => v,
+            Self::Ip(v)
+            | Self::Domain(v)
+            | Self::Email(v)
+            | Self::Phone(v)
+            | Self::Cell(v)
+            | Self::MacAddress(v) => v,
         }
     }
 

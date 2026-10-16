@@ -1415,5 +1415,7 @@ pub const RRSIG: u16 = 46;
 /// Whether the answer carried DNSSEC records. **Pure.**
 #[must_use]
 pub fn dnssec_present(answers: &[DnsJsonAnswer]) -> bool {
-    answers.iter().any(|a| matches!(a.rtype, DNSKEY | DS | RRSIG))
+    answers
+        .iter()
+        .any(|a| matches!(a.rtype, DNSKEY | DS | RRSIG))
 }
