@@ -56,10 +56,10 @@ pub fn lookup(
 /// # Errors
 /// [`LegError::Decode`] for a body that is not UTF-8 or not the expected shape.
 pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
-    let text = std::str::from_utf8(body)
-        .map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|_| LegError::Decode("answer is not JSON".into()))?;
+    let text =
+        std::str::from_utf8(body).map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| LegError::Decode("answer is not JSON".into()))?;
     if value.get("status").and_then(|v| v.as_str()) != Some("success") {
         return Ok(None);
     }
@@ -91,7 +91,11 @@ mod tests {
     fn a_position_is_kept() {
         let body = br#"{"status":"success","country":"US","city":"Mountain View","lat":37.4,"lon":-122.1,"isp":"Google"}"#;
         let f = decode(body).unwrap().unwrap();
-        assert!(f.attrs.iter().any(|(k, v)| *k == "position" && v.starts_with("37")));
+        assert!(
+            f.attrs
+                .iter()
+                .any(|(k, v)| *k == "position" && v.starts_with("37"))
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
 
 pub const SOURCE: &str = "mozilla_location";
-pub const KEY_SLOT: &str = "HUNTSMAN_MOZILLA_LOCATION_KEY";
+pub const KEY_SLOT: &str = crate::environment::MOZILLA_LOCATION_KEY_ENV;
 pub const API: Api = Api {
     source: SOURCE,
     provider: "location.services.mozilla.com",
@@ -61,10 +61,10 @@ pub fn lookup(
 /// # Errors
 /// [`LegError::Decode`] for a body that is not UTF-8 or not the expected shape.
 pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
-    let text = std::str::from_utf8(body)
-        .map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|_| LegError::Decode("answer is not JSON".into()))?;
+    let text =
+        std::str::from_utf8(body).map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| LegError::Decode("answer is not JSON".into()))?;
     let location = value.get("location");
     let lat = location.and_then(|l| l.get("lat")).and_then(|v| v.as_f64());
     let lng = location.and_then(|l| l.get("lng")).and_then(|v| v.as_f64());
@@ -88,7 +88,11 @@ mod tests {
     fn a_position_is_kept() {
         let body = br#"{"location":{"lat":51.0,"lng":-0.1},"accuracy":1200.0}"#;
         let f = decode(body).unwrap().unwrap();
-        assert!(f.attrs.iter().any(|(k, v)| *k == "position" && v.starts_with("51")));
+        assert!(
+            f.attrs
+                .iter()
+                .any(|(k, v)| *k == "position" && v.starts_with("51"))
+        );
     }
 
     #[test]

@@ -58,12 +58,18 @@ pub fn lookup(
 /// # Errors
 /// [`LegError::Decode`] for a body that is not UTF-8 or not the expected shape.
 pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
-    let text = std::str::from_utf8(body)
-        .map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|_| LegError::Decode("answer is not JSON".into()))?;
-    let employees = value.get("total_employees").and_then(|v| v.as_u64()).unwrap_or(0);
-    let users = value.get("total_users").and_then(|v| v.as_u64()).unwrap_or(0);
+    let text =
+        std::str::from_utf8(body).map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| LegError::Decode("answer is not JSON".into()))?;
+    let employees = value
+        .get("total_employees")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let users = value
+        .get("total_users")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     if employees == 0 && users == 0 {
         return Ok(None);
     }
@@ -90,6 +96,10 @@ mod tests {
 
     #[test]
     fn a_zero_is_none() {
-        assert!(decode(br#"{"total_employees":0,"total_users":0}"#).unwrap().is_none());
+        assert!(
+            decode(br#"{"total_employees":0,"total_users":0}"#)
+                .unwrap()
+                .is_none()
+        );
     }
 }

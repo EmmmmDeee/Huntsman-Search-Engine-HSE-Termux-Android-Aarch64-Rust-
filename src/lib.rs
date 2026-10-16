@@ -89,7 +89,6 @@ pub mod graph;
 pub mod gravatar;
 pub mod greynoise;
 pub mod hackertarget;
-pub mod submd;
 pub mod hibp;
 pub mod http;
 pub mod hunter;
@@ -200,6 +199,7 @@ pub mod stix;
 pub mod stolen_tax;
 pub mod stopforumspam;
 pub mod store;
+pub mod submd;
 pub mod tags;
 pub mod termination;
 pub mod textnorm;
@@ -234,9 +234,9 @@ pub use ledger::{
 pub use session::Session;
 pub use stage::{EvidenceLevel, Status};
 
-#[cfg(test)]
-mod test_support;
-pub mod opencellid;
-pub mod mozilla_location;
 pub mod hudsonrock;
 pub mod ipapi;
+pub mod mozilla_location;
+pub mod opencellid;
+#[cfg(test)]
+mod test_support;

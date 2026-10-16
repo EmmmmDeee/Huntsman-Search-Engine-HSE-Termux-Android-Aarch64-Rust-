@@ -10,7 +10,7 @@ use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
 
 pub const SOURCE: &str = "opencellid";
-pub const KEY_SLOT: &str = "HUNTSMAN_OPENCELLID_KEY";
+pub const KEY_SLOT: &str = crate::environment::OPENCELLID_KEY_ENV;
 pub const API: Api = Api {
     source: SOURCE,
     provider: "opencellid.org",
@@ -87,10 +87,10 @@ pub fn lookup(
 /// # Errors
 /// [`LegError::Decode`] for a body that is not UTF-8 or not the expected shape.
 pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
-    let text = std::str::from_utf8(body)
-        .map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|_| LegError::Decode("answer is not JSON".into()))?;
+    let text =
+        std::str::from_utf8(body).map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| LegError::Decode("answer is not JSON".into()))?;
     if value.get("error").is_some() {
         return Ok(None);
     }
@@ -119,7 +119,11 @@ mod tests {
     fn a_position_is_kept() {
         let body = br#"{"lat":51.0,"lon":-0.1,"range":1000,"samples":5}"#;
         let f = decode(body).unwrap().unwrap();
-        assert!(f.attrs.iter().any(|(k, v)| *k == "position" && v.starts_with("51")));
+        assert!(
+            f.attrs
+                .iter()
+                .any(|(k, v)| *k == "position" && v.starts_with("51"))
+        );
     }
 
     #[test]

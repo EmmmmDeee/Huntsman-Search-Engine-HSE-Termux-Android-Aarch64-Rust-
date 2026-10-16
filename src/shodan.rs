@@ -85,7 +85,10 @@ pub fn url(indicator: Indicator<'_>) -> Option<String> {
             "https://api.shodan.io/shodan/host/{ip}?minify=true"
         )),
         Indicator::Domain(domain) => Some(format!("https://api.shodan.io/dns/domain/{domain}")),
-        Indicator::Email(_) | Indicator::Phone(_) | Indicator::Cell(_) | Indicator::MacAddress(_) => None,
+        Indicator::Email(_)
+        | Indicator::Phone(_)
+        | Indicator::Cell(_)
+        | Indicator::MacAddress(_) => None,
     }
 }
 
@@ -120,7 +123,10 @@ pub fn decode(answer: Answer, indicator: Indicator<'_>) -> Result<Option<Finding
     match indicator {
         Indicator::Ip(ip) => host(api_leg::decode(&body)?, ip).map(Some),
         Indicator::Domain(domain) => dns(&api_leg::decode(&body)?, domain),
-        Indicator::Email(_) | Indicator::Phone(_) | Indicator::Cell(_) | Indicator::MacAddress(_) => Ok(None),
+        Indicator::Email(_)
+        | Indicator::Phone(_)
+        | Indicator::Cell(_)
+        | Indicator::MacAddress(_) => Ok(None),
     }
 }
 
