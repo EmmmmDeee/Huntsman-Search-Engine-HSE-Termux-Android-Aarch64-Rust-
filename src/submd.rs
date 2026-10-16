@@ -3,6 +3,7 @@
 //! One lookup is one `GET https://api.sub.md/v1/search?apex={domain}`.
 //! No key for 50 queries/day. Returns plain-text subdomains, one per line.
 //! Combines Certificate Transparency, passive DNS, and X.509 data.
+//! HTTP 429 is a rate limit.
 //!
 //! Runs alongside crt.sh and HackerTarget. Everything the answer holds is kept as `raw_answer`.
 
@@ -67,11 +68,12 @@ pub fn decode(body: &[u8], domain: &str) -> Result<Option<Finding>, LegError> {
     if text.is_empty() {
         return Ok(None);
     }
+    let suffix = format!(".{domain}");
     let mut hosts: Vec<String> = Vec::new();
     let mut total = 0usize;
     for line in text.lines() {
         let host = line.trim();
-        if host.is_empty() || !host.ends_with(domain) || host.eq_ignore_ascii_case(domain) {
+        if host.is_empty() || !host.ends_with(&suffix) {
             continue;
         }
         total += 1;
@@ -105,6 +107,12 @@ mod tests {
         let f = decode(body, "example.com").unwrap().unwrap();
         assert!(f.summary.contains("3"));
         assert!(f.attrs.iter().any(|(k, v)| *k == "raw_answer" && v.contains("www.example.com")));
+    }
+
+    #[test]
+    fn a_suffix_without_boundary_is_rejected() {
+        let body = b"notexample.com\n";
+        assert!(decode(body, "example.com").unwrap().is_none());
     }
 
     #[test]
