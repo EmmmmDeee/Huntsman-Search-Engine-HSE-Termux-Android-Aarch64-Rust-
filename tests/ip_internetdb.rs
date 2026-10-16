@@ -8,6 +8,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 fn internetdb_answer() -> String {
     let ports: Vec<String> = (0..90).map(|n| (8000 + n).to_string()).collect();
@@ -46,6 +47,7 @@ fn every_port_and_cve_internetdb_lists_reaches_the_address() {
     let entities = match run(
         &OnlyInternetDb,
         &Keys::default(),
+        &Feeds::none(),
         "45.33.32.156",
         1_760_000_000,
     ) {
