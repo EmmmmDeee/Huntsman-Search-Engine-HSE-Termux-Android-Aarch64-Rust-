@@ -520,7 +520,27 @@ fn virustotal_leg(lookup: &mut Lookup<'_>, report: &virustotal::Report) {
     if let Some(asn) = report.asn {
         evidence = evidence.with_attr("asn", format!("AS{asn}"));
     }
-    lookup.on_address(evidence, tags);
+    if !report.categories.is_empty() {
+        evidence = evidence.with_attr("categories", report.categories.join(","));
+    }
+    for (name, value) in &report.details {
+        evidence = evidence.with_attr(name.as_str(), value.as_str());
+    }
+    lookup.on_address(
+        evidence.with_attr("raw_answer", report.raw_answer.as_str()),
+        tags,
+    );
+    for (role, name) in &report.hosts {
+        let summary = if role == "certificate" {
+            "Name on the HTTPS certificate VirusTotal last saw at the address".to_owned()
+        } else {
+            format!(
+                "{} record VirusTotal last saw for the address",
+                role.to_ascii_uppercase()
+            )
+        };
+        lookup.hostname(api, name, &summary);
+    }
     lookup.found(api, 1);
 }
 
