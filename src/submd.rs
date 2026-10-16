@@ -117,7 +117,7 @@ mod tests {
     fn a_plain_text_answer_keeps_hosts_and_raw() {
         let body = b"www.example.com\napi.example.com\nmail.example.com\n";
         let f = decode(body, "example.com").unwrap().unwrap();
-        assert!(f.summary.contains("3"));
+        assert!(f.summary.contains('3'));
         assert!(
             f.attrs
                 .iter()
@@ -129,7 +129,7 @@ mod tests {
     fn case_and_duplicates_are_folded() {
         let body = b"WWW.EXAMPLE.COM\nwww.example.com\n";
         let f = decode(body, "example.com").unwrap().unwrap();
-        assert!(f.summary.contains("1"));
+        assert!(f.summary.contains('1'));
     }
 
     #[test]
