@@ -201,6 +201,7 @@ pub mod stopforumspam;
 pub mod store;
 pub mod tags;
 pub mod termination;
+pub mod tellows;
 pub mod textnorm;
 pub mod threat_feeds;
 pub mod threatfox;
