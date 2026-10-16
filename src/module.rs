@@ -929,6 +929,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "Robtex BGP route, origin AS and passive DNS names and records",
     },
     ReachableModule {
+        name: "submd",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1590.001"],
+        description: "sub.md passive subdomain enumeration (CT + pDNS + X.509)",
+    },
+    ReachableModule {
         name: "hackertarget",
         command: "ip ADDRESS | domain DOMAIN",
         access: "keyless",

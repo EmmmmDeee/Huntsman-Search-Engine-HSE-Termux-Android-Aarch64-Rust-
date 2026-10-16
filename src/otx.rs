@@ -106,7 +106,7 @@ pub fn url(indicator: Indicator<'_>) -> Option<String> {
         Indicator::Ip(ip) if ip.contains(':') => "IPv6",
         Indicator::Ip(_) => "IPv4",
         Indicator::Domain(_) => "domain",
-        Indicator::Email(_) | Indicator::Phone(_) => return None,
+        Indicator::Email(_) | Indicator::Phone(_) | Indicator::Cell(_) | Indicator::MacAddress(_) => return None,
     };
     Some(format!(
         "https://otx.alienvault.com/api/v1/indicators/{section}/{}/general",

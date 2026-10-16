@@ -277,7 +277,7 @@ fn is_about(body: &Body, indicator: Indicator<'_>) -> bool {
             .domain
             .as_deref()
             .is_some_and(|s| s.eq_ignore_ascii_case(domain)),
-        Indicator::Email(_) | Indicator::Phone(_) => false,
+        Indicator::Email(_) | Indicator::Phone(_) | Indicator::Cell(_) | Indicator::MacAddress(_) => false,
     }
 }
 

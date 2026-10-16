@@ -89,6 +89,7 @@ pub mod graph;
 pub mod gravatar;
 pub mod greynoise;
 pub mod hackertarget;
+pub mod submd;
 pub mod hibp;
 pub mod http;
 pub mod hunter;
@@ -235,3 +236,8 @@ pub use stage::{EvidenceLevel, Status};
 
 #[cfg(test)]
 mod test_support;
+pub mod opencellid;
+pub mod mozilla_location;
+pub mod hudsonrock;
+pub mod ipapi;
+pub mod tcp_scan;

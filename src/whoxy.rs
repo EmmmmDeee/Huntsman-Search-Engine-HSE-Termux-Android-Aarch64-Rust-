@@ -114,7 +114,7 @@ pub fn lookup(
     let (url, email) = match indicator {
         Indicator::Domain(domain) => (url(domain), None),
         Indicator::Email(email) => (reverse_url(email), Some(email)),
-        Indicator::Ip(_) | Indicator::Phone(_) => return Ok(None),
+        Indicator::Ip(_) | Indicator::Phone(_) | Indicator::Cell(_) | Indicator::MacAddress(_) => return Ok(None),
     };
     match api_leg::get(transport, &API, keys, &url, now_unix)? {
         Answer::Body(body) => match email {

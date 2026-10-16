@@ -98,6 +98,7 @@ fn names(ioc: &str, indicator: Indicator<'_>) -> bool {
                 .and_then(|r| r.strip_prefix(ip))
                 .is_some_and(|rest| rest.starts_with("]:"))
         }
+        Indicator::Cell(_) | Indicator::MacAddress(_) => false,
         Indicator::Domain(domain) => {
             ioc.contains("://") && host_of(ioc).is_some_and(|h| h.eq_ignore_ascii_case(domain))
         }
