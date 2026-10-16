@@ -14,6 +14,7 @@ use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Sour
 use crate::keys::Keys;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::{
+    hudsonrock, ipapi,
     hackertarget, submd, opencellid, mozilla_location, hunter, ipinfo, ipqs, isc, kickbox, leakix, maltiverse, netlas, otx, phishstats,
     pulsedive, robtex, securitytrails, shodan, stopforumspam, threatfox, urlhaus, urlscan, whoxy,
     xposedornot,
@@ -30,6 +31,8 @@ pub const SOURCES: &[Source] = &[
     robtex::INTEL,
     hackertarget::INTEL,
     submd::INTEL,
+    hudsonrock::INTEL,
+    ipapi::INTEL,
     opencellid::INTEL,
     mozilla_location::INTEL,
     stopforumspam::INTEL,

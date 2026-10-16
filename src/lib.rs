@@ -239,3 +239,5 @@ mod test_support;
 pub mod dnssec;
 pub mod opencellid;
 pub mod mozilla_location;
+pub mod hudsonrock;
+pub mod ipapi;
