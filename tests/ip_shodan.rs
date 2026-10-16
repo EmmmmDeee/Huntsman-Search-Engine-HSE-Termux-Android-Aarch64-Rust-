@@ -8,6 +8,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// The host fields Shodan recorded for `1.1.1.1` on 2026-10-14, without banners: what
 /// `minify=true` answers.
@@ -68,7 +69,13 @@ impl Transport for OnlyShodan {
 fn entities(cut: bool) -> Vec<Entity> {
     let keys =
         Keys::parse("HUNTSMAN_SHODAN_KEY=shodan-test-key-0815").unwrap_or_else(|e| panic!("{e}"));
-    match run(&OnlyShodan { cut }, &keys, "1.1.1.1", 1_760_000_000) {
+    match run(
+        &OnlyShodan { cut },
+        &keys,
+        &Feeds::none(),
+        "1.1.1.1",
+        1_760_000_000,
+    ) {
         IpRun::Printed { report, .. } => report.entities,
         IpRun::Network(why) | IpRun::Failed(why) => panic!("ip 1.1.1.1 did not print: {why}"),
     }
