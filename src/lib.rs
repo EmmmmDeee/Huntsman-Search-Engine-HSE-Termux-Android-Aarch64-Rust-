@@ -137,7 +137,6 @@ pub mod people_cli;
 pub mod phishstats;
 pub mod phone_cli;
 pub mod phone_intl;
-pub mod phone_spam;
 pub mod pipeline;
 pub mod pipeline_limits;
 pub mod pivot;
