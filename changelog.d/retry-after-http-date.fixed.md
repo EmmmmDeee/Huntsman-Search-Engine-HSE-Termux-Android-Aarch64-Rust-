@@ -1,0 +1,1 @@
+- A `Retry-After` sent as an HTTP-date is now honoured: HIBP no longer retries after 2 s when the server asked for later, a lookup keeps the retry hint, and stolen.tax does not pause for a date already past.

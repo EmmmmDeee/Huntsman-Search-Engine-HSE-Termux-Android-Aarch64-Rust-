@@ -1,8 +1,10 @@
 //! End-to-end front-end for `huntsman-recon exposure`.
 //!
 //! The address is canonicalised once, then the account-keyed legs of
-//! [`breach_hybrid::exposure_order`] run in that order: HIBP `breachedaccount`,
-//! then the stolen.tax cascade, then `OathNet` breach search, then `DeHashed` exact-match search (addresses only).
+//! [`breach_hybrid::exposure_order`] run at once, each on a thread of its own, and their answers
+//! fold in that order: HIBP `breachedaccount`, then the stolen.tax cascade, then `OathNet` breach
+//! search, then `DeHashed` exact-match search (addresses only). A lookup waits for its slowest leg,
+//! not for every leg in turn, and its report is the one the legs gave when they ran in turn.
 //! The keyless legs (Pwned Passwords, the HIBP
 //! catalogue) are not keyed on an address and are not run here. Each HIBP breach
 //! becomes evidence on the seed email entity, tagged `breach` or `stealer-log`;
@@ -29,6 +31,7 @@ use std::path::PathBuf;
 
 use crate::breach_hybrid::{self, BreachLeg};
 use crate::canonical::{canonical_email, canonical_url};
+use crate::concurrent::{self, Job};
 use crate::dehashed::{
     self, DehashedClient, DehashedError,
     exposure::{ExposureBreach, ExposureSearch},
@@ -42,6 +45,7 @@ use crate::http::Transport;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
+use crate::module_selection::Selection;
 use crate::oathnet::{self, OathnetError};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_http_status};
 use crate::stolen_tax::{self, StolenTaxError};
@@ -51,10 +55,12 @@ use crate::textnorm::{decode_html_entities, escape_controls, is_escaped};
 pub const EXPOSURE_USAGE: &str = "usage: huntsman-recon exposure ADDR|HANDLE [--save FILE]";
 pub const EXPOSURE_HELP: &str = "\
 exposure ADDR|HANDLE [--save FILE]
-Canonicalise the email address ADDR or the username HANDLE and run the keyed breach legs in order: HIBP breached-account (addresses only), then the stolen.tax cascade, then OathNet breach search, then DeHashed exact-match search (addresses only). A leg without its key makes no request and reports auth_required. Results are lineage-rendered entities. Then incidents=N (none when HIBP gave no answer) and, per HIBP breach sorted by name (a name the source repeats is shown once, keeping every flag any of its records sets): an incident row (title, breach and added dates, domain, account count, verified, flags), a caution row for a fabricated or spam-list breach, its summary, data classes, attribution, and the reference links its own description gives. This is public context about each breach, not a finding about the person. Then oathnet_breaches=N (none when OathNet gave no answer) and one oathnet_breach row per breach database: records, breach date, indexed range, whether a password or hash is exposed, and the exposed field types. Then dehashed_breaches=N (none when DeHashed gave no answer) and one dehashed_breach row per breach database: records and whether a password or hash is exposed. No record value other than a username or address is shown or kept. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise the email address ADDR or the username HANDLE and run the keyed breach legs at once, reported in this order: HIBP breached-account (addresses only), then the stolen.tax cascade, then OathNet breach search, then DeHashed exact-match search (addresses only). The lookup takes as long as its slowest leg. A leg without its key makes no request and reports auth_required. Results are lineage-rendered entities. Then incidents=N (none when HIBP gave no answer) and, per HIBP breach sorted by name (a name the source repeats is shown once, keeping every flag any of its records sets): an incident row (title, breach and added dates, domain, account count, verified, flags), a caution row for a fabricated or spam-list breach, its summary, data classes, attribution, and the reference links its own description gives. This is public context about each breach, not a finding about the person. Then oathnet_breaches=N (none when OathNet gave no answer) and one oathnet_breach row per breach database: records, breach date, indexed range, whether a password or hash is exposed, and the exposed field types. Then dehashed_breaches=N (none when DeHashed gave no answer) and one dehashed_breach row per breach database: records and whether a password or hash is exposed. No record value other than a username or address is shown or kept. --save FILE writes an unverified ledger that verify can reload.";
 
 /// Source label for the HIBP breached-account leg.
 pub const SOURCE: &str = "hibp_account";
+/// The module a lookup asks for HIBP's account search by.
+pub const HIBP_MODULE: &str = "hibp";
 /// Source label for the stolen.tax leg.
 pub const STOLEN_TAX_SOURCE: &str = "stolen_tax";
 /// Source label for the `OathNet` leg.
@@ -313,25 +319,40 @@ fn flag_attribute(label: &str) -> String {
     format!("breach_{}", label.replace('-', "_"))
 }
 
-/// The configured legs. `None` means that leg has no operator key.
+/// The configured legs. `None` means that leg has no operator key. The legs run at once, so a
+/// leg's transport is shared with its thread and must be `Sync`.
 #[derive(Clone, Copy, Default)]
 pub struct Sources<'a> {
     pub hibp: Option<&'a HibpClient>,
-    pub stolen_tax: Option<(&'a dyn Transport, &'a Keys)>,
-    pub oathnet: Option<(&'a dyn Transport, &'a Keys)>,
+    pub stolen_tax: Option<(&'a (dyn Transport + Sync), &'a Keys)>,
+    pub oathnet: Option<(&'a (dyn Transport + Sync), &'a Keys)>,
     pub dehashed: Option<&'a DehashedClient>,
+    /// The modules the lookup asks; `None` asks every one. A leg it leaves out sends nothing and
+    /// leaves no row, configured or not.
+    pub selection: Option<&'a Selection>,
 }
 
 impl Sources<'_> {
-    /// Whether a lookup of `selector` would reach at least one keyed leg: HIBP or `DeHashed` for
-    /// an address, stolen.tax or `OathNet` for either. Another lookup of the same selector runs exposure when
-    /// this holds, so a configured paid source is never left out of it.
+    /// Whether a lookup of `selector` would reach at least one keyed leg it asks: HIBP or
+    /// `DeHashed` for an address, stolen.tax or `OathNet` for either. Another lookup of the same
+    /// selector runs exposure when this holds, so a configured paid source is never left out of it.
     #[must_use]
     pub fn reach(&self, selector: &str) -> bool {
         let email = canonical_email(selector).is_some();
-        let email_only = email && (self.hibp.is_some() || self.dehashed.is_some());
+        let email_only = email
+            && ((self.hibp.is_some() && self.runs(HIBP_MODULE))
+                || (self.dehashed.is_some() && self.runs(DEHASHED_SOURCE)));
         canonical_selector(selector).is_some()
-            && (email_only || self.stolen_tax.is_some() || self.oathnet.is_some())
+            && (email_only
+                || (self.stolen_tax.is_some() && self.runs(STOLEN_TAX_SOURCE))
+                || (self.oathnet.is_some() && self.runs(OATHNET_SOURCE)))
+    }
+
+    /// Whether the lookup asks `module`.
+    #[must_use]
+    pub fn runs(&self, module: &str) -> bool {
+        self.selection
+            .is_none_or(|selection| selection.runs(module))
     }
 }
 
@@ -428,8 +449,9 @@ pub fn canonical_selector(raw: &str) -> Option<String> {
 }
 
 /// Run every configured account-keyed breach leg for `selector`, an email address or a
-/// username. HIBP searches addresses only, so a username skips it without a request or an
-/// outcome; stolen.tax and `OathNet` search either.
+/// username. HIBP and `DeHashed` search addresses only, so a username skips them without a
+/// request or an outcome; stolen.tax and `OathNet` search either. The legs run at once and fold
+/// in [`breach_hybrid::exposure_order`].
 #[must_use]
 pub fn run(sources: Sources<'_>, selector: &str, now_unix: u64) -> ExposureRun {
     let Some(value) = canonical_selector(selector) else {
@@ -440,7 +462,6 @@ pub fn run(sources: Sources<'_>, selector: &str, now_unix: u64) -> ExposureRun {
     } else {
         EntityKind::Username
     };
-    let seed = value.as_str();
     let scan_id = crate::entity::scan_id("exposure", &value);
     let mut report = Report {
         entities: vec![seed_entity(&kind, &value, &scan_id)],
@@ -451,42 +472,31 @@ pub fn run(sources: Sources<'_>, selector: &str, now_unix: u64) -> ExposureRun {
     };
     let mut network = None;
 
-    for leg in breach_hybrid::exposure_order(true) {
-        let outcome = match leg {
-            BreachLeg::PwnedPasswords | BreachLeg::HibpCatalog => continue,
-            // HIBP and DeHashed search addresses only; a username lookup sends them nothing.
-            BreachLeg::HibpAccount | BreachLeg::DeHashed if kind != EntityKind::Email => continue,
-            BreachLeg::HibpAccount => match sources.hibp {
-                None => missing_key(SOURCE, now_unix),
-                Some(client) => {
-                    hibp_leg(client, seed, &scan_id, now_unix, &mut report, &mut network)
-                }
-            },
-            BreachLeg::StolenTax => match sources.stolen_tax {
-                None => missing_key(STOLEN_TAX_SOURCE, now_unix),
-                Some((transport, keys)) => {
-                    stolen_tax_leg(transport, keys, seed, &scan_id, now_unix, &mut report)
-                }
-            },
-            BreachLeg::OathNet => match sources.oathnet {
-                None => missing_key(OATHNET_SOURCE, now_unix),
-                Some((transport, keys)) => oathnet_leg(
-                    transport,
-                    keys,
-                    (&kind, seed),
-                    &scan_id,
-                    now_unix,
-                    &mut report,
-                    &mut network,
-                ),
-            },
-            BreachLeg::DeHashed => match sources.dehashed {
-                None => missing_key(DEHASHED_SOURCE, now_unix),
-                Some(client) => {
-                    dehashed_leg(client, seed, &scan_id, now_unix, &mut report, &mut network)
-                }
-            },
-        };
+    let seed = (&kind, value.as_str());
+    let jobs: Vec<Job<'_, Option<LegRun>>> = breach_hybrid::exposure_order(true)
+        .into_iter()
+        .filter(|&leg| searches(leg, &kind) && sources.runs(leg_module(leg)))
+        .map(|leg| {
+            let scan_id = scan_id.as_str();
+            Box::new(move || run_leg(sources, leg, seed, scan_id, now_unix))
+                as Job<'_, Option<LegRun>>
+        })
+        .collect();
+    // Folded in the legs' order, so the entities, outcomes and the first network failure are the
+    // ones the legs gave when they ran one after another.
+    for ran in concurrent::all(jobs).into_iter().flatten() {
+        let LegRun {
+            outcome,
+            found,
+            network: failed,
+        } = ran;
+        report.entities.extend(found.entities);
+        report.incidents = report.incidents.or(found.incidents);
+        report.oathnet = report.oathnet.or(found.oathnet);
+        report.dehashed = report.dehashed.or(found.dehashed);
+        if let Some(message) = failed {
+            network.get_or_insert(message);
+        }
         report.outcomes.push(outcome);
     }
     merge_by_uid(&mut report.entities);
@@ -504,6 +514,83 @@ pub fn run(sources: Sources<'_>, selector: &str, now_unix: u64) -> ExposureRun {
         }
         Err(msg) => ExposureRun::Failed(msg),
     }
+}
+
+/// What one leg gave: its outcome row, what it found (entities and its own section), and the
+/// transport failure that stopped it, if one did.
+struct LegRun {
+    outcome: SourceExecutionOutcome,
+    found: Report,
+    network: Option<String>,
+}
+
+/// Whether `leg` is run for a selector of `kind`. The keyless legs are not keyed on a selector,
+/// and HIBP and `DeHashed` search addresses only, so a username sends them nothing.
+fn searches(leg: BreachLeg, kind: &EntityKind) -> bool {
+    match leg {
+        BreachLeg::PwnedPasswords | BreachLeg::HibpCatalog => false,
+        BreachLeg::HibpAccount | BreachLeg::DeHashed => *kind == EntityKind::Email,
+        BreachLeg::StolenTax | BreachLeg::OathNet => true,
+    }
+}
+
+/// The module a scan chooses `leg` by.
+fn leg_module(leg: BreachLeg) -> &'static str {
+    match leg {
+        BreachLeg::PwnedPasswords | BreachLeg::HibpCatalog | BreachLeg::HibpAccount => HIBP_MODULE,
+        BreachLeg::StolenTax => STOLEN_TAX_SOURCE,
+        BreachLeg::OathNet => OATHNET_SOURCE,
+        BreachLeg::DeHashed => DEHASHED_SOURCE,
+    }
+}
+
+/// Run one keyed leg on its own [`Report`]; a leg without its key makes no request. `None` for a
+/// keyless leg, which is not keyed on a selector.
+fn run_leg(
+    sources: Sources<'_>,
+    leg: BreachLeg,
+    seed: (&EntityKind, &str),
+    scan_id: &str,
+    now_unix: u64,
+) -> Option<LegRun> {
+    let mut found = Report::default();
+    let mut network = None;
+    let outcome = match leg {
+        BreachLeg::HibpAccount => match sources.hibp {
+            None => missing_key(SOURCE, now_unix),
+            Some(client) => hibp_leg(client, seed.1, scan_id, now_unix, &mut found, &mut network),
+        },
+        BreachLeg::StolenTax => match sources.stolen_tax {
+            None => missing_key(STOLEN_TAX_SOURCE, now_unix),
+            Some((transport, keys)) => {
+                stolen_tax_leg(transport, keys, seed.1, scan_id, now_unix, &mut found)
+            }
+        },
+        BreachLeg::OathNet => match sources.oathnet {
+            None => missing_key(OATHNET_SOURCE, now_unix),
+            Some((transport, keys)) => oathnet_leg(
+                transport,
+                keys,
+                seed,
+                scan_id,
+                now_unix,
+                &mut found,
+                &mut network,
+            ),
+        },
+        BreachLeg::DeHashed => match sources.dehashed {
+            None => missing_key(DEHASHED_SOURCE, now_unix),
+            Some(client) => {
+                dehashed_leg(client, seed.1, scan_id, now_unix, &mut found, &mut network)
+            }
+        },
+        BreachLeg::PwnedPasswords | BreachLeg::HibpCatalog => return None,
+    };
+    Some(LegRun {
+        outcome,
+        found,
+        network,
+    })
 }
 
 /// The incidents section that follows the lookup report. The first line is `incidents=N`, or
@@ -1495,7 +1582,7 @@ mod tests {
         assert_eq!(canonical_selector("@Ada_99").as_deref(), Some("ada_99"));
     }
 
-    fn oathnet_only<'a>(transport: &'a dyn Transport, keys: &'a Keys) -> Sources<'a> {
+    fn oathnet_only<'a>(transport: &'a (dyn Transport + Sync), keys: &'a Keys) -> Sources<'a> {
         Sources {
             oathnet: Some((transport, keys)),
             ..Sources::default()
@@ -1512,7 +1599,7 @@ mod tests {
 
     #[test]
     fn a_configured_keyed_leg_reaches_every_selector_it_can_search() {
-        let transport = crate::test_support::OneResponse::json(404, "");
+        let transport = Counting::default();
         let keys = oathnet_keys();
         assert!(
             !Sources::default().reach("ada@example.com"),
@@ -1964,9 +2051,7 @@ mod tests {
         );
         let sources = Sources {
             hibp: Some(&client),
-            stolen_tax: None,
-            oathnet: None,
-            dehashed: None,
+            ..Sources::default()
         };
         let ExposureRun::Printed { text, report } = run(sources, "ada@example.com", 7) else {
             panic!("expected a printed report");
@@ -2549,7 +2634,15 @@ mod tests {
             panic!("the exposure ledger must save and reload");
         };
         assert_eq!(loaded, saved);
-        assert_eq!(saved.len(), report.outcomes.len() + report.entities.len());
+        let evidence: usize = report
+            .entities
+            .iter()
+            .map(|entity| entity.evidence.len())
+            .sum();
+        assert_eq!(
+            saved.len(),
+            report.outcomes.len() + report.entities.len() + evidence
+        );
     }
 
     #[test]
@@ -2717,6 +2810,130 @@ mod tests {
         assert_eq!(
             outcome_kind(&HibpError::Decode("x".into())),
             SourceOutcomeKind::SchemaDrift
+        );
+    }
+
+    /// Every leg's first request waits here until all the legs have sent one, or five seconds
+    /// pass, then is answered 404. Legs that run one after another never meet: the first waits
+    /// out the five seconds alone.
+    struct Meeting {
+        inside: std::sync::Mutex<usize>,
+        arrived: std::sync::Condvar,
+        want: usize,
+        together: std::sync::Mutex<Vec<bool>>,
+    }
+
+    /// One leg's transport into a [`Meeting`].
+    struct Attendee {
+        meeting: std::sync::Arc<Meeting>,
+        sent: std::sync::Mutex<bool>,
+    }
+
+    impl Transport for Attendee {
+        fn send(
+            &self,
+            _: &crate::http::Request,
+        ) -> Result<crate::http::Response, crate::http::TransportFailure> {
+            use std::sync::PoisonError;
+            let first = !std::mem::replace(
+                &mut *self.sent.lock().unwrap_or_else(PoisonError::into_inner),
+                true,
+            );
+            if first {
+                let meeting = &self.meeting;
+                let mut inside = meeting
+                    .inside
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                *inside += 1;
+                meeting.arrived.notify_all();
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while *inside < meeting.want && std::time::Instant::now() < until {
+                    let left = until.saturating_duration_since(std::time::Instant::now());
+                    inside = meeting
+                        .arrived
+                        .wait_timeout(inside, left)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
+                }
+                let met = *inside >= meeting.want;
+                drop(inside);
+                meeting
+                    .together
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(met);
+            }
+            Ok(crate::http::Response {
+                status: 404,
+                headers: Vec::new(),
+                body: Vec::new(),
+                truncated: false,
+            })
+        }
+    }
+
+    #[test]
+    fn the_keyed_legs_run_at_the_same_time_and_report_in_their_order() {
+        let meeting = std::sync::Arc::new(Meeting {
+            inside: std::sync::Mutex::new(0),
+            arrived: std::sync::Condvar::new(),
+            want: 4,
+            together: std::sync::Mutex::default(),
+        });
+        let attendee = || Attendee {
+            meeting: meeting.clone(),
+            sent: std::sync::Mutex::new(false),
+        };
+        let Some(key) = crate::hibp::key::ApiKey::new("0123456789abcdef0123456789abcdef") else {
+            panic!("the fixture key is a valid HIBP key");
+        };
+        let hibp = HibpClient::with_config(
+            std::sync::Arc::new(attendee()),
+            crate::hibp::client::Auth::ApiKey(key),
+            crate::hibp::client::HibpConfig::default(),
+            std::sync::Arc::new(crate::hibp::rate_limit::RateLimiter::per_minute(0)),
+        );
+        let secret = crate::keys::Secret::new("dh-test-key-0123456789".to_owned())
+            .unwrap_or_else(|e| panic!("fixture secret: {e}"));
+        let dehashed = DehashedClient::new(std::sync::Arc::new(attendee()), secret);
+        let (stolen_tax, oathnet) = (attendee(), attendee());
+        let keys = Keys::parse(&format!(
+            "{}=st-test-key-0123456789abcdef\n{}=on-test-key-0123456789abcdef\n",
+            stolen_tax::KEY_SLOT,
+            oathnet::KEY_SLOT
+        ))
+        .unwrap_or_else(|e| panic!("fixture keys: {e}"));
+        let sources = Sources {
+            hibp: Some(&hibp),
+            stolen_tax: Some((&stolen_tax, &keys)),
+            oathnet: Some((&oathnet, &keys)),
+            dehashed: Some(&dehashed),
+            ..Sources::default()
+        };
+        let started = std::time::Instant::now();
+        let ExposureRun::Printed { report, .. } = run(sources, "ada@example.com", 7) else {
+            panic!("expected a printed report");
+        };
+        let together = meeting
+            .together
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(
+            together,
+            vec![true; 4],
+            "each leg's first request found the other three in flight"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "no leg waited for another"
+        );
+        let legs: Vec<&str> = report.outcomes.iter().map(|o| o.module.as_str()).collect();
+        assert_eq!(
+            legs,
+            [SOURCE, STOLEN_TAX_SOURCE, OATHNET_SOURCE, DEHASHED_SOURCE],
+            "the outcomes fold in the legs' order"
         );
     }
 }

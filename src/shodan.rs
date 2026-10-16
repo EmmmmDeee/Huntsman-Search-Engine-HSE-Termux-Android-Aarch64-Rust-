@@ -151,7 +151,7 @@ fn host(host: Host, ip: &str) -> Result<Finding, LegError> {
     .opt_attr("last_update", host.last_update.as_deref())
     .tag_if(!host.vulns.is_empty(), tags::VULNERABLE)
     .tag_if(host.tags.iter().any(|t| t == "vpn"), "vpn")
-    .tag_if(host.tags.iter().any(|t| t == "tor"), "tor-exit");
+    .tag_if(host.tags.iter().any(|t| t == "tor"), tags::TOR_EXIT);
     for name in host.hostnames.iter().chain(&host.domains) {
         finding = finding.pivot(
             PivotKind::Domain,

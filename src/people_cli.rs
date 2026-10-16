@@ -73,7 +73,8 @@ pub enum PeopleRun {
     Failed(String),
 }
 
-/// Look up `name` over `transport` and render entities, outcomes, and lineage.
+/// Look up `name` over `transport` and render entities, outcomes, and lineage, asking each
+/// register only when the transport's lookup asks its module ([`Transport::runs_module`]).
 /// A single-token name prints the skip line and makes no request.
 #[must_use]
 pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> PeopleRun {
@@ -90,22 +91,26 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
     let mut network = None;
     let mut failed = None;
 
-    collect(
-        "asic_persons",
-        asic_persons::lookup(transport, &name, &scan_id, now_unix),
-        now_unix,
-        &mut report,
-        &mut network,
-        &mut failed,
-    );
-    collect(
-        "asic_director",
-        asic_director::lookup(transport, &name, &scan_id, now_unix),
-        now_unix,
-        &mut report,
-        &mut network,
-        &mut failed,
-    );
+    if transport.runs_module("asic_persons") {
+        collect(
+            "asic_persons",
+            asic_persons::lookup(transport, &name, &scan_id, now_unix),
+            now_unix,
+            &mut report,
+            &mut network,
+            &mut failed,
+        );
+    }
+    if transport.runs_module("asic_director") {
+        collect(
+            "asic_director",
+            asic_director::lookup(transport, &name, &scan_id, now_unix),
+            now_unix,
+            &mut report,
+            &mut network,
+            &mut failed,
+        );
+    }
 
     // Entities with identical UIDs from different sources are merged: duplicate records
     // are combined into one entity whose observation set includes evidence from all sources.

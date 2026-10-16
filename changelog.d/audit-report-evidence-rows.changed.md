@@ -1,0 +1,1 @@
+- The lookup text report (`email`, `username`, `people`, `phone`, `scan` and the other profile front-ends) prints every evidence record behind an entity, and each attribute of that evidence, as `evidence` and `attribute` rows under the entity. Before, the engine collected that evidence and the report dropped it. `investigate` prints the same rows.

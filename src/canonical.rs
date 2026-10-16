@@ -111,6 +111,40 @@ pub fn canonical_ip(raw: &str) -> Option<String> {
     is_public_ip(ip).then(|| ip.to_string())
 }
 
+/// A public address block in canonical form, `192.0.2.7/24` written `192.0.2.0/24`, or `None`
+/// for a bare address, a malformed block, or a block whose first address is not public (see
+/// [`is_public_ip`]): a private or documentation block is refused before any request. **Pure.**
+#[must_use]
+pub fn canonical_netblock(raw: &str) -> Option<String> {
+    let block = crate::netblock::Netblock::parse(raw)?;
+    is_public_ip(block.network()).then(|| block.to_string())
+}
+
+/// A public AS number written `AS13335`, from `AS13335`, `as13335`, `ASN13335` or the bare
+/// `13335` Spiderfoot takes as a `BGP_AS_OWNER` target; `None` for anything else, or for a
+/// number IANA reserves (RFC 7607 `AS0`, `AS_TRANS` 23456, the documentation, private-use and
+/// reserved ranges of RFC 5398, RFC 6996 and RFC 7300). **Pure.**
+#[must_use]
+pub fn canonical_asn(raw: &str) -> Option<String> {
+    let upper = raw.trim().to_ascii_uppercase();
+    let digits = upper
+        .strip_prefix("ASN")
+        .or_else(|| upper.strip_prefix("AS"))
+        .unwrap_or(&upper)
+        .trim_start();
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number: u32 = digits.parse().ok()?;
+    is_public_asn(number).then(|| format!("AS{number}"))
+}
+
+/// Whether IANA leaves `asn` for assignment to a network. **Pure.**
+#[must_use]
+pub fn is_public_asn(asn: u32) -> bool {
+    !matches!(asn, 0 | 23_456 | 64_496..=131_071 | 4_200_000_000..=u32::MAX)
+}
+
 /// Whether `ip` is public unicast: see [`canonical_ip`]. IPv6 is public only inside global
 /// unicast `2000::/3` and outside the documentation and transition prefixes; an IPv4-mapped
 /// address is judged as its IPv4 address. **Pure.**
@@ -333,6 +367,60 @@ pub fn canonicalise_token(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_public_blocks_are_canonical_netblocks() {
+        assert_eq!(
+            canonical_netblock(" 1.1.1.9/24 ").as_deref(),
+            Some("1.1.1.0/24")
+        );
+        assert_eq!(
+            canonical_netblock("2606:4700::/32").as_deref(),
+            Some("2606:4700::/32")
+        );
+        for refused in [
+            "10.0.0.0/8",
+            "192.0.2.0/24",
+            "0.0.0.0/0",
+            "2001:db8::/32",
+            "1.1.1.1",
+        ] {
+            assert_eq!(canonical_netblock(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn only_public_as_numbers_are_canonical() {
+        for (raw, canonical) in [
+            ("AS13335", "AS13335"),
+            (" as13335 ", "AS13335"),
+            ("ASN 4608", "AS4608"),
+            ("13335", "AS13335"),
+            ("AS0013335", "AS13335"),
+            ("AS4199999999", "AS4199999999"),
+        ] {
+            assert_eq!(canonical_asn(raw).as_deref(), Some(canonical), "{raw}");
+        }
+        for refused in [
+            "AS0",
+            "AS23456",
+            "AS64496",
+            "AS64512",
+            "AS65535",
+            "AS65551",
+            "AS131071",
+            "AS4200000000",
+            "AS4294967295",
+            "AS4294967296",
+            "AS",
+            "AS-13335",
+            "ASX1",
+            "13335/24",
+            "",
+        ] {
+            assert_eq!(canonical_asn(refused), None, "{refused}");
+        }
+    }
 
     #[test]
     fn only_public_unicast_addresses_are_canonical_ips() {
