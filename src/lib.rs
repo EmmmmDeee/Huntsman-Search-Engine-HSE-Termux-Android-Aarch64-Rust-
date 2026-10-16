@@ -210,6 +210,7 @@ pub mod tlsrpt;
 pub mod union_find;
 pub mod urlhaus;
 pub mod urlscan;
+pub mod usacallerlookup;
 pub mod username_cli;
 pub mod username_variants;
 pub mod validation;
