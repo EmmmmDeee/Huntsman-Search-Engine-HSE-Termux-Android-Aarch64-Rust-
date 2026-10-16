@@ -10,6 +10,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// The documented `check` answer for the address, without the report list.
 const CHECK: &str = r#"{"data":{"ipAddress":"118.25.6.39","isPublic":true,"ipVersion":4,"isWhitelisted":false,"abuseConfidenceScore":100,"countryCode":"CN","countryName":"China","usageType":"Data Center/Web Hosting/Transit","isp":"Tencent Cloud Computing (Beijing) Co. Ltd","domain":"tencent.com","hostnames":[],"isTor":false,"totalReports":3,"numDistinctUsers":2,"lastReportedAt":"2026-10-14T20:55:14+00:00"}}"#;
@@ -52,7 +53,13 @@ impl Transport for OnlyAbuseIpdb {
 fn abuseipdb() -> Evidence {
     let keys = Keys::parse("HUNTSMAN_ABUSEIPDB_KEY=abuseipdb-test-key-0815")
         .unwrap_or_else(|e| panic!("{e}"));
-    let entities = match run(&OnlyAbuseIpdb, &keys, "118.25.6.39", 1_760_000_000) {
+    let entities = match run(
+        &OnlyAbuseIpdb,
+        &keys,
+        &Feeds::none(),
+        "118.25.6.39",
+        1_760_000_000,
+    ) {
         IpRun::Printed { report, .. } => report.entities,
         IpRun::Network(why) | IpRun::Failed(why) => {
             panic!("ip 118.25.6.39 did not print: {why}")
@@ -145,7 +152,13 @@ impl Transport for ReportsPastTheLimit {
 fn a_report_list_past_the_body_limit_still_keeps_the_score() {
     let keys = Keys::parse("HUNTSMAN_ABUSEIPDB_KEY=abuseipdb-test-key-0815")
         .unwrap_or_else(|e| panic!("{e}"));
-    let report = match run(&ReportsPastTheLimit, &keys, "118.25.6.39", 1_760_000_000) {
+    let report = match run(
+        &ReportsPastTheLimit,
+        &keys,
+        &Feeds::none(),
+        "118.25.6.39",
+        1_760_000_000,
+    ) {
         IpRun::Printed { report, .. } => report,
         IpRun::Network(why) | IpRun::Failed(why) => panic!("ip did not print: {why}"),
     };
