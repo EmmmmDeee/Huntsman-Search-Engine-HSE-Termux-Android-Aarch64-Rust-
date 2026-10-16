@@ -442,3 +442,26 @@ fn subnets_read_like_netaddr() {
     assert!(!in_subnet("not an ip", "203.0.113.0/24"));
     assert!(!in_subnet("203.0.113.77", "203.0.113.0/33"));
 }
+
+#[test]
+fn a_scans_derived_countries_feed_spiderfoots_outlier_rule() {
+    use crate::entity::{Entity, EntityKind};
+    use crate::sf_elements::{Target, elements};
+    let mut entities: Vec<Entity> = (0..19)
+        .map(|index| {
+            Entity::builder(EntityKind::Domain, format!("partner{index}.com"), 0.8, "s").build()
+        })
+        .collect();
+    entities.push(Entity::builder(EntityKind::Domain, "partner.is", 0.8, "s").build());
+    let scan = elements(
+        Target {
+            value: "example.com",
+            kind: "INTERNET_NAME",
+        },
+        &entities,
+        1_700_000_000,
+    );
+    let found = findings("outlier_country", &scan);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].title, "Outlier country found: Iceland");
+}

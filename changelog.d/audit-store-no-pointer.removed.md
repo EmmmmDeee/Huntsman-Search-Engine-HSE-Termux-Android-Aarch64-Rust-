@@ -1,0 +1,1 @@
+- `store` no longer writes `current.txt` beside the saved sessions. Nothing read it, so the marker was a second record of the session that nothing consulted. `plan --load-session DIR ID` takes the id, as before, and the session files are unchanged.

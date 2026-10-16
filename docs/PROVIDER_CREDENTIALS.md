@@ -18,6 +18,8 @@ these slots without printing their values.
 | HIBP | `HUNTSMAN_HIBP_KEY` | owned subscription/key history; clean current credential required |
 | SeekNow | `HUNTSMAN_SEEKNOW_KEY` | historical credential only; clean current credential required |
 | OathNet | `HUNTSMAN_OATHNET_KEY` | used by `exposure` (CLI, `scan -k exposure`, web UI) when set in the environment; one daily lookup per search; validity unverified until a live search |
+| DeHashed | `HUNTSMAN_DEHASHED_KEY` | used by `exposure` and the `email` lookup (CLI, `scan`, web UI) when set, for an email address |
+| stolen.tax | `HUNTSMAN_STOLEN_TAX_KEY` | used by `exposure` and the `email` and `username` lookups (CLI, `scan`, web UI) when set |
 | Exa | `HUNTSMAN_EXA_KEY` | account confirmed; current credential not recovered |
 | OpenRouter | `HUNTSMAN_OPENROUTER_KEY` | account confirmed; current credential not recovered |
 | Google Gemini | `HUNTSMAN_GEMINI_KEY` | provider key existence confirmed; current value requires provider account |
@@ -37,8 +39,44 @@ these slots without printing their values.
 | AlienVault OTX | `HUNTSMAN_OTX_KEY` | optional for `ip` and `domain`: OTX answers without a key at a lower limit; a free key raises it |
 | urlscan.io | `HUNTSMAN_URLSCAN_KEY` | optional for `ip` and `domain`: searches work without a key at a lower quota; a free key raises it |
 | IPinfo | `HUNTSMAN_IPINFO_KEY` | optional for `ip`: IPinfo answers without a token at a lower limit; a free token gives 50,000 lookups/month |
+| Cert Spotter (SSLMate) | `HUNTSMAN_CERTSPOTTER_KEY` | optional for `domain`: Cert Spotter answers without a key at a lower limit; a free key raises it |
 | HackerTarget | `HUNTSMAN_HACKERTARGET_KEY` | optional for `ip` and `domain`: HackerTarget answers without a key at 50 queries a day; a membership key raises it |
 | Censys | `HUNTSMAN_CENSYS_ID`, `HUNTSMAN_CENSYS_SECRET` | do not assume usable; provider access must be revalidated |
+
+## Importing keys from Spiderfoot
+
+Settings → **Import API keys** in the web UI (`POST /api/settings/keys` with `import=`) reads
+Spiderfoot 4.0's settings export, the `SpiderFoot.cfg` that Spiderfoot's Settings → Export API
+Keys writes, and saves each key into the slot of the source that takes it, in one rewrite of
+`~/.huntsman.env`. It reads a keys file of `HUNTSMAN_…=value` lines the same way. Empty and
+placeholder values are skipped. The answer names the Spiderfoot key options that no Huntsman
+source takes, and never shows a value.
+
+| Spiderfoot option | Slot |
+| --- | --- |
+| `sfp_abuseipdb:api_key` | `HUNTSMAN_ABUSEIPDB_KEY` |
+| `sfp_alienvault:api_key` | `HUNTSMAN_OTX_KEY` |
+| `sfp_censys:censys_api_key_uid` | `HUNTSMAN_CENSYS_ID` |
+| `sfp_censys:censys_api_key_secret` | `HUNTSMAN_CENSYS_SECRET` |
+| `sfp_certspotter:api_key` | `HUNTSMAN_CERTSPOTTER_KEY` |
+| `sfp_dehashed:api_key` | `HUNTSMAN_DEHASHED_KEY` |
+| `sfp_greynoise:api_key` | `HUNTSMAN_GREYNOISE_KEY` |
+| `sfp_greynoise_community:api_key` | `HUNTSMAN_GREYNOISE_KEY` |
+| `sfp_haveibeenpwned:api_key` | `HUNTSMAN_HIBP_KEY` |
+| `sfp_hunter:api_key` | `HUNTSMAN_HUNTER_KEY` |
+| `sfp_ipinfo:api_key` | `HUNTSMAN_IPINFO_KEY` |
+| `sfp_ipqualityscore:api_key` | `HUNTSMAN_IPQS_KEY` |
+| `sfp_leakix:api_key` | `HUNTSMAN_LEAKIX_KEY` |
+| `sfp_numverify:api_key` | `HUNTSMAN_NUMVERIFY_KEY` |
+| `sfp_pulsedive:api_key` | `HUNTSMAN_PULSEDIVE_KEY` |
+| `sfp_securitytrails:api_key` | `HUNTSMAN_SECTRAILS_KEY` |
+| `sfp_shodan:api_key` | `HUNTSMAN_SHODAN_KEY` |
+| `sfp_virustotal:api_key` | `HUNTSMAN_VIRUSTOTAL_KEY` |
+| `sfp_whoxy:api_key` | `HUNTSMAN_WHOXY_KEY` |
+| `sfp_wigle:api_key_encoded` | `HUNTSMAN_WIGLE_USER` and `HUNTSMAN_WIGLE_TOKEN`, decoded from the base64 of `NAME:TOKEN` |
+
+Spiderfoot's `sfp_dehashed` used DeHashed's first API. If DeHashed refuses an imported key,
+issue a current key on dehashed.com.
 
 ## Private runtime template
 
@@ -54,6 +92,8 @@ HUNTSMAN_WHOXY_KEY=
 HUNTSMAN_HIBP_KEY=
 HUNTSMAN_SEEKNOW_KEY=
 HUNTSMAN_OATHNET_KEY=
+HUNTSMAN_DEHASHED_KEY=
+HUNTSMAN_STOLEN_TAX_KEY=
 HUNTSMAN_EXA_KEY=
 HUNTSMAN_OPENROUTER_KEY=
 HUNTSMAN_GEMINI_KEY=
@@ -74,6 +114,7 @@ HUNTSMAN_OTX_KEY=
 HUNTSMAN_URLSCAN_KEY=
 HUNTSMAN_IPINFO_KEY=
 HUNTSMAN_HACKERTARGET_KEY=
+HUNTSMAN_CERTSPOTTER_KEY=
 HUNTSMAN_CENSYS_ID=
 HUNTSMAN_CENSYS_SECRET=
 ```

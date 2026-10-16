@@ -277,8 +277,9 @@ binary, and the container entrypoint also sets the same bind explicitly.
 For durable state, attach one volume at `/data`. A volume is optional for a
 stateless deployment. Set `HSE_AUTH_TOKEN` as a Railway variable for a stable
 token; if omitted, the entrypoint generates one from `/dev/urandom`, stores it
-under `/data/.huntsman` when that location is persistent, and emits the newly
-generated value once to deployment logs.
+under `/data/.huntsman` when that location is persistent. The deployment log
+names that file and never prints the value; a value an earlier build printed
+must be treated as exposed.
 
 See [`RAILWAY.md`](RAILWAY.md) for the complete deployment contract.
 

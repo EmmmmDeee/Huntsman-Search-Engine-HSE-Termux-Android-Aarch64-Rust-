@@ -186,6 +186,22 @@ impl<T: Transport + ?Sized> Transport for DynTransport<'_, T> {
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
         self.0.send(request)
     }
+
+    fn resolve(&self, name: &str) -> Result<Vec<std::net::IpAddr>, TransportFailure> {
+        self.0.resolve(name)
+    }
+
+    fn exchange_udp(
+        &self,
+        server: std::net::SocketAddr,
+        message: &[u8],
+    ) -> Result<Vec<u8>, TransportFailure> {
+        self.0.exchange_udp(server, message)
+    }
+
+    fn runs_module(&self, module: &str) -> bool {
+        self.0.runs_module(module)
+    }
 }
 
 #[cfg(test)]
