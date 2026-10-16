@@ -9,12 +9,11 @@
 //! A source runs when [`Api::wanted`] says so: a keyless or key-optional source always does, a
 //! key-required source exactly when its key is configured. A configured key is never skipped.
 
+use std::collections::HashSet;
+
 use crate::api_leg::{self, Api, LegError};
 use crate::http::{Request, Response, Transport, TransportFailure};
 use crate::keys::Keys;
-
-/// Most pivots one finding keeps; the rest are counted in the summary attributes only.
-pub const MAX_PIVOTS: usize = 50;
 
 /// The indicator a source is asked about. Every value is already canonical (a public address, a
 /// lower-case domain, a canonical email, an E.164 number).
@@ -55,7 +54,7 @@ impl Indicator<'_> {
 }
 
 /// What kind of indicator a pivot names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PivotKind {
     Domain,
     Ip,
@@ -80,6 +79,9 @@ pub struct Finding {
     pub attrs: Vec<(&'static str, String)>,
     pub tags: Vec<&'static str>,
     pub pivots: Vec<Pivot>,
+    /// Each pivot's kind and lower-case value, so [`Finding::pivot`] drops a duplicate in
+    /// constant time however many pivots a provider names.
+    seen: HashSet<(PivotKind, String)>,
 }
 
 impl Finding {
@@ -128,17 +130,14 @@ impl Finding {
         if condition { self.tag(tag) } else { self }
     }
 
-    /// Name another indicator; duplicates and anything past [`MAX_PIVOTS`] are dropped.
+    /// Name another indicator. Every one the provider names is kept; a duplicate (same kind,
+    /// same value in any case) is dropped.
     #[must_use]
     pub fn pivot(mut self, kind: PivotKind, value: impl AsRef<str>, summary: &'static str) -> Self {
         let Some(value) = api_leg::clean(Some(value.as_ref())) else {
             return self;
         };
-        let known = self
-            .pivots
-            .iter()
-            .any(|p| p.kind == kind && p.value.eq_ignore_ascii_case(&value));
-        if !known && self.pivots.len() < MAX_PIVOTS {
+        if self.seen.insert((kind, value.to_ascii_lowercase())) {
             self.pivots.push(Pivot {
                 kind,
                 value,
@@ -209,19 +208,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn findings_drop_blank_values_duplicate_pivots_and_overflow() {
+    fn findings_drop_blank_values_and_duplicate_pivots_and_keep_every_other_pivot() {
         let mut finding = Finding::new("s")
             .attr("a", "  ")
             .opt_attr("b", None::<&str>)
             .list_attr::<&str>("c", &[])
             .tag("x")
             .tag("x");
-        for n in 0..(MAX_PIVOTS + 5) {
+        for n in 0..5000 {
             finding = finding.pivot(PivotKind::Domain, format!("h{n}.example"), "p");
         }
-        finding = finding.pivot(PivotKind::Domain, "H0.EXAMPLE", "p");
+        finding = finding.pivot(PivotKind::Domain, "H0.EXAMPLE", "p").pivot(
+            PivotKind::Organisation,
+            "h0.example",
+            "p",
+        );
         assert!(finding.attrs.is_empty());
         assert_eq!(finding.tags, ["x"]);
-        assert_eq!(finding.pivots.len(), MAX_PIVOTS);
+        assert_eq!(finding.pivots.len(), 5001);
+        assert_eq!(finding.pivots[0].value, "h0.example");
+        assert_eq!(finding.pivots[4999].value, "h4999.example");
+        assert_eq!(finding.pivots[5000].kind, PivotKind::Organisation);
     }
 }
