@@ -68,21 +68,26 @@ pub fn decode(body: &[u8], domain: &str) -> Result<Option<Finding>, LegError> {
     if text.is_empty() {
         return Ok(None);
     }
-    let suffix = format!(".{domain}");
+    let suffix = format!(".{}", domain.to_ascii_lowercase());
     let mut hosts: Vec<String> = Vec::new();
-    let mut total = 0usize;
+    let mut seen = std::collections::HashSet::new();
     for line in text.lines() {
         let host = line.trim();
-        if host.is_empty() || !host.ends_with(&suffix) {
+        if host.is_empty() {
             continue;
         }
-        total += 1;
+        let lower = host.to_ascii_lowercase();
+        if !lower.ends_with(&suffix) || seen.contains(&lower) {
+            continue;
+        }
+        seen.insert(lower);
         if hosts.len() < MAX_NAMES {
             if let Some(clean) = api_leg::clean(Some(host)) {
                 hosts.push(clean);
             }
         }
     }
+    let total = seen.len();
     if total == 0 {
         return Ok(None);
     }
@@ -107,6 +112,13 @@ mod tests {
         let f = decode(body, "example.com").unwrap().unwrap();
         assert!(f.summary.contains("3"));
         assert!(f.attrs.iter().any(|(k, v)| *k == "raw_answer" && v.contains("www.example.com")));
+    }
+
+    #[test]
+    fn case_and_duplicates_are_folded() {
+        let body = b"WWW.EXAMPLE.COM\nwww.example.com\n";
+        let f = decode(body, "example.com").unwrap().unwrap();
+        assert!(f.summary.contains("1"));
     }
 
     #[test]
