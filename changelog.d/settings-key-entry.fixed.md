@@ -1,0 +1,1 @@
+- `credential-status`, `diagnostics` and the provider credential catalogue now list DeHashed (`HUNTSMAN_DEHASHED_KEY`) and stolen.tax (`HUNTSMAN_STOLEN_TAX_KEY`), which lookups already used but the catalogue left out, and the keys file template names both slots.

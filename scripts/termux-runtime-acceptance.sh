@@ -193,6 +193,13 @@ verify_api() {
     "$base/api/lookup?kind=phone&q=%2B61412345678" -o "$lookup" || return 1
   grep -q '"route":"phone"' "$lookup" || return 1
   grep -q '"value":"+61412345678"' "$lookup" || return 1
+  # It was kept as a saved scan that the scan API reads back, finished.
+  local scan
+  scan="$(sed -n 's/.*"scan":"\([0-9a-f]*\)".*/\1/p' "$lookup")"
+  [ -n "$scan" ] || return 1
+  curl --fail --silent --show-error --max-time 5 -H 'X-Huntsman-Lookup: 1' \
+    "$base/api/scans/$scan" -o "$WORK_DIR/lookup-scan.json" || return 1
+  grep -q '"status":"FINISHED"' "$WORK_DIR/lookup-scan.json" || return 1
   # Without the header the lookup must be refused, so a page on another site cannot run one.
   [ "$(curl --silent --max-time 5 -o /dev/null -w '%{http_code}' "$base/api/lookup?kind=phone&q=%2B61412345678")" = 403 ] || return 1
 }
@@ -235,8 +242,11 @@ start_and_verify_server() {
   local base="http://$bind"
   : > "$SERVER_LOG"
 
+  # The lookup it runs is kept as a saved scan; that scan goes in the disposable directory, not
+  # among the operator's own scans.
   (
     unset HSE_AUTH_TOKEN
+    export HUNTSMAN_HOME="$WORK_DIR/home"
     exec "$HSE_BIN" serve --bind "$bind"
   ) >"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!

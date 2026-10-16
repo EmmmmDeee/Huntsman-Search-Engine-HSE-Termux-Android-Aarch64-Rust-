@@ -1,0 +1,271 @@
+use super::*;
+
+/// `name` in wire form, uncompressed. **Test only.**
+fn encode_name(name: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    for label in name
+        .trim_end_matches('.')
+        .split('.')
+        .filter(|l| !l.is_empty())
+    {
+        out.push(u8::try_from(label.len()).expect("label"));
+        out.extend_from_slice(label.as_bytes());
+    }
+    out.push(0);
+    out
+}
+
+/// One record's data for [`answer`]: an address, a name, or raw bytes.
+pub(crate) enum Rdata<'a> {
+    Address(&'a str),
+    Name(&'a str),
+    Raw(Vec<u8>),
+}
+
+/// An answer to `query` (a message [`super::query`] built) with `rcode`, the query's id and
+/// question, `records` as `(type, data)` for the asked name, and, when `extended` is set, an OPT
+/// record carrying that extended error. **Test only.**
+pub(crate) fn answer(
+    query: &[u8],
+    rcode: u8,
+    records: &[(u16, Rdata<'_>)],
+    extended: Option<(u16, &str)>,
+) -> Vec<u8> {
+    let asked = question(query).expect("a question");
+    let (_, after) = read_name(query, 12).expect("a name");
+    let mut out = query[..2].to_vec();
+    out.extend_from_slice(&[0x81, 0x80 | rcode, 0, 1]);
+    let count = u16::try_from(records.len()).expect("count");
+    out.extend_from_slice(&count.to_be_bytes());
+    out.extend_from_slice(&[0, 0, 0, u8::from(extended.is_some())]);
+    out.extend_from_slice(&query[12..after + 4]);
+    for (kind, data) in records {
+        let rdata = match data {
+            Rdata::Address(text) => match text.parse::<IpAddr>().expect("address") {
+                IpAddr::V4(v4) => v4.octets().to_vec(),
+                IpAddr::V6(v6) => v6.octets().to_vec(),
+            },
+            Rdata::Name(name) => encode_name(name),
+            Rdata::Raw(bytes) => bytes.clone(),
+        };
+        out.extend_from_slice(&encode_name(&asked.name));
+        out.extend_from_slice(&kind.to_be_bytes());
+        out.extend_from_slice(&[0, 1, 0, 0, 0x0e, 0x10]);
+        out.extend_from_slice(&u16::try_from(rdata.len()).expect("rdata").to_be_bytes());
+        out.extend_from_slice(&rdata);
+    }
+    if let Some((code, text)) = extended {
+        let length = u16::try_from(text.len() + 2).expect("text");
+        out.extend_from_slice(&[0, 0, 41, 0x10, 0, 0, 0, 0, 0]);
+        out.extend_from_slice(&(length + 4).to_be_bytes());
+        out.extend_from_slice(&15_u16.to_be_bytes());
+        out.extend_from_slice(&length.to_be_bytes());
+        out.extend_from_slice(&code.to_be_bytes());
+        out.extend_from_slice(text.as_bytes());
+    }
+    out
+}
+
+fn hex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).expect("hex"))
+        .collect()
+}
+
+/// Cloudflare's answer to `www.github.com A`, its names compressed.
+const GITHUB_A: &str = "abcd81800001000200000000037777770667697468756203636f6d0000010001\
+c00c0005000100000bbb0002c010c010000100010000001b00048c527003";
+/// Cloudflare's answer to `example.com TXT`.
+const EXAMPLE_TXT: &str = "abcd81800001000200000000076578616d706c6503636f6d0000100001\
+c00c00100001000000cf000c0b763d73706631202d616c6c\
+c00c00100001000000cf0021205f6b326e31793476773371746234736b6478396537647874393771726d6d7139";
+/// Quad9's answer to `isitblocked.org A`: no such name, with extended error 17, Filtered.
+const QUAD9_FILTERED: &str = "abcd810300010000000000010b69736974626c6f636b6564036f7267000001\
+000100002904d0000000000006000f00020011";
+
+#[test]
+fn a_query_is_the_rfc_1035_form_with_edns0() {
+    let asked = query(0x1234, "www.Example.com.", A).expect("query");
+    assert_eq!(
+        asked,
+        [
+            &[0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 1][..],
+            &b"\x03www\x07Example\x03com\x00"[..],
+            &[0, 1, 0, 1][..],
+            &[0, 0, 41, 0x10, 0x00, 0, 0, 0, 0, 0, 0][..],
+        ]
+        .concat()
+    );
+    assert_eq!(
+        question(&asked),
+        Ok(Question {
+            name: "www.Example.com".into(),
+            kind: A
+        })
+    );
+    assert_eq!(parse(&asked), Err(WireError::NotAnswer));
+    let long = format!("{}.com", "a".repeat(64));
+    let too_long = vec!["a".repeat(60); 5].join(".");
+    for bad in [
+        "",
+        ".",
+        "a..b",
+        long.as_str(),
+        too_long.as_str(),
+        "bücher.de",
+    ] {
+        assert!(
+            matches!(query(1, bad, A), Err(WireError::BadQuery(_))),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn real_answers_read_with_their_compressed_names_and_records() {
+    let github = parse(&hex(GITHUB_A)).expect("github");
+    assert_eq!(
+        (github.id, github.rcode, github.truncated),
+        (0xabcd, NOERROR, false)
+    );
+    assert_eq!(
+        github.question,
+        Some(Question {
+            name: "www.github.com".into(),
+            kind: A
+        })
+    );
+    let records: Vec<(String, String, u32, String)> = github
+        .answers
+        .iter()
+        .map(|r| {
+            (
+                r.name.clone(),
+                type_name(r.kind),
+                r.ttl,
+                r.data.presentation(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        records,
+        [
+            (
+                "www.github.com".into(),
+                "CNAME".into(),
+                3003,
+                "github.com".into()
+            ),
+            ("github.com".into(), "A".into(), 27, "140.82.112.3".into()),
+        ]
+    );
+    assert_eq!(
+        github.addresses(),
+        ["140.82.112.3".parse::<IpAddr>().expect("ip")]
+    );
+
+    let txt = parse(&hex(EXAMPLE_TXT)).expect("txt");
+    let texts: Vec<String> = txt.answers.iter().map(|r| r.data.presentation()).collect();
+    assert_eq!(
+        texts,
+        ["\"v=spf1 -all\"", "\"_k2n1y4vw3qtb4skdx9e7dxt97qrmmq9\""]
+    );
+
+    let filtered = parse(&hex(QUAD9_FILTERED)).expect("quad9");
+    assert_eq!(rcode_name(filtered.rcode), "NXDOMAIN");
+    assert!(filtered.answers.is_empty());
+    assert_eq!(filtered.extended_errors.len(), 1);
+    assert!(filtered.extended_errors[0].withheld());
+    assert_eq!(filtered.extended_errors[0].describe(), "17 Filtered");
+}
+
+#[test]
+fn every_record_type_reads_in_presentation_form() {
+    let asked = query(7, "example.com", 255).expect("query");
+    let mut caa = vec![0, 5];
+    caa.extend_from_slice(b"issueletsencrypt.org");
+    let mut soa = [
+        encode_name("ns.example.com"),
+        encode_name("hostmaster.example.com"),
+    ]
+    .concat();
+    for number in [2024_u32, 7200, 3600, 1_209_600, 300] {
+        soa.extend_from_slice(&number.to_be_bytes());
+    }
+    let body = answer(
+        &asked,
+        NOERROR,
+        &[
+            (AAAA, Rdata::Address("2001:db8::1")),
+            (2, Rdata::Name("ns.example.com")),
+            (
+                15,
+                Rdata::Raw([vec![0, 10], encode_name("mx.example.com")].concat()),
+            ),
+            (16, Rdata::Raw(b"\x05a\"b\\c\x00".to_vec())),
+            (
+                33,
+                Rdata::Raw([vec![0, 1, 0, 2, 0x01, 0xbb], encode_name("sip.example.com")].concat()),
+            ),
+            (257, Rdata::Raw(caa)),
+            (6, Rdata::Raw(soa)),
+            (99, Rdata::Raw(vec![0xde, 0xad])),
+        ],
+        Some((0, "")),
+    );
+    let message = parse(&body).expect("answer");
+    let forms: Vec<String> = message
+        .answers
+        .iter()
+        .map(|r| format!("{} {}", type_name(r.kind), r.data.presentation()))
+        .collect();
+    assert_eq!(
+        forms,
+        [
+            "AAAA 2001:db8::1",
+            "NS ns.example.com",
+            "MX 10 mx.example.com",
+            "TXT \"a\\\"b\\\\c\" \"\"",
+            "SRV 1 2 443 sip.example.com",
+            "CAA 0 issue \"letsencrypt.org\"",
+            "SOA ns.example.com hostmaster.example.com 2024 7200 3600 1209600 300",
+            "TYPE99 \\# dead",
+        ]
+    );
+    assert_eq!(message.extended_errors[0].describe(), "0 Other");
+    assert!(!message.extended_errors[0].withheld());
+}
+
+/// A cut, looping or malformed body is an error, never a panic.
+#[test]
+fn a_hostile_body_is_an_error() {
+    let whole = hex(GITHUB_A);
+    for cut in 0..whole.len() {
+        assert!(parse(&whole[..cut]).is_err(), "cut at {cut}");
+    }
+    // The CNAME's target points at itself.
+    let mut looping = whole.clone();
+    let at = whole.len() - 18;
+    looping[at..at + 2].copy_from_slice(&[0xc0, u8::try_from(at).expect("offset")]);
+    assert!(parse(&looping).is_err());
+    // A label length in the reserved 0x40-0xbf range.
+    let mut reserved = whole;
+    reserved[12] = 0x45;
+    assert_eq!(parse(&reserved), Err(WireError::BadName));
+    // A malformed OPT record after a whole answer leaves the answer standing.
+    let mut tail = hex(QUAD9_FILTERED);
+    let length = tail.len();
+    tail[length - 7] = 0xff;
+    let message = parse(&tail).expect("answer");
+    assert_eq!(message.rcode, NXDOMAIN);
+    assert!(message.extended_errors.is_empty());
+    let label = (0..=255_u8).map(escape).collect::<String>();
+    assert!(label.starts_with("\\000\\001"));
+    assert!(
+        label.contains("\\.")
+            && label.contains("\\\\")
+            && label.contains("ABC")
+            && label.contains("xyz")
+    );
+}
