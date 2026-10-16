@@ -8,6 +8,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 const NAMES: usize = 30;
 
@@ -42,7 +43,13 @@ impl Transport for OnlyRobtex {
 }
 
 fn entities() -> Vec<Entity> {
-    match run(&OnlyRobtex, &Keys::default(), "1.1.1.1", 1_760_000_000) {
+    match run(
+        &OnlyRobtex,
+        &Keys::default(),
+        &Feeds::none(),
+        "1.1.1.1",
+        1_760_000_000,
+    ) {
         IpRun::Printed { report, .. } => report.entities,
         IpRun::Network(why) | IpRun::Failed(why) => panic!("ip 1.1.1.1 did not print: {why}"),
     }
