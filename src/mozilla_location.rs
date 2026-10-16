@@ -96,3 +96,31 @@ mod tests {
         assert!(decode(br#"{}"#).unwrap().is_none());
     }
 }
+
+/// Cell tower for geolocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellTower {
+    pub radio: &'static str,
+    pub mcc: u16,
+    pub mnc: u16,
+    pub lac: u32,
+    pub cellid: u32,
+}
+
+/// The request body for cell towers. **Pure.**
+#[must_use]
+pub fn cell_body(towers: &[CellTower]) -> serde_json::Value {
+    let towers: Vec<_> = towers
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "radioType": t.radio,
+                "mobileCountryCode": t.mcc,
+                "mobileNetworkCode": t.mnc,
+                "locationAreaCode": t.lac,
+                "cellId": t.cellid,
+            })
+        })
+        .collect();
+    serde_json::json!({ "cellTowers": towers })
+}

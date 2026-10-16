@@ -127,3 +127,49 @@ mod tests {
         assert!(decode(br#"{"error":"Cell not found"}"#).unwrap().is_none());
     }
 }
+
+/// Area search URL. **Pure.**
+#[must_use]
+pub fn area_url(lat: f64, lon: f64, radius_m: u32) -> String {
+    format!(
+        "https://opencellid.org/cell/getInArea?lat={lat}&lon={lon}&radius={radius_m}&format=json"
+    )
+}
+
+/// One cell in an area answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AreaCell {
+    pub mcc: u16,
+    pub mnc: u16,
+    pub lac: u32,
+    pub cellid: u32,
+    pub lat: f64,
+    pub lon: f64,
+}
+
+/// Decode an area answer. **Pure.**
+pub fn decode_area(body: &[u8]) -> Result<Vec<AreaCell>, LegError> {
+    let text = std::str::from_utf8(body)
+        .map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
+    let value: serde_json::Value = serde_json::from_str(text)
+        .map_err(|_| LegError::Decode("answer is not JSON".into()))?;
+    let cells = value.get("cells").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let mut out = Vec::new();
+    for cell in cells {
+        let Some(mcc) = cell.get("mcc").and_then(|v| v.as_u64()) else { continue };
+        let Some(mnc) = cell.get("mnc").and_then(|v| v.as_u64()) else { continue };
+        let Some(lac) = cell.get("lac").and_then(|v| v.as_u64()) else { continue };
+        let Some(cellid) = cell.get("cellid").and_then(|v| v.as_u64()) else { continue };
+        let Some(lat) = cell.get("lat").and_then(|v| v.as_f64()) else { continue };
+        let Some(lon) = cell.get("lon").and_then(|v| v.as_f64()) else { continue };
+        out.push(AreaCell {
+            mcc: mcc as u16,
+            mnc: mnc as u16,
+            lac: lac as u32,
+            cellid: cellid as u32,
+            lat,
+            lon,
+        });
+    }
+    Ok(out)
+}
