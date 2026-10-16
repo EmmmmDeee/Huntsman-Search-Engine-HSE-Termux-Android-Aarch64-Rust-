@@ -10,6 +10,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, Report, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// Recorded without a key for `45.155.205.233` on 2026-10-15.
 const PULSEDIVE: &str = r#"{"qid":null,"iid":30377744,"indicator":"45.155.205.233","type":"ip","risk":"unknown","risk_recommended":"unknown","manualrisk":0,"retired":"No recent activity","stamp_added":"2021-12-13 13:50:44","stamp_updated":"2024-01-05 14:10:53","stamp_seen":"2023-10-03 06:58:19","stamp_probed":"2022-10-02 19:10:20","stamp_retired":"2024-01-05 14:10:53","recent":0,"submissions":4,"umbrella_rank":null,"umbrella_domain":null,"riskfactors":[],"redirects":{"from":[],"to":[]},"threats":[],"feeds":[],"comments":[],"attributes":[],"properties":{"geo":{"country":"Russian Federation","countrycode":"RU","region":"St.-Petersburg","city":"St Petersburg","lat":"59.9417","long":"30.3096","isp":"Proton66 OOO","org":"Proton66 OOO","asn":"AS198953"}}}"#;
@@ -41,6 +42,7 @@ fn report() -> Report {
     match run(
         &OnlyPulsedive,
         &Keys::default(),
+        &Feeds::none(),
         "45.155.205.233",
         1_760_000_000,
     ) {
