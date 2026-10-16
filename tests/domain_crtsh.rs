@@ -7,6 +7,7 @@ use huntsman_recon::entity::{Entity, EntityKind, Evidence};
 use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// Three certificates naming `api.example.com`, from two CAs, in crt.sh's JSON row shape.
 const CRTSH: &str = r#"[
@@ -46,7 +47,13 @@ fn evidence(entities: &[Entity], name: &str) -> Evidence {
 
 #[test]
 fn every_certificate_crtsh_logs_for_a_name_reaches_it() {
-    let entities = match run(&OnlyCrtSh, &Keys::default(), "example.com", 1_760_000_000) {
+    let entities = match run(
+        &OnlyCrtSh,
+        &Keys::default(),
+        &Feeds::none(),
+        "example.com",
+        1_760_000_000,
+    ) {
         DomainRun::Printed { report, .. } => report.entities,
         DomainRun::Network(why) | DomainRun::Failed(why) => panic!("did not print: {why}"),
     };
