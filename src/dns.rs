@@ -229,7 +229,7 @@ struct DnsJsonResponse {
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct DnsJsonAnswer {
+pub struct DnsJsonAnswer {
     #[serde(rename = "type", default)]
     rtype: u16,
     #[serde(default)]
@@ -333,9 +333,13 @@ pub fn resolve_with_config<T: Transport + ?Sized>(
 
 fn build_request(server: &ResolverServer, query: &ResolveQuery, timeout: Duration) -> Request {
     let url = append_query_param(
-        &append_query_param(server.doh_url, "name", &query.name),
-        "type",
-        query.record_type.as_str(),
+        &append_query_param(
+            &append_query_param(server.doh_url, "name", &query.name),
+            "type",
+            query.record_type.as_str(),
+        ),
+        "do",
+        "1",
     );
     Request::get(url)
         .header("accept", "application/dns-json")

@@ -199,6 +199,7 @@ pub mod stix;
 pub mod stolen_tax;
 pub mod stopforumspam;
 pub mod store;
+pub mod submd;
 pub mod tags;
 pub mod termination;
 pub mod textnorm;
@@ -233,5 +234,7 @@ pub use ledger::{
 pub use session::Session;
 pub use stage::{EvidenceLevel, Status};
 
+pub mod mozilla_location;
+pub mod opencellid;
 #[cfg(test)]
 mod test_support;
