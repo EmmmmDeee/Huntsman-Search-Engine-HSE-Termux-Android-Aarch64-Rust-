@@ -10,7 +10,7 @@ use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
 
 pub const SOURCE: &str = "mozilla_location";
-pub const KEY_SLOT: &str = "HUNTSMAN_MOZILLA_LOCATION_KEY";
+pub const KEY_SLOT: &str = crate::environment::MOZILLA_LOCATION_KEY_ENV;
 pub const API: Api = Api {
     source: SOURCE,
     provider: "location.services.mozilla.com",
