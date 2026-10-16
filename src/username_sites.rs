@@ -2,8 +2,9 @@
 //!
 //! Checks a curated set of public profile endpoints for the existence of a username.
 //! Each site that confirms the username emits a Username entity with the profile URL
-//! and retains the full raw answer. Sites that return a documented "not found" are
-//! valid zeros. No keys are required.
+//! and retains the full raw answer. A site that returns a documented miss is a valid zero
+//! for that site; a transport or decode failure is recorded as an outcome, not swallowed.
+//! No keys are required.
 //!
 //! Wired into `username_cli` alongside the existing GitHub and Bluesky collectors.
 
@@ -13,19 +14,14 @@ use crate::api_leg::{self, Answer, Api, LegError};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::http::Transport;
 use crate::keys::Keys;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::SourceExecutionOutcome;
 
 pub const SOURCE: &str = "username_sites";
-pub const API: Api = Api {
-    source: SOURCE,
-    provider: "username_sites",
-    origin: "https://username_sites.local:443",
-    key: None,
-};
 
 /// One public site that answers for a username.
 struct Site {
     name: &'static str,
+    origin: &'static str,
     /// Builds the request URL for `username`.
     url: fn(&str) -> String,
     /// Returns true when the body confirms the username exists.
@@ -43,6 +39,7 @@ fn keybase_url(username: &str) -> String {
 const SITES: &[Site] = &[
     Site {
         name: "gitlab",
+        origin: "https://gitlab.com:443",
         url: gitlab_url,
         exists: |body| {
             let users: Vec<serde_json::Value> = serde_json::from_slice(body).unwrap_or_default();
@@ -51,6 +48,7 @@ const SITES: &[Site] = &[
     },
     Site {
         name: "keybase",
+        origin: "https://keybase.io:443",
         url: keybase_url,
         exists: |body| {
             #[derive(Deserialize)]
@@ -74,6 +72,7 @@ pub struct Hit {
 }
 
 /// Look the username up on every site. Returns the hits that confirmed existence.
+/// A site that fails is skipped; the first transport error aborts the rest.
 pub fn lookup<T: Transport + ?Sized>(
     transport: &T,
     username: &str,
@@ -81,8 +80,14 @@ pub fn lookup<T: Transport + ?Sized>(
 ) -> Result<Vec<Hit>, LegError> {
     let mut hits = Vec::new();
     for site in SITES {
+        let api = Api {
+            source: SOURCE,
+            provider: site.name,
+            origin: site.origin,
+            key: None,
+        };
         let url = (site.url)(username);
-        match api_leg::get(transport, &API, &Keys::default(), &url, now_unix) {
+        match api_leg::get(transport, &api, &Keys::default(), &url, now_unix) {
             Ok(Answer::Body(body)) if (site.exists)(&body) => {
                 let raw = String::from_utf8_lossy(&body).into_owned();
                 hits.push(Hit {
@@ -91,7 +96,8 @@ pub fn lookup<T: Transport + ?Sized>(
                     raw,
                 });
             }
-            Ok(_) | Err(LegError::NotAnAnswer(_)) => {}
+            Ok(_) => {}
+            Err(LegError::NotAnAnswer(_)) | Err(LegError::Unexpected(_)) => {}
             Err(err) => return Err(err),
         }
     }
@@ -135,6 +141,7 @@ pub fn outcome(hits: &[Hit], now_unix: u64) -> SourceExecutionOutcome {
 mod tests {
     use super::*;
     use crate::http::{Request, Response, TransportFailure};
+    use crate::source_outcome::SourceOutcomeKind;
     use std::sync::Mutex;
 
     struct Fake {
