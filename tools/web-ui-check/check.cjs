@@ -406,7 +406,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
           const td = document.querySelector('#mods tr').cells[3];
           return { label: td.querySelector('.label').textContent, note: (td.querySelector('[role=status]') || {}).textContent || '', typed: [...td.querySelectorAll('input')].map(i => i.value).join('') };
         });
-        await page.fill('#mfilter', 'HUNTSMAN_SHODAN_KEY');
+        await page.fill('#mfilter', 'shodan host');
         check('Settings filters to the module that reads a slot', (await page.$$('#mods tr')).length === 1, (await page.$$('#mods tr')).length);
         await page.click('#mods tr .keyedit summary');
         await page.fill('#mods tr input[data-slot=HUNTSMAN_SHODAN_KEY]', KEY);
