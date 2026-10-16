@@ -812,7 +812,6 @@ impl DomainDns {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::{cell::RefCell, collections::VecDeque};
@@ -1407,4 +1406,3 @@ mod tests {
         assert!(report.render().contains("answers=0 failed=7"));
     }
 }
-
