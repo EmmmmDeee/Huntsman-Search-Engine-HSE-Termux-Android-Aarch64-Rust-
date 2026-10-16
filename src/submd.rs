@@ -5,7 +5,7 @@
 //! Combines Certificate Transparency, passive DNS, and X.509 data.
 //! HTTP 429 is a rate limit.
 //!
-//! Runs alongside crt.sh and HackerTarget. Everything the answer holds is kept as `raw_answer`.
+//! Runs alongside crt.sh and `HackerTarget`. Everything the answer holds is kept as `raw_answer`.
 
 use crate::api_leg::{self, Answer, Api, LegError};
 use crate::http::{Transport, percent_encode_component};

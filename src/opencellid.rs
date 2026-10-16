@@ -1,11 +1,11 @@
-//! OpenCelliD: keyed cell tower position.
+//! `OpenCelliD`: keyed cell tower position.
 //!
 //! One lookup is one `GET https://opencellid.org/cell/get?key={key}&mcc={mcc}&mnc={mnc}&lac={lac}&cellid={cellid}&format=json`.
 //! Requires `HUNTSMAN_OPENCELLID_KEY`. 1000 credits/day. Returns lat, lon, range, samples.
 //! A missing cell is HTTP 200 with an error body: that is a valid zero.
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
-use crate::http::{Transport, percent_encode_component};
+use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
 
@@ -27,7 +27,7 @@ pub const INTEL: Source = Source {
     lookup,
 };
 
-/// Cell identifier: MCC, MNC, LAC, CellID.
+/// Cell identifier: `MCC`, `MNC`, `LAC`, `CellID`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CellId {
     pub mcc: u16,
@@ -94,18 +94,18 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     if value.get("error").is_some() {
         return Ok(None);
     }
-    let lat = value.get("lat").and_then(|v| v.as_f64());
-    let lon = value.get("lon").and_then(|v| v.as_f64());
+    let lat = value.get("lat").and_then(serde_json::Value::as_f64);
+    let lon = value.get("lon").and_then(serde_json::Value::as_f64);
     let Some((lat, lon)) = lat.zip(lon) else {
         return Ok(None);
     };
     let mut finding = Finding::new(format!("OpenCelliD: {lat:.4},{lon:.4}"))
         .attr("position", format!("{lat:.6},{lon:.6}"))
         .attr("raw_answer", text);
-    if let Some(range) = value.get("range").and_then(|v| v.as_u64()) {
+    if let Some(range) = value.get("range").and_then(serde_json::Value::as_u64) {
         finding = finding.attr("range", range.to_string());
     }
-    if let Some(samples) = value.get("samples").and_then(|v| v.as_u64()) {
+    if let Some(samples) = value.get("samples").and_then(serde_json::Value::as_u64) {
         finding = finding.attr("samples", samples.to_string());
     }
     Ok(Some(finding))
@@ -164,29 +164,29 @@ pub fn decode_area(body: &[u8]) -> Result<Vec<AreaCell>, LegError> {
         .unwrap_or_default();
     let mut out = Vec::new();
     for cell in cells {
-        let Some(mcc) = cell.get("mcc").and_then(|v| v.as_u64()) else {
+        let Some(mcc) = cell.get("mcc").and_then(serde_json::Value::as_u64) else {
             continue;
         };
-        let Some(mnc) = cell.get("mnc").and_then(|v| v.as_u64()) else {
+        let Some(mnc) = cell.get("mnc").and_then(serde_json::Value::as_u64) else {
             continue;
         };
-        let Some(lac) = cell.get("lac").and_then(|v| v.as_u64()) else {
+        let Some(lac) = cell.get("lac").and_then(serde_json::Value::as_u64) else {
             continue;
         };
-        let Some(cellid) = cell.get("cellid").and_then(|v| v.as_u64()) else {
+        let Some(cellid) = cell.get("cellid").and_then(serde_json::Value::as_u64) else {
             continue;
         };
-        let Some(lat) = cell.get("lat").and_then(|v| v.as_f64()) else {
+        let Some(lat) = cell.get("lat").and_then(serde_json::Value::as_f64) else {
             continue;
         };
-        let Some(lon) = cell.get("lon").and_then(|v| v.as_f64()) else {
+        let Some(lon) = cell.get("lon").and_then(serde_json::Value::as_f64) else {
             continue;
         };
         out.push(AreaCell {
-            mcc: mcc as u16,
-            mnc: mnc as u16,
-            lac: lac as u32,
-            cellid: cellid as u32,
+            mcc: u16::try_from(mcc).unwrap_or(0),
+            mnc: u16::try_from(mnc).unwrap_or(0),
+            lac: u32::try_from(lac).unwrap_or(0),
+            cellid: u32::try_from(cellid).unwrap_or(0),
             lat,
             lon,
         });
