@@ -1,0 +1,1 @@
+- An `ip` lookup keeps every port, hostname, CPE, tag and CVE Shodan InternetDB lists for the address. `internetdb::decode` kept at most 64 of each, so an outdated server's CVE list, or a host answering on hundreds of ports, was cut short without a word. Every item is now kept, each once.
