@@ -141,6 +141,10 @@ pub fn write_atomic(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
 /// Atomically and durably write a private file, creating it mode 600 on Unix before any bytes
 /// land. Use it for anything holding credentials or the people a lookup found: ledgers,
 /// sessions, scan artifacts, tokens. Replacing an older, more open file leaves it mode 600.
+///
+/// # Errors
+/// As [`write_atomic`], and on Unix when the filesystem leaves the new file readable by others
+/// (see `private_mode_verdict`); on shared storage that case warns and writes.
 pub fn write_atomic_private(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
     write_atomic_mode(path, body, max, true)
 }
@@ -164,6 +168,9 @@ fn write_atomic_mode(path: &Path, body: &[u8], max: u64, private: bool) -> Resul
         .ok_or_else(|| Error::Store(format!("{}: no file name", path.display())))?;
     let (mut file, tmp) = create_temp_file(&parent, name, private, &TEMP_SEQUENCE)?;
     let result = (|| {
+        if private {
+            check_private_mode(path, &file)?;
+        }
         file.write_all(body).map_err(|e| store_err(&tmp, &e))?;
         file.sync_all().map_err(|e| store_err(&tmp, &e))?;
         fs::rename(&tmp, path).map_err(|e| store_err(path, &e))
@@ -184,6 +191,67 @@ fn sync_directory(dir: &Path) {
     if let Ok(handle) = File::open(dir) {
         let _ = handle.sync_all();
     }
+}
+
+/// Android's shared storage. Its FAT, exFAT and FUSE mounts do not keep Unix mode bits, so a
+/// private file there cannot be made private.
+#[cfg(unix)]
+const SHARED_STORAGE_ROOTS: [&str; 5] = [
+    "/sdcard",
+    "/storage",
+    "/mnt/sdcard",
+    "/mnt/media_rw",
+    "/mnt/runtime",
+];
+
+#[cfg(unix)]
+fn is_shared_storage(path: &Path) -> bool {
+    SHARED_STORAGE_ROOTS
+        .iter()
+        .any(|root| path.starts_with(root))
+}
+
+/// Judge the mode a private file was created with. A private file has no group or other bits:
+/// the creation request is 600 and the umask can only narrow it, so wider bits mean the
+/// filesystem did not honour the request. Off shared storage that refuses the write; on shared
+/// storage, where the mode cannot be enforced, it warns on stderr and lets the write land. The
+/// warning is a plain write, not `eprintln!`, so a closed stderr cannot abort the save.
+#[cfg(unix)]
+fn private_mode_verdict(path: &Path, mode: u32) -> Result<(), Error> {
+    let group_and_other = mode & 0o077;
+    if group_and_other == 0 {
+        return Ok(());
+    }
+    if is_shared_storage(path) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "{}: mode {mode:o} on shared storage, which does not keep Unix modes; readable by others",
+            path.display()
+        );
+        return Ok(());
+    }
+    Err(Error::Store(format!(
+        "{}: created with mode {mode:o}, readable by others; this filesystem does not honour Unix modes, so a private file is refused",
+        path.display()
+    )))
+}
+
+/// Check the new temp file before any bytes land, so a refused write leaves nothing behind.
+#[cfg(unix)]
+fn check_private_mode(path: &Path, file: &File) -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = file
+        .metadata()
+        .map_err(|e| store_err(path, &e))?
+        .permissions()
+        .mode()
+        & 0o777;
+    private_mode_verdict(path, mode)
+}
+
+#[cfg(not(unix))]
+fn check_private_mode(_path: &Path, _file: &File) -> Result<(), Error> {
+    Ok(())
 }
 
 fn create_temp_file(
@@ -339,6 +407,45 @@ mod tests {
         assert!(error.contains(CHANGED_WHILE_OPENING), "{error}");
         assert!(error.contains(&checked.display().to_string()), "{error}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_private_file_is_created_with_no_group_or_other_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("private-mode");
+        let path = dir.join("tokens.json");
+        write_atomic_private(&path, b"{}", 10).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_mode_readable_by_others_is_refused_off_shared_storage() {
+        let refused = private_mode_verdict(
+            Path::new("/data/data/com.termux/files/home/.huntsman/tokens.json"),
+            0o644,
+        );
+        let err = refused.expect_err("a private file readable by others is refused");
+        assert!(err.to_string().contains("readable by others"), "{err}");
+        assert!(private_mode_verdict(Path::new("/data/x/tokens.json"), 0o600).is_ok());
+        assert!(private_mode_verdict(Path::new("/data/x/tokens.json"), 0o400).is_ok());
+        assert!(private_mode_verdict(Path::new("/data/x/tokens.json"), 0o640).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_storage_warns_and_writes_instead_of_refusing() {
+        assert!(private_mode_verdict(Path::new("/sdcard/Download/tokens.json"), 0o666).is_ok());
+        assert!(
+            private_mode_verdict(Path::new("/storage/emulated/0/huntsman/x.json"), 0o644).is_ok()
+        );
+        assert!(is_shared_storage(Path::new("/storage/emulated/0/x")));
+        assert!(!is_shared_storage(Path::new("/storagex/huntsman")));
+        assert!(!is_shared_storage(Path::new(
+            "/data/data/com.termux/files/home/.huntsman"
+        )));
     }
 
     #[cfg(unix)]

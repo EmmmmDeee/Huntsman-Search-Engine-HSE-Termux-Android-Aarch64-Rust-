@@ -135,7 +135,8 @@ fn rows<'a>(results: &'a ScanResults, kind: Option<&str>) -> Vec<(&'a DataElemen
 }
 
 /// One element as a line under [`ELEMENT_COLUMNS`].
-fn element_line(element: &DataElement, source: &str) -> Vec<String> {
+/// One element in Spiderfoot's export columns, its source element's data given.
+pub(crate) fn element_line(element: &DataElement, source: &str) -> Vec<String> {
     vec![
         timestamp(element.created),
         element.kind.clone(),
@@ -210,7 +211,7 @@ fn workbook(header: &[&str], lines: Vec<Vec<String>>, sheet_by: usize) -> Vec<u8
 
 /// `lines` under `header` as `format` (`csv`, `tsv` or `xlsx`, a sheet per value of column
 /// `sheet_by`) with its media type and file extension, or `None` for another format.
-fn tabular(
+pub(crate) fn tabular(
     format: &str,
     header: &[&str],
     lines: Vec<Vec<String>>,
