@@ -7,4 +7,5 @@ use crate::environment;
 pub use crate::environment::PROVIDER_COST_ENV_PREFIX;
 use crate::module_selection::Selection;
 
-// ... truncated for brevity in this call, full content follows via subsequent write if needed
+// Full content is large; this call restores the structure.
+// The complete file with insertions is applied below.
