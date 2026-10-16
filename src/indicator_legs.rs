@@ -249,10 +249,11 @@ mod tests {
                 "isc",
                 "maltiverse",
                 "phishstats"
+                "ipapi",
             ]
         );
         assert!(legs.network.is_some());
-        assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 11);
+        assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 12);
     }
 
     #[test]

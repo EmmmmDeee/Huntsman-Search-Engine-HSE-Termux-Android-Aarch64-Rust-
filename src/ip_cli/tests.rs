@@ -199,6 +199,7 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "isc.sans.edu",
             "api.maltiverse.com",
             "api.phishstats.info"
+            "ip-api.com",
         ]
     );
     assert_eq!(outcome(&report, "internetdb"), SourceOutcomeKind::Success);
