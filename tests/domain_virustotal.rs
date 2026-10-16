@@ -9,6 +9,7 @@ use huntsman_recon::entity::{Entity, EntityKind, Evidence};
 use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// Shaped as the v3 `domains/{domain}` object of the `VirusTotal` API reference.
 const ANSWER: &str = r#"{"data":{"id":"example.com","type":"domain","links":{"self":"https://www.virustotal.com/api/v3/domains/example.com"},"attributes":{
@@ -49,7 +50,13 @@ impl Transport for OnlyVirusTotal {
 fn entities() -> Vec<Entity> {
     let keys = Keys::parse("HUNTSMAN_VIRUSTOTAL_KEY=virustotal-test-key-0815")
         .unwrap_or_else(|e| panic!("{e}"));
-    match run(&OnlyVirusTotal, &keys, "example.com", 1_760_000_000) {
+    match run(
+        &OnlyVirusTotal,
+        &keys,
+        &Feeds::none(),
+        "example.com",
+        1_760_000_000,
+    ) {
         DomainRun::Printed { report, .. } => report.entities,
         DomainRun::Network(why) | DomainRun::Failed(why) => {
             panic!("domain example.com did not print: {why}")
