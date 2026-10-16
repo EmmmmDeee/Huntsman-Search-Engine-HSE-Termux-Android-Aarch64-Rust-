@@ -8,6 +8,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// Twelve scans, each of a page on its own host name served by its own server.
 fn urlscan_answer() -> String {
@@ -49,6 +50,7 @@ fn entities() -> Vec<Entity> {
     match run(
         &OnlyUrlscan,
         &Keys::default(),
+        &Feeds::none(),
         "45.155.205.233",
         1_760_000_000,
     ) {
