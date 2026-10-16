@@ -7,6 +7,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// Sixty domains on `93.184.215.14`, one per line, as `reverseiplookup` answers.
 fn reverse_ip_answer() -> String {
@@ -38,6 +39,7 @@ fn entities() -> Vec<Entity> {
     match run(
         &OnlyHackerTarget,
         &Keys::default(),
+        &Feeds::none(),
         "93.184.215.14",
         1_760_000_000,
     ) {
