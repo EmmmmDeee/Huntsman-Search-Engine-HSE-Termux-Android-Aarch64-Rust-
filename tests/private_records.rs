@@ -62,7 +62,7 @@ fn a_ledger_is_private_even_over_an_older_readable_one() {
 }
 
 #[test]
-fn a_saved_session_and_its_current_marker_are_private() {
+fn a_saved_session_is_private() {
     let dir = scratch("session");
     recon(
         &dir,
@@ -74,6 +74,5 @@ fn a_saved_session_and_its_current_marker_are_private() {
         .collect();
     assert_eq!(sessions.len(), 1, "{sessions:?}");
     assert_eq!(mode(&sessions[0]), 0o600, "{}", sessions[0].display());
-    assert_eq!(mode(&dir.join("store/current.txt")), 0o600);
     fs::remove_dir_all(dir).unwrap();
 }

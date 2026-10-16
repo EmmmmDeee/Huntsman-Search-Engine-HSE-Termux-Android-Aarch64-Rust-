@@ -367,11 +367,14 @@ mod tests {
     #[test]
     fn from_batch_carries_entities_and_correlates() {
         use crate::collector::{CollectionBatch, CollectionOutcome};
+        // One fixture for both sides: each build stamps its entities with the clock, and a
+        // correlation carries the latest stamp, so two builds a second apart never compare equal.
+        let expected = corroborated();
         let mut batch = CollectionBatch::empty("dehashed", "uid", CollectionOutcome::Success);
-        batch.entities = corroborated().entities;
+        batch.entities.clone_from(&expected.entities);
         let artifact = ScanArtifact::from_batch("scan-1", &batch).unwrap();
         assert_eq!(artifact.entities, batch.entities);
-        assert_eq!(artifact.correlate(), corroborated().correlate());
+        assert_eq!(artifact.correlate(), expected.correlate());
     }
 
     /// A saved scan correlates exactly as the analysis behind `plan` and the web UI correlates the

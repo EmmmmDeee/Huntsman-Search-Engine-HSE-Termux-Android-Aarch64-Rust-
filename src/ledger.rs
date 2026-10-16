@@ -153,7 +153,11 @@ pub fn admitted(entries: &[LedgerEntry]) -> Vec<&LedgerEntry> {
         .collect()
 }
 
-const MAX_LEDGER_BYTES: u64 = 1_048_576;
+/// The ceiling on a saved ledger, for writing and for reading alike. It is the ceiling on a saved
+/// scan artifact: a lookup of a large domain writes one entry per name, and a ledger the writer
+/// accepts must be one the reader loads. The old 1 MiB cap refused a save of a few thousand
+/// entries after the lookup had already spent its requests.
+const MAX_LEDGER_BYTES: u64 = crate::scan_artifact::MAX_ARTIFACT_BYTES;
 
 /// Persist a chain atomically, mode 600 on Unix: a lookup's ledger names the addresses, phones
 /// and handles it found. A broken chain is never written.
@@ -313,6 +317,32 @@ mod tests {
         let second = append(&first.hash, &second_claim);
         assert!(chain_intact(&[first.clone(), second.clone()]));
         assert!(!chain_intact(&[second, first]));
+    }
+
+    #[test]
+    fn a_ledger_of_thousands_of_entries_saves_and_reloads() {
+        let dir = std::env::temp_dir().join(format!("huntsman-ledger-long-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ledger.json");
+        let mut entries = Vec::new();
+        let mut prev = GENESIS.to_owned();
+        for index in 0..5_000 {
+            let mut claim = sample(Status::Verified, EvidenceLevel::DirectObservation, None);
+            claim.claim = format!("name {index}.example.test resolves");
+            let entry = append(&prev, &claim);
+            prev.clone_from(&entry.hash);
+            entries.push(entry);
+        }
+        assert!(
+            serde_json::to_vec_pretty(&entries).unwrap().len() > 1_048_576,
+            "the fixture must be larger than the old 1 MiB cap"
+        );
+        save_chain(&path, &entries).expect("a long ledger saves");
+        let loaded = load_chain(&path).expect("and loads back intact");
+        assert_eq!(loaded.len(), entries.len());
+        assert_eq!(loaded.last(), entries.last());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

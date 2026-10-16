@@ -535,29 +535,6 @@ pub fn with_dir(dir: &Path) -> (Vec<Rule>, Vec<RuleError>) {
     (rules.into_values().collect(), errors)
 }
 
-/// The Spiderfoot module names a Huntsman source does the work of, beside `sfp_<source>`.
-fn spiderfoot_names(module: &str) -> Vec<String> {
-    let extra: &[&str] = match module {
-        "crtsh" => &["sfp_crt"],
-        "dns" => &["sfp_dnsresolve", "sfp_dnsraw"],
-        "internetdb" => &["sfp_shodan"],
-        "otx" => &["sfp_alienvault"],
-        "hibp" | "hibp_account" => &["sfp_haveibeenpwned"],
-        "ipqs" => &["sfp_ipqualityscore"],
-        "ripestat" => &["sfp_ripe"],
-        "urlhaus" | "threatfox" => &["sfp_abusech"],
-        "github_user" => &["sfp_github"],
-        "openpgp_keys" => &["sfp_pgp"],
-        "whoxy" => &["sfp_whois"],
-        "kickbox" => &["sfp_debounce"],
-        "greynoise" => &["sfp_greynoise_community"],
-        _ => &[],
-    };
-    let mut names = vec![module.to_owned(), format!("sfp_{module}")];
-    names.extend(extra.iter().map(|name| (*name).to_owned()));
-    names
-}
-
 /// One collected element, with its source, children and entity as the rule's fields see them.
 #[derive(Debug, Clone)]
 struct Hit {
@@ -655,7 +632,7 @@ impl<'a> Scan<'a> {
         Self::scoped(hit, matcher.field.scope).iter().any(|index| {
             let value = self.attr(*index, matcher.field.attr);
             let names = if matcher.field.attr == Attr::Module {
-                spiderfoot_names(value)
+                crate::module::spiderfoot_names(value)
             } else {
                 vec![value.to_owned()]
             };

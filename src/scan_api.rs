@@ -14,18 +14,22 @@
 //! | `scanstatus` | `GET /api/scans/ID` |
 //! | `scansummary` | `GET /api/scans/ID/summary` |
 //! | `scaneventresults`, `scaneventresultsunique` | `GET /api/scans/ID/elements[?type=T][&unique=1][&hidefp=1][&correlation=C]` |
-//! | `scancorrelations`, `scancorrelationsexport` | `GET /api/scans/ID/correlations[?format=csv|tsv|json]` |
+//! | `scancorrelations`, `scancorrelationsexport` | `GET /api/scans/ID/correlations[?format=csv|tsv|xlsx|json]` |
 //! | `sf.py -C` | `POST /api/scans/ID/correlate` |
 //! | `correlationrules` | `GET /api/correlationrules` |
 //! | `scanlog`, `scanerrors` | `GET /api/scans/ID/log[?level=ERROR]` |
 //! | `scanviz` | `GET /api/scans/ID/graph` |
-//! | `scaneventresultexport`, `scanexportjsonmulti`, `scanviz?gexf=1` | `GET /api/scans/ID/export?format=csv|tsv|json|gexf[&type=T]`, `GET /api/scans/export?ids=A,B` |
+//! | `scaneventresultexport`, `scanviz?gexf=1` | `GET /api/scans/ID/export?format=csv|tsv|xlsx|json|gexf[&type=T]` |
+//! | `scaneventresultexportmulti`, `scanexportjsonmulti` | `GET /api/scans/export?ids=A,B[&format=json|csv|tsv|xlsx][&type=T]` |
+//! | (none: Spiderfoot cannot compare scans) | `GET /api/scans/compare?ids=EARLIER,LATER[&format=json|csv|tsv|xlsx]` |
+//! | `search` (one scan, or every scan here) | `GET /api/scans/search?value=V[&type=T][&ids=A,B][&hidefp=1]` |
 //! | `stopscan`, `scandelete`, `rerunscan` | `POST /api/scans/ID/stop|delete|rerun` |
 //! | `resultsetfp` | `POST /api/scans/ID/fp?ids=A,B&fp=1|0` |
 //! | `eventtypes` | `GET /api/eventtypes` |
 //! | `opts` (status only) | `GET /api/settings` |
 
-use std::collections::BTreeSet;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -33,7 +37,9 @@ use serde_json::{Value, json};
 use crate::api_leg::Api;
 use crate::correlator::rule_catalog;
 use crate::module::reachable_modules;
+use crate::scan_compare;
 use crate::scan_export;
+use crate::scan_search;
 use crate::scan_service::{MAX_RUNNING, ScanRequest, ScanService, ServiceError};
 use crate::scan_store::{LogLevel, Risk, ScanOptions, ScanRecord, ScanResults, ScanStatus};
 use crate::sf_correlate::Rule;
@@ -53,9 +59,27 @@ pub const MAX_EXPORT_SCANS: usize = 50;
 pub struct ApiResponse {
     pub status: u16,
     pub content_type: &'static str,
-    pub body: String,
+    /// The bytes to send: UTF-8 text for every answer but an Excel export.
+    pub body: Vec<u8>,
     /// For an export: the file name for `Content-Disposition: attachment`.
     pub filename: Option<String>,
+}
+
+impl ApiResponse {
+    /// The body as text; only an Excel export is not text.
+    #[must_use]
+    pub fn text(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.body)
+    }
+
+    fn export(export: scan_export::Export) -> Self {
+        Self {
+            status: 200,
+            content_type: export.content_type,
+            body: export.body,
+            filename: Some(export.filename),
+        }
+    }
 }
 
 const JSON: &str = "application/json; charset=utf-8";
@@ -64,7 +88,7 @@ fn ok(status: u16, value: &Value) -> ApiResponse {
     ApiResponse {
         status,
         content_type: JSON,
-        body: format!("{value}\n"),
+        body: format!("{value}\n").into_bytes(),
         filename: None,
     }
 }
@@ -80,7 +104,7 @@ fn service_error(failure: &ServiceError) -> ApiResponse {
 /// The keyed sources' slots, from each source's own [`Api`] constant, plus the sources that
 /// read their key elsewhere.
 fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
-    let apis: [&Api; 24] = [
+    let apis: [&Api; 27] = [
         &crate::abuseipdb::API,
         &crate::greynoise::API,
         &crate::hackertarget::API,
@@ -88,11 +112,14 @@ fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
         &crate::internetdb::API,
         &crate::ipinfo::API,
         &crate::ipqs::API,
+        &crate::isc::API,
         &crate::kickbox::API,
         &crate::leakix::API,
+        &crate::maltiverse::API,
         &crate::netlas::API,
         &crate::numverify::API,
         &crate::otx::API,
+        &crate::phishstats::API,
         &crate::pulsedive::API,
         &crate::ripestat::API,
         &crate::robtex::API,
@@ -204,6 +231,8 @@ impl ScanApi {
             (["scans"], false) => self.list(),
             (["scans"], true) => self.start(&param),
             (["scans", "export"], false) => self.export_many(&param),
+            (["scans", "compare"], false) => self.compare(&param),
+            (["scans", "search"], false) => self.search(&param),
             (["scans", id], false) => self.status(id),
             (["scans", id, "summary"], false) => self.summary(id),
             (["scans", id, "elements"], false) => self.elements(id, &param),
@@ -261,6 +290,8 @@ impl ScanApi {
                     "description": module.description,
                     "key_env": key_env,
                     "configured": configured,
+                    "lookups": crate::lookup_modules::lookups_asking(module.name),
+                    "spiderfoot": crate::module::spiderfoot_names(module.name),
                 })
             })
             .collect();
@@ -395,7 +426,7 @@ impl ScanApi {
         value["honoured"] = json!({
             "usecase": "passive skips the keyed breach lookup of every email; the other use cases run every source of each lookup",
             "types": true,
-            "modules": record.options.modules.is_empty(),
+            "modules": true,
             "depth": true,
         });
         ok(200, &value)
@@ -453,21 +484,126 @@ impl ScanApi {
             let mut seen = BTreeSet::new();
             chosen.retain(|element| seen.insert((element.kind.as_str(), element.data.as_str())));
         }
-        let rows: Vec<Value> = chosen
-            .into_iter()
-            .map(|element| {
-                let source_data = element
-                    .source
-                    .as_deref()
-                    .and_then(|source| results.elements.iter().find(|item| item.id == source))
-                    .map_or("", |source| source.data.as_str());
-                let mut row = json!(element);
-                row["description"] = Value::String(sf_types::describe(&element.kind).to_owned());
-                row["source_data"] = Value::String(source_data.to_owned());
-                row
-            })
+        ok(200, &Value::Array(element_rows(&results, chosen)))
+    }
+
+    /// `GET /api/scans/compare?ids=EARLIER,LATER`: what the later scan found that the earlier did
+    /// not, what it no longer finds, the change in each data type and the correlations each has
+    /// that the other lacks ([`scan_compare`]). JSON by default; `csv`, `tsv` and `xlsx` are the
+    /// added and removed elements as a file. A scan with no results yet compares as empty.
+    /// Spiderfoot's `search`, over the scans `ids` names or every saved scan: each matching
+    /// element as `/elements` gives it, with the scan it belongs to.
+    fn search(&self, param: &Params) -> ApiResponse {
+        let value = param.get("value").unwrap_or_default();
+        let kind = param
+            .get("type")
+            .filter(|kind| !kind.is_empty() && *kind != "ALL");
+        if value.trim().is_empty() && kind.is_none() {
+            return error(400, "search needs a value, a type or both");
+        }
+        let query = match scan_search::Query::parse(value) {
+            Ok(query) => query,
+            Err(failure) => return error(400, &failure.to_string()),
+        };
+        let ids: Vec<&str> = param
+            .get("ids")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
             .collect();
+        let records = if ids.is_empty() {
+            match self.service.store().list() {
+                Ok(records) => records,
+                Err(failure) => return service_error(&failure.into()),
+            }
+        } else {
+            let mut records = Vec::with_capacity(ids.len());
+            for id in ids {
+                match self.record(id) {
+                    Ok(record) => records.push(record),
+                    Err(response) => return response,
+                }
+            }
+            records
+        };
+        let hide_fp = matches!(param.get("hidefp"), Some("1" | "true"));
+        let mut rows = Vec::new();
+        for record in records {
+            let results = match self.service.store().results(&record.id) {
+                Ok(Some(results)) => results,
+                Ok(None) => continue,
+                Err(failure) => return service_error(&failure.into()),
+            };
+            let mut hits = scan_search::hits(&results, &query, kind);
+            if hide_fp {
+                hits.retain(|element| !element.fp);
+            }
+            for mut row in element_rows(&results, hits) {
+                row["scan_id"] = Value::String(record.id.clone());
+                row["scan_name"] = Value::String(record.name.clone());
+                row["scan_target"] = Value::String(record.target.clone());
+                rows.push(row);
+            }
+        }
         ok(200, &Value::Array(rows))
+    }
+
+    fn compare(&self, param: &Params) -> ApiResponse {
+        let ids: Vec<&str> = param
+            .get("ids")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .collect();
+        let &[earlier, later] = ids.as_slice() else {
+            return error(400, "compare takes two scan ids: ids=EARLIER,LATER");
+        };
+        let mut scans = Vec::with_capacity(2);
+        for id in [earlier, later] {
+            match self.results(id) {
+                Ok((record, results)) => {
+                    let results = results.unwrap_or_else(|| empty_results(&record));
+                    scans.push((record, results));
+                }
+                Err(response) => return response,
+            }
+        }
+        let [(base, base_results), (other, other_results)] = [&scans[0], &scans[1]];
+        let comparison = scan_compare::compare(base_results, other_results);
+        let format = param.get("format").filter(|format| !format.is_empty());
+        if let Some(format) = format.filter(|format| !format.eq_ignore_ascii_case("json")) {
+            return match scan_compare::render(
+                [(base, base_results), (other, other_results)],
+                &comparison,
+                format,
+            ) {
+                Ok(export) => ApiResponse::export(export),
+                Err(message) => error(400, &message),
+            };
+        }
+        let value = json!({
+            "base": base,
+            "other": other,
+            "unchanged": comparison.unchanged(),
+            "types": comparison.types,
+            "added": element_rows(other_results, comparison.added.iter().copied()),
+            "removed": element_rows(base_results, comparison.removed.iter().copied()),
+            "correlations": {
+                "added": comparison.correlations_added,
+                "removed": comparison.correlations_removed,
+            },
+        });
+        if format.is_none() {
+            return ok(200, &value);
+        }
+        // Asked for as a file: the same answer, under the comparison's file name.
+        ApiResponse::export(scan_export::Export {
+            body: value.to_string().into_bytes(),
+            content_type: "application/json; charset=utf-8",
+            filename: format!("{}-vs-{}-Huntsman.json", base.id, other.id),
+        })
     }
 
     fn correlations(&self, id: &str, format: Option<&str>) -> ApiResponse {
@@ -480,12 +616,7 @@ impl ScanApi {
             return ok(200, &json!(results.correlations));
         };
         match scan_export::render_correlations(&record, &results, format) {
-            Ok(export) => ApiResponse {
-                status: 200,
-                content_type: export.content_type,
-                body: export.body,
-                filename: Some(export.filename),
-            },
+            Ok(export) => ApiResponse::export(export),
             Err(message) => error(400, &message),
         }
     }
@@ -558,12 +689,7 @@ impl ScanApi {
             param.get("format").unwrap_or("csv"),
             param.get("type").filter(|kind| !kind.is_empty()),
         ) {
-            Ok(export) => ApiResponse {
-                status: 200,
-                content_type: export.content_type,
-                body: export.body,
-                filename: Some(export.filename),
-            },
+            Ok(export) => ApiResponse::export(export),
             Err(message) => error(400, &message),
         }
     }
@@ -585,9 +711,6 @@ impl ScanApi {
                 &format!("export takes at most {MAX_EXPORT_SCANS} scans"),
             );
         }
-        if param.get("format").is_some_and(|format| format != "json") {
-            return error(400, "a multi-scan export is JSON");
-        }
         let mut scans = Vec::new();
         for id in ids {
             match self.results(id) {
@@ -602,11 +725,13 @@ impl ScanApi {
             .iter()
             .map(|(record, results)| (record, results))
             .collect();
-        ApiResponse {
-            status: 200,
-            content_type: JSON,
-            body: scan_export::json_rows(&pairs, param.get("type")).to_string(),
-            filename: Some("Huntsman.json".into()),
+        match scan_export::render_many(
+            &pairs,
+            param.get("format").unwrap_or("json"),
+            param.get("type").filter(|kind| !kind.is_empty()),
+        ) {
+            Ok(export) => ApiResponse::export(export),
+            Err(message) => error(400, &message),
         }
     }
 
@@ -636,21 +761,87 @@ impl ScanApi {
         let Some(mut results) = results else {
             return error(404, "this scan saved no results");
         };
+        let named = results
+            .elements
+            .iter()
+            .filter(|element| ids.contains(element.id.as_str()) && element.kind != "ROOT")
+            .count();
+        if named != ids.len() {
+            return error(404, "an id names no element of this scan");
+        }
+        let affected = with_descendants(&results.elements, &ids);
+        if !flag {
+            if let Some(blocked) = unflag_blocked(&results.elements, &ids, &affected) {
+                return error(
+                    409,
+                    &format!(
+                        "element {blocked} was found from an element that is still a false \
+                         positive: unset that one, which unsets everything found from it"
+                    ),
+                );
+            }
+        }
+        let affected: BTreeSet<String> = affected.into_iter().map(str::to_owned).collect();
         let mut changed = Vec::new();
         for element in &mut results.elements {
-            if ids.contains(element.id.as_str()) && element.kind != "ROOT" {
+            if affected.contains(&element.id) && element.kind != "ROOT" {
                 element.fp = flag;
                 changed.push(element.id.clone());
             }
-        }
-        if changed.len() != ids.len() {
-            return error(404, "an id names no element of this scan");
         }
         match self.service.store().save_results(&results) {
             Ok(()) => ok(200, &json!({ "fp": flag, "ids": changed })),
             Err(failure) => service_error(&failure.into()),
         }
     }
+}
+
+/// The elements `ids` name and every element found from them, at any depth: what Spiderfoot's
+/// `resultsetfp` flags or unflags, since whatever a false positive led to is no finding either.
+fn with_descendants<'a>(elements: &'a [DataElement], ids: &BTreeSet<&str>) -> BTreeSet<&'a str> {
+    let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for element in elements {
+        if let Some(source) = element.source.as_deref() {
+            children.entry(source).or_default().push(&element.id);
+        }
+    }
+    let mut affected = BTreeSet::new();
+    let mut queue: Vec<&str> = elements
+        .iter()
+        .map(|element| element.id.as_str())
+        .filter(|id| ids.contains(id))
+        .collect();
+    while let Some(id) = queue.pop() {
+        if affected.insert(id) {
+            queue.extend(children.get(id).into_iter().flatten().copied());
+        }
+    }
+    affected
+}
+
+/// The first element of `ids` whose source is a false positive this change leaves flagged, as
+/// Spiderfoot refuses to unflag an element under a flagged parent. Unflagging the parent in the
+/// same request unflags the child with it, so that is allowed.
+fn unflag_blocked<'a>(
+    elements: &[DataElement],
+    ids: &BTreeSet<&'a str>,
+    affected: &BTreeSet<&str>,
+) -> Option<&'a str> {
+    let flagged: BTreeSet<&str> = elements
+        .iter()
+        .filter(|element| element.fp)
+        .map(|element| element.id.as_str())
+        .collect();
+    elements
+        .iter()
+        .filter(|element| ids.contains(element.id.as_str()))
+        .find(|element| {
+            element
+                .source
+                .as_deref()
+                .is_some_and(|source| flagged.contains(source) && !affected.contains(source))
+        })
+        .and_then(|element| ids.get(element.id.as_str()).copied())
 }
 
 /// Spiderfoot's `correlationrules` (id, name, descr, risk) for every rule a scan runs:
@@ -719,6 +910,29 @@ fn event_types() -> ApiResponse {
     ok(200, &Value::Array(types))
 }
 
+/// Elements as `/elements` answers them: each as saved, with its type's description and the data
+/// of the element it was found from in `results`.
+fn element_rows<'a>(
+    results: &ScanResults,
+    chosen: impl IntoIterator<Item = &'a DataElement>,
+) -> Vec<Value> {
+    let sources = scan_compare::source_data(results);
+    chosen
+        .into_iter()
+        .map(|element| {
+            let source_data = element
+                .source
+                .as_deref()
+                .and_then(|source| sources.get(source).copied())
+                .unwrap_or("");
+            let mut row = json!(element);
+            row["description"] = Value::String(sf_types::describe(&element.kind).to_owned());
+            row["source_data"] = Value::String(source_data.to_owned());
+            row
+        })
+        .collect()
+}
+
 fn empty_results(record: &ScanRecord) -> ScanResults {
     ScanResults {
         format_version: crate::scan_store::FORMAT_VERSION,
@@ -737,6 +951,7 @@ fn empty_results(record: &ScanRecord) -> ScanResults {
 mod tests {
     use super::*;
     use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+    use crate::module_selection::Selection;
     use crate::scan_route::ScanKind;
     use crate::scan_service::LookupOutput;
     use crate::scan_store::ScanStore;
@@ -751,7 +966,7 @@ mod tests {
 
     fn api(tag: &str) -> (ScanApi, PathBuf) {
         let dir = scratch(tag);
-        let lookup = Arc::new(|_kind: ScanKind, selector: &str| {
+        let lookup = Arc::new(|_kind: ScanKind, selector: &str, _: &Selection| {
             let evidence = Evidence::new(EvidenceProvenance::for_scan("internetdb", "s"), "ports")
                 .with_attr("ports", "22,443")
                 .with_attr("vulns", "CVE-2021-44228,CVE-2014-0160");
@@ -771,7 +986,7 @@ mod tests {
     }
 
     fn body(response: &ApiResponse) -> Value {
-        serde_json::from_str(&response.body).unwrap()
+        serde_json::from_slice(&response.body).unwrap()
     }
 
     fn finished(api: &ScanApi) -> String {
@@ -782,6 +997,214 @@ mod tests {
             })
             .unwrap()
             .id
+    }
+
+    /// Spiderfoot's search box over one scan or all of them: text anywhere, a wildcard as the
+    /// whole value, a regex anywhere, in the data, the source's data or the module.
+    #[test]
+    fn search_reads_spiderfoots_forms_over_one_scan_or_every_scan() {
+        let (api, dir) = api("search");
+        let first = finished(&api);
+        let second = api
+            .service()
+            .run(&ScanRequest {
+                target: "8.8.8.8".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap()
+            .id;
+        let search = |query: &str| api.handle("GET", "/api/scans/search", query);
+        let rows = |query: &str| -> Vec<Value> {
+            let answer = search(query);
+            assert_eq!(answer.status, 200, "{query}: {}", answer.text());
+            body(&answer).as_array().unwrap().clone()
+        };
+        let scans = |rows: &[Value]| -> BTreeSet<String> {
+            rows.iter()
+                .map(|row| row["scan_id"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let text = |row: &Value, key: &str| row[key].as_str().unwrap().to_owned();
+        let ports = rows("value=443&type=tcp_port_open");
+        assert_eq!(
+            scans(&ports),
+            BTreeSet::from([first.clone(), second.clone()])
+        );
+        for row in &ports {
+            assert_eq!(row["type"], "TCP_PORT_OPEN");
+            assert!(text(row, "data").contains("443") || text(row, "source_data").contains("443"));
+            assert!(row["scan_name"].is_string() && row["scan_target"].is_string());
+            assert!(row["description"].is_string(), "{row}");
+            // Each port was found from its scan's address, which the row names.
+            assert_eq!(row["source_data"], row["scan_target"], "{row}");
+        }
+        let one = rows(&format!("value=443&ids={first}"));
+        assert!(!one.is_empty());
+        assert_eq!(scans(&one), BTreeSet::from([first.clone()]));
+        // A wildcard is the whole value: 8.8.8.8 and what was found from it, never 1.1.1.1's.
+        let google = rows("value=8.8.*");
+        assert_eq!(scans(&google), BTreeSet::from([second.clone()]));
+        assert!(
+            google
+                .iter()
+                .all(|row| text(row, "data").starts_with("8.8.")
+                    || text(row, "source_data").starts_with("8.8."))
+        );
+        let cves = rows("value=/^cve-2021-/");
+        assert!(!cves.is_empty());
+        assert!(
+            cves.iter()
+                .all(|row| text(row, "data").starts_with("CVE-2021-"))
+        );
+        // A type alone lists it everywhere; the root is never a hit.
+        let every_port: usize = [&first, &second]
+            .iter()
+            .map(|id| {
+                body(&api.handle(
+                    "GET",
+                    &format!("/api/scans/{id}/elements"),
+                    "type=TCP_PORT_OPEN",
+                ))
+                .as_array()
+                .unwrap()
+                .len()
+            })
+            .sum();
+        assert!(every_port > ports.len());
+        assert_eq!(rows("type=TCP_PORT_OPEN").len(), every_port);
+        assert!(
+            rows("value=1.1.1.1")
+                .iter()
+                .all(|row| row["type"] != "ROOT")
+        );
+        assert_eq!(search("").status, 400);
+        assert_eq!(search("value=/(a/").status, 400);
+        assert_eq!(search("value=x&ids=0000000000000000").status, 404);
+        assert_eq!(
+            api.handle("POST", "/api/scans/search", "value=x").status,
+            405
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_scans_compare_by_value_and_export_their_changes() {
+        let (api, dir) = api("compare");
+        let earlier = finished(&api);
+        let later = api
+            .service()
+            .run(&ScanRequest {
+                target: "8.8.8.8".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap()
+            .id;
+        let answer = api.handle(
+            "GET",
+            "/api/scans/compare",
+            &format!("ids={earlier},{later}"),
+        );
+        assert_eq!(answer.status, 200, "{}", answer.text());
+        let compared = body(&answer);
+        assert_eq!(compared["base"]["id"], earlier.as_str());
+        assert_eq!(compared["other"]["id"], later.as_str());
+        assert_eq!(compared["unchanged"], false);
+        let data = |list: &Value| -> Vec<String> {
+            list.as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["data"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        // Each address is its own scan's; the vulnerabilities both found are kept, not listed.
+        assert!(data(&compared["added"]).contains(&"8.8.8.8".to_owned()));
+        assert!(data(&compared["removed"]).contains(&"1.1.1.1".to_owned()));
+        assert!(
+            !data(&compared["added"])
+                .iter()
+                .any(|value| value.starts_with("CVE-"))
+        );
+        let types = compared["types"].as_array().unwrap();
+        let ip = types
+            .iter()
+            .find(|row| row["type"] == "IP_ADDRESS")
+            .unwrap();
+        assert_eq!(
+            (
+                ip["added"].as_u64(),
+                ip["removed"].as_u64(),
+                ip["kept"].as_u64()
+            ),
+            (Some(1), Some(1), Some(0))
+        );
+        assert!(
+            types.iter().any(|row| row["kept"].as_u64() > Some(0)),
+            "{types:?}"
+        );
+        // Rows carry what /elements carries, so the page shows them alike.
+        let row = &compared["added"][0];
+        assert!(
+            row["description"].is_string()
+                && row["source_data"].is_string()
+                && row.get("raw").is_some(),
+            "{row}"
+        );
+        assert!(compared["correlations"]["added"].is_array());
+        let csv = api.handle(
+            "GET",
+            "/api/scans/compare",
+            &format!("ids={earlier},{later}&format=csv"),
+        );
+        assert_eq!(csv.status, 200, "{}", csv.text());
+        assert!(
+            csv.text()
+                .starts_with("Change,Scan Name,Updated,Type,Module,Source,F/P,Data\r\n")
+        );
+        assert_eq!(
+            csv.filename.as_deref(),
+            Some(format!("{earlier}-vs-{later}-Huntsman.csv").as_str())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_comparison_takes_two_saved_scans_and_a_table_format() {
+        let (api, dir) = api("compare-refused");
+        let earlier = finished(&api);
+        let later = finished(&api);
+        assert_eq!(
+            api.handle("GET", "/api/scans/compare", &format!("ids={earlier}"))
+                .status,
+            400
+        );
+        assert_eq!(
+            api.handle(
+                "GET",
+                "/api/scans/compare",
+                &format!("ids={earlier},{later}&format=gexf")
+            )
+            .status,
+            400
+        );
+        assert_eq!(
+            api.handle(
+                "GET",
+                "/api/scans/compare",
+                &format!("ids={earlier},0000000000000000")
+            )
+            .status,
+            404
+        );
+        assert_eq!(
+            api.handle(
+                "POST",
+                "/api/scans/compare",
+                &format!("ids={earlier},{later}")
+            )
+            .status,
+            405
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -822,7 +1245,7 @@ mod tests {
             "{titles:?}"
         );
         let rerun = api.handle("POST", &format!("/api/scans/{id}/correlate"), "");
-        assert_eq!(rerun.status, 200, "{}", rerun.body);
+        assert_eq!(rerun.status, 200, "{}", rerun.text());
         assert_eq!(body(&rerun), saved);
         let csv = api.handle(
             "GET",
@@ -831,10 +1254,10 @@ mod tests {
         );
         assert_eq!(csv.status, 200);
         assert!(
-            csv.body
+            csv.text()
                 .starts_with("Rule Name,Correlation,Risk,Description,Rule,Origin,Elements\r\n")
         );
-        assert_eq!(csv.body.matches("\r\n").count(), titles.len() + 1);
+        assert_eq!(csv.text().matches("\r\n").count(), titles.len() + 1);
         assert!(
             csv.filename
                 .unwrap()
@@ -846,7 +1269,7 @@ mod tests {
             refused(
                 "GET",
                 &format!("/api/scans/{id}/correlations"),
-                "format=xlsx"
+                "format=gexf"
             ),
             400
         );
@@ -863,9 +1286,9 @@ mod tests {
     fn a_scan_started_with_a_depth_keeps_it_and_a_bad_depth_is_refused() {
         let (api, dir) = api("depth");
         let bad = api.handle("POST", "/api/scans", "target=1.1.1.1&depth=deep");
-        assert_eq!(bad.status, 400, "{}", bad.body);
+        assert_eq!(bad.status, 400, "{}", bad.text());
         let started = api.handle("POST", "/api/scans", "target=1.1.1.1&depth=2");
-        assert_eq!(started.status, 202, "{}", started.body);
+        assert_eq!(started.status, 202, "{}", started.text());
         assert_eq!(body(&started)["options"]["depth"], 2);
         let id = body(&started)["id"].as_str().unwrap().to_owned();
         for _ in 0..200 {
@@ -878,6 +1301,43 @@ mod tests {
     }
 
     #[test]
+    fn a_scan_started_with_modules_keeps_them_and_refuses_what_none_of_them_takes() {
+        let (api, dir) = api("modules");
+        let unknown = api.handle("POST", "/api/scans", "target=1.1.1.1&modules=nonesuch");
+        assert_eq!(unknown.status, 400, "{}", unknown.text());
+        assert!(
+            unknown.text().contains("no module is named nonesuch"),
+            "{}",
+            unknown.text()
+        );
+        let unasked = api.handle("POST", "/api/scans", "target=1.1.1.1&modules=sfp_gravatar");
+        assert_eq!(unasked.status, 400, "{}", unasked.text());
+        assert!(
+            unasked
+                .text()
+                .contains("none of the chosen modules (sfp_gravatar)"),
+            "{}",
+            unasked.text()
+        );
+        let started = api.handle("POST", "/api/scans", "target=1.1.1.1&modules=sfp_ripe,RDAP");
+        assert_eq!(started.status, 202, "{}", started.text());
+        assert_eq!(
+            body(&started)["options"]["modules"],
+            json!(["sfp_ripe", "rdap"])
+        );
+        let id = body(&started)["id"].as_str().unwrap().to_owned();
+        for _ in 0..200 {
+            if !api.service().store().get(&id).unwrap().status.is_active() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let shown = body(&api.handle("GET", &format!("/api/scans/{id}"), ""));
+        assert_eq!(shown["honoured"]["modules"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_started_scan_is_listed_and_finishes() {
         let (api, dir) = api("start");
         let started = api.handle(
@@ -885,7 +1345,7 @@ mod tests {
             "/api/scans",
             "target=1.1.1.1&name=resolver&usecase=footprint",
         );
-        assert_eq!(started.status, 202, "{}", started.body);
+        assert_eq!(started.status, 202, "{}", started.text());
         let id = body(&started)["id"].as_str().unwrap().to_owned();
         let mut status = String::new();
         for _ in 0..200 {
@@ -973,7 +1433,7 @@ mod tests {
             &format!("/api/scans/{id}/fp"),
             &format!("ids={first}&fp=1"),
         );
-        assert_eq!(set.status, 200, "{}", set.body);
+        assert_eq!(set.status, 200, "{}", set.text());
         let shown = body(&api.handle(
             "GET",
             &format!("/api/scans/{id}/elements"),
@@ -992,6 +1452,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Spiderfoot's `resultsetfp`: flagging an element flags every element found from it, and an
+    /// element under a flagged parent cannot be unflagged on its own.
+    #[test]
+    fn a_false_positive_carries_to_everything_found_from_it() {
+        let (api, dir) = api("fp-tree");
+        let id = finished(&api);
+        let graph = || body(&api.handle("GET", &format!("/api/scans/{id}/graph"), ""));
+        let edges: Vec<(String, String)> = graph()["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|edge| {
+                (
+                    edge["source"].as_str().unwrap().to_owned(),
+                    edge["target"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let root = graph()["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["type"] == "ROOT")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // An element below the root that others were found from, and everything below it.
+        let parent = edges
+            .iter()
+            .map(|(source, _)| source)
+            .find(|source| **source != root)
+            .unwrap()
+            .clone();
+        let mut below = BTreeSet::new();
+        let mut queue = vec![parent.clone()];
+        while let Some(next) = queue.pop() {
+            for (source, target) in &edges {
+                if *source == next && below.insert(target.clone()) {
+                    queue.push(target.clone());
+                }
+            }
+        }
+        let child = below.iter().next().unwrap().clone();
+        let flagged = || -> BTreeSet<String> {
+            graph()["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|node| node["fp"] == true)
+                .map(|node| node["id"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let fp = |ids: &str, on: &str| {
+            api.handle(
+                "POST",
+                &format!("/api/scans/{id}/fp"),
+                &format!("ids={ids}&fp={on}"),
+            )
+        };
+        let set = fp(&parent, "1");
+        assert_eq!(set.status, 200, "{}", set.text());
+        let mut subtree = below.clone();
+        subtree.insert(parent.clone());
+        assert_eq!(flagged(), subtree);
+        assert_eq!(body(&set)["ids"].as_array().unwrap().len(), subtree.len());
+        // The child cannot leave its flagged parent behind, and nothing changes.
+        let refused = fp(&child, "0");
+        assert_eq!(refused.status, 409, "{}", refused.text());
+        assert!(refused.text().contains(&child), "{}", refused.text());
+        assert_eq!(flagged(), subtree);
+        // Unflagging the parent, alone or with the child, unflags the whole branch.
+        let both = fp(&format!("{parent},{child}"), "0");
+        assert_eq!(both.status, 200, "{}", both.text());
+        assert!(flagged().is_empty());
+        assert_eq!(fp(&parent, "1").status, 200);
+        assert_eq!(fp(&parent, "0").status, 200);
+        assert!(flagged().is_empty());
+        // The root is the target, never a false positive.
+        assert_eq!(fp(&root, "1").status, 404);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn exports_carry_a_file_name_and_spiderfoots_layout() {
         let (api, dir) = api("export");
@@ -999,13 +1542,42 @@ mod tests {
         let csv = api.handle("GET", &format!("/api/scans/{id}/export"), "format=csv");
         assert_eq!(csv.status, 200);
         assert!(
-            csv.body
+            csv.text()
                 .starts_with("Updated,Type,Module,Source,F/P,Data\r\n")
         );
         assert_eq!(csv.filename.as_deref(), Some("1.1.1.1-Huntsman.csv"));
+        let book = api.handle("GET", &format!("/api/scans/{id}/export"), "format=xlsx");
+        assert_eq!(book.status, 200);
+        assert_eq!(book.content_type, crate::xlsx::CONTENT_TYPE);
+        assert_eq!(book.filename.as_deref(), Some("1.1.1.1-Huntsman.xlsx"));
+        assert!(book.body.starts_with(b"PK\x03\x04"));
+        assert!(crate::xlsx::tests::sheet_names(&book.body).contains(&"TCP_PORT_OPEN".to_owned()));
         let many = api.handle("GET", "/api/scans/export", &format!("ids={id},{id}"));
         assert_eq!(many.status, 200);
         assert!(body(&many).as_array().unwrap().len() > 2);
+        let many = api.handle(
+            "GET",
+            "/api/scans/export",
+            &format!("ids={id},{id}&format=csv&type=TCP_PORT_OPEN"),
+        );
+        assert_eq!(many.filename.as_deref(), Some("Huntsman.csv"));
+        assert!(
+            many.text()
+                .starts_with("Scan Name,Updated,Type,Module,Source,F/P,Data\r\n")
+        );
+        let book = api.handle(
+            "GET",
+            "/api/scans/export",
+            &format!("ids={id}&format=excel"),
+        );
+        assert_eq!(book.filename.as_deref(), Some("1.1.1.1-Huntsman.xlsx"));
+        let correlations = api.handle(
+            "GET",
+            &format!("/api/scans/{id}/correlations"),
+            "format=xlsx",
+        );
+        assert_eq!(correlations.status, 200);
+        assert_eq!(correlations.content_type, crate::xlsx::CONTENT_TYPE);
         assert_eq!(
             api.handle("GET", &format!("/api/scans/{id}/export"), "format=pdf")
                 .status,
@@ -1100,6 +1672,31 @@ mod tests {
         assert_eq!(robtex["key_env"], json!([]));
         assert_eq!(robtex["configured"], Value::Null);
         assert!(settings["global"].as_array().unwrap().len() >= 3);
+        // Each module names the lookups that ask it, as New Scan's By Module list shows.
+        let modules = settings["modules"].as_array().unwrap();
+        assert!(modules.iter().all(|module| module["lookups"].is_array()));
+        let ripestat = modules.iter().find(|module| module["name"] == "ripestat");
+        assert_eq!(
+            ripestat.unwrap()["lookups"],
+            json!(["ip", "netblock", "asn"])
+        );
+        // And every name a scan may choose it by, so Clone can restore a scan that chose a
+        // Spiderfoot module: `sfp_whois` stands for both RDAP and Whoxy.
+        assert_eq!(
+            ripestat.unwrap()["spiderfoot"],
+            json!(["ripestat", "sfp_ripestat", "sfp_ripe"])
+        );
+        let whois: Vec<&Value> = modules
+            .iter()
+            .filter(|module| {
+                module["spiderfoot"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("sfp_whois"))
+            })
+            .map(|module| &module["name"])
+            .collect();
+        assert_eq!(whois, [&json!("whoxy"), &json!("rdap")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

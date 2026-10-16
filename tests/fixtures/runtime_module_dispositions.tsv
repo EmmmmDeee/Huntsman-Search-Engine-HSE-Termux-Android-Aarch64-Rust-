@@ -7,13 +7,14 @@ archive_bridge	adapter	archive records into collection observations
 artifacts	exporter	bounded shared-state artifact renderer
 asic_director	adapter	ASIC director source client
 asic_persons	adapter	ASIC people source client
+asn_cli	runtime	AS lookup front-end reached from asn, scan -k asn, scans run and /api/lookup
 atproto	adapter	ATProto source adapter
 attack	leaf	ATT&CK model utility
 attack_catalog	leaf	ATT&CK catalogue
 attack_cli	diagnostic	ATT&CK command front-end over the reachable module catalogue
 attack_reporting	leaf	hierarchy-aware ATT&CK coverage projection
 au_id	leaf	Australian identifier normalization
-base64	leaf	RFC 4648 base64 encoding for CSP hashes and PKCE values
+base64	leaf	RFC 4648 base64 codec for CSP hashes, PKCE values and certificate DER
 benchmark	diagnostic	benchmarking support
 bluesky_user	adapter	public Bluesky profile source client
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
@@ -28,12 +29,14 @@ collection	runtime	provider-neutral execution/observation bridge
 collector	adapter	source-agnostic collection boundary
 commercial_readiness	diagnostic	machine-checkable capability proof and benchmark readiness reporting
 community	runtime	graph community analysis through intelligence report
+concurrent	runtime	runs a lookup's independent sources at once for exposure_cli and every email, username and name lookup
 confidence	runtime	entity confidence and verification helpers
 coref	runtime	deterministic coreference clusters in investigation report
 correlator	runtime	correlation rules used by the runtime analysis spine
 coverage	runtime	provider coverage and incompleteness semantics
 credential_origin	leaf	authentication authority boundary
 cross_scan	runtime	bounded historical scan bridge analysis
+certspotter	adapter	Cert Spotter certificate leg reached through domain_cli from domain, scan -k domain and /api/lookup, keyless or with its key
 crtsh	adapter	Certificate Transparency source client
 deadline	leaf	shared per-lookup request budget
 dehashed	adapter	DeHashed exact-match source client and lineage-safe collector
@@ -43,6 +46,9 @@ differential	diagnostic	legacy no-regression entity comparator and oracle manife
 directive_lock	diagnostic	canonical repository directive verification and mirror synchronization
 dmarc	leaf	DMARC parser
 dns	adapter	DNS source client
+dns_filter	adapter	filtering-resolver checks (AdGuard, CleanBrowsing, Cloudflare, Comodo, DNS for Family, OpenDNS, Quad9, Yandex) reached through domain_cli from domain, scan and /api/lookup
+dns_wire	leaf	RFC 1035 wire-form DNS query writer and answer reader behind dns_filter
+dnsbl	adapter	DNS blocklist checks (Spamhaus, SpamCop, UCEPROTECT, DroneBL, SORBS, SURBL) reached through ip_cli and domain_cli from ip, domain, scan and /api/lookup
 doctor	diagnostic	doctor and fix checks and reversible repairs called by src/cli/doctor.rs
 domain_cli	diagnostic	domain recon command front-end over crtsh and dns
 domain_lifecycle	diagnostic	offline imported domain-observation comparison
@@ -85,7 +91,9 @@ internetdb	adapter	Shodan InternetDB leg reached through ip_cli from ip, scan -k
 ip_cli	runtime	ip lookup front-end reached from ip, scan -k ip and /api/lookup
 ipinfo	adapter	IPinfo leg reached through indicator_legs from ip, scan and /api/lookup
 ipqs	adapter	IPQualityScore IP leg reached through indicator_legs from ip, scan -k ip and /api/lookup when its key is set
+isc	adapter	Internet Storm Center leg reached through indicator_legs from ip, scan and /api/lookup
 json	exporter	canonical JSON support
+key_import	adapter	Spiderfoot SpiderFoot.cfg and keys-file key import reached through serve's POST /api/settings/keys (Settings, Import API keys)
 keys	leaf	credential file handling
 kickbox	adapter	Kickbox disposable-domain leg reached through indicator_legs from email, scan -k email and /api/lookup
 leads	runtime	lead ranking through intelligence report
@@ -93,13 +101,19 @@ leakix	adapter	LeakIX leg reached through indicator_legs from ip, domain, scan a
 ledger	exporter	hash-chained verified-claim ledger
 lineage	leaf	lineage-aware candidate resolution helper
 lookup_args	leaf	lookup option grammar shared by the front-ends
+lookup_modules	runtime	the modules each lookup kind asks, reached through scans run -m, sf -m, the New Scan page's modules and /api/settings
 lookup_report	leaf	shared text report of an identifier lookup
 lookup_save	exporter	shared unverified lookup ledger persistence
+maltiverse	adapter	Maltiverse leg reached through indicator_legs from ip, domain, scan and /api/lookup
 md5	leaf	MD5 primitive for protocols that require public MD5 identifiers
 meta_plan	runtime	meta-plan validation consumed by the runtime
 metrics	runtime	shared scan metrics
+mnemonic	adapter	Mnemonic passive DNS leg reached through ip_cli and domain_cli from ip, domain, scan and /api/lookup
 module	runtime	provider economics metadata
+module_selection	runtime	the chosen modules carried on the transport, reached through every lookup a scan with modules runs
 navigator	exporter	ATT&CK Navigator output from admitted claims
+netblock	runtime	CIDR address-block parsing, containment and listing shared by spf, rdap and netblock_cli
+netblock_cli	runtime	netblock lookup front-end reached from netblock, scan -k netblock, sf -s and /api/lookup
 netlas	adapter	Netlas host leg reached through indicator_legs from ip, domain, scan and /api/lookup
 network_cli	adapter	network lookup front-end reached from network, scan -k network and /api/lookup
 numverify	adapter	Numverify leg reached through phone_cli from phone, scan -k phone and /api/lookup when its key is set
@@ -110,6 +124,7 @@ oui	leaf	OUI lookup
 oui_ieee	leaf	IEEE OUI data
 pattern	leaf	linear-time regular expressions the Spiderfoot correlation rules run
 people_cli	diagnostic	ASIC people command front-end
+phishstats	adapter	PhishStats leg reached through indicator_legs from ip, scan and /api/lookup
 phone_cli	diagnostic	offline phone enrichment command front-end
 phone_intl	leaf	international phone canonicalization and country-prefix lookup
 pipeline	runtime	bounded normalization and evidence composition
@@ -125,6 +140,8 @@ pulsedive	adapter	Pulsedive leg reached through indicator_legs from ip, domain, 
 radar	leaf	radar model utility
 recon	leaf	host reconnaissance helpers
 recursion	runtime	bounded fetch-expand-fetch crawl orchestration and termination
+rdap	adapter	keyless RDAP registration client reached through rdap_legs from domain, ip, scan and /api/lookup
+rdap_legs	runtime	RDAP registration leg of domain_cli and ip_cli, as sfp_whois
 redact	leaf	secret and location redaction
 relation	runtime	structural relation derivation
 resolve	leaf	conservative automatic merge application for supplied decisions
@@ -138,8 +155,10 @@ runtime	runtime	high-level investigation composition root
 scan_api	runtime	Spiderfoot-shaped saved-scan API router reached through scans and serve
 scan_artifact	exporter	versioned re-loadable scan results and correlation rerun
 scan_batch	leaf	bounded ordered scan seed-list parsing
-scan_export	exporter	Spiderfoot-layout CSV, TSV, JSON and GEXF exports of saved scans through scans export and the scan API
+scan_compare	runtime	what changed between two saved scans, reached through scans compare and the scan API
+scan_export	exporter	Spiderfoot-layout CSV, TSV, Excel, JSON and GEXF exports of saved scans through scans export and the scan API
 scan_route	runtime	deterministic lookup-front-end selector routing
+scan_search	runtime	Spiderfoot's search over one or every saved scan, reached through scans search, the scan API and the console
 scan_service	runtime	saved-scan runner reached through scans run and the scan API
 scan_store	runtime	private on-disk saved-scan store with crash recovery read by scans and the scan API
 scraper_health	diagnostic	source drift diagnostics
@@ -151,7 +170,8 @@ seeknow_collector	adapter	SeekNow lineage-safe collector
 serve_probe	diagnostic	loopback probe of a running serve called by doctor and doctor serve
 service_defs	adapter	keyed-provider service registry
 session	exporter	auditable execution session
-sf_compat	diagnostic	SpiderFoot-compatible front end over rebuilt lookup paths
+sf_compat	diagnostic	SpiderFoot-compatible sf.py front end over saved scans
+sf_country	leaf	Spiderfoot's country table and sfp_countryname's readings behind sf_elements' COUNTRY_NAME elements
 sf_correlate	runtime	Spiderfoot 4.0 correlation rules run on every saved scan, scans rules and /api/correlationrules
 sf_elements	runtime	entities as typed Spiderfoot data elements for saved scans and sf -s rows
 sf_types	runtime	Spiderfoot 4.0 data-element type catalogue read by sf -T, scans and /api/eventtypes
@@ -172,6 +192,7 @@ store	exporter	bounded atomic session persistence
 tags	leaf	entity tag constants
 termination	runtime	explicit bounded termination semantics
 textnorm	leaf	text normalization
+threat_feeds	adapter	downloaded threat feeds (abuse.ch, AlienVault, blocklist.de, botvrij, CINS, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black, Tor exits, VoIPBL, VXVault) kept in the state directory and reached through ip_cli, domain_cli and netblock_cli from ip, domain, netblock, scan and /api/lookup
 threatfox	adapter	ThreatFox IOC leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
 timefmt	leaf	timestamp parsing
 timeline	runtime	timeline reconstruction through intelligence report
@@ -188,5 +209,7 @@ web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
 whoxy	adapter	Whoxy WHOIS leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set
 wigle	adapter	WiGLE network-search leg reached through network_cli from network, scan -k network and /api/lookup
+x509	leaf	dependency-free X.509 DER reader and PEM writer behind certspotter
+xlsx	exporter	dependency-free Excel workbook writer behind scan_export's xlsx exports
 xposedornot	adapter	XposedOrNot breach-name leg reached through indicator_legs from email, scan and /api/lookup
 yaml_lite	leaf	dependency-free YAML subset reader for Spiderfoot correlation rules
