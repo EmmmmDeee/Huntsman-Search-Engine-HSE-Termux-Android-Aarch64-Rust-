@@ -229,7 +229,7 @@ struct DnsJsonResponse {
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct DnsJsonAnswer {
+pub struct DnsJsonAnswer {
     #[serde(rename = "type", default)]
     rtype: u16,
     #[serde(default)]
@@ -333,9 +333,13 @@ pub fn resolve_with_config<T: Transport + ?Sized>(
 
 fn build_request(server: &ResolverServer, query: &ResolveQuery, timeout: Duration) -> Request {
     let url = append_query_param(
-        &append_query_param(server.doh_url, "name", &query.name),
-        "type",
-        query.record_type.as_str(),
+        &append_query_param(
+            &append_query_param(server.doh_url, "name", &query.name),
+            "type",
+            query.record_type.as_str(),
+        ),
+        "do",
+        "1",
     );
     Request::get(url)
         .header("accept", "application/dns-json")
@@ -1401,4 +1405,15 @@ mod tests {
         assert!(report.tlsrpt.is_none());
         assert!(report.render().contains("answers=0 failed=7"));
     }
+}
+
+/// DNSSEC record type codes.
+pub const DNSKEY: u16 = 48;
+pub const DS: u16 = 43;
+pub const RRSIG: u16 = 46;
+
+/// Whether the answer carried DNSSEC records. **Pure.**
+#[must_use]
+pub fn dnssec_present(answers: &[DnsJsonAnswer]) -> bool {
+    answers.iter().any(|a| matches!(a.rtype, DNSKEY | DS | RRSIG))
 }

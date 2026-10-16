@@ -89,6 +89,7 @@ pub mod graph;
 pub mod gravatar;
 pub mod greynoise;
 pub mod hackertarget;
+pub mod submd;
 pub mod hibp;
 pub mod http;
 pub mod hunter;
