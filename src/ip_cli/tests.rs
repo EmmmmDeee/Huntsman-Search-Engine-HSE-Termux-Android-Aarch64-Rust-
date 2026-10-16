@@ -130,6 +130,11 @@ fn keyless() -> Routes {
         ("https://api.maltiverse.com/", 404, "{}"),
         ("https://api.phishstats.info/", 200, "[]"),
         ("https://api.shodan.io/", 200, SHODAN),
+        (
+            "https://api.mnemonic.no/",
+            200,
+            r#"{"responseCode":200,"count":0,"data":[]}"#,
+        ),
     ])
 }
 
@@ -179,6 +184,7 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "cloudflare-dns.com",
             "data.iana.org",
             "rdap.apnic.net",
+            "api.mnemonic.no",
             "internetdb.shodan.io",
             "stat.ripe.net",
             "api.greynoise.io",
@@ -215,6 +221,7 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     }
     assert_eq!(outcome(&report, RESOLVE_SOURCE), SourceOutcomeKind::Success);
     assert_eq!(outcome(&report, "rdap"), SourceOutcomeKind::Success);
+    assert_eq!(outcome(&report, "mnemonic"), SourceOutcomeKind::ValidZero);
     // The DNS blocklists are keyless and always asked; this transport has no system resolver.
     for source in [
         "spamhaus",
@@ -230,7 +237,7 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "{source}"
         );
     }
-    assert_eq!(report.outcomes.len(), 22, "an unkeyed leg reports nothing");
+    assert_eq!(report.outcomes.len(), 23, "an unkeyed leg reports nothing");
 
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
     assert!(ip.has_tag(tags::VULNERABLE));

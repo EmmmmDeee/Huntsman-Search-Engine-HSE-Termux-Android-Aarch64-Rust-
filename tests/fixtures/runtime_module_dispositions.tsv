@@ -108,6 +108,7 @@ maltiverse	adapter	Maltiverse leg reached through indicator_legs from ip, domain
 md5	leaf	MD5 primitive for protocols that require public MD5 identifiers
 meta_plan	runtime	meta-plan validation consumed by the runtime
 metrics	runtime	shared scan metrics
+mnemonic	adapter	Mnemonic passive DNS leg reached through ip_cli and domain_cli from ip, domain, scan and /api/lookup
 module	runtime	provider economics metadata
 module_selection	runtime	the chosen modules carried on the transport, reached through every lookup a scan with modules runs
 navigator	exporter	ATT&CK Navigator output from admitted claims

@@ -186,6 +186,9 @@ pub fn run<T: Transport + ?Sized>(
     let registration = crate::rdap_legs::ip(transport, &ip, &scan_id, now_unix);
     lookup.report.entities.extend(registration.entities);
     lookup.report.outcomes.extend(registration.outcome);
+    let seen = crate::mnemonic::ip(transport, &ip, &scan_id, now_unix);
+    lookup.report.entities.extend(seen.entities);
+    lookup.report.outcomes.extend(seen.outcome);
     if internetdb::API.runs(transport, keys) {
         match internetdb::lookup(transport, &ip, now_unix) {
             Ok(Some(host)) => internetdb_leg(&mut lookup, &host),

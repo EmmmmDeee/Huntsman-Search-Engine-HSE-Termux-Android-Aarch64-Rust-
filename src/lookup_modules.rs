@@ -16,7 +16,7 @@ use crate::scan_route::ScanKind;
 use crate::threat_feeds;
 use crate::{
     abuseipdb, bluesky_user, certspotter, dehashed, duolingo, exposure_cli, github_user, gravatar,
-    greynoise, hunter, internetdb, numverify, oathnet, openpgp_keys, rdap, ripestat,
+    greynoise, hunter, internetdb, mnemonic, numverify, oathnet, openpgp_keys, rdap, ripestat,
     seeknow_collector, virustotal, wigle,
 };
 
@@ -36,6 +36,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             let mut ip = vec![
                 crate::dns::RESOLVE_SOURCE,
                 rdap::SOURCE,
+                mnemonic::SOURCE,
                 internetdb::SOURCE,
                 ripestat::SOURCE,
                 greynoise::SOURCE,
@@ -47,7 +48,13 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             ip
         }
         ScanKind::Domain => {
-            let mut domain = vec!["crtsh", certspotter::SOURCE, "dns", rdap::SOURCE];
+            let mut domain = vec![
+                "crtsh",
+                certspotter::SOURCE,
+                "dns",
+                rdap::SOURCE,
+                mnemonic::SOURCE,
+            ];
             domain.extend(zones(|takes| {
                 matches!(takes, Takes::Domains | Takes::Ipv4AndDomains)
             }));

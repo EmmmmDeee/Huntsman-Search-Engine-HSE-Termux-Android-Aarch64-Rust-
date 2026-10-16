@@ -1055,6 +1055,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "RDAP registration of a domain, an address's network, a block or an AS number, from the registry the IANA bootstrap names",
     },
     ReachableModule {
+        name: "mnemonic",
+        command: "domain DOMAIN | ip ADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1596.001"],
+        description: "Mnemonic passive DNS: every record seen for a domain or an address, with when, how often and its TTL; names, addresses and co-hosted sites",
+    },
+    ReachableModule {
         name: "stolen_tax",
         command: "recon stolen-tax QUERY",
         access: "operator_key",
