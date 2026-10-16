@@ -9,6 +9,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// Shaped as the v3 `ip_addresses/{ip}` object of the `VirusTotal` API reference.
 const ANSWER: &str = r#"{"data":{"id":"1.1.1.1","type":"ip_address","links":{"self":"https://www.virustotal.com/api/v3/ip_addresses/1.1.1.1"},"attributes":{
@@ -45,7 +46,13 @@ impl Transport for OnlyVirusTotal {
 fn entities() -> Vec<Entity> {
     let keys = Keys::parse("HUNTSMAN_VIRUSTOTAL_KEY=virustotal-test-key-0815")
         .unwrap_or_else(|e| panic!("{e}"));
-    match run(&OnlyVirusTotal, &keys, "1.1.1.1", 1_760_000_000) {
+    match run(
+        &OnlyVirusTotal,
+        &keys,
+        &Feeds::none(),
+        "1.1.1.1",
+        1_760_000_000,
+    ) {
         IpRun::Printed { report, .. } => report.entities,
         IpRun::Network(why) | IpRun::Failed(why) => panic!("ip 1.1.1.1 did not print: {why}"),
     }
