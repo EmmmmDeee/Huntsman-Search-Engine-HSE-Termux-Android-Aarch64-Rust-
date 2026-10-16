@@ -209,9 +209,96 @@ pub fn parse_timestamp(raw: &str) -> Option<i64> {
     parse_timestamp_and_iso(raw).map(|(ts, _)| ts)
 }
 
+/// An HTTP-date (RFC 9110 §5.6.7) as Unix seconds: the IMF-fixdate `Sun, 06 Nov 1994 08:49:37 GMT`,
+/// or either obsolete form a recipient must also accept, RFC 850 `Sunday, 06-Nov-94 08:49:37 GMT`
+/// and asctime `Sun Nov  6 08:49:37 1994`. The weekday is not checked against the date. A two-digit
+/// RFC 850 year more than 50 years ahead of `now_unix` is read as the previous century.
+#[must_use]
+pub fn parse_http_date(raw: &str, now_unix: u64) -> Option<i64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let raw = raw.trim();
+    let (weekday, rest) = raw.split_once([',', ' '])?;
+    if weekday.len() < 3 || !weekday.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return None;
+    }
+    let parts: Vec<&str> = rest.split_ascii_whitespace().collect();
+    let (year, month, day, clock) = match parts.as_slice() {
+        [day, month, year, clock, "GMT"] if raw.as_bytes()[3] == b',' && year.len() == 4 => {
+            (year.parse::<i32>().ok()?, *month, *day, *clock)
+        }
+        [date, clock, "GMT"] if raw.as_bytes().get(weekday.len()) == Some(&b',') => {
+            let mut fields = date.split('-');
+            let (day, month, yy) = (fields.next()?, fields.next()?, fields.next()?);
+            if fields.next().is_some() || yy.len() != 2 {
+                return None;
+            }
+            let yy: i32 = yy.parse().ok()?;
+            let now_year =
+                i32::try_from(civil_from_days(i64::try_from(now_unix / 86_400).ok()?).0).ok()?;
+            let mut year = now_year - now_year.rem_euclid(100) + yy;
+            if year > now_year + 50 {
+                year -= 100;
+            }
+            (year, month, day, *clock)
+        }
+        [month, day, clock, year] if raw.as_bytes()[3] == b' ' && year.len() == 4 => {
+            (year.parse::<i32>().ok()?, *month, *day, *clock)
+        }
+        _ => return None,
+    };
+    let month = u32::try_from(MONTHS.iter().position(|m| *m == month)? + 1).ok()?;
+    if day.is_empty() || day.len() > 2 || !day.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let day: u32 = day.parse().ok()?;
+    let mut hms = clock.split(':');
+    let mut field = |max: i64| -> Option<i64> {
+        let text = hms.next()?;
+        if text.len() != 2 || !text.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let value: i64 = text.parse().ok()?;
+        (value <= max).then_some(value)
+    };
+    let (hour, minute, second) = (field(23)?, field(59)?, field(60)?);
+    if hms.next().is_some() {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    if civil_from_days(days) != (i64::from(year), month, day) {
+        return None;
+    }
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_dates_in_all_three_forms_read_as_the_same_instant() {
+        let now = 1_792_108_800; // 2026-10-15
+        for raw in [
+            "Sun, 06 Nov 1994 08:49:37 GMT",
+            "Sunday, 06-Nov-94 08:49:37 GMT",
+            "Sun Nov  6 08:49:37 1994",
+        ] {
+            assert_eq!(parse_http_date(raw, now), Some(784_111_777), "{raw}");
+        }
+        for raw in [
+            "",
+            "120",
+            "Sun, 06 Nov 1994 08:49:37 UTC",
+            "Sun, 31 Feb 1994 08:49:37 GMT",
+            "Sun, 06 Nov 1994 24:00:00 GMT",
+            "Sun, 06 Foo 1994 08:49:37 GMT",
+            "Sun, 6 Nov 1994 8:49:37 GMT",
+        ] {
+            assert_eq!(parse_http_date(raw, now), None, "{raw}");
+        }
+    }
 
     #[test]
     fn round_trip_epoch_and_leap_day() {
