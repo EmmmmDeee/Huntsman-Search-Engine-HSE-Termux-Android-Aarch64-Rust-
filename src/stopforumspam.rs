@@ -2,14 +2,16 @@
 //!
 //! One lookup is one keyless `GET https://api.stopforumspam.org/api?{email|ip}=VALUE&json`. Kept:
 //! whether the value appears, how many reports it has, when it was last reported, the service's
-//! confidence score, and (for an address) whether it is a Tor exit. A value with no reports is a
-//! valid zero.
+//! confidence score, and for an address whether it is a Tor exit, its origin AS (also an ASN
+//! pivot), its country, and for IPv6 the prefix the service counts the reports under
+//! (`normalized`, such as `2a0b:f4c2::` for `2a0b:f4c2::1`). A value with no reports is a valid
+//! zero.
 
 use serde::Deserialize;
 
 use crate::api_leg::{self, Answer, Api, LegError};
 use crate::http::{Transport, percent_encode_component};
-use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
+use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
 
 pub const SOURCE: &str = "stopforumspam";
@@ -49,6 +51,12 @@ struct Entry {
     confidence: Option<f64>,
     #[serde(default)]
     torexit: u8,
+    #[serde(default)]
+    asn: Option<u64>,
+    #[serde(default)]
+    country: Option<String>,
+    #[serde(default)]
+    normalized: Option<String>,
 }
 
 /// The request URL for `indicator`, or `None` when it is not an email or IP address. **Pure.**
@@ -110,20 +118,30 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
     }
     let last = api_leg::clean(entry.lastseen.as_deref());
     let confidence = entry.confidence.map(|c| format!("{c:.2}"));
-    Ok(Some(
-        Finding::new(format!(
-            "StopForumSpam: the {what} has {} spam report{}{}",
-            entry.frequency,
-            if entry.frequency == 1 { "" } else { "s" },
-            last.as_deref()
-                .map_or_else(String::new, |l| format!(", last on {l}"))
-        ))
-        .attr("reports", entry.frequency.to_string())
-        .opt_attr("last_reported", last.as_deref())
-        .opt_attr("confidence", confidence.as_deref())
-        .tag("spam-reported")
-        .tag_if(entry.torexit == 1, "tor-exit"),
+    let country = api_leg::clean(entry.country.as_deref()).map(|c| c.to_ascii_uppercase());
+    let normalized = api_leg::clean(entry.normalized.as_deref());
+    let mut finding = Finding::new(format!(
+        "StopForumSpam: the {what} has {} spam report{}{}",
+        entry.frequency,
+        if entry.frequency == 1 { "" } else { "s" },
+        last.as_deref()
+            .map_or_else(String::new, |l| format!(", last on {l}"))
     ))
+    .attr("reports", entry.frequency.to_string())
+    .opt_attr("last_reported", last.as_deref())
+    .opt_attr("confidence", confidence.as_deref())
+    .tag("spam-reported")
+    .tag_if(entry.torexit == 1, "tor-exit")
+    .opt_attr("country", country.as_deref())
+    .opt_attr("normalized", normalized.as_deref());
+    if let Some(asn) = entry.asn.filter(|a| *a > 0) {
+        finding = finding.attr("asn", format!("AS{asn}")).pivot(
+            PivotKind::Asn,
+            format!("AS{asn}"),
+            "Origin AS StopForumSpam gives for the address",
+        );
+    }
+    Ok(Some(finding))
 }
 
 #[cfg(test)]
@@ -149,6 +167,43 @@ mod tests {
                 .iter()
                 .any(|(k, v)| *k == "confidence" && v == "95.29")
         );
+    }
+
+    #[test]
+    fn a_reported_ip_keeps_its_origin_as_and_country() {
+        let f = decode(RECORDED.as_bytes(), Indicator::Ip("185.220.101.1"))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("recorded body must decode"));
+        assert!(
+            f.attrs.contains(&("asn", "AS60729".into())),
+            "{:?}",
+            f.attrs
+        );
+        assert!(f.attrs.contains(&("country", "DE".into())), "{:?}", f.attrs);
+        assert!(
+            f.pivots
+                .iter()
+                .any(|p| p.kind == PivotKind::Asn && p.value == "AS60729"),
+            "{:?}",
+            f.pivots
+        );
+    }
+
+    #[test]
+    fn an_ipv6_report_keeps_the_prefix_it_is_counted_under() {
+        // Recorded for `2a0b:f4c2::1` on 2026-10-15.
+        let body = r#"{"success":1,"ip":{"value":"2a0b:f4c2::1","appears":1,"frequency":41,"lastseen":"2026-10-13 19:25:50","asn":60729,"country":"de","normalized":"2a0b:f4c2::","confidence":90.11}}"#;
+        let f = decode(body.as_bytes(), Indicator::Ip("2a0b:f4c2::1"))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("recorded body must decode"));
+        assert!(
+            f.attrs.contains(&("normalized", "2a0b:f4c2::".into())),
+            "{:?}",
+            f.attrs
+        );
+        assert!(f.attrs.contains(&("asn", "AS60729".into())));
     }
 
     #[test]
