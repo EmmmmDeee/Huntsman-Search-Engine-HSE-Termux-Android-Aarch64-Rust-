@@ -109,6 +109,7 @@ fn sample(id: &str) -> &'static str {
              other.example,0,domain,9,\"x\"\n"
         }
         "cinsscore" => "1.12.229.231\n198.51.100.20\n",
+        "cleantalk" => "#\n# cleantalk_7d\n#\n# ipv4 hash:ip ipset\n#\n2.56.10.21\n198.51.100.20\n",
         "coinblocker" => "# CoinBlocker\nminer.evil.example\npool.example\n",
         "cybercrimetracker" => {
             "5.182.86.32/auth/login\nevil.example/wp-content/plugins/x/mail.php\n"
@@ -206,6 +207,7 @@ fn every_published_form_reads_as_its_entries() {
             ("blocklistde", 3),
             ("botvrij", 2),
             ("cinsscore", 2),
+            ("cleantalk", 2),
             ("coinblocker", 2),
             ("cybercrimetracker", 2),
             ("emergingthreats", 1),
@@ -295,6 +297,7 @@ fn a_lookup_checks_every_subject_and_keeps_each_entry_whole() {
             ("alienvaultiprep", "AlienVault IP Reputation"),
             ("blocklistde", "blocklist.de"),
             ("cinsscore", "CINS Army"),
+            ("cleantalk", "CleanTalk Spam List"),
             ("torexits", "tor"),
         ]
     );
@@ -340,7 +343,7 @@ fn a_lookup_checks_every_subject_and_keeps_each_entry_whole() {
             .any(|entity| entity.value == "198.51.100.20" && entity.has_tag(tags::TOR_EXIT))
     );
     // One row per source, saying what each of its feeds listed.
-    assert_eq!(rows.len(), 15);
+    assert_eq!(rows.len(), 16);
     assert_eq!(row(&rows, "abusech").kind, SourceOutcomeKind::Success);
     assert_eq!(row(&rows, "abusech").found, Some(3));
     assert_eq!(
@@ -380,7 +383,11 @@ fn a_copy_is_read_until_it_is_old_then_downloaded_again() {
     assert!(detail(&rows, "cinsscore").contains("(2 entries, copy from "));
     // After an hour only the Tor exit list is old; after 18 hours every feed but Steven Black's.
     let _ = check(&feeds, &subjects, "s", start + 3_601);
-    assert_eq!(net.asked(), [FEEDS[13].url]);
+    let tor = FEEDS
+        .iter()
+        .find(|feed| feed.id == "torexits")
+        .expect("tor");
+    assert_eq!(net.asked(), [tor.url]);
     let _ = check(&feeds, &subjects, "s", start + 18 * 3_600 + 60);
     assert_eq!(net.asked().len(), FEEDS.len() - 1);
     std::fs::remove_dir_all(&dir).expect("cleanup");

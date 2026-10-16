@@ -14,8 +14,9 @@ use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Sour
 use crate::keys::Keys;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::{
-    hackertarget, hunter, ipinfo, ipqs, kickbox, leakix, netlas, otx, pulsedive, robtex,
-    securitytrails, shodan, stopforumspam, threatfox, urlhaus, urlscan, whoxy, xposedornot,
+    hackertarget, hunter, ipinfo, ipqs, isc, kickbox, leakix, maltiverse, netlas, otx, phishstats,
+    pulsedive, robtex, securitytrails, shodan, stopforumspam, threatfox, urlhaus, urlscan, whoxy,
+    xposedornot,
 };
 
 /// Every indicator source, in the order a lookup runs them.
@@ -29,6 +30,9 @@ pub const SOURCES: &[Source] = &[
     robtex::INTEL,
     hackertarget::INTEL,
     stopforumspam::INTEL,
+    isc::INTEL,
+    maltiverse::INTEL,
+    phishstats::INTEL,
     kickbox::INTEL,
     xposedornot::INTEL,
     leakix::INTEL,
@@ -234,11 +238,14 @@ mod tests {
                 "ipinfo",
                 "robtex",
                 "hackertarget",
-                "stopforumspam"
+                "stopforumspam",
+                "isc",
+                "maltiverse",
+                "phishstats"
             ]
         );
         assert!(legs.network.is_some());
-        assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 8);
+        assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 11);
     }
 
     #[test]

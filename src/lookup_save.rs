@@ -192,6 +192,9 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         "robtex" => ("robtex", "src/robtex.rs"),
         "hackertarget" => ("hackertarget", "src/hackertarget.rs"),
         "stopforumspam" => ("stopforumspam", "src/stopforumspam.rs"),
+        "isc" => ("isc", "src/isc.rs"),
+        "maltiverse" => ("maltiverse", "src/maltiverse.rs"),
+        "phishstats" => ("phishstats", "src/phishstats.rs"),
         "xposed_or_not" => ("xposed_or_not", "src/xposedornot.rs"),
         "rdap" => ("rdap", "src/rdap.rs"),
         "dnsresolve" => ("dnsresolve", "src/dns.rs"),
@@ -201,9 +204,9 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         filter @ ("adguard_dns" | "cleanbrowsing" | "cloudflaredns" | "comodo"
         | "dns_for_family" | "opendns" | "quad9" | "yandexdns") => (filter, "src/dns_filter.rs"),
         feed @ ("abusech" | "alienvaultiprep" | "blocklistde" | "botvrij" | "cinsscore"
-        | "coinblocker" | "cybercrimetracker" | "emergingthreats" | "greensnow"
-        | "openphish" | "phishtank" | "stevenblack_hosts" | "torexits" | "voipbl"
-        | "vxvault") => (feed, "src/threat_feeds.rs"),
+        | "cleantalk" | "coinblocker" | "cybercrimetracker" | "emergingthreats"
+        | "greensnow" | "openphish" | "phishtank" | "stevenblack_hosts" | "torexits"
+        | "voipbl" | "vxvault") => (feed, "src/threat_feeds.rs"),
         _ => return None,
     })
 }

@@ -808,6 +808,20 @@ fn map_ureq_error(err: &ureq::Error) -> TransportFailure {
     }
 }
 
+/// The seconds to wait that a `Retry-After` value asks for (RFC 9110 §10.2.3): delta-seconds, or an
+/// HTTP-date counted from `now_unix`, a date already past being `0`. `None` when it is neither.
+/// The one reader of the header; each caller applies its own cap.
+#[must_use]
+pub fn retry_after_secs(value: &str, now_unix: u64) -> Option<u64> {
+    let value = value.trim();
+    if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        return value.parse().ok();
+    }
+    let at = crate::timefmt::parse_http_date(value, now_unix)?;
+    let now = i64::try_from(now_unix).unwrap_or(i64::MAX);
+    Some(u64::try_from(at.saturating_sub(now)).unwrap_or(0))
+}
+
 #[cfg(test)]
 mod tests {
     fn bundle_transport(path: &Path) -> UreqTransport {

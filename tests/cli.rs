@@ -444,6 +444,10 @@ fn modules_lists_only_reachable_catalog_entries() {
         "robtex",
         "hackertarget",
         "stopforumspam",
+        "isc",
+        "maltiverse",
+        "phishstats",
+        "cleantalk",
         "xposed_or_not",
     ] {
         assert!(stdout.contains(name), "missing reachable module {name}");
