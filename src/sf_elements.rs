@@ -16,9 +16,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::domains::is_or_subdomain_of;
+use crate::domains::{is_or_subdomain_of, registrable_domain};
 use crate::entity::{Entity, EntityKind, Evidence};
 use crate::recursion::PivotEdge;
+use crate::sf_country;
 use crate::sf_types::{self, base_type};
 use crate::sha256::{hex32, sha256};
 use crate::tags;
@@ -26,6 +27,12 @@ use crate::tags;
 /// The module name of the elements Huntsman itself makes: the root, the target, and verdicts no
 /// single source gave.
 pub const HUNTSMAN_MODULE: &str = "huntsman";
+
+/// The module of the domain each host belongs to, the work of Spiderfoot's `sfp_dnsresolve`.
+pub const DOMAIN_MODULE: &str = "hostdomain";
+
+/// The module of the countries a scan's data names, as Spiderfoot's `sfp_countryname` finds them.
+pub const COUNTRY_MODULE: &str = "countryname";
 
 /// Days before expiry at which a certificate is reported as expiring, as Spiderfoot does.
 const EXPIRING_DAYS: i64 = 30;
@@ -83,6 +90,37 @@ impl Target<'_> {
         matches!(self.kind, "IP_ADDRESS" | "IPV6_ADDRESS")
     }
 
+    fn is_netblock(&self) -> bool {
+        matches!(self.kind, "NETBLOCK_OWNER" | "NETBLOCKV6_OWNER")
+    }
+
+    /// Whether the target is the AS `asn` (`AS13335` or `13335`): an AS target is its own
+    /// owner, never a member of what it announces.
+    fn is_as(&self, asn: &str) -> bool {
+        let digits = |value: &str| {
+            value
+                .trim()
+                .trim_start_matches(['A', 'S', 'a', 's'])
+                .to_owned()
+        };
+        self.kind == "BGP_AS_OWNER" && digits(self.value) == digits(asn)
+    }
+
+    /// Whether Spiderfoot's target would claim `domain` (`SpiderFootTarget.matches`): the target
+    /// domain or a name under it, a target email's domain or a name under it, and any domain at
+    /// all for a target it cannot place, a name, phone number, username or bitcoin address.
+    fn claims(&self, domain: &str) -> bool {
+        let value = self.value.trim();
+        match self.kind {
+            "HUMAN_NAME" | "PHONE_NUMBER" | "USERNAME" | "BITCOIN_ADDRESS" => true,
+            "INTERNET_NAME" | "DOMAIN_NAME" => is_or_subdomain_of(domain, &value.to_lowercase()),
+            "EMAILADDR" => value
+                .rsplit_once('@')
+                .is_some_and(|(_, host)| is_or_subdomain_of(domain, &host.to_lowercase())),
+            _ => false,
+        }
+    }
+
     fn names(&self, entity: &Entity) -> bool {
         let wanted = match entity.kind {
             EntityKind::Domain => matches!(self.kind, "INTERNET_NAME" | "DOMAIN_NAME"),
@@ -92,6 +130,7 @@ impl Target<'_> {
             EntityKind::Username => self.kind == "USERNAME",
             EntityKind::Person => self.kind == "HUMAN_NAME",
             EntityKind::Asn => self.kind == "BGP_AS_OWNER",
+            EntityKind::Netblock => self.is_netblock(),
             EntityKind::MacAddress => self.kind == "HSE_MAC_ADDRESS",
             EntityKind::Ssid => self.kind == "HSE_WIFI_SSID",
             EntityKind::Coordinates => self.kind == "PHYSICAL_COORDINATES",
@@ -112,12 +151,29 @@ impl Target<'_> {
 fn entity_type(entity: &Entity, target: Target<'_>) -> &'static str {
     let value = entity.value.as_str();
     match entity.kind {
-        EntityKind::Domain => match target.domain() {
-            Some(domain) if is_or_subdomain_of(value, domain) => "INTERNET_NAME",
-            Some(_) => "AFFILIATE_INTERNET_NAME",
-            None if target.is_ip() => "CO_HOSTED_SITE",
-            None => "INTERNET_NAME",
-        },
+        EntityKind::Domain => {
+            let unresolved = entity.has_tag(tags::UNRESOLVED);
+            match target.domain() {
+                Some(domain) if is_or_subdomain_of(value, domain) => {
+                    if unresolved {
+                        "INTERNET_NAME_UNRESOLVED"
+                    } else {
+                        "INTERNET_NAME"
+                    }
+                }
+                Some(_) if unresolved => "AFFILIATE_INTERNET_NAME_UNRESOLVED",
+                Some(_) => "AFFILIATE_INTERNET_NAME",
+                // The address's own reverse zone names it: Spiderfoot takes such a name as the
+                // target's alias, as it does a name of an address in a target block. Any other
+                // name on the address is a site hosted there.
+                None if (target.is_ip() || target.is_netblock()) && entity.has_tag(tags::PTR) => {
+                    "INTERNET_NAME"
+                }
+                None if target.is_ip() => "CO_HOSTED_SITE",
+                None if unresolved => "INTERNET_NAME_UNRESOLVED",
+                None => "INTERNET_NAME",
+            }
+        }
         EntityKind::Email => match (target.domain(), value.rsplit_once('@')) {
             (Some(domain), Some((_, host))) if !is_or_subdomain_of(host, domain) => {
                 "AFFILIATE_EMAILADDR"
@@ -132,6 +188,13 @@ fn entity_type(entity: &Entity, target: Target<'_>) -> &'static str {
             _ => "LINKED_URL_EXTERNAL",
         },
         EntityKind::CryptoAddress => crypto_type(value),
+        // An AS target owns the blocks it announces; any other block holds what was found.
+        EntityKind::Netblock => match (target.kind == "BGP_AS_OWNER", value.contains(':')) {
+            (true, false) => "NETBLOCK_OWNER",
+            (true, true) => "NETBLOCKV6_OWNER",
+            (false, false) => "NETBLOCK_MEMBER",
+            (false, true) => "NETBLOCKV6_MEMBER",
+        },
         _ => base_type(&entity.kind),
     }
 }
@@ -164,6 +227,17 @@ fn malicious_type(kind: &EntityKind) -> Option<&'static str> {
         EntityKind::Email => Some("MALICIOUS_EMAILADDR"),
         EntityKind::Phone => Some("MALICIOUS_PHONE_NUMBER"),
         EntityKind::Asn => Some("MALICIOUS_ASN"),
+        EntityKind::Netblock => Some("MALICIOUS_NETBLOCK"),
+        _ => None,
+    }
+}
+
+/// The descriptor type saying a blocklist lists an entity of this kind.
+fn blacklisted_type(kind: &EntityKind) -> Option<&'static str> {
+    match kind {
+        EntityKind::IpAddress => Some("BLACKLISTED_IPADDR"),
+        EntityKind::Domain => Some("BLACKLISTED_INTERNET_NAME"),
+        EntityKind::Netblock => Some("BLACKLISTED_NETBLOCK"),
         _ => None,
     }
 }
@@ -303,6 +377,12 @@ fn host_descriptors(
     if !place.is_empty() {
         out.push(("GEOINFO", place.join(", ")));
     }
+    if let Some(certificate) = attr("certificate") {
+        out.push(("SSL_CERTIFICATE_RAW", certificate.to_owned()));
+    }
+    if let Some(subject) = attr("subject") {
+        out.push(("SSL_CERTIFICATE_ISSUED", subject.to_owned()));
+    }
     if let Some(issuer) = attr("issuer") {
         out.push(("SSL_CERTIFICATE_ISSUER", issuer.to_owned()));
     }
@@ -327,6 +407,14 @@ fn identity_descriptors(
     let attr = |key: &str| attr(evidence, key);
     if let Some(registrar) = attr("registrar") {
         out.push(("DOMAIN_REGISTRAR", registrar.to_owned()));
+    }
+    // A registration record as published: an address's is its network's.
+    if let Some(whois) = attr("whois") {
+        let kind = match entity.kind {
+            EntityKind::IpAddress | EntityKind::Asn | EntityKind::Netblock => "NETBLOCK_WHOIS",
+            _ => "DOMAIN_WHOIS",
+        };
+        out.push((kind, whois.to_owned()));
     }
     if let Some(carrier) = attr("carrier") {
         out.push(("PROVIDER_TELCO", carrier.to_owned()));
@@ -376,7 +464,41 @@ fn identity_descriptors(
         let kind = attr("hash_type").map_or(String::new(), |kind| format!(" ({kind})"));
         out.push(("HASH_COMPROMISED", format!("{host}{kind} [{source}]")));
     }
-    if says_malicious(evidence) {
+    // A blocklist's listing names the list and its reason, as Spiderfoot's DNSBL modules write
+    // both the blacklisted and the malicious element.
+    if let Some(listing) = attr("dnsbl") {
+        let data = format!("{listing} [{host}]");
+        if let Some(kind) = blacklisted_type(&entity.kind) {
+            out.push((kind, data.clone()));
+        }
+        if let Some(kind) = malicious_type(&entity.kind) {
+            out.push((kind, data));
+        }
+    } else if let Some(reason) = attr("dns_filter") {
+        // A filtering resolver's block, as Spiderfoot's DNS-filter modules write it: always the
+        // blacklisted element, and the malicious one too when the filter blocks threats.
+        let data = format!("{reason} [{host}]");
+        if let Some(kind) = blacklisted_type(&entity.kind) {
+            out.push((kind, data.clone()));
+        }
+        if attr("dns_filter_threat").is_some_and(positive) {
+            if let Some(kind) = malicious_type(&entity.kind) {
+                out.push((kind, data));
+            }
+        }
+    } else if let Some(feed) = attr("threat_feed") {
+        // A threat feed's listing, as Spiderfoot's feed modules write it: always the blacklisted
+        // element, and the malicious one too when the feed lists threats.
+        let data = format!("{feed} [{host}]");
+        if let Some(kind) = blacklisted_type(&entity.kind) {
+            out.push((kind, data.clone()));
+        }
+        if attr("threat_feed_threat").is_some_and(positive) {
+            if let Some(kind) = malicious_type(&entity.kind) {
+                out.push((kind, data));
+            }
+        }
+    } else if says_malicious(evidence) {
         if let Some(kind) = malicious_type(&entity.kind) {
             out.push((kind, format!("{} [{host}]", evidence.provenance.source)));
         }
@@ -393,7 +515,9 @@ fn exposed(value: &str) -> bool {
 
 /// Attributes naming the indicator a source was asked about when it found this entity: the
 /// element of that indicator is the new element's source.
-const PARENT_KEYS: [&str; 6] = ["ip", "domain", "email", "username", "phone", "host"];
+const PARENT_KEYS: [&str; 7] = [
+    "ip", "domain", "email", "username", "phone", "host", "netblock",
+];
 
 fn raw_of(evidence: &Evidence, entity: &Entity) -> Value {
     json!({
@@ -495,6 +619,8 @@ pub fn elements_with_lineage(
     for (entity_index, entity) in entities.iter().enumerate() {
         walk.descriptors(entity_index, entity, &made);
     }
+    walk.domains();
+    walk.countries();
     walk.builder.out
 }
 
@@ -656,6 +782,9 @@ impl<'a> Walk<'a> {
             };
             let created = evidence.provenance.recorded_at_unix.saturating_mul(1000);
             for (kind, data) in descriptors(entity, evidence, self.now_unix) {
+                if kind == "BGP_AS_MEMBER" && self.target.is_as(&data) {
+                    continue;
+                }
                 said_malicious |= kind.starts_with("MALICIOUS_");
                 self.builder.push(
                     kind,
@@ -689,6 +818,104 @@ impl<'a> Walk<'a> {
                     Value::Null,
                 );
             }
+        }
+    }
+}
+
+impl Walk<'_> {
+    /// The domain each host belongs to, each domain once, as Spiderfoot's `sfp_dnsresolve`
+    /// reports it: a host's domain the target claims as `DOMAIN_NAME`, one the target sits below
+    /// as `DOMAIN_NAME_PARENT`, an affiliate's as `AFFILIATE_DOMAIN_NAME` and a co-hosted site's
+    /// as `CO_HOSTED_SITE_DOMAIN`, each found from the first host that names it.
+    fn domains(&mut self) {
+        let hosts: Vec<(String, &'static str, String, u8, u64)> = self
+            .builder
+            .out
+            .iter()
+            .filter_map(|element| {
+                let derived = match element.kind.as_str() {
+                    "INTERNET_NAME" => "DOMAIN_NAME",
+                    "AFFILIATE_INTERNET_NAME" => "AFFILIATE_DOMAIN_NAME",
+                    "CO_HOSTED_SITE" => "CO_HOSTED_SITE_DOMAIN",
+                    _ => return None,
+                };
+                Some((
+                    element.id.clone(),
+                    derived,
+                    element
+                        .data
+                        .trim()
+                        .trim_end_matches('.')
+                        .to_ascii_lowercase(),
+                    element.confidence,
+                    element.created,
+                ))
+            })
+            .collect();
+        let mut reported = BTreeSet::new();
+        for (source, mut derived, host, confidence, created) in hosts {
+            if host.parse::<std::net::IpAddr>().is_ok() {
+                continue;
+            }
+            let Some(domain) = registrable_domain(&host) else {
+                continue;
+            };
+            if derived == "DOMAIN_NAME" && !self.target.claims(&domain) {
+                if !host.ends_with(&format!(".{domain}")) {
+                    continue;
+                }
+                derived = "DOMAIN_NAME_PARENT";
+            }
+            if reported.insert((derived, domain.clone())) {
+                self.builder.push(
+                    derived,
+                    domain,
+                    Some(&source),
+                    DOMAIN_MODULE,
+                    confidence,
+                    created,
+                    None,
+                    Value::Null,
+                );
+            }
+        }
+    }
+
+    /// The countries the scan's phone numbers, domains, IBANs, places, addresses and WHOIS
+    /// records name, as Spiderfoot's `sfp_countryname` finds them: each country a child of the
+    /// element that names it, and each distinct value read once, whatever its type.
+    fn countries(&mut self) {
+        let mut read = BTreeSet::new();
+        let named: Vec<(String, &'static str, u8, u64)> = self
+            .builder
+            .out
+            .iter()
+            .filter(|element| sf_country::WATCHED.contains(&element.kind.as_str()))
+            .filter(|element| read.insert(element.data.clone()))
+            .flat_map(|element| {
+                sf_country::of_element(&element.kind, &element.data)
+                    .into_iter()
+                    .map(|country| {
+                        (
+                            element.id.clone(),
+                            country,
+                            element.confidence,
+                            element.created,
+                        )
+                    })
+            })
+            .collect();
+        for (source, country, confidence, created) in named {
+            self.builder.push(
+                "COUNTRY_NAME",
+                country.to_owned(),
+                Some(&source),
+                COUNTRY_MODULE,
+                confidence,
+                created,
+                None,
+                Value::Null,
+            );
         }
     }
 }
@@ -798,6 +1025,124 @@ mod tests {
         assert_eq!(www.source.as_deref(), Some(found[1].id.as_str()));
         assert_eq!(www.created, 1_700_000_000_000);
         assert_eq!(www.confidence, 80);
+    }
+
+    /// A name tagged unresolved is Spiderfoot's unresolved type, inside the target or out.
+    #[test]
+    fn a_name_that_does_not_resolve_is_an_unresolved_internet_name() {
+        let mut inside = entity(EntityKind::Domain, "old.example.com", "dnsresolve", &[]);
+        inside.tag(tags::UNRESOLVED);
+        let mut outside = entity(EntityKind::Domain, "old.example.net", "robtex", &[]);
+        outside.tag(tags::UNRESOLVED);
+        let found = elements(DOMAIN, &[inside.clone(), outside], 1_700_000_000);
+        assert_eq!(
+            of_type(&found, "INTERNET_NAME_UNRESOLVED")[0].data,
+            "old.example.com"
+        );
+        assert_eq!(
+            of_type(&found, "AFFILIATE_INTERNET_NAME_UNRESOLVED")[0].data,
+            "old.example.net"
+        );
+        // A name with no domain target is still unresolved.
+        let found = elements(
+            Target {
+                value: "ops@example.org",
+                kind: "EMAILADDR",
+            },
+            &[inside],
+            1_700_000_000,
+        );
+        assert_eq!(of_type(&found, "INTERNET_NAME_UNRESOLVED").len(), 1);
+    }
+
+    #[test]
+    fn each_hosts_domain_and_each_named_country_is_derived_once_as_spiderfoot_does() {
+        let found = elements(
+            DOMAIN,
+            &[
+                entity(EntityKind::Domain, "www.example.com", "crtsh", &[]),
+                entity(EntityKind::Domain, "mail.example.com", "crtsh", &[]),
+                entity(EntityKind::Domain, "shop.example.com.au", "robtex", &[]),
+                entity(EntityKind::Domain, "cdn.example.com.au", "robtex", &[]),
+                entity(EntityKind::Phone, "+442071838750", "hunter", &[]),
+                entity(
+                    EntityKind::IpAddress,
+                    "8.8.8.8",
+                    "ipinfo",
+                    &[("city", "Mountain View"), ("country", "US")],
+                ),
+            ],
+            1_700_000_000,
+        );
+        let data = |kind: &str| -> Vec<&str> {
+            of_type(&found, kind)
+                .iter()
+                .map(|element| element.data.as_str())
+                .collect()
+        };
+        // The target's domain once, from the target, though three hosts sit in it.
+        assert_eq!(data("DOMAIN_NAME"), ["example.com"]);
+        assert_eq!(
+            of_type(&found, "DOMAIN_NAME")[0].source.as_deref(),
+            Some(found[1].id.as_str())
+        );
+        assert_eq!(of_type(&found, "DOMAIN_NAME")[0].module, DOMAIN_MODULE);
+        assert_eq!(data("AFFILIATE_DOMAIN_NAME"), ["example.com.au"]);
+        let mut countries = data("COUNTRY_NAME");
+        countries.sort_unstable();
+        // .com is the United States to Spiderfoot, and so is the place; .com.au is Australia.
+        assert_eq!(
+            countries,
+            [
+                "Australia",
+                "United Kingdom",
+                "United States",
+                "United States"
+            ]
+        );
+        let uk = of_type(&found, "COUNTRY_NAME")
+            .into_iter()
+            .find(|element| element.data == "United Kingdom")
+            .unwrap();
+        let phone = of_type(&found, "PHONE_NUMBER")[0];
+        assert_eq!(uk.source.as_deref(), Some(phone.id.as_str()));
+        assert_eq!(uk.module, COUNTRY_MODULE);
+    }
+
+    #[test]
+    fn a_host_above_a_named_target_gives_its_parent_domain_and_an_address_target_gives_co_hosts() {
+        let host = Target {
+            value: "www.example.com",
+            kind: "INTERNET_NAME",
+        };
+        let found = elements(
+            host,
+            &[entity(EntityKind::Domain, "api.example.com", "crtsh", &[])],
+            1_700_000_000,
+        );
+        let parent: Vec<&str> = of_type(&found, "DOMAIN_NAME_PARENT")
+            .iter()
+            .map(|element| element.data.as_str())
+            .collect();
+        assert_eq!(parent, ["example.com"]);
+        assert!(of_type(&found, "DOMAIN_NAME").is_empty());
+        let address = Target {
+            value: "8.8.8.8",
+            kind: "IP_ADDRESS",
+        };
+        let found = elements(
+            address,
+            &[entity(EntityKind::Domain, "dns.google", "robtex", &[])],
+            1_700_000_000,
+        );
+        assert_eq!(
+            of_type(&found, "CO_HOSTED_SITE_DOMAIN")[0].data,
+            "dns.google"
+        );
+        assert!(
+            of_type(&found, "COUNTRY_NAME").is_empty(),
+            ".google names no country"
+        );
     }
 
     #[test]
@@ -1036,6 +1381,11 @@ mod tests {
             "MALICIOUS_EMAILADDR",
             "MALICIOUS_PHONE_NUMBER",
             "MALICIOUS_ASN",
+            "DOMAIN_NAME",
+            "DOMAIN_NAME_PARENT",
+            "AFFILIATE_DOMAIN_NAME",
+            "CO_HOSTED_SITE_DOMAIN",
+            "COUNTRY_NAME",
         ];
         for kind in emitted {
             assert!(sf_types::find(kind).is_some(), "{kind} is not catalogued");

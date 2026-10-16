@@ -281,6 +281,18 @@ pub enum LogLevel {
     Error,
 }
 
+impl LogLevel {
+    /// Its name as the log shows it: `INFO`, `WARNING` or `ERROR`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "INFO",
+            Self::Warning => "WARNING",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
 /// One line of a scan's log: Spiderfoot's Time, Component, Type and Event columns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogEntry {
