@@ -1,0 +1,1 @@
+- Numverify (with `HUNTSMAN_NUMVERIFY_KEY`) keeps the number's local and international formats, the country prefix and country name, beside the carrier, line type, location and country code it already kept, and the whole answer as `raw_answer`.
