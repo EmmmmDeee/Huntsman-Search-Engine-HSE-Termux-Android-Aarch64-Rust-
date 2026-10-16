@@ -342,10 +342,14 @@ pub fn is_social_platform(domain: &str) -> bool {
     SOCIAL.iter().any(|root| is_or_subdomain_of(domain, root))
 }
 
+/// A WHOIS contact value that a privacy service, a redaction notice or a registrar or host put in
+/// place of the owner's: a privacy marker, or for an address, a mailbox at a provider's own mail
+/// domain. A role mailbox at the owner's domain (`hostmaster@`, `admin@`) is the owner's.
 #[must_use]
 pub fn is_proxy_registrant(value: &str, is_email: bool) -> bool {
     crate::value_syntax::is_whois_privacy_placeholder(value)
-        || (is_email && is_infrastructure_email(value))
+        || (is_email
+            && split_email(value).is_some_and(|(_, domain)| is_infrastructure_mail_domain(&domain)))
 }
 
 #[must_use]
@@ -466,5 +470,35 @@ mod email_split_contract_tests {
         assert!(is_infrastructure_email(" Network-Ops@AmazonAWS.com. "));
         assert!(!is_infrastructure_email("@amazonses.com"));
         assert!(!is_noreply_email_domain("@noreply.github.com"));
+    }
+
+    #[test]
+    fn a_proxy_registrant_is_a_privacy_marker_or_a_providers_mailbox_not_a_role_mailbox() {
+        for proxy in [
+            "Domains By Proxy, LLC",
+            "REDACTED FOR PRIVACY",
+            "Statutory Masking",
+        ] {
+            assert!(is_proxy_registrant(proxy, false), "{proxy}");
+        }
+        for proxy in [
+            "6c3f0d@domainsbyproxy.com",
+            "abusecomplaints@markmonitor.com",
+            "x@withheldforprivacy.com",
+        ] {
+            assert!(is_proxy_registrant(proxy, true), "{proxy}");
+        }
+        for owner in [
+            "hostmaster@acme-shop.com",
+            "admin@acme-shop.com",
+            "ada@gmail.com",
+            "dnsmanager@mindspark.com",
+        ] {
+            assert!(!is_proxy_registrant(owner, true), "{owner}");
+        }
+        assert!(!is_proxy_registrant(
+            "Mindspark Interactive Network, Inc.",
+            false
+        ));
     }
 }

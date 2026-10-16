@@ -4,8 +4,13 @@
 //! is set; Whoxy takes the key only as the `key` query parameter, added as the request is sent.
 //! Whoxy answers HTTP 200 for its own errors, with `status: 0` and a `status_reason`: an invalid
 //! key is reported as a rejected key and an empty balance as a plan refusal, never as a zero.
-//! What is kept: registrar, dates, status codes, name servers, and from the registrant the name,
-//! organisation, country and address. Street address, phone and fax are not kept.
+//! What is kept: registrar, dates, status codes, name servers, the registrant's country, and from
+//! the registrant, administrative and technical contacts the name, organisation and address, under
+//! the `registrant_*`, `admin_*` and `tech_*` attributes the registration and shared-operator
+//! relations read. A value a privacy service or redaction notice put in place of the owner's is
+//! kept under `{role}_proxy` and tags the finding `whois-privacy`, but is never a relation key or a
+//! pivot: two domains behind one privacy service share a proxy, not an owner. Street address,
+//! phone and fax are not kept.
 //!
 //! For an address the same key runs a reverse WHOIS (`?reverse=whois&email={address}`, one reverse
 //! credit per page): the first page of domains registered with that address, each a domain pivot.
@@ -13,6 +18,8 @@
 use serde::Deserialize;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::canonical::canonical_email;
+use crate::domains::is_proxy_registrant;
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
@@ -82,6 +89,37 @@ struct Contact {
     #[serde(default)]
     email_address: Option<String>,
 }
+
+/// The attributes one contact's fields are kept under.
+struct Role {
+    name: &'static str,
+    org: &'static str,
+    email: &'static str,
+    /// Any field a privacy service, redaction notice or provider filled in for the owner.
+    proxy: &'static str,
+}
+
+const REGISTRANT: Role = Role {
+    name: "registrant_name",
+    org: "registrant_org",
+    email: "registrant_email",
+    proxy: "registrant_proxy",
+};
+const ADMIN: Role = Role {
+    name: "admin_name",
+    org: "admin_org",
+    email: "admin_email",
+    proxy: "admin_proxy",
+};
+const TECH: Role = Role {
+    name: "tech_name",
+    org: "tech_org",
+    email: "tech_email",
+    proxy: "tech_proxy",
+};
+
+/// The tag on a record with at least one field filled in by a privacy service or redaction.
+pub const PRIVACY_TAG: &str = "whois-privacy";
 
 /// The request URL for `domain`. **Pure.**
 #[must_use]
@@ -214,7 +252,6 @@ pub fn decode(body: &[u8], domain: &str) -> Result<Option<Finding>, LegError> {
     let registrar = body
         .domain_registrar
         .and_then(|r| api_leg::clean(r.registrar_name.as_deref()));
-    let registrant = body.registrant_contact;
     let mut finding = Finding::new(format!(
         "Whoxy WHOIS: registered{}",
         registrar
@@ -226,13 +263,13 @@ pub fn decode(body: &[u8], domain: &str) -> Result<Option<Finding>, LegError> {
     .opt_attr("updated", body.update_date.as_deref())
     .opt_attr("expires", body.expiry_date.as_deref())
     .list_attr("name_servers", &body.name_servers)
-    .list_attr("domain_status", &body.domain_status);
-    if let Some(r) = registrant.as_ref() {
-        finding = finding
-            .opt_attr("registrant_name", r.full_name.as_deref())
-            .opt_attr("registrant_org", r.company_name.as_deref())
-            .opt_attr("registrant_country", r.country_code.as_deref());
-    }
+    .list_attr("domain_status", &body.domain_status)
+    .opt_attr(
+        "registrant_country",
+        body.registrant_contact
+            .as_ref()
+            .and_then(|r| r.country_code.as_deref()),
+    );
     for ns in &body.name_servers {
         finding = finding.pivot(
             PivotKind::Domain,
@@ -240,30 +277,72 @@ pub fn decode(body: &[u8], domain: &str) -> Result<Option<Finding>, LegError> {
             "Name server in the domain's WHOIS record",
         );
     }
-    for contact in [
-        registrant,
-        body.administrative_contact,
-        body.technical_contact,
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if let Some(email) = contact.email_address.as_deref() {
-            finding = finding.pivot(
-                PivotKind::Email,
-                email,
-                "Contact address in the domain's WHOIS record",
-            );
-        }
-        if let Some(org) = contact.company_name.as_deref() {
-            finding = finding.pivot(
-                PivotKind::Organisation,
-                org,
-                "Organisation in the domain's WHOIS record",
-            );
+    for (role, contact) in [
+        (&REGISTRANT, body.registrant_contact),
+        (&ADMIN, body.administrative_contact),
+        (&TECH, body.technical_contact),
+    ] {
+        if let Some(contact) = contact {
+            finding = contact_fields(finding, role, &contact);
         }
     }
     Ok(Some(finding))
+}
+
+/// One contact's name, organisation and address on `finding`. The owner's own values are kept
+/// under `role`'s attributes and the organisation and address are pivots; a value a privacy
+/// service, redaction notice or provider put there instead is kept under `role.proxy` and tags the
+/// finding. **Pure.**
+fn contact_fields(finding: Finding, role: &Role, contact: &Contact) -> Finding {
+    let fields = [
+        (
+            role.name,
+            owner_value(contact.full_name.as_deref(), false),
+            None,
+        ),
+        (
+            role.org,
+            owner_value(contact.company_name.as_deref(), false),
+            Some((
+                PivotKind::Organisation,
+                "Organisation in the domain's WHOIS record",
+            )),
+        ),
+        (
+            role.email,
+            owner_value(contact.email_address.as_deref(), true),
+            Some((
+                PivotKind::Email,
+                "Contact address in the domain's WHOIS record",
+            )),
+        ),
+    ];
+    fields
+        .into_iter()
+        .fold(finding, |finding, (key, value, pivot)| match value {
+            Some(Ok(value)) => {
+                let finding = finding.attr(key, &value);
+                match pivot {
+                    Some((kind, summary)) => finding.pivot(kind, &value, summary),
+                    None => finding,
+                }
+            }
+            Some(Err(value)) => finding.attr(role.proxy, value).tag(PRIVACY_TAG),
+            None => finding,
+        })
+}
+
+/// A contact field as the owner's own value (`Ok`), or as one a privacy service, redaction notice
+/// or provider put in its place (`Err`). An address is kept in canonical form; one that does not
+/// parse is not the owner's address. `None` when the field is blank. **Pure.**
+fn owner_value(value: Option<&str>, is_email: bool) -> Option<Result<String, String>> {
+    let value = api_leg::clean(value)?;
+    let owner = if is_email {
+        canonical_email(&value).filter(|email| !is_proxy_registrant(email, true))
+    } else {
+        Some(value.clone()).filter(|text| !is_proxy_registrant(text, false))
+    };
+    Some(owner.ok_or(value))
 }
 
 #[cfg(test)]
@@ -284,6 +363,11 @@ mod tests {
         assert_eq!(f.summary, "Whoxy WHOIS: registered with MarkMonitor, Inc.");
         assert!(f.attrs.contains(&("created", "1995-09-19".into())));
         assert!(f.attrs.contains(&("registrant_country", "US".into())));
+        assert!(
+            f.attrs
+                .contains(&("registrant_email", "dnsmanager@mindspark.com".into()))
+        );
+        assert!(f.tags.is_empty(), "{:?}", f.tags);
         let text = format!("{f:?}");
         assert!(
             !text.contains("9145912000") && !text.contains("Wells Ave"),
@@ -366,5 +450,218 @@ mod tests {
             reverse_url("a+b@example.com"),
             "https://api.whoxy.com/?reverse=whois&email=a%2Bb%40example.com"
         );
+    }
+
+    use crate::entity::{Entity, EntityKind, merge_by_uid};
+    use crate::http::{Request, Response, TransportFailure};
+    use crate::relation::RelationKind;
+    use crate::source_outcome::SourceOutcomeKind;
+
+    /// Whoxy answering with one record per domain; every other request fails.
+    struct Records(Vec<(String, String)>);
+
+    impl Records {
+        fn new(domains: &[&str], contact: impl Fn(&str) -> String) -> Self {
+            Self(
+                domains
+                    .iter()
+                    .map(|domain| {
+                        let contact = contact(domain);
+                        let body = format!(
+                            r#"{{"status":1,"domain_name":"{domain}","domain_registered":"yes","domain_registrar":{{"registrar_name":"NameCheap, Inc."}},"registrant_contact":{contact},"administrative_contact":{contact}}}"#
+                        );
+                        (url(domain), body)
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    impl Transport for Records {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            self.0
+                .iter()
+                .find(|(url, _)| {
+                    request
+                        .url
+                        .strip_prefix(url.as_str())
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with('&'))
+                })
+                .map(|(_, body)| crate::test_support::json_ok(body))
+                .ok_or_else(|| TransportFailure {
+                    kind: SourceOutcomeKind::ConnectFailure,
+                    detail: "offline".into(),
+                    blocked: false,
+                })
+        }
+    }
+
+    /// One `domain` lookup's indicator legs per domain, with only the Whoxy key set.
+    fn lookups(records: &Records, domains: &[&str]) -> Vec<Entity> {
+        let keys = Keys::parse(&format!("{KEY_SLOT}=k-0123456789abcdef\n"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut entities = Vec::new();
+        for domain in domains {
+            let legs = crate::indicator_legs::run(
+                records,
+                &keys,
+                Indicator::Domain(domain),
+                &format!("lookup-{domain}"),
+                1,
+            );
+            let whoxy = legs.outcomes.iter().find(|o| o.module == SOURCE);
+            assert!(
+                whoxy.is_some_and(|o| o.kind.is_accepted()),
+                "{:?}",
+                legs.outcomes
+            );
+            entities.extend(legs.entities);
+        }
+        merge_by_uid(&mut entities);
+        entities
+    }
+
+    fn rules_fired(entities: Vec<Entity>) -> Vec<String> {
+        crate::analysis::analyze_snapshot(&crate::pipeline::AnalysisSnapshot {
+            entities,
+            relations: Vec::new(),
+            coverage: Vec::new(),
+            ancestry: crate::evidence_ancestry::EvidenceAncestryGraph::default(),
+            truncated: false,
+        })
+        .correlations
+        .into_iter()
+        .map(|correlation| correlation.rule_id)
+        .collect()
+    }
+
+    fn evidence_attr(entity: &Entity, key: &str) -> Vec<String> {
+        entity
+            .evidence
+            .iter()
+            .flat_map(|evidence| evidence.attr_values(key))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Two domains a person registered with one address are registered by that address, and the
+    /// shared-registrant rule names them. Before, the address was only a pivot: no relation read
+    /// it, so AU-109 fired only when the record also named an organisation.
+    #[test]
+    fn two_domains_registered_with_one_address_share_a_registrant() {
+        let domains = ["alpha-shop.com", "beta-shop.org"];
+        let records = Records::new(&domains, |_| {
+            r#"{"full_name":"Ada Lovelace","email_address":"Ada@Analytical-Engines.com","country_code":"GB"}"#.into()
+        });
+        let entities = lookups(&records, &domains);
+        let fired = rules_fired(entities.clone());
+        assert!(
+            fired.iter().any(|id| id == "AU-109"),
+            "rules that fired: {fired:?}"
+        );
+
+        let address = entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "ada@analytical-engines.com")
+            .unwrap_or_else(|| panic!("{entities:?}"));
+        for domain in domains {
+            let entity = entities
+                .iter()
+                .find(|e| e.kind == EntityKind::Domain && e.value == domain)
+                .unwrap_or_else(|| panic!("{domain}"));
+            assert_eq!(
+                evidence_attr(entity, "registrant_email"),
+                ["ada@analytical-engines.com"]
+            );
+            assert_eq!(
+                evidence_attr(entity, "admin_email"),
+                ["ada@analytical-engines.com"]
+            );
+        }
+        let registered_by = crate::relation::derive_all(&entities, "two-lookups")
+            .into_iter()
+            .filter(|r| r.kind == RelationKind::RegisteredBy && r.to_uid == address.uid)
+            .count();
+        assert_eq!(registered_by, 2);
+    }
+
+    /// Domains behind one privacy service share a proxy, not an owner: the proxy's name,
+    /// organisation and address stay in the record, but no relation or rule treats them as the
+    /// registrant. Before, the proxy became an organisation both domains were registered by, so
+    /// AU-109 named any two privacy-protected domains as one operator's.
+    #[test]
+    fn domains_behind_one_privacy_service_do_not_share_a_registrant() {
+        let domains = ["alpha-shop.com", "beta-shop.org"];
+        let records = Records::new(&domains, |domain| {
+            let mailbox = domain.replace('.', "-");
+            format!(
+                r#"{{"full_name":"REDACTED FOR PRIVACY","company_name":"Domains By Proxy, LLC","email_address":"{mailbox}@domainsbyproxy.com","country_code":"US"}}"#
+            )
+        });
+        let entities = lookups(&records, &domains);
+        let fired = rules_fired(entities.clone());
+        assert!(
+            !fired.iter().any(|id| id == "AU-109"),
+            "rules that fired: {fired:?}"
+        );
+
+        for domain in domains {
+            let entity = entities
+                .iter()
+                .find(|e| e.kind == EntityKind::Domain && e.value == domain)
+                .unwrap_or_else(|| panic!("{domain}"));
+            assert!(entity.tags.iter().any(|t| t == PRIVACY_TAG), "{entity:?}");
+            let proxy = evidence_attr(entity, "registrant_proxy").join("; ");
+            for kept in [
+                "REDACTED FOR PRIVACY",
+                "Domains By Proxy, LLC",
+                "@domainsbyproxy.com",
+            ] {
+                assert!(proxy.contains(kept), "{kept} not in {proxy}");
+            }
+            for key in [
+                "registrant_name",
+                "registrant_org",
+                "registrant_email",
+                "admin_org",
+            ] {
+                assert!(evidence_attr(entity, key).is_empty(), "{key} on {domain}");
+            }
+        }
+        assert!(
+            !entities
+                .iter()
+                .any(|e| matches!(e.kind, EntityKind::Organisation | EntityKind::Email)),
+            "{entities:?}"
+        );
+    }
+
+    /// A record that redacts the name but publishes the organisation keeps the organisation.
+    #[test]
+    fn a_redacted_name_beside_a_published_organisation_keeps_the_organisation() {
+        let body = br#"{"status":1,"domain_name":"acme-shop.com","domain_registered":"yes","registrant_contact":{"full_name":"REDACTED FOR PRIVACY","company_name":"Acme Shops Ltd","email_address":"Please query the RDDS service of the Registrar of Record"}}"#;
+        let f = decode(body, "acme-shop.com")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("record must decode"));
+        assert!(
+            f.attrs
+                .contains(&("registrant_org", "Acme Shops Ltd".into()))
+        );
+        assert!(
+            f.attrs
+                .contains(&("registrant_proxy", "REDACTED FOR PRIVACY".into()))
+        );
+        assert!(f.attrs.contains(&(
+            "registrant_proxy",
+            "Please query the RDDS service of the Registrar of Record".into()
+        )));
+        assert_eq!(f.tags, [PRIVACY_TAG]);
+        let pivots: Vec<(PivotKind, &str)> = f
+            .pivots
+            .iter()
+            .map(|p| (p.kind, p.value.as_str()))
+            .collect();
+        assert_eq!(pivots, [(PivotKind::Organisation, "Acme Shops Ltd")]);
     }
 }
