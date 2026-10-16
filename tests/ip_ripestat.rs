@@ -7,11 +7,11 @@ use huntsman_recon::entity::{Entity, EntityKind, Evidence};
 use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, Report, run};
 use huntsman_recon::keys::Keys;
-
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// `8.8.8.8` as `RIPEstat` answered it on 2026-10-15, with ten origin AS numbers, as a prefix
-/// announced from many networks (MOAS) has.
+//! announced from many networks (MOAS) has.
 fn ripestat_answer() -> String {
     let asns: Vec<String> = (0..10)
         .map(|n| format!(r#"{{"asn":{},"holder":"Origin {n}"}}"#, 15_169 + n))
@@ -55,7 +55,13 @@ impl Transport for OnlyRipestat {
 }
 
 fn report(ip: &str) -> Report {
-    match run(&OnlyRipestat, &Keys::default(), ip, 1_760_000_000) {
+    match run(
+        &OnlyRipestat,
+        &Keys::default(),
+        &Feeds::none(),
+        ip,
+        1_760_000_000,
+    ) {
         IpRun::Printed { report, .. } => report,
         IpRun::Network(why) | IpRun::Failed(why) => panic!("ip {ip} did not print: {why}"),
     }
