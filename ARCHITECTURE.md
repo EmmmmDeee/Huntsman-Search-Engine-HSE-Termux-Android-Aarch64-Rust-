@@ -205,8 +205,9 @@ PLANNED, in this order. "In flight" means work has started on that branch and is
 ### Reproducible graph scheduling comparison
 
 Run `cargo test --locked --test graph_exec measured_sequential_vs_bounded_graph_synthetic_io -- --nocapture`
-from the repository root. CI runs the same comparison on pinned Rust 1.99 after the
-full repair gate and prints a JSON timing record. The benchmark executes four
+from the repository root to print a JSON timing record. The ordinary test suite
+also executes the benchmark but captures its output unless run with `--nocapture`.
+The benchmark executes four
 independent synthetic, fixed-latency blocking lookups first in sequence and then
 through the graph executor at concurrency two. It checks equivalent outputs,
 success counts and termination status; no speedup threshold is asserted because
