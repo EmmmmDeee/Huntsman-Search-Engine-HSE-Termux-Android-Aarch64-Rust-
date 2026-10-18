@@ -1499,6 +1499,50 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_sequential_baseline_measures_graph_speedup() {
+        let ids = ["a", "b", "c", "d"];
+        let definition = GraphDefinition {
+            run_id: "synthetic-benchmark".into(),
+            tasks: ids.iter().map(|id| spec(id, &[])).collect(),
+        };
+        let mut handlers = HandlerRegistry::new();
+        for id in ids {
+            handlers.insert(
+                id.into(),
+                handler(move |_| {
+                    thread::sleep(Duration::from_millis(25));
+                    Ok(output(json!(true), id))
+                }),
+            );
+        }
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let sequential_start = Instant::now();
+        for id in ids {
+            let context = TaskContext {
+                task_id: id.into(),
+                input: json!({}),
+                dependency_outputs: BTreeMap::new(),
+                attempt: 1,
+                idempotency_key: None,
+                deadline: Instant::now() + Duration::from_secs(1),
+                cancelled: Arc::clone(&cancelled),
+            };
+            let handler = handlers.get(id).expect("benchmark handler");
+            handler(context).expect("synthetic sequential task");
+        }
+        let sequential_ms =
+            u64::try_from(sequential_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let graph_report = GraphExecutor::new(policy())
+            .execute(&definition, &handlers, cancelled)
+            .unwrap();
+        let comparison =
+            ExecutionComparison::from_measured_sequential_baseline(sequential_ms, &graph_report);
+        assert_eq!(comparison.task_count, ids.len());
+        assert!(comparison.speedup_ratio_milli.is_some_and(|ratio| ratio > 1_000));
+    }
+
+    #[test]
     fn dependent_task_receives_only_completed_dependency_output() {
         let definition = GraphDefinition {
             run_id: "dependency-run".into(),
