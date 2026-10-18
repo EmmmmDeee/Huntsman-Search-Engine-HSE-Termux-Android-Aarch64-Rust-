@@ -283,7 +283,9 @@ impl CrawlState {
                 self.cancelled = true;
                 stopped = true;
                 next.push(first);
-                for target in remaining.by_ref() { next.push(target); }
+                for target in remaining.by_ref() {
+                    next.push(target);
+                }
                 break;
             }
             if !self.visited.insert(first.owned_key()) { continue; }
@@ -291,28 +293,38 @@ impl CrawlState {
                 self.resource_limited = true;
                 stopped = true;
                 next.push(first);
-                for target in remaining.by_ref() { next.push(target); }
+                for target in remaining.by_ref() {
+                    next.push(target);
+                }
                 break;
             }
 
             let mut batch = vec![first];
             while batch.len() < MAX_BATCH {
-                let Some(target) = remaining.next() else { break; };
+                let Some(target) = remaining.next() else {
+                    break;
+                };
                 if collector.cancelled() {
                     self.cancelled = true;
                     stopped = true;
                     next.push(target);
-                    for target in remaining.by_ref() { next.push(target); }
+                    for target in remaining.by_ref() {
+                    next.push(target);
+                }
                     break;
                 }
-                if !self.visited.insert(target.owned_key()) { continue; }
+                if !self.visited.insert(target.owned_key()) {
+                    continue;
+                }
                 if self.dispatches.saturating_add(batch.len()) >= policy.max_dispatches
                     || self.entities.len() >= policy.max_entities
                 {
                     self.resource_limited = true;
                     stopped = true;
                     next.push(target);
-                    for target in remaining.by_ref() { next.push(target); }
+                    for target in remaining.by_ref() {
+                    next.push(target);
+                }
                     break;
                 }
                 batch.push(target);
@@ -321,7 +333,10 @@ impl CrawlState {
             let steps = collector.collect_batch(&batch);
             let mut steps = steps.into_iter();
             for target in batch {
-                let step = steps.next().unwrap_or_else(|| Step { entities: Vec::new(), outcomes: Vec::new() });
+                let step = steps.next().unwrap_or_else(|| Step {
+                    entities: Vec::new(),
+                    outcomes: Vec::new(),
+                });
                 self.dispatches += 1;
                 dispatched += 1;
                 self.outcomes.extend(step.outcomes);
@@ -338,7 +353,9 @@ impl CrawlState {
                     self.entities.push(entity);
                 }
             }
-            if stopped { break; }
+            if stopped {
+                break;
+            }
         }
 
         merge_by_uid(&mut self.entities);
