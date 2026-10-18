@@ -1222,7 +1222,10 @@ mod tests {
         let mut b = spec("b", &[]);
         a.exclusive_resources = vec!["shared-store".into()];
         b.exclusive_resources = vec!["shared-store".into()];
-        let definition = GraphDefinition { run_id: "resource-run".into(), tasks: vec![a, b] };
+        let definition = GraphDefinition {
+            run_id: "resource-run".into(),
+            tasks: vec![a, b],
+        };
         let inside = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
         let lock = Arc::new(Mutex::new(()));
@@ -1231,14 +1234,19 @@ mod tests {
             let inside = Arc::clone(&inside);
             let peak = Arc::clone(&peak);
             let lock = Arc::clone(&lock);
-            handlers.insert(id.into(), handler(move |_| {
-                let _guard = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                let current = inside.fetch_add(1, Ordering::SeqCst) + 1;
-                peak.fetch_max(current, Ordering::SeqCst);
-                thread::sleep(Duration::from_millis(10));
-                inside.fetch_sub(1, Ordering::SeqCst);
-                Ok(output(json!(true), id))
-            }));
+            handlers.insert(
+                id.into(),
+                handler(move |_| {
+                    let _guard = lock
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let current = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(current, Ordering::SeqCst);
+                    thread::sleep(Duration::from_millis(10));
+                    inside.fetch_sub(1, Ordering::SeqCst);
+                    Ok(output(json!(true), id))
+                }),
+            );
         }
         let report = GraphExecutor::new(policy())
             .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
@@ -1258,17 +1266,29 @@ mod tests {
         let mut handlers = HandlerRegistry::new();
         for id in ["done", "later"] {
             let calls = Arc::clone(&calls);
-            handlers.insert(id.into(), handler(move |_| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(output(json!(id), id))
-            }));
+            handlers.insert(
+                id.into(),
+                handler(move |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(output(json!(id), id))
+                }),
+            );
         }
         let executor = GraphExecutor::new(policy());
-        let first = executor.execute(&definition, &handlers, Arc::new(AtomicBool::new(false))).unwrap();
+        let first = executor
+            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .unwrap();
         let checkpoint = ExecutionCheckpoint::from_report(first.clone());
         let bytes = checkpoint.encode().unwrap();
         let decoded = ExecutionCheckpoint::decode(&bytes).unwrap();
-        let resumed = executor.resume(&definition, &handlers, Arc::new(AtomicBool::new(false)), decoded).unwrap();
+        let resumed = executor
+            .resume(
+                &definition,
+                &handlers,
+                Arc::new(AtomicBool::new(false)),
+                decoded,
+            )
+            .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(resumed.tasks["done"].state, TaskState::Succeeded);
         assert_eq!(resumed.tasks["later"].state, TaskState::Succeeded);
