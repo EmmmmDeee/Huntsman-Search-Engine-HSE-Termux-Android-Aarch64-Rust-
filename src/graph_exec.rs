@@ -626,24 +626,24 @@ fn run_one(
             break;
         }
         match result {
-            Ok(Ok(output)) => {
-                match validate_output(spec, &output, max_output_bytes) {
-                    Ok(()) => {
-                        record.state = TaskState::Succeeded;
-                        record.output = Some(output);
-                        record.error = None;
-                        break;
-                    }
-                    Err(error) => {
-                        record.state = TaskState::Failed;
-                        last_error = error;
-                        break;
-                    }
+            Ok(Ok(output)) => match validate_output(spec, &output, max_output_bytes) {
+                Ok(()) => {
+                    record.state = TaskState::Succeeded;
+                    record.output = Some(output);
+                    record.error = None;
+                    break;
                 }
-            }
+                Err(error) => {
+                    record.state = TaskState::Failed;
+                    last_error = error;
+                    break;
+                }
+            },
             Ok(Err(error)) => {
                 last_error = error.message;
-                if !error.retryable || prior_attempts.saturating_add(record.attempts) >= max_attempts {
+                if !error.retryable
+                    || prior_attempts.saturating_add(record.attempts) >= max_attempts
+                {
                     record.state = TaskState::Failed;
                     break;
                 }
@@ -687,8 +687,8 @@ impl ExecutionCheckpoint {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, GraphError> {
-        let bytes = serde_json::to_vec(self)
-            .map_err(|error| GraphError::Checkpoint(error.to_string()))?;
+        let bytes =
+            serde_json::to_vec(self).map_err(|error| GraphError::Checkpoint(error.to_string()))?;
         if bytes.len() > MAX_CHECKPOINT_BYTES {
             return Err(GraphError::Checkpoint(
                 "checkpoint exceeds size limit".into(),
@@ -699,7 +699,9 @@ impl ExecutionCheckpoint {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, GraphError> {
         if bytes.len() > MAX_CHECKPOINT_BYTES {
-            return Err(GraphError::Checkpoint("checkpoint exceeds size limit".into()));
+            return Err(GraphError::Checkpoint(
+                "checkpoint exceeds size limit".into(),
+            ));
         }
         let checkpoint: Self = serde_json::from_slice(bytes)
             .map_err(|error| GraphError::Checkpoint(error.to_string()))?;
@@ -840,7 +842,10 @@ impl GraphExecutor {
             }
             if Instant::now() >= run_deadline {
                 termination = RunTermination::TimedOut;
-                for record in records.values_mut().filter(|record| record.state == TaskState::Pending) {
+                for record in records
+                    .values_mut()
+                    .filter(|record| record.state == TaskState::Pending)
+                {
                     record.state = TaskState::TimedOut;
                     record.error = Some("run deadline exceeded before dispatch".into());
                     record.finished_at_unix = Some(now_unix());
