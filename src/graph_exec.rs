@@ -842,12 +842,13 @@ impl GraphExecutor {
                     continue;
                 }
                 let failed_dependency = graph.by_id[id].dependencies.iter().find(|dependency| {
-                    records[*dependency].state.terminal() && !records[*dependency].state.successful()
+                    records[*dependency].state.terminal()
+                        && !records[*dependency].state.successful()
                 });
                 if let Some(dependency) = failed_dependency {
-                    let record = records.get_mut(id).ok_or_else(|| {
-                        GraphError::Invalid("missing task record".into())
-                    })?;
+                    let record = records
+                        .get_mut(id)
+                        .ok_or_else(|| GraphError::Invalid("missing task record".into()))?;
                     record.state = TaskState::Blocked;
                     record.error = Some(format!("dependency {dependency} did not succeed"));
                     record.finished_at_unix = Some(now_unix());
@@ -871,12 +872,16 @@ impl GraphExecutor {
                     continue;
                 }
                 let spec = &graph.by_id[id];
-                if !spec.dependencies.iter().all(|dependency| {
-                    records[dependency].state == TaskState::Succeeded
-                }) {
+                if !spec
+                    .dependencies
+                    .iter()
+                    .all(|dependency| records[dependency].state == TaskState::Succeeded)
+                {
                     continue;
                 }
-                if consumed.saturating_add(wave_cost).saturating_add(spec.resource_units)
+                if consumed
+                    .saturating_add(wave_cost)
+                    .saturating_add(spec.resource_units)
                     > self.policy.max_total_resource_units
                 {
                     budget_blocked.push(id.clone());
@@ -894,9 +899,9 @@ impl GraphExecutor {
                 selected.push(id.clone());
             }
             for id in budget_blocked {
-                let record = records.get_mut(&id).ok_or_else(|| {
-                    GraphError::Invalid("missing task record".into())
-                })?;
+                let record = records
+                    .get_mut(&id)
+                    .ok_or_else(|| GraphError::Invalid("missing task record".into()))?;
                 record.state = TaskState::Blocked;
                 record.error = Some("resource budget exhausted".into());
                 record.finished_at_unix = Some(now_unix());
@@ -904,7 +909,10 @@ impl GraphExecutor {
                 termination = RunTermination::ResourceLimit;
             }
             if selected.is_empty() {
-                if records.values().any(|record| record.state == TaskState::Pending) {
+                if records
+                    .values()
+                    .any(|record| record.state == TaskState::Pending)
+                {
                     let pending: Vec<String> = records
                         .iter()
                         .filter(|(_, record)| record.state == TaskState::Pending)
@@ -912,9 +920,9 @@ impl GraphExecutor {
                         .collect();
                     for id in pending {
                         if records[&id].state == TaskState::Pending {
-                            let record = records.get_mut(&id).ok_or_else(|| {
-                                GraphError::Invalid("missing task record".into())
-                            })?;
+                            let record = records
+                                .get_mut(&id)
+                                .ok_or_else(|| GraphError::Invalid("missing task record".into()))?;
                             record.state = TaskState::Blocked;
                             record.error = Some("no schedulable dependency frontier".into());
                             record.finished_at_unix = Some(now_unix());
