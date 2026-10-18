@@ -690,7 +690,9 @@ impl ExecutionCheckpoint {
         let bytes = serde_json::to_vec(self)
             .map_err(|error| GraphError::Checkpoint(error.to_string()))?;
         if bytes.len() > MAX_CHECKPOINT_BYTES {
-            return Err(GraphError::Checkpoint("checkpoint exceeds size limit".into()));
+            return Err(GraphError::Checkpoint(
+                "checkpoint exceeds size limit".into(),
+            ));
         }
         Ok(bytes)
     }
@@ -702,7 +704,9 @@ impl ExecutionCheckpoint {
         let checkpoint: Self = serde_json::from_slice(bytes)
             .map_err(|error| GraphError::Checkpoint(error.to_string()))?;
         if checkpoint.format_version != 1 {
-            return Err(GraphError::Checkpoint("unsupported checkpoint version".into()));
+            return Err(GraphError::Checkpoint(
+                "unsupported checkpoint version".into(),
+            ));
         }
         if checkpoint.graph_fingerprint != checkpoint.report.graph_fingerprint {
             return Err(GraphError::Checkpoint("fingerprint mismatch".into()));
@@ -773,7 +777,10 @@ impl GraphExecutor {
                 }
                 if record.state == TaskState::Succeeded {
                     let spec = &graph.by_id[id];
-                    let output = record.output.as_ref().ok_or(GraphError::CheckpointMismatch)?;
+                    let output = record
+                        .output
+                        .as_ref()
+                        .ok_or(GraphError::CheckpointMismatch)?;
                     validate_output(spec, output, self.policy.max_output_bytes)
                         .map_err(|_| GraphError::CheckpointMismatch)?;
                 }
@@ -798,7 +805,9 @@ impl GraphExecutor {
             .as_ref()
             .map_or(0, |saved| saved.report.consumed_resource_units);
         for id in &graph.topological_order {
-            let prior = checkpoint.as_ref().and_then(|saved| saved.report.tasks.get(id));
+            let prior = checkpoint
+                .as_ref()
+                .and_then(|saved| saved.report.tasks.get(id));
             let mut record = prior.cloned().unwrap_or_default();
             if record.state != TaskState::Succeeded {
                 record.state = TaskState::Pending;
@@ -819,7 +828,10 @@ impl GraphExecutor {
             }
             if cancelled.load(Ordering::Acquire) {
                 termination = RunTermination::Cancelled;
-                for record in records.values_mut().filter(|record| record.state == TaskState::Pending) {
+                for record in records
+                    .values_mut()
+                    .filter(|record| record.state == TaskState::Pending)
+                {
                     record.state = TaskState::Cancelled;
                     record.error = Some("run cancelled before dispatch".into());
                     record.finished_at_unix = Some(now_unix());
