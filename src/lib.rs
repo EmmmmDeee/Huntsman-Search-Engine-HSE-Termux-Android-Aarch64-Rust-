@@ -87,6 +87,7 @@ pub mod gexf;
 pub mod github_user;
 pub mod graph;
 pub mod graph_exec;
+pub mod trafficking_intel;
 pub mod gravatar;
 pub mod greynoise;
 pub mod hackertarget;
