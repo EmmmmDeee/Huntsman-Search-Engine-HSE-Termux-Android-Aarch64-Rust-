@@ -23,7 +23,7 @@ const MAX_TASKS: usize = 4096;
 const MAX_DEPENDENCIES_PER_TASK: usize = 1024;
 const MAX_RESOURCES_PER_TASK: usize = 64;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
-const MAX_CONCURRENCY: usize = 16;
+const MAX_CONCURRENCY: usize = 8;
 const MAX_OBJECTIVE_BYTES: usize = 4096;
 const MAX_SCHEMA_DEPTH: usize = 64;
 const MAX_CHECKPOINT_BYTES: usize = 16 * 1024 * 1024;
@@ -1187,9 +1187,9 @@ impl GraphExecutor {
                         .map(|output| (id.clone(), output.clone()))
                 })
                 .collect();
-            let results = thread::scope(|scope| {
-                let mut handles = Vec::with_capacity(selected.len());
-                for id in &selected {
+            let jobs: Vec<crate::concurrent::Job<'_, (String, (TaskRecord, u64))>> = selected
+                .iter()
+                .map(|id| {
                     let spec = &graph.by_id[id];
                     let handler = handlers
                         .get(id)
@@ -1209,35 +1209,22 @@ impl GraphExecutor {
                     let cancelled = Arc::clone(&cancelled);
                     let run_deadline = run_deadline;
                     let max_output_bytes = self.policy.max_output_bytes;
-                    handles.push((
-                        id.clone(),
-                        scope.spawn(move || {
-                            run_one(
-                                spec,
-                                &handler,
-                                deps,
-                                prior_attempts,
-                                cancelled,
-                                run_deadline,
-                                max_output_bytes,
-                            )
-                        }),
-                    ));
-                }
-                handles
-                    .into_iter()
-                    .map(|(id, handle)| {
-                        let result = handle.join().unwrap_or_else(|_| {
-                            let mut record = TaskRecord::default();
-                            record.state = TaskState::Failed;
-                            record.error = Some("task worker panicked".into());
-                            record.finished_at_unix = Some(now_unix());
-                            (record, graph.by_id[&id].resource_units)
-                        });
-                        (id, result)
-                    })
-                    .collect::<Vec<_>>()
-            });
+                    let task_id = id.clone();
+                    Box::new(move || {
+                        let result = run_one(
+                            spec,
+                            &handler,
+                            deps,
+                            prior_attempts,
+                            cancelled,
+                            run_deadline,
+                            max_output_bytes,
+                        );
+                        (task_id, result)
+                    }) as crate::concurrent::Job<'_, (String, (TaskRecord, u64))>
+                })
+                .collect();
+            let results = crate::concurrent::all(jobs);
             for (id, (mut record, _charged)) in results {
                 let previous_attempts = records[&id].attempts;
                 record.attempts = previous_attempts.saturating_add(record.attempts);
