@@ -55,7 +55,7 @@ pub fn lookup(
 /// Decode one answer. Pure.
 ///
 /// # Errors
-/// Returns LegError::Decode when the response is not UTF-8 JSON with numeric aggregate
+/// Returns `LegError::Decode` when the response is not UTF-8 JSON with numeric aggregate
 /// counts. A valid zero-count response is a clean negative.
 pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     let text =
