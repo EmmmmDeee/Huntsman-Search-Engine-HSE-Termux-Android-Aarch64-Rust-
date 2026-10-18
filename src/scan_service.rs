@@ -45,7 +45,7 @@ use crate::scan_store::{
 use crate::sf_correlate::{self, Rule, RuleError};
 use crate::sf_elements::{self, DataElement, Target};
 use crate::sf_types;
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::termination::TerminationReason;
 
 /// Scans that run at once; more wait as `STARTING`. A phone runs two lookups' worth of requests
@@ -328,6 +328,30 @@ fn lookup_output_schema() -> ValueSchema {
     }
 }
 
+/// Preserve failures in durable scan results, not just ephemeral logs and counters.
+/// A scheduler or transport error is not a validated zero-result lookup.
+fn failed_lookup_step(
+    target: &CrawlTarget,
+    module: &str,
+    kind: SourceOutcomeKind,
+    detail: &str,
+) -> Step {
+    Step {
+        entities: Vec::new(),
+        outcomes: vec![SourceExecutionOutcome::failed(
+            module,
+            now_ms() / 1_000,
+            kind,
+            None,
+            format!(
+                "{} lookup on {}: {detail}",
+                target.kind.command(),
+                target.selector
+            ),
+        )],
+    }
+}
+
 impl SelectorCollector for ScanCollector<'_> {
     fn collect(&mut self, target: &CrawlTarget) -> Step {
         let skip = Step {
@@ -351,16 +375,16 @@ impl SelectorCollector for ScanCollector<'_> {
             return skip;
         }
         let mut found = LookupOutput::default();
-        match self.service.lookup_into(
+        if let Some(failed) = self.service.lookup_into(
             self.id,
             (target.kind, &target.selector, self.chosen),
             &mut found,
         ) {
-            Some(failed) => {
-                self.ran += 1;
-                self.errors += failed;
-            }
-            None => self.errors += 1,
+            self.ran += 1;
+            self.errors += failed;
+        } else {
+            // lookup_into retained its exact error in found.outcomes.
+            self.errors += 1;
         }
         if target.kind == ScanKind::Email
             && found
@@ -504,9 +528,13 @@ impl SelectorCollector for ScanCollector<'_> {
                 self.errors = self.errors.saturating_add(targets.len());
                 return targets
                     .iter()
-                    .map(|_| Step {
-                        entities: Vec::new(),
-                        outcomes: Vec::new(),
+                    .map(|target| {
+                        failed_lookup_step(
+                            target,
+                            "graph_exec",
+                            SourceOutcomeKind::Inconclusive,
+                            &format!("lookup batch rejected by graph executor: {error}"),
+                        )
                     })
                     .collect();
             }
@@ -539,10 +567,12 @@ impl SelectorCollector for ScanCollector<'_> {
                         LogLevel::Error,
                         format!("graph executor omitted task record {task_id}"),
                     );
-                    return Step {
-                        entities: Vec::new(),
-                        outcomes: Vec::new(),
-                    };
+                    return failed_lookup_step(
+                        target,
+                        "graph_exec",
+                        SourceOutcomeKind::Inconclusive,
+                        &format!("graph executor omitted task record {task_id}"),
+                    );
                 };
                 if record.state != TaskState::Succeeded {
                     self.errors = self.errors.saturating_add(1);
@@ -556,10 +586,16 @@ impl SelectorCollector for ScanCollector<'_> {
                             record.error.as_deref().unwrap_or("no failure detail")
                         ),
                     );
-                    return Step {
-                        entities: Vec::new(),
-                        outcomes: Vec::new(),
-                    };
+                    return failed_lookup_step(
+                        target,
+                        "graph_exec",
+                        SourceOutcomeKind::Inconclusive,
+                        &format!(
+                            "graph task {task_id} ended as {:?}: {}",
+                            record.state,
+                            record.error.as_deref().unwrap_or("no failure detail")
+                        ),
+                    );
                 }
                 let decoded = record
                     .output
@@ -579,10 +615,12 @@ impl SelectorCollector for ScanCollector<'_> {
                             LogLevel::Error,
                             format!("task {task_id}: {error}"),
                         );
-                        return Step {
-                            entities: Vec::new(),
-                            outcomes: Vec::new(),
-                        };
+                        return failed_lookup_step(
+                            target,
+                            "graph_exec",
+                            SourceOutcomeKind::SchemaDrift,
+                            &format!("task {task_id}: {error}"),
+                        );
                     }
                 };
                 let failed_sources = found
@@ -628,6 +666,18 @@ impl SelectorCollector for ScanCollector<'_> {
                 }
             })
             .collect()
+    }
+
+    fn on_batch_contract_error(&mut self, violations: usize) {
+        self.errors = self.errors.saturating_add(violations);
+        self.service.log(
+            self.id,
+            "recursion",
+            LogLevel::Error,
+            format!(
+                "recursive collector returned {violations} missing or unsolicited batch results"
+            ),
+        );
     }
 
     fn cancelled(&self) -> bool {
@@ -1154,6 +1204,11 @@ impl ScanService {
                     LogLevel::Error,
                     format!("the {} lookup gave no report: {message}", kind.command()),
                 );
+                found.outcomes.push(SourceExecutionOutcome::inconclusive(
+                    "scan_lookup",
+                    now_ms() / 1_000,
+                    format!("{} lookup on {target}: {message}", kind.command()),
+                ));
                 None
             }
         }
@@ -1965,6 +2020,135 @@ mod tests {
         };
         assert!(collector.may_batch(&[first_ip], &next_ip));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sequential_lookup_error_persists_an_inconclusive_outcome() {
+        let (service, dir) = with_lookup(
+            "persist-sequential-failure",
+            Arc::new(|_, _, _| Err("synthetic source outage".into())),
+        );
+        let record = service
+            .run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                kind: Some("ip".into()),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        assert_eq!(record.status, ScanStatus::ErrorFailed);
+        assert_eq!(record.errors, 1);
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        assert!(results.entities.is_empty());
+        assert_eq!(results.outcomes.len(), 1);
+        assert_eq!(results.outcomes[0].module, "scan_lookup");
+        assert_eq!(results.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
+        assert!(results.outcomes[0].found.is_none());
+        let diagnostic = results.outcomes[0].detail.as_deref().unwrap();
+        assert!(diagnostic.contains("synthetic source outage"));
+        assert!(
+            results.outcomes[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("ip lookup on 1.1.1.1")
+        );
+        let log = service.store().log(&record.id).unwrap();
+        assert!(
+            log.iter()
+                .any(|entry| entry.message.contains("synthetic source outage"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn graph_lookup_error_persists_alongside_a_valid_zero_result() {
+        let (service, dir) = with_lookup(
+            "persist-graph-failure",
+            Arc::new(|kind: ScanKind, selector: &str, _: &Selection| {
+                if kind == ScanKind::Domain {
+                    let evidence = Evidence::new(
+                        EvidenceProvenance::for_scan("test", "seed"),
+                        "discovered address",
+                    );
+                    return Ok(LookupOutput {
+                        entities: ["1.1.1.1", "8.8.8.8"]
+                            .into_iter()
+                            .map(|ip| {
+                                Entity::builder(EntityKind::IpAddress, ip, 0.95, "test")
+                                    .evidence(evidence.clone())
+                                    .build()
+                            })
+                            .collect(),
+                        ..LookupOutput::default()
+                    });
+                }
+                if selector == "1.1.1.1" {
+                    return Err("synthetic provider failure".into());
+                }
+                Ok(LookupOutput {
+                    outcomes: vec![SourceExecutionOutcome::valid_zero("fixture", 42)],
+                    ..LookupOutput::default()
+                })
+            }),
+        );
+        let record = service
+            .run(&ScanRequest {
+                target: "example.org".into(),
+                kind: Some("domain".into()),
+                options: ScanOptions {
+                    depth: 1,
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        assert_eq!(record.status, ScanStatus::Finished);
+        assert_eq!(record.errors, 1);
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        assert_eq!(results.outcomes.len(), 2);
+        let failure = results
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == "graph_exec")
+            .unwrap();
+        assert_eq!(failure.kind, SourceOutcomeKind::Inconclusive);
+        assert!(failure.found.is_none());
+        assert!(failure.detail.as_deref().unwrap().contains("1.1.1.1"));
+        assert!(
+            failure
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("synthetic provider failure")
+        );
+        let zero = results
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == "fixture")
+            .unwrap();
+        assert_eq!(zero.kind, SourceOutcomeKind::ValidZero);
+        assert_eq!(zero.found, Some(0));
+        assert!(record.modules_run.contains(&"graph_exec".to_owned()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn graph_schema_failure_is_not_misreported_as_empty_success() {
+        let target = CrawlTarget {
+            kind: ScanKind::Ip,
+            selector: "1.1.1.1".into(),
+        };
+        let failure = failed_lookup_step(
+            &target,
+            "graph_exec",
+            SourceOutcomeKind::SchemaDrift,
+            "task lookup-0000: missing output envelope",
+        );
+        assert!(failure.entities.is_empty());
+        assert_eq!(failure.outcomes.len(), 1);
+        assert_eq!(failure.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
+        assert!(failure.outcomes[0].found.is_none());
+        assert!(!failure.outcomes[0].kind.is_accepted());
     }
 
     #[test]

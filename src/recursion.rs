@@ -13,6 +13,7 @@
 //! output concern, never the scan's.
 
 use std::collections::BTreeSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +66,10 @@ pub trait SelectorCollector {
     fn may_batch(&self, _selected: &[Target], _next: &Target) -> bool {
         true
     }
+
+    /// Report mismatched collector batch output cardinality to the scan's error accounting.
+    /// The recursion driver also persists a typed non-success outcome for each violation.
+    fn on_batch_contract_error(&mut self, _violations: usize) {}
 
     /// Whether the operator asked the crawl to stop. Checked before every dispatch: the crawl
     /// then stops as `Cancelled`, keeping everything found so far.
@@ -236,6 +241,58 @@ impl Frontier {
     }
 }
 
+/// One missing lookup result is always an unsuccessful outcome, never an empty success.
+fn missing_batch_step(target: &Target, observed_at: u64) -> Step {
+    Step {
+        entities: Vec::new(),
+        outcomes: vec![SourceExecutionOutcome::inconclusive(
+            "recursion",
+            observed_at,
+            format!(
+                "collector omitted a {} lookup result for {}",
+                target.kind.command(),
+                target.selector
+            ),
+        )],
+    }
+}
+
+/// Normalize the collector's response count before deterministic, target-ordered reduction.
+/// A missing lookup step or an unsolicited extra step is a contract failure, never valid-zero.
+fn normalize_batch<C: SelectorCollector>(
+    collector: &mut C,
+    batch: &[Target],
+    mut steps: Vec<Step>,
+) -> Vec<Step> {
+    let missing = batch.len().saturating_sub(steps.len());
+    let excess = steps.len().saturating_sub(batch.len());
+    if missing == 0 && excess == 0 {
+        return steps;
+    }
+
+    collector.on_batch_contract_error(missing.saturating_add(excess));
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    steps.truncate(batch.len());
+    for target in batch.iter().skip(steps.len()) {
+        steps.push(missing_batch_step(target, observed_at));
+    }
+    if excess > 0 {
+        if let Some(last) = steps.last_mut() {
+            last.outcomes.push(SourceExecutionOutcome::inconclusive(
+                "recursion",
+                observed_at,
+                format!(
+                    "collector returned {excess} unsolicited results for a batch of {} lookups",
+                    batch.len()
+                ),
+            ));
+        }
+    }
+    steps
+}
+
 /// Build the initial frontier: each routable seed becomes a de-duplicated target; an empty or
 /// non-routable seed is rejected. Returns (accepted seeds, rejected seeds, frontier).
 fn seed_frontier(seeds: &[String]) -> (Vec<Target>, Vec<String>, Vec<Target>) {
@@ -351,12 +408,12 @@ impl CrawlState {
             }
 
             let steps = collector.collect_batch(&batch);
+            let steps = normalize_batch(collector, &batch, steps);
             let mut steps = steps.into_iter();
             for target in batch {
-                let step = steps.next().unwrap_or_else(|| Step {
-                    entities: Vec::new(),
-                    outcomes: Vec::new(),
-                });
+                let step = steps
+                    .next()
+                    .unwrap_or_else(|| missing_batch_step(&target, 0));
                 self.dispatches += 1;
                 dispatched += 1;
                 self.outcomes.extend(step.outcomes);
@@ -563,6 +620,75 @@ mod tests {
 
         fn cancelled(&self) -> bool {
             self.inner.calls.len() >= self.limit
+        }
+    }
+
+    #[test]
+    fn batch_cardinality_violations_remain_visible_as_failed_outcomes() {
+        struct BadBatch {
+            returned: usize,
+            violations: usize,
+        }
+
+        impl SelectorCollector for BadBatch {
+            fn collect(&mut self, _target: &Target) -> Step {
+                Step {
+                    entities: Vec::new(),
+                    outcomes: Vec::new(),
+                }
+            }
+
+            fn collect_batch(&mut self, _targets: &[Target]) -> Vec<Step> {
+                (0..self.returned)
+                    .map(|_| Step {
+                        entities: Vec::new(),
+                        outcomes: vec![SourceExecutionOutcome::valid_zero("fixture", 1)],
+                    })
+                    .collect()
+            }
+
+            fn on_batch_contract_error(&mut self, violations: usize) {
+                self.violations += violations;
+            }
+        }
+
+        let targets = ["1.1.1.1", "8.8.8.8"]
+            .into_iter()
+            .map(|selector| Target {
+                kind: ScanKind::Ip,
+                selector: selector.into(),
+            })
+            .collect::<Vec<_>>();
+        let policy = RecursionPolicy {
+            max_generations: 0,
+            expose_emails: false,
+            ..RecursionPolicy::default()
+        };
+        for (returned, expected_outcomes) in [(1, 2), (3, 3)] {
+            let mut collector = BadBatch {
+                returned,
+                violations: 0,
+            };
+            let report = run_targets(targets.clone(), &policy, &mut collector);
+            assert_eq!(collector.violations, 1);
+            assert_eq!(report.dispatches, 2);
+            assert_eq!(report.outcomes.len(), expected_outcomes);
+            let violations = report
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.module == "recursion")
+                .collect::<Vec<_>>();
+            assert_eq!(violations.len(), 1);
+            assert!(!violations[0].kind.is_accepted());
+            assert!(violations[0].found.is_none());
+            let detail = violations[0].detail.as_deref().unwrap();
+            if returned == 1 {
+                assert!(detail.contains("omitted"));
+                assert!(detail.contains("8.8.8.8"));
+            } else {
+                assert!(detail.contains("unsolicited"));
+                assert!(detail.contains('1'));
+            }
         }
     }
 
