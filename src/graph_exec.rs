@@ -1435,7 +1435,9 @@ impl GraphExecutor {
             }
             let results = crate::concurrent::all(jobs);
             for (id, (mut record, last_attempt_start)) in results {
-                if let (Some(limit), Some(start)) = (&graph.by_id[&id].rate_limit, last_attempt_start) {
+                if let (Some(limit), Some(start)) =
+                    (&graph.by_id[&id].rate_limit, last_attempt_start)
+                {
                     last_rate_start.insert(limit.key.clone(), start);
                 }
                 let previous_attempts = records[&id].attempts;
@@ -2278,10 +2280,6 @@ mod tests {
         assert_ne!(legacy.graph_fingerprint, old_hash);
         legacy.graph_fingerprint = old_hash.clone();
         legacy.report.graph_fingerprint = old_hash;
-        definition.tasks.reverse();
-        // The original unordered definition is still accepted as a legacy checkpoint;
-        // a changed task order must use the canonical representation going forward.
-        definition.tasks.reverse();
         let resumed = executor
             .resume(
                 &definition,
@@ -2291,7 +2289,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(resumed.summary().succeeded, 2);
-        assert_eq!(resumed.graph_fingerprint, definition.validate().unwrap().fingerprint);
+        assert_eq!(
+            resumed.graph_fingerprint,
+            definition.validate().unwrap().fingerprint
+        );
     }
 
     #[test]
@@ -2344,5 +2345,4 @@ mod tests {
             assert!(window[1].duration_since(window[0]) >= Duration::from_millis(55));
         }
     }
-
 }
