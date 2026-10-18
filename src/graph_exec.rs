@@ -337,6 +337,72 @@ pub struct RunReport {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunSummary {
+    pub total_tasks: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub timed_out: usize,
+    pub cancelled: usize,
+    pub blocked: usize,
+    pub pending_or_running: usize,
+    pub retry_attempts: usize,
+    pub evidence_references: usize,
+    pub verified_results: usize,
+    pub wall_clock_ms: Option<u64>,
+    pub consumed_resource_units: u64,
+}
+
+impl RunReport {
+    /// Derive deterministic accounting from the persisted task records.
+    #[must_use]
+    pub fn summary(&self) -> RunSummary {
+        let mut summary = RunSummary {
+            total_tasks: self.tasks.len(),
+            wall_clock_ms: self.duration_ms,
+            consumed_resource_units: self.consumed_resource_units,
+            ..RunSummary::default()
+        };
+        for record in self.tasks.values() {
+            match record.state {
+                TaskState::Succeeded => summary.succeeded += 1,
+                TaskState::Failed => summary.failed += 1,
+                TaskState::TimedOut => summary.timed_out += 1,
+                TaskState::Cancelled => summary.cancelled += 1,
+                TaskState::Blocked => summary.blocked += 1,
+                TaskState::Pending | TaskState::Running => summary.pending_or_running += 1,
+            }
+            summary.retry_attempts += usize::from(record.attempts.saturating_sub(1));
+            if let Some(output) = &record.output {
+                summary.evidence_references += output.evidence.len();
+                if output.verification.state == VerificationState::Verified {
+                    summary.verified_results += 1;
+                }
+            }
+        }
+        summary
+    }
+}
+
+impl Default for RunSummary {
+    fn default() -> Self {
+        Self {
+            total_tasks: 0,
+            succeeded: 0,
+            failed: 0,
+            timed_out: 0,
+            cancelled: 0,
+            blocked: 0,
+            pending_or_running: 0,
+            retry_attempts: 0,
+            evidence_references: 0,
+            verified_results: 0,
+            wall_clock_ms: None,
+            consumed_resource_units: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionCheckpoint {
     pub format_version: u32,
@@ -380,6 +446,7 @@ impl GraphDefinition {
         let mut by_id = BTreeMap::new();
         let mut idempotency = BTreeSet::new();
         let mut rate_limits = BTreeMap::<String, u64>::new();
+        let mut total_task_bytes = 0_usize;
         for task in &self.tasks {
             if !valid_token(&task.id) {
                 return Err(GraphError::Invalid(format!("invalid task id: {}", task.id)));
@@ -433,6 +500,12 @@ impl GraphDefinition {
             }
             let mut deps = BTreeSet::new();
             for dependency in &task.dependencies {
+                if !valid_token(dependency) {
+                    return Err(GraphError::Invalid(format!(
+                        "invalid dependency identifier on {}",
+                        task.id
+                    )));
+                }
                 if dependency == &task.id {
                     return Err(GraphError::Invalid(format!("self dependency: {}", task.id)));
                 }
@@ -479,6 +552,13 @@ impl GraphDefinition {
                         task.id
                     )));
                 }
+            }
+            let task_bytes = serde_json::to_vec(task).map_err(|error| {
+                GraphError::Invalid(format!("cannot encode task {}: {error}", task.id))
+            })?;
+            total_task_bytes = total_task_bytes.saturating_add(task_bytes.len());
+            if total_task_bytes > MAX_CHECKPOINT_BYTES {
+                return Err(GraphError::Invalid("graph exceeds serialized size limit".into()));
             }
             if by_id.insert(task.id.clone(), task.clone()).is_some() {
                 return Err(GraphError::Invalid(format!(
@@ -1449,6 +1529,40 @@ mod tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
         assert_eq!(report.tasks["retry"].attempts, 3);
         assert_eq!(report.tasks["retry"].state, TaskState::Failed);
+    }
+
+    #[test]
+    fn run_summary_accounts_for_results_and_retries() {
+        let definition = GraphDefinition {
+            run_id: "summary-run".into(),
+            tasks: vec![{
+                let mut value = spec("retry", &[]);
+                value.max_retries = 1;
+                value
+            }],
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut handlers = HandlerRegistry::new();
+        let attempts_for_handler = Arc::clone(&attempts);
+        handlers.insert(
+            "retry".into(),
+            handler(move |_| {
+                if attempts_for_handler.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(TaskFailure::transient("retry once"))
+                } else {
+                    Ok(output(json!([]), "retry"))
+                }
+            }),
+        );
+        let report = GraphExecutor::new(policy())
+            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        let summary = report.summary();
+        assert_eq!(summary.total_tasks, 1);
+        assert_eq!(summary.succeeded, 1);
+        assert_eq!(summary.retry_attempts, 1);
+        assert_eq!(summary.evidence_references, 0);
+        assert_eq!(summary.consumed_resource_units, 1);
     }
 
     #[test]
