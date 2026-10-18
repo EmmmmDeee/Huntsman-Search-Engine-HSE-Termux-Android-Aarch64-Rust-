@@ -461,6 +461,8 @@ pub struct ValidatedGraph {
     pub topological_order: Vec<String>,
     by_id: BTreeMap<String, TaskSpec>,
     fingerprint: String,
+    // Accept checkpoints emitted before graph task order was canonicalized.
+    legacy_fingerprint: String,
 }
 
 impl GraphDefinition {
@@ -664,11 +666,25 @@ impl GraphDefinition {
         if order.len() != by_id.len() {
             return Err(GraphError::Invalid("dependency cycle detected".into()));
         }
-        let encoded = serde_json::to_vec(self)
+        let legacy_encoded = serde_json::to_vec(self)
+            .map_err(|error| GraphError::Invalid(format!("cannot fingerprint graph: {error}")))?;
+        if legacy_encoded.len() > MAX_CHECKPOINT_BYTES {
+            return Err(GraphError::Invalid(
+                "graph definition exceeds size limit".into(),
+            ));
+        }
+        let legacy_fingerprint = crate::sha256::hex32(&crate::sha256::sha256(&legacy_encoded));
+        // Task declaration order is not part of the graph's execution semantics.
+        // Canonicalize for stable fingerprints and order-independent checkpoint resume.
+        let canonical = GraphDefinition {
+            run_id: self.run_id.clone(),
+            tasks: by_id.values().cloned().collect(),
+        };
+        let encoded = serde_json::to_vec(&canonical)
             .map_err(|error| GraphError::Invalid(format!("cannot fingerprint graph: {error}")))?;
         if encoded.len() > MAX_CHECKPOINT_BYTES {
             return Err(GraphError::Invalid(
-                "graph definition exceeds size limit".into(),
+                "canonical graph exceeds size limit".into(),
             ));
         }
         let fingerprint = crate::sha256::hex32(&crate::sha256::sha256(&encoded));
@@ -676,6 +692,7 @@ impl GraphDefinition {
             topological_order: order,
             by_id,
             fingerprint,
+            legacy_fingerprint,
         })
     }
 }
@@ -805,7 +822,7 @@ fn run_one(
     cancelled: &Arc<AtomicBool>,
     run_deadline: Instant,
     max_output_bytes: usize,
-) -> (TaskRecord, u64) {
+) -> (TaskRecord, Option<Instant>) {
     let start = Instant::now();
     let started_at_unix = now_unix();
     let mut record = TaskRecord {
@@ -815,6 +832,7 @@ fn run_one(
     };
     let max_attempts = spec.max_retries.saturating_add(1);
     let mut last_error = "task did not execute".to_string();
+    let mut last_attempt_start: Option<Instant> = None;
     loop {
         if cancelled.load(Ordering::Acquire) {
             record.state = TaskState::Cancelled;
@@ -830,9 +848,31 @@ fn run_one(
             record.state = TaskState::Failed;
             break;
         }
+        // Every invocation (including retries) counts as a provider start. Rate-limit
+        // the next attempt from the actual preceding attempt, not the initial wave dispatch.
+        if let (Some(limit), Some(previous_start)) = (&spec.rate_limit, last_attempt_start) {
+            let eligible_at = previous_start + Duration::from_millis(limit.min_interval_ms);
+            let wait = eligible_at.saturating_duration_since(Instant::now());
+            if !wait.is_zero() {
+                thread::sleep(wait.min(run_deadline.saturating_duration_since(Instant::now())));
+            }
+        }
+        // Cancellation or the run deadline may have occurred during rate-limit sleep.
+        if cancelled.load(Ordering::Acquire) {
+            record.state = TaskState::Cancelled;
+            last_error = "run cancelled before retry".into();
+            break;
+        }
+        if Instant::now() >= run_deadline {
+            record.state = TaskState::TimedOut;
+            last_error = "run deadline exceeded before retry".into();
+            break;
+        }
         record.attempts = record.attempts.saturating_add(1);
         let attempt = prior_attempts.saturating_add(record.attempts);
-        let deadline = (Instant::now() + Duration::from_millis(spec.timeout_ms)).min(run_deadline);
+        let attempt_started = Instant::now();
+        last_attempt_start = Some(attempt_started);
+        let deadline = (attempt_started + Duration::from_millis(spec.timeout_ms)).min(run_deadline);
         let context = TaskContext {
             task_id: spec.id.clone(),
             input: spec.input.clone(),
@@ -842,7 +882,6 @@ fn run_one(
             deadline,
             cancelled: Arc::clone(cancelled),
         };
-        let attempt_started = Instant::now();
         let result = catch_unwind(AssertUnwindSafe(|| handler(context)));
         let elapsed = attempt_started.elapsed();
         if cancelled.load(Ordering::Acquire) {
@@ -905,7 +944,7 @@ fn run_one(
     if !record.state.successful() {
         record.error = Some(last_error);
     }
-    (record, spec.resource_units)
+    (record, last_attempt_start)
 }
 
 impl ExecutionCheckpoint {
@@ -1048,8 +1087,12 @@ impl GraphExecutor {
         let policy_fingerprint = crate::sha256::hex32(&crate::sha256::sha256(&policy_bytes));
         if let Some(checkpoint) = &checkpoint {
             if checkpoint.format_version != 1
-                || checkpoint.graph_fingerprint != graph.fingerprint
-                || checkpoint.report.graph_fingerprint != graph.fingerprint
+                || ![
+                    graph.fingerprint.as_str(),
+                    graph.legacy_fingerprint.as_str(),
+                ]
+                .contains(&checkpoint.graph_fingerprint.as_str())
+                || checkpoint.report.graph_fingerprint != checkpoint.graph_fingerprint
                 || checkpoint.report.policy_fingerprint != policy_fingerprint
                 || checkpoint.report.consumed_resource_units > self.policy.max_total_resource_units
                 || checkpoint.report.run_id != definition.run_id
@@ -1353,7 +1396,7 @@ impl GraphExecutor {
                 }
             }
             consumed = consumed.saturating_add(wave_cost);
-            let mut jobs: Vec<crate::concurrent::Job<'_, (String, (TaskRecord, u64))>> =
+            let mut jobs: Vec<crate::concurrent::Job<'_, (String, (TaskRecord, Option<Instant>))>> =
                 Vec::with_capacity(selected.len());
             for id in &selected {
                 let spec = &graph.by_id[id];
@@ -1391,7 +1434,10 @@ impl GraphExecutor {
                 }));
             }
             let results = crate::concurrent::all(jobs);
-            for (id, (mut record, _charged)) in results {
+            for (id, (mut record, last_attempt_start)) in results {
+                if let (Some(limit), Some(start)) = (&graph.by_id[&id].rate_limit, last_attempt_start) {
+                    last_rate_start.insert(limit.key.clone(), start);
+                }
                 let previous_attempts = records[&id].attempts;
                 record.attempts = previous_attempts.saturating_add(record.attempts);
                 if record.state.successful() {
@@ -2181,4 +2227,122 @@ mod tests {
         assert_eq!(resumed.tasks["done"].state, TaskState::Succeeded);
         assert_eq!(resumed.tasks["later"].state, TaskState::Succeeded);
     }
+    #[test]
+    fn task_declaration_order_has_stable_fingerprint_and_resume() {
+        let ordered = GraphDefinition {
+            run_id: "canonical-order".into(),
+            tasks: vec![spec("a", &[]), spec("b", &["a"])],
+        };
+        let reversed = GraphDefinition {
+            run_id: "canonical-order".into(),
+            tasks: vec![spec("b", &["a"]), spec("a", &[])],
+        };
+        let fingerprint = ordered.validate().unwrap().fingerprint;
+        assert_eq!(fingerprint, reversed.validate().unwrap().fingerprint);
+        let mut handlers = HandlerRegistry::new();
+        handlers.insert("a".into(), handler(|_| Ok(output(json!(1), "a"))));
+        handlers.insert("b".into(), handler(|_| Ok(output(json!(2), "b"))));
+        let executor = GraphExecutor::new(policy());
+        let original = executor
+            .execute(&reversed, &handlers, &Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        let resumed = executor
+            .resume(
+                &ordered,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                ExecutionCheckpoint::from_report(original),
+            )
+            .unwrap();
+        assert_eq!(resumed.graph_fingerprint, fingerprint);
+        assert_eq!(resumed.summary().succeeded, 2);
+    }
+
+    #[test]
+    fn legacy_ordered_checkpoint_can_resume_with_canonical_fingerprint() {
+        let mut definition = GraphDefinition {
+            run_id: "legacy-order".into(),
+            tasks: vec![spec("b", &[]), spec("a", &[])],
+        };
+        let mut handlers = HandlerRegistry::new();
+        handlers.insert("a".into(), handler(|_| Ok(output(json!(1), "a"))));
+        handlers.insert("b".into(), handler(|_| Ok(output(json!(2), "b"))));
+        let executor = GraphExecutor::new(policy());
+        let report = executor
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        let mut legacy = ExecutionCheckpoint::from_report(report);
+        let old_hash = crate::sha256::hex32(&crate::sha256::sha256(
+            &serde_json::to_vec(&definition).unwrap(),
+        ));
+        assert_ne!(legacy.graph_fingerprint, old_hash);
+        legacy.graph_fingerprint = old_hash.clone();
+        legacy.report.graph_fingerprint = old_hash;
+        definition.tasks.reverse();
+        // The original unordered definition is still accepted as a legacy checkpoint;
+        // a changed task order must use the canonical representation going forward.
+        definition.tasks.reverse();
+        let resumed = executor
+            .resume(
+                &definition,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                legacy,
+            )
+            .unwrap();
+        assert_eq!(resumed.summary().succeeded, 2);
+        assert_eq!(resumed.graph_fingerprint, definition.validate().unwrap().fingerprint);
+    }
+
+    #[test]
+    fn provider_rate_limit_applies_to_each_retry_and_next_task() {
+        let limit = RateLimit {
+            key: "provider-retries".into(),
+            min_interval_ms: 65,
+        };
+        let mut first = spec("a", &[]);
+        first.max_retries = 1;
+        first.rate_limit = Some(limit.clone());
+        let mut second = spec("b", &[]);
+        second.rate_limit = Some(limit);
+        let definition = GraphDefinition {
+            run_id: "provider-retry-starts".into(),
+            tasks: vec![first, second],
+        };
+        let observed = Arc::new(Mutex::new(Vec::<Instant>::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut handlers = HandlerRegistry::new();
+        let first_observed = Arc::clone(&observed);
+        let first_calls = Arc::clone(&calls);
+        handlers.insert(
+            "a".into(),
+            handler(move |_| {
+                first_observed.lock().unwrap().push(Instant::now());
+                if first_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(TaskFailure::transient("retry"))
+                } else {
+                    Ok(output(json!(true), "a"))
+                }
+            }),
+        );
+        let second_observed = Arc::clone(&observed);
+        handlers.insert(
+            "b".into(),
+            handler(move |_| {
+                second_observed.lock().unwrap().push(Instant::now());
+                Ok(output(json!(true), "b"))
+            }),
+        );
+        let report = GraphExecutor::new(policy())
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        assert_eq!(report.summary().succeeded, 2);
+        assert_eq!(report.tasks["a"].attempts, 2);
+        let starts = observed.lock().unwrap();
+        assert_eq!(starts.len(), 3);
+        for window in starts.windows(2) {
+            assert!(window[1].duration_since(window[0]) >= Duration::from_millis(55));
+        }
+    }
+
 }
