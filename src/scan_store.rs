@@ -401,7 +401,8 @@ impl ScanStore {
         if fs::symlink_metadata(&path).is_err() {
             return Err(StoreError::NotFound(id.to_owned()));
         }
-        let bytes = crate::fsio::read_bounded(&path, MAX_ROW_BYTES).map_err(|e| fsio_error(&e))?;
+        let bytes =
+            crate::fsio::read_bounded_replacing(&path, MAX_ROW_BYTES).map_err(|e| fsio_error(&e))?;
         let record: ScanRecord = serde_json::from_slice(&bytes)
             .map_err(|error| StoreError::Io(format!("{}: {error}", path.display())))?;
         if record.format_version != FORMAT_VERSION || record.id != id {
@@ -473,7 +474,8 @@ impl ScanStore {
             return Ok(None);
         }
         let bytes =
-            crate::fsio::read_bounded(&path, MAX_RESULTS_BYTES).map_err(|e| fsio_error(&e))?;
+            crate::fsio::read_bounded_replacing(&path, MAX_RESULTS_BYTES)
+                .map_err(|e| fsio_error(&e))?;
         let results: ScanResults = serde_json::from_slice(&bytes)
             .map_err(|error| StoreError::Io(format!("{}: {error}", path.display())))?;
         if results.format_version != FORMAT_VERSION || results.scan_id != id {
