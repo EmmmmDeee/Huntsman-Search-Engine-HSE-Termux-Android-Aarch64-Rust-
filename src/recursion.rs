@@ -621,6 +621,75 @@ mod tests {
     }
 
     #[test]
+    fn batch_cardinality_violations_remain_visible_as_failed_outcomes() {
+        struct BadBatch {
+            returned: usize,
+            violations: usize,
+        }
+
+        impl SelectorCollector for BadBatch {
+            fn collect(&mut self, _target: &Target) -> Step {
+                Step {
+                    entities: Vec::new(),
+                    outcomes: Vec::new(),
+                }
+            }
+
+            fn collect_batch(&mut self, _targets: &[Target]) -> Vec<Step> {
+                (0..self.returned)
+                    .map(|_| Step {
+                        entities: Vec::new(),
+                        outcomes: vec![SourceExecutionOutcome::valid_zero("fixture", 1)],
+                    })
+                    .collect()
+            }
+
+            fn on_batch_contract_error(&mut self, violations: usize) {
+                self.violations += violations;
+            }
+        }
+
+        let targets = ["1.1.1.1", "8.8.8.8"]
+            .into_iter()
+            .map(|selector| Target {
+                kind: ScanKind::Ip,
+                selector: selector.into(),
+            })
+            .collect::<Vec<_>>();
+        let policy = RecursionPolicy {
+            max_generations: 0,
+            expose_emails: false,
+            ..RecursionPolicy::default()
+        };
+        for (returned, expected_outcomes) in [(1, 2), (3, 3)] {
+            let mut collector = BadBatch {
+                returned,
+                violations: 0,
+            };
+            let report = run_targets(targets.clone(), &policy, &mut collector);
+            assert_eq!(collector.violations, 1);
+            assert_eq!(report.dispatches, 2);
+            assert_eq!(report.outcomes.len(), expected_outcomes);
+            let violations = report
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.module == "recursion")
+                .collect::<Vec<_>>();
+            assert_eq!(violations.len(), 1);
+            assert!(!violations[0].kind.is_accepted());
+            assert!(violations[0].found.is_none());
+            let detail = violations[0].detail.as_deref().unwrap();
+            if returned == 1 {
+                assert!(detail.contains("omitted"));
+                assert!(detail.contains("8.8.8.8"));
+            } else {
+                assert!(detail.contains("unsolicited"));
+                assert!(detail.contains("1"));
+            }
+        }
+    }
+
+    #[test]
     fn a_cancelled_crawl_stops_before_the_next_dispatch_and_keeps_what_it_found() {
         let inner = Scripted::new().on(
             ScanKind::Domain,
