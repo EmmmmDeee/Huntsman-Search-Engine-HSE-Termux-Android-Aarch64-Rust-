@@ -4,9 +4,8 @@ use std::time::{Duration, Instant};
 
 use huntsman_recon::graph_exec::{
     ExecutionComparison, ExecutionPolicy, GraphDefinition, GraphExecutor, HandlerRegistry,
-    RunTermination, TaskContext,
-    TaskFailure, TaskOutput, TaskRole, TaskSpec, TaskState, ValueSchema, VerificationRecord,
-    VerificationState,
+    RunTermination, TaskContext, TaskFailure, TaskOutput, TaskRole, TaskSpec, TaskState,
+    ValueSchema, VerificationRecord, VerificationState,
 };
 use serde_json::json;
 
@@ -123,7 +122,12 @@ fn measured_sequential_vs_bounded_graph_synthetic_io() {
     .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
     .unwrap();
     assert_eq!(graph.termination, Some(RunTermination::Completed));
-    assert!(graph.tasks.values().all(|task| task.state == TaskState::Succeeded));
+    assert!(
+        graph
+            .tasks
+            .values()
+            .all(|task| task.state == TaskState::Succeeded)
+    );
     let parallel: Vec<_> = graph
         .tasks
         .values()
