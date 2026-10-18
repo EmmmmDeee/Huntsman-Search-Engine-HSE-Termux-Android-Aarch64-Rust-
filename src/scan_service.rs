@@ -51,6 +51,9 @@ use crate::termination::TerminationReason;
 /// Scans that run at once; more wait as `STARTING`. A phone runs two lookups' worth of requests
 /// comfortably, and each lookup already fans out to its sources.
 pub const MAX_RUNNING: usize = 2;
+/// Total concurrent lookup calls per scan service, across sequential and graph scan waves.
+/// This limits phone resource pressure without disabling parallelism within a scan.
+const MAX_ACTIVE_LOOKUPS: usize = 2;
 /// The longest target, in bytes.
 pub const MAX_TARGET_BYTES: usize = 512;
 /// The longest scan name, in bytes.
@@ -269,6 +272,58 @@ fn chosen(options: &ScanOptions) -> Result<Selection, ServiceError> {
     crate::module::selection(&options.modules).map_err(ServiceError::BadRequest)
 }
 
+/// Shared, cancellation-aware admission for all lookups started by this service.
+#[derive(Default)]
+struct LookupAdmission {
+    active: Mutex<usize>,
+    freed: Condvar,
+}
+
+struct LookupPermit {
+    admission: Arc<LookupAdmission>,
+}
+
+impl Drop for LookupPermit {
+    fn drop(&mut self) {
+        let mut active = self
+            .admission
+            .active
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *active -= 1;
+        self.admission.freed.notify_one();
+    }
+}
+
+impl LookupAdmission {
+    fn acquire(self: &Arc<Self>, should_abort: impl Fn() -> bool) -> Option<LookupPermit> {
+        let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if should_abort() {
+                return None;
+            }
+            if *active < MAX_ACTIVE_LOOKUPS {
+                *active += 1;
+                return Some(LookupPermit {
+                    admission: Arc::clone(self),
+                });
+            }
+            active = self
+                .freed
+                .wait_timeout(active, Duration::from_millis(25))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+}
+
+/// Whether a sequential lookup ran, failed, or never acquired a slot before scan cancellation.
+enum LookupDispatch {
+    Completed(usize),
+    Missing,
+    Cancelled,
+}
+
 struct State {
     running: usize,
     aborts: BTreeSet<String>,
@@ -376,16 +431,18 @@ impl SelectorCollector for ScanCollector<'_> {
             return skip;
         }
         let mut found = LookupOutput::default();
-        if let Some(failed) = self.service.lookup_into(
+        match self.service.lookup_into(
             self.id,
             (target.kind, &target.selector, self.chosen),
             &mut found,
         ) {
-            self.ran += 1;
-            self.errors += failed;
-        } else {
+            LookupDispatch::Completed(failed) => {
+                self.ran += 1;
+                self.errors += failed;
+            }
             // lookup_into retained its exact error in found.outcomes.
-            self.errors += 1;
+            LookupDispatch::Missing => self.errors += 1,
+            LookupDispatch::Cancelled => {}
         }
         if target.kind == ScanKind::Email
             && found
@@ -474,10 +531,13 @@ impl SelectorCollector for ScanCollector<'_> {
                 })
                 .collect(),
         };
+        let cancellation = self.service.graph_cancellation(self.id);
         let mut handlers = HandlerRegistry::new();
         for (index, target) in targets.iter().enumerate() {
             let task_id = format!("lookup-{index:04}");
             let lookup = Arc::clone(&self.service.lookup);
+            let admission = Arc::clone(&self.service.admission);
+            let cancellation_for_task = Arc::clone(&cancellation);
             let chosen = self.chosen.clone();
             let kind = target.kind;
             let selector = target.selector.clone();
@@ -485,6 +545,17 @@ impl SelectorCollector for ScanCollector<'_> {
                 task_id,
                 Arc::new(
                     move |context: TaskContext| -> Result<TaskOutput, TaskFailure> {
+                        context.check_deadline()?;
+                        let _permit = admission
+                            .acquire(|| {
+                                cancellation_for_task.load(Ordering::Acquire)
+                                    || context.remaining().is_zero()
+                            })
+                            .ok_or_else(|| {
+                                TaskFailure::permanent(
+                                    "scan cancelled or task deadline reached before lookup admission",
+                                )
+                            })?;
                         context.check_deadline()?;
                         let output =
                             lookup(kind, &selector, &chosen).map_err(TaskFailure::permanent)?;
@@ -515,7 +586,6 @@ impl SelectorCollector for ScanCollector<'_> {
             max_output_bytes: 2 * 1024 * 1024,
             run_timeout_ms: 15 * 60 * 1000,
         };
-        let cancellation = self.service.graph_cancellation(self.id);
         let report = match GraphExecutor::new(policy).execute(&definition, &handlers, &cancellation)
         {
             Ok(report) => report,
@@ -694,6 +764,7 @@ pub struct ScanService {
     rule_errors: Vec<RuleError>,
     state: Mutex<State>,
     freed: Condvar,
+    admission: Arc<LookupAdmission>,
     sequence: AtomicU64,
 }
 
@@ -726,6 +797,7 @@ impl ScanService {
                 graph_cancellations: BTreeMap::new(),
             }),
             freed: Condvar::new(),
+            admission: Arc::new(LookupAdmission::default()),
             sequence: AtomicU64::new(0),
         })
     }
@@ -1185,7 +1257,23 @@ impl ScanService {
         id: &str,
         (kind, target, chosen): (ScanKind, &str, &Selection),
         found: &mut LookupOutput,
-    ) -> Option<usize> {
+    ) -> LookupDispatch {
+        let cancelled = self.graph_cancellation(id);
+        let Some(_permit) = self
+            .admission
+            .acquire(|| cancelled.load(Ordering::Acquire))
+        else {
+            self.log(
+                id,
+                "huntsman",
+                LogLevel::Info,
+                format!("{} lookup on {target} cancelled before admission", kind.command()),
+            );
+            return LookupDispatch::Cancelled;
+        };
+        if cancelled.load(Ordering::Acquire) {
+            return LookupDispatch::Cancelled;
+        }
         self.log(
             id,
             "huntsman",
@@ -1211,7 +1299,7 @@ impl ScanService {
                 found.text.push_str(&output.text);
                 found.entities.extend(output.entities);
                 found.outcomes.extend(output.outcomes);
-                Some(failed)
+                LookupDispatch::Completed(failed)
             }
             Err(message) => {
                 self.log(
@@ -1225,7 +1313,7 @@ impl ScanService {
                     now_ms() / 1_000,
                     format!("{} lookup on {target}: {message}", kind.command()),
                 ));
-                None
+                LookupDispatch::Missing
             }
         }
     }
@@ -1318,6 +1406,7 @@ impl ScanService {
             }
         }
         self.freed.notify_all();
+        self.admission.freed.notify_all();
         if record.status != ScanStatus::AbortRequested {
             record.status = ScanStatus::AbortRequested;
             self.store.update(&record)?;
@@ -2309,6 +2398,72 @@ mod tests {
         assert_eq!(peak.load(Ordering::SeqCst), 2);
         let log = service.store().log(&record.id).unwrap();
         assert!(log.iter().any(|entry| entry.component == "graph_exec"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_scans_share_lookup_capacity_without_disabling_graph_parallelism() {
+        use std::sync::atomic::AtomicUsize;
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (service, dir) = with_lookup(
+            "shared-lookup-capacity",
+            Arc::new({
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                let calls = Arc::clone(&calls);
+                move |kind: ScanKind, selector: &str, _: &Selection| {
+                    if kind == ScanKind::Domain {
+                        let evidence = Evidence::new(
+                            EvidenceProvenance::for_scan("test", "seed"),
+                            "discovered address",
+                        );
+                        return Ok(LookupOutput {
+                            entities: ["1.1.1.1", "8.8.8.8"]
+                                .into_iter()
+                                .map(|ip| {
+                                    Entity::builder(EntityKind::IpAddress, ip, 0.95, "test")
+                                        .evidence(evidence.clone())
+                                        .build()
+                                })
+                                .collect(),
+                            ..LookupOutput::default()
+                        });
+                    }
+                    let inside = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(inside, Ordering::SeqCst);
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    thread::sleep(Duration::from_millis(80));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(LookupOutput {
+                        text: format!("completed-{selector}"),
+                        ..LookupOutput::default()
+                    })
+                }
+            }),
+        );
+        let request = |target: &str| ScanRequest {
+            target: target.into(),
+            kind: Some("domain".into()),
+            options: ScanOptions {
+                depth: 1,
+                ..ScanOptions::default()
+            },
+            ..ScanRequest::default()
+        };
+        let first = service.start(&request("first.example.org")).unwrap();
+        let second = service.start(&request("second.example.org")).unwrap();
+        for id in [&first.id, &second.id] {
+            let record = service
+                .wait(id, Instant::now() + Duration::from_secs(15))
+                .unwrap();
+            assert_eq!(record.status, ScanStatus::Finished);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert!(peak.load(Ordering::SeqCst) <= MAX_ACTIVE_LOOKUPS);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
