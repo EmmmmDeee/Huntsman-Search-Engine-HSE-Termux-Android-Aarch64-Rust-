@@ -1,0 +1,261 @@
+//! Validated, deterministic task-DAG planning and outcome accounting.
+//!
+//! This module deliberately separates graph validation/reduction from task-specific I/O.
+//! It does not replace the existing ROI scheduler or source execution paths.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub const MAX_TASKS: usize = 10_000;
+pub const MAX_ATTEMPTS: u8 = 10;
+pub const MAX_TIMEOUT_MS: u64 = 600_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSpec {
+    pub id: String,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default = "default_attempts")]
+    pub max_attempts: u8,
+    pub timeout_ms: u64,
+    #[serde(default)]
+    pub required_output_keys: Vec<String>,
+}
+
+const fn default_attempts() -> u8 { 1 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphError {
+    EmptyGraph,
+    TooManyTasks { actual: usize, limit: usize },
+    EmptyTaskId,
+    DuplicateTaskId(String),
+    InvalidAttempts { task: String, attempts: u8 },
+    InvalidTimeout { task: String, timeout_ms: u64 },
+    DuplicateDependency { task: String, dependency: String },
+    MissingDependency { task: String, dependency: String },
+    SelfDependency(String),
+    Cycle(Vec<String>),
+}
+
+impl std::fmt::Display for GraphError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyGraph => f.write_str("workflow graph is empty"),
+            Self::TooManyTasks { actual, limit } => write!(f, "workflow has {actual} tasks; limit is {limit}"),
+            Self::EmptyTaskId => f.write_str("task id must not be empty"),
+            Self::DuplicateTaskId(id) => write!(f, "duplicate task id: {id}"),
+            Self::InvalidAttempts { task, attempts } => write!(f, "task {task} has invalid max_attempts={attempts}"),
+            Self::InvalidTimeout { task, timeout_ms } => write!(f, "task {task} has invalid timeout_ms={timeout_ms}"),
+            Self::DuplicateDependency { task, dependency } => write!(f, "task {task} repeats dependency {dependency}"),
+            Self::MissingDependency { task, dependency } => write!(f, "task {task} references missing dependency {dependency}"),
+            Self::SelfDependency(id) => write!(f, "task {id} depends on itself"),
+            Self::Cycle(ids) => write!(f, "workflow dependency cycle: {}", ids.join(" -> ")),
+        }
+    }
+}
+
+impl std::error::Error for GraphError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskGraph {
+    tasks: BTreeMap<String, TaskSpec>,
+    layers: Vec<Vec<String>>,
+}
+
+impl TaskGraph {
+    pub fn validate(specs: Vec<TaskSpec>) -> Result<Self, GraphError> {
+        if specs.is_empty() { return Err(GraphError::EmptyGraph); }
+        if specs.len() > MAX_TASKS {
+            return Err(GraphError::TooManyTasks { actual: specs.len(), limit: MAX_TASKS });
+        }
+
+        let mut tasks = BTreeMap::new();
+        for task in specs {
+            if task.id.trim().is_empty() { return Err(GraphError::EmptyTaskId); }
+            if tasks.contains_key(&task.id) { return Err(GraphError::DuplicateTaskId(task.id)); }
+            if task.max_attempts == 0 || task.max_attempts > MAX_ATTEMPTS {
+                return Err(GraphError::InvalidAttempts { task: task.id, attempts: task.max_attempts });
+            }
+            if task.timeout_ms == 0 || task.timeout_ms > MAX_TIMEOUT_MS {
+                return Err(GraphError::InvalidTimeout { task: task.id, timeout_ms: task.timeout_ms });
+            }
+            let mut dependencies = BTreeSet::new();
+            for dependency in &task.depends_on {
+                if !dependencies.insert(dependency) {
+                    return Err(GraphError::DuplicateDependency { task: task.id.clone(), dependency: dependency.clone() });
+                }
+            }
+            tasks.insert(task.id.clone(), task);
+        }
+
+        for task in tasks.values() {
+            for dependency in &task.depends_on {
+                if dependency == &task.id { return Err(GraphError::SelfDependency(task.id.clone())); }
+                if !tasks.contains_key(dependency) {
+                    return Err(GraphError::MissingDependency { task: task.id.clone(), dependency: dependency.clone() });
+                }
+            }
+        }
+
+        let mut remaining: BTreeSet<String> = tasks.keys().cloned().collect();
+        let mut completed = BTreeSet::new();
+        let mut layers = Vec::new();
+        while !remaining.is_empty() {
+            let layer: Vec<String> = remaining.iter()
+                .filter(|id| tasks[*id].depends_on.iter().all(|dependency| completed.contains(dependency)))
+                .cloned().collect();
+            if layer.is_empty() {
+                return Err(GraphError::Cycle(remaining.into_iter().collect()));
+            }
+            for id in &layer { remaining.remove(id); completed.insert(id.clone()); }
+            layers.push(layer);
+        }
+        Ok(Self { tasks, layers })
+    }
+
+    #[must_use]
+    pub fn task(&self, id: &str) -> Option<&TaskSpec> { self.tasks.get(id) }
+
+    #[must_use]
+    pub fn tasks(&self) -> &BTreeMap<String, TaskSpec> { &self.tasks }
+
+    /// Stable topological layers. Tasks in one layer have no dependencies on each other.
+    #[must_use]
+    pub fn layers(&self) -> &[Vec<String>] { &self.layers }
+
+    /// Tasks ready after the supplied successful task IDs, in stable lexical order.
+    #[must_use]
+    pub fn ready<'a>(&'a self, succeeded: &BTreeSet<String>, running: &BTreeSet<String>) -> Vec<&'a TaskSpec> {
+        self.tasks.values().filter(|task| {
+            !succeeded.contains(&task.id)
+                && !running.contains(&task.id)
+                && task.depends_on.iter().all(|id| succeeded.contains(id))
+        }).collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum TaskOutcome {
+    Succeeded { output: Value, attempts: u8 },
+    Empty { attempts: u8 },
+    Failed { error: String, attempts: u8 },
+    TimedOut { attempts: u8 },
+    Cancelled { attempts: u8 },
+    Blocked { dependency: String },
+    Missing,
+    InvalidOutput { reason: String, attempts: u8 },
+}
+
+impl TaskOutcome {
+    #[must_use]
+    pub const fn is_success(&self) -> bool {
+        matches!(self, Self::Succeeded { .. } | Self::Empty { .. })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Accounting {
+    pub expected: usize,
+    pub returned: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub incomplete: usize,
+}
+
+/// Validate outputs and account for every expected task. Missing results are explicit;
+/// a successful empty result is not conflated with a failure.
+#[must_use]
+pub fn account(graph: &TaskGraph, outcomes: &BTreeMap<String, TaskOutcome>) -> Accounting {
+    let mut succeeded = 0;
+    let mut failed = 0;
+    let mut incomplete = 0;
+    for id in graph.tasks.keys() {
+        match outcomes.get(id) {
+            Some(outcome) if outcome.is_success() => succeeded += 1,
+            Some(TaskOutcome::Missing | TaskOutcome::Blocked { .. } | TaskOutcome::Cancelled { .. } | TaskOutcome::TimedOut { .. }) | None => incomplete += 1,
+            Some(_) => failed += 1,
+        }
+    }
+    Accounting {
+        expected: graph.tasks.len(),
+        returned: outcomes.keys().filter(|id| graph.tasks.contains_key(*id)).count(),
+        succeeded,
+        failed,
+        incomplete,
+    }
+}
+
+/// Validate that a successful output is an object containing every required field.
+pub fn validate_output(task: &TaskSpec, output: &Value) -> Result<(), String> {
+    let object = output.as_object().ok_or_else(|| "output must be a JSON object".to_string())?;
+    for key in &task.required_output_keys {
+        if !object.contains_key(key) {
+            return Err(format!("required output key is missing: {key}"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn task(id: &str, dependencies: &[&str]) -> TaskSpec {
+        TaskSpec {
+            id: id.into(),
+            depends_on: dependencies.iter().map(|id| (*id).into()).collect(),
+            max_attempts: 2,
+            timeout_ms: 1_000,
+            required_output_keys: vec![],
+        }
+    }
+
+    #[test]
+    fn independent_tasks_share_a_layer_and_dependents_follow() {
+        let graph = TaskGraph::validate(vec![
+            task("merge", &["b", "a"]),
+            task("b", &[]),
+            task("a", &[]),
+        ]).expect("valid graph");
+        assert_eq!(graph.layers(), &[vec!["a".to_string(), "b".to_string()], vec!["merge".to_string()]]);
+    }
+
+    #[test]
+    fn rejects_missing_self_and_cyclic_dependencies() {
+        assert!(matches!(TaskGraph::validate(vec![task("a", &["absent"])]), Err(GraphError::MissingDependency { .. })));
+        assert!(matches!(TaskGraph::validate(vec![task("a", &["a"])]), Err(GraphError::SelfDependency(_))));
+        assert!(matches!(TaskGraph::validate(vec![task("a", &["b"]), task("b", &["a"])]), Err(GraphError::Cycle(_))));
+    }
+
+    #[test]
+    fn rejects_duplicate_ids_and_invalid_resource_bounds() {
+        assert!(matches!(TaskGraph::validate(vec![task("a", &[]), task("a", &[])]), Err(GraphError::DuplicateTaskId(_))));
+        let mut invalid = task("a", &[]);
+        invalid.timeout_ms = MAX_TIMEOUT_MS + 1;
+        assert!(matches!(TaskGraph::validate(vec![invalid]), Err(GraphError::InvalidTimeout { .. })));
+    }
+
+    #[test]
+    fn output_contract_and_missing_work_are_explicit() {
+        let mut required = task("a", &[]);
+        required.required_output_keys.push("source".into());
+        assert!(validate_output(&required, &json!({"source":"https://example.test"})).is_ok());
+        assert!(validate_output(&required, &json!({})).is_err());
+        let graph = TaskGraph::validate(vec![required, task("b", &[])]).expect("valid graph");
+        let outcomes = BTreeMap::from([("a".into(), TaskOutcome::Empty { attempts: 1 })]);
+        let tally = account(&graph, &outcomes);
+        assert_eq!((tally.expected, tally.returned, tally.succeeded, tally.incomplete), (2, 1, 1, 1));
+    }
+
+    #[test]
+    fn ready_tasks_wait_for_successful_dependencies() {
+        let graph = TaskGraph::validate(vec![task("a", &[]), task("b", &["a"])]).expect("valid graph");
+        assert_eq!(graph.ready(&BTreeSet::new(), &BTreeSet::new()).iter().map(|task| task.id.as_str()).collect::<Vec<_>>(), vec!["a"]);
+        assert_eq!(graph.ready(&BTreeSet::from(["a".to_string()]), &BTreeSet::new()).iter().map(|task| task.id.as_str()).collect::<Vec<_>>(), vec!["b"]);
+    }
+}
