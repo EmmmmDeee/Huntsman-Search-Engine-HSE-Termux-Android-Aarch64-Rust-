@@ -1,2 +1,3 @@
 - Reject resumed graph checkpoints that claim a task succeeded while a prerequisite is missing or unsuccessful, or that exceed the task's declared attempt limit.
 - Make the browser key-import regression test inspect the Shodan row by module name instead of assuming it is the first row.
+- Wait for the imported key's configured status to refresh before asserting it in the browser test, removing an asynchronous UI-test race.
