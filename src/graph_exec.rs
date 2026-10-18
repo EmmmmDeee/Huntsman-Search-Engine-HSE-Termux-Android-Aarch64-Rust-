@@ -2039,6 +2039,8 @@ mod tests {
         );
         let checkpoints = Arc::new(Mutex::new(Vec::<ExecutionCheckpoint>::new()));
         let sink_records = Arc::clone(&checkpoints);
+        let sink_calls = Arc::new(AtomicUsize::new(0));
+        let sink_calls_for_callback = Arc::clone(&sink_calls);
         let executor = GraphExecutor::new(policy());
         let first = executor
             .execute_checkpointed(
@@ -2050,12 +2052,17 @@ mod tests {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(checkpoint.clone());
-                    Ok(())
+                    if sink_calls_for_callback.fetch_add(1, Ordering::SeqCst) == 0 {
+                        Err("simulate checkpoint sink interruption".into())
+                    } else {
+                        Ok(())
+                    }
                 },
             )
             .unwrap();
         assert_eq!(first.tasks["parent"].state, TaskState::Succeeded);
-        assert_eq!(first.tasks["child"].state, TaskState::Succeeded);
+        assert_eq!(first.tasks["child"].state, TaskState::Blocked);
+        assert_eq!(first.termination, Some(RunTermination::Failed));
         let saved = checkpoints
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2080,7 +2087,7 @@ mod tests {
         assert_eq!(resumed.tasks["child"].state, TaskState::Succeeded);
         assert_eq!(parent_calls.load(Ordering::SeqCst), 1);
         assert_eq!(child_calls.load(Ordering::SeqCst), 1);
-        assert!(saved.len() >= 3);
+        assert!(saved.len() >= 2);
     }
 
     #[test]
