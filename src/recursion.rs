@@ -411,7 +411,9 @@ impl CrawlState {
             let steps = normalize_batch(collector, &batch, steps);
             let mut steps = steps.into_iter();
             for target in batch {
-                let step = steps.next().unwrap_or_else(|| missing_batch_step(&target, 0));
+                let step = steps
+                    .next()
+                    .unwrap_or_else(|| missing_batch_step(&target, 0));
                 self.dispatches += 1;
                 dispatched += 1;
                 self.outcomes.extend(step.outcomes);
