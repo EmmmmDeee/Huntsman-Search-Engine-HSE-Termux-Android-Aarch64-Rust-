@@ -58,6 +58,14 @@ pub trait SelectorCollector {
         targets.iter().map(|target| self.collect(target)).collect()
     }
 
+    /// Whether `next` may join an in-flight batch of `selected` lookups.
+    ///
+    /// Stateful collectors can impose a sequencing boundary, so cancellation is checked again
+    /// after the current batch returns rather than dispatching an otherwise dependent lookup.
+    fn may_batch(&self, _selected: &[Target], _next: &Target) -> bool {
+        true
+    }
+
     /// Whether the operator asked the crawl to stop. Checked before every dispatch: the crawl
     /// then stops as `Cancelled`, keeping everything found so far.
     fn cancelled(&self) -> bool {
@@ -276,7 +284,7 @@ impl CrawlState {
         let mut next = Frontier::default();
         let mut dispatched = 0usize;
         let mut stopped = false;
-        let mut remaining = frontier.into_iter();
+        let mut remaining = frontier.into_iter().peekable();
 
         while let Some(first) = remaining.next() {
             if collector.cancelled() {
@@ -305,6 +313,14 @@ impl CrawlState {
 
             let mut batch = vec![first];
             while batch.len() < MAX_BATCH {
+                // Peek before consuming: dependent targets must remain queued for the next
+                // dispatch, where the cancellation and resource limits are checked afresh.
+                let Some(candidate) = remaining.peek() else {
+                    break;
+                };
+                if !collector.may_batch(&batch, candidate) {
+                    break;
+                }
                 let Some(target) = remaining.next() else {
                     break;
                 };
