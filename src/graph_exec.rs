@@ -1773,6 +1773,30 @@ mod tests {
     }
 
     #[test]
+    fn pre_cancelled_run_does_not_dispatch_tasks() {
+        let definition = GraphDefinition {
+            run_id: "cancelled-run".into(),
+            tasks: vec![spec("never-started", &[])],
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut handlers = HandlerRegistry::new();
+        let calls_for_handler = Arc::clone(&calls);
+        handlers.insert(
+            "never-started".into(),
+            handler(move |_| {
+                calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                Ok(output(json!(true), "never-started"))
+            }),
+        );
+        let report = GraphExecutor::new(policy())
+            .execute(&definition, &handlers, Arc::new(AtomicBool::new(true)))
+            .unwrap();
+        assert_eq!(report.termination, Some(RunTermination::Cancelled));
+        assert_eq!(report.tasks["never-started"].state, TaskState::Cancelled);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn resource_budget_exhaustion_is_explicit() {
         let mut task = spec("expensive", &[]);
         task.resource_units = 2;
