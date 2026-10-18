@@ -772,6 +772,7 @@ fn restored_rate_history(
         return Err(GraphError::CheckpointMismatch);
     }
     let now = now_unix_ms();
+    let explicitly_persisted: BTreeSet<String> = persisted.keys().cloned().collect();
     for (id, spec) in &graph.by_id {
         let Some(limit) = &spec.rate_limit else {
             continue;
@@ -782,11 +783,14 @@ fn restored_rate_history(
         // Version-one checkpoints emitted before the timestamp field existed still resume.
         // Use the finish time (rounded up to the next second) instead of a potentially stale
         // first-attempt start, since the handler may have retried the same provider.
-        if record.attempts > 0 && !persisted.contains_key(&limit.key) {
+        if record.attempts > 0 && !explicitly_persisted.contains(&limit.key) {
             let completed_ms = record.finished_at_unix.map_or(now, |seconds| {
                 seconds.saturating_mul(1_000).saturating_add(999)
             });
-            persisted.insert(limit.key.clone(), completed_ms);
+            persisted
+                .entry(limit.key.clone())
+                .and_modify(|previous| *previous = (*previous).max(completed_ms))
+                .or_insert(completed_ms);
         }
     }
     let instant_now = Instant::now();
