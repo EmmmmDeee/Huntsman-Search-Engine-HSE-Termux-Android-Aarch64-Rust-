@@ -13,6 +13,7 @@
 //! output concern, never the scan's.
 
 use std::collections::BTreeSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +66,10 @@ pub trait SelectorCollector {
     fn may_batch(&self, _selected: &[Target], _next: &Target) -> bool {
         true
     }
+
+    /// Report mismatched collector batch output cardinality to the scan's error accounting.
+    /// The recursion driver also persists a typed non-success outcome for each violation.
+    fn on_batch_contract_error(&mut self, _violations: usize) {}
 
     /// Whether the operator asked the crawl to stop. Checked before every dispatch: the crawl
     /// then stops as `Cancelled`, keeping everything found so far.
@@ -236,6 +241,50 @@ impl Frontier {
     }
 }
 
+/// Normalize the collector's response count before deterministic, target-ordered reduction.
+/// A missing lookup step or an unsolicited extra step is a contract failure, never valid-zero.
+fn normalize_batch<C: SelectorCollector>(
+    collector: &mut C,
+    batch: &[Target],
+    mut steps: Vec<Step>,
+) -> Vec<Step> {
+    let missing = batch.len().saturating_sub(steps.len());
+    let excess = steps.len().saturating_sub(batch.len());
+    if missing == 0 && excess == 0 {
+        return steps;
+    }
+
+    collector.on_batch_contract_error(missing.saturating_add(excess));
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    steps.truncate(batch.len());
+    for target in batch.iter().skip(steps.len()) {
+        steps.push(Step {
+            entities: Vec::new(),
+            outcomes: vec![SourceExecutionOutcome::inconclusive(
+                "recursion",
+                observed_at,
+                format!(
+                    "collector omitted a {} lookup result for {}",
+                    target.kind.command(),
+                    target.selector
+                ),
+            )],
+        });
+    }
+    if excess > 0 {
+        if let Some(last) = steps.last_mut() {
+            last.outcomes.push(SourceExecutionOutcome::inconclusive(
+                "recursion",
+                observed_at,
+                format!("collector returned {excess} unsolicited results for a batch of {} lookups", batch.len()),
+            ));
+        }
+    }
+    steps
+}
+
 /// Build the initial frontier: each routable seed becomes a de-duplicated target; an empty or
 /// non-routable seed is rejected. Returns (accepted seeds, rejected seeds, frontier).
 fn seed_frontier(seeds: &[String]) -> (Vec<Target>, Vec<String>, Vec<Target>) {
@@ -351,11 +400,16 @@ impl CrawlState {
             }
 
             let steps = collector.collect_batch(&batch);
+            let steps = normalize_batch(collector, &batch, steps);
             let mut steps = steps.into_iter();
             for target in batch {
                 let step = steps.next().unwrap_or_else(|| Step {
                     entities: Vec::new(),
-                    outcomes: Vec::new(),
+                    outcomes: vec![SourceExecutionOutcome::inconclusive(
+                        "recursion",
+                        0,
+                        format!("collector omitted {} lookup on {}", target.kind.command(), target.selector),
+                    )],
                 });
                 self.dispatches += 1;
                 dispatched += 1;
