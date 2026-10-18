@@ -431,7 +431,10 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         await page.fill('#kimp-text', `sfp_fullhunt:api_key=TEST_ONLY_UNUSED\nsfp_shodan:api_key=${PASTED}\nsfp_spider:maxpages=100\n`);
         await page.click('#kimp button[type=submit]');
         await imported();
-        const note = await page.evaluate(() => ({ note: document.getElementById('kimp-m').textContent, typed: document.getElementById('kimp-text').value, label: document.querySelector('#mods tr').cells[3].querySelector('.label').textContent }));
+        const note = await page.evaluate(() => {
+          const row = [...document.querySelectorAll('#mods tr')].find(tr => tr.cells[0]?.textContent.trim().toLowerCase() === 'shodan');
+          return { note: document.getElementById('kimp-m').textContent, typed: document.getElementById('kimp-text').value, label: row?.cells[3].querySelector('.label')?.textContent || 'missing shodan row' };
+        });
         const pasted = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
         check('Import API keys saves a pasted Spiderfoot export into the keys file', pasted === `HUNTSMAN_SHODAN_KEY='${PASTED}'\n` && note.label === 'set' && note.typed === '', { pasted: pasted.replace(PASTED, '<key>'), note });
         check('the import names the keys no Huntsman source takes', note.note.includes('HUNTSMAN_SHODAN_KEY') && note.note.includes('sfp_fullhunt:api_key') && /1 Spiderfoot setting/.test(note.note), note.note);
