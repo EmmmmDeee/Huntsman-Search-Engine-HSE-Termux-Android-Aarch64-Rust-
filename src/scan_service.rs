@@ -19,6 +19,13 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::graph_exec::{
+    ExecutionPolicy, GraphDefinition, GraphExecutor, HandlerRegistry, TaskContext, TaskFailure,
+    TaskOutput, TaskRole, TaskSpec, TaskState, ValueSchema, VerificationRecord, VerificationState,
+};
 use crate::correlator::evaluate_rules;
 use crate::entity::Entity;
 use crate::lookup_modules;
@@ -55,7 +62,7 @@ const WAIT_SLICE: Duration = Duration::from_millis(250);
 pub const USE_CASES: [&str; 4] = ["all", "footprint", "investigate", "passive"];
 
 /// What one lookup found.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct LookupOutput {
     pub text: String,
     pub entities: Vec<Entity>,
@@ -341,6 +348,179 @@ impl SelectorCollector for ScanCollector<'_> {
             entities: found.entities,
             outcomes: found.outcomes,
         }
+    }
+
+    fn collect_batch(&mut self, targets: &[CrawlTarget]) -> Vec<Step> {
+        // Keep legacy ordering when a batch contains a paired email/exposure lookup, a skipped
+        // module selection, or an already-covered exposure. These cases have stateful semantics.
+        let has_email_exposure_pair = targets.iter().any(|email| {
+            email.kind == ScanKind::Email
+                && targets.iter().any(|exposure| {
+                    exposure.kind == ScanKind::Exposure && exposure.selector == email.selector
+                })
+        });
+        let has_stateful_or_skipped_target = targets.iter().any(|target| {
+            (target.kind == ScanKind::Exposure && self.breach_checked.contains(&target.selector))
+                || !lookup_modules::asks_any(target.kind, self.chosen)
+        });
+        if targets.len() < 2 || has_email_exposure_pair || has_stateful_or_skipped_target {
+            return targets.iter().map(|target| self.collect(target)).collect();
+        }
+
+        let run_number = self.service.sequence.fetch_add(1, Ordering::Relaxed);
+        let definition = GraphDefinition {
+            run_id: format!("scan-{}-{run_number}", self.id),
+            tasks: targets
+                .iter()
+                .enumerate()
+                .map(|(index, target)| TaskSpec {
+                    id: format!("lookup-{index:04}"),
+                    objective: format!(
+                        "run {} lookup for the selected scan target",
+                        target.kind.command()
+                    ),
+                    role: TaskRole::Producer,
+                    input: json!({
+                        "kind": target.kind.command(),
+                        "selector": target.selector,
+                    }),
+                    input_schema: ValueSchema::Any,
+                    output_schema: ValueSchema::Any,
+                    dependencies: Vec::new(),
+                    exclusive_resources: Vec::new(),
+                    rate_limit: None,
+                    idempotency_key: None,
+                    requires_idempotency: false,
+                    timeout_ms: 15 * 60 * 1000,
+                    max_retries: 0,
+                    resource_units: 1,
+                })
+                .collect(),
+        };
+        let mut handlers = HandlerRegistry::new();
+        for (index, target) in targets.iter().enumerate() {
+            let task_id = format!("lookup-{index:04}");
+            let lookup = Arc::clone(&self.service.lookup);
+            let chosen = self.chosen.clone();
+            let kind = target.kind;
+            let selector = target.selector.clone();
+            handlers.insert(
+                task_id,
+                Arc::new(move |context: TaskContext| -> Result<TaskOutput, TaskFailure> {
+                    context.check_deadline()?;
+                    let output = lookup(kind, &selector, &chosen)
+                        .map_err(TaskFailure::permanent)?;
+                    let value = serde_json::to_value(output).map_err(|error| {
+                        TaskFailure::permanent(format!("lookup output serialization failed: {error}"))
+                    })?;
+                    Ok(TaskOutput {
+                        value,
+                        evidence: Vec::new(),
+                        verification: VerificationRecord {
+                            state: VerificationState::Unresolved,
+                            producer_id: context.task_id,
+                            reviewer_id: "independent-review-pending".into(),
+                            basis: "raw lookup output; source claims remain unverified".into(),
+                            evidence_refs: Vec::new(),
+                        },
+                    })
+                }),
+            );
+        }
+
+        let policy = ExecutionPolicy {
+            max_concurrency: 2,
+            max_total_resource_units: u64::try_from(targets.len()).unwrap_or(u64::MAX),
+            max_output_bytes: 2 * 1024 * 1024,
+            run_timeout_ms: 15 * 60 * 1000,
+        };
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let report = match GraphExecutor::new(policy).execute(&definition, &handlers, &cancellation) {
+            Ok(report) => report,
+            Err(error) => {
+                self.service.log(
+                    self.id,
+                    "graph_exec",
+                    LogLevel::Error,
+                    format!("lookup batch rejected by graph executor: {error}"),
+                );
+                self.errors = self.errors.saturating_add(targets.len());
+                return targets
+                    .iter()
+                    .map(|_| Step { entities: Vec::new(), outcomes: Vec::new() })
+                    .collect();
+            }
+        };
+
+        targets
+            .iter()
+            .enumerate()
+            .map(|(index, target)| {
+                let task_id = format!("lookup-{index:04}");
+                let Some(record) = report.tasks.get(&task_id) else {
+                    self.errors = self.errors.saturating_add(1);
+                    self.service.log(
+                        self.id,
+                        "graph_exec",
+                        LogLevel::Error,
+                        format!("graph executor omitted task record {task_id}"),
+                    );
+                    return Step { entities: Vec::new(), outcomes: Vec::new() };
+                };
+                if record.state != TaskState::Succeeded {
+                    self.errors = self.errors.saturating_add(1);
+                    self.service.log(
+                        self.id,
+                        target.kind.command(),
+                        LogLevel::Error,
+                        format!(
+                            "graph task {task_id} ended as {:?}: {}",
+                            record.state,
+                            record.error.as_deref().unwrap_or("no failure detail")
+                        ),
+                    );
+                    return Step { entities: Vec::new(), outcomes: Vec::new() };
+                }
+                let decoded = record
+                    .output
+                    .as_ref()
+                    .ok_or_else(|| "successful graph task has no output".to_owned())
+                    .and_then(|output| {
+                        serde_json::from_value::<LookupOutput>(output.value.clone())
+                            .map_err(|error| format!("malformed lookup output: {error}"))
+                    });
+                let found = match decoded {
+                    Ok(found) => found,
+                    Err(error) => {
+                        self.errors = self.errors.saturating_add(1);
+                        self.service.log(
+                            self.id,
+                            "graph_exec",
+                            LogLevel::Error,
+                            format!("task {task_id}: {error}"),
+                        );
+                        return Step { entities: Vec::new(), outcomes: Vec::new() };
+                    }
+                };
+                let failed_sources = found.outcomes.iter().filter(|outcome| !outcome.kind.is_accepted()).count();
+                self.ran = self.ran.saturating_add(1);
+                self.errors = self.errors.saturating_add(failed_sources);
+                for outcome in &found.outcomes {
+                    let accepted = outcome.kind.is_accepted();
+                    self.service.log(
+                        self.id,
+                        &outcome.module,
+                        if accepted { LogLevel::Info } else { LogLevel::Error },
+                        outcome_line(outcome),
+                    );
+                }
+                if !found.text.is_empty() {
+                    if !self.text.is_empty() { self.text.push('\n'); }
+                    self.text.push_str(&found.text);
+                }
+                Step { entities: found.entities, outcomes: found.outcomes }
+            })
+            .collect()
     }
 
     fn cancelled(&self) -> bool {
