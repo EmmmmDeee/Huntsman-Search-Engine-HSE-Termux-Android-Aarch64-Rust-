@@ -2017,6 +2017,114 @@ mod tests {
     }
 
     #[test]
+    fn sequential_lookup_error_persists_an_inconclusive_outcome() {
+        let (service, dir) = with_lookup(
+            "persist-sequential-failure",
+            Arc::new(|_, _, _| Err("synthetic source outage".into())),
+        );
+        let record = service
+            .run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                kind: Some("ip".into()),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        assert_eq!(record.status, ScanStatus::ErrorFailed);
+        assert_eq!(record.errors, 1);
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        assert!(results.entities.is_empty());
+        assert_eq!(results.outcomes.len(), 1);
+        assert_eq!(results.outcomes[0].module, "scan_lookup");
+        assert_eq!(results.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
+        assert!(results.outcomes[0].found.is_none());
+        assert!(results.outcomes[0]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("ip lookup on 1.1.1.1"));
+        let log = service.store().log(&record.id).unwrap();
+        assert!(log.iter().any(|entry| entry.message.contains("synthetic source outage")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn graph_lookup_error_persists_alongside_a_valid_zero_result() {
+        let (service, dir) = with_lookup(
+            "persist-graph-failure",
+            Arc::new(|kind: ScanKind, selector: &str, _: &Selection| {
+                if kind == ScanKind::Domain {
+                    let evidence = Evidence::new(
+                        EvidenceProvenance::for_scan("test", "seed"),
+                        "discovered address",
+                    );
+                    return Ok(LookupOutput {
+                        entities: ["1.1.1.1", "8.8.8.8"]
+                            .into_iter()
+                            .map(|ip| {
+                                Entity::builder(EntityKind::IpAddress, ip, 0.95, "test")
+                                    .evidence(evidence.clone())
+                                    .build()
+                            })
+                            .collect(),
+                        ..LookupOutput::default()
+                    });
+                }
+                if selector == "1.1.1.1" {
+                    return Err("synthetic provider failure".into());
+                }
+                Ok(LookupOutput {
+                    outcomes: vec![SourceExecutionOutcome::valid_zero("fixture", 42)],
+                    ..LookupOutput::default()
+                })
+            }),
+        );
+        let record = service
+            .run(&ScanRequest {
+                target: "example.org".into(),
+                kind: Some("domain".into()),
+                options: ScanOptions {
+                    depth: 1,
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        assert_eq!(record.status, ScanStatus::Finished);
+        assert_eq!(record.errors, 1);
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        assert_eq!(results.outcomes.len(), 2);
+        let failure = results.outcomes.iter().find(|outcome| outcome.module == "graph_exec").unwrap();
+        assert_eq!(failure.kind, SourceOutcomeKind::Inconclusive);
+        assert!(failure.found.is_none());
+        assert!(failure.detail.as_deref().unwrap().contains("1.1.1.1"));
+        assert!(failure.detail.as_deref().unwrap().contains("synthetic provider failure"));
+        let zero = results.outcomes.iter().find(|outcome| outcome.module == "fixture").unwrap();
+        assert_eq!(zero.kind, SourceOutcomeKind::ValidZero);
+        assert_eq!(zero.found, Some(0));
+        assert!(record.modules_run.contains(&"graph_exec".to_owned()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn graph_schema_failure_is_not_misreported_as_empty_success() {
+        let target = CrawlTarget {
+            kind: ScanKind::Ip,
+            selector: "1.1.1.1".into(),
+        };
+        let failure = failed_lookup_step(
+            &target,
+            "graph_exec",
+            SourceOutcomeKind::SchemaDrift,
+            "task lookup-0000: missing output envelope",
+        );
+        assert!(failure.entities.is_empty());
+        assert_eq!(failure.outcomes.len(), 1);
+        assert_eq!(failure.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
+        assert!(failure.outcomes[0].found.is_none());
+        assert!(!failure.outcomes[0].kind.is_accepted());
+    }
+
+    #[test]
     fn independent_recursive_lookups_use_bounded_graph_concurrency() {
         use std::sync::atomic::AtomicUsize;
 
