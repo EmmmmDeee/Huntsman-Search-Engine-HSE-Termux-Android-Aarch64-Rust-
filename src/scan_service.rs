@@ -22,12 +22,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::correlator::evaluate_rules;
+use crate::entity::Entity;
 use crate::graph_exec::{
     ExecutionPolicy, GraphDefinition, GraphExecutor, HandlerRegistry, TaskContext, TaskFailure,
     TaskOutput, TaskRole, TaskSpec, TaskState, ValueSchema, VerificationRecord, VerificationState,
 };
-use crate::correlator::evaluate_rules;
-use crate::entity::Entity;
 use crate::lookup_modules;
 use crate::module_selection::Selection;
 use crate::recursion::{
@@ -334,8 +334,7 @@ impl SelectorCollector for ScanCollector<'_> {
                 .iter()
                 .any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
         {
-            if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector)
-                    {
+            if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector) {
                 self.breach_checked.insert(selector);
             }
         }
@@ -407,25 +406,29 @@ impl SelectorCollector for ScanCollector<'_> {
             let selector = target.selector.clone();
             handlers.insert(
                 task_id,
-                Arc::new(move |context: TaskContext| -> Result<TaskOutput, TaskFailure> {
-                    context.check_deadline()?;
-                    let output = lookup(kind, &selector, &chosen)
-                        .map_err(TaskFailure::permanent)?;
-                    let value = serde_json::to_value(output).map_err(|error| {
-                        TaskFailure::permanent(format!("lookup output serialization failed: {error}"))
-                    })?;
-                    Ok(TaskOutput {
-                        value,
-                        evidence: Vec::new(),
-                        verification: VerificationRecord {
-                            state: VerificationState::Unresolved,
-                            producer_id: context.task_id,
-                            reviewer_id: "independent-review-pending".into(),
-                            basis: "raw lookup output; source claims remain unverified".into(),
-                            evidence_refs: Vec::new(),
-                        },
-                    })
-                }),
+                Arc::new(
+                    move |context: TaskContext| -> Result<TaskOutput, TaskFailure> {
+                        context.check_deadline()?;
+                        let output =
+                            lookup(kind, &selector, &chosen).map_err(TaskFailure::permanent)?;
+                        let value = serde_json::to_value(output).map_err(|error| {
+                            TaskFailure::permanent(format!(
+                                "lookup output serialization failed: {error}"
+                            ))
+                        })?;
+                        Ok(TaskOutput {
+                            value,
+                            evidence: Vec::new(),
+                            verification: VerificationRecord {
+                                state: VerificationState::Unresolved,
+                                producer_id: context.task_id,
+                                reviewer_id: "independent-review-pending".into(),
+                                basis: "raw lookup output; source claims remain unverified".into(),
+                                evidence_refs: Vec::new(),
+                            },
+                        })
+                    },
+                ),
             );
         }
 
