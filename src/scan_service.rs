@@ -480,7 +480,10 @@ impl SelectorCollector for ScanCollector<'_> {
                         LogLevel::Error,
                         format!("graph executor omitted task record {task_id}"),
                     );
-                    return Step { entities: Vec::new(), outcomes: Vec::new() };
+                    return Step {
+                        entities: Vec::new(),
+                        outcomes: Vec::new(),
+                    };
                 };
                 if record.state != TaskState::Succeeded {
                     self.errors = self.errors.saturating_add(1);
@@ -514,7 +517,10 @@ impl SelectorCollector for ScanCollector<'_> {
                             LogLevel::Error,
                             format!("task {task_id}: {error}"),
                         );
-                        return Step { entities: Vec::new(), outcomes: Vec::new() };
+                        return Step {
+                            entities: Vec::new(),
+                            outcomes: Vec::new(),
+                        };
                     }
                 };
                 let failed_sources = found
@@ -543,7 +549,8 @@ impl SelectorCollector for ScanCollector<'_> {
                         .iter()
                         .any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
                 {
-                    if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector) {
+                    if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector)
+                    {
                         self.breach_checked.insert(selector);
                     }
                 }
