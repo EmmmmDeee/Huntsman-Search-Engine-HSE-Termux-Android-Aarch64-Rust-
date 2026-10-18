@@ -932,14 +932,20 @@ impl GraphExecutor {
             let outputs: BTreeMap<String, TaskOutput> = records
                 .iter()
                 .filter_map(|(id, record)| {
-                    record.output.as_ref().map(|output| (id.clone(), output.clone()))
+                    record
+                        .output
+                        .as_ref()
+                        .map(|output| (id.clone(), output.clone()))
                 })
                 .collect();
             let results = thread::scope(|scope| {
                 let mut handles = Vec::with_capacity(selected.len());
                 for id in &selected {
                     let spec = &graph.by_id[id];
-                    let handler = handlers.get(id).cloned().expect("handler checked before dispatch");
+                    let handler = handlers
+                        .get(id)
+                        .cloned()
+                        .expect("handler checked before dispatch");
                     let deps = spec
                         .dependencies
                         .iter()
@@ -1036,7 +1042,10 @@ mod tests {
             input: json!({}),
             input_schema: schema_any(),
             output_schema: schema_any(),
-            dependencies: dependencies.iter().map(|value| (*value).to_string()).collect(),
+            dependencies: dependencies
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
             exclusive_resources: Vec::new(),
             idempotency_key: None,
             timeout_ms: 1_000,
@@ -1095,11 +1104,28 @@ mod tests {
         let mut b = spec("b", &[]);
         a.idempotency_key = Some("same-operation".into());
         b.idempotency_key = Some("same-operation".into());
-        assert!(GraphDefinition { run_id: "run-3".into(), tasks: vec![a, b] }.validate().is_err());
+        assert!(
+            GraphDefinition {
+                run_id: "run-3".into(),
+                tasks: vec![a, b]
+            }
+            .validate()
+            .is_err()
+        );
         let mut bad = spec("bad", &[]);
         bad.input = json!("not an object");
-        bad.input_schema = ValueSchema::Object { required: BTreeMap::new(), allow_additional: false };
-        assert!(GraphDefinition { run_id: "run-4".into(), tasks: vec![bad] }.validate().is_err());
+        bad.input_schema = ValueSchema::Object {
+            required: BTreeMap::new(),
+            allow_additional: false,
+        };
+        assert!(
+            GraphDefinition {
+                run_id: "run-4".into(),
+                tasks: vec![bad]
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]
