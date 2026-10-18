@@ -334,7 +334,8 @@ impl SelectorCollector for ScanCollector<'_> {
                 .iter()
                 .any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
         {
-            if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector) {
+            if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector)
+                    {
                 self.breach_checked.insert(selector);
             }
         }
@@ -516,7 +517,11 @@ impl SelectorCollector for ScanCollector<'_> {
                         return Step { entities: Vec::new(), outcomes: Vec::new() };
                     }
                 };
-                let failed_sources = found.outcomes.iter().filter(|outcome| !outcome.kind.is_accepted()).count();
+                let failed_sources = found
+                    .outcomes
+                    .iter()
+                    .filter(|outcome| !outcome.kind.is_accepted())
+                    .count();
                 self.ran = self.ran.saturating_add(1);
                 self.errors = self.errors.saturating_add(failed_sources);
                 for outcome in &found.outcomes {
@@ -524,22 +529,34 @@ impl SelectorCollector for ScanCollector<'_> {
                     self.service.log(
                         self.id,
                         &outcome.module,
-                        if accepted { LogLevel::Info } else { LogLevel::Error },
+                        if accepted {
+                            LogLevel::Info
+                        } else {
+                            LogLevel::Error
+                        },
                         outcome_line(outcome),
                     );
                 }
                 if target.kind == ScanKind::Email
-                    && found.outcomes.iter().any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
+                    && found
+                        .outcomes
+                        .iter()
+                        .any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
                 {
                     if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector) {
                         self.breach_checked.insert(selector);
                     }
                 }
                 if !found.text.is_empty() {
-                    if !self.text.is_empty() { self.text.push('\n'); }
+                    if !self.text.is_empty() {
+                        self.text.push('\n');
+                    }
                     self.text.push_str(&found.text);
                 }
-                Step { entities: found.entities, outcomes: found.outcomes }
+                Step {
+                    entities: found.entities,
+                    outcomes: found.outcomes,
+                }
             })
             .collect()
     }
