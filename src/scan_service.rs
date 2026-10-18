@@ -2043,11 +2043,8 @@ mod tests {
         assert_eq!(results.outcomes[0].module, "scan_lookup");
         assert_eq!(results.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
         assert!(results.outcomes[0].found.is_none());
-        assert!(results.outcomes[0]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("synthetic source outage"));
+        let diagnostic = results.outcomes[0].detail.as_deref().unwrap();
+        assert!(diagnostic.contains("synthetic source outage"));
         assert!(
             results.outcomes[0]
                 .detail
