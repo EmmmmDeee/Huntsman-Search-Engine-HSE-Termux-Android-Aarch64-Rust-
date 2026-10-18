@@ -216,6 +216,7 @@ pub mod validation;
 pub mod value_syntax;
 pub mod virustotal;
 pub mod web_query;
+pub mod workflow_graph;
 pub mod web_server;
 pub mod whoxy;
 pub mod wigle;
