@@ -1,7 +1,4 @@
-use std::sync::{
-    atomic::AtomicBool,
-    Arc,
-};
+use std::sync::{Arc, atomic::AtomicBool};
 
 use huntsman_recon::graph_exec::{
     ExecutionPolicy, GraphDefinition, GraphExecutor, HandlerRegistry, RunTermination, TaskContext,
@@ -51,11 +48,7 @@ fn exported_graph_executor_runs_a_task_through_the_public_api() {
     );
 
     let report = GraphExecutor::new(ExecutionPolicy::default())
-        .execute(
-            &definition,
-            &handlers,
-            &Arc::new(AtomicBool::new(false)),
-        )
+        .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
         .unwrap();
 
     assert_eq!(report.tasks["public-api"].state, TaskState::Succeeded);
