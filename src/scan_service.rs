@@ -382,7 +382,7 @@ impl SelectorCollector for ScanCollector<'_> {
                     role: TaskRole::Producer,
                     input: json!({
                         "kind": target.kind.command(),
-                        "selector": target.selector,
+                        "selector": target.selector.clone(),
                     }),
                     input_schema: ValueSchema::Any,
                     output_schema: ValueSchema::Any,
@@ -513,6 +513,13 @@ impl SelectorCollector for ScanCollector<'_> {
                         if accepted { LogLevel::Info } else { LogLevel::Error },
                         outcome_line(outcome),
                     );
+                }
+                if target.kind == ScanKind::Email
+                    && found.outcomes.iter().any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
+                {
+                    if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector) {
+                        self.breach_checked.insert(selector);
+                    }
                 }
                 if !found.text.is_empty() {
                     if !self.text.is_empty() { self.text.push('\n'); }
