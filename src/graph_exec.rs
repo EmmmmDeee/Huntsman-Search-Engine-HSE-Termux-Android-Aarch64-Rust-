@@ -1112,18 +1112,27 @@ mod tests {
         let mut handlers = HandlerRegistry::new();
         for id in ["a", "b"] {
             let barrier = Arc::clone(&barrier);
-            handlers.insert(id.into(), handler(move |_| {
-                barrier.wait();
-                Ok(output(json!({"task": id}), id))
-            }));
+            handlers.insert(
+                id.into(),
+                handler(move |_| {
+                    barrier.wait();
+                    Ok(output(json!({"task": id}), id))
+                }),
+            );
         }
         let report = GraphExecutor::new(policy())
             .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["a"].state, TaskState::Succeeded);
         assert_eq!(report.tasks["b"].state, TaskState::Succeeded);
-        assert_eq!(report.tasks["a"].output.as_ref().unwrap().value, json!({"task":"a"}));
-        assert_eq!(report.tasks["b"].output.as_ref().unwrap().value, json!({"task":"b"}));
+        assert_eq!(
+            report.tasks["a"].output.as_ref().unwrap().value,
+            json!({"task":"a"})
+        );
+        assert_eq!(
+            report.tasks["b"].output.as_ref().unwrap().value,
+            json!({"task":"b"})
+        );
     }
 
     #[test]
@@ -1134,10 +1143,16 @@ mod tests {
         };
         let mut handlers = HandlerRegistry::new();
         handlers.insert("parent".into(), handler(|_| Ok(output(json!(7), "parent"))));
-        handlers.insert("child".into(), handler(|context| {
-            let value = context.dependency_outputs["parent"].value.as_i64().unwrap_or_default();
-            Ok(output(json!(value + 1), "child"))
-        }));
+        handlers.insert(
+            "child".into(),
+            handler(|context| {
+                let value = context.dependency_outputs["parent"]
+                    .value
+                    .as_i64()
+                    .unwrap_or_default();
+                Ok(output(json!(value + 1), "child"))
+            }),
+        );
         let report = GraphExecutor::new(policy())
             .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
             .unwrap();
