@@ -675,6 +675,29 @@ fn valid_token(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
 }
 
+fn derive_termination(records: &BTreeMap<String, TaskRecord>) -> RunTermination {
+    if records
+        .values()
+        .any(|record| record.state == TaskState::TimedOut)
+    {
+        RunTermination::TimedOut
+    } else if records
+        .values()
+        .any(|record| record.state == TaskState::Cancelled)
+    {
+        RunTermination::Cancelled
+    } else if records.values().any(|record| {
+        matches!(
+            &record.state,
+            TaskState::Failed | TaskState::Blocked
+        )
+    }) {
+        RunTermination::Failed
+    } else {
+        RunTermination::Completed
+    }
+}
+
 fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -719,6 +742,16 @@ fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Re
     {
         return Err(format!("missing verification provenance for {}", spec.id));
     }
+    if verification
+        .evidence_refs
+        .iter()
+        .any(|reference| !evidence_ids.contains(reference))
+    {
+        return Err(format!(
+            "verification references unknown evidence for {}",
+            spec.id
+        ));
+    }
     if verification.state == VerificationState::Verified {
         if spec.role != TaskRole::Verifier
             || verification.reviewer_id != spec.id
@@ -730,12 +763,7 @@ fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Re
                 spec.id
             ));
         }
-        if verification.evidence_refs.is_empty()
-            || verification
-                .evidence_refs
-                .iter()
-                .any(|reference| !evidence_ids.contains(reference))
-        {
+        if verification.evidence_refs.is_empty() {
             return Err(format!(
                 "verified result lacks linked evidence for {}",
                 spec.id
@@ -1064,7 +1092,22 @@ impl GraphExecutor {
             records.insert(id.clone(), record);
         }
         let run_deadline = Instant::now() + Duration::from_millis(self.policy.run_timeout_ms);
-        let mut termination = RunTermination::Completed;
+        let has_pending_work = records.values().any(|record| {
+            matches!(&record.state, TaskState::Pending | TaskState::Running)
+        });
+        let prior_termination = checkpoint
+            .as_ref()
+            .and_then(|saved| saved.report.termination.clone());
+        let mut termination = if has_pending_work {
+            match prior_termination {
+                Some(RunTermination::ResourceLimit) => RunTermination::ResourceLimit,
+                Some(RunTermination::TimedOut) => RunTermination::TimedOut,
+                Some(RunTermination::Cancelled) => RunTermination::Cancelled,
+                _ => RunTermination::Completed,
+            }
+        } else {
+            prior_termination.unwrap_or_else(|| derive_termination(&records))
+        };
         let mut errors = checkpoint.map_or_else(Vec::new, |saved| saved.report.errors);
         let mut last_rate_start = BTreeMap::<String, Instant>::new();
 
@@ -1305,7 +1348,7 @@ impl GraphExecutor {
                     duration_ms: Some(
                         u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                     ),
-                    termination: None,
+                    termination: Some(termination.clone()),
                     consumed_resource_units: consumed,
                     tasks: records.clone(),
                     errors: errors.clone(),
@@ -1327,6 +1370,9 @@ impl GraphExecutor {
             }
         }
 
+        if termination == RunTermination::Completed {
+            termination = derive_termination(&records);
+        }
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut report = RunReport {
             run_id: definition.run_id.clone(),
