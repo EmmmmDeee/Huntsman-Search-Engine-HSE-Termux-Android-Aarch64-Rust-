@@ -751,14 +751,21 @@ fn attempt_start_unix_ms(started: Instant) -> u64 {
     now_unix_ms().saturating_sub(age)
 }
 
+/// The scheduler uses monotonic time; checkpoints retain portable wall-clock timestamps.
+#[derive(Default)]
+struct RateStartHistory {
+    monotonic: BTreeMap<String, Instant>,
+    persisted: BTreeMap<String, u64>,
+}
+
 /// Rehydrate provider spacing from a checkpoint. Legacy checkpoints lack millisecond-level
 /// starts; their task completion time is a conservative lower bound for the next safe start.
 fn restored_rate_history(
     graph: &ValidatedGraph,
     checkpoint: Option<&ExecutionCheckpoint>,
-) -> Result<(BTreeMap<String, Instant>, BTreeMap<String, u64>), GraphError> {
+) -> Result<RateStartHistory, GraphError> {
     let Some(checkpoint) = checkpoint else {
-        return Ok((BTreeMap::new(), BTreeMap::new()));
+        return Ok(RateStartHistory::default());
     };
     let intervals: BTreeMap<String, u64> = graph
         .by_id
@@ -809,7 +816,10 @@ fn restored_rate_history(
             })
         })
         .collect();
-    Ok((monotonic, persisted))
+    Ok(RateStartHistory {
+        monotonic,
+        persisted,
+    })
 }
 
 fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Result<(), String> {
@@ -1331,8 +1341,10 @@ impl GraphExecutor {
         } else {
             prior_termination.unwrap_or_else(|| derive_termination(&records))
         };
-        let (mut last_rate_start, mut persisted_rate_start) =
-            restored_rate_history(&graph, checkpoint.as_ref())?;
+        let RateStartHistory {
+            monotonic: mut last_rate_start,
+            persisted: mut persisted_rate_start,
+        } = restored_rate_history(&graph, checkpoint.as_ref())?;
         let mut errors = checkpoint.map_or_else(Vec::new, |saved| saved.report.errors);
 
         loop {
