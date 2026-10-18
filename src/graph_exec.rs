@@ -1026,7 +1026,9 @@ fn run_one(
         };
         let result = catch_unwind(AssertUnwindSafe(|| handler(context)));
         let elapsed = attempt_started.elapsed();
-        if cancelled.load(Ordering::Acquire) {
+        // A scan stop forbids further work but must not discard a successful lookup that
+        // was already running. Preserve its validated output, including its evidence.
+        if cancelled.load(Ordering::Acquire) && !matches!(&result, Ok(Ok(_))) {
             record.state = TaskState::Cancelled;
             last_error = "run cancelled while task was executing".into();
             break;
@@ -2612,6 +2614,42 @@ mod tests {
             result
                 .rate_limit_last_start_unix_ms
                 .contains_key("legacy-provider")
+        );
+    }
+
+    #[test]
+    fn cancellation_during_running_handler_preserves_its_completed_output() {
+        let definition = GraphDefinition {
+            run_id: "cancel-running-retain-output".into(),
+            tasks: vec![spec("running", &[])],
+        };
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let mut handlers = HandlerRegistry::new();
+        let receiver = Mutex::new(release_rx);
+        handlers.insert(
+            "running".into(),
+            handler(move |_| {
+                started_tx.send(()).unwrap();
+                receiver.lock().unwrap().recv().unwrap();
+                Ok(output(json!("retained"), "running"))
+            }),
+        );
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancelled);
+        let stopper = thread::spawn(move || {
+            started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            flag.store(true, Ordering::Release);
+            release_tx.send(()).unwrap();
+        });
+        let report = GraphExecutor::new(policy())
+            .execute(&definition, &handlers, &cancelled)
+            .unwrap();
+        stopper.join().unwrap();
+        assert_eq!(report.tasks["running"].state, TaskState::Succeeded);
+        assert_eq!(
+            report.tasks["running"].output.as_ref().unwrap().value,
+            json!("retained")
         );
     }
 
