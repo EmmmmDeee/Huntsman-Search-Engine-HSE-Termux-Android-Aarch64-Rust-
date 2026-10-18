@@ -408,7 +408,11 @@ impl CrawlState {
                     outcomes: vec![SourceExecutionOutcome::inconclusive(
                         "recursion",
                         0,
-                        format!("collector omitted {} lookup on {}", target.kind.command(), target.selector),
+                        format!(
+                            "collector omitted {} lookup on {}",
+                            target.kind.command(),
+                            target.selector
+                        ),
                     )],
                 });
                 self.dispatches += 1;
