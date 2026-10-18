@@ -973,7 +973,7 @@ impl GraphExecutor {
         &self,
         definition: &GraphDefinition,
         handlers: &HandlerRegistry,
-        cancelled: Arc<AtomicBool>,
+        cancelled: &Arc<AtomicBool>,
         checkpoint: ExecutionCheckpoint,
     ) -> Result<RunReport, GraphError> {
         self.execute_inner(definition, handlers, cancelled, Some(checkpoint), None)
@@ -987,7 +987,7 @@ impl GraphExecutor {
         &self,
         definition: &GraphDefinition,
         handlers: &HandlerRegistry,
-        cancelled: Arc<AtomicBool>,
+        cancelled: &Arc<AtomicBool>,
         checkpoint_sink: F,
     ) -> Result<RunReport, GraphError>
     where
@@ -1007,7 +1007,7 @@ impl GraphExecutor {
         &self,
         definition: &GraphDefinition,
         handlers: &HandlerRegistry,
-        cancelled: Arc<AtomicBool>,
+        cancelled: &Arc<AtomicBool>,
         checkpoint: ExecutionCheckpoint,
         checkpoint_sink: F,
     ) -> Result<RunReport, GraphError>
@@ -2044,7 +2044,7 @@ mod tests {
             .execute_checkpointed(
                 &definition,
                 &handlers,
-                Arc::new(AtomicBool::new(false)),
+                &Arc::new(AtomicBool::new(false)),
                 move |checkpoint| {
                     sink_records
                         .lock()
@@ -2072,7 +2072,7 @@ mod tests {
             .resume_checkpointed(
                 &definition,
                 &handlers,
-                Arc::new(AtomicBool::new(false)),
+                &Arc::new(AtomicBool::new(false)),
                 partial,
                 |_| Ok(()),
             )
@@ -2112,7 +2112,7 @@ mod tests {
             .resume(
                 &definition,
                 &handlers,
-                Arc::new(AtomicBool::new(false)),
+                &Arc::new(AtomicBool::new(false)),
                 decoded,
             )
             .unwrap();
