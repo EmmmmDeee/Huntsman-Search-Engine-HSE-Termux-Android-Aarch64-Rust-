@@ -9,8 +9,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -39,7 +39,9 @@ pub enum ValueSchema {
     Boolean,
     Number,
     String,
-    Array { items: Box<ValueSchema> },
+    Array {
+        items: Box<ValueSchema>,
+    },
     Object {
         #[serde(default)]
         required: BTreeMap<String, ValueSchema>,
