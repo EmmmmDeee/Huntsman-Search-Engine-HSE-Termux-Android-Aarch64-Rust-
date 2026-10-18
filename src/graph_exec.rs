@@ -481,7 +481,9 @@ impl GraphDefinition {
         let encoded = serde_json::to_vec(self)
             .map_err(|error| GraphError::Invalid(format!("cannot fingerprint graph: {error}")))?;
         if encoded.len() > MAX_CHECKPOINT_BYTES {
-            return Err(GraphError::Invalid("graph definition exceeds size limit".into()));
+            return Err(GraphError::Invalid(
+                "graph definition exceeds size limit".into(),
+            ));
         }
         let fingerprint = crate::sha256::hex32(&crate::sha256::sha256(&encoded));
         Ok(ValidatedGraph {
@@ -495,9 +497,9 @@ impl GraphDefinition {
 fn valid_token(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_ID_BYTES
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':')
-        })
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
 }
 
 fn now_unix() -> u64 {
@@ -526,7 +528,10 @@ fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Re
             || evidence.provenance.trim().is_empty()
             || !evidence_ids.insert(evidence.id.clone())
         {
-            return Err(format!("invalid or duplicate evidence reference for {}", spec.id));
+            return Err(format!(
+                "invalid or duplicate evidence reference for {}",
+                spec.id
+            ));
         }
         if let Some(hash) = &evidence.content_sha256 {
             if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -543,7 +548,10 @@ fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Re
     }
     if verification.state == VerificationState::Verified {
         if verification.producer_id == verification.reviewer_id {
-            return Err(format!("verified result lacks independent reviewer for {}", spec.id));
+            return Err(format!(
+                "verified result lacks independent reviewer for {}",
+                spec.id
+            ));
         }
         if verification.evidence_refs.is_empty()
             || verification
@@ -551,7 +559,10 @@ fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Re
                 .iter()
                 .any(|reference| !evidence_ids.contains(reference))
         {
-            return Err(format!("verified result lacks linked evidence for {}", spec.id));
+            return Err(format!(
+                "verified result lacks linked evidence for {}",
+                spec.id
+            ));
         }
     }
     if verification
@@ -561,7 +572,10 @@ fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Re
         .len()
         != verification.evidence_refs.len()
     {
-        return Err(format!("duplicate verification evidence reference for {}", spec.id));
+        return Err(format!(
+            "duplicate verification evidence reference for {}",
+            spec.id
+        ));
     }
     Ok(())
 }
