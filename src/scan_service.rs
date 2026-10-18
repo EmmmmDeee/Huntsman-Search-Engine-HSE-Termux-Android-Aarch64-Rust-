@@ -685,7 +685,9 @@ impl SelectorCollector for ScanCollector<'_> {
             self.id,
             "recursion",
             LogLevel::Error,
-            format!("recursive collector returned {violations} missing or unsolicited batch results"),
+            format!(
+                "recursive collector returned {violations} missing or unsolicited batch results"
+            ),
         );
     }
 
@@ -2047,13 +2049,18 @@ mod tests {
         assert_eq!(results.outcomes[0].module, "scan_lookup");
         assert_eq!(results.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
         assert!(results.outcomes[0].found.is_none());
-        assert!(results.outcomes[0]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("ip lookup on 1.1.1.1"));
+        assert!(
+            results.outcomes[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("ip lookup on 1.1.1.1")
+        );
         let log = service.store().log(&record.id).unwrap();
-        assert!(log.iter().any(|entry| entry.message.contains("synthetic source outage")));
+        assert!(
+            log.iter()
+                .any(|entry| entry.message.contains("synthetic source outage"))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2103,12 +2110,26 @@ mod tests {
         assert_eq!(record.errors, 1);
         let results = service.store().results(&record.id).unwrap().unwrap();
         assert_eq!(results.outcomes.len(), 2);
-        let failure = results.outcomes.iter().find(|outcome| outcome.module == "graph_exec").unwrap();
+        let failure = results
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == "graph_exec")
+            .unwrap();
         assert_eq!(failure.kind, SourceOutcomeKind::Inconclusive);
         assert!(failure.found.is_none());
         assert!(failure.detail.as_deref().unwrap().contains("1.1.1.1"));
-        assert!(failure.detail.as_deref().unwrap().contains("synthetic provider failure"));
-        let zero = results.outcomes.iter().find(|outcome| outcome.module == "fixture").unwrap();
+        assert!(
+            failure
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("synthetic provider failure")
+        );
+        let zero = results
+            .outcomes
+            .iter()
+            .find(|outcome| outcome.module == "fixture")
+            .unwrap();
         assert_eq!(zero.kind, SourceOutcomeKind::ValidZero);
         assert_eq!(zero.found, Some(0));
         assert!(record.modules_run.contains(&"graph_exec".to_owned()));
