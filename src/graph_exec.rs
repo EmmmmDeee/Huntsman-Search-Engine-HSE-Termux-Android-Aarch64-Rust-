@@ -22,7 +22,7 @@ const MAX_ID_BYTES: usize = 128;
 const MAX_TASKS: usize = 4096;
 const MAX_DEPENDENCIES_PER_TASK: usize = 1024;
 const MAX_RESOURCES_PER_TASK: usize = 64;
-const MAX_INPUT_BYTES: usize = 1024 * 1024;
+const MAX_TASK_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_DEPENDENCY_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RUN_OUTPUT_BYTES: usize = 12 * 1024 * 1024;
 const MAX_CONCURRENCY: usize = 4;
@@ -517,7 +517,7 @@ impl GraphDefinition {
             let input_bytes = serde_json::to_vec(&task.input).map_err(|error| {
                 GraphError::Invalid(format!("cannot encode input for {}: {error}", task.id))
             })?;
-            if input_bytes.len() > MAX_INPUT_BYTES {
+            if input_bytes.len() > MAX_TASK_INPUT_BYTES {
                 return Err(GraphError::Invalid(format!(
                     "input exceeds size limit for {}",
                     task.id
