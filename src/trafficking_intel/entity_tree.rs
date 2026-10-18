@@ -89,6 +89,53 @@ impl EntityTree {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeEntry {
+    pub id: String,
+    pub depth: usize,
+    pub parent: Option<String>,
+}
+
+impl EntityTree {
+    /// Bounded breadth-first expansion for a simple, cycle-safe entity tree.
+    /// The returned view is not an inference of ownership or criminal hierarchy.
+    pub fn expand(&self, root: &str, max_depth: usize, max_nodes: usize)
+        -> Result<Vec<TreeEntry>, GraphError>
+    {
+        let adj = self.adjacency()?;
+        if !adj.contains_key(root) {
+            return Err(GraphError::UnknownEndpoint(root.to_owned()));
+        }
+        let limit = max_nodes.min(10_000);
+        if limit == 0 { return Ok(Vec::new()); }
+        let mut visited = BTreeSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        let mut result = Vec::new();
+        visited.insert(root.to_owned());
+        queue.push_back(TreeEntry { id: root.to_owned(), depth: 0, parent: None });
+        while let Some(entry) = queue.pop_front() {
+            let depth = entry.depth;
+            let parent_id = entry.id.clone();
+            result.push(entry);
+            if result.len() >= limit { break; }
+            if depth >= max_depth { continue; }
+            if let Some(neighbours) = adj.get(&parent_id) {
+                for neighbour in neighbours {
+                    if visited.len() >= limit { break; }
+                    if visited.insert(neighbour.clone()) {
+                        queue.push_back(TreeEntry {
+                            id: neighbour.clone(),
+                            depth: depth + 1,
+                            parent: Some(parent_id.clone()),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +177,28 @@ mod tests {
         let a = graph().adjacency().unwrap();
         assert_eq!(a["company"], vec!["record"]);
         assert_eq!(a["record"], vec!["company"]);
+    }
+}
+
+#[cfg(test)]
+mod traversal_tests {
+    use super::*;
+    #[test]
+    fn cycle_is_visited_once_and_depth_bounded() {
+        let g = EntityTree {
+            nodes: ["a", "b", "c"].iter().map(|id| EntityNode {
+                id: (*id).into(), kind: EntityKind::Organisation, label: (*id).into()
+            }).collect(),
+            edges: [("a","b"),("b","c"),("c","a")].iter().map(|(from,to)| EntityEdge {
+                from: (*from).into(), to: (*to).into(), kind: RelationshipKind::MentionedIn,
+                evidence_refs: vec!["record".into()], alleged: false,
+            }).collect(),
+        };
+        let view = g.expand("a", 1, 10).unwrap();
+        assert_eq!(view.len(), 3);
+        assert_eq!(view[0].depth, 0);
+        assert!(view[1..].iter().all(|e| e.depth == 1));
+        assert_eq!(g.expand("a", 10, 2).unwrap().len(), 2);
+        assert!(g.expand("a", 10, 0).unwrap().is_empty());
     }
 }
