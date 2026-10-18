@@ -417,6 +417,37 @@ impl Default for RunSummary {
     }
 }
 
+/// Compare a measured sequential baseline with one graph-execution report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionComparison {
+    pub sequential_wall_clock_ms: u64,
+    pub graph_wall_clock_ms: u64,
+    /// Speedup ratio multiplied by 1,000; 1,000 means equal duration, 2,000 means 2x.
+    pub speedup_ratio_milli: Option<u64>,
+    pub task_count: usize,
+    pub graph_summary: RunSummary,
+}
+
+impl ExecutionComparison {
+    /// Build a comparison from an externally measured sequential duration and graph report.
+    #[must_use]
+    pub fn from_measured_sequential_baseline(
+        sequential_wall_clock_ms: u64,
+        graph_report: &RunReport,
+    ) -> Self {
+        let graph_wall_clock_ms = graph_report.duration_ms.unwrap_or_default();
+        Self {
+            sequential_wall_clock_ms,
+            graph_wall_clock_ms,
+            speedup_ratio_milli: (graph_wall_clock_ms > 0).then(|| {
+                sequential_wall_clock_ms.saturating_mul(1_000) / graph_wall_clock_ms
+            }),
+            task_count: graph_report.tasks.len(),
+            graph_summary: graph_report.summary(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionCheckpoint {
     pub format_version: u32,
