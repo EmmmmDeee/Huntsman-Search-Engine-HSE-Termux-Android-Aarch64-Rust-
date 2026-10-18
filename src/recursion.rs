@@ -430,16 +430,7 @@ impl CrawlState {
                     self.entities.push(entity);
                 }
             }
-            // A stop may arrive while the collector is executing the final batch.
-            // Checking only before the next dispatch mislabels a completed last wave as a
-            // fixed point, even though the operator explicitly cancelled the crawl.
-            if collector.cancelled() {
-                self.cancelled = true;
-                stopped = true;
-                for target in remaining.by_ref() {
-                    next.push(target);
-                }
-            }
+            stopped |= self.record_post_batch_stop(collector, remaining.by_ref(), &mut next);
             if stopped {
                 break;
             }
@@ -452,6 +443,24 @@ impl CrawlState {
             entities_after: self.entities.len(),
         });
         (next.into_queue(), stopped)
+    }
+
+    /// Record cancellation after a batch even when no further dispatch remains.
+    /// Retain outstanding targets for accurate truncated-frontier accounting.
+    fn record_post_batch_stop<C: SelectorCollector>(
+        &mut self,
+        collector: &C,
+        remaining: impl Iterator<Item = Target>,
+        next: &mut Frontier,
+    ) -> bool {
+        if !collector.cancelled() {
+            return false;
+        }
+        self.cancelled = true;
+        for target in remaining {
+            next.push(target);
+        }
+        true
     }
 
     /// Queue the next-generation targets an entity contributes, honouring the per-generation
