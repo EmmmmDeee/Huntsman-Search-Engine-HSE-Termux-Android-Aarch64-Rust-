@@ -82,6 +82,7 @@ greynoise	adapter	GreyNoise Community leg reached through ip_cli from ip, scan -
 hackertarget	adapter	HackerTarget leg reached through indicator_legs from ip, domain, scan and /api/lookup
 hibp	adapter	HIBP source adapter
 http	leaf	single socket-opening transport boundary
+hudsonrock	adapter	Domain-level Hudson Rock Cavalier aggregate leg reached through indicator_legs from domain, scan and /api/lookup
 hunter	adapter	Hunter domain-search leg reached through domain_cli from domain, scan -k domain and /api/lookup when its key is set
 identity	leaf	legacy/simple person record resolution helper
 identity_resolution	leaf	conservative merge decision policy
