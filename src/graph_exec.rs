@@ -737,9 +737,11 @@ fn now_unix() -> u64 {
 }
 
 fn now_unix_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| {
-        u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-    })
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// Approximate an actual monotonic attempt start on the wall clock for durable checkpoints.
@@ -2483,7 +2485,12 @@ mod tests {
 
         let checkpoint = captured.lock().unwrap().clone().unwrap();
         assert_eq!(checkpoint.report.tasks["second"].state, TaskState::Pending);
-        assert!(checkpoint.report.rate_limit_last_start_unix_ms.contains_key("checkpoint-provider"));
+        assert!(
+            checkpoint
+                .report
+                .rate_limit_last_start_unix_ms
+                .contains_key("checkpoint-provider")
+        );
         let mut checkpoint = ExecutionCheckpoint::decode(&checkpoint.encode().unwrap()).unwrap();
 
         let mut invalid = checkpoint.clone();
@@ -2565,19 +2572,18 @@ mod tests {
         let legacy: ExecutionCheckpoint = serde_json::from_value(serialized).unwrap();
         let resumed_at = Instant::now();
         let result = executor
-            .resume(
-                &graph,
-                &handlers,
-                &Arc::new(AtomicBool::new(false)),
-                legacy,
-            )
+            .resume(&graph, &handlers, &Arc::new(AtomicBool::new(false)), legacy)
             .unwrap();
         assert_eq!(result.summary().succeeded, 2);
         assert!(
             resumed_at.elapsed() >= Duration::from_millis(150),
             "legacy checkpoints must not bypass a recently completed provider call"
         );
-        assert!(result.rate_limit_last_start_unix_ms.contains_key("legacy-provider"));
+        assert!(
+            result
+                .rate_limit_last_start_unix_ms
+                .contains_key("legacy-provider")
+        );
     }
 
     #[test]
