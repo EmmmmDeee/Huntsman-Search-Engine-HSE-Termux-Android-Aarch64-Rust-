@@ -355,6 +355,10 @@ pub struct RunReport {
     pub duration_ms: Option<u64>,
     pub termination: Option<RunTermination>,
     pub consumed_resource_units: u64,
+    /// Last provider starts in UTC milliseconds, persisted across interrupted runs.
+    /// Missing in older checkpoints; recovered conservatively from completed task timestamps.
+    #[serde(default)]
+    pub rate_limit_last_start_unix_ms: BTreeMap<String, u64>,
     pub tasks: BTreeMap<String, TaskRecord>,
     pub errors: Vec<String>,
 }
@@ -730,6 +734,76 @@ fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| {
+        u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+    })
+}
+
+/// Approximate an actual monotonic attempt start on the wall clock for durable checkpoints.
+/// The in-process scheduler continues to use monotonic Instants for precise spacing.
+fn attempt_start_unix_ms(started: Instant) -> u64 {
+    let age = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    now_unix_ms().saturating_sub(age)
+}
+
+/// Rehydrate provider spacing from a checkpoint. Legacy checkpoints lack millisecond-level
+/// starts; their task completion time is a conservative lower bound for the next safe start.
+fn restored_rate_history(
+    graph: &ValidatedGraph,
+    checkpoint: Option<&ExecutionCheckpoint>,
+) -> Result<(BTreeMap<String, Instant>, BTreeMap<String, u64>), GraphError> {
+    let Some(checkpoint) = checkpoint else {
+        return Ok((BTreeMap::new(), BTreeMap::new()));
+    };
+    let intervals: BTreeMap<String, u64> = graph
+        .by_id
+        .values()
+        .filter_map(|spec| spec.rate_limit.as_ref())
+        .map(|limit| (limit.key.clone(), limit.min_interval_ms))
+        .collect();
+    let mut persisted = checkpoint.report.rate_limit_last_start_unix_ms.clone();
+    if persisted
+        .iter()
+        .any(|(key, start)| !intervals.contains_key(key) || *start == 0)
+    {
+        return Err(GraphError::CheckpointMismatch);
+    }
+    let now = now_unix_ms();
+    for (id, spec) in &graph.by_id {
+        let Some(limit) = &spec.rate_limit else {
+            continue;
+        };
+        let Some(record) = checkpoint.report.tasks.get(id) else {
+            continue;
+        };
+        // Version-one checkpoints emitted before the timestamp field existed still resume.
+        // Use the finish time (rounded up to the next second) instead of a potentially stale
+        // first-attempt start, since the handler may have retried the same provider.
+        if record.attempts > 0 && !persisted.contains_key(&limit.key) {
+            let completed_ms = record.finished_at_unix.map_or(now, |seconds| {
+                seconds.saturating_mul(1_000).saturating_add(999)
+            });
+            persisted.insert(limit.key.clone(), completed_ms);
+        }
+    }
+    let instant_now = Instant::now();
+    let monotonic = persisted
+        .iter()
+        .filter_map(|(key, start)| {
+            let elapsed_ms = now.saturating_sub(*start);
+            let interval = intervals[key];
+            (elapsed_ms < interval).then(|| {
+                let restored = instant_now
+                    .checked_sub(Duration::from_millis(elapsed_ms))
+                    .unwrap_or(instant_now);
+                (key.clone(), restored)
+            })
+        })
+        .collect();
+    Ok((monotonic, persisted))
 }
 
 fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Result<(), String> {
@@ -1251,8 +1325,9 @@ impl GraphExecutor {
         } else {
             prior_termination.unwrap_or_else(|| derive_termination(&records))
         };
+        let (mut last_rate_start, mut persisted_rate_start) =
+            restored_rate_history(&graph, checkpoint.as_ref())?;
         let mut errors = checkpoint.map_or_else(Vec::new, |saved| saved.report.errors);
-        let mut last_rate_start = BTreeMap::<String, Instant>::new();
 
         loop {
             if records.values().all(|record| record.state.terminal()) {
@@ -1442,9 +1517,11 @@ impl GraphExecutor {
             }
 
             let dispatch_started = Instant::now();
+            let dispatch_unix_ms = now_unix_ms();
             for id in &selected {
                 if let Some(limit) = &graph.by_id[id].rate_limit {
                     last_rate_start.insert(limit.key.clone(), dispatch_started);
+                    persisted_rate_start.insert(limit.key.clone(), dispatch_unix_ms);
                 }
             }
             consumed = consumed.saturating_add(wave_cost);
@@ -1491,6 +1568,7 @@ impl GraphExecutor {
                     (&graph.by_id[&id].rate_limit, last_attempt_start)
                 {
                     last_rate_start.insert(limit.key.clone(), start);
+                    persisted_rate_start.insert(limit.key.clone(), attempt_start_unix_ms(start));
                 }
                 let previous_attempts = records[&id].attempts;
                 record.attempts = previous_attempts.saturating_add(record.attempts);
@@ -1538,6 +1616,7 @@ impl GraphExecutor {
                     ),
                     termination: Some(termination.clone()),
                     consumed_resource_units: consumed,
+                    rate_limit_last_start_unix_ms: persisted_rate_start.clone(),
                     tasks: records.clone(),
                     errors: errors.clone(),
                 };
@@ -1571,6 +1650,7 @@ impl GraphExecutor {
             duration_ms: Some(duration_ms),
             termination: Some(termination),
             consumed_resource_units: consumed,
+            rate_limit_last_start_unix_ms: persisted_rate_start,
             tasks: records,
             errors,
         };
