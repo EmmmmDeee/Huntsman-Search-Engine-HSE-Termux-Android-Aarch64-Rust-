@@ -77,7 +77,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("benchmark tasks did not all succeed".into());
     }
     let comparison = ExecutionComparison::from_measured_sequential_baseline(
-        sequential.duration_ms.ok_or("missing sequential duration")?,
+        sequential
+            .duration_ms
+            .ok_or("missing sequential duration")?,
         &parallel,
     );
     let output = json!({
