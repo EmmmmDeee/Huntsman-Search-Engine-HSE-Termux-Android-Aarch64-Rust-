@@ -813,6 +813,8 @@ fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Re
     Ok(())
 }
 
+type CompletedJob = (String, (TaskRecord, Option<Instant>));
+
 #[allow(clippy::too_many_lines)]
 fn run_one(
     spec: &TaskSpec,
@@ -1396,7 +1398,7 @@ impl GraphExecutor {
                 }
             }
             consumed = consumed.saturating_add(wave_cost);
-            let mut jobs: Vec<crate::concurrent::Job<'_, (String, (TaskRecord, Option<Instant>))>> =
+            let mut jobs: Vec<crate::concurrent::Job<'_, CompletedJob>> =
                 Vec::with_capacity(selected.len());
             for id in &selected {
                 let spec = &graph.by_id[id];
@@ -2262,7 +2264,7 @@ mod tests {
 
     #[test]
     fn legacy_ordered_checkpoint_can_resume_with_canonical_fingerprint() {
-        let mut definition = GraphDefinition {
+        let definition = GraphDefinition {
             run_id: "legacy-order".into(),
             tasks: vec![spec("b", &[]), spec("a", &[])],
         };
