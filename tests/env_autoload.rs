@@ -70,7 +70,7 @@ fn serve_once() -> (u16, thread::JoinHandle<Served>) {
             match sock.read(&mut chunk) {
                 Ok(0) => break "eof".to_owned(),
                 Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
                 Err(e) => break format!("{:?}", e.kind()),
             }
         };
