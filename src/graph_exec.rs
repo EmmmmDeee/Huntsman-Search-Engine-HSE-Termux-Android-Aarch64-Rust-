@@ -371,29 +371,51 @@ impl GraphDefinition {
                 return Err(GraphError::Invalid(format!("invalid task id: {}", task.id)));
             }
             if task.objective.trim().is_empty() || task.objective.len() > MAX_OBJECTIVE_BYTES {
-                return Err(GraphError::Invalid(format!("invalid objective for {}", task.id)));
+                return Err(GraphError::Invalid(format!(
+                    "invalid objective for {}",
+                    task.id
+                )));
             }
             if task.timeout_ms == 0 || task.timeout_ms > MAX_TIMEOUT_MS {
-                return Err(GraphError::Invalid(format!("invalid timeout for {}", task.id)));
+                return Err(GraphError::Invalid(format!(
+                    "invalid timeout for {}",
+                    task.id
+                )));
             }
             if task.max_retries > MAX_RETRIES {
-                return Err(GraphError::Invalid(format!("retry limit exceeded for {}", task.id)));
+                return Err(GraphError::Invalid(format!(
+                    "retry limit exceeded for {}",
+                    task.id
+                )));
             }
             if task.resource_units == 0 {
-                return Err(GraphError::Invalid(format!("zero resource cost for {}", task.id)));
+                return Err(GraphError::Invalid(format!(
+                    "zero resource cost for {}",
+                    task.id
+                )));
             }
-            let input_bytes = serde_json::to_vec(&task.input)
-                .map_err(|error| GraphError::Invalid(format!("cannot encode input for {}: {error}", task.id)))?;
+            let input_bytes = serde_json::to_vec(&task.input).map_err(|error| {
+                GraphError::Invalid(format!("cannot encode input for {}: {error}", task.id))
+            })?;
             if input_bytes.len() > MAX_INPUT_BYTES {
-                return Err(GraphError::Invalid(format!("input exceeds size limit for {}", task.id)));
+                return Err(GraphError::Invalid(format!(
+                    "input exceeds size limit for {}",
+                    task.id
+                )));
             }
             if task.dependencies.len() > MAX_DEPENDENCIES_PER_TASK
                 || task.exclusive_resources.len() > MAX_RESOURCES_PER_TASK
             {
-                return Err(GraphError::Invalid(format!("dependency or resource limit exceeded for {}", task.id)));
+                return Err(GraphError::Invalid(format!(
+                    "dependency or resource limit exceeded for {}",
+                    task.id
+                )));
             }
             if !task.input_schema.accepts(&task.input) {
-                return Err(GraphError::Invalid(format!("input schema mismatch for {}", task.id)));
+                return Err(GraphError::Invalid(format!(
+                    "input schema mismatch for {}",
+                    task.id
+                )));
             }
             let mut deps = BTreeSet::new();
             for dependency in &task.dependencies {
@@ -425,7 +447,10 @@ impl GraphDefinition {
                 }
             }
             if by_id.insert(task.id.clone(), task.clone()).is_some() {
-                return Err(GraphError::Invalid(format!("duplicate task id: {}", task.id)));
+                return Err(GraphError::Invalid(format!(
+                    "duplicate task id: {}",
+                    task.id
+                )));
             }
         }
         for task in self.tasks.iter() {
