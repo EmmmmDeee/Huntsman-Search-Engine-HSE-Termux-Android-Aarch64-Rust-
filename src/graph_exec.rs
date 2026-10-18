@@ -2432,6 +2432,155 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_resume_retains_provider_rate_limit_and_rejects_unknown_groups() {
+        let limit = RateLimit {
+            key: "checkpoint-provider".into(),
+            min_interval_ms: 220,
+        };
+        let mut first = spec("first", &[]);
+        first.rate_limit = Some(limit.clone());
+        let mut second = spec("second", &["first"]);
+        second.rate_limit = Some(limit);
+        let definition = GraphDefinition {
+            run_id: "checkpoint-provider-spacing".into(),
+            tasks: vec![first, second],
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut handlers = HandlerRegistry::new();
+        let first_calls = Arc::clone(&calls);
+        handlers.insert(
+            "first".into(),
+            handler(move |_| {
+                first_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(output(json!("first"), "first"))
+            }),
+        );
+        let second_calls = Arc::clone(&calls);
+        handlers.insert(
+            "second".into(),
+            handler(move |_| {
+                second_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(output(json!("second"), "second"))
+            }),
+        );
+        let captured = Arc::new(Mutex::new(None::<ExecutionCheckpoint>));
+        let to_capture = Arc::clone(&captured);
+        let executor = GraphExecutor::new(policy());
+        let interrupted = executor
+            .execute_checkpointed(
+                &definition,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                move |checkpoint| {
+                    *to_capture.lock().unwrap() = Some(checkpoint.clone());
+                    Err("deliberately pause after the first wave".into())
+                },
+            )
+            .unwrap();
+        assert_eq!(interrupted.tasks["first"].state, TaskState::Succeeded);
+        assert_eq!(interrupted.tasks["second"].state, TaskState::Blocked);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let checkpoint = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(checkpoint.report.tasks["second"].state, TaskState::Pending);
+        assert!(checkpoint.report.rate_limit_last_start_unix_ms.contains_key("checkpoint-provider"));
+        let mut checkpoint = ExecutionCheckpoint::decode(&checkpoint.encode().unwrap()).unwrap();
+
+        let mut invalid = checkpoint.clone();
+        invalid
+            .report
+            .rate_limit_last_start_unix_ms
+            .insert("unknown-provider".into(), now_unix_ms());
+        assert!(matches!(
+            executor.resume(
+                &definition,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                invalid
+            ),
+            Err(GraphError::CheckpointMismatch)
+        ));
+
+        // Make the persisted start recent, independent of the CI runner's setup delays.
+        checkpoint
+            .report
+            .rate_limit_last_start_unix_ms
+            .insert("checkpoint-provider".into(), now_unix_ms());
+        let resumed_at = Instant::now();
+        let resumed = executor
+            .resume(
+                &definition,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                checkpoint,
+            )
+            .unwrap();
+        assert!(
+            resumed_at.elapsed() >= Duration::from_millis(150),
+            "resuming a recent provider start bypassed the persisted rate limit"
+        );
+        assert_eq!(resumed.summary().succeeded, 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(resumed.tasks["first"].attempts, 1);
+        assert_eq!(resumed.tasks["second"].attempts, 1);
+    }
+
+    #[test]
+    fn legacy_checkpoint_recovers_latest_provider_completion() {
+        let limit = RateLimit {
+            key: "legacy-provider".into(),
+            min_interval_ms: 250,
+        };
+        let mut first = spec("a", &[]);
+        first.rate_limit = Some(limit.clone());
+        let mut second = spec("b", &["a"]);
+        second.rate_limit = Some(limit);
+        let graph = GraphDefinition {
+            run_id: "legacy-provider-history".into(),
+            tasks: vec![first, second],
+        };
+        let mut handlers = HandlerRegistry::new();
+        handlers.insert("a".into(), handler(|_| Ok(output(json!(1), "a"))));
+        handlers.insert("b".into(), handler(|_| Ok(output(json!(2), "b"))));
+        let saved = Arc::new(Mutex::new(None::<ExecutionCheckpoint>));
+        let recorder = Arc::clone(&saved);
+        let executor = GraphExecutor::new(policy());
+        let _ = executor
+            .execute_checkpointed(
+                &graph,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                move |checkpoint| {
+                    *recorder.lock().unwrap() = Some(checkpoint.clone());
+                    Err("interrupted before dependent lookup".into())
+                },
+            )
+            .unwrap();
+        let checkpoint = saved.lock().unwrap().clone().unwrap();
+        let mut serialized = serde_json::to_value(checkpoint).unwrap();
+        serialized["report"]
+            .as_object_mut()
+            .unwrap()
+            .remove("rate_limit_last_start_unix_ms");
+        let legacy: ExecutionCheckpoint = serde_json::from_value(serialized).unwrap();
+        let resumed_at = Instant::now();
+        let result = executor
+            .resume(
+                &graph,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                legacy,
+            )
+            .unwrap();
+        assert_eq!(result.summary().succeeded, 2);
+        assert!(
+            resumed_at.elapsed() >= Duration::from_millis(150),
+            "legacy checkpoints must not bypass a recently completed provider call"
+        );
+        assert!(result.rate_limit_last_start_unix_ms.contains_key("legacy-provider"));
+    }
+
+    #[test]
     fn provider_rate_limit_applies_to_each_retry_and_next_task() {
         let limit = RateLimit {
             key: "provider-retries".into(),
