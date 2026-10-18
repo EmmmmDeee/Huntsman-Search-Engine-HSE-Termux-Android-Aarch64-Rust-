@@ -1057,17 +1057,34 @@ impl GraphExecutor {
                 return Err(GraphError::CheckpointMismatch);
             }
             for (id, record) in &checkpoint.report.tasks {
-                if !graph.by_id.contains_key(id) {
+                let Some(spec) = graph.by_id.get(id) else {
+                    return Err(GraphError::CheckpointMismatch);
+                };
+                if record.attempts > spec.max_retries.saturating_add(1)
+                    || (record.state == TaskState::Succeeded && record.attempts == 0)
+                {
                     return Err(GraphError::CheckpointMismatch);
                 }
                 if record.state == TaskState::Succeeded {
-                    let spec = &graph.by_id[id];
                     let output = record
                         .output
                         .as_ref()
                         .ok_or(GraphError::CheckpointMismatch)?;
                     validate_output(spec, output, self.policy.max_output_bytes)
                         .map_err(|_| GraphError::CheckpointMismatch)?;
+                    // A saved success is trustworthy only if every prerequisite is also a
+                    // saved success. Otherwise a malformed checkpoint could skip a task whose
+                    // dependency failed or was never recorded.
+                    for dependency in &spec.dependencies {
+                        if !checkpoint
+                            .report
+                            .tasks
+                            .get(dependency)
+                            .is_some_and(|saved| saved.state == TaskState::Succeeded)
+                        {
+                            return Err(GraphError::CheckpointMismatch);
+                        }
+                    }
                 } else if record.output.is_some() {
                     return Err(GraphError::CheckpointMismatch);
                 }
@@ -2088,6 +2105,43 @@ mod tests {
         assert_eq!(parent_calls.load(Ordering::SeqCst), 1);
         assert_eq!(child_calls.load(Ordering::SeqCst), 1);
         assert!(saved.len() >= 2);
+    }
+
+    #[test]
+    fn resume_rejects_successful_child_with_failed_dependency_in_checkpoint() {
+        let definition = GraphDefinition {
+            run_id: "tampered-checkpoint-run".into(),
+            tasks: vec![spec("child", &["parent"]), spec("parent", &[])],
+        };
+        let mut handlers = HandlerRegistry::new();
+        handlers.insert(
+            "parent".into(),
+            handler(|_| Ok(output(json!("parent"), "parent"))),
+        );
+        handlers.insert(
+            "child".into(),
+            handler(|_| Ok(output(json!("child"), "child"))),
+        );
+        let executor = GraphExecutor::new(policy());
+        let report = executor
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        let mut checkpoint = ExecutionCheckpoint::from_report(report);
+        let parent = checkpoint.report.tasks.get_mut("parent").unwrap();
+        parent.state = TaskState::Failed;
+        parent.output = None;
+        parent.error = Some("simulated persisted failure".into());
+        checkpoint.report.termination = Some(RunTermination::Failed);
+
+        assert!(matches!(
+            executor.resume(
+                &definition,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                checkpoint,
+            ),
+            Err(GraphError::CheckpointMismatch)
+        ));
     }
 
     #[test]
