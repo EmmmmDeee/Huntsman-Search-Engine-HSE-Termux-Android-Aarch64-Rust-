@@ -288,8 +288,12 @@ impl CrawlState {
                 }
                 break;
             }
-            if !self.visited.insert(first.owned_key()) { continue; }
-            if self.dispatches >= policy.max_dispatches || self.entities.len() >= policy.max_entities {
+            if !self.visited.insert(first.owned_key()) {
+                continue;
+            }
+            if self.dispatches >= policy.max_dispatches
+                || self.entities.len() >= policy.max_entities
+            {
                 self.resource_limited = true;
                 stopped = true;
                 next.push(first);
@@ -309,8 +313,8 @@ impl CrawlState {
                     stopped = true;
                     next.push(target);
                     for target in remaining.by_ref() {
-                    next.push(target);
-                }
+                        next.push(target);
+                    }
                     break;
                 }
                 if !self.visited.insert(target.owned_key()) {
@@ -323,8 +327,8 @@ impl CrawlState {
                     stopped = true;
                     next.push(target);
                     for target in remaining.by_ref() {
-                    next.push(target);
-                }
+                        next.push(target);
+                    }
                     break;
                 }
                 batch.push(target);
