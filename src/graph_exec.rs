@@ -701,6 +701,24 @@ impl GraphDefinition {
     }
 }
 
+/// Wait for admission without losing responsiveness to cancellation or the run deadline.
+/// Bounded sleep slices avoid a full provider interval of cancellation latency.
+fn wait_until_or_cancel(until: Instant, cancelled: &AtomicBool, deadline: Instant) {
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
+        let now = Instant::now();
+        let remaining = until
+            .saturating_duration_since(now)
+            .min(deadline.saturating_duration_since(now));
+        if remaining.is_zero() {
+            break;
+        }
+        thread::sleep(remaining.min(Duration::from_millis(25)));
+    }
+}
+
 fn valid_token(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_ID_BYTES
@@ -979,10 +997,7 @@ fn run_one(
         // the next attempt from the actual preceding attempt, not the initial wave dispatch.
         if let (Some(limit), Some(previous_start)) = (&spec.rate_limit, last_attempt_start) {
             let eligible_at = previous_start + Duration::from_millis(limit.min_interval_ms);
-            let wait = eligible_at.saturating_duration_since(Instant::now());
-            if !wait.is_zero() {
-                thread::sleep(wait.min(run_deadline.saturating_duration_since(Instant::now())));
-            }
+            wait_until_or_cancel(eligible_at, cancelled, run_deadline);
         }
         // Cancellation or the run deadline may have occurred during rate-limit sleep.
         if cancelled.load(Ordering::Acquire) {
@@ -1064,7 +1079,8 @@ fn run_one(
             last_error = format!("task {} deadline exceeded before retry", spec.id);
             break;
         }
-        thread::sleep(Duration::from_millis(backoff_ms).min(remaining));
+        let retry_wait = Duration::from_millis(backoff_ms).min(remaining);
+        wait_until_or_cancel(Instant::now() + retry_wait, cancelled, deadline);
         if elapsed >= Duration::from_millis(spec.timeout_ms) {
             record.state = TaskState::TimedOut;
             last_error = format!("task {} exceeded its deadline", spec.id);
@@ -1499,12 +1515,7 @@ impl GraphExecutor {
             }
             if selected.is_empty() {
                 if let Some(eligible_at) = rate_wait_until {
-                    let wait = eligible_at.saturating_duration_since(Instant::now());
-                    if !wait.is_zero() {
-                        thread::sleep(
-                            wait.min(run_deadline.saturating_duration_since(Instant::now())),
-                        );
-                    }
+                    wait_until_or_cancel(eligible_at, cancelled, run_deadline);
                     continue;
                 }
                 if records
@@ -2601,6 +2612,64 @@ mod tests {
             result
                 .rate_limit_last_start_unix_ms
                 .contains_key("legacy-provider")
+        );
+    }
+
+    #[test]
+    fn cancellation_interrupts_provider_rate_wait_without_dispatching_next_task() {
+        let limit = RateLimit {
+            key: "interruptible-provider".into(),
+            min_interval_ms: 1_500,
+        };
+        let mut first = spec("a", &[]);
+        first.rate_limit = Some(limit.clone());
+        let mut second = spec("b", &[]);
+        second.rate_limit = Some(limit);
+        let graph = GraphDefinition {
+            run_id: "provider-cancel-wait".into(),
+            tasks: vec![first, second],
+        };
+        let first_called = Arc::new(AtomicBool::new(false));
+        let second_calls = Arc::new(AtomicUsize::new(0));
+        let mut handlers = HandlerRegistry::new();
+        let signal = Arc::clone(&first_called);
+        handlers.insert(
+            "a".into(),
+            handler(move |_| {
+                signal.store(true, Ordering::Release);
+                Ok(output(json!(true), "a"))
+            }),
+        );
+        let second_observed = Arc::clone(&second_calls);
+        handlers.insert(
+            "b".into(),
+            handler(move |_| {
+                second_observed.fetch_add(1, Ordering::SeqCst);
+                Ok(output(json!(true), "b"))
+            }),
+        );
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_flag = Arc::clone(&cancelled);
+        let observed_first = Arc::clone(&first_called);
+        let stopper = thread::spawn(move || {
+            while !observed_first.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            thread::sleep(Duration::from_millis(100));
+            cancel_flag.store(true, Ordering::Release);
+        });
+        let started = Instant::now();
+        let report = GraphExecutor::new(policy())
+            .execute(&graph, &handlers, &cancelled)
+            .unwrap();
+        stopper.join().unwrap();
+        assert_eq!(report.tasks["a"].state, TaskState::Succeeded);
+        assert_eq!(report.tasks["b"].state, TaskState::Cancelled);
+        assert_eq!(report.termination, Some(RunTermination::Cancelled));
+        assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "cancellation was delayed by the provider rate-limit wait"
         );
     }
 
