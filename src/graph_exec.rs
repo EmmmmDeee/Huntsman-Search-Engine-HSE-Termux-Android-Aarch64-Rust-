@@ -1141,7 +1141,10 @@ mod tests {
         let report = GraphExecutor::new(policy())
             .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
             .unwrap();
-        assert_eq!(report.tasks["child"].output.as_ref().unwrap().value, json!(8));
+        assert_eq!(
+            report.tasks["child"].output.as_ref().unwrap().value,
+            json!(8)
+        );
     }
 
     #[test]
@@ -1151,29 +1154,47 @@ mod tests {
             tasks: vec![spec("root", &[]), spec("child", &["root"])],
         };
         let mut handlers = HandlerRegistry::new();
-        handlers.insert("root".into(), handler(|_| Err(TaskFailure::permanent("fixture failure"))));
-        handlers.insert("child".into(), handler(|_| Ok(output(json!(true), "child"))));
+        handlers.insert(
+            "root".into(),
+            handler(|_| Err(TaskFailure::permanent("fixture failure"))),
+        );
+        handlers.insert(
+            "child".into(),
+            handler(|_| Ok(output(json!(true), "child"))),
+        );
         let report = GraphExecutor::new(policy())
             .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["root"].state, TaskState::Failed);
         assert_eq!(report.tasks["child"].state, TaskState::Blocked);
-        assert!(report.errors.iter().any(|error| error.contains("fixture failure")));
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("fixture failure"))
+        );
     }
 
     #[test]
     fn retries_are_bounded_and_counted() {
         let definition = GraphDefinition {
             run_id: "retry-run".into(),
-            tasks: vec![{ let mut value = spec("retry", &[]); value.max_retries = 2; value }],
+            tasks: vec![{
+                let mut value = spec("retry", &[]);
+                value.max_retries = 2;
+                value
+            }],
         };
         let attempts = Arc::new(AtomicUsize::new(0));
         let mut handlers = HandlerRegistry::new();
         let attempts_for_handler = Arc::clone(&attempts);
-        handlers.insert("retry".into(), handler(move |_| {
-            attempts_for_handler.fetch_add(1, Ordering::SeqCst);
-            Err(TaskFailure::transient("retry me"))
-        }));
+        handlers.insert(
+            "retry".into(),
+            handler(move |_| {
+                attempts_for_handler.fetch_add(1, Ordering::SeqCst);
+                Err(TaskFailure::transient("retry me"))
+            }),
+        );
         let report = GraphExecutor::new(policy())
             .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
             .unwrap();
@@ -1194,7 +1215,10 @@ mod tests {
             .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["empty"].state, TaskState::Succeeded);
-        assert_eq!(report.tasks["empty"].output.as_ref().unwrap().value, json!([]));
+        assert_eq!(
+            report.tasks["empty"].output.as_ref().unwrap().value,
+            json!([])
+        );
     }
 
     #[test]
