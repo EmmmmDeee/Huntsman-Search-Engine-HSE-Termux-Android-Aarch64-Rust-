@@ -964,9 +964,9 @@ impl GraphExecutor {
         &self,
         definition: &GraphDefinition,
         handlers: &HandlerRegistry,
-        cancelled: Arc<AtomicBool>,
+        cancelled: &Arc<AtomicBool>,
     ) -> Result<RunReport, GraphError> {
-        self.execute_inner(definition, handlers, &cancelled, None, None)
+        self.execute_inner(definition, handlers, cancelled, None, None)
     }
 
     pub fn resume(
@@ -976,7 +976,7 @@ impl GraphExecutor {
         cancelled: Arc<AtomicBool>,
         checkpoint: ExecutionCheckpoint,
     ) -> Result<RunReport, GraphError> {
-        self.execute_inner(definition, handlers, &cancelled, Some(checkpoint), None)
+        self.execute_inner(definition, handlers, cancelled, Some(checkpoint), None)
     }
 
     /// Execute and checkpoint after each completed scheduling wave.
@@ -996,7 +996,7 @@ impl GraphExecutor {
         self.execute_inner(
             definition,
             handlers,
-            &cancelled,
+            cancelled,
             None,
             Some(&checkpoint_sink),
         )
@@ -1017,7 +1017,7 @@ impl GraphExecutor {
         self.execute_inner(
             definition,
             handlers,
-            &cancelled,
+            cancelled,
             Some(checkpoint),
             Some(&checkpoint_sink),
         )
@@ -1616,7 +1616,7 @@ mod tests {
             );
         }
         let report = GraphExecutor::new(policy())
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["a"].state, TaskState::Succeeded);
         assert_eq!(report.tasks["b"].state, TaskState::Succeeded);
@@ -1666,7 +1666,7 @@ mod tests {
         let sequential_ms =
             u64::try_from(sequential_start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let graph_report = GraphExecutor::new(policy())
-            .execute(&definition, &handlers, cancelled)
+            .execute(&definition, &handlers, &cancelled)
             .unwrap();
         let comparison =
             ExecutionComparison::from_measured_sequential_baseline(sequential_ms, &graph_report);
@@ -1693,7 +1693,7 @@ mod tests {
             }),
         );
         let report = GraphExecutor::new(policy())
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(
             report.tasks["child"].output.as_ref().unwrap().value,
@@ -1715,7 +1715,7 @@ mod tests {
             handler(|_| Ok(output(json!({}), "malformed"))),
         );
         let report = GraphExecutor::new(policy())
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["malformed"].state, TaskState::Failed);
         assert!(
@@ -1743,7 +1743,7 @@ mod tests {
             handler(|_| Ok(output(json!(true), "child"))),
         );
         let report = GraphExecutor::new(policy())
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["root"].state, TaskState::Failed);
         assert_eq!(report.tasks["child"].state, TaskState::Blocked);
@@ -1776,7 +1776,7 @@ mod tests {
             }),
         );
         let report = GraphExecutor::new(policy())
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
         assert_eq!(report.tasks["retry"].attempts, 3);
@@ -1800,7 +1800,7 @@ mod tests {
             }),
         );
         let report = GraphExecutor::new(policy())
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["slow"].state, TaskState::TimedOut);
         assert!(
@@ -1828,7 +1828,7 @@ mod tests {
             }),
         );
         let report = GraphExecutor::new(policy())
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(true)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(true)))
             .unwrap();
         assert_eq!(report.termination, Some(RunTermination::Cancelled));
         assert_eq!(report.tasks["never-started"].state, TaskState::Cancelled);
@@ -1851,7 +1851,7 @@ mod tests {
         let mut constrained = policy();
         constrained.max_total_resource_units = 1;
         let report = GraphExecutor::new(constrained)
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["expensive"].state, TaskState::Blocked);
         assert_eq!(report.termination, Some(RunTermination::ResourceLimit));
@@ -1882,7 +1882,7 @@ mod tests {
             }),
         );
         let report = GraphExecutor::new(policy())
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
             .unwrap();
         let summary = report.summary();
         assert_eq!(summary.total_tasks, 1);
@@ -1901,7 +1901,7 @@ mod tests {
         let mut handlers = HandlerRegistry::new();
         handlers.insert("empty".into(), handler(|_| Ok(output(json!([]), "empty"))));
         let report = GraphExecutor::new(policy())
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["empty"].state, TaskState::Succeeded);
         assert_eq!(
@@ -1964,7 +1964,7 @@ mod tests {
             );
         }
         let report = GraphExecutor::new(policy())
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["a"].state, TaskState::Succeeded);
         assert_eq!(report.tasks["b"].state, TaskState::Succeeded);
@@ -2001,7 +2001,7 @@ mod tests {
             );
         }
         let report = GraphExecutor::new(policy())
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["first"].state, TaskState::Succeeded);
         assert_eq!(report.tasks["second"].state, TaskState::Succeeded);
@@ -2103,7 +2103,7 @@ mod tests {
         }
         let executor = GraphExecutor::new(policy());
         let first = executor
-            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
             .unwrap();
         let checkpoint = ExecutionCheckpoint::from_report(first.clone());
         let bytes = checkpoint.encode().unwrap();
