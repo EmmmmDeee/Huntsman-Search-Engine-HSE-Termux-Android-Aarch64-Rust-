@@ -1241,44 +1241,42 @@ impl GraphExecutor {
                         .map(|output| (id.clone(), output.clone()))
                 })
                 .collect();
-            let jobs: Vec<crate::concurrent::Job<'_, (String, (TaskRecord, u64))>> = selected
-                .iter()
-                .map(|id| {
-                    let spec = &graph.by_id[id];
-                    let handler = handlers
-                        .get(id)
-                        .cloned()
-                        .expect("handler checked before dispatch");
-                    let deps = spec
-                        .dependencies
-                        .iter()
-                        .filter_map(|dependency| {
-                            outputs
-                                .get(dependency)
-                                .cloned()
-                                .map(|output| (dependency.clone(), output))
-                        })
-                        .collect::<BTreeMap<_, _>>();
-                    let prior_attempts = records[id].attempts;
-                    let cancelled = Arc::clone(&cancelled);
-                    let run_deadline = run_deadline;
-                    let max_output_bytes = self.policy.max_output_bytes;
-                    let task_id = id.clone();
-                    Box::new(move || {
-                        let result = run_one(
-                            spec,
-                            &handler,
-                            deps,
-                            prior_attempts,
-                            cancelled,
-                            run_deadline,
-                            max_output_bytes,
-                        );
-                        (task_id, result)
+            let mut jobs: Vec<crate::concurrent::Job<'_, (String, (TaskRecord, u64))>> =
+                Vec::with_capacity(selected.len());
+            for id in &selected {
+                let spec = &graph.by_id[id];
+                let handler = handlers
+                    .get(id)
+                    .cloned()
+                    .ok_or_else(|| GraphError::MissingHandler(id.clone()))?;
+                let deps = spec
+                    .dependencies
+                    .iter()
+                    .filter_map(|dependency| {
+                        outputs
+                            .get(dependency)
+                            .cloned()
+                            .map(|output| (dependency.clone(), output))
                     })
-                        as crate::concurrent::Job<'_, (String, (TaskRecord, u64))>
-                })
-                .collect();
+                    .collect::<BTreeMap<_, _>>();
+                let prior_attempts = records[id].attempts;
+                let cancelled = Arc::clone(&cancelled);
+                let run_deadline = run_deadline;
+                let max_output_bytes = self.policy.max_output_bytes;
+                let task_id = id.clone();
+                jobs.push(Box::new(move || {
+                    let result = run_one(
+                        spec,
+                        &handler,
+                        deps,
+                        prior_attempts,
+                        cancelled,
+                        run_deadline,
+                        max_output_bytes,
+                    );
+                    (task_id, result)
+                }));
+            }
             let results = crate::concurrent::all(jobs);
             for (id, (mut record, _charged)) in results {
                 let previous_attempts = records[&id].attempts;
