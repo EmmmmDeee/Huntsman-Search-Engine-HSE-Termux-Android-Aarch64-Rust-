@@ -101,11 +101,21 @@ pub struct RateLimit {
     pub min_interval_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRole {
+    #[default]
+    Producer,
+    Verifier,
+}
+
 /// Static task definition. Function handlers are registered separately and are never serialized.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskSpec {
     pub id: String,
     pub objective: String,
+    #[serde(default)]
+    pub role: TaskRole,
     pub input: Value,
     pub input_schema: ValueSchema,
     pub output_schema: ValueSchema,
@@ -455,6 +465,12 @@ impl GraphDefinition {
             if !valid_token(&task.id) {
                 return Err(GraphError::Invalid(format!("invalid task id: {}", task.id)));
             }
+            if task.role == TaskRole::Verifier && task.dependencies.is_empty() {
+                return Err(GraphError::Invalid(format!(
+                    "verifier task {} must depend on the claim-producing task",
+                    task.id
+                )));
+            }
             if task.objective.trim().is_empty() || task.objective.len() > MAX_OBJECTIVE_BYTES {
                 return Err(GraphError::Invalid(format!(
                     "invalid objective for {}",
@@ -690,9 +706,13 @@ fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Re
         return Err(format!("missing verification provenance for {}", spec.id));
     }
     if verification.state == VerificationState::Verified {
-        if verification.producer_id == verification.reviewer_id {
+        if spec.role != TaskRole::Verifier
+            || verification.reviewer_id != spec.id
+            || verification.producer_id == verification.reviewer_id
+            || !spec.dependencies.contains(&verification.producer_id)
+        {
             return Err(format!(
-                "verified result lacks independent reviewer for {}",
+                "verified result lacks a separate dependent verifier task for {}",
                 spec.id
             ));
         }
@@ -1323,6 +1343,7 @@ mod tests {
         TaskSpec {
             id: id.into(),
             objective: format!("execute {id}"),
+            role: TaskRole::Producer,
             input: json!({}),
             input_schema: schema_any(),
             output_schema: schema_any(),
@@ -1586,7 +1607,9 @@ mod tests {
         let mut value = output(json!({"claim":"x"}), "producer");
         value.verification.state = VerificationState::Verified;
         value.verification.reviewer_id = "producer".into();
-        assert!(validate_output(&spec("verify", &[]), &value, 1024).is_err());
+        let mut verifier = spec("reviewer", &["producer"]);
+        verifier.role = TaskRole::Verifier;
+        assert!(validate_output(&verifier, &value, 1024).is_err());
         value.verification.reviewer_id = "reviewer".into();
         value.evidence.push(EvidenceReference {
             id: "ev-1".into(),
@@ -1597,7 +1620,7 @@ mod tests {
             content_sha256: None,
         });
         value.verification.evidence_refs = vec!["ev-1".into()];
-        assert!(validate_output(&spec("verify", &[]), &value, 1024).is_ok());
+        assert!(validate_output(&verifier, &value, 1024).is_ok());
     }
 
     #[test]
