@@ -679,6 +679,16 @@ impl SelectorCollector for ScanCollector<'_> {
             .collect()
     }
 
+    fn on_batch_contract_error(&mut self, violations: usize) {
+        self.errors = self.errors.saturating_add(violations);
+        self.service.log(
+            self.id,
+            "recursion",
+            LogLevel::Error,
+            format!("recursive collector returned {violations} missing or unsolicited batch results"),
+        );
+    }
+
     fn cancelled(&self) -> bool {
         self.service.aborted(self.id)
     }
