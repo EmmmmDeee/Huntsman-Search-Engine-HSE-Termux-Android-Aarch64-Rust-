@@ -294,6 +294,40 @@ struct ScanCollector<'a> {
     breach_checked: BTreeSet<String>,
 }
 
+/// Reject graph inputs with missing or mistyped scan target identifiers.
+fn lookup_input_schema() -> ValueSchema {
+    ValueSchema::Object {
+        required: BTreeMap::from([
+            ("kind".into(), ValueSchema::String),
+            ("selector".into(), ValueSchema::String),
+        ]),
+        allow_additional: false,
+    }
+}
+
+/// Verify the lookup envelope before reducing it into scan results. Element payloads are
+/// subsequently validated by serde when decoded as `LookupOutput`.
+fn lookup_output_schema() -> ValueSchema {
+    ValueSchema::Object {
+        required: BTreeMap::from([
+            ("text".into(), ValueSchema::String),
+            (
+                "entities".into(),
+                ValueSchema::Array {
+                    items: Box::new(ValueSchema::Any),
+                },
+            ),
+            (
+                "outcomes".into(),
+                ValueSchema::Array {
+                    items: Box::new(ValueSchema::Any),
+                },
+            ),
+        ]),
+        allow_additional: false,
+    }
+}
+
 impl SelectorCollector for ScanCollector<'_> {
     fn collect(&mut self, target: &CrawlTarget) -> Step {
         let skip = Step {
@@ -402,8 +436,8 @@ impl SelectorCollector for ScanCollector<'_> {
                         "kind": target.kind.command(),
                         "selector": target.selector.clone(),
                     }),
-                    input_schema: ValueSchema::Any,
-                    output_schema: ValueSchema::Any,
+                    input_schema: lookup_input_schema(),
+                    output_schema: lookup_output_schema(),
                     dependencies: Vec::new(),
                     exclusive_resources: Vec::new(),
                     rate_limit: None,
