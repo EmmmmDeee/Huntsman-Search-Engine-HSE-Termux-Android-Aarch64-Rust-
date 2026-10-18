@@ -349,6 +349,7 @@ impl Default for TaskRecord {
 pub struct RunReport {
     pub run_id: String,
     pub graph_fingerprint: String,
+    pub policy_fingerprint: String,
     pub started_at_unix: u64,
     pub finished_at_unix: Option<u64>,
     pub duration_ms: Option<u64>,
@@ -1042,10 +1043,15 @@ impl GraphExecutor {
             return Err(GraphError::Invalid("invalid execution policy".into()));
         }
         let graph = definition.validate()?;
+        let policy_bytes = serde_json::to_vec(&self.policy)
+            .map_err(|error| GraphError::Invalid(format!("cannot fingerprint policy: {error}")))?;
+        let policy_fingerprint = crate::sha256::hex32(&crate::sha256::sha256(&policy_bytes));
         if let Some(checkpoint) = &checkpoint {
             if checkpoint.format_version != 1
                 || checkpoint.graph_fingerprint != graph.fingerprint
                 || checkpoint.report.graph_fingerprint != graph.fingerprint
+                || checkpoint.report.policy_fingerprint != policy_fingerprint
+                || checkpoint.report.consumed_resource_units > self.policy.max_total_resource_units
                 || checkpoint.report.run_id != definition.run_id
             {
                 return Err(GraphError::CheckpointMismatch);
@@ -1407,6 +1413,7 @@ impl GraphExecutor {
                 let snapshot = RunReport {
                     run_id: definition.run_id.clone(),
                     graph_fingerprint: graph.fingerprint.clone(),
+                    policy_fingerprint: policy_fingerprint.clone(),
                     started_at_unix,
                     finished_at_unix: None,
                     duration_ms: Some(
@@ -1441,6 +1448,7 @@ impl GraphExecutor {
         let mut report = RunReport {
             run_id: definition.run_id.clone(),
             graph_fingerprint: graph.fingerprint,
+            policy_fingerprint,
             started_at_unix,
             finished_at_unix: Some(now_unix()),
             duration_ms: Some(duration_ms),
