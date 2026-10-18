@@ -400,7 +400,6 @@ impl RunReport {
     }
 }
 
-
 /// Compare a measured sequential baseline with one graph-execution report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionComparison {
@@ -688,12 +687,10 @@ fn derive_termination(records: &BTreeMap<String, TaskRecord>) -> RunTermination 
         .any(|record| record.state == TaskState::Cancelled)
     {
         RunTermination::Cancelled
-    } else if records.values().any(|record| {
-        matches!(
-            &record.state,
-            TaskState::Failed | TaskState::Blocked
-        )
-    }) {
+    } else if records
+        .values()
+        .any(|record| matches!(&record.state, TaskState::Failed | TaskState::Blocked))
+    {
         RunTermination::Failed
     } else {
         RunTermination::Completed
@@ -1109,9 +1106,9 @@ impl GraphExecutor {
             }
         }
         let run_deadline = Instant::now() + Duration::from_millis(self.policy.run_timeout_ms);
-        let has_pending_work = records.values().any(|record| {
-            matches!(&record.state, TaskState::Pending | TaskState::Running)
-        });
+        let has_pending_work = records
+            .values()
+            .any(|record| matches!(&record.state, TaskState::Pending | TaskState::Running));
         let prior_termination = checkpoint
             .as_ref()
             .and_then(|saved| saved.report.termination.clone());
@@ -1686,10 +1683,12 @@ mod tests {
             .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["malformed"].state, TaskState::Failed);
-        assert!(report.tasks["malformed"]
-            .error
-            .as_deref()
-            .is_some_and(|error| error.contains("output schema mismatch")));
+        assert!(
+            report.tasks["malformed"]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("output schema mismatch"))
+        );
         assert!(report.tasks["malformed"].output.is_none());
     }
 
