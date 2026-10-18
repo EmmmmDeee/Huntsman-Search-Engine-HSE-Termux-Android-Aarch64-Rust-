@@ -350,6 +350,21 @@ impl SelectorCollector for ScanCollector<'_> {
         }
     }
 
+    fn may_batch(&self, selected: &[CrawlTarget], next: &CrawlTarget) -> bool {
+        let needs_sequential = |target: &CrawlTarget| {
+            (target.kind == ScanKind::Exposure && self.breach_checked.contains(&target.selector))
+                || !lookup_modules::asks_any(target.kind, self.chosen)
+        };
+        if needs_sequential(next) || selected.iter().any(needs_sequential) {
+            return false;
+        }
+        !selected.iter().any(|target| {
+            target.selector == next.selector
+                && ((target.kind == ScanKind::Email && next.kind == ScanKind::Exposure)
+                    || (target.kind == ScanKind::Exposure && next.kind == ScanKind::Email))
+        })
+    }
+
     // The graph adapter intentionally keeps task construction, execution and ordered accounting
     // together so failures cannot bypass scan-level error reporting.
     #[allow(clippy::too_many_lines)]
