@@ -286,7 +286,7 @@ pub fn validate_output(task: &TaskSpec, output: &Value) -> Result<(), String> {
 
 
 /// Cooperative cancellation shared by a workflow and its task executors.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CancellationToken(Arc<AtomicBool>);
 
 impl CancellationToken {
@@ -332,6 +332,7 @@ impl TaskContext {
 /// Task executors must honour the cooperative deadline/cancellation contract in
 /// `TaskContext`. A dependency runs only after all its prerequisites succeed.
 /// Failed prerequisites produce explicit `Blocked` outcomes.
+#[must_use]
 pub fn execute<F>(
     graph: &TaskGraph,
     max_parallel: usize,
