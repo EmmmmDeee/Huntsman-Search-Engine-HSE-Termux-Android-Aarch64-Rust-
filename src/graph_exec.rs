@@ -439,9 +439,8 @@ impl ExecutionComparison {
         Self {
             sequential_wall_clock_ms,
             graph_wall_clock_ms,
-            speedup_ratio_milli: (graph_wall_clock_ms > 0).then(|| {
-                sequential_wall_clock_ms.saturating_mul(1_000) / graph_wall_clock_ms
-            }),
+            speedup_ratio_milli: (graph_wall_clock_ms > 0)
+                .then(|| sequential_wall_clock_ms.saturating_mul(1_000) / graph_wall_clock_ms),
             task_count: graph_report.tasks.len(),
             graph_summary: graph_report.summary(),
         }
@@ -609,7 +608,9 @@ impl GraphDefinition {
             })?;
             total_task_bytes = total_task_bytes.saturating_add(task_bytes.len());
             if total_task_bytes > MAX_CHECKPOINT_BYTES {
-                return Err(GraphError::Invalid("graph exceeds serialized size limit".into()));
+                return Err(GraphError::Invalid(
+                    "graph exceeds serialized size limit".into(),
+                ));
             }
             if by_id.insert(task.id.clone(), task.clone()).is_some() {
                 return Err(GraphError::Invalid(format!(
@@ -1551,7 +1552,11 @@ mod tests {
         let comparison =
             ExecutionComparison::from_measured_sequential_baseline(sequential_ms, &graph_report);
         assert_eq!(comparison.task_count, ids.len());
-        assert!(comparison.speedup_ratio_milli.is_some_and(|ratio| ratio > 1_000));
+        assert!(
+            comparison
+                .speedup_ratio_milli
+                .is_some_and(|ratio| ratio > 1_000)
+        );
     }
 
     #[test]
