@@ -2,6 +2,7 @@
 //! This module does not determine guilt, identify victims, or infer crimes from proximity.
 //! Inputs should be drawn from lawfully accessible, documented public sources.
 use serde::{Deserialize, Serialize};
+pub mod entity_tree;
 mod policy;
 pub use policy::ReviewPolicy;
 
