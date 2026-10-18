@@ -1,0 +1,1 @@
+- Reject resumed graph checkpoints that claim a task succeeded while a prerequisite is missing or unsuccessful, or that exceed the task's declared attempt limit.
