@@ -308,6 +308,9 @@ pub struct TaskRecord {
     pub duration_ms: Option<u64>,
     pub output: Option<TaskOutput>,
     pub error: Option<String>,
+    /// Whether the last failure was explicitly declared retryable by its handler.
+    #[serde(default)]
+    pub retryable: bool,
 }
 
 impl Default for TaskRecord {
@@ -320,6 +323,7 @@ impl Default for TaskRecord {
             duration_ms: None,
             output: None,
             error: None,
+            retryable: false,
         }
     }
 }
@@ -784,6 +788,7 @@ fn run_one(
                     record.state = TaskState::Succeeded;
                     record.output = Some(output);
                     record.error = None;
+                    record.retryable = false;
                     break;
                 }
                 Err(error) => {
@@ -794,6 +799,7 @@ fn run_one(
             },
             Ok(Err(error)) => {
                 last_error = error.message;
+                record.retryable = error.retryable;
                 if !error.retryable
                     || prior_attempts.saturating_add(record.attempts) >= max_attempts
                 {
@@ -1003,12 +1009,17 @@ impl GraphExecutor {
                 .as_ref()
                 .and_then(|saved| saved.report.tasks.get(id));
             let mut record = prior.cloned().unwrap_or_default();
-            if record.state != TaskState::Succeeded {
+            let spec = &graph.by_id[id];
+            let attempts_remain = record.attempts < spec.max_retries.saturating_add(1);
+            let can_resume = matches!(record.state, TaskState::Pending | TaskState::Running)
+                || (record.state == TaskState::Failed && record.retryable && attempts_remain);
+            if can_resume {
                 record.state = TaskState::Pending;
                 record.finished_at_unix = None;
                 record.duration_ms = None;
                 record.output = None;
                 record.error = None;
+                record.retryable = false;
             }
             records.insert(id.clone(), record);
         }
