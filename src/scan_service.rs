@@ -1259,15 +1259,15 @@ impl ScanService {
         found: &mut LookupOutput,
     ) -> LookupDispatch {
         let cancelled = self.graph_cancellation(id);
-        let Some(_permit) = self
-            .admission
-            .acquire(|| cancelled.load(Ordering::Acquire))
-        else {
+        let Some(_permit) = self.admission.acquire(|| cancelled.load(Ordering::Acquire)) else {
             self.log(
                 id,
                 "huntsman",
                 LogLevel::Info,
-                format!("{} lookup on {target} cancelled before admission", kind.command()),
+                format!(
+                    "{} lookup on {target} cancelled before admission",
+                    kind.command()
+                ),
             );
             return LookupDispatch::Cancelled;
         };
