@@ -824,16 +824,25 @@ fn validate_verification_lineage(
     if output.verification.state != VerificationState::Verified {
         return Ok(());
     }
-    let original = producer.ok_or_else(|| format!("verified task {} has no producer output", spec.id))?;
-    let matches_producer = output.verification.evidence_refs.iter().any(|id| {
-        output.evidence.iter().any(|reference| {
-            &reference.id == id && original.evidence.contains(reference)
-        })
+    let original = producer.ok_or_else(|| format!("missing producer evidence for {}", spec.id))?;
+    let matches_producer = output.evidence.iter().any(|reference| {
+        output.verification.evidence_refs.contains(&reference.id)
+            && original.evidence.contains(reference)
     });
     if !matches_producer {
         return Err(format!("verified task {} lacks matching producer evidence", spec.id));
     }
     Ok(())
+}
+
+fn validate_output_and_lineage(
+    spec: &TaskSpec,
+    output: &TaskOutput,
+    max_bytes: usize,
+    producer: Option<&TaskOutput>,
+) -> Result<(), String> {
+    validate_output(spec, output, max_bytes)?;
+    validate_verification_lineage(spec, output, producer)
 }
 
 type CompletedJob = (String, (TaskRecord, Option<Instant>));
@@ -920,13 +929,12 @@ fn run_one(
             break;
         }
         match result {
-            Ok(Ok(output)) => match validate_output(spec, &output, max_output_bytes).and_then(|()| {
-                validate_verification_lineage(
-                    spec,
-                    &output,
-                    dependency_outputs.get(&output.verification.producer_id),
-                )
-            }) {
+            Ok(Ok(output)) => match validate_output_and_lineage(
+                spec,
+                &output,
+                max_output_bytes,
+                dependency_outputs.get(&output.verification.producer_id),
+            ) {
                 Ok(()) => {
                     record.state = TaskState::Succeeded;
                     record.output = Some(output);
@@ -1149,7 +1157,9 @@ impl GraphExecutor {
                     validate_verification_lineage(
                         spec,
                         output,
-                        checkpoint.report.tasks
+                        checkpoint
+                            .report
+                            .tasks
                             .get(&output.verification.producer_id)
                             .and_then(|parent| parent.output.as_ref()),
                     )
@@ -2420,7 +2430,10 @@ mod tests {
                 let mut different = forged.clone();
                 different.locator = "https://example.invalid/unrelated".into();
                 result.evidence.push(different);
-                result.verification.evidence_refs.push("producer-source".into());
+                result
+                    .verification
+                    .evidence_refs
+                    .push("producer-source".into());
                 Ok(result)
             }),
         );
@@ -2430,7 +2443,13 @@ mod tests {
             .unwrap();
         assert_eq!(rejected.tasks["producer"].state, TaskState::Succeeded);
         assert_eq!(rejected.tasks["reviewer"].state, TaskState::Failed);
-        assert!(rejected.tasks["reviewer"].error.as_deref().unwrap().contains("matching producer evidence"));
+        assert!(
+            rejected.tasks["reviewer"]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("matching producer evidence")
+        );
 
         let verified_evidence = producer_evidence.clone();
         handlers.insert(
@@ -2440,7 +2459,10 @@ mod tests {
                 result.verification.state = VerificationState::Verified;
                 result.verification.reviewer_id = "reviewer".into();
                 result.evidence.push(verified_evidence.clone());
-                result.verification.evidence_refs.push("producer-source".into());
+                result
+                    .verification
+                    .evidence_refs
+                    .push("producer-source".into());
                 Ok(result)
             }),
         );
@@ -2450,8 +2472,14 @@ mod tests {
         assert_eq!(accepted.tasks["reviewer"].state, TaskState::Succeeded);
         assert_eq!(accepted.summary().verified_results, 1);
         let mut forged_checkpoint = ExecutionCheckpoint::from_report(accepted);
-        let result = forged_checkpoint.report.tasks
-            .get_mut("reviewer").unwrap().output.as_mut().unwrap();
+        let result = forged_checkpoint
+            .report
+            .tasks
+            .get_mut("reviewer")
+            .unwrap()
+            .output
+            .as_mut()
+            .unwrap();
         result.evidence[0].locator = "https://example.invalid/unrelated".into();
         assert!(matches!(
             executor.resume(
@@ -2463,5 +2491,4 @@ mod tests {
             Err(GraphError::CheckpointMismatch)
         ));
     }
-
 }
