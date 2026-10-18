@@ -46,7 +46,7 @@ fn exported_graph_executor_runs_a_task_through_the_public_api() {
                     basis: "public API integration smoke test".into(),
                     evidence_refs: vec![],
                 },
-            }),
+            })
         }),
     );
 
