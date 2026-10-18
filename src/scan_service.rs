@@ -436,7 +436,8 @@ impl SelectorCollector for ScanCollector<'_> {
             run_timeout_ms: 15 * 60 * 1000,
         };
         let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let report = match GraphExecutor::new(policy).execute(&definition, &handlers, &cancellation) {
+        let report = match GraphExecutor::new(policy).execute(&definition, &handlers, &cancellation)
+        {
             Ok(report) => report,
             Err(error) => {
                 self.service.log(
@@ -448,7 +449,10 @@ impl SelectorCollector for ScanCollector<'_> {
                 self.errors = self.errors.saturating_add(targets.len());
                 return targets
                     .iter()
-                    .map(|_| Step { entities: Vec::new(), outcomes: Vec::new() })
+                    .map(|_| Step {
+                        entities: Vec::new(),
+                        outcomes: Vec::new(),
+                    })
                     .collect();
             }
         };
