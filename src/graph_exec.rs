@@ -830,7 +830,10 @@ fn validate_verification_lineage(
             && original.evidence.contains(reference)
     });
     if !matches_producer {
-        return Err(format!("verified task {} lacks matching producer evidence", spec.id));
+        return Err(format!(
+            "verified task {} lacks matching producer evidence",
+            spec.id
+        ));
     }
     Ok(())
 }
