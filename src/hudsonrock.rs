@@ -92,13 +92,22 @@ mod tests {
         let body = br#"{"total_employees":5,"total_users":10,"stealers":[]}"#;
         let finding = decode(body).unwrap().unwrap();
         assert!(finding.summary.contains("5 employees"));
-        assert!(finding.attrs.iter().any(|(k, v)| *k == "raw_answer" && v.contains("total_users")));
+        assert!(
+            finding
+                .attrs
+                .iter()
+                .any(|(k, v)| *k == "raw_answer" && v.contains("total_users"))
+        );
         assert_eq!(INTEL.kinds, &[IndicatorKind::Domain]);
     }
 
     #[test]
     fn valid_zero_is_a_clean_negative() {
-        assert!(decode(br#"{"total_employees":0,"total_users":0}"#).unwrap().is_none());
+        assert!(
+            decode(br#"{"total_employees":0,"total_users":0}"#)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
