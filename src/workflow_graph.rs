@@ -356,11 +356,15 @@ where
                 continue;
             }
             if let Some(dependency) = task.depends_on.iter().find(|dependency| {
-                outcomes.get(*dependency).is_some_and(|outcome: &TaskOutcome| !outcome.is_success())
+                outcomes
+                    .get(*dependency)
+                    .is_some_and(|outcome: &TaskOutcome| !outcome.is_success())
             }) {
                 outcomes.insert(
                     id.clone(),
-                    TaskOutcome::Blocked { dependency: dependency.clone() },
+                    TaskOutcome::Blocked {
+                        dependency: dependency.clone(),
+                    },
                 );
             } else {
                 runnable.push(id.clone());
@@ -368,15 +372,18 @@ where
         }
 
         for batch in runnable.chunks(max_parallel) {
-            let jobs = batch.iter().map(|id| {
-                let id = id.clone();
-                let task = graph.task(&id).expect("validated graph contains task");
-                let cancellation = cancellation.clone();
-                Box::new(move || {
-                    let outcome = execute_one(task, &cancellation, executor);
-                    (id, outcome)
-                }) as crate::concurrent::Job<'_, (String, TaskOutcome)>
-            }).collect();
+            let jobs = batch
+                .iter()
+                .map(|id| {
+                    let id = id.clone();
+                    let task = graph.task(&id).expect("validated graph contains task");
+                    let cancellation = cancellation.clone();
+                    Box::new(move || {
+                        let outcome = execute_one(task, &cancellation, executor);
+                        (id, outcome)
+                    }) as crate::concurrent::Job<'_, (String, TaskOutcome)>
+                })
+                .collect();
             for (id, outcome) in crate::concurrent::all(jobs) {
                 outcomes.insert(id, outcome);
             }
@@ -400,11 +407,7 @@ impl std::fmt::Display for ExecutionError {
 
 impl std::error::Error for ExecutionError {}
 
-fn execute_one<F>(
-    task: &TaskSpec,
-    cancellation: &CancellationToken,
-    executor: &F,
-) -> TaskOutcome
+fn execute_one<F>(task: &TaskSpec, cancellation: &CancellationToken, executor: &F) -> TaskOutcome
 where
     F: Fn(&TaskSpec, &TaskContext) -> Result<Value, String> + Sync + Send,
 {
@@ -414,7 +417,9 @@ where
     };
     for attempt in 1..=task.max_attempts {
         if cancellation.is_cancelled() {
-            return TaskOutcome::Cancelled { attempts: attempt - 1 };
+            return TaskOutcome::Cancelled {
+                attempts: attempt - 1,
+            };
         }
         let deadline = Instant::now() + Duration::from_millis(task.timeout_ms);
         let context = TaskContext {
