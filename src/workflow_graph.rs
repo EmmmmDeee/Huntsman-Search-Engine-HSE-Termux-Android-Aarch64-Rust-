@@ -434,14 +434,31 @@ where
                 Ok(()) if is_empty_output(&output) => {
                     return TaskOutcome::Empty { attempts: attempt };
                 }
-                Ok(()) => return TaskOutcome::Succeeded { output, attempts: attempt },
-                Err(reason) => last = TaskOutcome::InvalidOutput { reason, attempts: attempt },
+                Ok(()) => {
+                    return TaskOutcome::Succeeded {
+                        output,
+                        attempts: attempt,
+                    };
+                }
+                Err(reason) => {
+                    last = TaskOutcome::InvalidOutput {
+                        reason,
+                        attempts: attempt,
+                    }
+                }
             },
-            Ok(Err(error)) => last = TaskOutcome::Failed { error, attempts: attempt },
-            Err(_) => last = TaskOutcome::Failed {
-                error: "task executor panicked".to_string(),
-                attempts: attempt,
-            },
+            Ok(Err(error)) => {
+                last = TaskOutcome::Failed {
+                    error,
+                    attempts: attempt,
+                }
+            }
+            Err(_) => {
+                last = TaskOutcome::Failed {
+                    error: "task executor panicked".to_string(),
+                    attempts: attempt,
+                }
+            }
         }
     }
     last
