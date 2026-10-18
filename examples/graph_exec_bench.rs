@@ -1,5 +1,5 @@
 //! Reproducible, entirely offline DAG scheduling benchmark.
-//! Run: cargo run --locked --example graph_exec_bench
+//! Run: `cargo run --locked --example graph_exec_bench`
 
 use std::sync::{Arc, atomic::AtomicBool};
 use std::thread;
