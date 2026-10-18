@@ -2059,11 +2059,12 @@ mod tests {
             .cloned()
             .expect("checkpoint after parent wave");
         let resumed = executor
-            .resume(
+            .resume_checkpointed(
                 &definition,
                 &handlers,
                 Arc::new(AtomicBool::new(false)),
                 partial,
+                |_| Ok(()),
             )
             .unwrap();
         assert_eq!(resumed.tasks["child"].state, TaskState::Succeeded);
