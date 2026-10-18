@@ -351,7 +351,7 @@ pub struct RunReport {
     pub errors: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunSummary {
     pub total_tasks: usize,
     pub succeeded: usize,
@@ -398,24 +398,6 @@ impl RunReport {
     }
 }
 
-impl Default for RunSummary {
-    fn default() -> Self {
-        Self {
-            total_tasks: 0,
-            succeeded: 0,
-            failed: 0,
-            timed_out: 0,
-            cancelled: 0,
-            blocked: 0,
-            pending_or_running: 0,
-            retry_attempts: 0,
-            evidence_references: 0,
-            verified_results: 0,
-            wall_clock_ms: None,
-            consumed_resource_units: 0,
-        }
-    }
-}
 
 /// Compare a measured sequential baseline with one graph-execution report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
