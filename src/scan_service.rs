@@ -45,7 +45,7 @@ use crate::scan_store::{
 use crate::sf_correlate::{self, Rule, RuleError};
 use crate::sf_elements::{self, DataElement, Target};
 use crate::sf_types;
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::termination::TerminationReason;
 
 /// Scans that run at once; more wait as `STARTING`. A phone runs two lookups' worth of requests
@@ -328,6 +328,30 @@ fn lookup_output_schema() -> ValueSchema {
     }
 }
 
+/// Preserve failures in durable scan results, not just ephemeral logs and counters.
+/// A scheduler or transport error is not a validated zero-result lookup.
+fn failed_lookup_step(
+    target: &CrawlTarget,
+    module: &str,
+    kind: SourceOutcomeKind,
+    detail: &str,
+) -> Step {
+    Step {
+        entities: Vec::new(),
+        outcomes: vec![SourceExecutionOutcome::failed(
+            module,
+            now_ms() / 1_000,
+            kind,
+            None,
+            format!(
+                "{} lookup on {}: {detail}",
+                target.kind.command(),
+                target.selector
+            ),
+        )],
+    }
+}
+
 impl SelectorCollector for ScanCollector<'_> {
     fn collect(&mut self, target: &CrawlTarget) -> Step {
         let skip = Step {
@@ -360,7 +384,18 @@ impl SelectorCollector for ScanCollector<'_> {
                 self.ran += 1;
                 self.errors += failed;
             }
-            None => self.errors += 1,
+            None => {
+                self.errors += 1;
+                found.outcomes.extend(
+                    failed_lookup_step(
+                        target,
+                        "scan_lookup",
+                        SourceOutcomeKind::Inconclusive,
+                        "lookup returned no report; see scan log for the underlying error",
+                    )
+                    .outcomes,
+                );
+            }
         }
         if target.kind == ScanKind::Email
             && found
@@ -504,9 +539,13 @@ impl SelectorCollector for ScanCollector<'_> {
                 self.errors = self.errors.saturating_add(targets.len());
                 return targets
                     .iter()
-                    .map(|_| Step {
-                        entities: Vec::new(),
-                        outcomes: Vec::new(),
+                    .map(|target| {
+                        failed_lookup_step(
+                            target,
+                            "graph_exec",
+                            SourceOutcomeKind::Inconclusive,
+                            &format!("lookup batch rejected by graph executor: {error}"),
+                        )
                     })
                     .collect();
             }
@@ -539,10 +578,12 @@ impl SelectorCollector for ScanCollector<'_> {
                         LogLevel::Error,
                         format!("graph executor omitted task record {task_id}"),
                     );
-                    return Step {
-                        entities: Vec::new(),
-                        outcomes: Vec::new(),
-                    };
+                    return failed_lookup_step(
+                        target,
+                        "graph_exec",
+                        SourceOutcomeKind::Inconclusive,
+                        &format!("graph executor omitted task record {task_id}"),
+                    );
                 };
                 if record.state != TaskState::Succeeded {
                     self.errors = self.errors.saturating_add(1);
@@ -556,10 +597,16 @@ impl SelectorCollector for ScanCollector<'_> {
                             record.error.as_deref().unwrap_or("no failure detail")
                         ),
                     );
-                    return Step {
-                        entities: Vec::new(),
-                        outcomes: Vec::new(),
-                    };
+                    return failed_lookup_step(
+                        target,
+                        "graph_exec",
+                        SourceOutcomeKind::Inconclusive,
+                        &format!(
+                            "graph task {task_id} ended as {:?}: {}",
+                            record.state,
+                            record.error.as_deref().unwrap_or("no failure detail")
+                        ),
+                    );
                 }
                 let decoded = record
                     .output
@@ -579,10 +626,12 @@ impl SelectorCollector for ScanCollector<'_> {
                             LogLevel::Error,
                             format!("task {task_id}: {error}"),
                         );
-                        return Step {
-                            entities: Vec::new(),
-                            outcomes: Vec::new(),
-                        };
+                        return failed_lookup_step(
+                            target,
+                            "graph_exec",
+                            SourceOutcomeKind::SchemaDrift,
+                            &format!("task {task_id}: {error}"),
+                        );
                     }
                 };
                 let failed_sources = found
