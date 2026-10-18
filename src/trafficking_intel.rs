@@ -2,7 +2,8 @@
 //! This module does not determine guilt, identify victims, or infer crimes from proximity.
 //! Inputs should be drawn from lawfully accessible, documented public sources.
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+mod policy;
+pub use policy::ReviewPolicy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,48 +47,7 @@ pub struct Assessment {
     pub evidence_refs: Vec<String>,
 }
 
-/// Conservative triage only. Never label a person or organisation as a trafficker.
-/// Repeated publications of the same original report count as one origin.
-#[must_use]
-pub fn assess(observations: &[Observation]) -> Assessment {
-    let valid: Vec<&Observation> = observations.iter().filter(|o| {
-        !o.source_id.trim().is_empty()
-            && !o.origin_id.trim().is_empty()
-            && !o.evidence_ref.trim().is_empty()
-            && !o.observed_at.trim().is_empty()
-            && o.corroborated
-    }).collect();
-    let origins: BTreeSet<&str> = valid.iter().map(|o| o.origin_id.as_str()).collect();
-    let mut by_indicator: BTreeMap<Indicator, BTreeSet<&str>> = BTreeMap::new();
-    for o in &valid {
-        by_indicator.entry(o.indicator).or_default().insert(&o.origin_id);
-    }
-    let supported_indicators: Vec<Indicator> = by_indicator.iter()
-        .filter(|(_, origins)| origins.len() >= 2)
-        .map(|(indicator, _)| *indicator)
-        .collect();
-    let status = if !supported_indicators.is_empty() {
-        AssessmentStatus::IndicatorsForHumanReview
-    } else {
-        AssessmentStatus::InsufficientEvidence
-    };
-    let mut limitations = vec![
-        "Indicators do not establish trafficking or criminal culpability.".to_owned(),
-        "Assess coercion, exploitation, context, and alternative explanations manually.".to_owned(),
-        "Do not publish potential victim identifiers or automate enforcement actions.".to_owned(),
-    ];
-    if valid.len() != observations.len() {
-        limitations.push("Incomplete or uncorroborated observations were excluded.".to_owned());
-    }
-    if supported_indicators.is_empty() {
-        limitations.push("No indicator has two independent corroborated origins.".to_owned());
-    }
-    let evidence_refs = valid.iter().map(|o| o.evidence_ref.clone())
-        .collect::<BTreeSet<_>>().into_iter().collect();
-    Assessment { status, supported_indicators, independent_origins: origins.len(), limitations, evidence_refs }
-}
-
-#[cfg(test)]
+/// Conservative triage; preserves the original public entry point.\n#[must_use]\npub fn assess(observations: &[Observation]) -> Assessment {\n    ReviewPolicy::default().assess(observations)\n}\n\n#[cfg(test)]
 mod tests {
     use super::*;
     fn observation(origin: &str) -> Observation {
@@ -122,5 +82,31 @@ mod tests {
     #[test]
     fn empty_input_abstains() {
         assert_eq!(assess(&[]).status, AssessmentStatus::InsufficientEvidence);
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    fn observation(origin: &str) -> Observation {
+        Observation {
+            indicator: Indicator::DebtBondage,
+            source_id: origin.into(),
+            evidence_ref: format!("public-case-{origin}"),
+            origin_id: origin.into(),
+            observed_at: "2026-01-01".into(),
+            corroborated: true,
+        }
+    }
+    #[test]
+    fn configurable_threshold_requires_three_independent_origins() {
+        let policy = ReviewPolicy { minimum_independent_origins: 3 };
+        assert_eq!(policy.assess(&[observation("a"), observation("b")]).status, AssessmentStatus::InsufficientEvidence);
+        assert_eq!(policy.assess(&[observation("a"), observation("b"), observation("c")]).status, AssessmentStatus::IndicatorsForHumanReview);
+    }
+    #[test]
+    fn cannot_lower_minimum_below_two() {
+        let policy = ReviewPolicy { minimum_independent_origins: 0 };
+        assert_eq!(policy.assess(&[observation("a")]).status, AssessmentStatus::InsufficientEvidence);
     }
 }
