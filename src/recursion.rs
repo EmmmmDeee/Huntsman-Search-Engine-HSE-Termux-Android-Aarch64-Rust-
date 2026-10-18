@@ -430,6 +430,16 @@ impl CrawlState {
                     self.entities.push(entity);
                 }
             }
+            // A stop may arrive while the collector is executing the final batch.
+            // Checking only before the next dispatch mislabels a completed last wave as a
+            // fixed point, even though the operator explicitly cancelled the crawl.
+            if collector.cancelled() {
+                self.cancelled = true;
+                stopped = true;
+                for target in remaining.by_ref() {
+                    next.push(target);
+                }
+            }
             if stopped {
                 break;
             }
@@ -690,6 +700,26 @@ mod tests {
                 assert!(detail.contains('1'));
             }
         }
+    }
+
+    #[test]
+    fn cancellation_during_final_batch_is_not_reported_as_fixed_point() {
+        let targets = ["1.1.1.1", "8.8.8.8"]
+            .into_iter()
+            .map(|selector| Target {
+                kind: ScanKind::Ip,
+                selector: selector.into(),
+            })
+            .collect();
+        let mut collector = StopAfter {
+            inner: Scripted::new(),
+            limit: 2,
+        };
+        let report = run_targets(targets, &policy(), &mut collector);
+        assert_eq!(report.dispatches, 2);
+        assert_eq!(report.termination, TerminationReason::Cancelled);
+        assert!(report.truncated);
+        assert_eq!(report.visited, 2);
     }
 
     #[test]
