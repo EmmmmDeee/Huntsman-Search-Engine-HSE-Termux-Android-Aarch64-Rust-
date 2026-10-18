@@ -23,6 +23,8 @@ const MAX_TASKS: usize = 4096;
 const MAX_DEPENDENCIES_PER_TASK: usize = 1024;
 const MAX_RESOURCES_PER_TASK: usize = 64;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
+const MAX_DEPENDENCY_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RUN_OUTPUT_BYTES: usize = 12 * 1024 * 1024;
 const MAX_CONCURRENCY: usize = 8;
 const MAX_OBJECTIVE_BYTES: usize = 4096;
 const MAX_SCHEMA_DEPTH: usize = 64;
@@ -1025,6 +1027,7 @@ impl GraphExecutor {
             || self.policy.max_concurrency > MAX_CONCURRENCY
             || self.policy.max_total_resource_units == 0
             || self.policy.max_output_bytes == 0
+            || self.policy.max_output_bytes > MAX_RUN_OUTPUT_BYTES
             || self.policy.run_timeout_ms == 0
             || self.policy.run_timeout_ms > MAX_TIMEOUT_MS
         {
@@ -1051,6 +1054,8 @@ impl GraphExecutor {
                         .ok_or(GraphError::CheckpointMismatch)?;
                     validate_output(spec, output, self.policy.max_output_bytes)
                         .map_err(|_| GraphError::CheckpointMismatch)?;
+                } else if record.output.is_some() {
+                    return Err(GraphError::CheckpointMismatch);
                 }
             }
         }
@@ -1090,6 +1095,18 @@ impl GraphExecutor {
                 record.retryable = false;
             }
             records.insert(id.clone(), record);
+        }
+        let mut retained_output_bytes = 0_usize;
+        for record in records.values() {
+            if let Some(output) = &record.output {
+                let output_bytes = serde_json::to_vec(output)
+                    .map_err(|error| GraphError::Checkpoint(error.to_string()))?
+                    .len();
+                retained_output_bytes = retained_output_bytes.saturating_add(output_bytes);
+                if retained_output_bytes > MAX_RUN_OUTPUT_BYTES {
+                    return Err(GraphError::CheckpointMismatch);
+                }
+            }
         }
         let run_deadline = Instant::now() + Duration::from_millis(self.policy.run_timeout_ms);
         let has_pending_work = records.values().any(|record| {
@@ -1170,6 +1187,7 @@ impl GraphExecutor {
             let mut rate_wait_until: Option<Instant> = None;
             let mut wave_cost = 0_u64;
             let mut budget_blocked = Vec::new();
+            let mut dependency_output_blocked = Vec::new();
             for id in &graph.topological_order {
                 if selected.len() >= self.policy.max_concurrency {
                     break;
@@ -1191,6 +1209,25 @@ impl GraphExecutor {
                     > self.policy.max_total_resource_units
                 {
                     budget_blocked.push(id.clone());
+                    continue;
+                }
+                let mut dependency_bytes = 0_usize;
+                for dependency in &spec.dependencies {
+                    let output = records[dependency].output.as_ref().ok_or_else(|| {
+                        GraphError::Invalid(format!(
+                            "successful dependency {dependency} has no output"
+                        ))
+                    })?;
+                    let output_bytes = serde_json::to_vec(output)
+                        .map_err(|error| GraphError::Invalid(error.to_string()))?
+                        .len();
+                    dependency_bytes = dependency_bytes.saturating_add(output_bytes);
+                    if dependency_bytes > MAX_DEPENDENCY_OUTPUT_BYTES {
+                        dependency_output_blocked.push(id.clone());
+                        break;
+                    }
+                }
+                if dependency_output_blocked.last() == Some(id) {
                     continue;
                 }
                 if spec
@@ -1220,6 +1257,16 @@ impl GraphExecutor {
                 selected_resources.extend(spec.exclusive_resources.iter().cloned());
                 wave_cost = wave_cost.saturating_add(spec.resource_units);
                 selected.push(id.clone());
+            }
+            for id in dependency_output_blocked {
+                let record = records
+                    .get_mut(&id)
+                    .ok_or_else(|| GraphError::Invalid("missing task record".into()))?;
+                record.state = TaskState::Blocked;
+                record.error = Some("dependency output budget exhausted".into());
+                record.finished_at_unix = Some(now_unix());
+                errors.push(format!("{id}: dependency output budget exhausted"));
+                termination = RunTermination::ResourceLimit;
             }
             for id in budget_blocked {
                 let record = records
@@ -1275,15 +1322,6 @@ impl GraphExecutor {
                 }
             }
             consumed = consumed.saturating_add(wave_cost);
-            let outputs: BTreeMap<String, TaskOutput> = records
-                .iter()
-                .filter_map(|(id, record)| {
-                    record
-                        .output
-                        .as_ref()
-                        .map(|output| (id.clone(), output.clone()))
-                })
-                .collect();
             let mut jobs: Vec<crate::concurrent::Job<'_, (String, (TaskRecord, u64))>> =
                 Vec::with_capacity(selected.len());
             for id in &selected {
@@ -1295,13 +1333,15 @@ impl GraphExecutor {
                 let deps = spec
                     .dependencies
                     .iter()
-                    .filter_map(|dependency| {
-                        outputs
-                            .get(dependency)
-                            .cloned()
-                            .map(|output| (dependency.clone(), output))
+                    .map(|dependency| {
+                        let output = records[dependency].output.as_ref().ok_or_else(|| {
+                            GraphError::Invalid(format!(
+                                "successful dependency {dependency} has no output"
+                            ))
+                        })?;
+                        Ok((dependency.clone(), output.clone()))
                     })
-                    .collect::<BTreeMap<_, _>>();
+                    .collect::<Result<BTreeMap<_, _>, GraphError>>()?;
                 let prior_attempts = records[id].attempts;
                 let cancelled = Arc::clone(&cancelled);
                 let run_deadline = run_deadline;
@@ -1324,6 +1364,23 @@ impl GraphExecutor {
             for (id, (mut record, _charged)) in results {
                 let previous_attempts = records[&id].attempts;
                 record.attempts = previous_attempts.saturating_add(record.attempts);
+                if record.state.successful() {
+                    let output = record.output.as_ref().ok_or_else(|| {
+                        GraphError::Invalid(format!("successful task {id} has no output"))
+                    })?;
+                    let output_bytes = serde_json::to_vec(output)
+                        .map_err(|error| GraphError::Invalid(error.to_string()))?
+                        .len();
+                    if retained_output_bytes.saturating_add(output_bytes) > MAX_RUN_OUTPUT_BYTES {
+                        record.state = TaskState::Failed;
+                        record.output = None;
+                        record.error = Some("run output budget exhausted".into());
+                        record.retryable = false;
+                        termination = RunTermination::ResourceLimit;
+                    } else {
+                        retained_output_bytes = retained_output_bytes.saturating_add(output_bytes);
+                    }
+                }
                 if !record.state.successful() {
                     errors.push(format!(
                         "{id}: {}",
