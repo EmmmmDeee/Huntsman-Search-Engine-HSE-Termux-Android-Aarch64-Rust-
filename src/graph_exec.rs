@@ -364,7 +364,7 @@ impl RunReport {
             ..RunSummary::default()
         };
         for record in self.tasks.values() {
-            match record.state {
+            match &record.state {
                 TaskState::Succeeded => summary.succeeded += 1,
                 TaskState::Failed => summary.failed += 1,
                 TaskState::TimedOut => summary.timed_out += 1,
