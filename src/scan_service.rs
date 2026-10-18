@@ -497,7 +497,10 @@ impl SelectorCollector for ScanCollector<'_> {
                             record.error.as_deref().unwrap_or("no failure detail")
                         ),
                     );
-                    return Step { entities: Vec::new(), outcomes: Vec::new() };
+                    return Step {
+                        entities: Vec::new(),
+                        outcomes: Vec::new(),
+                    };
                 }
                 let decoded = record
                     .output
