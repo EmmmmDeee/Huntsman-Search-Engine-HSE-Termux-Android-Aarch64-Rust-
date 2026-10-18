@@ -23,7 +23,7 @@ const MAX_TASKS: usize = 4096;
 const MAX_DEPENDENCIES_PER_TASK: usize = 1024;
 const MAX_RESOURCES_PER_TASK: usize = 64;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
-const MAX_CONCURRENCY: usize = 64;
+const MAX_CONCURRENCY: usize = 16;
 const MAX_OBJECTIVE_BYTES: usize = 4096;
 const MAX_SCHEMA_DEPTH: usize = 64;
 const MAX_CHECKPOINT_BYTES: usize = 16 * 1024 * 1024;
@@ -566,12 +566,7 @@ fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Re
     Ok(())
 }
 
-fn unix_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis())
-}
-
+#[allow(clippy::too_many_lines)]
 fn run_one(
     spec: &TaskSpec,
     handler: &TaskHandler,
@@ -620,13 +615,18 @@ fn run_one(
         let attempt_started = Instant::now();
         let result = catch_unwind(AssertUnwindSafe(|| handler(context)));
         let elapsed = attempt_started.elapsed();
+        if cancelled.load(Ordering::Acquire) {
+            record.state = TaskState::Cancelled;
+            last_error = "run cancelled while task was executing".into();
+            break;
+        }
+        if Instant::now() > deadline {
+            record.state = TaskState::TimedOut;
+            last_error = format!("task {} exceeded its deadline", spec.id);
+            break;
+        }
         match result {
             Ok(Ok(output)) => {
-                if Instant::now() > deadline {
-                    record.state = TaskState::TimedOut;
-                    last_error = format!("task {} exceeded its deadline", spec.id);
-                    break;
-                }
                 match validate_output(spec, &output, max_output_bytes) {
                     Ok(()) => {
                         record.state = TaskState::Succeeded;
@@ -741,6 +741,7 @@ impl GraphExecutor {
         self.execute_inner(definition, handlers, cancelled, Some(checkpoint))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute_inner(
         &self,
         definition: &GraphDefinition,
