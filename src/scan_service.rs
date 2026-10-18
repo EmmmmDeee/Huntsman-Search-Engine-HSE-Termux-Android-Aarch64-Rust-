@@ -1812,6 +1812,64 @@ mod tests {
     }
 
     #[test]
+    fn independent_recursive_lookups_use_bounded_graph_concurrency() {
+        use std::sync::atomic::AtomicUsize;
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let (service, dir) = with_lookup(
+            "graph-concurrency",
+            Arc::new({
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                move |kind: ScanKind, selector: &str, _: &Selection| {
+                    if kind == ScanKind::Domain {
+                        let evidence = Evidence::new(
+                            EvidenceProvenance::for_scan("test", "seed"),
+                            "discovered address",
+                        );
+                        return Ok(LookupOutput {
+                            entities: ["1.1.1.1", "8.8.8.8"]
+                                .into_iter()
+                                .map(|ip| {
+                                    Entity::builder(EntityKind::IpAddress, ip, 0.95, "test")
+                                        .evidence(evidence.clone())
+                                        .build()
+                                })
+                                .collect(),
+                            ..LookupOutput::default()
+                        });
+                    }
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(current, Ordering::SeqCst);
+                    thread::sleep(Duration::from_millis(100));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(LookupOutput {
+                        text: format!("{} {selector}", kind.command()),
+                        ..LookupOutput::default()
+                    })
+                }
+            }),
+        );
+        let record = service
+            .run(&ScanRequest {
+                target: "example.org".into(),
+                kind: Some("domain".into()),
+                options: ScanOptions {
+                    depth: 1,
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        assert_eq!(record.status, ScanStatus::Finished);
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+        let log = service.store().log(&record.id).unwrap();
+        assert!(log.iter().any(|entry| entry.component == "graph_exec"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn targets_route_to_kinds_and_spiderfoot_types() {
         for (target, kind, kind_word, sf_type) in [
             ("example.com", None, "domain", "INTERNET_NAME"),
