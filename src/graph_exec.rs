@@ -354,6 +354,7 @@ pub struct ValidatedGraph {
 
 impl GraphDefinition {
     /// Validate every task contract, dependency, idempotency key and cycle before dispatch.
+    #[allow(clippy::too_many_lines)]
     pub fn validate(&self) -> Result<ValidatedGraph, GraphError> {
         if !valid_token(&self.run_id) {
             return Err(GraphError::Invalid("run_id is empty or invalid".into()));
