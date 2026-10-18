@@ -164,10 +164,7 @@ pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
             // 2001::/23 holds Teredo, benchmarking and other IETF special-purpose blocks;
             // 2002::/16 is 6to4. Keep this selector gate stricter than general egress.
             let special = (s[0] == 0x2001 && s[1] < 0x0200) || s[0] == 0x2002;
-            global_unicast
-                && !documentation
-                && !special
-                && crate::egress::is_public_ip(ip)
+            global_unicast && !documentation && !special && crate::egress::is_public_ip(ip)
         }
     }
 }
@@ -469,7 +466,11 @@ mod tests {
             ("240.0.0.1", false),
         ] {
             let parsed = raw.parse().expect("fixture IP");
-            assert_eq!(crate::egress::is_public_ip(parsed), expected, "egress {raw}");
+            assert_eq!(
+                crate::egress::is_public_ip(parsed),
+                expected,
+                "egress {raw}"
+            );
             assert_eq!(canonical_ip(raw).is_some(), expected, "canonical {raw}");
         }
     }
