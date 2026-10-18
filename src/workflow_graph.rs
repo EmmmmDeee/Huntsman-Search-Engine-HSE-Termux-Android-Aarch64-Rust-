@@ -66,7 +66,7 @@ pub struct TaskGraph {
 }
 
 impl TaskGraph {
-    pub fn validate(specs: Vec<TaskSpec>) -> Result<Self, GraphError> {
+    #[must_use]\n    pub fn validate(specs: Vec<TaskSpec>) -> Result<Self, GraphError> {
         if specs.is_empty() { return Err(GraphError::EmptyGraph); }
         if specs.len() > MAX_TASKS {
             return Err(GraphError::TooManyTasks { actual: specs.len(), limit: MAX_TASKS });
@@ -190,7 +190,7 @@ pub fn account(graph: &TaskGraph, outcomes: &BTreeMap<String, TaskOutcome>) -> A
 }
 
 /// Validate that a successful output is an object containing every required field.
-pub fn validate_output(task: &TaskSpec, output: &Value) -> Result<(), String> {
+#[must_use]\npub fn validate_output(task: &TaskSpec, output: &Value) -> Result<(), String> {
     let object = output.as_object().ok_or_else(|| "output must be a JSON object".to_string())?;
     for key in &task.required_output_keys {
         if !object.contains_key(key) {
