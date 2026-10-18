@@ -355,6 +355,10 @@ pub struct RunReport {
     pub duration_ms: Option<u64>,
     pub termination: Option<RunTermination>,
     pub consumed_resource_units: u64,
+    /// Last provider starts in UTC milliseconds, persisted across interrupted runs.
+    /// Missing in older checkpoints; recovered conservatively from completed task timestamps.
+    #[serde(default)]
+    pub rate_limit_last_start_unix_ms: BTreeMap<String, u64>,
     pub tasks: BTreeMap<String, TaskRecord>,
     pub errors: Vec<String>,
 }
@@ -730,6 +734,92 @@ fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// Approximate an actual monotonic attempt start on the wall clock for durable checkpoints.
+/// The in-process scheduler continues to use monotonic Instants for precise spacing.
+fn attempt_start_unix_ms(started: Instant) -> u64 {
+    let age = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    now_unix_ms().saturating_sub(age)
+}
+
+/// The scheduler uses monotonic time; checkpoints retain portable wall-clock timestamps.
+#[derive(Default)]
+struct RateStartHistory {
+    monotonic: BTreeMap<String, Instant>,
+    persisted: BTreeMap<String, u64>,
+}
+
+/// Rehydrate provider spacing from a checkpoint. Legacy checkpoints lack millisecond-level
+/// starts; their task completion time is a conservative lower bound for the next safe start.
+fn restored_rate_history(
+    graph: &ValidatedGraph,
+    checkpoint: Option<&ExecutionCheckpoint>,
+) -> Result<RateStartHistory, GraphError> {
+    let Some(checkpoint) = checkpoint else {
+        return Ok(RateStartHistory::default());
+    };
+    let intervals: BTreeMap<String, u64> = graph
+        .by_id
+        .values()
+        .filter_map(|spec| spec.rate_limit.as_ref())
+        .map(|limit| (limit.key.clone(), limit.min_interval_ms))
+        .collect();
+    let mut persisted = checkpoint.report.rate_limit_last_start_unix_ms.clone();
+    if persisted
+        .iter()
+        .any(|(key, start)| !intervals.contains_key(key) || *start == 0)
+    {
+        return Err(GraphError::CheckpointMismatch);
+    }
+    let now = now_unix_ms();
+    let explicitly_persisted: BTreeSet<String> = persisted.keys().cloned().collect();
+    for (id, spec) in &graph.by_id {
+        let Some(limit) = &spec.rate_limit else {
+            continue;
+        };
+        let Some(record) = checkpoint.report.tasks.get(id) else {
+            continue;
+        };
+        // Version-one checkpoints emitted before the timestamp field existed still resume.
+        // Use the finish time (rounded up to the next second) instead of a potentially stale
+        // first-attempt start, since the handler may have retried the same provider.
+        if record.attempts > 0 && !explicitly_persisted.contains(&limit.key) {
+            let completed_ms = record.finished_at_unix.map_or(now, |seconds| {
+                seconds.saturating_mul(1_000).saturating_add(999)
+            });
+            persisted
+                .entry(limit.key.clone())
+                .and_modify(|previous| *previous = (*previous).max(completed_ms))
+                .or_insert(completed_ms);
+        }
+    }
+    let instant_now = Instant::now();
+    let monotonic = persisted
+        .iter()
+        .filter_map(|(key, start)| {
+            let elapsed_ms = now.saturating_sub(*start);
+            let interval = intervals[key];
+            (elapsed_ms < interval).then(|| {
+                let restored = instant_now
+                    .checked_sub(Duration::from_millis(elapsed_ms))
+                    .unwrap_or(instant_now);
+                (key.clone(), restored)
+            })
+        })
+        .collect();
+    Ok(RateStartHistory {
+        monotonic,
+        persisted,
+    })
 }
 
 fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Result<(), String> {
@@ -1251,8 +1341,11 @@ impl GraphExecutor {
         } else {
             prior_termination.unwrap_or_else(|| derive_termination(&records))
         };
+        let RateStartHistory {
+            monotonic: mut last_rate_start,
+            persisted: mut persisted_rate_start,
+        } = restored_rate_history(&graph, checkpoint.as_ref())?;
         let mut errors = checkpoint.map_or_else(Vec::new, |saved| saved.report.errors);
-        let mut last_rate_start = BTreeMap::<String, Instant>::new();
 
         loop {
             if records.values().all(|record| record.state.terminal()) {
@@ -1442,9 +1535,11 @@ impl GraphExecutor {
             }
 
             let dispatch_started = Instant::now();
+            let dispatch_unix_ms = now_unix_ms();
             for id in &selected {
                 if let Some(limit) = &graph.by_id[id].rate_limit {
                     last_rate_start.insert(limit.key.clone(), dispatch_started);
+                    persisted_rate_start.insert(limit.key.clone(), dispatch_unix_ms);
                 }
             }
             consumed = consumed.saturating_add(wave_cost);
@@ -1491,6 +1586,7 @@ impl GraphExecutor {
                     (&graph.by_id[&id].rate_limit, last_attempt_start)
                 {
                     last_rate_start.insert(limit.key.clone(), start);
+                    persisted_rate_start.insert(limit.key.clone(), attempt_start_unix_ms(start));
                 }
                 let previous_attempts = records[&id].attempts;
                 record.attempts = previous_attempts.saturating_add(record.attempts);
@@ -1538,6 +1634,7 @@ impl GraphExecutor {
                     ),
                     termination: Some(termination.clone()),
                     consumed_resource_units: consumed,
+                    rate_limit_last_start_unix_ms: persisted_rate_start.clone(),
                     tasks: records.clone(),
                     errors: errors.clone(),
                 };
@@ -1571,6 +1668,7 @@ impl GraphExecutor {
             duration_ms: Some(duration_ms),
             termination: Some(termination),
             consumed_resource_units: consumed,
+            rate_limit_last_start_unix_ms: persisted_rate_start,
             tasks: records,
             errors,
         };
@@ -2344,6 +2442,165 @@ mod tests {
         assert_eq!(
             resumed.graph_fingerprint,
             definition.validate().unwrap().fingerprint
+        );
+    }
+
+    #[test]
+    fn checkpoint_resume_retains_provider_rate_limit_and_rejects_unknown_groups() {
+        let limit = RateLimit {
+            key: "checkpoint-provider".into(),
+            min_interval_ms: 220,
+        };
+        let mut first = spec("first", &[]);
+        first.rate_limit = Some(limit.clone());
+        let mut second = spec("second", &["first"]);
+        second.rate_limit = Some(limit);
+        let definition = GraphDefinition {
+            run_id: "checkpoint-provider-spacing".into(),
+            tasks: vec![first, second],
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut handlers = HandlerRegistry::new();
+        let first_calls = Arc::clone(&calls);
+        handlers.insert(
+            "first".into(),
+            handler(move |_| {
+                first_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(output(json!("first"), "first"))
+            }),
+        );
+        let second_calls = Arc::clone(&calls);
+        handlers.insert(
+            "second".into(),
+            handler(move |_| {
+                second_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(output(json!("second"), "second"))
+            }),
+        );
+        let captured = Arc::new(Mutex::new(None::<ExecutionCheckpoint>));
+        let to_capture = Arc::clone(&captured);
+        let executor = GraphExecutor::new(policy());
+        let interrupted = executor
+            .execute_checkpointed(
+                &definition,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                move |checkpoint| {
+                    let mut slot = to_capture.lock().unwrap();
+                    if slot.is_none() {
+                        *slot = Some(checkpoint.clone());
+                    }
+                    Err("deliberately pause after the first wave".into())
+                },
+            )
+            .unwrap();
+        assert_eq!(interrupted.tasks["first"].state, TaskState::Succeeded);
+        assert_eq!(interrupted.tasks["second"].state, TaskState::Blocked);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let checkpoint = captured.lock().unwrap().clone().unwrap();
+        assert_eq!(checkpoint.report.tasks["second"].state, TaskState::Pending);
+        assert!(
+            checkpoint
+                .report
+                .rate_limit_last_start_unix_ms
+                .contains_key("checkpoint-provider")
+        );
+        let mut checkpoint = ExecutionCheckpoint::decode(&checkpoint.encode().unwrap()).unwrap();
+
+        let mut invalid = checkpoint.clone();
+        invalid
+            .report
+            .rate_limit_last_start_unix_ms
+            .insert("unknown-provider".into(), now_unix_ms());
+        assert!(matches!(
+            executor.resume(
+                &definition,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                invalid
+            ),
+            Err(GraphError::CheckpointMismatch)
+        ));
+
+        // Make the persisted start recent, independent of the CI runner's setup delays.
+        checkpoint
+            .report
+            .rate_limit_last_start_unix_ms
+            .insert("checkpoint-provider".into(), now_unix_ms());
+        let resumed_at = Instant::now();
+        let resumed = executor
+            .resume(
+                &definition,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                checkpoint,
+            )
+            .unwrap();
+        assert!(
+            resumed_at.elapsed() >= Duration::from_millis(150),
+            "resuming a recent provider start bypassed the persisted rate limit"
+        );
+        assert_eq!(resumed.summary().succeeded, 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(resumed.tasks["first"].attempts, 1);
+        assert_eq!(resumed.tasks["second"].attempts, 1);
+    }
+
+    #[test]
+    fn legacy_checkpoint_recovers_latest_provider_completion() {
+        let limit = RateLimit {
+            key: "legacy-provider".into(),
+            min_interval_ms: 250,
+        };
+        let mut first = spec("a", &[]);
+        first.rate_limit = Some(limit.clone());
+        let mut second = spec("b", &["a"]);
+        second.rate_limit = Some(limit);
+        let graph = GraphDefinition {
+            run_id: "legacy-provider-history".into(),
+            tasks: vec![first, second],
+        };
+        let mut handlers = HandlerRegistry::new();
+        handlers.insert("a".into(), handler(|_| Ok(output(json!(1), "a"))));
+        handlers.insert("b".into(), handler(|_| Ok(output(json!(2), "b"))));
+        let saved = Arc::new(Mutex::new(None::<ExecutionCheckpoint>));
+        let recorder = Arc::clone(&saved);
+        let executor = GraphExecutor::new(policy());
+        let _ = executor
+            .execute_checkpointed(
+                &graph,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                move |checkpoint| {
+                    let mut slot = recorder.lock().unwrap();
+                    if slot.is_none() {
+                        *slot = Some(checkpoint.clone());
+                    }
+                    Err("interrupted before dependent lookup".into())
+                },
+            )
+            .unwrap();
+        let checkpoint = saved.lock().unwrap().clone().unwrap();
+        let mut serialized = serde_json::to_value(checkpoint).unwrap();
+        serialized["report"]
+            .as_object_mut()
+            .unwrap()
+            .remove("rate_limit_last_start_unix_ms");
+        let legacy: ExecutionCheckpoint = serde_json::from_value(serialized).unwrap();
+        let resumed_at = Instant::now();
+        let result = executor
+            .resume(&graph, &handlers, &Arc::new(AtomicBool::new(false)), legacy)
+            .unwrap();
+        assert_eq!(result.summary().succeeded, 2);
+        assert!(
+            resumed_at.elapsed() >= Duration::from_millis(150),
+            "legacy checkpoints must not bypass a recently completed provider call"
+        );
+        assert!(
+            result
+                .rate_limit_last_start_unix_ms
+                .contains_key("legacy-provider")
         );
     }
 

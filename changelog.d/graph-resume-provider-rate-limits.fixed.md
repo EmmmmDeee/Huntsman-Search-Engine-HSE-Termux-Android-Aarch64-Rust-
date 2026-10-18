@@ -1,0 +1,2 @@
+- Preserve provider rate-limit start timestamps at millisecond resolution in graph execution checkpoints and restore rate-limit spacing when an interrupted run resumes.
+- Recover older checkpoints conservatively from completed task timestamps, retain bounded retry behavior, and reject checkpoint entries naming unknown provider groups.
