@@ -813,6 +813,29 @@ fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Re
     Ok(())
 }
 
+/// A verifier must cite at least one exact evidence record from the claimed producer.
+/// Independent new evidence may accompany it, but cannot replace traceability to the
+/// producer's underlying observation. This tests lineage, not the truth of a claim.
+fn validate_verification_lineage(
+    spec: &TaskSpec,
+    output: &TaskOutput,
+    producer: Option<&TaskOutput>,
+) -> Result<(), String> {
+    if output.verification.state != VerificationState::Verified {
+        return Ok(());
+    }
+    let original = producer.ok_or_else(|| format!("verified task {} has no producer output", spec.id))?;
+    let matches_producer = output.verification.evidence_refs.iter().any(|id| {
+        output.evidence.iter().any(|reference| {
+            &reference.id == id && original.evidence.contains(reference)
+        })
+    });
+    if !matches_producer {
+        return Err(format!("verified task {} lacks matching producer evidence", spec.id));
+    }
+    Ok(())
+}
+
 type CompletedJob = (String, (TaskRecord, Option<Instant>));
 
 #[allow(clippy::too_many_lines)]
@@ -897,7 +920,13 @@ fn run_one(
             break;
         }
         match result {
-            Ok(Ok(output)) => match validate_output(spec, &output, max_output_bytes) {
+            Ok(Ok(output)) => match validate_output(spec, &output, max_output_bytes).and_then(|()| {
+                validate_verification_lineage(
+                    spec,
+                    &output,
+                    dependency_outputs.get(&output.verification.producer_id),
+                )
+            }) {
                 Ok(()) => {
                     record.state = TaskState::Succeeded;
                     record.output = Some(output);
@@ -1117,6 +1146,14 @@ impl GraphExecutor {
                         .ok_or(GraphError::CheckpointMismatch)?;
                     validate_output(spec, output, self.policy.max_output_bytes)
                         .map_err(|_| GraphError::CheckpointMismatch)?;
+                    validate_verification_lineage(
+                        spec,
+                        output,
+                        checkpoint.report.tasks
+                            .get(&output.verification.producer_id)
+                            .and_then(|parent| parent.output.as_ref()),
+                    )
+                    .map_err(|_| GraphError::CheckpointMismatch)?;
                     // A saved success is trustworthy only if every prerequisite is also a
                     // saved success. Otherwise a malformed checkpoint could skip a task whose
                     // dependency failed or was never recorded.
@@ -2347,4 +2384,84 @@ mod tests {
             assert!(window[1].duration_since(window[0]) >= Duration::from_millis(55));
         }
     }
+    #[test]
+    fn verified_claim_requires_evidence_from_its_producer() {
+        let mut reviewer = spec("reviewer", &["producer"]);
+        reviewer.role = TaskRole::Verifier;
+        let definition = GraphDefinition {
+            run_id: "lineage-review".into(),
+            tasks: vec![spec("producer", &[]), reviewer],
+        };
+        let producer_evidence = EvidenceReference {
+            id: "producer-source".into(),
+            source_id: "fixture".into(),
+            locator: "https://example.invalid/original".into(),
+            provenance: "captured for test".into(),
+            observed_at_unix: 1,
+            content_sha256: None,
+        };
+        let mut handlers = HandlerRegistry::new();
+        let original = producer_evidence.clone();
+        handlers.insert(
+            "producer".into(),
+            handler(move |_| {
+                let mut result = output(json!({"claim":"x"}), "producer");
+                result.evidence.push(original.clone());
+                Ok(result)
+            }),
+        );
+        let forged = producer_evidence.clone();
+        handlers.insert(
+            "reviewer".into(),
+            handler(move |_| {
+                let mut result = output(json!({"claim":"x"}), "producer");
+                result.verification.state = VerificationState::Verified;
+                result.verification.reviewer_id = "reviewer".into();
+                let mut different = forged.clone();
+                different.locator = "https://example.invalid/unrelated".into();
+                result.evidence.push(different);
+                result.verification.evidence_refs.push("producer-source".into());
+                Ok(result)
+            }),
+        );
+        let executor = GraphExecutor::new(policy());
+        let rejected = executor
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        assert_eq!(rejected.tasks["producer"].state, TaskState::Succeeded);
+        assert_eq!(rejected.tasks["reviewer"].state, TaskState::Failed);
+        assert!(rejected.tasks["reviewer"].error.as_deref().unwrap().contains("matching producer evidence"));
+
+        let verified_evidence = producer_evidence.clone();
+        handlers.insert(
+            "reviewer".into(),
+            handler(move |_| {
+                let mut result = output(json!({"claim":"x"}), "producer");
+                result.verification.state = VerificationState::Verified;
+                result.verification.reviewer_id = "reviewer".into();
+                result.evidence.push(verified_evidence.clone());
+                result.verification.evidence_refs.push("producer-source".into());
+                Ok(result)
+            }),
+        );
+        let accepted = executor
+            .execute(&definition, &handlers, &Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        assert_eq!(accepted.tasks["reviewer"].state, TaskState::Succeeded);
+        assert_eq!(accepted.summary().verified_results, 1);
+        let mut forged_checkpoint = ExecutionCheckpoint::from_report(accepted);
+        let result = forged_checkpoint.report.tasks
+            .get_mut("reviewer").unwrap().output.as_mut().unwrap();
+        result.evidence[0].locator = "https://example.invalid/unrelated".into();
+        assert!(matches!(
+            executor.resume(
+                &definition,
+                &handlers,
+                &Arc::new(AtomicBool::new(false)),
+                forged_checkpoint,
+            ),
+            Err(GraphError::CheckpointMismatch)
+        ));
+    }
+
 }
