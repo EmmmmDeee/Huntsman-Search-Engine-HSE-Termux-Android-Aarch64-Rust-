@@ -1582,6 +1582,30 @@ mod tests {
     }
 
     #[test]
+    fn malformed_output_is_a_failed_task_not_an_empty_success() {
+        let mut task = spec("malformed", &[]);
+        task.output_schema = ValueSchema::Boolean;
+        let definition = GraphDefinition {
+            run_id: "output-schema-run".into(),
+            tasks: vec![task],
+        };
+        let mut handlers = HandlerRegistry::new();
+        handlers.insert(
+            "malformed".into(),
+            handler(|_| Ok(output(json!({}), "malformed"))),
+        );
+        let report = GraphExecutor::new(policy())
+            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        assert_eq!(report.tasks["malformed"].state, TaskState::Failed);
+        assert!(report.tasks["malformed"]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("output schema mismatch")));
+        assert!(report.tasks["malformed"].output.is_none());
+    }
+
+    #[test]
     fn failed_dependency_blocks_descendants_without_hiding_the_failure() {
         let definition = GraphDefinition {
             run_id: "failure-run".into(),
