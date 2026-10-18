@@ -1919,9 +1919,9 @@ mod tests {
         assert!(!lookup_input_schema().accepts(&json!({
             "kind": 42, "selector": "jane@example.org"
         })));
-        assert!(lookup_output_schema().accepts(
-            &serde_json::to_value(LookupOutput::default()).unwrap()
-        ));
+        assert!(
+            lookup_output_schema().accepts(&serde_json::to_value(LookupOutput::default()).unwrap())
+        );
         assert!(!lookup_output_schema().accepts(&json!({
             "text": "", "entities": []
         })));
