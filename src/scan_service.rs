@@ -1912,6 +1912,62 @@ mod tests {
     }
 
     #[test]
+    fn graph_scan_envelopes_reject_missing_or_wrongly_typed_fields() {
+        assert!(lookup_input_schema().accepts(&json!({
+            "kind": "email", "selector": "jane@example.org"
+        })));
+        assert!(!lookup_input_schema().accepts(&json!({
+            "kind": 42, "selector": "jane@example.org"
+        })));
+        assert!(lookup_output_schema().accepts(
+            &serde_json::to_value(LookupOutput::default()).unwrap()
+        ));
+        assert!(!lookup_output_schema().accepts(&json!({
+            "text": "", "entities": []
+        })));
+        assert!(!lookup_output_schema().accepts(&json!({
+            "text": "", "entities": {}, "outcomes": []
+        })));
+    }
+
+    #[test]
+    fn graph_batch_admission_separates_dependent_and_independent_targets() {
+        let (service, dir) = with_lookup(
+            "batch-admission",
+            Arc::new(|_, _, _| Ok(LookupOutput::default())),
+        );
+        let selection = chosen(&ScanOptions::default()).unwrap();
+        let collector = ScanCollector {
+            service: &service,
+            id: "batch-admission",
+            chosen: &selection,
+            text: String::new(),
+            ran: 0,
+            errors: 0,
+            breach_checked: BTreeSet::new(),
+        };
+        let email = CrawlTarget {
+            kind: ScanKind::Email,
+            selector: "jane@example.org".into(),
+        };
+        let exposure = CrawlTarget {
+            kind: ScanKind::Exposure,
+            selector: email.selector.clone(),
+        };
+        assert!(!collector.may_batch(&[email], &exposure));
+        let first_ip = CrawlTarget {
+            kind: ScanKind::Ip,
+            selector: "1.1.1.1".into(),
+        };
+        let next_ip = CrawlTarget {
+            kind: ScanKind::Ip,
+            selector: "8.8.8.8".into(),
+        };
+        assert!(collector.may_batch(&[first_ip], &next_ip));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn independent_recursive_lookups_use_bounded_graph_concurrency() {
         use std::sync::atomic::AtomicUsize;
 
