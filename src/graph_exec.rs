@@ -1465,6 +1465,76 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_sink_saves_wave_state_for_safe_resume() {
+        let definition = GraphDefinition {
+            run_id: "checkpoint-wave-run".into(),
+            tasks: vec![spec("child", &["parent"]), spec("parent", &[])],
+        };
+        let parent_calls = Arc::new(AtomicUsize::new(0));
+        let child_calls = Arc::new(AtomicUsize::new(0));
+        let mut handlers = HandlerRegistry::new();
+        let parent_counter = Arc::clone(&parent_calls);
+        handlers.insert(
+            "parent".into(),
+            handler(move |_| {
+                parent_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(output(json!("parent-result"), "parent"))
+            }),
+        );
+        let child_counter = Arc::clone(&child_calls);
+        handlers.insert(
+            "child".into(),
+            handler(move |_| {
+                child_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(output(json!("child-result"), "child"))
+            }),
+        );
+        let checkpoints = Arc::new(Mutex::new(Vec::<ExecutionCheckpoint>::new()));
+        let sink_records = Arc::clone(&checkpoints);
+        let executor = GraphExecutor::new(policy());
+        let first = executor
+            .execute_checkpointed(
+                &definition,
+                &handlers,
+                Arc::new(AtomicBool::new(false)),
+                move |checkpoint| {
+                    sink_records
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(checkpoint.clone());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(first.tasks["parent"].state, TaskState::Succeeded);
+        assert_eq!(first.tasks["child"].state, TaskState::Succeeded);
+        let saved = checkpoints
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let partial = saved
+            .iter()
+            .find(|checkpoint| {
+                checkpoint.report.tasks["parent"].state == TaskState::Succeeded
+                    && checkpoint.report.tasks["child"].state == TaskState::Pending
+            })
+            .cloned()
+            .expect("checkpoint after parent wave");
+        let resumed = executor
+            .resume(
+                &definition,
+                &handlers,
+                Arc::new(AtomicBool::new(false)),
+                partial,
+            )
+            .unwrap();
+        assert_eq!(resumed.tasks["child"].state, TaskState::Succeeded);
+        assert_eq!(parent_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(child_calls.load(Ordering::SeqCst), 1);
+        assert!(saved.len() >= 3);
+    }
+
+    #[test]
     fn checkpoint_round_trip_and_resume_preserve_success() {
         let definition = GraphDefinition {
             run_id: "checkpoint-run".into(),
