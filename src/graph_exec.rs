@@ -1061,8 +1061,8 @@ impl GraphExecutor {
                     let wait = eligible_at.saturating_duration_since(Instant::now());
                     if !wait.is_zero() {
                         thread::sleep(wait.min(run_deadline.saturating_duration_since(Instant::now())));
-                        continue;
                     }
+                    continue;
                 }
                 if records
                     .values()
@@ -1526,6 +1526,47 @@ mod tests {
         assert_eq!(report.tasks["a"].state, TaskState::Succeeded);
         assert_eq!(report.tasks["b"].state, TaskState::Succeeded);
         assert_eq!(peak.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn rate_limit_group_spaces_task_start_times() {
+        let mut first = spec("first", &[]);
+        let mut second = spec("second", &[]);
+        let limit = RateLimit {
+            key: "public-provider".into(),
+            min_interval_ms: 40,
+        };
+        first.rate_limit = Some(limit.clone());
+        second.rate_limit = Some(limit);
+        let definition = GraphDefinition {
+            run_id: "rate-limit-run".into(),
+            tasks: vec![first, second],
+        };
+        let starts = Arc::new(Mutex::new(Vec::<Instant>::new()));
+        let mut handlers = HandlerRegistry::new();
+        for id in ["first", "second"] {
+            let observed_starts = Arc::clone(&starts);
+            handlers.insert(
+                id.into(),
+                handler(move |_| {
+                    observed_starts
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(Instant::now());
+                    Ok(output(json!(true), id))
+                }),
+            );
+        }
+        let report = GraphExecutor::new(policy())
+            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        assert_eq!(report.tasks["first"].state, TaskState::Succeeded);
+        assert_eq!(report.tasks["second"].state, TaskState::Succeeded);
+        let observed = starts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(observed.len(), 2);
+        assert!(observed[1].duration_since(observed[0]) >= Duration::from_millis(30));
     }
 
     #[test]
