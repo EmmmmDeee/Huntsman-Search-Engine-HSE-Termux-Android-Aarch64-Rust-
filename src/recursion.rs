@@ -278,7 +278,10 @@ fn normalize_batch<C: SelectorCollector>(
             last.outcomes.push(SourceExecutionOutcome::inconclusive(
                 "recursion",
                 observed_at,
-                format!("collector returned {excess} unsolicited results for a batch of {} lookups", batch.len()),
+                format!(
+                    "collector returned {excess} unsolicited results for a batch of {} lookups",
+                    batch.len()
+                ),
             ));
         }
     }
