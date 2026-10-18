@@ -48,7 +48,13 @@ pub struct Assessment {
     pub evidence_refs: Vec<String>,
 }
 
-/// Conservative triage; preserves the original public entry point.\n#[must_use]\npub fn assess(observations: &[Observation]) -> Assessment {\n    ReviewPolicy::default().assess(observations)\n}\n\n#[cfg(test)]
+/// Conservative triage; preserves the original public entry point.
+#[must_use]
+pub fn assess(observations: &[Observation]) -> Assessment {
+    ReviewPolicy::default().assess(observations)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn observation(origin: &str) -> Observation {
