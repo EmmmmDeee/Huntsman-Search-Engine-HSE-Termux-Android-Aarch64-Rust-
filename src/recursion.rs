@@ -241,6 +241,22 @@ impl Frontier {
     }
 }
 
+/// One missing lookup result is always an unsuccessful outcome, never an empty success.
+fn missing_batch_step(target: &Target, observed_at: u64) -> Step {
+    Step {
+        entities: Vec::new(),
+        outcomes: vec![SourceExecutionOutcome::inconclusive(
+            "recursion",
+            observed_at,
+            format!(
+                "collector omitted a {} lookup result for {}",
+                target.kind.command(),
+                target.selector
+            ),
+        )],
+    }
+}
+
 /// Normalize the collector's response count before deterministic, target-ordered reduction.
 /// A missing lookup step or an unsolicited extra step is a contract failure, never valid-zero.
 fn normalize_batch<C: SelectorCollector>(
@@ -260,18 +276,7 @@ fn normalize_batch<C: SelectorCollector>(
         .map_or(0, |elapsed| elapsed.as_secs());
     steps.truncate(batch.len());
     for target in batch.iter().skip(steps.len()) {
-        steps.push(Step {
-            entities: Vec::new(),
-            outcomes: vec![SourceExecutionOutcome::inconclusive(
-                "recursion",
-                observed_at,
-                format!(
-                    "collector omitted a {} lookup result for {}",
-                    target.kind.command(),
-                    target.selector
-                ),
-            )],
-        });
+        steps.push(missing_batch_step(target, observed_at));
     }
     if excess > 0 {
         if let Some(last) = steps.last_mut() {
@@ -406,18 +411,7 @@ impl CrawlState {
             let steps = normalize_batch(collector, &batch, steps);
             let mut steps = steps.into_iter();
             for target in batch {
-                let step = steps.next().unwrap_or_else(|| Step {
-                    entities: Vec::new(),
-                    outcomes: vec![SourceExecutionOutcome::inconclusive(
-                        "recursion",
-                        0,
-                        format!(
-                            "collector omitted {} lookup on {}",
-                            target.kind.command(),
-                            target.selector
-                        ),
-                    )],
-                });
+                let step = steps.next().unwrap_or_else(|| missing_batch_step(&target, 0));
                 self.dispatches += 1;
                 dispatched += 1;
                 self.outcomes.extend(step.outcomes);
@@ -691,7 +685,7 @@ mod tests {
                 assert!(detail.contains("8.8.8.8"));
             } else {
                 assert!(detail.contains("unsolicited"));
-                assert!(detail.contains("1"));
+                assert!(detail.contains('1'));
             }
         }
     }
