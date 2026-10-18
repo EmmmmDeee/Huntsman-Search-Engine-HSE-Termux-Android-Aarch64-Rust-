@@ -408,6 +408,117 @@ fn failed_lookup_step(
     }
 }
 
+impl ScanCollector<'_> {
+    /// Reduce a completed lookup identically for sequential and graph dispatch.
+    /// This does not modify source error counts, which depend on how the lookup ran.
+    fn finish_lookup(&mut self, target: &CrawlTarget, found: LookupOutput) -> Step {
+        if target.kind == ScanKind::Email
+            && found
+                .outcomes
+                .iter()
+                .any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
+        {
+            if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector) {
+                self.breach_checked.insert(selector);
+            }
+        }
+        if !found.text.is_empty() {
+            if !self.text.is_empty() {
+                self.text.push('\n');
+            }
+            self.text.push_str(&found.text);
+        }
+        Step {
+            entities: found.entities,
+            outcomes: found.outcomes,
+        }
+    }
+
+    /// Record a graph adapter failure once and preserve the outcome in durable scan results.
+    fn graph_failure(
+        &mut self,
+        target: &CrawlTarget,
+        component: &str,
+        kind: SourceOutcomeKind,
+        detail: &str,
+    ) -> Step {
+        self.errors = self.errors.saturating_add(1);
+        self.service
+            .log(self.id, component, LogLevel::Error, detail);
+        failed_lookup_step(target, "graph_exec", kind, detail)
+    }
+
+    /// Account for a completed graph lookup before applying the shared result reduction.
+    fn finish_graph_lookup(&mut self, target: &CrawlTarget, found: LookupOutput) -> Step {
+        self.ran = self.ran.saturating_add(1);
+        for outcome in &found.outcomes {
+            let accepted = outcome.kind.is_accepted();
+            self.errors = self.errors.saturating_add(usize::from(!accepted));
+            self.service.log(
+                self.id,
+                &outcome.module,
+                if accepted {
+                    LogLevel::Info
+                } else {
+                    LogLevel::Error
+                },
+                outcome_line(outcome),
+            );
+        }
+        self.finish_lookup(target, found)
+    }
+    /// Reduce a graph task record independently of scheduling and lookup admission.
+    /// Cancellation requested by the scan is not a provider error.
+    fn reduce_graph_record(
+        &mut self,
+        target: &CrawlTarget,
+        task_id: &str,
+        record: &crate::graph_exec::TaskRecord,
+    ) -> Step {
+        if record.state == TaskState::Cancelled && self.service.aborted(self.id) {
+            self.service.log(
+                self.id,
+                "graph_exec",
+                LogLevel::Info,
+                format!("graph task {task_id} cancelled by scan stop"),
+            );
+            return Step {
+                entities: Vec::new(),
+                outcomes: Vec::new(),
+            };
+        }
+        if record.state != TaskState::Succeeded {
+            return self.graph_failure(
+                target,
+                target.kind.command(),
+                SourceOutcomeKind::Inconclusive,
+                &format!(
+                    "graph task {task_id} ended as {:?}: {}",
+                    record.state,
+                    record.error.as_deref().unwrap_or("no failure detail")
+                ),
+            );
+        }
+        let decoded = record
+            .output
+            .as_ref()
+            .ok_or_else(|| "successful graph task has no output".to_owned())
+            .and_then(|output| {
+                serde_json::from_value::<LookupOutput>(output.value.clone())
+                    .map_err(|error| format!("malformed lookup output: {error}"))
+            });
+        match decoded {
+            Ok(found) => self.finish_graph_lookup(target, found),
+            Err(error) => self.graph_failure(
+                target,
+                "graph_exec",
+                SourceOutcomeKind::SchemaDrift,
+                &format!("task {task_id}: {error}"),
+            ),
+        }
+    }
+}
+
 impl SelectorCollector for ScanCollector<'_> {
     fn collect(&mut self, target: &CrawlTarget) -> Step {
         let skip = Step {
@@ -444,26 +555,7 @@ impl SelectorCollector for ScanCollector<'_> {
             LookupDispatch::Missing => self.errors += 1,
             LookupDispatch::Cancelled => {}
         }
-        if target.kind == ScanKind::Email
-            && found
-                .outcomes
-                .iter()
-                .any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
-        {
-            if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector) {
-                self.breach_checked.insert(selector);
-            }
-        }
-        if !found.text.is_empty() {
-            if !self.text.is_empty() {
-                self.text.push('\n');
-            }
-            self.text.push_str(&found.text);
-        }
-        Step {
-            entities: found.entities,
-            outcomes: found.outcomes,
-        }
+        self.finish_lookup(target, found)
     }
 
     fn may_batch(&self, selected: &[CrawlTarget], next: &CrawlTarget) -> bool {
@@ -631,110 +723,14 @@ impl SelectorCollector for ScanCollector<'_> {
             .map(|(index, target)| {
                 let task_id = format!("lookup-{index:04}");
                 let Some(record) = report.tasks.get(&task_id) else {
-                    self.errors = self.errors.saturating_add(1);
-                    self.service.log(
-                        self.id,
-                        "graph_exec",
-                        LogLevel::Error,
-                        format!("graph executor omitted task record {task_id}"),
-                    );
-                    return failed_lookup_step(
+                    return self.graph_failure(
                         target,
                         "graph_exec",
                         SourceOutcomeKind::Inconclusive,
                         &format!("graph executor omitted task record {task_id}"),
                     );
                 };
-                if record.state != TaskState::Succeeded {
-                    self.errors = self.errors.saturating_add(1);
-                    self.service.log(
-                        self.id,
-                        target.kind.command(),
-                        LogLevel::Error,
-                        format!(
-                            "graph task {task_id} ended as {:?}: {}",
-                            record.state,
-                            record.error.as_deref().unwrap_or("no failure detail")
-                        ),
-                    );
-                    return failed_lookup_step(
-                        target,
-                        "graph_exec",
-                        SourceOutcomeKind::Inconclusive,
-                        &format!(
-                            "graph task {task_id} ended as {:?}: {}",
-                            record.state,
-                            record.error.as_deref().unwrap_or("no failure detail")
-                        ),
-                    );
-                }
-                let decoded = record
-                    .output
-                    .as_ref()
-                    .ok_or_else(|| "successful graph task has no output".to_owned())
-                    .and_then(|output| {
-                        serde_json::from_value::<LookupOutput>(output.value.clone())
-                            .map_err(|error| format!("malformed lookup output: {error}"))
-                    });
-                let found = match decoded {
-                    Ok(found) => found,
-                    Err(error) => {
-                        self.errors = self.errors.saturating_add(1);
-                        self.service.log(
-                            self.id,
-                            "graph_exec",
-                            LogLevel::Error,
-                            format!("task {task_id}: {error}"),
-                        );
-                        return failed_lookup_step(
-                            target,
-                            "graph_exec",
-                            SourceOutcomeKind::SchemaDrift,
-                            &format!("task {task_id}: {error}"),
-                        );
-                    }
-                };
-                let failed_sources = found
-                    .outcomes
-                    .iter()
-                    .filter(|outcome| !outcome.kind.is_accepted())
-                    .count();
-                self.ran = self.ran.saturating_add(1);
-                self.errors = self.errors.saturating_add(failed_sources);
-                for outcome in &found.outcomes {
-                    let accepted = outcome.kind.is_accepted();
-                    self.service.log(
-                        self.id,
-                        &outcome.module,
-                        if accepted {
-                            LogLevel::Info
-                        } else {
-                            LogLevel::Error
-                        },
-                        outcome_line(outcome),
-                    );
-                }
-                if target.kind == ScanKind::Email
-                    && found
-                        .outcomes
-                        .iter()
-                        .any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
-                {
-                    if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector)
-                    {
-                        self.breach_checked.insert(selector);
-                    }
-                }
-                if !found.text.is_empty() {
-                    if !self.text.is_empty() {
-                        self.text.push('\n');
-                    }
-                    self.text.push_str(&found.text);
-                }
-                Step {
-                    entities: found.entities,
-                    outcomes: found.outcomes,
-                }
+                self.reduce_graph_record(target, &task_id, record)
             })
             .collect()
     }
@@ -2398,6 +2394,69 @@ mod tests {
         assert_eq!(peak.load(Ordering::SeqCst), 2);
         let log = service.store().log(&record.id).unwrap();
         assert!(log.iter().any(|entry| entry.component == "graph_exec"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn graph_reducer_distinguishes_stop_from_actual_task_failure() {
+        let (service, dir) = with_lookup(
+            "graph-cancel-reduction",
+            Arc::new(|_: ScanKind, _: &str, _: &Selection| Ok(LookupOutput::default())),
+        );
+        let (record, _) = service
+            .create(&ScanRequest {
+                target: "example.org".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let selection = chosen(&ScanOptions::default()).unwrap();
+        let target = CrawlTarget {
+            kind: ScanKind::Ip,
+            selector: "1.1.1.1".into(),
+        };
+        let mut collector = ScanCollector {
+            service: &service,
+            id: &record.id,
+            chosen: &selection,
+            text: String::new(),
+            ran: 0,
+            errors: 0,
+            breach_checked: BTreeSet::new(),
+        };
+        service.state().aborts.insert(record.id.clone());
+        let cancelled = crate::graph_exec::TaskRecord {
+            state: TaskState::Cancelled,
+            error: Some("scan cancelled before dispatch".into()),
+            ..crate::graph_exec::TaskRecord::default()
+        };
+        let stopped = collector.reduce_graph_record(&target, "lookup-0000", &cancelled);
+        assert!(stopped.entities.is_empty());
+        assert!(stopped.outcomes.is_empty());
+        assert_eq!(collector.errors, 0);
+        assert_eq!(collector.ran, 0);
+        let log = service.store().log(&record.id).unwrap();
+        assert!(
+            log.iter()
+                .any(|entry| entry.message.contains("cancelled by scan stop"))
+        );
+
+        service.state().aborts.remove(&record.id);
+        let failed = crate::graph_exec::TaskRecord {
+            state: TaskState::Failed,
+            error: Some("synthetic execution failure".into()),
+            ..crate::graph_exec::TaskRecord::default()
+        };
+        let outcome = collector.reduce_graph_record(&target, "lookup-0001", &failed);
+        assert_eq!(collector.errors, 1);
+        assert_eq!(outcome.outcomes.len(), 1);
+        assert_eq!(outcome.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
+        assert!(
+            outcome.outcomes[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("synthetic execution failure")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

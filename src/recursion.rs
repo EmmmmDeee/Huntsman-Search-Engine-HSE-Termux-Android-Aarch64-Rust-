@@ -430,6 +430,7 @@ impl CrawlState {
                     self.entities.push(entity);
                 }
             }
+            stopped |= self.record_post_batch_stop(collector, remaining.by_ref(), &mut next);
             if stopped {
                 break;
             }
@@ -442,6 +443,24 @@ impl CrawlState {
             entities_after: self.entities.len(),
         });
         (next.into_queue(), stopped)
+    }
+
+    /// Record cancellation after a batch even when no further dispatch remains.
+    /// Retain outstanding targets for accurate truncated-frontier accounting.
+    fn record_post_batch_stop<C: SelectorCollector>(
+        &mut self,
+        collector: &C,
+        remaining: impl Iterator<Item = Target>,
+        next: &mut Frontier,
+    ) -> bool {
+        if !collector.cancelled() {
+            return false;
+        }
+        self.cancelled = true;
+        for target in remaining {
+            next.push(target);
+        }
+        true
     }
 
     /// Queue the next-generation targets an entity contributes, honouring the per-generation
@@ -690,6 +709,26 @@ mod tests {
                 assert!(detail.contains('1'));
             }
         }
+    }
+
+    #[test]
+    fn cancellation_during_final_batch_is_not_reported_as_fixed_point() {
+        let targets = ["1.1.1.1", "8.8.8.8"]
+            .into_iter()
+            .map(|selector| Target {
+                kind: ScanKind::Ip,
+                selector: selector.into(),
+            })
+            .collect();
+        let mut collector = StopAfter {
+            inner: Scripted::new(),
+            limit: 2,
+        };
+        let report = run_targets(targets, &policy(), &mut collector);
+        assert_eq!(report.dispatches, 2);
+        assert_eq!(report.termination, TerminationReason::Cancelled);
+        assert!(report.truncated);
+        assert_eq!(report.visited, 2);
     }
 
     #[test]
