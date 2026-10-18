@@ -1557,12 +1557,14 @@ mod tests {
         };
         assert!(graph.validate().is_err());
         task.idempotency_key = Some("stable-operation-1".into());
-        assert!(GraphDefinition {
-            run_id: "idempotency-run".into(),
-            tasks: vec![task],
-        }
-        .validate()
-        .is_ok());
+        assert!(
+            GraphDefinition {
+                run_id: "idempotency-run".into(),
+                tasks: vec![task],
+            }
+            .validate()
+            .is_ok()
+        );
     }
 
     #[test]
