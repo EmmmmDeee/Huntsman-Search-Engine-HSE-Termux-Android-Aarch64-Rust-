@@ -86,6 +86,7 @@ pub mod geometry;
 pub mod gexf;
 pub mod github_user;
 pub mod graph;
+pub mod graph_exec;
 pub mod gravatar;
 pub mod greynoise;
 pub mod hackertarget;
