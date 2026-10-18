@@ -375,27 +375,24 @@ impl SelectorCollector for ScanCollector<'_> {
             return skip;
         }
         let mut found = LookupOutput::default();
-        match self.service.lookup_into(
+        if let Some(failed) = self.service.lookup_into(
             self.id,
             (target.kind, &target.selector, self.chosen),
             &mut found,
         ) {
-            Some(failed) => {
-                self.ran += 1;
-                self.errors += failed;
-            }
-            None => {
-                self.errors += 1;
-                found.outcomes.extend(
-                    failed_lookup_step(
-                        target,
-                        "scan_lookup",
-                        SourceOutcomeKind::Inconclusive,
-                        "lookup returned no report; see scan log for the underlying error",
-                    )
-                    .outcomes,
-                );
-            }
+            self.ran += 1;
+            self.errors += failed;
+        } else {
+            self.errors += 1;
+            found.outcomes.extend(
+                failed_lookup_step(
+                    target,
+                    "scan_lookup",
+                    SourceOutcomeKind::Inconclusive,
+                    "lookup returned no report; see scan log for the underlying error",
+                )
+                .outcomes,
+            );
         }
         if target.kind == ScanKind::Email
             && found
