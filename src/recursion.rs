@@ -51,6 +51,21 @@ pub struct Step {
 pub trait SelectorCollector {
     fn collect(&mut self, target: &Target) -> Step;
 
+    /// Collect a small wave of independent targets. The default preserves legacy sequential
+    /// semantics; graph-aware collectors may override it to schedule the wave concurrently.
+    /// Results must be returned in the same order as `targets`.
+    fn collect_batch(&mut self, targets: &[Target]) -> Vec<Step> {
+        targets.iter().map(|target| self.collect(target)).collect()
+    }
+
+    /// Whether `next` may join an in-flight batch of `selected` lookups.
+    ///
+    /// Stateful collectors can impose a sequencing boundary, so cancellation is checked again
+    /// after the current batch returns rather than dispatching an otherwise dependent lookup.
+    fn may_batch(&self, _selected: &[Target], _next: &Target) -> bool {
+        true
+    }
+
     /// Whether the operator asked the crawl to stop. Checked before every dispatch: the crawl
     /// then stops as `Cancelled`, keeping everything found so far.
     fn cancelled(&self) -> bool {
@@ -264,19 +279,24 @@ impl CrawlState {
         policy: &RecursionPolicy,
         collector: &mut C,
     ) -> (Vec<Target>, bool) {
+        // Small waves bound concurrency and let the entity budget be rechecked between waves.
+        const MAX_BATCH: usize = 2;
         let mut next = Frontier::default();
         let mut dispatched = 0usize;
         let mut stopped = false;
+        let mut remaining = frontier.into_iter().peekable();
 
-        let mut remaining = frontier.into_iter();
-        for target in remaining.by_ref() {
+        while let Some(first) = remaining.next() {
             if collector.cancelled() {
                 self.cancelled = true;
                 stopped = true;
-                next.push(target);
+                next.push(first);
+                for target in remaining.by_ref() {
+                    next.push(target);
+                }
                 break;
             }
-            if !self.visited.insert(target.owned_key()) {
+            if !self.visited.insert(first.owned_key()) {
                 continue;
             }
             if self.dispatches >= policy.max_dispatches
@@ -284,29 +304,80 @@ impl CrawlState {
             {
                 self.resource_limited = true;
                 stopped = true;
-                next.push(target);
+                next.push(first);
+                for target in remaining.by_ref() {
+                    next.push(target);
+                }
                 break;
             }
-            let step = collector.collect(&target);
-            self.dispatches += 1;
-            dispatched += 1;
-            self.outcomes.extend(step.outcomes);
-            for mut entity in step.entities {
-                entity.generation = generation;
-                self.edges.push(PivotEdge {
-                    from_kind: target.kind.command().to_owned(),
-                    from_selector: target.selector.clone(),
-                    to_kind: entity.kind.as_str().to_owned(),
-                    to_value: entity.value.clone(),
-                    generation,
+
+            let mut batch = vec![first];
+            while batch.len() < MAX_BATCH {
+                // Peek before consuming: dependent targets must remain queued for the next
+                // dispatch, where the cancellation and resource limits are checked afresh.
+                let Some(candidate) = remaining.peek() else {
+                    break;
+                };
+                if !collector.may_batch(&batch, candidate) {
+                    break;
+                }
+                let Some(target) = remaining.next() else {
+                    break;
+                };
+                if collector.cancelled() {
+                    self.cancelled = true;
+                    stopped = true;
+                    next.push(target);
+                    for target in remaining.by_ref() {
+                        next.push(target);
+                    }
+                    break;
+                }
+                if !self.visited.insert(target.owned_key()) {
+                    continue;
+                }
+                if self.dispatches.saturating_add(batch.len()) >= policy.max_dispatches
+                    || self.entities.len() >= policy.max_entities
+                {
+                    self.resource_limited = true;
+                    stopped = true;
+                    next.push(target);
+                    for target in remaining.by_ref() {
+                        next.push(target);
+                    }
+                    break;
+                }
+                batch.push(target);
+            }
+
+            let steps = collector.collect_batch(&batch);
+            let mut steps = steps.into_iter();
+            for target in batch {
+                let step = steps.next().unwrap_or_else(|| Step {
+                    entities: Vec::new(),
+                    outcomes: Vec::new(),
                 });
-                self.queue_expansions(&entity, policy, &mut next);
-                self.entities.push(entity);
+                self.dispatches += 1;
+                dispatched += 1;
+                self.outcomes.extend(step.outcomes);
+                for mut entity in step.entities {
+                    entity.generation = generation;
+                    self.edges.push(PivotEdge {
+                        from_kind: target.kind.command().to_owned(),
+                        from_selector: target.selector.clone(),
+                        to_kind: entity.kind.as_str().to_owned(),
+                        to_value: entity.value.clone(),
+                        generation,
+                    });
+                    self.queue_expansions(&entity, policy, &mut next);
+                    self.entities.push(entity);
+                }
+            }
+            if stopped {
+                break;
             }
         }
-        for target in remaining {
-            next.push(target);
-        }
+
         merge_by_uid(&mut self.entities);
         self.generations.push(GenerationStat {
             generation,

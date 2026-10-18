@@ -19,8 +19,15 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
 use crate::correlator::evaluate_rules;
 use crate::entity::Entity;
+use crate::graph_exec::{
+    ExecutionPolicy, GraphDefinition, GraphExecutor, HandlerRegistry, TaskContext, TaskFailure,
+    TaskOutput, TaskRole, TaskSpec, TaskState, ValueSchema, VerificationRecord, VerificationState,
+};
 use crate::lookup_modules;
 use crate::module_selection::Selection;
 use crate::recursion::{
@@ -55,7 +62,7 @@ const WAIT_SLICE: Duration = Duration::from_millis(250);
 pub const USE_CASES: [&str; 4] = ["all", "footprint", "investigate", "passive"];
 
 /// What one lookup found.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct LookupOutput {
     pub text: String,
     pub entities: Vec<Entity>,
@@ -287,6 +294,40 @@ struct ScanCollector<'a> {
     breach_checked: BTreeSet<String>,
 }
 
+/// Reject graph inputs with missing or mistyped scan target identifiers.
+fn lookup_input_schema() -> ValueSchema {
+    ValueSchema::Object {
+        required: BTreeMap::from([
+            ("kind".into(), ValueSchema::String),
+            ("selector".into(), ValueSchema::String),
+        ]),
+        allow_additional: false,
+    }
+}
+
+/// Verify the lookup envelope before reducing it into scan results. Element payloads are
+/// subsequently validated by serde when decoded as `LookupOutput`.
+fn lookup_output_schema() -> ValueSchema {
+    ValueSchema::Object {
+        required: BTreeMap::from([
+            ("text".into(), ValueSchema::String),
+            (
+                "entities".into(),
+                ValueSchema::Array {
+                    items: Box::new(ValueSchema::Any),
+                },
+            ),
+            (
+                "outcomes".into(),
+                ValueSchema::Array {
+                    items: Box::new(ValueSchema::Any),
+                },
+            ),
+        ]),
+        allow_additional: false,
+    }
+}
+
 impl SelectorCollector for ScanCollector<'_> {
     fn collect(&mut self, target: &CrawlTarget) -> Step {
         let skip = Step {
@@ -341,6 +382,252 @@ impl SelectorCollector for ScanCollector<'_> {
             entities: found.entities,
             outcomes: found.outcomes,
         }
+    }
+
+    fn may_batch(&self, selected: &[CrawlTarget], next: &CrawlTarget) -> bool {
+        let needs_sequential = |target: &CrawlTarget| {
+            (target.kind == ScanKind::Exposure && self.breach_checked.contains(&target.selector))
+                || !lookup_modules::asks_any(target.kind, self.chosen)
+        };
+        if needs_sequential(next) || selected.iter().any(needs_sequential) {
+            return false;
+        }
+        !selected.iter().any(|target| {
+            target.selector == next.selector
+                && ((target.kind == ScanKind::Email && next.kind == ScanKind::Exposure)
+                    || (target.kind == ScanKind::Exposure && next.kind == ScanKind::Email))
+        })
+    }
+
+    // The graph adapter intentionally keeps task construction, execution and ordered accounting
+    // together so failures cannot bypass scan-level error reporting.
+    #[allow(clippy::too_many_lines)]
+    fn collect_batch(&mut self, targets: &[CrawlTarget]) -> Vec<Step> {
+        // Keep legacy ordering when a batch contains a paired email/exposure lookup, a skipped
+        // module selection, or an already-covered exposure. These cases have stateful semantics.
+        let has_email_exposure_pair = targets.iter().any(|email| {
+            email.kind == ScanKind::Email
+                && targets.iter().any(|exposure| {
+                    exposure.kind == ScanKind::Exposure && exposure.selector == email.selector
+                })
+        });
+        let has_stateful_or_skipped_target = targets.iter().any(|target| {
+            (target.kind == ScanKind::Exposure && self.breach_checked.contains(&target.selector))
+                || !lookup_modules::asks_any(target.kind, self.chosen)
+        });
+        if targets.len() < 2 || has_email_exposure_pair || has_stateful_or_skipped_target {
+            return targets.iter().map(|target| self.collect(target)).collect();
+        }
+
+        let run_number = self.service.sequence.fetch_add(1, Ordering::Relaxed);
+        let definition = GraphDefinition {
+            run_id: format!("scan-{}-{run_number}", self.id),
+            tasks: targets
+                .iter()
+                .enumerate()
+                .map(|(index, target)| TaskSpec {
+                    id: format!("lookup-{index:04}"),
+                    objective: format!(
+                        "run {} lookup for the selected scan target",
+                        target.kind.command()
+                    ),
+                    role: TaskRole::Producer,
+                    input: json!({
+                        "kind": target.kind.command(),
+                        "selector": target.selector.clone(),
+                    }),
+                    input_schema: lookup_input_schema(),
+                    output_schema: lookup_output_schema(),
+                    dependencies: Vec::new(),
+                    exclusive_resources: Vec::new(),
+                    rate_limit: None,
+                    idempotency_key: None,
+                    requires_idempotency: false,
+                    timeout_ms: 15 * 60 * 1000,
+                    max_retries: 0,
+                    resource_units: 1,
+                })
+                .collect(),
+        };
+        let mut handlers = HandlerRegistry::new();
+        for (index, target) in targets.iter().enumerate() {
+            let task_id = format!("lookup-{index:04}");
+            let lookup = Arc::clone(&self.service.lookup);
+            let chosen = self.chosen.clone();
+            let kind = target.kind;
+            let selector = target.selector.clone();
+            handlers.insert(
+                task_id,
+                Arc::new(
+                    move |context: TaskContext| -> Result<TaskOutput, TaskFailure> {
+                        context.check_deadline()?;
+                        let output =
+                            lookup(kind, &selector, &chosen).map_err(TaskFailure::permanent)?;
+                        let value = serde_json::to_value(output).map_err(|error| {
+                            TaskFailure::permanent(format!(
+                                "lookup output serialization failed: {error}"
+                            ))
+                        })?;
+                        Ok(TaskOutput {
+                            value,
+                            evidence: Vec::new(),
+                            verification: VerificationRecord {
+                                state: VerificationState::Unresolved,
+                                producer_id: context.task_id,
+                                reviewer_id: "independent-review-pending".into(),
+                                basis: "raw lookup output; source claims remain unverified".into(),
+                                evidence_refs: Vec::new(),
+                            },
+                        })
+                    },
+                ),
+            );
+        }
+
+        let policy = ExecutionPolicy {
+            max_concurrency: 2,
+            max_total_resource_units: u64::try_from(targets.len()).unwrap_or(u64::MAX),
+            max_output_bytes: 2 * 1024 * 1024,
+            run_timeout_ms: 15 * 60 * 1000,
+        };
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let report = match GraphExecutor::new(policy).execute(&definition, &handlers, &cancellation)
+        {
+            Ok(report) => report,
+            Err(error) => {
+                self.service.log(
+                    self.id,
+                    "graph_exec",
+                    LogLevel::Error,
+                    format!("lookup batch rejected by graph executor: {error}"),
+                );
+                self.errors = self.errors.saturating_add(targets.len());
+                return targets
+                    .iter()
+                    .map(|_| Step {
+                        entities: Vec::new(),
+                        outcomes: Vec::new(),
+                    })
+                    .collect();
+            }
+        };
+
+        let summary = report.summary();
+        self.service.log(
+            self.id,
+            "graph_exec",
+            LogLevel::Info,
+            format!(
+                "lookup wave run {}: {} tasks, {} succeeded, {} failed, {} ms",
+                definition.run_id,
+                summary.total_tasks,
+                summary.succeeded,
+                summary.failed + summary.timed_out + summary.blocked,
+                summary.wall_clock_ms.unwrap_or_default()
+            ),
+        );
+        targets
+            .iter()
+            .enumerate()
+            .map(|(index, target)| {
+                let task_id = format!("lookup-{index:04}");
+                let Some(record) = report.tasks.get(&task_id) else {
+                    self.errors = self.errors.saturating_add(1);
+                    self.service.log(
+                        self.id,
+                        "graph_exec",
+                        LogLevel::Error,
+                        format!("graph executor omitted task record {task_id}"),
+                    );
+                    return Step {
+                        entities: Vec::new(),
+                        outcomes: Vec::new(),
+                    };
+                };
+                if record.state != TaskState::Succeeded {
+                    self.errors = self.errors.saturating_add(1);
+                    self.service.log(
+                        self.id,
+                        target.kind.command(),
+                        LogLevel::Error,
+                        format!(
+                            "graph task {task_id} ended as {:?}: {}",
+                            record.state,
+                            record.error.as_deref().unwrap_or("no failure detail")
+                        ),
+                    );
+                    return Step {
+                        entities: Vec::new(),
+                        outcomes: Vec::new(),
+                    };
+                }
+                let decoded = record
+                    .output
+                    .as_ref()
+                    .ok_or_else(|| "successful graph task has no output".to_owned())
+                    .and_then(|output| {
+                        serde_json::from_value::<LookupOutput>(output.value.clone())
+                            .map_err(|error| format!("malformed lookup output: {error}"))
+                    });
+                let found = match decoded {
+                    Ok(found) => found,
+                    Err(error) => {
+                        self.errors = self.errors.saturating_add(1);
+                        self.service.log(
+                            self.id,
+                            "graph_exec",
+                            LogLevel::Error,
+                            format!("task {task_id}: {error}"),
+                        );
+                        return Step {
+                            entities: Vec::new(),
+                            outcomes: Vec::new(),
+                        };
+                    }
+                };
+                let failed_sources = found
+                    .outcomes
+                    .iter()
+                    .filter(|outcome| !outcome.kind.is_accepted())
+                    .count();
+                self.ran = self.ran.saturating_add(1);
+                self.errors = self.errors.saturating_add(failed_sources);
+                for outcome in &found.outcomes {
+                    let accepted = outcome.kind.is_accepted();
+                    self.service.log(
+                        self.id,
+                        &outcome.module,
+                        if accepted {
+                            LogLevel::Info
+                        } else {
+                            LogLevel::Error
+                        },
+                        outcome_line(outcome),
+                    );
+                }
+                if target.kind == ScanKind::Email
+                    && found
+                        .outcomes
+                        .iter()
+                        .any(|outcome| EXPOSURE_SOURCES.contains(&outcome.module.as_str()))
+                {
+                    if let Some(selector) = canonical_selector(ScanKind::Exposure, &target.selector)
+                    {
+                        self.breach_checked.insert(selector);
+                    }
+                }
+                if !found.text.is_empty() {
+                    if !self.text.is_empty() {
+                        self.text.push('\n');
+                    }
+                    self.text.push_str(&found.text);
+                }
+                Step {
+                    entities: found.entities,
+                    outcomes: found.outcomes,
+                }
+            })
+            .collect()
     }
 
     fn cancelled(&self) -> bool {
@@ -1621,6 +1908,120 @@ mod tests {
             assert_eq!(record.status, ScanStatus::ErrorFailed);
         }
         assert_eq!(service.state().running, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn graph_scan_envelopes_reject_missing_or_wrongly_typed_fields() {
+        assert!(lookup_input_schema().accepts(&json!({
+            "kind": "email", "selector": "jane@example.org"
+        })));
+        assert!(!lookup_input_schema().accepts(&json!({
+            "kind": 42, "selector": "jane@example.org"
+        })));
+        assert!(
+            lookup_output_schema().accepts(&serde_json::to_value(LookupOutput::default()).unwrap())
+        );
+        assert!(!lookup_output_schema().accepts(&json!({
+            "text": "", "entities": []
+        })));
+        assert!(!lookup_output_schema().accepts(&json!({
+            "text": "", "entities": {}, "outcomes": []
+        })));
+    }
+
+    #[test]
+    fn graph_batch_admission_separates_dependent_and_independent_targets() {
+        let (service, dir) = with_lookup(
+            "batch-admission",
+            Arc::new(|_, _, _| Ok(LookupOutput::default())),
+        );
+        let selection = chosen(&ScanOptions::default()).unwrap();
+        let collector = ScanCollector {
+            service: &service,
+            id: "batch-admission",
+            chosen: &selection,
+            text: String::new(),
+            ran: 0,
+            errors: 0,
+            breach_checked: BTreeSet::new(),
+        };
+        let email = CrawlTarget {
+            kind: ScanKind::Email,
+            selector: "jane@example.org".into(),
+        };
+        let exposure = CrawlTarget {
+            kind: ScanKind::Exposure,
+            selector: email.selector.clone(),
+        };
+        assert!(!collector.may_batch(&[email], &exposure));
+        let first_ip = CrawlTarget {
+            kind: ScanKind::Ip,
+            selector: "1.1.1.1".into(),
+        };
+        let next_ip = CrawlTarget {
+            kind: ScanKind::Ip,
+            selector: "8.8.8.8".into(),
+        };
+        assert!(collector.may_batch(&[first_ip], &next_ip));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn independent_recursive_lookups_use_bounded_graph_concurrency() {
+        use std::sync::atomic::AtomicUsize;
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let (service, dir) = with_lookup(
+            "graph-concurrency",
+            Arc::new({
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                move |kind: ScanKind, selector: &str, _: &Selection| {
+                    if kind == ScanKind::Domain {
+                        let evidence = Evidence::new(
+                            EvidenceProvenance::for_scan("test", "seed"),
+                            "discovered address",
+                        );
+                        return Ok(LookupOutput {
+                            entities: ["1.1.1.1", "8.8.8.8"]
+                                .into_iter()
+                                .map(|ip| {
+                                    Entity::builder(EntityKind::IpAddress, ip, 0.95, "test")
+                                        .evidence(evidence.clone())
+                                        .build()
+                                })
+                                .collect(),
+                            ..LookupOutput::default()
+                        });
+                    }
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(current, Ordering::SeqCst);
+                    thread::sleep(Duration::from_millis(100));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(LookupOutput {
+                        text: format!("{} {selector}", kind.command()),
+                        ..LookupOutput::default()
+                    })
+                }
+            }),
+        );
+        let record = service
+            .run(&ScanRequest {
+                target: "example.org".into(),
+                kind: Some("domain".into()),
+                options: ScanOptions {
+                    depth: 1,
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        assert_eq!(record.status, ScanStatus::Finished);
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+        let log = service.store().log(&record.id).unwrap();
+        assert!(log.iter().any(|entry| entry.component == "graph_exec"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
