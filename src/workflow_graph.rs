@@ -468,7 +468,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn executor_runs_independent_tasks_concurrently_with_a_cap() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -485,8 +484,15 @@ mod tests {
             active.fetch_sub(1, Ordering::SeqCst);
             Ok(json!({"ok": true}))
         };
-        let outcomes = execute(&graph, 2, CancellationToken::default(), &executor).expect("execute");
-        assert_eq!(outcomes.values().filter(|outcome| outcome.is_success()).count(), 2);
+        let outcomes =
+            execute(&graph, 2, CancellationToken::default(), &executor).expect("execute");
+        assert_eq!(
+            outcomes
+                .values()
+                .filter(|outcome| outcome.is_success())
+                .count(),
+            2
+        );
         assert_eq!(peak.load(Ordering::SeqCst), 2);
     }
 
@@ -494,7 +500,8 @@ mod tests {
     fn executor_retries_within_the_declared_bound_and_blocks_dependents() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let graph = TaskGraph::validate(vec![task("a", &[]), task("b", &["a"])]).expect("valid graph");
+        let graph =
+            TaskGraph::validate(vec![task("a", &[]), task("b", &["a"])]).expect("valid graph");
         let calls = AtomicUsize::new(0);
         let executor = |task: &TaskSpec, _: &TaskContext| {
             if task.id == "a" && calls.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -505,9 +512,16 @@ mod tests {
                 Ok(json!({"done": true}))
             }
         };
-        let outcomes = execute(&graph, 2, CancellationToken::default(), &executor).expect("execute");
-        assert!(matches!(outcomes.get("a"), Some(TaskOutcome::Succeeded { attempts: 2, .. })));
-        assert!(matches!(outcomes.get("b"), Some(TaskOutcome::Succeeded { attempts: 1, .. })));
+        let outcomes =
+            execute(&graph, 2, CancellationToken::default(), &executor).expect("execute");
+        assert!(matches!(
+            outcomes.get("a"),
+            Some(TaskOutcome::Succeeded { attempts: 2, .. })
+        ));
+        assert!(matches!(
+            outcomes.get("b"),
+            Some(TaskOutcome::Succeeded { attempts: 1, .. })
+        ));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
@@ -519,8 +533,12 @@ mod tests {
             execute(&graph, 0, CancellationToken::default(), &executor),
             Err(ExecutionError::ZeroConcurrency)
         );
-        let outcomes = execute(&graph, 1, CancellationToken::default(), &executor).expect("execute");
-        assert!(matches!(outcomes.get("a"), Some(TaskOutcome::InvalidOutput { .. })));
+        let outcomes =
+            execute(&graph, 1, CancellationToken::default(), &executor).expect("execute");
+        assert!(matches!(
+            outcomes.get("a"),
+            Some(TaskOutcome::InvalidOutput { .. })
+        ));
     }
 
     #[test]
