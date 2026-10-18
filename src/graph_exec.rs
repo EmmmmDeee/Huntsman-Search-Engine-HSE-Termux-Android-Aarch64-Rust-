@@ -971,7 +971,13 @@ impl GraphExecutor {
     where
         F: Fn(&ExecutionCheckpoint) -> Result<(), String>,
     {
-        self.execute_inner(definition, handlers, cancelled, None, Some(&checkpoint_sink))
+        self.execute_inner(
+            definition,
+            handlers,
+            cancelled,
+            None,
+            Some(&checkpoint_sink),
+        )
     }
 
     /// Resume from a validated checkpoint and continue checkpointing after each completed wave.
@@ -1177,7 +1183,8 @@ impl GraphExecutor {
                             *last_start + Duration::from_millis(limit.min_interval_ms);
                         if Instant::now() < eligible_at {
                             rate_wait_until = Some(
-                                rate_wait_until.map_or(eligible_at, |current| current.min(eligible_at)),
+                                rate_wait_until
+                                    .map_or(eligible_at, |current| current.min(eligible_at)),
                             );
                             continue;
                         }
@@ -1202,7 +1209,9 @@ impl GraphExecutor {
                 if let Some(eligible_at) = rate_wait_until {
                     let wait = eligible_at.saturating_duration_since(Instant::now());
                     if !wait.is_zero() {
-                        thread::sleep(wait.min(run_deadline.saturating_duration_since(Instant::now())));
+                        thread::sleep(
+                            wait.min(run_deadline.saturating_duration_since(Instant::now())),
+                        );
                     }
                     continue;
                 }
@@ -1283,7 +1292,8 @@ impl GraphExecutor {
                             max_output_bytes,
                         );
                         (task_id, result)
-                    }) as crate::concurrent::Job<'_, (String, (TaskRecord, u64))>
+                    })
+                        as crate::concurrent::Job<'_, (String, (TaskRecord, u64))>
                 })
                 .collect();
             let results = crate::concurrent::all(jobs);
@@ -1351,7 +1361,9 @@ impl GraphExecutor {
         if let Some(sink) = checkpoint_sink {
             let checkpoint = ExecutionCheckpoint::from_report(report.clone());
             if let Err(error) = sink(&checkpoint) {
-                report.errors.push(format!("final checkpoint persistence failed: {error}"));
+                report
+                    .errors
+                    .push(format!("final checkpoint persistence failed: {error}"));
                 report.termination = Some(RunTermination::Failed);
             }
         }
@@ -1645,10 +1657,12 @@ mod tests {
             .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
             .unwrap();
         assert_eq!(report.tasks["slow"].state, TaskState::TimedOut);
-        assert!(report.tasks["slow"]
-            .error
-            .as_deref()
-            .is_some_and(|error| error.contains("deadline")));
+        assert!(
+            report.tasks["slow"]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("deadline"))
+        );
     }
 
     #[test]
