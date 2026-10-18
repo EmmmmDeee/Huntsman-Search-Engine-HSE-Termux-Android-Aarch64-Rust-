@@ -198,10 +198,7 @@ impl TaskGraph {
             .filter(|task| {
                 !succeeded.contains(&task.id)
                     && !running.contains(&task.id)
-                    && task
-                        .depends_on
-                        .iter()
-                        .all(|id| succeeded.contains(id))
+                    && task.depends_on.iter().all(|id| succeeded.contains(id))
             })
             .collect()
     }
