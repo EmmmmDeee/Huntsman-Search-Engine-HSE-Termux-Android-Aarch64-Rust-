@@ -1011,7 +1011,7 @@ impl GraphExecutor {
             let mut record = prior.cloned().unwrap_or_default();
             let spec = &graph.by_id[id];
             let attempts_remain = record.attempts < spec.max_retries.saturating_add(1);
-            let can_resume = matches!(record.state, TaskState::Pending | TaskState::Running)
+            let can_resume = matches!(&record.state, TaskState::Pending | TaskState::Running)
                 || (record.state == TaskState::Failed && record.retryable && attempts_remain);
             if can_resume {
                 record.state = TaskState::Pending;
