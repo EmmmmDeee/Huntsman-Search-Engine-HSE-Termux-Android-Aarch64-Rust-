@@ -1551,6 +1551,55 @@ mod tests {
     }
 
     #[test]
+    fn late_handler_is_recorded_as_timed_out() {
+        let mut task = spec("slow", &[]);
+        task.timeout_ms = 5;
+        let definition = GraphDefinition {
+            run_id: "timeout-run".into(),
+            tasks: vec![task],
+        };
+        let mut handlers = HandlerRegistry::new();
+        handlers.insert(
+            "slow".into(),
+            handler(|_| {
+                thread::sleep(Duration::from_millis(20));
+                Ok(output(json!(true), "slow"))
+            }),
+        );
+        let report = GraphExecutor::new(policy())
+            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        assert_eq!(report.tasks["slow"].state, TaskState::TimedOut);
+        assert!(report.tasks["slow"]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("deadline")));
+    }
+
+    #[test]
+    fn resource_budget_exhaustion_is_explicit() {
+        let mut task = spec("expensive", &[]);
+        task.resource_units = 2;
+        let definition = GraphDefinition {
+            run_id: "resource-budget-run".into(),
+            tasks: vec![task],
+        };
+        let mut handlers = HandlerRegistry::new();
+        handlers.insert(
+            "expensive".into(),
+            handler(|_| Ok(output(json!(true), "expensive"))),
+        );
+        let mut constrained = policy();
+        constrained.max_total_resource_units = 1;
+        let report = GraphExecutor::new(constrained)
+            .execute(&definition, &handlers, Arc::new(AtomicBool::new(false)))
+            .unwrap();
+        assert_eq!(report.tasks["expensive"].state, TaskState::Blocked);
+        assert_eq!(report.termination, Some(RunTermination::ResourceLimit));
+        assert_eq!(report.consumed_resource_units, 0);
+    }
+
+    #[test]
     fn run_summary_accounts_for_results_and_retries() {
         let definition = GraphDefinition {
             run_id: "summary-run".into(),
