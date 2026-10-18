@@ -94,6 +94,13 @@ impl ValueSchema {
     }
 }
 
+/// Minimum spacing between starts for tasks in one rate-limit group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateLimit {
+    pub key: String,
+    pub min_interval_ms: u64,
+}
+
 /// Static task definition. Function handlers are registered separately and are never serialized.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskSpec {
@@ -106,6 +113,9 @@ pub struct TaskSpec {
     pub dependencies: Vec<String>,
     #[serde(default)]
     pub exclusive_resources: Vec<String>,
+    /// Optional shared start-rate limit for an external provider or resource.
+    #[serde(default)]
+    pub rate_limit: Option<RateLimit>,
     /// Logical-operation key. Duplicate keys in one graph are rejected.
     #[serde(default)]
     pub idempotency_key: Option<String>,
@@ -369,6 +379,7 @@ impl GraphDefinition {
         }
         let mut by_id = BTreeMap::new();
         let mut idempotency = BTreeSet::new();
+        let mut rate_limits = BTreeMap::<String, u64>::new();
         for task in &self.tasks {
             if !valid_token(&task.id) {
                 return Err(GraphError::Invalid(format!("invalid task id: {}", task.id)));
@@ -429,6 +440,26 @@ impl GraphDefinition {
                     return Err(GraphError::Invalid(format!(
                         "duplicate dependency {dependency} on {}",
                         task.id
+                    )));
+                }
+            }
+            if let Some(limit) = &task.rate_limit {
+                if !valid_token(&limit.key)
+                    || limit.min_interval_ms == 0
+                    || limit.min_interval_ms > MAX_TIMEOUT_MS
+                {
+                    return Err(GraphError::Invalid(format!(
+                        "invalid rate limit for {}",
+                        task.id
+                    )));
+                }
+                if rate_limits
+                    .insert(limit.key.clone(), limit.min_interval_ms)
+                    .is_some_and(|existing| existing != limit.min_interval_ms)
+                {
+                    return Err(GraphError::Invalid(format!(
+                        "inconsistent interval for rate-limit group {}",
+                        limit.key
                     )));
                 }
             }
@@ -904,6 +935,7 @@ impl GraphExecutor {
         let run_deadline = Instant::now() + Duration::from_millis(self.policy.run_timeout_ms);
         let mut termination = RunTermination::Completed;
         let mut errors = checkpoint.map_or_else(Vec::new, |saved| saved.report.errors);
+        let mut last_rate_start = BTreeMap::<String, Instant>::new();
 
         loop {
             if records.values().all(|record| record.state.terminal()) {
@@ -960,6 +992,8 @@ impl GraphExecutor {
 
             let mut selected = Vec::<String>::new();
             let mut selected_resources = BTreeSet::new();
+            let mut selected_rate_keys = BTreeSet::new();
+            let mut rate_wait_until: Option<Instant> = None;
             let mut wave_cost = 0_u64;
             let mut budget_blocked = Vec::new();
             for id in &graph.topological_order {
@@ -992,6 +1026,22 @@ impl GraphExecutor {
                 {
                     continue;
                 }
+                if let Some(limit) = &spec.rate_limit {
+                    if selected_rate_keys.contains(&limit.key) {
+                        continue;
+                    }
+                    if let Some(last_start) = last_rate_start.get(&limit.key) {
+                        let eligible_at =
+                            *last_start + Duration::from_millis(limit.min_interval_ms);
+                        if Instant::now() < eligible_at {
+                            rate_wait_until = Some(
+                                rate_wait_until.map_or(eligible_at, |current| current.min(eligible_at)),
+                            );
+                            continue;
+                        }
+                    }
+                    selected_rate_keys.insert(limit.key.clone());
+                }
                 selected_resources.extend(spec.exclusive_resources.iter().cloned());
                 wave_cost = wave_cost.saturating_add(spec.resource_units);
                 selected.push(id.clone());
@@ -1007,6 +1057,13 @@ impl GraphExecutor {
                 termination = RunTermination::ResourceLimit;
             }
             if selected.is_empty() {
+                if let Some(eligible_at) = rate_wait_until {
+                    let wait = eligible_at.saturating_duration_since(Instant::now());
+                    if !wait.is_zero() {
+                        thread::sleep(wait.min(run_deadline.saturating_duration_since(Instant::now())));
+                        continue;
+                    }
+                }
                 if records
                     .values()
                     .any(|record| record.state == TaskState::Pending)
@@ -1034,6 +1091,12 @@ impl GraphExecutor {
                 break;
             }
 
+            let dispatch_started = Instant::now();
+            for id in &selected {
+                if let Some(limit) = &graph.by_id[id].rate_limit {
+                    last_rate_start.insert(limit.key.clone(), dispatch_started);
+                }
+            }
             consumed = consumed.saturating_add(wave_cost);
             let outputs: BTreeMap<String, TaskOutput> = records
                 .iter()
@@ -1190,6 +1253,7 @@ mod tests {
                 .map(|value| (*value).to_string())
                 .collect(),
             exclusive_resources: Vec::new(),
+            rate_limit: None,
             idempotency_key: None,
             timeout_ms: 1_000,
             max_retries: 0,
