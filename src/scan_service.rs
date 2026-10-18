@@ -517,7 +517,6 @@ impl ScanCollector<'_> {
             ),
         }
     }
-
 }
 
 impl SelectorCollector for ScanCollector<'_> {
@@ -2436,7 +2435,10 @@ mod tests {
         assert_eq!(collector.errors, 0);
         assert_eq!(collector.ran, 0);
         let log = service.store().log(&record.id).unwrap();
-        assert!(log.iter().any(|entry| entry.message.contains("cancelled by scan stop")));
+        assert!(
+            log.iter()
+                .any(|entry| entry.message.contains("cancelled by scan stop"))
+        );
 
         service.state().aborts.remove(&record.id);
         let failed = crate::graph_exec::TaskRecord {
@@ -2448,11 +2450,13 @@ mod tests {
         assert_eq!(collector.errors, 1);
         assert_eq!(outcome.outcomes.len(), 1);
         assert_eq!(outcome.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
-        assert!(outcome.outcomes[0]
-            .detail
-            .as_deref()
-            .unwrap()
-            .contains("synthetic execution failure"));
+        assert!(
+            outcome.outcomes[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("synthetic execution failure")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
