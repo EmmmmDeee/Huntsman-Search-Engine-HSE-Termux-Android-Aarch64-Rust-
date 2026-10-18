@@ -426,7 +426,12 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         // Spiderfoot's Import API Keys: its SpiderFoot.cfg export, pasted or chosen as a file, fills
         // the slots its keys belong to and names the keys no Huntsman source takes.
         const PASTED = 'TEST_ONLY_WEB_UI_IMPORT_8b2f', CHOSEN = 'TEST_ONLY_WEB_UI_FILE_4d7a';
-        const imported = () => page.waitForFunction(() => /^Imported/.test(document.getElementById('kimp-m').textContent), null, { timeout: 5000 }).catch(() => {});
+        const imported = () => page.waitForFunction(() => {
+          const note = document.getElementById('kimp-m').textContent;
+          const row = [...document.querySelectorAll('#mods tr')].find(tr => tr.cells[0]?.textContent.trim().toLowerCase() === 'shodan');
+          const label = row?.cells[3].querySelector('.label')?.textContent;
+          return /^Imported/.test(note) && label === 'set';
+        }, null, { timeout: 5000 }).catch(() => {});
         await page.click('#kimp summary');
         await page.fill('#kimp-text', `sfp_fullhunt:api_key=TEST_ONLY_UNUSED\nsfp_shodan:api_key=${PASTED}\nsfp_spider:maxpages=100\n`);
         await page.click('#kimp button[type=submit]');
