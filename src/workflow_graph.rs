@@ -4,6 +4,9 @@
 //! It does not replace the existing ROI scheduler or source execution paths.
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -281,6 +284,174 @@ pub fn validate_output(task: &TaskSpec, output: &Value) -> Result<(), String> {
     Ok(())
 }
 
+
+/// Cooperative cancellation shared by a workflow and its task executors.
+#[derive(Clone, Default)]
+pub struct CancellationToken(Arc<AtomicBool>);
+
+impl CancellationToken {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// Deadline and cancellation signal passed to each attempt.
+///
+/// Executors must propagate `remaining()` into blocking I/O timeouts and check
+/// cancellation between operations. Rust cannot forcibly stop an uncooperative thread.
+#[derive(Debug, Clone)]
+pub struct TaskContext {
+    deadline: Instant,
+    cancellation: CancellationToken,
+}
+
+impl TaskContext {
+    #[must_use]
+    pub fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    #[must_use]
+    pub fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+}
+
+/// Execute each topological layer with bounded concurrency and bounded retries.
+///
+/// Task executors must honour the cooperative deadline/cancellation contract in
+/// `TaskContext`. A dependency runs only after all its prerequisites succeed.
+/// Failed prerequisites produce explicit `Blocked` outcomes.
+pub fn execute<F>(
+    graph: &TaskGraph,
+    max_parallel: usize,
+    cancellation: CancellationToken,
+    executor: &F,
+) -> Result<BTreeMap<String, TaskOutcome>, ExecutionError>
+where
+    F: Fn(&TaskSpec, &TaskContext) -> Result<Value, String> + Sync + Send,
+{
+    if max_parallel == 0 {
+        return Err(ExecutionError::ZeroConcurrency);
+    }
+
+    let mut outcomes = BTreeMap::new();
+    for layer in graph.layers() {
+        let mut runnable = Vec::new();
+        for id in layer {
+            let task = graph.task(id).expect("validated graph layer references a task");
+            if cancellation.is_cancelled() {
+                outcomes.insert(id.clone(), TaskOutcome::Cancelled { attempts: 0 });
+                continue;
+            }
+            if let Some(dependency) = task.depends_on.iter().find(|dependency| {
+                outcomes.get(*dependency).is_some_and(|outcome: &TaskOutcome| !outcome.is_success())
+            }) {
+                outcomes.insert(
+                    id.clone(),
+                    TaskOutcome::Blocked { dependency: dependency.clone() },
+                );
+            } else {
+                runnable.push(id.clone());
+            }
+        }
+
+        for batch in runnable.chunks(max_parallel) {
+            let jobs = batch.iter().map(|id| {
+                let id = id.clone();
+                let task = graph.task(&id).expect("validated graph contains task");
+                let cancellation = cancellation.clone();
+                Box::new(move || {
+                    let outcome = execute_one(task, &cancellation, executor);
+                    (id, outcome)
+                }) as crate::concurrent::Job<'_, (String, TaskOutcome)>
+            }).collect();
+            for (id, outcome) in crate::concurrent::all(jobs) {
+                outcomes.insert(id, outcome);
+            }
+        }
+    }
+    Ok(outcomes)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionError {
+    ZeroConcurrency,
+}
+
+impl std::fmt::Display for ExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroConcurrency => f.write_str("workflow concurrency must be at least one"),
+        }
+    }
+}
+
+impl std::error::Error for ExecutionError {}
+
+fn execute_one<F>(
+    task: &TaskSpec,
+    cancellation: &CancellationToken,
+    executor: &F,
+) -> TaskOutcome
+where
+    F: Fn(&TaskSpec, &TaskContext) -> Result<Value, String> + Sync + Send,
+{
+    let mut last = TaskOutcome::Failed {
+        error: "task did not execute".to_string(),
+        attempts: 0,
+    };
+    for attempt in 1..=task.max_attempts {
+        if cancellation.is_cancelled() {
+            return TaskOutcome::Cancelled { attempts: attempt - 1 };
+        }
+        let deadline = Instant::now() + Duration::from_millis(task.timeout_ms);
+        let context = TaskContext {
+            deadline,
+            cancellation: cancellation.clone(),
+        };
+        let result = catch_unwind(AssertUnwindSafe(|| executor(task, &context)));
+        if cancellation.is_cancelled() {
+            return TaskOutcome::Cancelled { attempts: attempt };
+        }
+        if Instant::now() > deadline {
+            last = TaskOutcome::TimedOut { attempts: attempt };
+            continue;
+        }
+        match result {
+            Ok(Ok(output)) => match validate_output(task, &output) {
+                Ok(()) if is_empty_output(&output) => {
+                    return TaskOutcome::Empty { attempts: attempt };
+                }
+                Ok(()) => return TaskOutcome::Succeeded { output, attempts: attempt },
+                Err(reason) => last = TaskOutcome::InvalidOutput { reason, attempts: attempt },
+            },
+            Ok(Err(error)) => last = TaskOutcome::Failed { error, attempts: attempt },
+            Err(_) => last = TaskOutcome::Failed {
+                error: "task executor panicked".to_string(),
+                attempts: attempt,
+            },
+        }
+    }
+    last
+}
+
+fn is_empty_output(output: &Value) -> bool {
+    output.is_null()
+        || output.as_array().is_some_and(Vec::is_empty)
+        || output.as_object().is_some_and(serde_json::Map::is_empty)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +465,61 @@ mod tests {
             timeout_ms: 1_000,
             required_output_keys: vec![],
         }
+    }
+
+
+    #[test]
+    fn executor_runs_independent_tasks_concurrently_with_a_cap() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+        use std::time::Duration;
+
+        let graph = TaskGraph::validate(vec![task("a", &[]), task("b", &[])]).expect("valid graph");
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let executor = |_: &TaskSpec, _: &TaskContext| {
+            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(30));
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok(json!({"ok": true}))
+        };
+        let outcomes = execute(&graph, 2, CancellationToken::default(), &executor).expect("execute");
+        assert_eq!(outcomes.values().filter(|outcome| outcome.is_success()).count(), 2);
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn executor_retries_within_the_declared_bound_and_blocks_dependents() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let graph = TaskGraph::validate(vec![task("a", &[]), task("b", &["a"])]).expect("valid graph");
+        let calls = AtomicUsize::new(0);
+        let executor = |task: &TaskSpec, _: &TaskContext| {
+            if task.id == "a" && calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err("temporary failure".to_string())
+            } else if task.id == "b" {
+                Ok(json!({"done": true}))
+            } else {
+                Ok(json!({"done": true}))
+            }
+        };
+        let outcomes = execute(&graph, 2, CancellationToken::default(), &executor).expect("execute");
+        assert!(matches!(outcomes.get("a"), Some(TaskOutcome::Succeeded { attempts: 2, .. })));
+        assert!(matches!(outcomes.get("b"), Some(TaskOutcome::Succeeded { attempts: 1, .. })));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn executor_rejects_zero_concurrency_and_reports_invalid_output() {
+        let graph = TaskGraph::validate(vec![task("a", &[])]).expect("valid graph");
+        let executor = |_: &TaskSpec, _: &TaskContext| Ok(json!("not an object"));
+        assert_eq!(
+            execute(&graph, 0, CancellationToken::default(), &executor),
+            Err(ExecutionError::ZeroConcurrency)
+        );
+        let outcomes = execute(&graph, 1, CancellationToken::default(), &executor).expect("execute");
+        assert!(matches!(outcomes.get("a"), Some(TaskOutcome::InvalidOutput { .. })));
     }
 
     #[test]
