@@ -2615,7 +2615,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn cancellation_interrupts_provider_rate_wait_without_dispatching_next_task() {
         let limit = RateLimit {
