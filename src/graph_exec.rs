@@ -1383,9 +1383,9 @@ impl GraphExecutor {
                         "{id}: {}",
                         record.error.as_deref().unwrap_or("task failed")
                     ));
-                    if matches!(record.state, TaskState::TimedOut) {
+                    if matches!(&record.state, TaskState::TimedOut) {
                         termination = RunTermination::TimedOut;
-                    } else if matches!(record.state, TaskState::Cancelled) {
+                    } else if matches!(&record.state, TaskState::Cancelled) {
                         termination = RunTermination::Cancelled;
                     } else if termination == RunTermination::Completed {
                         termination = RunTermination::Failed;
