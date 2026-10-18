@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -272,6 +272,7 @@ fn chosen(options: &ScanOptions) -> Result<Selection, ServiceError> {
 struct State {
     running: usize,
     aborts: BTreeSet<String>,
+    graph_cancellations: BTreeMap<String, Arc<AtomicBool>>,
 }
 
 /// What following a scan's findings produced beside the findings themselves.
@@ -514,7 +515,7 @@ impl SelectorCollector for ScanCollector<'_> {
             max_output_bytes: 2 * 1024 * 1024,
             run_timeout_ms: 15 * 60 * 1000,
         };
-        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancellation = self.service.graph_cancellation(self.id);
         let report = match GraphExecutor::new(policy).execute(&definition, &handlers, &cancellation)
         {
             Ok(report) => report,
@@ -722,6 +723,7 @@ impl ScanService {
             state: Mutex::new(State {
                 running: 0,
                 aborts: BTreeSet::new(),
+                graph_cancellations: BTreeMap::new(),
             }),
             freed: Condvar::new(),
             sequence: AtomicU64::new(0),
@@ -991,6 +993,19 @@ impl ScanService {
         self.state().aborts.contains(id)
     }
 
+    /// Reuse one cancellation signal across all graph waves of the same scan.
+    /// Registration under the state lock cannot miss a stop requested beforehand.
+    fn graph_cancellation(&self, id: &str) -> Arc<AtomicBool> {
+        let mut state = self.state();
+        let already_stopped = state.aborts.contains(id);
+        Arc::clone(
+            state
+                .graph_cancellations
+                .entry(id.to_owned())
+                .or_insert_with(|| Arc::new(AtomicBool::new(already_stopped))),
+        )
+    }
+
     fn set_status(&self, id: &str, status: ScanStatus, at: Option<u64>) {
         if let Ok(mut record) = self.store.get(id) {
             // A stop asked for while starting stays visible until the worker honours it.
@@ -1027,6 +1042,7 @@ impl ScanService {
             let mut state = self.state();
             state.running -= 1;
             state.aborts.remove(id);
+            state.graph_cancellations.remove(id);
         }
         self.freed.notify_all();
         if outcome.is_err() {
@@ -1294,7 +1310,13 @@ impl ScanService {
                 record.status.as_str()
             )));
         }
-        self.state().aborts.insert(id.to_owned());
+        {
+            let mut state = self.state();
+            state.aborts.insert(id.to_owned());
+            if let Some(cancelled) = state.graph_cancellations.get(id) {
+                cancelled.store(true, Ordering::Release);
+            }
+        }
         self.freed.notify_all();
         if record.status != ScanStatus::AbortRequested {
             record.status = ScanStatus::AbortRequested;
@@ -1909,6 +1931,83 @@ mod tests {
             Err(ServiceError::Conflict(_))
         ));
         service.delete(&record.id).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stopping_active_graph_batch_signals_cancellation_and_retains_results() {
+        let (entered_tx, entered_rx) = mpsc::channel::<String>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let entered_tx = Mutex::new(entered_tx);
+        let release_rx = Mutex::new(release_rx);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        let (service, dir) = with_lookup(
+            "stop-graph-batch",
+            Arc::new(move |kind: ScanKind, selector: &str, _: &Selection| {
+                if kind == ScanKind::Domain {
+                    let evidence = Evidence::new(
+                        EvidenceProvenance::for_scan("test", "seed"),
+                        "discovered address",
+                    );
+                    return Ok(LookupOutput {
+                        entities: ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
+                            .into_iter()
+                            .map(|ip| {
+                                Entity::builder(EntityKind::IpAddress, ip, 0.95, "test")
+                                    .evidence(evidence.clone())
+                                    .build()
+                            })
+                            .collect(),
+                        ..LookupOutput::default()
+                    });
+                }
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                entered_tx.lock().unwrap().send(selector.to_owned()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+                Ok(LookupOutput {
+                    text: format!("completed-{selector}"),
+                    ..LookupOutput::default()
+                })
+            }),
+        );
+        let record = service
+            .start(&ScanRequest {
+                target: "example.org".into(),
+                kind: Some("domain".into()),
+                options: ScanOptions {
+                    depth: 1,
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let first = entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let second = entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_ne!(first, second);
+        let cancellation = {
+            let state = service.state();
+            Arc::clone(
+                state
+                    .graph_cancellations
+                    .get(&record.id)
+                    .expect("running graph must register cancellation"),
+            )
+        };
+        assert!(!cancellation.load(Ordering::Acquire));
+        service.stop(&record.id).unwrap();
+        assert!(cancellation.load(Ordering::Acquire));
+        release_tx.send(()).unwrap();
+        release_tx.send(()).unwrap();
+        let finished = service
+            .wait(&record.id, Instant::now() + Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(finished.status, ScanStatus::Aborted);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        assert!(results.text.contains(&format!("completed-{first}")));
+        assert!(results.text.contains(&format!("completed-{second}")));
+        assert_eq!(results.termination, Some(TerminationReason::Cancelled));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
