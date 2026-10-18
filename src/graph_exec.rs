@@ -19,6 +19,11 @@ use serde_json::Value;
 use thiserror::Error;
 
 const MAX_ID_BYTES: usize = 128;
+const MAX_TASKS: usize = 4096;
+const MAX_DEPENDENCIES_PER_TASK: usize = 1024;
+const MAX_RESOURCES_PER_TASK: usize = 64;
+const MAX_INPUT_BYTES: usize = 1024 * 1024;
+const MAX_CONCURRENCY: usize = 64;
 const MAX_OBJECTIVE_BYTES: usize = 4096;
 const MAX_SCHEMA_DEPTH: usize = 64;
 const MAX_CHECKPOINT_BYTES: usize = 16 * 1024 * 1024;
@@ -220,6 +225,8 @@ pub struct TaskContext {
     pub input: Value,
     pub dependency_outputs: BTreeMap<String, TaskOutput>,
     pub attempt: u8,
+    /// Stable key handlers should forward to idempotent external operations.
+    pub idempotency_key: Option<String>,
     deadline: Instant,
     cancelled: Arc<AtomicBool>,
 }
@@ -354,6 +361,9 @@ impl GraphDefinition {
         if self.tasks.is_empty() {
             return Err(GraphError::Invalid("graph contains no tasks".into()));
         }
+        if self.tasks.len() > MAX_TASKS {
+            return Err(GraphError::Invalid("graph exceeds task limit".into()));
+        }
         let mut by_id = BTreeMap::new();
         let mut idempotency = BTreeSet::new();
         for task in &self.tasks {
@@ -371,6 +381,16 @@ impl GraphDefinition {
             }
             if task.resource_units == 0 {
                 return Err(GraphError::Invalid(format!("zero resource cost for {}", task.id)));
+            }
+            let input_bytes = serde_json::to_vec(&task.input)
+                .map_err(|error| GraphError::Invalid(format!("cannot encode input for {}: {error}", task.id)))?;
+            if input_bytes.len() > MAX_INPUT_BYTES {
+                return Err(GraphError::Invalid(format!("input exceeds size limit for {}", task.id)));
+            }
+            if task.dependencies.len() > MAX_DEPENDENCIES_PER_TASK
+                || task.exclusive_resources.len() > MAX_RESOURCES_PER_TASK
+            {
+                return Err(GraphError::Invalid(format!("dependency or resource limit exceeded for {}", task.id)));
             }
             if !task.input_schema.accepts(&task.input) {
                 return Err(GraphError::Invalid(format!("input schema mismatch for {}", task.id)));
@@ -460,6 +480,9 @@ impl GraphDefinition {
         }
         let encoded = serde_json::to_vec(self)
             .map_err(|error| GraphError::Invalid(format!("cannot fingerprint graph: {error}")))?;
+        if encoded.len() > MAX_CHECKPOINT_BYTES {
+            return Err(GraphError::Invalid("graph definition exceeds size limit".into()));
+        }
         let fingerprint = crate::sha256::hex32(&crate::sha256::sha256(&encoded));
         Ok(ValidatedGraph {
             topological_order: order,
@@ -487,7 +510,7 @@ fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Re
     if !spec.output_schema.accepts(&output.value) {
         return Err(format!("output schema mismatch for {}", spec.id));
     }
-    let encoded = serde_json::to_vec(&output.value)
+    let encoded = serde_json::to_vec(output)
         .map_err(|error| format!("output serialization failed: {error}"))?;
     if encoded.len() > max_bytes {
         return Err(format!(
@@ -578,7 +601,7 @@ fn run_one(
             last_error = "run deadline exceeded".into();
             break;
         }
-        if record.attempts >= max_attempts {
+        if prior_attempts.saturating_add(record.attempts) >= max_attempts {
             record.state = TaskState::Failed;
             break;
         }
@@ -590,6 +613,7 @@ fn run_one(
             input: spec.input.clone(),
             dependency_outputs: dependency_outputs.clone(),
             attempt,
+            idempotency_key: spec.idempotency_key.clone(),
             deadline,
             cancelled: Arc::clone(&cancelled),
         };
@@ -619,7 +643,7 @@ fn run_one(
             }
             Ok(Err(error)) => {
                 last_error = error.message;
-                if !error.retryable || record.attempts >= max_attempts {
+                if !error.retryable || prior_attempts.saturating_add(record.attempts) >= max_attempts {
                     record.state = TaskState::Failed;
                     break;
                 }
@@ -725,6 +749,7 @@ impl GraphExecutor {
         checkpoint: Option<ExecutionCheckpoint>,
     ) -> Result<RunReport, GraphError> {
         if self.policy.max_concurrency == 0
+            || self.policy.max_concurrency > MAX_CONCURRENCY
             || self.policy.max_total_resource_units == 0
             || self.policy.max_output_bytes == 0
             || self.policy.run_timeout_ms == 0
@@ -733,13 +758,6 @@ impl GraphExecutor {
             return Err(GraphError::Invalid("invalid execution policy".into()));
         }
         let graph = definition.validate()?;
-        if graph
-            .by_id
-            .values()
-            .any(|spec| spec.resource_units > self.policy.max_total_resource_units)
-        {
-            // Such a graph is valid but the affected task will be recorded as blocked below.
-        }
         if let Some(checkpoint) = &checkpoint {
             if checkpoint.format_version != 1
                 || checkpoint.graph_fingerprint != graph.fingerprint
