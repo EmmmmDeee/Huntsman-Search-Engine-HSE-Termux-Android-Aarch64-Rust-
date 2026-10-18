@@ -1075,11 +1075,24 @@ impl ScanService {
     }
 
     fn set_status(&self, id: &str, status: ScanStatus, at: Option<u64>) {
+        // The state lock also serializes stop requests and the scan row's final counters.
+        // A detached read/modify/write could resurrect RUNNING after ABORT-REQUESTED, or
+        // overwrite the operator's stop with FINISHED.
+        let state = self.state();
         if let Ok(mut record) = self.store.get(id) {
-            // A stop asked for while starting stays visible until the worker honours it.
-            if record.status == ScanStatus::AbortRequested && status == ScanStatus::Running {
+            if !record.status.is_active() {
                 return;
             }
+            if matches!(status, ScanStatus::Starting | ScanStatus::Running)
+                && (record.status == ScanStatus::AbortRequested || state.aborts.contains(id))
+            {
+                return;
+            }
+            let status = if status == ScanStatus::Finished && state.aborts.contains(id) {
+                ScanStatus::Aborted
+            } else {
+                status
+            };
             record.status = status;
             match status {
                 ScanStatus::Running => record.started = at,
@@ -1371,6 +1384,8 @@ impl ScanService {
             lineage: crawl.lineage,
             termination: Some(crawl.termination),
         })?;
+        // A stop and a result-count update must not write stale copies of the same row.
+        let _state = self.state();
         let mut record = self.store.get(id)?;
         record.elements = total;
         record.unique = unique;
@@ -1387,6 +1402,9 @@ impl ScanService {
     /// [`ServiceError::NotFound`] for no such scan, [`ServiceError::Conflict`] when it is not
     /// running.
     pub fn stop(&self, id: &str) -> Result<ScanRecord, ServiceError> {
+        // Hold the same lock as worker status transitions and save's row update.
+        // Otherwise a stop could read RUNNING and replace a newly FINISHED row.
+        let mut state = self.state();
         let mut record = self.store.get(id)?;
         if !record.status.is_active() {
             return Err(ServiceError::Conflict(format!(
@@ -1394,13 +1412,11 @@ impl ScanService {
                 record.status.as_str()
             )));
         }
-        {
-            let mut state = self.state();
-            state.aborts.insert(id.to_owned());
-            if let Some(cancelled) = state.graph_cancellations.get(id) {
-                cancelled.store(true, Ordering::Release);
-            }
+        state.aborts.insert(id.to_owned());
+        if let Some(cancelled) = state.graph_cancellations.get(id) {
+            cancelled.store(true, Ordering::Release);
         }
+        // Wake blocked workers even if persisting the request fails.
         self.freed.notify_all();
         self.admission.freed.notify_all();
         if record.status != ScanStatus::AbortRequested {
@@ -1953,6 +1969,44 @@ mod tests {
         assert_eq!(
             kinds,
             BTreeSet::from(["IP_ADDRESS", "ROOT", "TCP_PORT_OPEN"])
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancellation_is_monotonic_across_worker_start_and_finish() {
+        let (service, dir) = with_lookup(
+            "monotonic-status",
+            Arc::new(|_: ScanKind, _: &str, _: &Selection| Ok(LookupOutput::default())),
+        );
+        let (created, _) = service
+            .create(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let stop = service.stop(&created.id).unwrap();
+        assert_eq!(stop.status, ScanStatus::AbortRequested);
+
+        // The queued worker may observe the stop after starting. Neither transition
+        // may erase the operator's cancellation request or invent a start time.
+        service.set_status(&created.id, ScanStatus::Starting, None);
+        service.set_status(&created.id, ScanStatus::Running, Some(123));
+        let row = service.store().get(&created.id).unwrap();
+        assert_eq!(row.status, ScanStatus::AbortRequested);
+        assert!(row.started.is_none());
+
+        // A worker that chose FINISHED just before stop() acquired the state lock
+        // must still commit ABORTED when it eventually updates its row.
+        service.set_status(&created.id, ScanStatus::Finished, Some(456));
+        let row = service.store().get(&created.id).unwrap();
+        assert_eq!(row.status, ScanStatus::Aborted);
+        assert_eq!(row.ended, Some(456));
+        service.set_status(&created.id, ScanStatus::Running, Some(789));
+        assert_eq!(
+            service.store().get(&created.id).unwrap().status,
+            ScanStatus::Aborted,
+            "a completed scan must never be resurrected by a late worker transition"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
