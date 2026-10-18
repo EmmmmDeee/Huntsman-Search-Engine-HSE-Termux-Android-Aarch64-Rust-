@@ -776,7 +776,7 @@ impl GraphExecutor {
         handlers: &HandlerRegistry,
         cancelled: Arc<AtomicBool>,
     ) -> Result<RunReport, GraphError> {
-        self.execute_inner(definition, handlers, cancelled, None)
+        self.execute_inner(definition, handlers, cancelled, None, None)
     }
 
     pub fn resume(
@@ -786,7 +786,45 @@ impl GraphExecutor {
         cancelled: Arc<AtomicBool>,
         checkpoint: ExecutionCheckpoint,
     ) -> Result<RunReport, GraphError> {
-        self.execute_inner(definition, handlers, cancelled, Some(checkpoint))
+        self.execute_inner(definition, handlers, cancelled, Some(checkpoint), None)
+    }
+
+    /// Execute and checkpoint after each completed scheduling wave.
+    ///
+    /// The sink should atomically persist the encoded checkpoint. A sink failure stops further
+    /// dispatch so the engine does not knowingly continue without its requested recovery record.
+    pub fn execute_checkpointed<F>(
+        &self,
+        definition: &GraphDefinition,
+        handlers: &HandlerRegistry,
+        cancelled: Arc<AtomicBool>,
+        checkpoint_sink: F,
+    ) -> Result<RunReport, GraphError>
+    where
+        F: Fn(&ExecutionCheckpoint) -> Result<(), String>,
+    {
+        self.execute_inner(definition, handlers, cancelled, None, Some(&checkpoint_sink))
+    }
+
+    /// Resume from a validated checkpoint and continue checkpointing after each completed wave.
+    pub fn resume_checkpointed<F>(
+        &self,
+        definition: &GraphDefinition,
+        handlers: &HandlerRegistry,
+        cancelled: Arc<AtomicBool>,
+        checkpoint: ExecutionCheckpoint,
+        checkpoint_sink: F,
+    ) -> Result<RunReport, GraphError>
+    where
+        F: Fn(&ExecutionCheckpoint) -> Result<(), String>,
+    {
+        self.execute_inner(
+            definition,
+            handlers,
+            cancelled,
+            Some(checkpoint),
+            Some(&checkpoint_sink),
+        )
     }
 
     #[allow(clippy::too_many_lines)]
@@ -796,6 +834,7 @@ impl GraphExecutor {
         handlers: &HandlerRegistry,
         cancelled: Arc<AtomicBool>,
         checkpoint: Option<ExecutionCheckpoint>,
+        checkpoint_sink: Option<&dyn Fn(&ExecutionCheckpoint) -> Result<(), String>>,
     ) -> Result<RunReport, GraphError> {
         if self.policy.max_concurrency == 0
             || self.policy.max_concurrency > MAX_CONCURRENCY
@@ -1074,10 +1113,39 @@ impl GraphExecutor {
                 }
                 records.insert(id, record);
             }
+            if let Some(sink) = checkpoint_sink {
+                let snapshot = RunReport {
+                    run_id: definition.run_id.clone(),
+                    graph_fingerprint: graph.fingerprint.clone(),
+                    started_at_unix,
+                    finished_at_unix: None,
+                    duration_ms: Some(
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    ),
+                    termination: None,
+                    consumed_resource_units: consumed,
+                    tasks: records.clone(),
+                    errors: errors.clone(),
+                };
+                let checkpoint = ExecutionCheckpoint::from_report(snapshot);
+                if let Err(error) = sink(&checkpoint) {
+                    errors.push(format!("checkpoint persistence failed: {error}"));
+                    for record in records
+                        .values_mut()
+                        .filter(|record| record.state == TaskState::Pending)
+                    {
+                        record.state = TaskState::Blocked;
+                        record.error = Some("checkpoint persistence failed".into());
+                        record.finished_at_unix = Some(now_unix());
+                    }
+                    termination = RunTermination::Failed;
+                    break;
+                }
+            }
         }
 
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        Ok(RunReport {
+        let mut report = RunReport {
             run_id: definition.run_id.clone(),
             graph_fingerprint: graph.fingerprint,
             started_at_unix,
@@ -1087,7 +1155,15 @@ impl GraphExecutor {
             consumed_resource_units: consumed,
             tasks: records,
             errors,
-        })
+        };
+        if let Some(sink) = checkpoint_sink {
+            let checkpoint = ExecutionCheckpoint::from_report(report.clone());
+            if let Err(error) = sink(&checkpoint) {
+                report.errors.push(format!("final checkpoint persistence failed: {error}"));
+                report.termination = Some(RunTermination::Failed);
+            }
+        }
+        Ok(report)
     }
 }
 
