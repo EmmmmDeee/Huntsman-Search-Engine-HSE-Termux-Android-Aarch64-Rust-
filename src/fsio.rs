@@ -466,7 +466,10 @@ mod tests {
         })
         .unwrap();
         assert_eq!(result, b"new");
-        assert_eq!(replacements, 2, "the stale inode was rejected then rechecked");
+        assert_eq!(
+            replacements, 2,
+            "the stale inode was rejected then rechecked"
+        );
         assert_eq!(read_bounded(&path, 32).unwrap(), b"new");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -480,7 +483,11 @@ mod tests {
         write_atomic_private(&path, b"expected", 32).unwrap();
         fs::write(&other, b"unrelated").unwrap();
         let failure = read_bounded_replacing_with(&path, 32, || {
-            if !fs::symlink_metadata(&path).unwrap().file_type().is_symlink() {
+            if !fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+            {
                 fs::remove_file(&path).unwrap();
                 std::os::unix::fs::symlink(&other, &path).unwrap();
             }
