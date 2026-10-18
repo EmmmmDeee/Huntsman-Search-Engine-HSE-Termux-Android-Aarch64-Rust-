@@ -839,7 +839,7 @@ fn run_one(
             attempt,
             idempotency_key: spec.idempotency_key.clone(),
             deadline,
-            cancelled: Arc::clone(&cancelled),
+            cancelled: Arc::clone(cancelled),
         };
         let attempt_started = Instant::now();
         let result = catch_unwind(AssertUnwindSafe(|| handler(context)));
