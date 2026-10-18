@@ -201,3 +201,17 @@ PLANNED, in this order. "In flight" means work has started on that branch and is
 4. Compile the 8 orphan modules (G8). Done: #675.
 5. ATT&CK reporting refactor. In flight: current-main hierarchy-aware ATT&CK projection that keeps raw object claims but scores independent leaf capabilities without version-specific hard-coded totals.
 6. The rest of CAPABILITIES, ranked by user value.
+
+### Reproducible graph scheduling comparison
+
+Run `cargo test --locked --test graph_exec measured_sequential_vs_bounded_graph_synthetic_io -- --nocapture`
+from the repository root. CI runs the same comparison on pinned Rust 1.99 after the
+full repair gate and prints a JSON timing record. The benchmark executes four
+independent synthetic, fixed-latency blocking lookups first in sequence and then
+through the graph executor at concurrency two. It checks equivalent outputs,
+success counts and termination status; no speedup threshold is asserted because
+CI scheduling can vary. Both durations are measured in milliseconds, not
+estimated. This measurement does **not** establish live-API performance, paid
+API costs, false-positive rates or performance on an Android handset. Those
+require an additional controlled provider/device workload with a captured
+baseline before any concurrency increase.
