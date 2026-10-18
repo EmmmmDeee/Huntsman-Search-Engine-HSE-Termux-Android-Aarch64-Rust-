@@ -131,6 +131,9 @@ pub struct TaskSpec {
     /// Logical-operation key. Duplicate keys in one graph are rejected.
     #[serde(default)]
     pub idempotency_key: Option<String>,
+    /// Require handlers to forward the stable key to side-effecting external operations.
+    #[serde(default)]
+    pub requires_idempotency: bool,
     /// Cooperative per-attempt deadline.
     pub timeout_ms: u64,
     /// Number of retries after the initial attempt; capped by MAX_RETRIES.
@@ -577,6 +580,12 @@ impl GraphDefinition {
                         task.id
                     )));
                 }
+            }
+            if task.requires_idempotency && task.idempotency_key.is_none() {
+                return Err(GraphError::Invalid(format!(
+                    "task {} requires an idempotency key",
+                    task.id
+                )));
             }
             if let Some(key) = &task.idempotency_key {
                 if !valid_token(key) || !idempotency.insert(key.clone()) {
@@ -1478,6 +1487,7 @@ mod tests {
             exclusive_resources: Vec::new(),
             rate_limit: None,
             idempotency_key: None,
+            requires_idempotency: false,
             timeout_ms: 1_000,
             max_retries: 0,
             resource_units: 1,
@@ -1526,6 +1536,24 @@ mod tests {
             tasks: vec![spec("a", &["b"]), spec("b", &["a"])],
         };
         assert!(cycle.validate().unwrap_err().to_string().contains("cycle"));
+    }
+
+    #[test]
+    fn side_effecting_task_requires_an_idempotency_key() {
+        let mut task = spec("side-effect", &[]);
+        task.requires_idempotency = true;
+        let graph = GraphDefinition {
+            run_id: "idempotency-run".into(),
+            tasks: vec![task.clone()],
+        };
+        assert!(graph.validate().is_err());
+        task.idempotency_key = Some("stable-operation-1".into());
+        assert!(GraphDefinition {
+            run_id: "idempotency-run".into(),
+            tasks: vec![task],
+        }
+        .validate()
+        .is_ok());
     }
 
     #[test]
