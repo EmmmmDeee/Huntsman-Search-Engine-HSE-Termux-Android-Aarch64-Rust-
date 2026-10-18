@@ -1,1 +1,1 @@
-Canonical IP target validation now shares the guarded egress IPv4 policy, including IPv4-mapped IPv6, with explicit regression coverage for policy boundaries. IPv6 selection remains stricter for documentation, special-purpose and 6to4 ranges.
+- Canonical IP target validation now shares the guarded egress IPv4 policy, including IPv4-mapped IPv6, with explicit regression coverage for policy boundaries. IPv6 selection remains stricter for documentation, special-purpose and 6to4 ranges.
