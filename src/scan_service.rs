@@ -350,6 +350,9 @@ impl SelectorCollector for ScanCollector<'_> {
         }
     }
 
+    // The graph adapter intentionally keeps task construction, execution and ordered accounting
+    // together so failures cannot bypass scan-level error reporting.
+    #[allow(clippy::too_many_lines)]
     fn collect_batch(&mut self, targets: &[CrawlTarget]) -> Vec<Step> {
         // Keep legacy ordering when a batch contains a paired email/exposure lookup, a skipped
         // module selection, or an already-covered exposure. These cases have stateful semantics.
