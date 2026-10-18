@@ -109,9 +109,6 @@ jobs:
       - name: Run deterministic repair gate (MSRV)
         if: matrix.toolchain == '1.87'
         run: cargo run --locked -p xtask -- gate msrv
-      - name: Record synthetic sequential versus graph comparison (1.99)
-        if: matrix.toolchain == '1.99'
-        run: cargo test --locked --test graph_exec measured_sequential_vs_bounded_graph_synthetic_io -- --nocapture
 
 
   railway-container:
