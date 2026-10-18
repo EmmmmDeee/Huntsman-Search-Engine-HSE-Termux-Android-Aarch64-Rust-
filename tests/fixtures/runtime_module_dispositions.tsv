@@ -76,6 +76,7 @@ geometry	leaf	geometry helpers
 gexf	exporter	GEXF graph output
 github_user	adapter	public GitHub profile source client
 graph	runtime	shared deterministic graph model
+graph_exec	leaf	public evidence-gated DAG execution and checkpoint API; exported library surface awaiting scan-service integration
 gravatar	adapter	public Gravatar profile source client
 greynoise	adapter	GreyNoise Community leg reached through ip_cli from ip, scan -k ip and /api/lookup
 hackertarget	adapter	HackerTarget leg reached through indicator_legs from ip, domain, scan and /api/lookup
