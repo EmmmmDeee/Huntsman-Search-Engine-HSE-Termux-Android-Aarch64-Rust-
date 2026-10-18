@@ -136,7 +136,7 @@ pub struct TaskSpec {
     pub requires_idempotency: bool,
     /// Cooperative per-attempt deadline.
     pub timeout_ms: u64,
-    /// Number of retries after the initial attempt; capped by MAX_RETRIES.
+    /// Number of retries after the initial attempt; capped by `MAX_RETRIES`.
     #[serde(default)]
     pub max_retries: u8,
     /// Cumulative budget units charged once for each attempted task, not each retry.
@@ -284,6 +284,8 @@ impl TaskContext {
 pub type TaskHandler =
     Arc<dyn Fn(TaskContext) -> Result<TaskOutput, TaskFailure> + Send + Sync + 'static>;
 pub type HandlerRegistry = BTreeMap<String, TaskHandler>;
+/// Callback used to persist a validated checkpoint after each completed wave.
+pub type CheckpointSink = dyn Fn(&ExecutionCheckpoint) -> Result<(), String>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPolicy {
@@ -611,7 +613,7 @@ impl GraphDefinition {
                 )));
             }
         }
-        for task in self.tasks.iter() {
+        for task in &self.tasks {
             for dependency in &task.dependencies {
                 if !by_id.contains_key(dependency) {
                     return Err(GraphError::Invalid(format!(
@@ -797,9 +799,9 @@ fn validate_output(spec: &TaskSpec, output: &TaskOutput, max_bytes: usize) -> Re
 fn run_one(
     spec: &TaskSpec,
     handler: &TaskHandler,
-    dependency_outputs: BTreeMap<String, TaskOutput>,
+    dependency_outputs: &BTreeMap<String, TaskOutput>,
     prior_attempts: u8,
-    cancelled: Arc<AtomicBool>,
+    cancelled: &Arc<AtomicBool>,
     run_deadline: Instant,
     max_output_bytes: usize,
 ) -> (TaskRecord, u64) {
@@ -963,7 +965,7 @@ impl GraphExecutor {
         handlers: &HandlerRegistry,
         cancelled: Arc<AtomicBool>,
     ) -> Result<RunReport, GraphError> {
-        self.execute_inner(definition, handlers, cancelled, None, None)
+        self.execute_inner(definition, handlers, &cancelled, None, None)
     }
 
     pub fn resume(
@@ -973,7 +975,7 @@ impl GraphExecutor {
         cancelled: Arc<AtomicBool>,
         checkpoint: ExecutionCheckpoint,
     ) -> Result<RunReport, GraphError> {
-        self.execute_inner(definition, handlers, cancelled, Some(checkpoint), None)
+        self.execute_inner(definition, handlers, &cancelled, Some(checkpoint), None)
     }
 
     /// Execute and checkpoint after each completed scheduling wave.
@@ -993,7 +995,7 @@ impl GraphExecutor {
         self.execute_inner(
             definition,
             handlers,
-            cancelled,
+            &cancelled,
             None,
             Some(&checkpoint_sink),
         )
@@ -1014,7 +1016,7 @@ impl GraphExecutor {
         self.execute_inner(
             definition,
             handlers,
-            cancelled,
+            &cancelled,
             Some(checkpoint),
             Some(&checkpoint_sink),
         )
@@ -1025,9 +1027,9 @@ impl GraphExecutor {
         &self,
         definition: &GraphDefinition,
         handlers: &HandlerRegistry,
-        cancelled: Arc<AtomicBool>,
+        cancelled: &Arc<AtomicBool>,
         checkpoint: Option<ExecutionCheckpoint>,
-        checkpoint_sink: Option<&dyn Fn(&ExecutionCheckpoint) -> Result<(), String>>,
+        checkpoint_sink: Option<&CheckpointSink>,
     ) -> Result<RunReport, GraphError> {
         if self.policy.max_concurrency == 0
             || self.policy.max_concurrency > MAX_CONCURRENCY
@@ -1349,17 +1351,16 @@ impl GraphExecutor {
                     })
                     .collect::<Result<BTreeMap<_, _>, GraphError>>()?;
                 let prior_attempts = records[id].attempts;
-                let cancelled = Arc::clone(&cancelled);
-                let run_deadline = run_deadline;
+                let cancelled = Arc::clone(cancelled);
                 let max_output_bytes = self.policy.max_output_bytes;
                 let task_id = id.clone();
                 jobs.push(Box::new(move || {
                     let result = run_one(
                         spec,
                         &handler,
-                        deps,
+                        &deps,
                         prior_attempts,
-                        cancelled,
+                        &cancelled,
                         run_deadline,
                         max_output_bytes,
                     );
