@@ -1963,7 +1963,11 @@ mod tests {
                     });
                 }
                 observed_calls.fetch_add(1, Ordering::SeqCst);
-                entered_tx.lock().unwrap().send(selector.to_owned()).unwrap();
+                entered_tx
+                    .lock()
+                    .unwrap()
+                    .send(selector.to_owned())
+                    .unwrap();
                 release_rx.lock().unwrap().recv().unwrap();
                 Ok(LookupOutput {
                     text: format!("completed-{selector}"),
