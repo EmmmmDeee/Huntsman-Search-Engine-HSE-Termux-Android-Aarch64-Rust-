@@ -285,7 +285,8 @@ pub type TaskHandler =
     Arc<dyn Fn(TaskContext) -> Result<TaskOutput, TaskFailure> + Send + Sync + 'static>;
 pub type HandlerRegistry = BTreeMap<String, TaskHandler>;
 /// Callback used to persist a validated checkpoint after each completed wave.
-pub type CheckpointSink = dyn Fn(&ExecutionCheckpoint) -> Result<(), String>;
+pub type CheckpointSink<'sink> =
+    dyn Fn(&ExecutionCheckpoint) -> Result<(), String> + 'sink;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPolicy {
@@ -1030,7 +1031,7 @@ impl GraphExecutor {
         handlers: &HandlerRegistry,
         cancelled: &Arc<AtomicBool>,
         checkpoint: Option<ExecutionCheckpoint>,
-        checkpoint_sink: Option<&CheckpointSink>,
+        checkpoint_sink: Option<&CheckpointSink<'_>>,
     ) -> Result<RunReport, GraphError> {
         if self.policy.max_concurrency == 0
             || self.policy.max_concurrency > MAX_CONCURRENCY
