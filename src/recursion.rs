@@ -283,7 +283,7 @@ impl CrawlState {
                 self.cancelled = true;
                 stopped = true;
                 next.push(first);
-                for target in remaining { next.push(target); }
+                for target in remaining.by_ref() { next.push(target); }
                 break;
             }
             if !self.visited.insert(first.owned_key()) { continue; }
@@ -291,7 +291,7 @@ impl CrawlState {
                 self.resource_limited = true;
                 stopped = true;
                 next.push(first);
-                for target in remaining { next.push(target); }
+                for target in remaining.by_ref() { next.push(target); }
                 break;
             }
 
@@ -302,7 +302,7 @@ impl CrawlState {
                     self.cancelled = true;
                     stopped = true;
                     next.push(target);
-                    for target in remaining { next.push(target); }
+                    for target in remaining.by_ref() { next.push(target); }
                     break;
                 }
                 if !self.visited.insert(target.owned_key()) { continue; }
@@ -312,7 +312,7 @@ impl CrawlState {
                     self.resource_limited = true;
                     stopped = true;
                     next.push(target);
-                    for target in remaining { next.push(target); }
+                    for target in remaining.by_ref() { next.push(target); }
                     break;
                 }
                 batch.push(target);
