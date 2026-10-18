@@ -452,6 +452,20 @@ impl SelectorCollector for ScanCollector<'_> {
             }
         };
 
+        let summary = report.summary();
+        self.service.log(
+            self.id,
+            "graph_exec",
+            LogLevel::Info,
+            format!(
+                "lookup wave run {}: {} tasks, {} succeeded, {} failed, {} ms",
+                definition.run_id,
+                summary.total_tasks,
+                summary.succeeded,
+                summary.failed + summary.timed_out + summary.blocked,
+                summary.wall_clock_ms.unwrap_or_default()
+            ),
+        );
         targets
             .iter()
             .enumerate()
