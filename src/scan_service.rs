@@ -383,16 +383,8 @@ impl SelectorCollector for ScanCollector<'_> {
             self.ran += 1;
             self.errors += failed;
         } else {
+            // lookup_into retained its exact error in found.outcomes.
             self.errors += 1;
-            found.outcomes.extend(
-                failed_lookup_step(
-                    target,
-                    "scan_lookup",
-                    SourceOutcomeKind::Inconclusive,
-                    "lookup returned no report; see scan log for the underlying error",
-                )
-                .outcomes,
-            );
         }
         if target.kind == ScanKind::Email
             && found
@@ -1212,6 +1204,11 @@ impl ScanService {
                     LogLevel::Error,
                     format!("the {} lookup gave no report: {message}", kind.command()),
                 );
+                found.outcomes.push(SourceExecutionOutcome::inconclusive(
+                    "scan_lookup",
+                    now_ms() / 1_000,
+                    format!("{} lookup on {target}: {message}", kind.command()),
+                ));
                 None
             }
         }
@@ -2046,6 +2043,11 @@ mod tests {
         assert_eq!(results.outcomes[0].module, "scan_lookup");
         assert_eq!(results.outcomes[0].kind, SourceOutcomeKind::Inconclusive);
         assert!(results.outcomes[0].found.is_none());
+        assert!(results.outcomes[0]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("synthetic source outage"));
         assert!(
             results.outcomes[0]
                 .detail
