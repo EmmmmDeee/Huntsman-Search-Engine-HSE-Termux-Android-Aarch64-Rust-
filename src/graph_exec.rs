@@ -285,8 +285,7 @@ pub type TaskHandler =
     Arc<dyn Fn(TaskContext) -> Result<TaskOutput, TaskFailure> + Send + Sync + 'static>;
 pub type HandlerRegistry = BTreeMap<String, TaskHandler>;
 /// Callback used to persist a validated checkpoint after each completed wave.
-pub type CheckpointSink<'sink> =
-    dyn Fn(&ExecutionCheckpoint) -> Result<(), String> + 'sink;
+pub type CheckpointSink<'sink> = dyn Fn(&ExecutionCheckpoint) -> Result<(), String> + 'sink;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPolicy {
