@@ -2486,7 +2486,10 @@ mod tests {
                 &handlers,
                 &Arc::new(AtomicBool::new(false)),
                 move |checkpoint| {
-                    *to_capture.lock().unwrap() = Some(checkpoint.clone());
+                    let mut slot = to_capture.lock().unwrap();
+                    if slot.is_none() {
+                        *slot = Some(checkpoint.clone());
+                    }
                     Err("deliberately pause after the first wave".into())
                 },
             )
@@ -2570,7 +2573,10 @@ mod tests {
                 &handlers,
                 &Arc::new(AtomicBool::new(false)),
                 move |checkpoint| {
-                    *recorder.lock().unwrap() = Some(checkpoint.clone());
+                    let mut slot = recorder.lock().unwrap();
+                    if slot.is_none() {
+                        *slot = Some(checkpoint.clone());
+                    }
                     Err("interrupted before dependent lookup".into())
                 },
             )
