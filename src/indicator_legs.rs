@@ -14,9 +14,9 @@ use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Sour
 use crate::keys::Keys;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::{
-    hackertarget, hudsonrock, hunter, ipinfo, ipqs, isc, kickbox, leakix, maltiverse, mozilla_location, netlas,
-    opencellid, otx, phishstats, pulsedive, robtex, securitytrails, shodan, stopforumspam, submd,
-    threatfox, urlhaus, urlscan, whoxy, xposedornot,
+    hackertarget, hudsonrock, hunter, ipinfo, ipqs, isc, kickbox, leakix, maltiverse,
+    mozilla_location, netlas, opencellid, otx, phishstats, pulsedive, robtex, securitytrails,
+    shodan, stopforumspam, submd, threatfox, urlhaus, urlscan, whoxy, xposedornot,
 };
 
 /// Every indicator source, in the order a lookup runs them.
