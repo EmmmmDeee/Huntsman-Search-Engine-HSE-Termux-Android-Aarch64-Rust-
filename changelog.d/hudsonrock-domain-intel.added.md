@@ -1,0 +1,1 @@
+- Add Hudson Rock Cavalier domain-level aggregate intelligence with raw-response retention, explicit malformed-response handling, and no attribution of domain-wide counts to individual email addresses.
