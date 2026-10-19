@@ -73,6 +73,17 @@ fn fsio_error(error: &crate::error::Error) -> StoreError {
     StoreError::Io(error.to_string())
 }
 
+/// Only a confirmed non-directory is skipped. Failed directory metadata
+/// inspection must not silently remove a registered scan from a listing.
+fn is_scan_directory(
+    path: &Path,
+    file_type: std::io::Result<fs::FileType>,
+) -> Result<bool, StoreError> {
+    file_type
+        .map(|kind| kind.is_dir())
+        .map_err(|error| io_error(path, &error))
+}
+
 /// An optional scan artifact is absent only on `NotFound`, never on an I/O failure.
 /// Pass the checked metadata result so the classification is independently testable.
 fn optional_file_missing(
@@ -427,10 +438,7 @@ impl ScanStore {
             if !entry.file_name().to_str().is_some_and(valid_id) {
                 continue;
             }
-            let kind = entry
-                .file_type()
-                .map_err(|error| io_error(&entry.path(), &error))?;
-            if kind.is_dir() {
+            if is_scan_directory(&entry.path(), entry.file_type())? {
                 count += 1;
                 if count >= max_scans {
                     return Err(StoreError::Capacity(max_scans));
@@ -528,7 +536,10 @@ impl ScanStore {
             let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            if !valid_id(&id) || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            if !valid_id(&id) {
+                continue;
+            }
+            if !is_scan_directory(&entry.path(), entry.file_type())? {
                 continue;
             }
             if records.len() == MAX_SCANS {
@@ -891,6 +902,36 @@ mod tests {
             modules_run: Vec::new(),
             owner: None,
         }
+    }
+
+    #[test]
+    fn scan_listing_classifies_metadata_io_as_failure_not_absence() {
+        let dir = scratch("list-metadata-io");
+        let store = ScanStore::open(&dir).unwrap();
+        let scan = record(&new_id("listed", 32, 0), 32, ScanStatus::Finished);
+        store.create(&scan).unwrap();
+        let extra = new_id("ordinary-file", 33, 0);
+        fs::write(dir.join(&extra), b"not a scan directory").unwrap();
+
+        assert_eq!(store.list().unwrap(), vec![scan.clone()]);
+        assert_eq!(
+            is_scan_directory(&dir.join(&scan.id), fs::symlink_metadata(dir.join(&scan.id)).map(|meta| meta.file_type())),
+            Ok(true)
+        );
+        assert_eq!(
+            is_scan_directory(&dir.join(&extra), fs::symlink_metadata(dir.join(&extra)).map(|meta| meta.file_type())),
+            Ok(false)
+        );
+
+        let injected_failure = is_scan_directory(
+            &dir.join(&scan.id),
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        );
+        assert!(
+            matches!(injected_failure, Err(StoreError::Io(_))),
+            "a failed metadata query must not silently hide a scan"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
