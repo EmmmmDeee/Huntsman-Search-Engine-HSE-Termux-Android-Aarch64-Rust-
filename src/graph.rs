@@ -576,7 +576,9 @@ mod tests {
 
     #[test]
     fn reverse_and_duplicate_relations_preserve_deterministic_adjacency() {
-        let nodes = (0..12).map(|i| entity(&format!("node-{i}"))).collect::<Vec<_>>();
+        let nodes = (0..12)
+            .map(|i| entity(&format!("node-{i}")))
+            .collect::<Vec<_>>();
         let mut relations = Vec::new();
         for left in 0..nodes.len() {
             for right in left + 1..nodes.len() {
@@ -604,7 +606,12 @@ mod tests {
         assert_eq!(first, reverse);
         assert_eq!(first.edge_count(), relations.len() / 2);
         for left in 0..first.node_count() {
-            assert!(first.neighbours(left).windows(2).all(|window| window[0] < window[1]));
+            assert!(
+                first
+                    .neighbours(left)
+                    .windows(2)
+                    .all(|window| window[0] < window[1])
+            );
             for &right in first.neighbours(left) {
                 assert_eq!(
                     first.edge(left, right).unwrap().max_confidence,
@@ -616,14 +623,18 @@ mod tests {
 
     #[test]
     fn graph_sparse_scale_keeps_component_and_core_results() {
-        let nodes = (0..2_000).map(|i| entity(&format!("sparse-{i}"))).collect::<Vec<_>>();
+        let nodes = (0..2_000)
+            .map(|i| entity(&format!("sparse-{i}")))
+            .collect::<Vec<_>>();
         let relations = (1..nodes.len())
-            .map(|index| EntityRelation::new(
-                nodes[index - 1].uid.clone(),
-                nodes[index].uid.clone(),
-                RelationKind::AssociatedWith,
-                0.5,
-            ))
+            .map(|index| {
+                EntityRelation::new(
+                    nodes[index - 1].uid.clone(),
+                    nodes[index].uid.clone(),
+                    RelationKind::AssociatedWith,
+                    0.5,
+                )
+            })
             .collect::<Vec<_>>();
         let graph = Graph::build(&nodes, &relations);
         assert_eq!(graph.node_count(), nodes.len());
@@ -634,5 +645,4 @@ mod tests {
         assert_eq!(cut_vertices.len(), nodes.len() - 2);
         assert_eq!(bridges.len(), nodes.len() - 1);
     }
-
 }
