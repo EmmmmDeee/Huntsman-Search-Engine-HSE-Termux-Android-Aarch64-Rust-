@@ -20,8 +20,13 @@ pub struct EntityNode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationshipKind {
-    EmployedBy, DirectorOf, RegisteredAt, OperatesDomain, MentionedIn,
-    RecruitedBy, AllegedAssociation,
+    EmployedBy,
+    DirectorOf,
+    RegisteredAt,
+    OperatesDomain,
+    MentionedIn,
+    RecruitedBy,
+    AllegedAssociation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,7 +71,9 @@ impl EntityTree {
             if edge.from.trim().is_empty() || edge.to.trim().is_empty() {
                 return Err(GraphError::EmptyEndpoint);
             }
-            if edge.from == edge.to { return Err(GraphError::SelfLink); }
+            if edge.from == edge.to {
+                return Err(GraphError::SelfLink);
+            }
             for endpoint in [&edge.from, &edge.to] {
                 if !ids.contains(endpoint.as_str()) {
                     return Err(GraphError::UnknownEndpoint(endpoint.clone()));
@@ -88,13 +95,25 @@ impl EntityTree {
     /// A deterministic adjacency view, including both directions of each documented link.
     pub fn adjacency(&self) -> Result<BTreeMap<String, Vec<String>>, GraphError> {
         self.validate()?;
-        let mut result: BTreeMap<String, BTreeSet<String>> = self.nodes.iter()
-            .map(|node| (node.id.clone(), BTreeSet::new())).collect();
+        let mut result: BTreeMap<String, BTreeSet<String>> = self
+            .nodes
+            .iter()
+            .map(|node| (node.id.clone(), BTreeSet::new()))
+            .collect();
         for edge in &self.edges {
-            result.entry(edge.from.clone()).or_default().insert(edge.to.clone());
-            result.entry(edge.to.clone()).or_default().insert(edge.from.clone());
+            result
+                .entry(edge.from.clone())
+                .or_default()
+                .insert(edge.to.clone());
+            result
+                .entry(edge.to.clone())
+                .or_default()
+                .insert(edge.from.clone());
         }
-        Ok(result.into_iter().map(|(k, v)| (k, v.into_iter().collect())).collect())
+        Ok(result
+            .into_iter()
+            .map(|(k, v)| (k, v.into_iter().collect()))
+            .collect())
     }
 }
 
@@ -108,9 +127,12 @@ pub struct TreeEntry {
 impl EntityTree {
     /// Bounded breadth-first expansion for a simple, cycle-safe entity tree.
     /// The returned view is not an inference of ownership or criminal hierarchy.
-    pub fn expand(&self, root: &str, max_depth: usize, max_nodes: usize)
-        -> Result<Vec<TreeEntry>, GraphError>
-    {
+    pub fn expand(
+        &self,
+        root: &str,
+        max_depth: usize,
+        max_nodes: usize,
+    ) -> Result<Vec<TreeEntry>, GraphError> {
         let adj = self.adjacency()?;
         if !adj.contains_key(root) {
             return Err(GraphError::UnknownEndpoint(root.to_owned()));
