@@ -60,7 +60,7 @@ pub fn decode_standard(text: &str) -> Option<Vec<u8>> {
         pending += 6;
         if pending >= 8 {
             pending -= 8;
-            output.push(((accumulator >> pending) & 0xff) as u8);
+            output.push(u8::try_from((accumulator >> pending) & 0xff).ok()?);
         }
     }
 
