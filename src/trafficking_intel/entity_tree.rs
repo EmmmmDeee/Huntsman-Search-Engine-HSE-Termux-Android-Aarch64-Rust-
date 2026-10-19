@@ -162,7 +162,9 @@ mod tests {
         }
     }
     #[test]
-    fn validates_supported_graph() { assert!(graph().validate().is_ok()); }
+    fn validates_supported_graph() {
+        assert!(graph().validate().is_ok());
+    }
     #[test]
     fn rejects_missing_evidence() {
         let mut g = graph();
@@ -173,13 +175,19 @@ mod tests {
     fn rejects_unknown_endpoints() {
         let mut g = graph();
         g.edges[0].to = "missing".into();
-        assert_eq!(g.validate(), Err(GraphError::UnknownEndpoint("missing".into())));
+        assert_eq!(
+            g.validate(),
+            Err(GraphError::UnknownEndpoint("missing".into()))
+        );
     }
     #[test]
     fn rejects_duplicate_ids() {
         let mut g = graph();
         g.nodes.push(g.nodes[0].clone());
-        assert_eq!(g.validate(), Err(GraphError::DuplicateNode("company".into())));
+        assert_eq!(
+            g.validate(),
+            Err(GraphError::DuplicateNode("company".into()))
+        );
     }
     #[test]
     fn produces_deterministic_adjacency() {
@@ -195,13 +203,24 @@ mod traversal_tests {
     #[test]
     fn cycle_is_visited_once_and_depth_bounded() {
         let g = EntityTree {
-            nodes: ["a", "b", "c"].iter().map(|id| EntityNode {
-                id: (*id).into(), kind: EntityKind::Organisation, label: (*id).into()
-            }).collect(),
-            edges: [("a","b"),("b","c"),("c","a")].iter().map(|(from,to)| EntityEdge {
-                from: (*from).into(), to: (*to).into(), kind: RelationshipKind::MentionedIn,
-                evidence_refs: vec!["record".into()], alleged: false,
-            }).collect(),
+            nodes: ["a", "b", "c"]
+                .iter()
+                .map(|id| EntityNode {
+                    id: (*id).into(),
+                    kind: EntityKind::Organisation,
+                    label: (*id).into(),
+                })
+                .collect(),
+            edges: [("a", "b"), ("b", "c"), ("c", "a")]
+                .iter()
+                .map(|(from, to)| EntityEdge {
+                    from: (*from).into(),
+                    to: (*to).into(),
+                    kind: RelationshipKind::MentionedIn,
+                    evidence_refs: vec!["record".into()],
+                    alleged: false,
+                })
+                .collect(),
         };
         let view = g.expand("a", 1, 10).unwrap();
         assert_eq!(view.len(), 3);
