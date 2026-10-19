@@ -73,15 +73,17 @@ fn fsio_error(error: &crate::error::Error) -> StoreError {
     StoreError::Io(error.to_string())
 }
 
-/// Only a confirmed non-directory is skipped. Failed directory metadata
-/// inspection must not silently remove a registered scan from a listing.
+/// Only a confirmed non-directory or a concurrently removed entry is skipped.
+/// Other directory metadata failures must not silently hide a registered scan.
 fn is_scan_directory(
     path: &Path,
     file_type: std::io::Result<fs::FileType>,
 ) -> Result<bool, StoreError> {
-    file_type
-        .map(|kind| kind.is_dir())
-        .map_err(|error| io_error(path, &error))
+    match file_type {
+        Ok(kind) => Ok(kind.is_dir()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error(path, &error)),
+    }
 }
 
 /// An optional scan artifact is absent only on `NotFound`, never on an I/O failure.
@@ -926,6 +928,12 @@ mod tests {
             is_scan_directory(&dir.join(&extra), Ok(file_type)),
             Ok(false)
         );
+
+        let removed_during_list = is_scan_directory(
+            &dir.join(&scan.id),
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+        );
+        assert_eq!(removed_during_list, Ok(false));
 
         let injected_failure = is_scan_directory(
             &dir.join(&scan.id),
