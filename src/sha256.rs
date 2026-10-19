@@ -352,7 +352,10 @@ mod tests {
     fn streaming_chunks_match_single_slice_across_padding_boundaries() {
         for length in 0..=1_024 {
             let bytes = (0..length)
-                .map(|position| ((position * 31 + 17) % 256) as u8)
+                .map(|position| {
+                    u8::try_from((position * 31 + 17) % 256)
+                        .expect("test byte is reduced modulo 256")
+                })
                 .collect::<Vec<_>>();
             let expected = sha256(&bytes);
             for chunk in [1, 3, 7, 13, 63, 64, 65, 127, 128, 1_024] {
