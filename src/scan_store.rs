@@ -715,7 +715,10 @@ impl ScanStore {
                 "{}: not a directory",
                 dir.display()
             ))),
-            Err(_) => Err(StoreError::NotFound(id.to_owned())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(StoreError::NotFound(id.to_owned()))
+            }
+            Err(error) => Err(io_error(&dir, &error)),
         }
     }
 
@@ -1129,6 +1132,25 @@ mod tests {
         store.append_log(&id, &entry).unwrap();
         assert_eq!(store.log(&id).unwrap(), [entry]);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deleting_scans_propagates_filesystem_metadata_failures() {
+        let dir = scratch("delete-metadata-io");
+        let store = ScanStore::open(&dir).unwrap();
+        let id = new_id("delete-metadata-io", 370, 0);
+        let row = record(&id, 370, ScanStatus::Finished);
+        store.create(&row).unwrap();
+        store.delete(&id).unwrap();
+        assert_eq!(store.delete(&id), Err(StoreError::NotFound(id.clone())));
+
+        // A non-directory ancestor raises ENOTDIR, not ENOENT: this is a
+        // damaged store path, not proof that the scan is absent.
+        fs::remove_dir(&dir).unwrap();
+        fs::write(&dir, b"not a scan store directory").unwrap();
+        assert!(matches!(store.delete(&id), Err(StoreError::Io(_))));
+        fs::remove_file(&dir).unwrap();
     }
 
     #[test]
