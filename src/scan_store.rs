@@ -379,7 +379,7 @@ impl ScanStore {
             return Err(StoreError::Invalid(format!("scan {} exists", record.id)));
         }
         fs::create_dir(&dir).map_err(|error| io_error(&dir, &error))?;
-        let created = private_dir(&dir).and_then(|()| self.update(record));
+        let created = private_dir(&dir).and_then(|()| self.write_row(record));
         if let Err(error) = created {
             // Only remove the directory if it remains empty. A concurrent writer's
             // files must never be removed by rollback, even if the first write failed.
@@ -394,12 +394,31 @@ impl ScanStore {
         Ok(())
     }
 
-    /// Replace a scan's row.
+    /// Replace an existing scan's row without creating an unregistered scan.
     ///
     /// # Errors
-    /// [`StoreError::NotFound`] for an id the store cannot hold; [`StoreError::Io`] on a write
-    /// failure.
+    /// [`StoreError::NotFound`] when the scan has no persisted row; [`StoreError::Io`] for
+    /// an unreadable or nonregular row, or a write failure.
     pub fn update(&self, record: &ScanRecord) -> Result<(), StoreError> {
+        let path = self.scan_dir(&record.id)?.join(ROW_FILE);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(StoreError::Io(format!(
+                    "{}: not a regular scan row",
+                    path.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StoreError::NotFound(record.id.clone()));
+            }
+            Err(error) => return Err(io_error(&path, &error)),
+        }
+        self.write_row(record)
+    }
+
+    /// Write an initial or replacement scan row; only `create` may use this before a row exists.
+    fn write_row(&self, record: &ScanRecord) -> Result<(), StoreError> {
         let path = self.scan_dir(&record.id)?.join(ROW_FILE);
         let limit = usize::try_from(MAX_ROW_BYTES).unwrap_or(usize::MAX);
         let body = match crate::json::to_bounded_json(record, limit, true) {
@@ -1034,6 +1053,34 @@ mod tests {
         store.create(&valid).unwrap();
         assert_eq!(store.get(&valid.id).unwrap(), valid);
         assert_eq!(store.list().unwrap().len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_refuses_missing_and_deleted_scan_rows_without_creating_directories() {
+        let dir = scratch("update-missing-row");
+        let store = ScanStore::open(&dir).unwrap();
+        let row = record(&new_id("update-absent", 401, 0), 401, ScanStatus::Created);
+        assert_eq!(
+            store.update(&row),
+            Err(StoreError::NotFound(row.id.clone()))
+        );
+        assert!(!dir.join(&row.id).exists());
+        assert!(store.list().unwrap().is_empty());
+
+        store.create(&row).unwrap();
+        let mut finished = row.clone();
+        finished.status = ScanStatus::Finished;
+        store.update(&finished).unwrap();
+        assert_eq!(store.get(&row.id).unwrap(), finished);
+
+        store.delete(&row.id).unwrap();
+        assert_eq!(
+            store.update(&finished),
+            Err(StoreError::NotFound(row.id.clone()))
+        );
+        assert!(!dir.join(&row.id).exists());
+        assert!(store.list().unwrap().is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
