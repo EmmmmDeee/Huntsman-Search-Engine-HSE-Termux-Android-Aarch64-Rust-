@@ -116,21 +116,33 @@ impl EntityTree {
             return Err(GraphError::UnknownEndpoint(root.to_owned()));
         }
         let limit = max_nodes.min(10_000);
-        if limit == 0 { return Ok(Vec::new()); }
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let mut visited = BTreeSet::new();
         let mut queue = std::collections::VecDeque::new();
         let mut result = Vec::new();
         visited.insert(root.to_owned());
-        queue.push_back(TreeEntry { id: root.to_owned(), depth: 0, parent: None });
+        queue.push_back(TreeEntry {
+            id: root.to_owned(),
+            depth: 0,
+            parent: None,
+        });
         while let Some(entry) = queue.pop_front() {
             let depth = entry.depth;
             let parent_id = entry.id.clone();
             result.push(entry);
-            if result.len() >= limit { break; }
-            if depth >= max_depth { continue; }
+            if result.len() >= limit {
+                break;
+            }
+            if depth >= max_depth {
+                continue;
+            }
             if let Some(neighbours) = adj.get(&parent_id) {
                 for neighbour in neighbours {
-                    if visited.len() >= limit { break; }
+                    if visited.len() >= limit {
+                        break;
+                    }
                     if visited.insert(neighbour.clone()) {
                         queue.push_back(TreeEntry {
                             id: neighbour.clone(),
@@ -151,13 +163,23 @@ mod tests {
     fn graph() -> EntityTree {
         EntityTree {
             nodes: vec![
-                EntityNode { id: "company".into(), kind: EntityKind::Organisation, label: "Example Ltd".into() },
-                EntityNode { id: "record".into(), kind: EntityKind::Evidence, label: "Published filing".into() },
+                EntityNode {
+                    id: "company".into(),
+                    kind: EntityKind::Organisation,
+                    label: "Example Ltd".into(),
+                },
+                EntityNode {
+                    id: "record".into(),
+                    kind: EntityKind::Evidence,
+                    label: "Published filing".into(),
+                },
             ],
             edges: vec![EntityEdge {
-                from: "company".into(), to: "record".into(),
+                from: "company".into(),
+                to: "record".into(),
                 kind: RelationshipKind::MentionedIn,
-                evidence_refs: vec!["public-record-1".into()], alleged: false,
+                evidence_refs: vec!["public-record-1".into()],
+                alleged: false,
             }],
         }
     }
