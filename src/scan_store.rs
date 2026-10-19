@@ -49,6 +49,8 @@ const LOG_FILE: &str = "log.jsonl";
 
 // Serializes appends across ScanStore instances in one process. No cross-process guarantee.
 static LOG_APPEND_LOCK: Mutex<()> = Mutex::new(());
+// Serializes capacity admission and scan creation across store instances in this process.
+static SCAN_CREATE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Why a store operation failed.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -398,15 +400,48 @@ impl ScanStore {
         }
     }
 
-    /// Save a new scan's row.
+    /// Save a new scan's row without making the store impossible to list.
     ///
     /// # Errors
-    /// [`StoreError::Invalid`] when a scan with that id exists; [`StoreError::Io`] on a write
-    /// failure.
+    /// [`StoreError::Invalid`] when an id exists or the scan capacity is reached;
+    /// [`StoreError::Io`] on an enumeration or write failure.
     pub fn create(&self, record: &ScanRecord) -> Result<(), StoreError> {
+        self.create_with_limit(record, MAX_SCANS)
+    }
+
+    fn create_with_limit(
+        &self,
+        record: &ScanRecord,
+        max_scans: usize,
+    ) -> Result<(), StoreError> {
+        let _guard = SCAN_CREATE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = self.scan_dir(&record.id)?;
         if fs::symlink_metadata(&dir).is_ok() {
             return Err(StoreError::Invalid(format!("scan {} exists", record.id)));
+        }
+        // Count the same valid scan directories that `list` counts, but avoid
+        // reading and deserializing every row just to admit one new scan.
+        let mut count = 0;
+        for entry in fs::read_dir(&self.dir).map_err(|error| io_error(&self.dir, &error))? {
+            let entry = entry.map_err(|error| io_error(&self.dir, &error))?;
+            if !entry
+                .file_name()
+                .to_str()
+                .is_some_and(valid_id)
+            {
+                continue;
+            }
+            let kind = entry.file_type().map_err(|error| io_error(&entry.path(), &error))?;
+            if kind.is_dir() {
+                count += 1;
+                if count >= max_scans {
+                    return Err(StoreError::Invalid(format!(
+                        "scan store capacity reached ({max_scans}); delete finished scans before starting another"
+                    )));
+                }
+            }
         }
         fs::create_dir(&dir).map_err(|error| io_error(&dir, &error))?;
         let created = private_dir(&dir).and_then(|()| self.write_row(record));
@@ -862,6 +897,60 @@ mod tests {
             modules_run: Vec::new(),
             owner: None,
         }
+    }
+
+    #[test]
+    fn scan_creation_rejects_capacity_without_damaging_existing_scans() {
+        let dir = scratch("capacity");
+        let store = ScanStore::open(&dir).unwrap();
+        let first = record(&new_id("first", 1, 0), 1, ScanStatus::Finished);
+        let second = record(&new_id("second", 2, 0), 2, ScanStatus::Finished);
+        let third = record(&new_id("third", 3, 0), 3, ScanStatus::Created);
+
+        store.create_with_limit(&first, 2).unwrap();
+        store.create_with_limit(&second, 2).unwrap();
+        let refused = store.create_with_limit(&third, 2);
+        assert!(matches!(refused, Err(StoreError::Invalid(_))));
+        assert!(!dir.join(&third.id).exists());
+        assert_eq!(store.get(&first.id).unwrap(), first);
+        assert_eq!(store.get(&second.id).unwrap(), second);
+        assert_eq!(store.list().unwrap().len(), 2);
+
+        store.delete(&first.id).unwrap();
+        store.create_with_limit(&third, 2).unwrap();
+        assert_eq!(store.list().unwrap().len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_scan_creation_cannot_exceed_same_process_capacity() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = scratch("capacity-concurrent");
+        let store = ScanStore::open(&dir).unwrap();
+        let gate = Arc::new(Barrier::new(3));
+        let mut threads = Vec::new();
+        for i in 0..2 {
+            let store = store.clone();
+            let gate = Arc::clone(&gate);
+            threads.push(std::thread::spawn(move || {
+                let row = record(&new_id("same-capacity", 10 + i, i), 10 + i as u64, ScanStatus::Created);
+                gate.wait();
+                store.create_with_limit(&row, 1)
+            }));
+        }
+        gate.wait();
+        let mut successes = 0;
+        for thread in threads {
+            match thread.join().unwrap() {
+                Ok(()) => successes += 1,
+                Err(StoreError::Invalid(_)) => {}
+                Err(error) => panic!("unexpected scan admission error: {error}"),
+            }
+        }
+        assert_eq!(successes, 1);
+        assert_eq!(store.list().unwrap().len(), 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
