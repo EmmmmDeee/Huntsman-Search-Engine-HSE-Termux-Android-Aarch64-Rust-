@@ -219,8 +219,16 @@ mod validation_regression_tests {
     fn base() -> EntityTree {
         EntityTree {
             nodes: vec![
-                EntityNode { id: "a".into(), kind: EntityKind::Organisation, label: "A".into() },
-                EntityNode { id: "b".into(), kind: EntityKind::Evidence, label: "B".into() },
+                EntityNode {
+                    id: "a".into(),
+                    kind: EntityKind::Organisation,
+                    label: "A".into(),
+                },
+                EntityNode {
+                    id: "b".into(),
+                    kind: EntityKind::Evidence,
+                    label: "B".into(),
+                },
             ],
             edges: vec![EntityEdge {
                 from: "a".into(),
@@ -243,7 +251,10 @@ mod validation_regression_tests {
     fn rejects_duplicate_evidence_reference_on_edge() {
         let mut graph = base();
         graph.edges[0].evidence_refs.push("record-1".into());
-        assert_eq!(graph.validate(), Err(GraphError::DuplicateEvidenceReference));
+        assert_eq!(
+            graph.validate(),
+            Err(GraphError::DuplicateEvidenceReference)
+        );
     }
 
     #[test]
