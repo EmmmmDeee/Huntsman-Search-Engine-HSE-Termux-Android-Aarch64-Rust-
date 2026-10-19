@@ -48,7 +48,10 @@ impl Transport for Upstreams {
                     ),
                 )
             } else {
-                reply(400, r#"{"message":"Request is not a valid routable IPv4 address"}"#.into())
+                reply(
+                    400,
+                    r#"{"message":"Request is not a valid routable IPv4 address"}"#.into(),
+                )
             });
         }
         if request.url.starts_with("https://stat.ripe.net/") {
