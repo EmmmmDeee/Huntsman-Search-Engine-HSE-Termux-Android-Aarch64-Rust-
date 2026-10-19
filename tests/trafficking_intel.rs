@@ -76,3 +76,43 @@ fn review_and_tree_serialise_without_losing_citations() {
     invalid.edges[0].evidence_refs.clear();
     assert_eq!(invalid.validate(), Err(GraphError::MissingEvidence));
 }
+
+#[test]
+fn existing_core_graph_exposes_only_documented_relationships() {
+    use huntsman_recon::entity::{
+        Entity, EntityKind as CoreEntityKind, Evidence, EvidenceProvenance,
+    };
+    use huntsman_recon::graph::{EntityRelation, Graph, RelationKind};
+    use huntsman_recon::trafficking_intel::graph_bridge::expand_documented;
+
+    let root = Entity::new(CoreEntityKind::Organisation, "Example Agency", 0.5, "scan");
+    let record = Entity::new(CoreEntityKind::Document, "Published Record", 0.5, "scan");
+    let unrelated = Entity::new(CoreEntityKind::Domain, "example.org", 0.5, "scan");
+    let documented = EntityRelation::new(
+        root.uid.clone(),
+        record.uid.clone(),
+        RelationKind::MentionedWith,
+        0.6,
+    )
+    .with_evidence(Evidence::new(
+        EvidenceProvenance::new("published-case-record"),
+        "The public record mentions this organisation",
+    ));
+    let unsupported = EntityRelation::new(
+        root.uid.clone(),
+        unrelated.uid.clone(),
+        RelationKind::AssociatedWith,
+        0.9,
+    );
+    let relations = [documented, unsupported];
+    let graph = Graph::build(&[root.clone(), record.clone(), unrelated], &relations);
+    let view = expand_documented(&graph, &relations, &root.uid, 2, 10).expect("traverse");
+    assert_eq!(view.len(), 2);
+    assert_eq!(view[0].id, root.uid);
+    assert_eq!(view[1].id, record.uid);
+    assert_eq!(view[1].parent.as_deref(), Some(root.uid.as_str()));
+    assert_eq!(
+        expand_documented(&graph, &relations, "unknown", 2, 0),
+        Err(GraphError::UnknownEndpoint("unknown".to_owned()))
+    );
+}
