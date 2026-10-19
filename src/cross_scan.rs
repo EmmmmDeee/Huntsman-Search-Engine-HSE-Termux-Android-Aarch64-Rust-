@@ -566,7 +566,10 @@ mod tests {
         .unwrap();
         assert_eq!(small.len(), 3);
         assert_eq!(
-            small.iter().map(|link| link.target_scan_id.as_str()).collect::<Vec<_>>(),
+            small
+                .iter()
+                .map(|link| link.target_scan_id.as_str())
+                .collect::<Vec<_>>(),
             ["scan-000", "scan-001", "scan-002"],
         );
         let frontier_limited = transitive_closure(
@@ -607,9 +610,11 @@ mod tests {
                 max_visited: 0,
             },
         ] {
-            assert!(transitive_closure(&store, "origin", &seeds, options)
-                .unwrap()
-                .is_empty());
+            assert!(
+                transitive_closure(&store, "origin", &seeds, options)
+                    .unwrap()
+                    .is_empty()
+            );
         }
     }
 
@@ -637,8 +642,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(links.len(), 2);
-        assert_eq!((links[0].target_scan_id.as_str(), links[0].depth), ("scan-b", 1));
-        assert_eq!((links[1].target_scan_id.as_str(), links[1].depth), ("scan-c", 2));
+        assert_eq!(
+            (links[0].target_scan_id.as_str(), links[0].depth),
+            ("scan-b", 1)
+        );
+        assert_eq!(
+            (links[1].target_scan_id.as_str(), links[1].depth),
+            ("scan-c", 2)
+        );
     }
-
 }
