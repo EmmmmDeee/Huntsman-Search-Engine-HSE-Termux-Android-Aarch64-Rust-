@@ -524,7 +524,10 @@ impl ScanStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = self.scan_dir(id)?.join(LOG_FILE);
         let mut file = checked_open_for_append(&path)?;
-        let size = file.metadata().map_err(|error| io_error(&path, &error))?.len();
+        let size = file
+            .metadata()
+            .map_err(|error| io_error(&path, &error))?
+            .len();
 
         let full = LogEntry {
             time: entry.time,
@@ -1060,7 +1063,12 @@ mod tests {
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].level, LogLevel::Warning);
         assert!(log[0].message.starts_with("log full at"));
-        assert!(fs::metadata(dir.join(&record.id).join(LOG_FILE)).unwrap().len() <= MAX_LOG_BYTES);
+        assert!(
+            fs::metadata(dir.join(&record.id).join(LOG_FILE))
+                .unwrap()
+                .len()
+                <= MAX_LOG_BYTES
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1092,8 +1100,12 @@ mod tests {
             }
         });
         assert_eq!(store.log(&row.id).unwrap().len(), 200);
-        assert!(fs::metadata(dir.join(&row.id).join(LOG_FILE)).unwrap().len() <= MAX_LOG_BYTES);
+        assert!(
+            fs::metadata(dir.join(&row.id).join(LOG_FILE))
+                .unwrap()
+                .len()
+                <= MAX_LOG_BYTES
+        );
         let _ = fs::remove_dir_all(&dir);
     }
-
 }
