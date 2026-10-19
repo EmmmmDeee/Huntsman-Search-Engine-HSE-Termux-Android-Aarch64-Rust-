@@ -67,8 +67,7 @@ pub fn resolve(records: &[PersonRecord]) -> Vec<Cluster> {
 
     let count = records.len();
     let (emails, email_index) = indexed_keys(records, |record| &record.emails, canonical_email);
-    let (handles, handle_index) =
-        indexed_keys(records, |record| &record.handles, canonical_handle);
+    let (handles, handle_index) = indexed_keys(records, |record| &record.handles, canonical_handle);
 
     let mut parent: Vec<usize> = (0..count).collect();
     let mut links = Vec::new();
