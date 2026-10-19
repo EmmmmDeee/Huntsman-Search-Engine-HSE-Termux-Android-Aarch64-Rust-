@@ -1143,10 +1143,7 @@ mod tests {
         let row = record(&id, 370, ScanStatus::Finished);
         store.create(&row).unwrap();
         store.delete(&id).unwrap();
-        assert_eq!(
-            store.delete(&id),
-            Err(StoreError::NotFound(id.clone()))
-        );
+        assert_eq!(store.delete(&id), Err(StoreError::NotFound(id.clone())));
 
         // A non-directory ancestor raises ENOTDIR, not ENOENT: this is a
         // damaged store path, not proof that the scan is absent.
