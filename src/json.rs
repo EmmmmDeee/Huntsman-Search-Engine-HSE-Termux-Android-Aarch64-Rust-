@@ -89,6 +89,30 @@ pub fn to_canonical_bounded(
     Ok(writer.finish())
 }
 
+/// Serialize any Rust value to compact or pretty JSON without retaining more
+/// bytes than the requested limit. Serialization still traverses the source to
+/// report its full encoded size, but an over-budget document is never returned.
+///
+/// Existing callers that need canonical object order can keep using
+/// [`to_canonical_bounded`]; persistence respects the same serde representation
+/// as the original to_vec and to_vec_pretty calls.
+///
+/// # Errors
+/// Returns serialization failures from serde_json.
+pub fn to_bounded_json<T: Serialize>(
+    value: &T,
+    limit: usize,
+    pretty: bool,
+) -> serde_json::Result<Result<Vec<u8>, usize>> {
+    let mut writer = BoundedWriter::new(limit);
+    if pretty {
+        serde_json::to_writer_pretty(&mut writer, value)?;
+    } else {
+        serde_json::to_writer(&mut writer, value)?;
+    }
+    Ok(writer.finish())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,4 +143,39 @@ mod tests {
         );
         assert_eq!(to_canonical_bounded(&value, 0).unwrap(), Err(text.len()));
     }
+
+    #[test]
+    fn bounded_compact_and_pretty_match_serde_exactly() {
+        let value = serde_json::json!({"greeting":"café 🌐", "items":[1, null, true]});
+        for pretty in [false, true] {
+            let original = if pretty {
+                serde_json::to_vec_pretty(&value).unwrap()
+            } else {
+                serde_json::to_vec(&value).unwrap()
+            };
+            assert_eq!(
+                to_bounded_json(&value, original.len(), pretty).unwrap(),
+                Ok(original.clone())
+            );
+            assert_eq!(
+                to_bounded_json(&value, original.len() - 1, pretty).unwrap(),
+                Err(original.len())
+            );
+            assert_eq!(
+                to_bounded_json(&value, 0, pretty).unwrap(),
+                Err(original.len())
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_writer_does_not_retain_data_after_budget_exceeded() {
+        let mut writer = BoundedWriter::new(4);
+        writer.write_all(b"abcd").unwrap();
+        writer.write_all(b"efgh").unwrap();
+        assert_eq!(writer.bytes.len(), 4);
+        assert_eq!(writer.required_bytes, 8);
+        assert_eq!(writer.finish(), Err(8));
+    }
+
 }
