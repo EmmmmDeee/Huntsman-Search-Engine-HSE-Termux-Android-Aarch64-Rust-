@@ -415,9 +415,10 @@ mod tests {
             .collect::<Vec<_>>();
         let clusters = resolve(&records);
         assert_eq!(clusters.len(), records.len());
-        assert!(clusters.iter().all(|cluster| {
-            cluster.members.len() == 1 && cluster.links.is_empty()
-        }));
+        assert!(
+            clusters
+                .iter()
+                .all(|cluster| { cluster.members.len() == 1 && cluster.links.is_empty() })
+        );
     }
-
 }
