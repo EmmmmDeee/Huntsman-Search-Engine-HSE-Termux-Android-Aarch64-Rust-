@@ -33,7 +33,17 @@ impl Store {
             .root
             .join("sessions")
             .join(format!("{}.json", session.id));
-        let body = serde_json::to_vec_pretty(session).map_err(|e| Error::Store(e.to_string()))?;
+        let limit = usize::try_from(MAX_SESSION_BYTES).unwrap_or(usize::MAX);
+        let body = match crate::json::to_bounded_json(session, limit, true) {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(required_bytes)) => {
+                return Err(Error::Store(format!(
+                    "{}: exceeds {MAX_SESSION_BYTES} bytes (needs {required_bytes})",
+                    path.display()
+                )));
+            }
+            Err(error) => return Err(Error::Store(error.to_string())),
+        };
         write_atomic_private(&path, &body, MAX_SESSION_BYTES)?;
         Ok(path)
     }
@@ -50,8 +60,16 @@ impl Store {
         }
         let path = self.root.join("sessions").join(format!("{id}.json"));
         let body = read_bounded(&path, MAX_SESSION_BYTES)?;
-        serde_json::from_slice(&body)
-            .map_err(|e| Error::Invalid(format!("{}: not a session: {e}", path.display())))
+        let session: Session = serde_json::from_slice(&body)
+            .map_err(|e| Error::Invalid(format!("{}: not a session: {e}", path.display())))?;
+        if session.id != id {
+            return Err(Error::Invalid(format!(
+                "{}: session id {} does not match requested id {id}",
+                path.display(),
+                session.id
+            )));
+        }
+        Ok(session)
     }
 }
 
@@ -125,5 +143,39 @@ mod tests {
         session.title = "x".repeat(usize::try_from(MAX_SESSION_BYTES).unwrap());
         assert!(matches!(store.save(&session), Err(Error::Store(_))));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_claiming_another_session_id_is_rejected() {
+        let dir = scratch("session-id-mismatch");
+        let store = Store::new(dir.clone());
+        let wanted = Session::new("wanted");
+        let other = Session::new("different");
+        assert_ne!(wanted.id, other.id);
+        std::fs::write(
+            dir.join("sessions").join(format!("{}.json", wanted.id)),
+            serde_json::to_vec(&other).unwrap(),
+        )
+        .unwrap();
+        match store.load(&wanted.id) {
+            Err(Error::Invalid(message)) => {
+                assert!(message.contains("does not match requested id"), "{message}");
+            }
+            other => panic!("mismatched session loaded: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bounded_serialization_does_not_create_oversize_file() {
+        let dir = scratch("failed-save-preserves");
+        let store = Store::new(dir.clone());
+        let mut session = Session::new("stable");
+        let path = store.save(&session).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        session.title = "x".repeat(usize::try_from(MAX_SESSION_BYTES).unwrap());
+        assert!(matches!(store.save(&session), Err(Error::Store(_))));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -122,8 +122,21 @@ fn fsio_err(error: &crate::error::Error) -> ArtifactError {
 /// [`ArtifactError::Io`] on a symlink, an artifact over the cap, or a write,
 /// flush, or rename failure.
 pub fn write(path: &Path, artifact: &ScanArtifact) -> Result<(), ArtifactError> {
-    let bytes = serde_json::to_vec_pretty(artifact)
-        .map_err(|e| ArtifactError::Malformed(format!("could not encode: {e}")))?;
+    let limit = usize::try_from(MAX_ARTIFACT_BYTES).unwrap_or(usize::MAX);
+    let bytes = match crate::json::to_bounded_json(artifact, limit, true) {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(required_bytes)) => {
+            return Err(ArtifactError::Io(io::Error::other(format!(
+                "{}: exceeds {MAX_ARTIFACT_BYTES} bytes (needs {required_bytes})",
+                path.display()
+            ))));
+        }
+        Err(error) => {
+            return Err(ArtifactError::Malformed(format!(
+                "could not encode: {error}"
+            )));
+        }
+    };
     crate::fsio::write_atomic_private(path, &bytes, MAX_ARTIFACT_BYTES).map_err(|e| fsio_err(&e))
 }
 
@@ -614,5 +627,18 @@ mod tests {
         write(&outside, &corroborated()).unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("link.json")).unwrap();
         assert_eq!(ArtifactHistory::open(&dir).unwrap().scan_count(), 0);
+    }
+
+    #[test]
+    fn bounded_artifact_write_preserves_existing_file_on_overflow() {
+        let path = scratch("bounded-write-preserves");
+        let stable = corroborated();
+        write(&path, &stable).unwrap();
+        let before = fs::read(&path).unwrap();
+        let mut huge = stable.clone();
+        huge.entities[0].raw_value = "x".repeat(usize::try_from(MAX_ARTIFACT_BYTES).unwrap());
+        assert!(matches!(write(&path, &huge), Err(ArtifactError::Io(_))));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(read(&path).unwrap(), stable);
     }
 }
