@@ -150,3 +150,28 @@ fn bounded_gexf_reports_exact_required_bytes_without_partial_xml() {
     );
     assert!(capped.truncated);
 }
+
+#[test]
+fn bounded_report_json_reports_exact_required_bytes_without_partial_document() {
+    let snapshot = snapshot();
+    let report = analyze_snapshot(&snapshot);
+    let baseline = render_artifacts(&snapshot, &report, &[], &PipelineLimits::default())
+        .expect("baseline artifacts");
+    let ArtifactPayload::Ready(json) = baseline.report_json else {
+        panic!("baseline report JSON omitted")
+    };
+    let limit = json.len() - 1;
+    let limits = PipelineLimits {
+        max_export_bytes: limit,
+        ..PipelineLimits::default()
+    };
+    let capped = render_artifacts(&snapshot, &report, &[], &limits).expect("capped artifacts");
+    assert_eq!(
+        capped.report_json,
+        ArtifactPayload::OmittedTooLarge {
+            required_bytes: json.len(),
+            limit,
+        }
+    );
+    assert!(capped.truncated);
+}
