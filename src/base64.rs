@@ -149,8 +149,8 @@ mod tests {
     #[test]
     fn decoder_rejects_noncanonical_unused_bits_and_incomplete_padding() {
         for bad in [
-            "Zh==", "Zh", "Zm9=", "Zm9", "Zg=", "Zm8==", "Zg===", "Zg=a",
-            "Zg==A", "Zm8===", "Zg==\\0", "Zg==☃",
+            "Zh==", "Zh", "Zm9=", "Zm9", "Zg=", "Zm8==", "Zg===", "Zg=a", "Zg==A", "Zm8===",
+            "Zg==\\0", "Zg==☃",
         ] {
             assert_eq!(decode_standard(bad), None, "{bad:?}");
         }
@@ -158,7 +158,10 @@ mod tests {
         assert_eq!(decode_standard("Zg"), Some(b"f".to_vec()));
         assert_eq!(decode_standard("Zm8="), Some(b"fo".to_vec()));
         assert_eq!(decode_standard("Zm8"), Some(b"fo".to_vec()));
-        assert_eq!(decode_standard(" Zm9v\\r\\nYmFy\\t"), Some(b"foobar".to_vec()));
+        assert_eq!(
+            decode_standard(" Zm9v\\r\\nYmFy\\t"),
+            Some(b"foobar".to_vec())
+        );
     }
 
     #[test]
@@ -166,7 +169,11 @@ mod tests {
         let bytes: Vec<u8> = (0_u8..=u8::MAX).collect();
         for len in 0..=bytes.len() {
             let encoded = standard(&bytes[..len]);
-            assert_eq!(decode_standard(&encoded), Some(bytes[..len].to_vec()), "{len}");
+            assert_eq!(
+                decode_standard(&encoded),
+                Some(bytes[..len].to_vec()),
+                "{len}"
+            );
             assert_eq!(
                 decode_standard(encoded.trim_end_matches('=')),
                 Some(bytes[..len].to_vec()),
