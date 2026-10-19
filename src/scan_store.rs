@@ -857,7 +857,10 @@ mod tests {
             store.save_results(&results),
             Err(StoreError::NotFound(id.clone()))
         );
-        assert!(!dir.join(&id).exists(), "results must not create a scan directory");
+        assert!(
+            !dir.join(&id).exists(),
+            "results must not create a scan directory"
+        );
         assert!(store.list().unwrap().is_empty());
 
         let row = record(&id, 303, ScanStatus::Finished);
