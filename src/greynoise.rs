@@ -4,6 +4,7 @@
 //! without a key at a low daily limit; with `HUNTSMAN_GREYNOISE_KEY` set (a free Community key)
 //! the key goes in the `key` header and the limit is the account's. A `404` whose body has the
 //! address and `noise: false` is the documented "not observed" answer, a valid zero.
+//! This Community endpoint accepts routable IPv4 only; IPv6 receives HTTP 400.
 
 use serde::Deserialize;
 
@@ -51,6 +52,13 @@ struct Body {
     name: Option<String>,
     #[serde(default)]
     last_seen: Option<String>,
+}
+
+/// Whether GreyNoise Community can answer this address. IPv6 is unsupported.
+/// This capability check sends no network request.
+#[must_use]
+pub fn answers_for(ip: &str) -> bool {
+    ip.parse::<std::net::Ipv4Addr>().is_ok()
 }
 
 /// The request URL for `ip`. **Pure.**
