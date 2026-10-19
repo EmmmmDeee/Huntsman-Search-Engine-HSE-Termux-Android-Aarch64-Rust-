@@ -571,8 +571,8 @@ impl ScanStore {
     /// single entry saying the log is full.
     ///
     /// # Errors
-    /// [`StoreError::NotFound`] for an id the store cannot hold; [`StoreError::Io`] on a write
-    /// failure or a symlink in place of the log.
+    /// [`StoreError::NotFound`] when no scan row exists; [`StoreError::Io`] on a write
+    /// failure, an unreadable scan row or a symlink in place of the log.
     pub fn append_log(&self, id: &str, entry: &LogEntry) -> Result<(), StoreError> {
         // The lock applies to every store instance in this process and covers
         // both the size decision and the append. Another process must still
@@ -581,6 +581,8 @@ impl ScanStore {
         let _guard = LOG_APPEND_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // An orphaned scan directory must not accept logs as if it were a scan.
+        self.require_row(id)?;
         let path = self.scan_dir(id)?.join(LOG_FILE);
         let mut file = checked_open_for_append(&path)?;
         let size = file
@@ -952,6 +954,40 @@ mod tests {
         store.create(&row).unwrap();
         store.save_results(&results).unwrap();
         assert_eq!(store.results(&id).unwrap(), Some(results));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_log_does_not_create_an_orphaned_scan_log() {
+        let dir = scratch("orphan-log");
+        let store = ScanStore::open(&dir).unwrap();
+        let id = new_id("orphan", 304, 0);
+        let entry = LogEntry {
+            time: 1,
+            component: "huntsman".into(),
+            level: LogLevel::Info,
+            message: "a real event".into(),
+        };
+
+        assert_eq!(
+            store.append_log(&id, &entry),
+            Err(StoreError::NotFound(id.clone()))
+        );
+        assert!(!dir.join(&id).exists());
+
+        // Even a pre-existing empty directory cannot stand in for a scan row.
+        fs::create_dir(dir.join(&id)).unwrap();
+        assert_eq!(
+            store.append_log(&id, &entry),
+            Err(StoreError::NotFound(id.clone()))
+        );
+        assert!(!dir.join(&id).join(LOG_FILE).exists());
+        fs::remove_dir(dir.join(&id)).unwrap();
+
+        let row = record(&id, 304, ScanStatus::Created);
+        store.create(&row).unwrap();
+        store.append_log(&id, &entry).unwrap();
+        assert_eq!(store.log(&id).unwrap(), [entry]);
         let _ = fs::remove_dir_all(&dir);
     }
 
