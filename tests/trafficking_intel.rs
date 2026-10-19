@@ -34,7 +34,10 @@ fn review_abstains_until_independent_origins_support_the_same_indicator() {
         assessment.status,
         AssessmentStatus::IndicatorsForHumanReview
     );
-    assert_eq!(assessment.supported_indicators, vec![Indicator::DebtBondage]);
+    assert_eq!(
+        assessment.supported_indicators,
+        vec![Indicator::DebtBondage]
+    );
     assert_eq!(assessment.independent_origins, 2);
 }
 
@@ -64,7 +67,10 @@ fn review_and_tree_serialise_without_losing_citations() {
     let encoded = serde_json::to_string(&graph).expect("serialize");
     let decoded: EntityTree = serde_json::from_str(&encoded).expect("deserialize");
     assert_eq!(decoded.edges[0].evidence_refs, vec!["public-record-1"]);
-    assert_eq!(decoded.expand("organisation", 1, 10).expect("expand").len(), 2);
+    assert_eq!(
+        decoded.expand("organisation", 1, 10).expect("expand").len(),
+        2
+    );
 
     let mut invalid = decoded;
     invalid.edges[0].evidence_refs.clear();
