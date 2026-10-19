@@ -125,3 +125,28 @@ fn bounded_entity_tree_reports_exact_required_bytes_without_partial_output() {
     );
     assert!(capped.truncated);
 }
+
+#[test]
+fn bounded_gexf_reports_exact_required_bytes_without_partial_xml() {
+    let snapshot = snapshot();
+    let report = analyze_snapshot(&snapshot);
+    let baseline = render_artifacts(&snapshot, &report, &[], &PipelineLimits::default())
+        .expect("baseline artifacts");
+    let ArtifactPayload::Ready(xml) = baseline.gexf else {
+        panic!("baseline GEXF omitted")
+    };
+    let limit = xml.len() - 1;
+    let limits = PipelineLimits {
+        max_export_bytes: limit,
+        ..PipelineLimits::default()
+    };
+    let capped = render_artifacts(&snapshot, &report, &[], &limits).expect("capped artifacts");
+    assert_eq!(
+        capped.gexf,
+        ArtifactPayload::OmittedTooLarge {
+            required_bytes: xml.len(),
+            limit,
+        }
+    );
+    assert!(capped.truncated);
+}
