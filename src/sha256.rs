@@ -69,40 +69,97 @@ const K: [u32; 64] = [
     0xc671_78f2,
 ];
 
-/// Hash without cloning the input or allocating input-sized padding. Only two
-/// final 64-byte blocks are needed, even for large evidence streams in memory.
+/// Incremental SHA-256 with a constant-size, 64-byte input buffer.
+///
+/// The bit length uses the SHA-256 mandated 64-bit modulo arithmetic. Caller
+/// data is consumed in place rather than copied into a whole-message buffer.
+/// Finalization consumes the state; it cannot accidentally be finalized twice.
+pub struct Sha256 {
+    state: [u32; 8],
+    total_bytes: u64,
+    buffer: [u8; 64],
+    buffered: usize,
+}
+
+impl Default for Sha256 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Sha256 {
+    /// Start a fresh SHA-256 calculation.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            state: [
+                0x6a09_e667,
+                0xbb67_ae85,
+                0x3c6e_f372,
+                0xa54f_f53a,
+                0x510e_527f,
+                0x9b05_688c,
+                0x1f83_d9ab,
+                0x5be0_cd19,
+            ],
+            total_bytes: 0,
+            buffer: [0_u8; 64],
+            buffered: 0,
+        }
+    }
+
+    /// Append another chunk; it need not align to a SHA-256 block boundary.
+    pub fn update(&mut self, mut input: &[u8]) {
+        self.total_bytes = self.total_bytes.wrapping_add(input.len() as u64);
+        if self.buffered > 0 {
+            let take = input.len().min(64 - self.buffered);
+            self.buffer[self.buffered..self.buffered + take].copy_from_slice(&input[..take]);
+            self.buffered += take;
+            input = &input[take..];
+            if self.buffered < 64 {
+                return;
+            }
+            compress(&mut self.state, &self.buffer);
+            self.buffered = 0;
+        }
+
+        let mut chunks = input.chunks_exact(64);
+        for block in &mut chunks {
+            compress(&mut self.state, block);
+        }
+        let remainder = chunks.remainder();
+        self.buffer[..remainder.len()].copy_from_slice(remainder);
+        self.buffered = remainder.len();
+    }
+
+    /// Finalize with SHA-256 padding and return the 32-byte digest.
+    #[must_use]
+    pub fn finalize(mut self) -> [u8; 32] {
+        let mut final_blocks = [0_u8; 128];
+        final_blocks[..self.buffered].copy_from_slice(&self.buffer[..self.buffered]);
+        final_blocks[self.buffered] = 0x80;
+        let padded_len = if self.buffered < 56 { 64 } else { 128 };
+        let bit_len = self.total_bytes.wrapping_mul(8);
+        final_blocks[padded_len - 8..padded_len].copy_from_slice(&bit_len.to_be_bytes());
+        for block in final_blocks[..padded_len].chunks_exact(64) {
+            compress(&mut self.state, block);
+        }
+
+        let mut out = [0_u8; 32];
+        for (index, word) in self.state.iter().enumerate() {
+            out[index * 4..index * 4 + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        out
+    }
+}
+
+/// SHA-256 of a single byte slice, compatible with the incremental hasher.
+/// Hashing does not allocate input-sized copies or padding.
 #[must_use]
 pub fn sha256(data: &[u8]) -> [u8; 32] {
-    let mut h = [
-        0x6a09_e667,
-        0xbb67_ae85,
-        0x3c6e_f372,
-        0xa54f_f53a,
-        0x510e_527f,
-        0x9b05_688c,
-        0x1f83_d9ab,
-        0x5be0_cd19,
-    ];
-    for chunk in data.chunks_exact(64) {
-        compress(&mut h, chunk);
-    }
-
-    let remaining = data.len() % 64;
-    let mut final_blocks = [0_u8; 128];
-    final_blocks[..remaining].copy_from_slice(&data[data.len() - remaining..]);
-    final_blocks[remaining] = 0x80;
-    let padded_len = if remaining < 56 { 64 } else { 128 };
-    let bit_len = (data.len() as u64).wrapping_mul(8);
-    final_blocks[padded_len - 8..padded_len].copy_from_slice(&bit_len.to_be_bytes());
-    for chunk in final_blocks[..padded_len].chunks_exact(64) {
-        compress(&mut h, chunk);
-    }
-
-    let mut out = [0_u8; 32];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
-    }
-    out
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize()
 }
 
 fn compress(h: &mut [u32; 8], chunk: &[u8]) {
@@ -289,5 +346,54 @@ mod tests {
                 .collect();
             assert_eq!(hex32(&sha256(&bytes)), expected, "length {length}");
         }
+    }
+
+    #[test]
+    fn streaming_chunks_match_single_slice_across_padding_boundaries() {
+        for length in 0..=1_024 {
+            let bytes = (0..length)
+                .map(|position| {
+                    u8::try_from((position * 31 + 17) % 256)
+                        .expect("test byte is reduced modulo 256")
+                })
+                .collect::<Vec<_>>();
+            let expected = sha256(&bytes);
+            for chunk in [1, 3, 7, 13, 63, 64, 65, 127, 128, 1_024] {
+                let mut hasher = Sha256::new();
+                hasher.update(b"");
+                for part in bytes.chunks(chunk) {
+                    hasher.update(part);
+                    hasher.update(b"");
+                }
+                assert_eq!(
+                    hasher.finalize(),
+                    expected,
+                    "length {length}, chunk size {chunk}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_million_byte_nist_vector_without_whole_message_copy() {
+        let mut hasher = Sha256::new();
+        for _ in 0..1_000 {
+            hasher.update(&[b'a'; 1_000]);
+        }
+        assert_eq!(
+            hex32(&hasher.finalize()),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
+    }
+
+    #[test]
+    fn streaming_multiple_updates_and_fresh_default_are_compatible() {
+        let expected = sha256(b"abc");
+        let mut hasher = Sha256::default();
+        hasher.update(b"a");
+        hasher.update(b"b");
+        hasher.update(b"c");
+        assert_eq!(hasher.finalize(), expected);
+        assert_eq!(Sha256::default().finalize(), sha256(b""));
     }
 }
