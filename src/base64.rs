@@ -150,7 +150,7 @@ mod tests {
     fn decoder_rejects_noncanonical_unused_bits_and_incomplete_padding() {
         for bad in [
             "Zh==", "Zh", "Zm9=", "Zm9", "Zg=", "Zm8==", "Zg===", "Zg=a", "Zg==A", "Zm8===",
-            "Zg==\\0", "Zg==☃",
+            "Zg==\0", "Zg==☃",
         ] {
             assert_eq!(decode_standard(bad), None, "{bad:?}");
         }
@@ -159,7 +159,7 @@ mod tests {
         assert_eq!(decode_standard("Zm8="), Some(b"fo".to_vec()));
         assert_eq!(decode_standard("Zm8"), Some(b"fo".to_vec()));
         assert_eq!(
-            decode_standard(" Zm9v\\r\\nYmFy\\t"),
+            decode_standard(" Zm9v\r\nYmFy\t"),
             Some(b"foobar".to_vec())
         );
     }
