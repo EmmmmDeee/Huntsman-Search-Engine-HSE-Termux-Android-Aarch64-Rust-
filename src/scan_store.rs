@@ -462,9 +462,12 @@ impl ScanStore {
     /// Save what a scan found.
     ///
     /// # Errors
-    /// [`StoreError::NotFound`] for an id the store cannot hold; [`StoreError::Io`] on a write
-    /// failure or results over [`MAX_RESULTS_BYTES`].
+    /// [`StoreError::NotFound`] when the scan has no valid saved row; [`StoreError::Io`] on a
+    /// write failure or results over [`MAX_RESULTS_BYTES`].
     pub fn save_results(&self, results: &ScanResults) -> Result<(), StoreError> {
+        // The atomic writer creates parents; without this precondition, saving
+        // an unregistered scan would create a directory with no scan.json.
+        self.get(&results.scan_id)?;
         let path = self.scan_dir(&results.scan_id)?.join(RESULTS_FILE);
         let limit = usize::try_from(MAX_RESULTS_BYTES).unwrap_or(usize::MAX);
         let body = match crate::json::to_bounded_json(results, limit, false) {
@@ -831,6 +834,36 @@ mod tests {
         }
         assert!(valid_id(&new_id("x", 0, 0)));
         assert_ne!(new_id("x", 0, 0), new_id("x", 0, 1));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_results_cannot_create_a_scan_without_a_record() {
+        let dir = scratch("results-no-row");
+        let store = ScanStore::open(&dir).unwrap();
+        let id = new_id("missing-row", 303, 0);
+        let results = ScanResults {
+            format_version: FORMAT_VERSION,
+            scan_id: id.clone(),
+            text: "orphaned".into(),
+            entities: Vec::new(),
+            outcomes: Vec::new(),
+            elements: Vec::new(),
+            correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
+        };
+        assert_eq!(
+            store.save_results(&results),
+            Err(StoreError::NotFound(id.clone()))
+        );
+        assert!(!dir.join(&id).exists(), "results must not create a scan directory");
+        assert!(store.list().unwrap().is_empty());
+
+        let row = record(&id, 303, ScanStatus::Finished);
+        store.create(&row).unwrap();
+        store.save_results(&results).unwrap();
+        assert_eq!(store.results(&id).unwrap(), Some(results));
         let _ = fs::remove_dir_all(&dir);
     }
 
