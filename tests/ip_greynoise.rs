@@ -1,4 +1,4 @@
-//! A GreyNoise Community lookup must only be sent for routable IPv4, never IPv6.
+//! A `GreyNoise` Community lookup must only be sent for routable IPv4, never IPv6.
 use std::sync::Mutex;
 
 use huntsman_recon::greynoise;
