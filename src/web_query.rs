@@ -306,7 +306,17 @@ fn href_values(html: &str) -> Vec<&str> {
         let Some(rel) = find_ascii_case_insensitive(&bytes[index..], b"href") else {
             break;
         };
-        index += rel + 4;
+        let candidate = index + rel;
+        // Only a standalone href attribute is a navigational link. A substring
+        // in data-href, onclick, or another attribute is not a search result.
+        if candidate > 0
+            && !bytes[candidate - 1].is_ascii_whitespace()
+            && bytes[candidate - 1] != b'<'
+        {
+            index = candidate + 4;
+            continue;
+        }
+        index = candidate + 4;
         while index < bytes.len() && bytes[index].is_ascii_whitespace() {
             index += 1;
         }
@@ -484,6 +494,21 @@ mod tests {
         assert!(
             hits.iter()
                 .any(|hit| hit.url == "https://sub.example.net/profile")
+        );
+    }
+
+    #[test]
+    fn parser_rejects_data_href_and_attribute_substring_false_positives() {
+        let html = concat!(
+            "<a data-href=\"https://wrong.example/path\" href=\"https://real.example/path\">real</a>",
+            "<a nothref=\"https://also-wrong.example/path\">not a link</a>",
+            "<a HREF = 'https://second.example/path'>second</a>",
+        );
+        let hits = parse_hits(html, "bing");
+        let urls: Vec<_> = hits.iter().map(|hit| hit.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            ["https://real.example/path", "https://second.example/path"]
         );
     }
 
