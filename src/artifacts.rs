@@ -69,10 +69,17 @@ pub fn render_artifacts(
     let report_value =
         serde_json::to_value(report).map_err(|error| Error::Store(error.to_string()))?;
     let report_json = bounded(canonical_json(&report_value)?, limits.max_export_bytes);
-    let gexf = bounded(
-        gexf::to_gexf(&snapshot.entities, &snapshot.relations).into_bytes(),
+    let gexf = match gexf::to_gexf_bounded(
+        &snapshot.entities,
+        &snapshot.relations,
         limits.max_export_bytes,
-    );
+    ) {
+        Ok(xml) => ArtifactPayload::Ready(xml.into_bytes()),
+        Err(required_bytes) => ArtifactPayload::OmittedTooLarge {
+            required_bytes,
+            limit: limits.max_export_bytes,
+        },
+    };
     let graph = Graph::build(&snapshot.entities, &snapshot.relations);
     let snake_graph = metrics::subject_uid(&snapshot.entities)
         .or_else(|| snapshot.entities.first().map(|entity| entity.uid.as_str()))
