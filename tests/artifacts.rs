@@ -100,3 +100,28 @@ fn oversized_artifacts_are_omitted_not_truncated_into_invalid_data() {
         ArtifactPayload::OmittedTooLarge { .. }
     ));
 }
+
+#[test]
+fn bounded_entity_tree_reports_exact_required_bytes_without_partial_output() {
+    let snapshot = snapshot();
+    let report = analyze_snapshot(&snapshot);
+    let baseline = render_artifacts(&snapshot, &report, &[], &PipelineLimits::default())
+        .expect("baseline artifacts");
+    let ArtifactPayload::Ready(tree) = baseline.snake_graph else {
+        panic!("baseline tree omitted")
+    };
+    let limit = tree.len() - 1;
+    let limits = PipelineLimits {
+        max_export_bytes: limit,
+        ..PipelineLimits::default()
+    };
+    let capped = render_artifacts(&snapshot, &report, &[], &limits).expect("capped artifacts");
+    assert_eq!(
+        capped.snake_graph,
+        ArtifactPayload::OmittedTooLarge {
+            required_bytes: tree.len(),
+            limit,
+        }
+    );
+    assert!(capped.truncated);
+}
