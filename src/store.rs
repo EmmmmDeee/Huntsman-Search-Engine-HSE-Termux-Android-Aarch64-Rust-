@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crate::error::Error;
-use crate::fsio::{read_bounded, write_atomic_private};
+use crate::fsio::{read_bounded_replacing, write_atomic_private};
 use crate::session::{Session, valid_session_id};
 
 /// A saved session's ceiling is the saved-artifact ceiling, as a saved ledger's is: a long
@@ -59,7 +59,7 @@ impl Store {
             return Err(Error::Invalid(format!("unsafe session id: {id}")));
         }
         let path = self.root.join("sessions").join(format!("{id}.json"));
-        let body = read_bounded(&path, MAX_SESSION_BYTES)?;
+        let body = read_bounded_replacing(&path, MAX_SESSION_BYTES)?;
         let session: Session = serde_json::from_slice(&body)
             .map_err(|e| Error::Invalid(format!("{}: not a session: {e}", path.display())))?;
         if session.id != id {
@@ -163,6 +163,35 @@ mod tests {
             }
             other => panic!("mismatched session loaded: {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn session_round_trips_after_multiple_atomic_replacements() {
+        let dir = scratch("atomic-replacement-reader");
+        let store = Store::new(dir.clone());
+        let mut session = Session::new("replacement");
+        for version in 0..12 {
+            session.title = format!("complete version {version}");
+            store.save(&session).unwrap();
+            let loaded = store.load(&session.id).unwrap();
+            assert_eq!(loaded, session);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_reader_still_refuses_session_symlinks() {
+        let dir = scratch("replacement-symlink");
+        let store = Store::new(dir.clone());
+        let session = Session::new("linked session");
+        let path = store.save(&session).unwrap();
+        let other = dir.join("different.json");
+        std::fs::rename(&path, &other).unwrap();
+        std::os::unix::fs::symlink(&other, &path).unwrap();
+        assert!(matches!(store.load(&session.id), Err(Error::Store(_))));
+        assert!(std::fs::read(other).is_ok());
         let _ = std::fs::remove_dir_all(dir);
     }
 
