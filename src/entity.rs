@@ -661,8 +661,7 @@ fn same_evidence_identity(left: &Evidence, right: &Evidence) -> bool {
     // together or dropping the older document. Equal documents still coalesce as before.
     !left.attributes.iter().any(|(key, previous)| {
         right.attributes.get(key).is_some_and(|incoming| {
-            previous != incoming
-                && (is_json_document(previous) || is_json_document(incoming))
+            previous != incoming && (is_json_document(previous) || is_json_document(incoming))
         })
     })
 }
