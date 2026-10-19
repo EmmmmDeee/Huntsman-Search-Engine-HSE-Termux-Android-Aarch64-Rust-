@@ -88,15 +88,11 @@ fn unequal_opaque_raw_text_keeps_both_provider_answers() {
         provenance.recorded_at_unix = time;
         Entity::builder(EntityKind::Domain, "example.org", 0.5, "scan-merge")
             .evidence(
-                Evidence::new(provenance, "Subdomain source response")
-                    .with_attr("raw_answer", raw),
+                Evidence::new(provenance, "Subdomain source response").with_attr("raw_answer", raw),
             )
             .build()
     };
-    let mut entities = vec![
-        source(100, "host-a; host-b"),
-        source(200, "host-c; host-d"),
-    ];
+    let mut entities = vec![source(100, "host-a; host-b"), source(200, "host-c; host-d")];
     merge_by_uid(&mut entities);
     assert_eq!(entities.len(), 1);
     let answers: BTreeSet<_> = entities[0]
