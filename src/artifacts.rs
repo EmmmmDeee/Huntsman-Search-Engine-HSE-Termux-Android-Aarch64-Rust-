@@ -32,24 +32,22 @@ pub struct PipelineArtifacts {
     pub truncated: bool,
 }
 
-fn bounded(bytes: Vec<u8>, limit: usize) -> ArtifactPayload {
-    if bytes.len() > limit {
-        ArtifactPayload::OmittedTooLarge {
-            required_bytes: bytes.len(),
-            limit,
-        }
-    } else {
-        ArtifactPayload::Ready(bytes)
-    }
-}
-
 fn omitted(payload: &ArtifactPayload) -> bool {
     matches!(payload, ArtifactPayload::OmittedTooLarge { .. })
 }
 
-fn canonical_json(value: &serde_json::Value) -> Result<Vec<u8>, Error> {
-    json::to_canonical_string(value)
-        .map(String::into_bytes)
+fn canonical_json(
+    value: &serde_json::Value,
+    limit: usize,
+) -> Result<ArtifactPayload, Error> {
+    json::to_canonical_bounded(value, limit)
+        .map(|result| match result {
+            Ok(bytes) => ArtifactPayload::Ready(bytes),
+            Err(required_bytes) => ArtifactPayload::OmittedTooLarge {
+                required_bytes,
+                limit,
+            },
+        })
         .map_err(|error| Error::Store(error.to_string()))
 }
 
@@ -68,7 +66,7 @@ pub fn render_artifacts(
 ) -> Result<PipelineArtifacts, Error> {
     let report_value =
         serde_json::to_value(report).map_err(|error| Error::Store(error.to_string()))?;
-    let report_json = bounded(canonical_json(&report_value)?, limits.max_export_bytes);
+    let report_json = canonical_json(&report_value, limits.max_export_bytes)?;
     let gexf = match gexf::to_gexf_bounded(
         &snapshot.entities,
         &snapshot.relations,
@@ -93,14 +91,8 @@ pub fn render_artifacts(
                 limit: limits.max_export_bytes,
             },
         });
-    let stix = bounded(
-        canonical_json(&stix::bundle(ledger))?,
-        limits.max_export_bytes,
-    );
-    let navigator = bounded(
-        canonical_json(&navigator::layer(ledger))?,
-        limits.max_export_bytes,
-    );
+    let stix = canonical_json(&stix::bundle(ledger), limits.max_export_bytes)?;
+    let navigator = canonical_json(&navigator::layer(ledger), limits.max_export_bytes)?;
     let truncated = snapshot.truncated
         || report.truncated
         || [&report_json, &gexf, &snake_graph, &stix, &navigator]
