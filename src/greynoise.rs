@@ -54,7 +54,7 @@ struct Body {
     last_seen: Option<String>,
 }
 
-/// Whether GreyNoise Community can answer this address. IPv6 is unsupported.
+/// Whether `GreyNoise` Community can answer this address. IPv6 is unsupported.
 /// This capability check sends no network request.
 #[must_use]
 pub fn answers_for(ip: &str) -> bool {
