@@ -14,7 +14,7 @@ pub fn render_snake_graph(graph: &Graph, root_uid: &str) -> Option<String> {
 }
 
 /// Return the complete tree or its required UTF-8 byte count when it exceeds
-/// max_bytes. A missing root is None; no output is ever truncated.
+/// the supplied byte limit. A missing root is None; no output is ever truncated.
 #[must_use]
 pub fn render_snake_graph_bounded(
     graph: &Graph,
