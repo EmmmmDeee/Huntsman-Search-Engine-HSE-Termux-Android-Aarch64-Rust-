@@ -663,7 +663,7 @@ fn other_process_alive(pid: u32) -> bool {
 
 /// Open an append descriptor only after confirming that the path is a regular
 /// file and that its opened inode is the inode checked before the open.
-/// Creation uses create_new, so an attacker cannot plant a symlink in the
+/// Creation uses `create_new`, so an attacker cannot plant a symlink in the
 /// missing-file window and have it followed.
 fn checked_open_for_append(path: &Path) -> Result<std::fs::File, StoreError> {
     checked_open_for_append_with(path, || {})
