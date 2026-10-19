@@ -1576,7 +1576,7 @@ mod tests {
 
     #[test]
     fn full_scan_store_is_a_conflict_not_a_bad_request() {
-        let error = ServiceError::from(StoreError::Capacity(MAX_SCANS));
+        let error = ServiceError::from(StoreError::Capacity(crate::scan_store::MAX_SCANS));
         assert_eq!(error.status(), 409);
         assert!(matches!(error, ServiceError::Conflict(_)));
     }
