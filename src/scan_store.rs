@@ -917,9 +917,15 @@ mod tests {
         let scan_type = fs::symlink_metadata(dir.join(&scan.id))
             .unwrap()
             .file_type();
-        assert_eq!(is_scan_directory(&dir.join(&scan.id), Ok(scan_type)), Ok(true));
+        assert_eq!(
+            is_scan_directory(&dir.join(&scan.id), Ok(scan_type)),
+            Ok(true)
+        );
         let file_type = fs::symlink_metadata(dir.join(&extra)).unwrap().file_type();
-        assert_eq!(is_scan_directory(&dir.join(&extra), Ok(file_type)), Ok(false));
+        assert_eq!(
+            is_scan_directory(&dir.join(&extra), Ok(file_type)),
+            Ok(false)
+        );
 
         let injected_failure = is_scan_directory(
             &dir.join(&scan.id),
