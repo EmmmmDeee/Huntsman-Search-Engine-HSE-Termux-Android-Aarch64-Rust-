@@ -186,7 +186,11 @@ fn search_engine<T: Transport + ?Sized>(
 
 fn cached_response(url: &str, now_unix: u64) -> Option<Response> {
     let cached = RESPONSE_CACHE.get(url)?;
-    (now_unix.saturating_sub(cached.stored_at_unix) <= CACHE_TTL_SECS).then_some(cached.response)
+    // A clock rollback must not treat a future-dated entry as freshly observed.
+    now_unix
+        .checked_sub(cached.stored_at_unix)
+        .is_some_and(|age| age <= CACHE_TTL_SECS)
+        .then_some(cached.response)
 }
 
 fn response_is_cacheable(response: &Response) -> bool {
@@ -200,7 +204,7 @@ fn response_is_cacheable(response: &Response) -> bool {
     !cache_control
         .split(',')
         .map(str::trim)
-        .any(|directive| directive == "no-store")
+        .any(|directive| matches!(directive, "no-store" | "no-cache" | "max-age=0"))
         && classify_fetch(response.status, &response.text()) == SourceOutcomeKind::Inconclusive
 }
 
@@ -276,7 +280,10 @@ fn outcome(
 
 #[must_use]
 pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
-    let mut urls = BTreeSet::new();
+    // Preserve the provider's first-seen order: lexicographically sorting URLs
+    // destroys result ranking and can promote a less relevant link above the first hit.
+    let mut seen = BTreeSet::new();
+    let mut hits = Vec::new();
     for href in href_values(html) {
         let decoded = decode_minimal_html_entities(href);
         let Some(url) = canonical_url(&decoded) else {
@@ -285,17 +292,17 @@ pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
         if is_engine_or_navigation_url(&url) {
             continue;
         }
-        urls.insert(url);
-        if urls.len() >= MAX_RESULTS_PER_ENGINE {
-            break;
+        if seen.insert(url.clone()) {
+            hits.push(SearchHit {
+                engine: engine.into(),
+                url,
+            });
+            if hits.len() >= MAX_RESULTS_PER_ENGINE {
+                break;
+            }
         }
     }
-    urls.into_iter()
-        .map(|url| SearchHit {
-            engine: engine.into(),
-            url,
-        })
-        .collect()
+    hits
 }
 
 fn href_values(html: &str) -> Vec<&str> {
@@ -306,7 +313,17 @@ fn href_values(html: &str) -> Vec<&str> {
         let Some(rel) = find_ascii_case_insensitive(&bytes[index..], b"href") else {
             break;
         };
-        index += rel + 4;
+        let candidate = index + rel;
+        // Only a standalone href attribute is a navigational link. A substring
+        // in data-href, onclick, or another attribute is not a search result.
+        if candidate > 0
+            && !bytes[candidate - 1].is_ascii_whitespace()
+            && bytes[candidate - 1] != b'<'
+        {
+            index = candidate + 4;
+            continue;
+        }
+        index = candidate + 4;
         while index < bytes.len() && bytes[index].is_ascii_whitespace() {
             index += 1;
         }
@@ -488,6 +505,63 @@ mod tests {
     }
 
     #[test]
+    fn parser_preserves_first_seen_provider_ranking_and_deduplicates() {
+        let html = concat!(
+            "<a href=\"https://z.example/item\">first</a>",
+            "<a href=\"https://a.example/item\">second</a>",
+            "<a href=\"https://z.example/item\">duplicate</a>",
+            "<a href=\"https://m.example/item\">third</a>",
+        );
+        let hits = parse_hits(html, "bing");
+        let urls: Vec<_> = hits.iter().map(|hit| hit.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://z.example/item",
+                "https://a.example/item",
+                "https://m.example/item",
+            ]
+        );
+    }
+
+    #[test]
+    fn parser_caps_the_first_distinct_results_without_reordering() {
+        let mut html = String::new();
+        for index in (0..MAX_RESULTS_PER_ENGINE + 2).rev() {
+            std::fmt::Write::write_fmt(
+                &mut html,
+                format_args!("<a href=\"https://example.org/{index:02}\">hit</a>"),
+            )
+            .expect("writing to String is infallible");
+        }
+        let hits = parse_hits(&html, "bing");
+        assert_eq!(hits.len(), MAX_RESULTS_PER_ENGINE);
+        assert_eq!(
+            hits[0].url,
+            format!("https://example.org/{:02}", MAX_RESULTS_PER_ENGINE + 1)
+        );
+        assert_eq!(
+            hits[MAX_RESULTS_PER_ENGINE - 1].url,
+            "https://example.org/02"
+        );
+    }
+
+    #[test]
+    fn parser_rejects_data_href_and_attribute_substring_false_positives() {
+        let html = concat!(
+            "<a data-href=\"https://wrong.example/path\" href=\"https://real.example/path\">real</a>",
+            "<a nothref=\"https://also-wrong.example/path\">not a link</a>",
+            "<a HREF = 'https://second.example/path'>second</a>",
+        );
+        let hits = parse_hits(html, "bing");
+        let urls: Vec<_> = hits.iter().map(|hit| hit.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            ["https://real.example/path", "https://second.example/path"]
+        );
+    }
+
+    #[test]
     fn multi_engine_search_isolates_zero_yield_and_keeps_other_hits() {
         let fake = Fake::new(vec![
             Ok(response(200, r#"<a href="https://example.org/a">A</a>"#)),
@@ -581,6 +655,59 @@ mod tests {
 
         assert_eq!(first.hits[0].url, "https://example.org/first");
         assert_eq!(second.hits[0].url, "https://example.org/second");
+    }
+
+    #[test]
+    fn no_cache_directive_prevents_reusing_a_search_page_without_revalidation() {
+        let engine = EngineSpec {
+            name: "no_cache_directive_test",
+            base_url: "https://no-cache-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Ok(response_with_headers(
+                200,
+                &[("cache-control", "no-cache")],
+                r#"<a href="https://example.org/first">first</a>"#,
+            )),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/second">second</a>"#,
+            )),
+        ]);
+
+        let first = search_engine(&fake, engine, "no-cache-unique-query", 500).unwrap();
+        let second = search_engine(&fake, engine, "no-cache-unique-query", 501).unwrap();
+        assert_eq!(first.hits[0].url, "https://example.org/first");
+        assert_eq!(second.hits[0].url, "https://example.org/second");
+
+        assert!(!response_is_cacheable(&response_with_headers(
+            200,
+            &[("cache-control", "max-age=0")],
+            r#"<a href="https://example.org/third">third</a>"#,
+        )));
+    }
+
+    #[test]
+    fn a_future_dated_cache_entry_is_not_reused_after_clock_rollback() {
+        let engine = EngineSpec {
+            name: "cache_clock_rollback_test",
+            base_url: "https://clock-rollback-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/before">before</a>"#,
+            )),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/after">after</a>"#,
+            )),
+        ]);
+
+        let first = search_engine(&fake, engine, "clock-rollback-unique-query", 900).unwrap();
+        let second = search_engine(&fake, engine, "clock-rollback-unique-query", 899).unwrap();
+        assert_eq!(first.hits[0].url, "https://example.org/before");
+        assert_eq!(second.hits[0].url, "https://example.org/after");
     }
 
     #[test]
