@@ -36,10 +36,7 @@ fn omitted(payload: &ArtifactPayload) -> bool {
     matches!(payload, ArtifactPayload::OmittedTooLarge { .. })
 }
 
-fn canonical_json(
-    value: &serde_json::Value,
-    limit: usize,
-) -> Result<ArtifactPayload, Error> {
+fn canonical_json(value: &serde_json::Value, limit: usize) -> Result<ArtifactPayload, Error> {
     json::to_canonical_bounded(value, limit)
         .map(|result| match result {
             Ok(bytes) => ArtifactPayload::Ready(bytes),
