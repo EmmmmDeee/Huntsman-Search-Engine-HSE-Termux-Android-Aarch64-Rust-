@@ -1605,7 +1605,10 @@ mod tests {
         let permits: Vec<_> = (0..MAX_SCAN_WORKERS)
             .map(|_| service.reserve_worker().unwrap())
             .collect();
-        assert_eq!(service.worker_slots.load(Ordering::Acquire), MAX_SCAN_WORKERS);
+        assert_eq!(
+            service.worker_slots.load(Ordering::Acquire),
+            MAX_SCAN_WORKERS
+        );
         let rejected = service.start(&ScanRequest {
             target: "example.com".into(),
             ..ScanRequest::default()
@@ -1615,11 +1618,15 @@ mod tests {
 
         drop(permits);
         assert_eq!(service.worker_slots.load(Ordering::Acquire), 0);
-        let started = service.start(&ScanRequest {
-            target: "example.com".into(),
-            ..ScanRequest::default()
-        }).unwrap();
-        let finished = service.wait(&started.id, Instant::now() + Duration::from_secs(10)).unwrap();
+        let started = service
+            .start(&ScanRequest {
+                target: "example.com".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let finished = service
+            .wait(&started.id, Instant::now() + Duration::from_secs(10))
+            .unwrap();
         assert!(!finished.status.is_active());
         for _ in 0..200 {
             if service.worker_slots.load(Ordering::Acquire) == 0 {
