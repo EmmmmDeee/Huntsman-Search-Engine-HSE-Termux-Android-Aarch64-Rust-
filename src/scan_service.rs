@@ -98,6 +98,7 @@ impl From<StoreError> for ServiceError {
         match error {
             StoreError::NotFound(id) => Self::NotFound(format!("no scan {id}")),
             StoreError::Invalid(message) => Self::BadRequest(message),
+            error @ StoreError::Capacity(_) => Self::Conflict(error.to_string()),
             StoreError::Io(message) => Self::Store(message),
         }
     }
@@ -1572,6 +1573,13 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn full_scan_store_is_a_conflict_not_a_bad_request() {
+        let error = ServiceError::from(StoreError::Capacity(crate::scan_store::MAX_SCANS));
+        assert_eq!(error.status(), 409);
+        assert!(matches!(error, ServiceError::Conflict(_)));
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let dir =
