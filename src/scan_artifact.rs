@@ -149,8 +149,16 @@ pub fn write(path: &Path, artifact: &ScanArtifact) -> Result<(), ArtifactError> 
 /// [`ArtifactError::Malformed`] when it does not decode, and
 /// [`ArtifactError::UnsupportedVersion`] when its format differs from this build's.
 pub fn read(path: &Path) -> Result<ScanArtifact, ArtifactError> {
+    read_with_size(path).map(|(artifact, _)| artifact)
+}
+
+/// Return the decoded artifact together with the exact number of bytes read
+/// from the revalidated descriptor. A directory's aggregate budget must
+/// measure these bytes, not an earlier pathname-based metadata snapshot.
+fn read_with_size(path: &Path) -> Result<(ScanArtifact, u64), ArtifactError> {
     let bytes = crate::fsio::read_bounded_replacing(path, MAX_ARTIFACT_BYTES)
         .map_err(|error| fsio_err(&error))?;
+    let byte_count = bytes.len() as u64;
     let artifact: ScanArtifact =
         serde_json::from_slice(&bytes).map_err(|e| ArtifactError::Malformed(e.to_string()))?;
     if artifact.format_version != FORMAT_VERSION {
@@ -159,7 +167,7 @@ pub fn read(path: &Path) -> Result<ScanArtifact, ArtifactError> {
             supported: FORMAT_VERSION,
         });
     }
-    Ok(artifact)
+    Ok((artifact, byte_count))
 }
 
 /// Most artifacts a history directory may hold. Matches the cross-scan
@@ -193,6 +201,14 @@ impl ArtifactHistory {
     /// than [`MAX_HISTORY_ARTIFACTS`] artifacts or [`MAX_HISTORY_BYTES`] bytes;
     /// otherwise the first error [`read`] returns, prefixed with the file path.
     pub fn open(dir: &Path) -> Result<Self, ArtifactError> {
+        Self::open_with_limit(dir, MAX_HISTORY_BYTES, || {})
+    }
+
+    fn open_with_limit(
+        dir: &Path,
+        max_bytes: u64,
+        after_index: impl FnOnce(),
+    ) -> Result<Self, ArtifactError> {
         let mut paths = Vec::new();
         let mut total = 0u64;
         for entry in fs::read_dir(dir)? {
@@ -204,17 +220,27 @@ impl ArtifactHistory {
             }
             total = total.saturating_add(meta.len());
             paths.push(path);
-            if paths.len() > MAX_HISTORY_ARTIFACTS || total > MAX_HISTORY_BYTES {
+            if paths.len() > MAX_HISTORY_ARTIFACTS || total > max_bytes {
                 return Err(ArtifactError::Io(io::Error::other(format!(
-                    "{}: history exceeds {MAX_HISTORY_ARTIFACTS} artifacts or {MAX_HISTORY_BYTES} bytes",
+                    "{}: history exceeds {MAX_HISTORY_ARTIFACTS} artifacts or {max_bytes} bytes",
                     dir.display()
                 ))));
             }
         }
         paths.sort();
+        after_index();
         let mut history = Self::default();
+        let mut loaded_bytes = 0u64;
         for path in paths {
-            let artifact = read(&path).map_err(|error| named(&path, error))?;
+            let (artifact, byte_count) =
+                read_with_size(&path).map_err(|error| named(&path, error))?;
+            loaded_bytes = loaded_bytes.saturating_add(byte_count);
+            if loaded_bytes > max_bytes {
+                return Err(ArtifactError::Io(io::Error::other(format!(
+                    "{}: history exceeds {MAX_HISTORY_ARTIFACTS} artifacts or {max_bytes} bytes",
+                    dir.display()
+                ))));
+            }
             history.insert(artifact);
         }
         Ok(history)
@@ -335,6 +361,34 @@ mod tests {
         assert_eq!(read(&other).unwrap(), original);
         let _ = fs::remove_file(path);
         let _ = fs::remove_file(other);
+    }
+
+    #[test]
+    fn history_rechecks_total_bytes_after_a_larger_atomic_replacement() {
+        let path = scratch("history-aggregate-inode-replacement");
+        let dir = path.parent().unwrap();
+        let other = dir.join("other.json");
+        write(&path, &ScanArtifact::new("first", Vec::new(), Vec::new())).unwrap();
+        write(&other, &ScanArtifact::new("second", Vec::new(), Vec::new())).unwrap();
+
+        // The pre-index stat sees two small artifacts. Replacing one with a
+        // valid larger artifact tests the exact bytes that the reader observes,
+        // without needing to allocate a full 128 MiB test fixture.
+        let failure = ArtifactHistory::open_with_limit(dir, 512, || {
+            write(
+                &path,
+                &ScanArtifact::new("x".repeat(2_048), Vec::new(), Vec::new()),
+            )
+            .unwrap();
+        })
+        .expect_err("post-stat expansion must not bypass the history byte ceiling");
+        match failure {
+            ArtifactError::Io(error) => {
+                assert!(error.to_string().contains("history exceeds"));
+            }
+            other => panic!("unexpected history accounting error: {other:?}"),
+        }
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
