@@ -117,10 +117,11 @@ impl Sha256 {
                 .copy_from_slice(&input[..take]);
             self.buffered += take;
             input = &input[take..];
-            if self.buffered == 64 {
-                compress(&mut self.state, &self.buffer);
-                self.buffered = 0;
+            if self.buffered < 64 {
+                return;
             }
+            compress(&mut self.state, &self.buffer);
+            self.buffered = 0;
         }
 
         let mut chunks = input.chunks_exact(64);
@@ -393,5 +394,4 @@ mod tests {
         assert_eq!(hasher.finalize(), expected);
         assert_eq!(Sha256::default().finalize(), sha256(b""));
     }
-
 }
