@@ -177,5 +177,4 @@ mod tests {
         assert_eq!(writer.required_bytes, 8);
         assert_eq!(writer.finish(), Err(8));
     }
-
 }
