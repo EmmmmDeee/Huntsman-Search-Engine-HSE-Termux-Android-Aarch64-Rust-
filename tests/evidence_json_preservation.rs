@@ -1,14 +1,10 @@
 //! Distinct structured source answers remain intact when entities are consolidated.
 use std::collections::BTreeSet;
 
-use huntsman_recon::entity::{
-    Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid,
-};
+use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 
-const OLDER: &str =
-    r#"[{"name":"Log4Shell; actively exploited","modified":"2022-01-13"}]"#;
-const NEWER: &str =
-    r#"[{"name":"Log4Shell; actively exploited","modified":"2026-10-15"}]"#;
+const OLDER: &str = r#"[{"name":"Log4Shell; actively exploited","modified":"2022-01-13"}]"#;
+const NEWER: &str = r#"[{"name":"Log4Shell; actively exploited","modified":"2026-10-15"}]"#;
 
 fn observed(time: u64, raw: &str, label: &str) -> Entity {
     let mut provenance = EvidenceProvenance::new("otx");
@@ -55,7 +51,10 @@ fn unequal_json_answers_keep_both_original_documents_and_timestamps() {
 
 #[test]
 fn equal_json_answers_preserve_existing_coalescing_behavior() {
-    let mut entities = vec![observed(100, OLDER, "first"), observed(200, OLDER, "second")];
+    let mut entities = vec![
+        observed(100, OLDER, "first"),
+        observed(200, OLDER, "second"),
+    ];
     merge_by_uid(&mut entities);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].evidence.len(), 1);
@@ -73,7 +72,10 @@ fn equal_json_answers_preserve_existing_coalescing_behavior() {
 
 #[test]
 fn mismatched_document_and_scalar_cannot_be_spliced() {
-    let mut entities = vec![observed(100, OLDER, "first"), observed(200, "unknown", "second")];
+    let mut entities = vec![
+        observed(100, OLDER, "first"),
+        observed(200, "unknown", "second"),
+    ];
     merge_by_uid(&mut entities);
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].evidence.len(), 2);
