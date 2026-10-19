@@ -897,8 +897,10 @@ mod tests {
         larger.name = "x".repeat(usize::try_from(MAX_ROW_BYTES).unwrap());
         assert!(matches!(store.update(&larger), Err(StoreError::Io(_))));
         assert_eq!(store.get(&original.id).unwrap(), original);
-        assert_eq!(fs::read(dir.join(&original.id).join(ROW_FILE)).unwrap(), before);
+        assert_eq!(
+            fs::read(dir.join(&original.id).join(ROW_FILE)).unwrap(),
+            before
+        );
         let _ = fs::remove_dir_all(&dir);
     }
-
 }
