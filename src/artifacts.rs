@@ -76,9 +76,15 @@ pub fn render_artifacts(
     let graph = Graph::build(&snapshot.entities, &snapshot.relations);
     let snake_graph = metrics::subject_uid(&snapshot.entities)
         .or_else(|| snapshot.entities.first().map(|entity| entity.uid.as_str()))
-        .and_then(|root| snake_graph::render_snake_graph(&graph, root))
-        .map_or(ArtifactPayload::NotApplicable, |text| {
-            bounded(text.into_bytes(), limits.max_export_bytes)
+        .and_then(|root| {
+            snake_graph::render_snake_graph_bounded(&graph, root, limits.max_export_bytes)
+        })
+        .map_or(ArtifactPayload::NotApplicable, |result| match result {
+            Ok(text) => ArtifactPayload::Ready(text.into_bytes()),
+            Err(required_bytes) => ArtifactPayload::OmittedTooLarge {
+                required_bytes,
+                limit: limits.max_export_bytes,
+            },
         });
     let stix = bounded(
         canonical_json(&stix::bundle(ledger))?,
