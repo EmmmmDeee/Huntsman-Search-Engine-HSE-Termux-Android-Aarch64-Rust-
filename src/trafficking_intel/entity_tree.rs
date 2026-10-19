@@ -46,6 +46,8 @@ pub enum GraphError {
     UnknownEndpoint(String),
     MissingEvidence,
     SelfLink,
+    EmptyEndpoint,
+    DuplicateEvidenceReference,
 }
 
 impl EntityTree {
@@ -61,6 +63,9 @@ impl EntityTree {
             }
         }
         for edge in &self.edges {
+            if edge.from.trim().is_empty() || edge.to.trim().is_empty() {
+                return Err(GraphError::EmptyEndpoint);
+            }
             if edge.from == edge.to { return Err(GraphError::SelfLink); }
             for endpoint in [&edge.from, &edge.to] {
                 if !ids.contains(endpoint.as_str()) {
@@ -71,6 +76,10 @@ impl EntityTree {
                 || edge.evidence_refs.iter().any(|r| r.trim().is_empty())
             {
                 return Err(GraphError::MissingEvidence);
+            }
+            let mut refs = BTreeSet::new();
+            if edge.evidence_refs.iter().any(|r| !refs.insert(r.as_str())) {
+                return Err(GraphError::DuplicateEvidenceReference);
             }
         }
         Ok(())
@@ -200,5 +209,56 @@ mod traversal_tests {
         assert!(view[1..].iter().all(|e| e.depth == 1));
         assert_eq!(g.expand("a", 10, 2).unwrap().len(), 2);
         assert!(g.expand("a", 10, 0).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod validation_regression_tests {
+    use super::*;
+
+    fn base() -> EntityTree {
+        EntityTree {
+            nodes: vec![
+                EntityNode { id: "a".into(), kind: EntityKind::Organisation, label: "A".into() },
+                EntityNode { id: "b".into(), kind: EntityKind::Evidence, label: "B".into() },
+            ],
+            edges: vec![EntityEdge {
+                from: "a".into(),
+                to: "b".into(),
+                kind: RelationshipKind::MentionedIn,
+                evidence_refs: vec!["record-1".into()],
+                alleged: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn rejects_empty_edge_endpoint() {
+        let mut graph = base();
+        graph.edges[0].from.clear();
+        assert_eq!(graph.validate(), Err(GraphError::EmptyEndpoint));
+    }
+
+    #[test]
+    fn rejects_duplicate_evidence_reference_on_edge() {
+        let mut graph = base();
+        graph.edges[0].evidence_refs.push("record-1".into());
+        assert_eq!(graph.validate(), Err(GraphError::DuplicateEvidenceReference));
+    }
+
+    #[test]
+    fn depth_zero_yields_root_only() {
+        let graph = base();
+        let nodes = graph.expand("a", 0, 10).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].id, "a");
+    }
+
+    #[test]
+    fn unknown_root_fails_even_with_zero_budget() {
+        assert_eq!(
+            base().expand("unknown", 0, 0),
+            Err(GraphError::UnknownEndpoint("unknown".into()))
+        );
     }
 }
