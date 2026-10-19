@@ -636,11 +636,9 @@ mod tests {
         write(&path, &stable).unwrap();
         let before = fs::read(&path).unwrap();
         let mut huge = stable.clone();
-        huge.entities[0].raw_value =
-            "x".repeat(usize::try_from(MAX_ARTIFACT_BYTES).unwrap());
+        huge.entities[0].raw_value = "x".repeat(usize::try_from(MAX_ARTIFACT_BYTES).unwrap());
         assert!(matches!(write(&path, &huge), Err(ArtifactError::Io(_))));
         assert_eq!(fs::read(&path).unwrap(), before);
         assert_eq!(read(&path).unwrap(), stable);
     }
-
 }
