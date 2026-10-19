@@ -74,8 +74,14 @@ const K: [u32; 64] = [
 #[must_use]
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h = [
-        0x6a09_e667, 0xbb67_ae85, 0x3c6e_f372, 0xa54f_f53a,
-        0x510e_527f, 0x9b05_688c, 0x1f83_d9ab, 0x5be0_cd19,
+        0x6a09_e667,
+        0xbb67_ae85,
+        0x3c6e_f372,
+        0xa54f_f53a,
+        0x510e_527f,
+        0x9b05_688c,
+        0x1f83_d9ab,
+        0x5be0_cd19,
     ];
     for chunk in data.chunks_exact(64) {
         compress(&mut h, chunk);
@@ -229,18 +235,54 @@ mod tests {
     #[test]
     fn binary_vectors_across_padding_and_block_boundaries() {
         for (length, expected) in [
-            (55_usize, "4b587256d77fdf91e5d2b485b7bef8e498fac5dc88c724c30267a0d96222f9b7"),
-            (56, "4360272affef439b717f1c6c3b12b806dd844353fa53bbd0ef63c963fe3109db"),
-            (63, "d6166e0436d0b0e9296e171c13bb88fbc2dbcd1da6b9470b452ae06a9495e9a7"),
-            (64, "ca982c0fc8d1c35f64001571c33f1f34c109ad6c6420637d3d7633bd5c3c649a"),
-            (65, "d96cbc7f13f43e80ddedc86753166e0843d2898ffbb662e6c93c412690b49568"),
-            (119, "0618e277fa04810cee36404f1704459e982579ca7da339f7e27ed2bc987f2abd"),
-            (120, "7ae11528fbabe9755b6b55d01dd8e4a50e45182cff7e3d161b1d49c03eadd947"),
-            (127, "da06012c921524baa736ca49c74c26edff631841368f9aa03c866e186b9da089"),
-            (128, "4ea84049cfc1c375698f9df7d58de283151599431d5a7b804195ec62c29ca0e4"),
-            (129, "7c20a32fb7fb904575bca1c6a1f2c30c754f6a82661718f8e68f5137b9f8487d"),
-            (257, "de524d79c4f2ae863da0fafe9a68d9be00c05a2afddf72b7620d3820c48e71f8"),
-            (4097, "7094d261c319e162a1edb93c47322ba1ac6ea44c3e16b05351fbd1749d9bbd27"),
+            (
+                55_usize,
+                "4b587256d77fdf91e5d2b485b7bef8e498fac5dc88c724c30267a0d96222f9b7",
+            ),
+            (
+                56,
+                "4360272affef439b717f1c6c3b12b806dd844353fa53bbd0ef63c963fe3109db",
+            ),
+            (
+                63,
+                "d6166e0436d0b0e9296e171c13bb88fbc2dbcd1da6b9470b452ae06a9495e9a7",
+            ),
+            (
+                64,
+                "ca982c0fc8d1c35f64001571c33f1f34c109ad6c6420637d3d7633bd5c3c649a",
+            ),
+            (
+                65,
+                "d96cbc7f13f43e80ddedc86753166e0843d2898ffbb662e6c93c412690b49568",
+            ),
+            (
+                119,
+                "0618e277fa04810cee36404f1704459e982579ca7da339f7e27ed2bc987f2abd",
+            ),
+            (
+                120,
+                "7ae11528fbabe9755b6b55d01dd8e4a50e45182cff7e3d161b1d49c03eadd947",
+            ),
+            (
+                127,
+                "da06012c921524baa736ca49c74c26edff631841368f9aa03c866e186b9da089",
+            ),
+            (
+                128,
+                "4ea84049cfc1c375698f9df7d58de283151599431d5a7b804195ec62c29ca0e4",
+            ),
+            (
+                129,
+                "7c20a32fb7fb904575bca1c6a1f2c30c754f6a82661718f8e68f5137b9f8487d",
+            ),
+            (
+                257,
+                "de524d79c4f2ae863da0fafe9a68d9be00c05a2afddf72b7620d3820c48e71f8",
+            ),
+            (
+                4097,
+                "7094d261c319e162a1edb93c47322ba1ac6ea44c3e16b05351fbd1749d9bbd27",
+            ),
         ] {
             let bytes: Vec<u8> = (0..length)
                 .map(|i| u8::try_from((i * 17 + 91) % 256).expect("byte is reduced modulo 256"))
