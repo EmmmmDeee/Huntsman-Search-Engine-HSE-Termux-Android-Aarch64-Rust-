@@ -69,6 +69,19 @@ fn fsio_error(error: &crate::error::Error) -> StoreError {
     StoreError::Io(error.to_string())
 }
 
+/// An optional scan artifact is absent only on `NotFound`, never on an I/O failure.
+/// Pass the checked metadata result so the classification is independently testable.
+fn optional_file_missing(
+    path: &Path,
+    metadata: std::io::Result<fs::Metadata>,
+) -> Result<bool, StoreError> {
+    match metadata {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(io_error(path, &error)),
+    }
+}
+
 /// A scan's state, by Spiderfoot's names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScanStatus {
@@ -538,7 +551,7 @@ impl ScanStore {
         let dir = self.scan_dir(id)?;
         self.require_row(id)?;
         let path = dir.join(RESULTS_FILE);
-        if fs::symlink_metadata(&path).is_err() {
+        if optional_file_missing(&path, fs::symlink_metadata(&path))? {
             return Ok(None);
         }
         let bytes = crate::fsio::read_bounded_replacing(&path, MAX_RESULTS_BYTES)
@@ -624,7 +637,7 @@ impl ScanStore {
         let dir = self.scan_dir(id)?;
         self.require_row(id)?;
         let path = dir.join(LOG_FILE);
-        if fs::symlink_metadata(&path).is_err() {
+        if optional_file_missing(&path, fs::symlink_metadata(&path))? {
             return Ok(Vec::new());
         }
         let bytes = crate::fsio::read_bounded(&path, MAX_LOG_BYTES).map_err(|e| fsio_error(&e))?;
@@ -875,6 +888,37 @@ mod tests {
         }
         assert!(valid_id(&new_id("x", 0, 0)));
         assert_ne!(new_id("x", 0, 0), new_id("x", 0, 1));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn optional_scan_files_distinguish_absence_from_metadata_errors() {
+        let dir = scratch("optional-file-errors");
+        let store = ScanStore::open(&dir).unwrap();
+        let row = record(&new_id("optional-files", 305, 0), 305, ScanStatus::Created);
+        store.create(&row).unwrap();
+
+        let absent_path = dir.join(&row.id).join(RESULTS_FILE);
+        assert_eq!(
+            optional_file_missing(&absent_path, fs::symlink_metadata(&absent_path)),
+            Ok(true)
+        );
+        assert_eq!(store.results(&row.id).unwrap(), None);
+        assert!(store.log(&row.id).unwrap().is_empty());
+
+        let io_failure = optional_file_missing(
+            &absent_path,
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        );
+        assert!(
+            matches!(io_failure, Err(StoreError::Io(_))),
+            "metadata access failures must not masquerade as missing results or logs"
+        );
+        fs::write(&absent_path, b"present").unwrap();
+        assert_eq!(
+            optional_file_missing(&absent_path, fs::symlink_metadata(&absent_path)),
+            Ok(false)
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
