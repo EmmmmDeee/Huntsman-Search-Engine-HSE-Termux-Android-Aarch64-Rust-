@@ -1,7 +1,7 @@
 //! People-centric identity on operator-supplied records.
 //! A shared display name is not a link. Email and handle are.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -29,7 +29,10 @@ pub struct Cluster {
 }
 
 /// Union by shared canonical email or handle. Names never merge records.
-/// Canonical keys are computed once per record.
+/// A deterministic inverted index avoids pairwise comparisons between records
+/// without shared keys. All directly matching pairs are still emitted, in the
+/// original record-pair order, including duplicate public record identifiers.
+/// Canonical emails take precedence over handles as the recorded link reason.
 #[must_use]
 pub fn resolve(records: &[PersonRecord]) -> Vec<Cluster> {
     fn find(parent: &mut [usize], mut i: usize) -> usize {
@@ -39,56 +42,85 @@ pub fn resolve(records: &[PersonRecord]) -> Vec<Cluster> {
         }
         i
     }
-    fn keys(raw: &[String], canon: fn(&str) -> Option<String>) -> HashSet<String> {
-        raw.iter().filter_map(|v| canon(v)).collect()
-    }
-    let n = records.len();
-    let emails: Vec<HashSet<String>> = records
-        .iter()
-        .map(|r| keys(&r.emails, canonical_email))
-        .collect();
-    let handles: Vec<HashSet<String>> = records
-        .iter()
-        .map(|r| keys(&r.handles, canonical_handle))
-        .collect();
-    let mut parent: Vec<usize> = (0..n).collect();
-    let mut links = Vec::new();
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let reason = if !emails[i].is_disjoint(&emails[j]) {
-                "shared_email"
-            } else if !handles[i].is_disjoint(&handles[j]) {
-                "shared_handle"
-            } else {
-                continue;
-            };
-            let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
-            if ri != rj {
-                parent[rj] = ri;
+
+    fn collect_pairs(
+        records: &[PersonRecord],
+        select: fn(&PersonRecord) -> &[String],
+        canonicalize: fn(&str) -> Option<String>,
+        reason: &'static str,
+        pairs: &mut BTreeMap<(usize, usize), &'static str>,
+    ) {
+        let mut index: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (position, record) in records.iter().enumerate() {
+            // Repeated raw values (including different spellings that canonize
+            // to one key) must not create duplicate links.
+            let keys = select(record)
+                .iter()
+                .filter_map(|raw| canonicalize(raw))
+                .collect::<BTreeSet<_>>();
+            for key in keys {
+                index.entry(key).or_default().push(position);
             }
-            links.push((i, j, reason));
+        }
+        for members in index.values() {
+            for (position, &left) in members.iter().enumerate() {
+                for &right in &members[position + 1..] {
+                    pairs.entry((left, right)).or_insert(reason);
+                }
+            }
         }
     }
-    let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for i in 0..n {
-        let root = find(&mut parent, i);
-        buckets[root].push(i);
+
+    let count = records.len();
+    // Email pairs are inserted first. A handle overlap cannot overwrite the
+    // stronger email match, even if the handle appears first in the input.
+    let mut pairs = BTreeMap::new();
+    collect_pairs(
+        records,
+        |record| &record.emails,
+        canonical_email,
+        "shared_email",
+        &mut pairs,
+    );
+    collect_pairs(
+        records,
+        |record| &record.handles,
+        canonical_handle,
+        "shared_handle",
+        &mut pairs,
+    );
+
+    let mut parent: Vec<usize> = (0..count).collect();
+    for &(left, right) in pairs.keys() {
+        let (a, b) = (find(&mut parent, left), find(&mut parent, right));
+        if a != b {
+            parent[b] = a;
+        }
     }
-    let mut cluster_links: Vec<Vec<Link>> = vec![Vec::new(); n];
-    for (i, j, reason) in links {
-        let root = find(&mut parent, i);
+
+    let mut buckets = vec![Vec::new(); count];
+    for position in 0..count {
+        let root = find(&mut parent, position);
+        buckets[root].push(position);
+    }
+    let mut cluster_links = vec![Vec::new(); count];
+    for ((left, right), reason) in pairs {
+        let root = find(&mut parent, left);
         cluster_links[root].push(Link {
-            left: records[i].id.clone(),
-            right: records[j].id.clone(),
+            left: records[left].id.clone(),
+            right: records[right].id.clone(),
             reason: reason.to_owned(),
         });
     }
     buckets
         .into_iter()
         .zip(cluster_links)
-        .filter(|(b, _)| !b.is_empty())
-        .map(|(idxs, links)| Cluster {
-            members: idxs.iter().map(|i| records[*i].id.clone()).collect(),
+        .filter(|(indices, _)| !indices.is_empty())
+        .map(|(indices, links)| Cluster {
+            members: indices
+                .iter()
+                .map(|&position| records[position].id.clone())
+                .collect(),
             links,
         })
         .collect()
@@ -244,4 +276,148 @@ mod tests {
         assert_eq!(clusters[0].links[0].reason, "shared_email");
         assert_eq!(canonical_handle("@Ada"), Some("ada".into()));
     }
+
+    #[test]
+    fn overlapping_email_and_handle_emits_one_email_link() {
+        let records = vec![
+            PersonRecord {
+                id: "a".into(),
+                name: "same display name".into(),
+                emails: vec!["Ada@Example.com".into(), "ada@example.com".into()],
+                handles: vec!["@Ada".into(), "ada".into()],
+            },
+            PersonRecord {
+                id: "b".into(),
+                name: "same display name".into(),
+                emails: vec!["ada@example.com".into()],
+                handles: vec!["ada".into()],
+            },
+        ];
+        let clusters = resolve(&records);
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].links.len(), 1);
+        assert_eq!(clusters[0].links[0].reason, "shared_email");
+    }
+
+    #[test]
+    fn indexed_resolution_matches_pairwise_oracle_on_mixed_records() {
+        fn oracle(records: &[PersonRecord]) -> Vec<Cluster> {
+            fn find(parent: &mut [usize], mut position: usize) -> usize {
+                while parent[position] != position {
+                    parent[position] = parent[parent[position]];
+                    position = parent[position];
+                }
+                position
+            }
+
+            let emails: Vec<BTreeSet<String>> = records
+                .iter()
+                .map(|record| {
+                    record
+                        .emails
+                        .iter()
+                        .filter_map(|raw| canonical_email(raw))
+                        .collect()
+                })
+                .collect();
+            let handles: Vec<BTreeSet<String>> = records
+                .iter()
+                .map(|record| {
+                    record
+                        .handles
+                        .iter()
+                        .filter_map(|raw| canonical_handle(raw))
+                        .collect()
+                })
+                .collect();
+            let count = records.len();
+            let mut parent: Vec<usize> = (0..count).collect();
+            let mut links = Vec::new();
+            for left in 0..count {
+                for right in left + 1..count {
+                    let reason = if !emails[left].is_disjoint(&emails[right]) {
+                        "shared_email"
+                    } else if !handles[left].is_disjoint(&handles[right]) {
+                        "shared_handle"
+                    } else {
+                        continue;
+                    };
+                    let (a, b) = (find(&mut parent, left), find(&mut parent, right));
+                    if a != b {
+                        parent[b] = a;
+                    }
+                    links.push((left, right, reason));
+                }
+            }
+            let mut buckets = vec![Vec::new(); count];
+            for position in 0..count {
+                let root = find(&mut parent, position);
+                buckets[root].push(position);
+            }
+            let mut cluster_links = vec![Vec::new(); count];
+            for (left, right, reason) in links {
+                let root = find(&mut parent, left);
+                cluster_links[root].push(Link {
+                    left: records[left].id.clone(),
+                    right: records[right].id.clone(),
+                    reason: reason.to_owned(),
+                });
+            }
+            buckets
+                .into_iter()
+                .zip(cluster_links)
+                .filter(|(positions, _)| !positions.is_empty())
+                .map(|(positions, links)| Cluster {
+                    members: positions
+                        .iter()
+                        .map(|&position| records[position].id.clone())
+                        .collect(),
+                    links,
+                })
+                .collect()
+        }
+
+        let records = (0..160)
+            .map(|position| PersonRecord {
+                id: format!("id-{}", position % 43),
+                name: "repeated display name".to_owned(),
+                emails: if position % 7 == 0 {
+                    Vec::new()
+                } else {
+                    vec![
+                        format!("Person{}@Example.com", position % 29),
+                        format!("person{}@EXAMPLE.com", position % 29),
+                    ]
+                },
+                handles: if position % 11 == 0 {
+                    Vec::new()
+                } else {
+                    vec![
+                        format!("@account{}", position % 37),
+                        format!("ACCOUNT{}", position % 37),
+                    ]
+                },
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(resolve(&records), oracle(&records));
+        assert!(resolve(&[]).is_empty());
+    }
+
+    #[test]
+    fn thousands_of_disjoint_records_do_not_require_pairwise_comparison() {
+        let records = (0..10_000)
+            .map(|position| PersonRecord {
+                id: format!("person-{position}"),
+                name: "same name".to_owned(),
+                emails: vec![format!("person-{position}@example.com")],
+                handles: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        let clusters = resolve(&records);
+        assert_eq!(clusters.len(), records.len());
+        assert!(clusters.iter().all(|cluster| {
+            cluster.members.len() == 1 && cluster.links.is_empty()
+        }));
+    }
+
 }
