@@ -6,7 +6,7 @@ use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::Value;
 
 /// A value whose object members serialize in ascending key order. Sorting is
-/// explicit even when another dependency enables serde_json's preserve_order.
+/// explicit even when another dependency changes JSON object iteration order.
 struct Canonical<'a>(&'a Value);
 
 impl Serialize for Canonical<'_> {
