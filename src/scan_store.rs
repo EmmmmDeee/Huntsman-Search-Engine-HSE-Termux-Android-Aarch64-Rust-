@@ -1001,7 +1001,10 @@ mod tests {
         assert!(matches!(store.log(&id), Err(StoreError::Io(_))));
 
         let absent = new_id("absent", 102, 0);
-        assert_eq!(store.get(&absent), Err(StoreError::NotFound(absent.clone())));
+        assert_eq!(
+            store.get(&absent),
+            Err(StoreError::NotFound(absent.clone()))
+        );
         assert_eq!(
             store.results(&absent),
             Err(StoreError::NotFound(absent.clone()))
