@@ -113,8 +113,7 @@ impl Sha256 {
         self.total_bytes = self.total_bytes.wrapping_add(input.len() as u64);
         if self.buffered > 0 {
             let take = input.len().min(64 - self.buffered);
-            self.buffer[self.buffered..self.buffered + take]
-                .copy_from_slice(&input[..take]);
+            self.buffer[self.buffered..self.buffered + take].copy_from_slice(&input[..take]);
             self.buffered += take;
             input = &input[take..];
             if self.buffered < 64 {
