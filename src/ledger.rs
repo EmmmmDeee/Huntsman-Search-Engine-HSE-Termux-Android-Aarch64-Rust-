@@ -229,7 +229,10 @@ mod tests {
             &sample(Status::Verified, EvidenceLevel::DirectObservation, None),
         );
         save_chain(&path, std::slice::from_ref(&first)).unwrap();
-        assert_eq!(load_chain(&path).unwrap(), [first.clone()]);
+        assert_eq!(
+            load_chain(&path).unwrap().as_slice(),
+            std::slice::from_ref(&first)
+        );
         let mut second_claim = first.claim.clone();
         second_claim.claim = "second complete entry".into();
         let second = append(&first.hash, &second_claim);
