@@ -512,10 +512,14 @@ mod tests {
 
     #[test]
     fn parser_caps_the_first_distinct_results_without_reordering() {
-        let html = (0..MAX_RESULTS_PER_ENGINE + 2)
-            .rev()
-            .map(|index| format!("<a href=\"https://example.org/{index:02}\">hit</a>"))
-            .collect::<String>();
+        let mut html = String::new();
+        for index in (0..MAX_RESULTS_PER_ENGINE + 2).rev() {
+            std::fmt::Write::write_fmt(
+                &mut html,
+                format_args!("<a href=\"https://example.org/{index:02}\">hit</a>"),
+            )
+            .expect("writing to String is infallible");
+        }
         let hits = parse_hits(&html, "bing");
         assert_eq!(hits.len(), MAX_RESULTS_PER_ENGINE);
         assert_eq!(
