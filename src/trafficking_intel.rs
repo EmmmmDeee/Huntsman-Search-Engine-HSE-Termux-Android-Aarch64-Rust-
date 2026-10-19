@@ -3,6 +3,7 @@
 //! Inputs should be drawn from lawfully accessible, documented public sources.
 use serde::{Deserialize, Serialize};
 pub mod entity_tree;
+pub mod graph_bridge;
 mod policy;
 pub use policy::ReviewPolicy;
 
