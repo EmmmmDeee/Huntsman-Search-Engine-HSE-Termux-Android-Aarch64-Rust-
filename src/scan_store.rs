@@ -426,11 +426,7 @@ impl ScanStore {
         let mut count = 0;
         for entry in fs::read_dir(&self.dir).map_err(|error| io_error(&self.dir, &error))? {
             let entry = entry.map_err(|error| io_error(&self.dir, &error))?;
-            if !entry
-                .file_name()
-                .to_str()
-                .is_some_and(valid_id)
-            {
+            if !entry.file_name().to_str().is_some_and(valid_id) {
                 continue;
             }
             let kind = entry.file_type().map_err(|error| io_error(&entry.path(), &error))?;
@@ -930,11 +926,15 @@ mod tests {
         let store = ScanStore::open(&dir).unwrap();
         let gate = Arc::new(Barrier::new(3));
         let mut threads = Vec::new();
-        for i in 0..2 {
+        for i in 0_u64..2 {
             let store = store.clone();
             let gate = Arc::clone(&gate);
             threads.push(std::thread::spawn(move || {
-                let row = record(&new_id("same-capacity", 10 + i, i), 10 + i as u64, ScanStatus::Created);
+                let row = record(
+                    &new_id("same-capacity", u128::from(10 + i), i),
+                    10 + i,
+                    ScanStatus::Created,
+                );
                 gate.wait();
                 store.create_with_limit(&row, 1)
             }));
