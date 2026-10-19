@@ -255,7 +255,7 @@ pub fn transitive_closure<S: CrossScanStore>(
     for seed in seeds {
         for scan_id in &seed.overlapping_scans {
             if visited_scans.len() >= options.max_visited
-                || visited_scans.len() - 1 >= options.max_frontier
+                || visited_scans.len() > options.max_frontier
             {
                 break;
             }
@@ -276,7 +276,7 @@ pub fn transitive_closure<S: CrossScanStore>(
 
         if depth >= 2
             || visited_scans.len() >= options.max_visited
-            || visited_scans.len() - 1 >= options.max_frontier
+            || visited_scans.len() > options.max_frontier
         {
             continue;
         }
@@ -286,7 +286,7 @@ pub fn transitive_closure<S: CrossScanStore>(
             }
             for neighbor in overlapping_scans(store, &scan_id, &entity)? {
                 if visited_scans.len() >= options.max_visited
-                    || visited_scans.len() - 1 >= options.max_frontier
+                    || visited_scans.len() > options.max_frontier
                 {
                     break;
                 }
@@ -295,7 +295,7 @@ pub fn transitive_closure<S: CrossScanStore>(
                 }
             }
             if visited_scans.len() >= options.max_visited
-                || visited_scans.len() - 1 >= options.max_frontier
+                || visited_scans.len() > options.max_frontier
             {
                 break;
             }
