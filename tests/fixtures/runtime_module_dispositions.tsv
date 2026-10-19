@@ -198,6 +198,7 @@ threatfox	adapter	ThreatFox IOC leg reached through indicator_legs from ip, doma
 timefmt	leaf	timestamp parsing
 timeline	runtime	timeline reconstruction through intelligence report
 tlsrpt	leaf	TLS-RPT parser
+trafficking_intel	leaf	standalone evidence-linked trafficking indicator review and entity tree; not yet wired into the binary
 union_find	leaf	deterministic clustering primitive
 urlhaus	adapter	URLhaus host leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
 urlscan	adapter	urlscan.io search leg reached through indicator_legs from ip, domain, scan and /api/lookup
