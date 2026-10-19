@@ -69,73 +69,78 @@ const K: [u32; 64] = [
     0xc671_78f2,
 ];
 
+/// Hash without cloning the input or allocating input-sized padding. Only two
+/// final 64-byte blocks are needed, even for large evidence streams in memory.
 #[must_use]
 pub fn sha256(data: &[u8]) -> [u8; 32] {
-    let mut h: [u32; 8] = [
-        0x6a09_e667,
-        0xbb67_ae85,
-        0x3c6e_f372,
-        0xa54f_f53a,
-        0x510e_527f,
-        0x9b05_688c,
-        0x1f83_d9ab,
-        0x5be0_cd19,
+    let mut h = [
+        0x6a09_e667, 0xbb67_ae85, 0x3c6e_f372, 0xa54f_f53a,
+        0x510e_527f, 0x9b05_688c, 0x1f83_d9ab, 0x5be0_cd19,
     ];
-    let bit_len = (data.len() as u64).saturating_mul(8);
-    let mut msg = data.to_vec();
-    msg.push(0x80);
-    while (msg.len() % 64) != 56 {
-        msg.push(0);
+    for chunk in data.chunks_exact(64) {
+        compress(&mut h, chunk);
     }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
-    for chunk in msg.chunks(64) {
-        let mut w = [0u32; 64];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1],
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
-        }
-        let mut a = h;
-        for i in 0..64 {
-            let s1 = a[4].rotate_right(6) ^ a[4].rotate_right(11) ^ a[4].rotate_right(25);
-            let ch = (a[4] & a[5]) ^ (!a[4] & a[6]);
-            let t1 = a[7]
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K[i])
-                .wrapping_add(w[i]);
-            let s0 = a[0].rotate_right(2) ^ a[0].rotate_right(13) ^ a[0].rotate_right(22);
-            let maj = (a[0] & a[1]) ^ (a[0] & a[2]) ^ (a[1] & a[2]);
-            let t2 = s0.wrapping_add(maj);
-            a[7] = a[6];
-            a[6] = a[5];
-            a[5] = a[4];
-            a[4] = a[3].wrapping_add(t1);
-            a[3] = a[2];
-            a[2] = a[1];
-            a[1] = a[0];
-            a[0] = t1.wrapping_add(t2);
-        }
-        for i in 0..8 {
-            h[i] = h[i].wrapping_add(a[i]);
-        }
+
+    let remaining = data.len() % 64;
+    let mut final_blocks = [0_u8; 128];
+    final_blocks[..remaining].copy_from_slice(&data[data.len() - remaining..]);
+    final_blocks[remaining] = 0x80;
+    let padded_len = if remaining < 56 { 64 } else { 128 };
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    final_blocks[padded_len - 8..padded_len].copy_from_slice(&bit_len.to_be_bytes());
+    for chunk in final_blocks[..padded_len].chunks_exact(64) {
+        compress(&mut h, chunk);
     }
-    let mut out = [0u8; 32];
+
+    let mut out = [0_u8; 32];
     for (i, word) in h.iter().enumerate() {
         out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
     }
     out
+}
+
+fn compress(h: &mut [u32; 8], chunk: &[u8]) {
+    let mut w = [0u32; 64];
+    for i in 0..16 {
+        w[i] = u32::from_be_bytes([
+            chunk[i * 4],
+            chunk[i * 4 + 1],
+            chunk[i * 4 + 2],
+            chunk[i * 4 + 3],
+        ]);
+    }
+    for i in 16..64 {
+        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[i - 7])
+            .wrapping_add(s1);
+    }
+    let mut a = h;
+    for i in 0..64 {
+        let s1 = a[4].rotate_right(6) ^ a[4].rotate_right(11) ^ a[4].rotate_right(25);
+        let ch = (a[4] & a[5]) ^ (!a[4] & a[6]);
+        let t1 = a[7]
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(K[i])
+            .wrapping_add(w[i]);
+        let s0 = a[0].rotate_right(2) ^ a[0].rotate_right(13) ^ a[0].rotate_right(22);
+        let maj = (a[0] & a[1]) ^ (a[0] & a[2]) ^ (a[1] & a[2]);
+        let t2 = s0.wrapping_add(maj);
+        a[7] = a[6];
+        a[6] = a[5];
+        a[5] = a[4];
+        a[4] = a[3].wrapping_add(t1);
+        a[3] = a[2];
+        a[2] = a[1];
+        a[1] = a[0];
+        a[0] = t1.wrapping_add(t2);
+    }
+    for i in 0..8 {
+        h[i] = h[i].wrapping_add(a[i]);
+    }
 }
 
 #[must_use]
@@ -220,5 +225,27 @@ mod tests {
             )),
             "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
         );
+    }
+    #[test]
+    fn binary_vectors_across_padding_and_block_boundaries() {
+        for (length, expected) in [
+            (55_usize, "4b587256d77fdf91e5d2b485b7bef8e498fac5dc88c724c30267a0d96222f9b7"),
+            (56, "4360272affef439b717f1c6c3b12b806dd844353fa53bbd0ef63c963fe3109db"),
+            (63, "d6166e0436d0b0e9296e171c13bb88fbc2dbcd1da6b9470b452ae06a9495e9a7"),
+            (64, "ca982c0fc8d1c35f64001571c33f1f34c109ad6c6420637d3d7633bd5c3c649a"),
+            (65, "d96cbc7f13f43e80ddedc86753166e0843d2898ffbb662e6c93c412690b49568"),
+            (119, "0618e277fa04810cee36404f1704459e982579ca7da339f7e27ed2bc987f2abd"),
+            (120, "7ae11528fbabe9755b6b55d01dd8e4a50e45182cff7e3d161b1d49c03eadd947"),
+            (127, "da06012c921524baa736ca49c74c26edff631841368f9aa03c866e186b9da089"),
+            (128, "4ea84049cfc1c375698f9df7d58de283151599431d5a7b804195ec62c29ca0e4"),
+            (129, "7c20a32fb7fb904575bca1c6a1f2c30c754f6a82661718f8e68f5137b9f8487d"),
+            (257, "de524d79c4f2ae863da0fafe9a68d9be00c05a2afddf72b7620d3820c48e71f8"),
+            (4097, "7094d261c319e162a1edb93c47322ba1ac6ea44c3e16b05351fbd1749d9bbd27"),
+        ] {
+            let bytes: Vec<u8> = (0..length)
+                .map(|i| ((i * 17 + 91) % 256) as u8)
+                .collect();
+            assert_eq!(hex32(&sha256(&bytes)), expected, "length {length}");
+        }
     }
 }
