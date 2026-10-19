@@ -76,7 +76,10 @@ mod tests {
     fn flags_independently_supported_indicator_for_review() {
         let result = assess(&[observation("a"), observation("b")]);
         assert_eq!(result.status, AssessmentStatus::IndicatorsForHumanReview);
-        assert_eq!(result.supported_indicators, vec![Indicator::DocumentRetention]);
+        assert_eq!(
+            result.supported_indicators,
+            vec![Indicator::DocumentRetention]
+        );
     }
     #[test]
     fn excludes_uncorroborated_or_incomplete_evidence() {
@@ -107,13 +110,28 @@ mod policy_tests {
     }
     #[test]
     fn configurable_threshold_requires_three_independent_origins() {
-        let policy = ReviewPolicy { minimum_independent_origins: 3 };
-        assert_eq!(policy.assess(&[observation("a"), observation("b")]).status, AssessmentStatus::InsufficientEvidence);
-        assert_eq!(policy.assess(&[observation("a"), observation("b"), observation("c")]).status, AssessmentStatus::IndicatorsForHumanReview);
+        let policy = ReviewPolicy {
+            minimum_independent_origins: 3,
+        };
+        assert_eq!(
+            policy.assess(&[observation("a"), observation("b")]).status,
+            AssessmentStatus::InsufficientEvidence
+        );
+        assert_eq!(
+            policy
+                .assess(&[observation("a"), observation("b"), observation("c")])
+                .status,
+            AssessmentStatus::IndicatorsForHumanReview
+        );
     }
     #[test]
     fn cannot_lower_minimum_below_two() {
-        let policy = ReviewPolicy { minimum_independent_origins: 0 };
-        assert_eq!(policy.assess(&[observation("a")]).status, AssessmentStatus::InsufficientEvidence);
+        let policy = ReviewPolicy {
+            minimum_independent_origins: 0,
+        };
+        assert_eq!(
+            policy.assess(&[observation("a")]).status,
+            AssessmentStatus::InsufficientEvidence
+        );
     }
 }
