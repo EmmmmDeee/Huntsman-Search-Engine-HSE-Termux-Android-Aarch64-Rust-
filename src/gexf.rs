@@ -79,7 +79,6 @@ pub fn to_gexf(entities: &[Entity], relations: &[EntityRelation]) -> String {
 
 /// Serialize the whole graph without retaining XML beyond the supplied limit.
 /// Oversize output reports the complete, byte-exact size; never partial XML.
-#[must_use]
 pub fn to_gexf_bounded(
     entities: &[Entity],
     relations: &[EntityRelation],
