@@ -158,10 +158,7 @@ mod tests {
         assert_eq!(decode_standard("Zg"), Some(b"f".to_vec()));
         assert_eq!(decode_standard("Zm8="), Some(b"fo".to_vec()));
         assert_eq!(decode_standard("Zm8"), Some(b"fo".to_vec()));
-        assert_eq!(
-            decode_standard(" Zm9v\r\nYmFy\t"),
-            Some(b"foobar".to_vec())
-        );
+        assert_eq!(decode_standard(" Zm9v\r\nYmFy\t"), Some(b"foobar".to_vec()));
     }
 
     #[test]
