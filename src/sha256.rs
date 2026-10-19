@@ -117,7 +117,7 @@ fn compress(h: &mut [u32; 8], chunk: &[u8]) {
             .wrapping_add(w[i - 7])
             .wrapping_add(s1);
     }
-    let mut a = h;
+    let mut a = *h;
     for i in 0..64 {
         let s1 = a[4].rotate_right(6) ^ a[4].rotate_right(11) ^ a[4].rotate_right(25);
         let ch = (a[4] & a[5]) ^ (!a[4] & a[6]);
@@ -243,7 +243,7 @@ mod tests {
             (4097, "7094d261c319e162a1edb93c47322ba1ac6ea44c3e16b05351fbd1749d9bbd27"),
         ] {
             let bytes: Vec<u8> = (0..length)
-                .map(|i| ((i * 17 + 91) % 256) as u8)
+                .map(|i| u8::try_from((i * 17 + 91) % 256).expect("byte is reduced modulo 256"))
                 .collect();
             assert_eq!(hex32(&sha256(&bytes)), expected, "length {length}");
         }
