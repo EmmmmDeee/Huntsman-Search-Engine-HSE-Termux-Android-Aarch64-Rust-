@@ -14,6 +14,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -45,6 +46,9 @@ pub const ID_LEN: usize = 16;
 const ROW_FILE: &str = "scan.json";
 const RESULTS_FILE: &str = "results.json";
 const LOG_FILE: &str = "log.jsonl";
+
+// Serializes appends across ScanStore instances in one process. No cross-process guarantee.
+static LOG_APPEND_LOCK: Mutex<()> = Mutex::new(());
 
 /// Why a store operation failed.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -511,20 +515,20 @@ impl ScanStore {
     /// [`StoreError::NotFound`] for an id the store cannot hold; [`StoreError::Io`] on a write
     /// failure or a symlink in place of the log.
     pub fn append_log(&self, id: &str, entry: &LogEntry) -> Result<(), StoreError> {
+        // The lock applies to every store instance in this process and covers
+        // both the size decision and the append. Another process must still
+        // coordinate separately: std has no portable cross-process append lock
+        // on the project's Rust 1.87 baseline.
+        let _guard = LOG_APPEND_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = self.scan_dir(id)?.join(LOG_FILE);
-        let size = match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
-                return Err(StoreError::Io(format!(
-                    "{}: not a regular file",
-                    path.display()
-                )));
-            }
-            Ok(meta) => meta.len(),
-            Err(_) => 0,
-        };
-        let mut line =
-            serde_json::to_string(entry).map_err(|error| StoreError::Invalid(error.to_string()))?;
-        line.push('\n');
+        let mut file = checked_open_for_append(&path)?;
+        let size = file
+            .metadata()
+            .map_err(|error| io_error(&path, &error))?
+            .len();
+
         let full = LogEntry {
             time: entry.time,
             component: "huntsman".into(),
@@ -532,26 +536,35 @@ impl ScanStore {
             message: format!("log full at {MAX_LOG_BYTES} bytes; later entries are not kept"),
         };
         let mut full_line =
-            serde_json::to_string(&full).map_err(|error| StoreError::Invalid(error.to_string()))?;
-        full_line.push('\n');
-        let line = if size + (line.len() as u64) + (full_line.len() as u64) <= MAX_LOG_BYTES {
-            line
-        } else if size + (full_line.len() as u64) <= MAX_LOG_BYTES && !log_is_full(&path) {
-            full_line
+            serde_json::to_vec(&full).map_err(|error| StoreError::Invalid(error.to_string()))?;
+        full_line.push(b'\n');
+
+        // A very large log message must not allocate an unbounded encoded
+        // string merely to be discarded. A single oversized entry consumes
+        // only the log-full marker, if room is available.
+        let limit = usize::try_from(MAX_LOG_BYTES).unwrap_or(usize::MAX);
+        let mut line = crate::json::to_bounded_json(entry, limit, false)
+            .map_err(|error| StoreError::Invalid(error.to_string()))?
+            .ok();
+        if let Some(bytes) = &mut line {
+            bytes.push(b'\n');
+        }
+
+        let selected = if let Some(bytes) = line.as_ref().filter(|bytes| {
+            size.saturating_add(bytes.len() as u64)
+                .saturating_add(full_line.len() as u64)
+                <= MAX_LOG_BYTES
+        }) {
+            bytes.as_slice()
+        } else if size.saturating_add(full_line.len() as u64) <= MAX_LOG_BYTES
+            && !log_is_full(&path)
+        {
+            full_line.as_slice()
         } else {
             return Ok(());
         };
-        let mut options = OpenOptions::new();
-        options.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&path)
-            .map_err(|error| io_error(&path, &error))?;
-        file.write_all(line.as_bytes())
+
+        file.write_all(selected)
             .map_err(|error| io_error(&path, &error))
     }
 
@@ -648,9 +661,79 @@ fn other_process_alive(pid: u32) -> bool {
     pid != std::process::id() && Path::new("/proc").join(pid.to_string()).exists()
 }
 
+/// Open an append descriptor only after confirming that the path is a regular
+/// file and that its opened inode is the inode checked before the open.
+/// Creation uses `create_new`, so an attacker cannot plant a symlink in the
+/// missing-file window and have it followed.
+fn checked_open_for_append(path: &Path) -> Result<std::fs::File, StoreError> {
+    checked_open_for_append_with(path, || {})
+}
+
+fn checked_open_for_append_with(
+    path: &Path,
+    after_check: impl FnOnce(),
+) -> Result<std::fs::File, StoreError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| StoreError::Io(format!("{}: no parent", path.display())))?;
+    let directory = fs::symlink_metadata(parent).map_err(|error| io_error(parent, &error))?;
+    if directory.file_type().is_symlink() || !directory.is_dir() {
+        return Err(StoreError::Io(format!(
+            "{}: not a regular directory",
+            parent.display()
+        )));
+    }
+
+    let checked = match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
+            return Err(StoreError::Io(format!(
+                "{}: not a regular file",
+                path.display()
+            )));
+        }
+        Ok(meta) => Some(meta),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(io_error(path, &error)),
+    };
+    after_check();
+
+    let mut options = OpenOptions::new();
+    options.append(true);
+    if checked.is_none() {
+        options.create_new(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path).map_err(|error| io_error(path, &error))?;
+    let opened = file.metadata().map_err(|error| io_error(path, &error))?;
+    if !opened.is_file()
+        || checked
+            .as_ref()
+            .is_some_and(|meta| !crate::fsio::same_inode(meta, &opened))
+    {
+        return Err(StoreError::Io(format!(
+            "{}: file changed between check and open",
+            path.display()
+        )));
+    }
+    Ok(file)
+}
+
 fn log_is_full(path: &Path) -> bool {
-    crate::fsio::read_bounded(path, MAX_LOG_BYTES)
-        .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("\"message\":\"log full at"))
+    let Ok(bytes) = crate::fsio::read_bounded(path, MAX_LOG_BYTES) else {
+        return false;
+    };
+    let marker = format!("log full at {MAX_LOG_BYTES} bytes; later entries are not kept");
+    bytes.split(|byte| *byte == b'\n').any(|line| {
+        serde_json::from_slice::<LogEntry>(line).is_ok_and(|entry| {
+            entry.component == "huntsman"
+                && entry.level == LogLevel::Warning
+                && entry.message == marker
+        })
+    })
 }
 
 fn unreadable(id: &str, error: &StoreError) -> ScanRecord {
@@ -900,6 +983,128 @@ mod tests {
         assert_eq!(
             fs::read(dir.join(&original.id).join(ROW_FILE)).unwrap(),
             before
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_refuses_symlink_swapped_between_check_and_open() {
+        let dir = scratch("log-link-swap");
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join(LOG_FILE);
+        let unrelated = dir.join("unrelated.jsonl");
+        fs::write(&log, b"old\n").unwrap();
+        fs::write(&unrelated, b"protected\n").unwrap();
+        let result = checked_open_for_append_with(&log, || {
+            fs::remove_file(&log).unwrap();
+            std::os::unix::fs::symlink(&unrelated, &log).unwrap();
+        });
+        assert!(matches!(result, Err(StoreError::Io(_))));
+        assert_eq!(fs::read(&unrelated).unwrap(), b"protected\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_refuses_existing_log_symlink_and_nonregular_file() {
+        let dir = scratch("log-nonregular");
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join(LOG_FILE);
+        let unrelated = dir.join("unrelated");
+        fs::write(&unrelated, b"unchanged").unwrap();
+        std::os::unix::fs::symlink(&unrelated, &log).unwrap();
+        assert!(checked_open_for_append(&log).is_err());
+        fs::remove_file(&log).unwrap();
+        fs::create_dir(&log).unwrap();
+        assert!(checked_open_for_append(&log).is_err());
+        assert_eq!(fs::read(&unrelated).unwrap(), b"unchanged");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spoofed_log_full_message_does_not_suppress_real_marker() {
+        let dir = scratch("marker-spoof");
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join(LOG_FILE);
+        let fake = LogEntry {
+            time: 1,
+            component: "source".into(),
+            level: LogLevel::Info,
+            message: format!("log full at {MAX_LOG_BYTES} bytes; later entries are not kept"),
+        };
+        fs::write(&log, serde_json::to_vec(&fake).unwrap()).unwrap();
+        assert!(!log_is_full(&log));
+        let genuine = LogEntry {
+            component: "huntsman".into(),
+            level: LogLevel::Warning,
+            ..fake
+        };
+        fs::write(&log, serde_json::to_vec(&genuine).unwrap()).unwrap();
+        assert!(log_is_full(&log));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn oversized_entry_writes_one_marker_and_never_overshoots_budget() {
+        let dir = scratch("oversized-log-message");
+        let store = ScanStore::open(&dir).unwrap();
+        let record = record(&new_id("large-log", 31, 0), 31, ScanStatus::Running);
+        store.create(&record).unwrap();
+        let enormous = LogEntry {
+            time: 31,
+            component: "source".into(),
+            level: LogLevel::Error,
+            message: "x".repeat(usize::try_from(MAX_LOG_BYTES).unwrap()),
+        };
+        store.append_log(&record.id, &enormous).unwrap();
+        store.append_log(&record.id, &enormous).unwrap();
+        let log = store.log(&record.id).unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].level, LogLevel::Warning);
+        assert!(log[0].message.starts_with("log full at"));
+        assert!(
+            fs::metadata(dir.join(&record.id).join(LOG_FILE))
+                .unwrap()
+                .len()
+                <= MAX_LOG_BYTES
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn same_process_concurrent_log_writers_do_not_lose_entries() {
+        let dir = scratch("concurrent-append");
+        let store = ScanStore::open(&dir).unwrap();
+        let row = record(&new_id("concurrent-log", 41, 0), 41, ScanStatus::Running);
+        store.create(&row).unwrap();
+        std::thread::scope(|scope| {
+            for worker in 0..8 {
+                let id = &row.id;
+                let store = &store;
+                scope.spawn(move || {
+                    for number in 0..25 {
+                        store
+                            .append_log(
+                                id,
+                                &LogEntry {
+                                    time: number,
+                                    component: format!("worker-{worker}"),
+                                    level: LogLevel::Info,
+                                    message: format!("entry-{number}"),
+                                },
+                            )
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(store.log(&row.id).unwrap().len(), 200);
+        assert!(
+            fs::metadata(dir.join(&row.id).join(LOG_FILE))
+                .unwrap()
+                .len()
+                <= MAX_LOG_BYTES
         );
         let _ = fs::remove_dir_all(&dir);
     }
