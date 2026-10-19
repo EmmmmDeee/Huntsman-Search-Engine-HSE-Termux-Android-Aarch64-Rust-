@@ -6,7 +6,13 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityKind {
-    Investigation, Organisation, Person, DigitalAsset, Location, FinancialEntity, Evidence,
+    Investigation,
+    Organisation,
+    Person,
+    DigitalAsset,
+    Location,
+    FinancialEntity,
+    Evidence,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
