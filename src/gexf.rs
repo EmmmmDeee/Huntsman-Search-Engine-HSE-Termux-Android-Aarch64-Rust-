@@ -77,8 +77,8 @@ pub fn to_gexf(entities: &[Entity], relations: &[EntityRelation]) -> String {
         .expect("GEXF content must fit in addressable memory")
 }
 
-/// Serialize the whole graph without retaining XML beyond max_bytes.
-/// Err(required_bytes) reports the complete, byte-exact size; never partial XML.
+/// Serialize the whole graph without retaining XML beyond the supplied limit.
+/// Oversize output reports the complete, byte-exact size; never partial XML.
 #[must_use]
 pub fn to_gexf_bounded(
     entities: &[Entity],
@@ -104,8 +104,7 @@ pub fn to_gexf_bounded(
         let _ = write!(
             out,
             r#""><attvalues><attvalue for="kind" value="{}"/><attvalue for="confidence" value="{:.3}"/></attvalues></node>"#,
-            entity.kind,
-            entity.confidence
+            entity.kind, entity.confidence
         );
     }
     let _ = out.write_str("</nodes><edges>");
@@ -125,11 +124,7 @@ pub fn to_gexf_bounded(
         let _ = write_escaped(&mut out, graph.uid(right));
         let _ = out.write_str(r#"" label=""#);
         let _ = write_escaped(&mut out, &labels);
-        let _ = write!(
-            out,
-            r#"" weight="{:.3}"/>"#,
-            edge.max_confidence
-        );
+        let _ = write!(out, r#"" weight="{:.3}"/>"#, edge.max_confidence);
     }
     let _ = out.write_str("</edges></graph></gexf>");
     out.finish()
