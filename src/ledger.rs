@@ -242,10 +242,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn atomic_ledger_reader_still_refuses_symlinks() {
-        let dir = std::env::temp_dir().join(format!(
-            "huntsman-ledger-link-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("huntsman-ledger-link-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("ledger.json");
