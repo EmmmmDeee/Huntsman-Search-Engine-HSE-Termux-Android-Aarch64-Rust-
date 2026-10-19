@@ -178,5 +178,4 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), original);
         let _ = std::fs::remove_dir_all(dir);
     }
-
 }
