@@ -379,8 +379,19 @@ impl ScanStore {
             return Err(StoreError::Invalid(format!("scan {} exists", record.id)));
         }
         fs::create_dir(&dir).map_err(|error| io_error(&dir, &error))?;
-        private_dir(&dir)?;
-        self.update(record)
+        let created = private_dir(&dir).and_then(|()| self.update(record));
+        if let Err(error) = created {
+            // Only remove the directory if it remains empty. A concurrent writer's
+            // files must never be removed by rollback, even if the first write failed.
+            if let Err(cleanup) = fs::remove_dir(&dir) {
+                return Err(StoreError::Io(format!(
+                    "{error}; failed to remove incomplete scan directory {}: {cleanup}",
+                    dir.display()
+                )));
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Replace a scan's row.
@@ -966,6 +977,27 @@ mod tests {
         assert_eq!(mode(&dir.join(&row.id)), 0o700);
         assert_eq!(mode(&dir.join(&row.id).join(ROW_FILE)), 0o600);
         assert_eq!(mode(&dir.join(&row.id).join(LOG_FILE)), 0o600);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_initial_row_write_leaves_no_phantom_scan_and_id_can_be_reused() {
+        let dir = scratch("failed-create");
+        let store = ScanStore::open(&dir).unwrap();
+        let mut oversized = record(&new_id("too-large", 201, 0), 201, ScanStatus::Created);
+        oversized.name = "x".repeat(usize::try_from(MAX_ROW_BYTES).unwrap());
+        assert!(matches!(store.create(&oversized), Err(StoreError::Io(_))));
+        assert!(
+            !dir.join(&oversized.id).exists(),
+            "a failed create must not leave a scan directory without a row"
+        );
+        assert!(store.list().unwrap().is_empty());
+
+        let mut valid = oversized;
+        valid.name = "retry".into();
+        store.create(&valid).unwrap();
+        assert_eq!(store.get(&valid.id).unwrap(), valid);
+        assert_eq!(store.list().unwrap().len(), 1);
         let _ = fs::remove_dir_all(&dir);
     }
 
