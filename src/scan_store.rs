@@ -386,8 +386,17 @@ impl ScanStore {
     /// failure.
     pub fn update(&self, record: &ScanRecord) -> Result<(), StoreError> {
         let path = self.scan_dir(&record.id)?.join(ROW_FILE);
-        let body = serde_json::to_vec_pretty(record)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        let limit = usize::try_from(MAX_ROW_BYTES).unwrap_or(usize::MAX);
+        let body = match crate::json::to_bounded_json(record, limit, true) {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(required_bytes)) => {
+                return Err(StoreError::Io(format!(
+                    "{}: exceeds {MAX_ROW_BYTES} bytes (needs {required_bytes})",
+                    path.display()
+                )));
+            }
+            Err(error) => return Err(StoreError::Invalid(error.to_string())),
+        };
         crate::fsio::write_atomic_private(&path, &body, MAX_ROW_BYTES).map_err(|e| fsio_error(&e))
     }
 
@@ -453,8 +462,17 @@ impl ScanStore {
     /// failure or results over [`MAX_RESULTS_BYTES`].
     pub fn save_results(&self, results: &ScanResults) -> Result<(), StoreError> {
         let path = self.scan_dir(&results.scan_id)?.join(RESULTS_FILE);
-        let body =
-            serde_json::to_vec(results).map_err(|error| StoreError::Invalid(error.to_string()))?;
+        let limit = usize::try_from(MAX_RESULTS_BYTES).unwrap_or(usize::MAX);
+        let body = match crate::json::to_bounded_json(results, limit, false) {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(required_bytes)) => {
+                return Err(StoreError::Io(format!(
+                    "{}: exceeds {MAX_RESULTS_BYTES} bytes (needs {required_bytes})",
+                    path.display()
+                )));
+            }
+            Err(error) => return Err(StoreError::Invalid(error.to_string())),
+        };
         crate::fsio::write_atomic_private(&path, &body, MAX_RESULTS_BYTES)
             .map_err(|e| fsio_error(&e))
     }
@@ -867,4 +885,20 @@ mod tests {
         assert_eq!(mode(&dir.join(&row.id).join(LOG_FILE)), 0o600);
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn oversized_row_update_never_replaces_previous_scan() {
+        let dir = scratch("oversized-row");
+        let store = ScanStore::open(&dir).unwrap();
+        let original = record(&new_id("oversized", 100, 0), 100, ScanStatus::Finished);
+        store.create(&original).unwrap();
+        let before = fs::read(dir.join(&original.id).join(ROW_FILE)).unwrap();
+        let mut larger = original.clone();
+        larger.name = "x".repeat(usize::try_from(MAX_ROW_BYTES).unwrap());
+        assert!(matches!(store.update(&larger), Err(StoreError::Io(_))));
+        assert_eq!(store.get(&original.id).unwrap(), original);
+        assert_eq!(fs::read(dir.join(&original.id).join(ROW_FILE)).unwrap(), before);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
 }
