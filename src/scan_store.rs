@@ -368,6 +368,23 @@ impl ScanStore {
         Ok(self.dir.join(id))
     }
 
+    /// Distinguish an absent scan from a filesystem failure while checking its row.
+    /// A nonregular row cannot establish that the scan is registered.
+    fn require_row(&self, id: &str) -> Result<(), StoreError> {
+        let path = self.scan_dir(id)?.join(ROW_FILE);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => Ok(()),
+            Ok(_) => Err(StoreError::Io(format!(
+                "{}: not a regular scan row",
+                path.display()
+            ))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(StoreError::NotFound(id.to_owned()))
+            }
+            Err(error) => Err(io_error(&path, &error)),
+        }
+    }
+
     /// Save a new scan's row.
     ///
     /// # Errors
@@ -441,9 +458,7 @@ impl ScanStore {
     /// cannot be read or parsed.
     pub fn get(&self, id: &str) -> Result<ScanRecord, StoreError> {
         let path = self.scan_dir(id)?.join(ROW_FILE);
-        if fs::symlink_metadata(&path).is_err() {
-            return Err(StoreError::NotFound(id.to_owned()));
-        }
+        self.require_row(id)?;
         let bytes = crate::fsio::read_bounded_replacing(&path, MAX_ROW_BYTES)
             .map_err(|e| fsio_error(&e))?;
         let record: ScanRecord = serde_json::from_slice(&bytes)
@@ -521,9 +536,7 @@ impl ScanStore {
     /// cannot be read or parsed.
     pub fn results(&self, id: &str) -> Result<Option<ScanResults>, StoreError> {
         let dir = self.scan_dir(id)?;
-        if fs::symlink_metadata(dir.join(ROW_FILE)).is_err() {
-            return Err(StoreError::NotFound(id.to_owned()));
-        }
+        self.require_row(id)?;
         let path = dir.join(RESULTS_FILE);
         if fs::symlink_metadata(&path).is_err() {
             return Ok(None);
@@ -609,9 +622,7 @@ impl ScanStore {
     /// cannot be read.
     pub fn log(&self, id: &str) -> Result<Vec<LogEntry>, StoreError> {
         let dir = self.scan_dir(id)?;
-        if fs::symlink_metadata(dir.join(ROW_FILE)).is_err() {
-            return Err(StoreError::NotFound(id.to_owned()));
-        }
+        self.require_row(id)?;
         let path = dir.join(LOG_FILE);
         if fs::symlink_metadata(&path).is_err() {
             return Ok(Vec::new());
@@ -975,6 +986,33 @@ mod tests {
         assert_eq!(store.recover(9_000).unwrap(), 1);
         assert_eq!(store.get(&theirs.id).unwrap().status, ScanStatus::Running);
         assert_eq!(store.get(&ours.id).unwrap().status, ScanStatus::Aborted);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_directory_scan_path_is_io_failure_not_a_missing_scan() {
+        let dir = scratch("scan-not-directory");
+        let store = ScanStore::open(&dir).unwrap();
+        let id = new_id("not-a-directory", 101, 0);
+        fs::write(dir.join(&id), b"not a scan directory").unwrap();
+        assert!(matches!(store.get(&id), Err(StoreError::Io(_))));
+        assert!(matches!(store.results(&id), Err(StoreError::Io(_))));
+        assert!(matches!(store.log(&id), Err(StoreError::Io(_))));
+
+        let absent = new_id("absent", 102, 0);
+        assert_eq!(
+            store.get(&absent),
+            Err(StoreError::NotFound(absent.clone()))
+        );
+        assert_eq!(
+            store.results(&absent),
+            Err(StoreError::NotFound(absent.clone()))
+        );
+        assert_eq!(
+            store.log(&absent),
+            Err(StoreError::NotFound(absent.clone()))
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
