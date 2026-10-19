@@ -140,7 +140,7 @@ pub fn write(path: &Path, artifact: &ScanArtifact) -> Result<(), ArtifactError> 
     crate::fsio::write_atomic_private(path, &bytes, MAX_ARTIFACT_BYTES).map_err(|e| fsio_err(&e))
 }
 
-/// Read and validate an artifact, through [`crate::fsio::read_bounded`] at
+/// Read and validate an artifact, through [`crate::fsio::read_bounded_replacing`] at
 /// [`MAX_ARTIFACT_BYTES`].
 ///
 /// # Errors
@@ -149,7 +149,8 @@ pub fn write(path: &Path, artifact: &ScanArtifact) -> Result<(), ArtifactError> 
 /// [`ArtifactError::Malformed`] when it does not decode, and
 /// [`ArtifactError::UnsupportedVersion`] when its format differs from this build's.
 pub fn read(path: &Path) -> Result<ScanArtifact, ArtifactError> {
-    let bytes = crate::fsio::read_bounded(path, MAX_ARTIFACT_BYTES).map_err(|e| fsio_err(&e))?;
+    let bytes = crate::fsio::read_bounded_replacing(path, MAX_ARTIFACT_BYTES)
+        .map_err(|error| fsio_err(&error))?;
     let artifact: ScanArtifact =
         serde_json::from_slice(&bytes).map_err(|e| ArtifactError::Malformed(e.to_string()))?;
     if artifact.format_version != FORMAT_VERSION {
@@ -308,6 +309,32 @@ mod tests {
         let original = corroborated();
         write(&path, &original).unwrap();
         assert_eq!(read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn artifact_reader_accepts_complete_atomic_replacements() {
+        let path = scratch("atomic-replacement-read");
+        let mut artifact = corroborated();
+        write(&path, &artifact).unwrap();
+        assert_eq!(read(&path).unwrap(), artifact);
+        artifact.scan_id = "scan-replaced".to_owned();
+        write(&path, &artifact).unwrap();
+        assert_eq!(read(&path).unwrap(), artifact);
+        let _ = fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_replacement_reader_still_rejects_symlinks() {
+        let path = scratch("atomic-replacement-symlink");
+        let other = path.with_file_name("real.json");
+        let original = corroborated();
+        write(&other, &original).unwrap();
+        std::os::unix::fs::symlink(&other, &path).unwrap();
+        assert!(matches!(read(&path), Err(ArtifactError::Io(_))));
+        assert_eq!(read(&other).unwrap(), original);
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(other);
     }
 
     #[test]
