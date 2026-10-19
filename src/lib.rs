@@ -209,6 +209,7 @@ pub mod threatfox;
 pub mod timefmt;
 pub mod timeline;
 pub mod tlsrpt;
+pub mod trafficking_intel;
 pub mod union_find;
 pub mod urlhaus;
 pub mod urlscan;
