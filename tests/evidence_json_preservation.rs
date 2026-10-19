@@ -80,3 +80,32 @@ fn mismatched_document_and_scalar_cannot_be_spliced() {
     assert_eq!(entities.len(), 1);
     assert_eq!(entities[0].evidence.len(), 2);
 }
+
+#[test]
+fn unequal_opaque_raw_text_keeps_both_provider_answers() {
+    let source = |time, raw: &str| {
+        let mut provenance = EvidenceProvenance::new("submd");
+        provenance.recorded_at_unix = time;
+        Entity::builder(EntityKind::Domain, "example.org", 0.5, "scan-merge")
+            .evidence(
+                Evidence::new(provenance, "Subdomain source response")
+                    .with_attr("raw_answer", raw),
+            )
+            .build()
+    };
+    let mut entities = vec![
+        source(100, "host-a; host-b"),
+        source(200, "host-c; host-d"),
+    ];
+    merge_by_uid(&mut entities);
+    assert_eq!(entities.len(), 1);
+    let answers: BTreeSet<_> = entities[0]
+        .evidence
+        .iter()
+        .filter_map(|evidence| evidence.attributes.get("raw_answer").cloned())
+        .collect();
+    assert_eq!(
+        answers,
+        BTreeSet::from(["host-a; host-b".to_owned(), "host-c; host-d".to_owned()])
+    );
+}
