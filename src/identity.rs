@@ -43,58 +43,66 @@ pub fn resolve(records: &[PersonRecord]) -> Vec<Cluster> {
         i
     }
 
-    fn collect_pairs(
+    fn indexed_keys(
         records: &[PersonRecord],
         select: fn(&PersonRecord) -> &[String],
         canonicalize: fn(&str) -> Option<String>,
-        reason: &'static str,
-        pairs: &mut BTreeMap<(usize, usize), &'static str>,
-    ) {
+    ) -> (Vec<Vec<String>>, BTreeMap<String, Vec<usize>>) {
+        let mut keys_by_record = Vec::with_capacity(records.len());
         let mut index: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for (position, record) in records.iter().enumerate() {
-            // Repeated raw values (including different spellings that canonize
-            // to one key) must not create duplicate links.
+            // Canonicalize once; aliases and repeated raw input cannot
+            // manufacture duplicate matches.
             let keys = select(record)
                 .iter()
                 .filter_map(|raw| canonicalize(raw))
                 .collect::<BTreeSet<_>>();
-            for key in keys {
-                index.entry(key).or_default().push(position);
+            for key in &keys {
+                index.entry(key.clone()).or_default().push(position);
             }
+            keys_by_record.push(keys.into_iter().collect());
         }
-        for members in index.values() {
-            for (position, &left) in members.iter().enumerate() {
-                for &right in &members[position + 1..] {
-                    pairs.entry((left, right)).or_insert(reason);
-                }
-            }
-        }
+        (keys_by_record, index)
     }
 
     let count = records.len();
-    // Email pairs are inserted first. A handle overlap cannot overwrite the
-    // stronger email match, even if the handle appears first in the input.
-    let mut pairs = BTreeMap::new();
-    collect_pairs(
-        records,
-        |record| &record.emails,
-        canonical_email,
-        "shared_email",
-        &mut pairs,
-    );
-    collect_pairs(
-        records,
-        |record| &record.handles,
-        canonical_handle,
-        "shared_handle",
-        &mut pairs,
-    );
+    let (emails, email_index) = indexed_keys(records, |record| &record.emails, canonical_email);
+    let (handles, handle_index) =
+        indexed_keys(records, |record| &record.handles, canonical_handle);
 
     let mut parent: Vec<usize> = (0..count).collect();
-    for &(left, right) in pairs.keys() {
-        let (a, b) = (find(&mut parent, left), find(&mut parent, right));
-        if a != b {
-            parent[b] = a;
+    let mut links = Vec::new();
+    for left in 0..count {
+        // Allocate only matches for one record at a time, not a second
+        // global collection of every pair. Dense shared keys therefore
+        // require memory proportional to the output, not twice its size.
+        let mut matches = BTreeMap::new();
+        for key in &emails[left] {
+            if let Some(positions) = email_index.get(key) {
+                for &right in positions {
+                    if right > left {
+                        matches.insert(right, "shared_email");
+                    }
+                }
+            }
+        }
+        for key in &handles[left] {
+            if let Some(positions) = handle_index.get(key) {
+                for &right in positions {
+                    if right > left {
+                        matches.entry(right).or_insert("shared_handle");
+                    }
+                }
+            }
+        }
+        // Iterating in ascending right-index order reproduces the original
+        // pairwise union order and preserves the original cluster/link order.
+        for (right, reason) in matches {
+            let (a, b) = (find(&mut parent, left), find(&mut parent, right));
+            if a != b {
+                parent[b] = a;
+            }
+            links.push((left, right, reason));
         }
     }
 
@@ -104,7 +112,7 @@ pub fn resolve(records: &[PersonRecord]) -> Vec<Cluster> {
         buckets[root].push(position);
     }
     let mut cluster_links = vec![Vec::new(); count];
-    for ((left, right), reason) in pairs {
+    for (left, right, reason) in links {
         let root = find(&mut parent, left);
         cluster_links[root].push(Link {
             left: records[left].id.clone(),
