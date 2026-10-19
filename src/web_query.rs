@@ -186,7 +186,11 @@ fn search_engine<T: Transport + ?Sized>(
 
 fn cached_response(url: &str, now_unix: u64) -> Option<Response> {
     let cached = RESPONSE_CACHE.get(url)?;
-    (now_unix.saturating_sub(cached.stored_at_unix) <= CACHE_TTL_SECS).then_some(cached.response)
+    // A clock rollback must not treat a future-dated entry as freshly observed.
+    now_unix
+        .checked_sub(cached.stored_at_unix)
+        .is_some_and(|age| age <= CACHE_TTL_SECS)
+        .then_some(cached.response)
 }
 
 fn response_is_cacheable(response: &Response) -> bool {
@@ -200,7 +204,7 @@ fn response_is_cacheable(response: &Response) -> bool {
     !cache_control
         .split(',')
         .map(str::trim)
-        .any(|directive| directive == "no-store")
+        .any(|directive| matches!(directive, "no-store" | "no-cache" | "max-age=0"))
         && classify_fetch(response.status, &response.text()) == SourceOutcomeKind::Inconclusive
 }
 
@@ -581,6 +585,59 @@ mod tests {
 
         assert_eq!(first.hits[0].url, "https://example.org/first");
         assert_eq!(second.hits[0].url, "https://example.org/second");
+    }
+
+    #[test]
+    fn no_cache_directive_prevents_reusing_a_search_page_without_revalidation() {
+        let engine = EngineSpec {
+            name: "no_cache_directive_test",
+            base_url: "https://no-cache-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Ok(response_with_headers(
+                200,
+                &[("cache-control", "no-cache")],
+                r#"<a href="https://example.org/first">first</a>"#,
+            )),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/second">second</a>"#,
+            )),
+        ]);
+
+        let first = search_engine(&fake, engine, "no-cache-unique-query", 500).unwrap();
+        let second = search_engine(&fake, engine, "no-cache-unique-query", 501).unwrap();
+        assert_eq!(first.hits[0].url, "https://example.org/first");
+        assert_eq!(second.hits[0].url, "https://example.org/second");
+
+        assert!(!response_is_cacheable(&response_with_headers(
+            200,
+            &[("cache-control", "max-age=0")],
+            r#"<a href="https://example.org/third">third</a>"#,
+        )));
+    }
+
+    #[test]
+    fn a_future_dated_cache_entry_is_not_reused_after_clock_rollback() {
+        let engine = EngineSpec {
+            name: "cache_clock_rollback_test",
+            base_url: "https://clock-rollback-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/before">before</a>"#,
+            )),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/after">after</a>"#,
+            )),
+        ]);
+
+        let first = search_engine(&fake, engine, "clock-rollback-unique-query", 900).unwrap();
+        let second = search_engine(&fake, engine, "clock-rollback-unique-query", 899).unwrap();
+        assert_eq!(first.hits[0].url, "https://example.org/before");
+        assert_eq!(second.hits[0].url, "https://example.org/after");
     }
 
     #[test]
