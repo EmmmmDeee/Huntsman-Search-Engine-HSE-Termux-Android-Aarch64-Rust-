@@ -1193,7 +1193,8 @@ impl ScanService {
             Err(error) => {
                 // Never turn a missing or corrupt persisted scan into a lookup with
                 // default modules: those are not the operator's selected options.
-                eprintln!("scan {id}: cannot load persisted scan options: {error}");
+                // run/wait propagate the persisted row read error to the API boundary;
+                // the log and terminal status are best-effort if storage is damaged.
                 self.log(
                     id,
                     "huntsman",
