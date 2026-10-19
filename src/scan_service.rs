@@ -983,23 +983,32 @@ impl ScanService {
     /// Reserve a scan thread before persisting a row or allocating its stack.
     /// This also limits scans queued behind the two active execution slots.
     fn reserve_worker(&self) -> Result<ScanWorkerPermit, ServiceError> {
-        self.worker_slots
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
-                (live < MAX_SCAN_WORKERS).then_some(live + 1)
-            })
-            .map_err(|_| {
-                ServiceError::Conflict(format!(
+        let mut live = self.worker_slots.load(Ordering::Acquire);
+        loop {
+            if live >= MAX_SCAN_WORKERS {
+                return Err(ServiceError::Conflict(format!(
                     "scan worker capacity reached ({MAX_SCAN_WORKERS}); retry after a scan finishes"
-                ))
-            })?;
+                )));
+            }
+            match self.worker_slots.compare_exchange_weak(
+                live,
+                live + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(observed) => live = observed,
+            }
+        }
         Ok(ScanWorkerPermit(Arc::clone(&self.worker_slots)))
     }
 
     /// Start a scan on its own thread and return its `CREATED` row at once.
     ///
     /// # Errors
-    /// [`ServiceError::BadRequest`] for an unusable target or option; [`ServiceError::Store`]
-    /// when it cannot be saved or its thread cannot start.
+    /// [`ServiceError::BadRequest`] for an unusable target or option;
+    /// [`ServiceError::Conflict`] when scan worker capacity is exhausted; or
+    /// [`ServiceError::Store`] when it cannot be saved or its thread cannot start.
     pub fn start(self: &Arc<Self>, request: &ScanRequest) -> Result<ScanRecord, ServiceError> {
         let permit = self.reserve_worker()?;
         let (record, plan) = self.create(request)?;
