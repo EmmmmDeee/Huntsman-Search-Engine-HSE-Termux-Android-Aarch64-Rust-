@@ -1188,11 +1188,22 @@ impl ScanService {
             return;
         }
         self.set_status(id, ScanStatus::Running, Some(now_ms()));
-        let options = self
-            .store
-            .get(id)
-            .map(|record| record.options)
-            .unwrap_or_default();
+        let options = match self.store.get(id) {
+            Ok(record) => record.options,
+            Err(error) => {
+                // Never turn a missing or corrupt persisted scan into a lookup with
+                // default modules: those are not the operator's selected options.
+                eprintln!("scan {id}: cannot load persisted scan options: {error}");
+                self.log(
+                    id,
+                    "huntsman",
+                    LogLevel::Error,
+                    format!("cannot load persisted scan options: {error}"),
+                );
+                self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+                return;
+            }
+        };
         let chosen = match chosen(&options) {
             Ok(chosen) => chosen,
             Err(error) => {
@@ -1611,6 +1622,44 @@ mod tests {
             ScanService::new(ScanStore::open(&dir).unwrap(), lookup),
             dir,
         )
+    }
+
+    #[test]
+    fn missing_or_corrupt_scan_configuration_never_dispatches_default_lookups() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let (service, dir) = with_lookup(
+            "missing-scan-options",
+            Arc::new(move |_, _, _| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Ok(LookupOutput::default())
+            }),
+        );
+        for corrupt in [false, true] {
+            let request = ScanRequest {
+                target: "example.org".into(),
+                kind: Some("domain".into()),
+                options: ScanOptions {
+                    modules: vec!["crtsh".into()],
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            };
+            let (record, plan) = service.create(&request).unwrap();
+            let row = dir.join(&record.id).join("scan.json");
+            if corrupt {
+                std::fs::write(&row, b"not json").unwrap();
+            } else {
+                std::fs::remove_file(&row).unwrap();
+            }
+            service.collect(&record.id, &plan);
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "unreadable scan options must never result in network calls"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
