@@ -168,7 +168,17 @@ pub fn save_chain(path: &Path, entries: &[LedgerEntry]) -> Result<(), Error> {
     if !chain_intact(entries) {
         return Err(Error::Invalid("refusing to write a broken chain".into()));
     }
-    let body = serde_json::to_vec_pretty(entries).map_err(|e| Error::Store(e.to_string()))?;
+    let limit = usize::try_from(MAX_LEDGER_BYTES).unwrap_or(usize::MAX);
+    let body = match crate::json::to_bounded_json(&entries, limit, true) {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(required_bytes)) => {
+            return Err(Error::Store(format!(
+                "{}: exceeds {MAX_LEDGER_BYTES} bytes (needs {required_bytes})",
+                path.display()
+            )));
+        }
+        Err(error) => return Err(Error::Store(error.to_string())),
+    };
     write_atomic_private(path, &body, MAX_LEDGER_BYTES)
 }
 
