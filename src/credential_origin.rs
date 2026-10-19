@@ -11,7 +11,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::sha256::{Sha256, hex32, sha256};
+use crate::sha256::{Sha256, hex32};
 
 const FINGERPRINT_TAG: &[u8] = b"huntsman-credential-fingerprint-v1\0";
 
@@ -123,6 +123,7 @@ impl AuthenticationAuthority {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sha256::sha256;
 
     fn reference(provenance: &str) -> OperatorCredentialRef {
         OperatorCredentialRef {
