@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -51,6 +51,9 @@ use crate::termination::TerminationReason;
 /// Scans that run at once; more wait as `STARTING`. A phone runs two lookups' worth of requests
 /// comfortably, and each lookup already fans out to its sources.
 pub const MAX_RUNNING: usize = 2;
+/// Maximum number of scan threads, including workers waiting for an execution slot.
+/// Bound admission before spawning each 8 MiB-stack thread on memory-constrained devices.
+const MAX_SCAN_WORKERS: usize = 8;
 /// Total concurrent lookup calls per scan service, across sequential and graph scan waves.
 /// This limits phone resource pressure without disabling parallelism within a scan.
 const MAX_ACTIVE_LOOKUPS: usize = 2;
@@ -752,6 +755,16 @@ impl SelectorCollector for ScanCollector<'_> {
     }
 }
 
+/// Releases a reserved scan-thread slot even if the worker panics or spawning fails.
+struct ScanWorkerPermit(Arc<AtomicUsize>);
+
+impl Drop for ScanWorkerPermit {
+    fn drop(&mut self) {
+        let prior = self.0.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(prior > 0, "scan worker permit was released twice");
+    }
+}
+
 /// Starts, stops, reruns and deletes saved scans over one store.
 pub struct ScanService {
     store: ScanStore,
@@ -761,6 +774,7 @@ pub struct ScanService {
     state: Mutex<State>,
     freed: Condvar,
     admission: Arc<LookupAdmission>,
+    worker_slots: Arc<AtomicUsize>,
     sequence: AtomicU64,
 }
 
@@ -794,6 +808,7 @@ impl ScanService {
             }),
             freed: Condvar::new(),
             admission: Arc::new(LookupAdmission::default()),
+            worker_slots: Arc::new(AtomicUsize::new(0)),
             sequence: AtomicU64::new(0),
         })
     }
@@ -965,19 +980,38 @@ impl ScanService {
         Ok((record, plan))
     }
 
+    /// Reserve a scan thread before persisting a row or allocating its stack.
+    /// This also limits scans queued behind the two active execution slots.
+    fn reserve_worker(&self) -> Result<ScanWorkerPermit, ServiceError> {
+        self.worker_slots
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
+                (live < MAX_SCAN_WORKERS).then_some(live + 1)
+            })
+            .map_err(|_| {
+                ServiceError::Conflict(format!(
+                    "scan worker capacity reached ({MAX_SCAN_WORKERS}); retry after a scan finishes"
+                ))
+            })?;
+        Ok(ScanWorkerPermit(Arc::clone(&self.worker_slots)))
+    }
+
     /// Start a scan on its own thread and return its `CREATED` row at once.
     ///
     /// # Errors
     /// [`ServiceError::BadRequest`] for an unusable target or option; [`ServiceError::Store`]
     /// when it cannot be saved or its thread cannot start.
     pub fn start(self: &Arc<Self>, request: &ScanRequest) -> Result<ScanRecord, ServiceError> {
+        let permit = self.reserve_worker()?;
         let (record, plan) = self.create(request)?;
         let service = Arc::clone(self);
         let id = record.id.clone();
         let spawned = thread::Builder::new()
             .name("scan".into())
             .stack_size(8 * 1024 * 1024)
-            .spawn(move || service.execute(&id, &plan));
+            .spawn(move || {
+                let _permit = permit;
+                service.execute(&id, &plan);
+            });
         if let Err(error) = spawned {
             let mut failed = record;
             failed.status = ScanStatus::ErrorFailed;
@@ -1560,6 +1594,41 @@ mod tests {
             ScanService::new(ScanStore::open(&dir).unwrap(), lookup),
             dir,
         )
+    }
+
+    #[test]
+    fn scan_thread_admission_rejects_overload_without_creating_a_row() {
+        let (service, dir) = with_lookup(
+            "bounded-scan-workers",
+            Arc::new(|_, _, _| Ok(LookupOutput::default())),
+        );
+        let permits: Vec<_> = (0..MAX_SCAN_WORKERS)
+            .map(|_| service.reserve_worker().unwrap())
+            .collect();
+        assert_eq!(service.worker_slots.load(Ordering::Acquire), MAX_SCAN_WORKERS);
+        let rejected = service.start(&ScanRequest {
+            target: "example.com".into(),
+            ..ScanRequest::default()
+        });
+        assert!(matches!(rejected, Err(ServiceError::Conflict(_))));
+        assert!(service.store().list().unwrap().is_empty());
+
+        drop(permits);
+        assert_eq!(service.worker_slots.load(Ordering::Acquire), 0);
+        let started = service.start(&ScanRequest {
+            target: "example.com".into(),
+            ..ScanRequest::default()
+        }).unwrap();
+        let finished = service.wait(&started.id, Instant::now() + Duration::from_secs(10)).unwrap();
+        assert!(!finished.status.is_active());
+        for _ in 0..200 {
+            if service.worker_slots.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(service.worker_slots.load(Ordering::Acquire), 0);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
