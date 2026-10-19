@@ -59,6 +59,8 @@ pub enum StoreError {
     NotFound(String),
     #[error("{0}")]
     Invalid(String),
+    #[error("scan store capacity reached ({0}); delete finished scans before starting another")]
+    Capacity(usize),
     #[error("scan store: {0}")]
     Io(String),
 }
@@ -403,7 +405,7 @@ impl ScanStore {
     /// Save a new scan's row without making the store impossible to list.
     ///
     /// # Errors
-    /// [`StoreError::Invalid`] when an id exists or the scan capacity is reached;
+    /// [`StoreError::Invalid`] when an id exists; [`StoreError::Capacity`] when full;
     /// [`StoreError::Io`] on an enumeration or write failure.
     pub fn create(&self, record: &ScanRecord) -> Result<(), StoreError> {
         self.create_with_limit(record, MAX_SCANS)
@@ -433,9 +435,7 @@ impl ScanStore {
             if kind.is_dir() {
                 count += 1;
                 if count >= max_scans {
-                    return Err(StoreError::Invalid(format!(
-                        "scan store capacity reached ({max_scans}); delete finished scans before starting another"
-                    )));
+                    return Err(StoreError::Capacity(max_scans));
                 }
             }
         }
@@ -906,7 +906,7 @@ mod tests {
         store.create_with_limit(&first, 2).unwrap();
         store.create_with_limit(&second, 2).unwrap();
         let refused = store.create_with_limit(&third, 2);
-        assert!(matches!(refused, Err(StoreError::Invalid(_))));
+        assert_eq!(refused, Err(StoreError::Capacity(2)));
         assert!(!dir.join(&third.id).exists());
         assert_eq!(store.get(&first.id).unwrap(), first);
         assert_eq!(store.get(&second.id).unwrap(), second);
@@ -944,7 +944,7 @@ mod tests {
         for thread in threads {
             match thread.join().unwrap() {
                 Ok(()) => successes += 1,
-                Err(StoreError::Invalid(_)) => {}
+                Err(StoreError::Capacity(1)) => {}
                 Err(error) => panic!("unexpected scan admission error: {error}"),
             }
         }
