@@ -95,10 +95,10 @@ pub fn to_canonical_bounded(
 ///
 /// Existing callers that need canonical object order can keep using
 /// [`to_canonical_bounded`]; persistence respects the same serde representation
-/// as the original to_vec and to_vec_pretty calls.
+/// as the original `to_vec` and `to_vec_pretty` calls.
 ///
 /// # Errors
-/// Returns serialization failures from serde_json.
+/// Returns serialization failures from `serde_json`.
 pub fn to_bounded_json<T: Serialize>(
     value: &T,
     limit: usize,
