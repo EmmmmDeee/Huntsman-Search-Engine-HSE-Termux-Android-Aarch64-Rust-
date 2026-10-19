@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::fsio::{read_bounded, write_atomic_private};
+use crate::fsio::{read_bounded_replacing, write_atomic_private};
 use crate::sha256::{hex32, sha256};
 use crate::stage::{EvidenceLevel, Status};
 
@@ -188,7 +188,7 @@ pub fn save_chain(path: &Path, entries: &[LedgerEntry]) -> Result<(), Error> {
 /// `Error::Store` for IO, size, or symlink refusal (unreadable input); `Error::Invalid` for
 /// malformed JSON or a broken chain (bad data). Callers map these to distinct exit codes.
 pub fn load_chain(path: &Path) -> Result<Vec<LedgerEntry>, Error> {
-    let body = read_bounded(path, MAX_LEDGER_BYTES)?;
+    let body = read_bounded_replacing(path, MAX_LEDGER_BYTES)?;
     let entries: Vec<LedgerEntry> =
         serde_json::from_slice(&body).map_err(|e| Error::Invalid(e.to_string()))?;
     if !chain_intact(&entries) {
@@ -213,6 +213,48 @@ mod tests {
             evidence_level: level,
             does_not_show: "not survey grade".into(),
         }
+    }
+
+    #[test]
+    fn ledger_round_trips_after_atomic_replacement_without_losing_chain() {
+        let dir = std::env::temp_dir().join(format!(
+            "huntsman-ledger-replacement-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ledger.json");
+        let first = append(
+            GENESIS,
+            &sample(Status::Verified, EvidenceLevel::DirectObservation, None),
+        );
+        save_chain(&path, std::slice::from_ref(&first)).unwrap();
+        assert_eq!(load_chain(&path).unwrap(), [first.clone()]);
+        let mut second_claim = first.claim.clone();
+        second_claim.claim = "second complete entry".into();
+        let second = append(&first.hash, &second_claim);
+        let chain = [first, second];
+        save_chain(&path, &chain).unwrap();
+        assert_eq!(load_chain(&path).unwrap(), chain);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_ledger_reader_still_refuses_symlinks() {
+        let dir = std::env::temp_dir().join(format!(
+            "huntsman-ledger-link-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ledger.json");
+        let other = dir.join("other.json");
+        save_chain(&other, &[]).unwrap();
+        std::os::unix::fs::symlink(&other, &path).unwrap();
+        assert!(matches!(load_chain(&path), Err(Error::Store(_))));
+        assert_eq!(load_chain(&other).unwrap(), []);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
