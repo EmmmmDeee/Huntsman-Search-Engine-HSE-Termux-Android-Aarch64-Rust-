@@ -411,11 +411,7 @@ impl ScanStore {
         self.create_with_limit(record, MAX_SCANS)
     }
 
-    fn create_with_limit(
-        &self,
-        record: &ScanRecord,
-        max_scans: usize,
-    ) -> Result<(), StoreError> {
+    fn create_with_limit(&self, record: &ScanRecord, max_scans: usize) -> Result<(), StoreError> {
         let _guard = SCAN_CREATE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -431,7 +427,9 @@ impl ScanStore {
             if !entry.file_name().to_str().is_some_and(valid_id) {
                 continue;
             }
-            let kind = entry.file_type().map_err(|error| io_error(&entry.path(), &error))?;
+            let kind = entry
+                .file_type()
+                .map_err(|error| io_error(&entry.path(), &error))?;
             if kind.is_dir() {
                 count += 1;
                 if count >= max_scans {
