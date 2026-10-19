@@ -112,6 +112,11 @@ pub struct Graph {
 }
 
 impl Graph {
+    /// Build a deterministic undirected graph from known entities and relations.
+    /// Public relation fields and deserialized data may bypass the checked
+    /// constructor, so invalid confidences are normalized at graph ingress.
+    /// The canonical pair map is the only intermediate edge authority;
+    /// adjacency is derived from it without redundant ordered-set bookkeeping.
     #[must_use]
     pub fn build(entities: &[Entity], relations: &[EntityRelation]) -> Self {
         let mut uids: Vec<String> = entities.iter().map(|entity| entity.uid.clone()).collect();
@@ -120,9 +125,8 @@ impl Graph {
         let index: HashMap<String, usize> = uids
             .iter()
             .enumerate()
-            .map(|(i, uid)| (uid.clone(), i))
+            .map(|(position, uid)| (uid.clone(), position))
             .collect();
-        let mut adj_sets: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); uids.len()];
         let mut pairs: BTreeMap<(usize, usize), (BTreeSet<RelationKind>, f64)> = BTreeMap::new();
         for relation in relations {
             let (Some(&left), Some(&right)) = (
@@ -134,24 +138,23 @@ impl Graph {
             if left == right {
                 continue;
             }
-            let pair = if left < right {
-                (left, right)
-            } else {
-                (right, left)
-            };
-            adj_sets[left].insert(right);
-            adj_sets[right].insert(left);
+            let pair = (left.min(right), left.max(right));
             let (kinds, confidence) = pairs.entry(pair).or_insert_with(|| (BTreeSet::new(), 0.0));
             kinds.insert(relation.kind);
-            *confidence = confidence.max(relation.confidence);
+            let value = if relation.confidence.is_finite() {
+                relation.confidence.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            *confidence = confidence.max(value);
         }
-        let adj = adj_sets
-            .into_iter()
-            .map(|set| set.into_iter().collect::<Vec<_>>())
-            .collect::<Vec<_>>();
-        let mut edge_map = HashMap::new();
+
+        let mut adj = vec![Vec::new(); uids.len()];
+        let mut edge_map = HashMap::with_capacity(pairs.len().saturating_mul(2));
         for ((left, right), (kinds, max_confidence)) in pairs {
-            let mut relation_kinds = kinds.into_iter().collect::<Vec<_>>();
+            adj[left].push(right);
+            adj[right].push(left);
+            let mut relation_kinds: Vec<RelationKind> = kinds.into_iter().collect();
             relation_kinds.sort_by_key(|kind| kind.as_str());
             let edge = GraphEdge {
                 to: right,
@@ -161,6 +164,10 @@ impl Graph {
             edge_map.insert((left, right), edge.clone());
             edge_map.insert((right, left), GraphEdge { to: left, ..edge });
         }
+        for neighbours in &mut adj {
+            neighbours.sort_unstable();
+        }
+
         Self {
             uids,
             index,
@@ -515,4 +522,117 @@ mod tests {
         let core = |name: usize| graph.coreness()[graph.index_of(&nodes[name].uid).unwrap()];
         assert_eq!((0..6).map(core).collect::<Vec<_>>(), [3, 3, 3, 3, 1, 0]);
     }
+
+    #[test]
+    fn graph_normalizes_public_relation_confidence_without_losing_topology() {
+        let a = entity("invalid-a");
+        let b = entity("invalid-b");
+        let c = entity("invalid-c");
+        let cases = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.25, 1.5];
+        let mut relations = Vec::new();
+        for (index, confidence) in cases.into_iter().enumerate() {
+            let kind = if index % 2 == 0 {
+                RelationKind::Uses
+            } else {
+                RelationKind::AssociatedWith
+            };
+            let mut relation = EntityRelation::new(a.uid.clone(), b.uid.clone(), kind, 0.0);
+            relation.confidence = confidence;
+            relations.push(relation);
+        }
+        relations.push(EntityRelation::new(
+            b.uid.clone(),
+            c.uid.clone(),
+            RelationKind::Owns,
+            0.4,
+        ));
+        let graph = Graph::build(&[a.clone(), b.clone(), c.clone()], &relations);
+        let left = graph.index_of(&a.uid).unwrap();
+        let middle = graph.index_of(&b.uid).unwrap();
+        let right = graph.index_of(&c.uid).unwrap();
+        assert_eq!(graph.edge_count(), 2);
+        assert_eq!(graph.edge(left, middle).unwrap().max_confidence, 1.0);
+        assert_eq!(graph.edge(middle, left).unwrap().max_confidence, 1.0);
+        assert_eq!(graph.edge(middle, right).unwrap().max_confidence, 0.4);
+        assert_eq!(graph.bfs_levels(left)[right], 2);
+    }
+
+    #[test]
+    fn graph_rejects_nonfinite_confidence_as_strength_evidence() {
+        let a = entity("finite-a");
+        let b = entity("finite-b");
+        let mut relation = EntityRelation::new(
+            a.uid.clone(),
+            b.uid.clone(),
+            RelationKind::AssociatedWith,
+            0.0,
+        );
+        relation.confidence = f64::INFINITY;
+        let graph = Graph::build(&[a.clone(), b.clone()], &[relation]);
+        let left = graph.index_of(&a.uid).unwrap();
+        let right = graph.index_of(&b.uid).unwrap();
+        assert_eq!(graph.edge(left, right).unwrap().max_confidence, 0.0);
+    }
+
+    #[test]
+    fn reverse_and_duplicate_relations_preserve_deterministic_adjacency() {
+        let nodes = (0..12).map(|i| entity(&format!("node-{i}"))).collect::<Vec<_>>();
+        let mut relations = Vec::new();
+        for left in 0..nodes.len() {
+            for right in left + 1..nodes.len() {
+                if (left + right) % 3 == 0 {
+                    relations.push(EntityRelation::new(
+                        nodes[left].uid.clone(),
+                        nodes[right].uid.clone(),
+                        RelationKind::Uses,
+                        0.3,
+                    ));
+                    relations.push(EntityRelation::new(
+                        nodes[right].uid.clone(),
+                        nodes[left].uid.clone(),
+                        RelationKind::SameAs,
+                        0.8,
+                    ));
+                }
+            }
+        }
+        let first = Graph::build(&nodes, &relations);
+        let reverse = Graph::build(
+            &nodes.iter().rev().cloned().collect::<Vec<_>>(),
+            &relations.iter().rev().cloned().collect::<Vec<_>>(),
+        );
+        assert_eq!(first, reverse);
+        assert_eq!(first.edge_count(), relations.len() / 2);
+        for left in 0..first.node_count() {
+            assert!(first.neighbours(left).windows(2).all(|window| window[0] < window[1]));
+            for &right in first.neighbours(left) {
+                assert_eq!(
+                    first.edge(left, right).unwrap().max_confidence,
+                    first.edge(right, left).unwrap().max_confidence
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn graph_sparse_scale_keeps_component_and_core_results() {
+        let nodes = (0..2_000).map(|i| entity(&format!("sparse-{i}"))).collect::<Vec<_>>();
+        let relations = (1..nodes.len())
+            .map(|index| EntityRelation::new(
+                nodes[index - 1].uid.clone(),
+                nodes[index].uid.clone(),
+                RelationKind::AssociatedWith,
+                0.5,
+            ))
+            .collect::<Vec<_>>();
+        let graph = Graph::build(&nodes, &relations);
+        assert_eq!(graph.node_count(), nodes.len());
+        assert_eq!(graph.edge_count(), nodes.len() - 1);
+        assert_eq!(graph.connected_components().len(), 1);
+        assert!(graph.coreness().iter().all(|&core| core == 1));
+        let (cut_vertices, bridges) = graph.cut_vertices_and_bridges();
+        assert_eq!(cut_vertices.len(), nodes.len() - 2);
+        assert_eq!(bridges.len(), nodes.len() - 1);
+    }
+
 }
