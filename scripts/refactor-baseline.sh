@@ -13,7 +13,7 @@ root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
   exit 2
 }
 cd "$root" || exit 2
-out="${1:-$root/refactor-evidence}"
+out="${1:-$(mktemp -d "${TMPDIR:-/tmp}/huntsman-refactor.XXXXXXXX")}"
 mkdir -p "$out" || exit 2
 out="$(cd "$out" && pwd -P)" || exit 2
 
@@ -21,7 +21,6 @@ git rev-parse HEAD > "$out/revision.txt"
 git status --porcelain=v1 > "$out/working-tree-before.txt"
 git ls-files > "$out/tracked-files.txt"
 git log -n 30 --date=iso-strict --format='%H %ad %s' > "$out/recent-commits.txt"
-cargo metadata --no-deps --format-version 1 > "$out/cargo-metadata.json" 2> "$out/cargo-metadata.stderr"
 printf 'test\tresult\n' > "$out/checks.tsv"
 failures=0
 run_check() {
@@ -36,6 +35,7 @@ run_check() {
     failures=$((failures + 1))
   fi
 }
+run_check metadata cargo metadata --no-deps --format-version 1
 run_check fmt cargo fmt --all -- --check
 run_check test cargo test --workspace --locked
 run_check clippy cargo clippy --workspace --all-targets --locked -- -D warnings
