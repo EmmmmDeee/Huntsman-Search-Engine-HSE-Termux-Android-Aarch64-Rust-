@@ -98,6 +98,53 @@ fn a_replayed_foreign_boot_timestamp_is_never_called_fresh() {
 }
 
 #[test]
+fn redacted_and_group_bssids_are_not_exported_as_devices() {
+    let input = path("invalid-identities");
+    fs::write(
+        &input,
+        br#"[{"bssid":"02:00:00:00:00:00","ssid":"privacy-sentinel","rssi":-20},{"bssid":"01:00:5e:00:00:01","rssi":-45},{"bssid":"ff:ff:ff:ff:ff:ff","rssi":-49},{"bssid":"00:00:00:00:00:00","rssi":-40},{"bssid":"36:32:62:36:31:33","ssid":"randomized-valid","rssi":-60}]"#,
+    )
+    .unwrap();
+    let out = bin()
+        .args(["radar", "wifi", "--json", "--file"])
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["observed"], 1);
+    assert_eq!(parsed["rejected"], 4);
+    assert_eq!(parsed["status"], "freshness_unknown");
+    assert_eq!(
+        parsed["observations"][0]["sighting"]["network_id"],
+        "36:32:62:36:31:33"
+    );
+    assert_eq!(parsed["observations"][0]["freshness"], "unknown");
+    fs::remove_file(input).unwrap();
+}
+
+#[test]
+fn only_redacted_bssid_is_inconclusive_not_zero_devices_detected() {
+    let input = path("only-redacted");
+    fs::write(&input, br#"[{"bssid":"02:00:00:00:00:00","rssi":-25}]"#).unwrap();
+    let out = bin()
+        .args(["radar", "wifi", "--json", "--file"])
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(i32::from(EX_UNAVAILABLE)));
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["observed"], 0);
+    assert_eq!(parsed["rejected"], 1);
+    assert_eq!(parsed["status"], "inconclusive");
+    fs::remove_file(input).unwrap();
+}
+
+#[test]
 fn empty_android_os_cache_cannot_be_reported_as_success() {
     let input = path("empty");
     fs::write(&input, b"[]").unwrap();
