@@ -83,7 +83,8 @@ fn parse_row(row: &serde_json::Value) -> Option<CellObservation> {
             "nr" => ("tac", "nci", (1_u64 << 36) - 1),
             _ => return None,
         };
-        let area = bounded_id(row, area_key, u64::from(u16::MAX))?;
+        let area_limit = if technology == "nr" { (1_u64 << 24) - 1 } else { u64::from(u16::MAX) };
+        let area = bounded_id(row, area_key, area_limit)?;
         let cell = bounded_id(row, cell_key, limit)?;
         let identity = format!("{technology}:{mcc}:{mnc}:{area}:{cell}");
         (Some(mcc), Some(mnc), area, cell, identity)
