@@ -588,3 +588,70 @@ pub fn rule_au_110_shared_hosting_ip(
         })
         .collect()
 }
+
+/// BSSID position within this distance of an IP geolocation is a finding.
+const GEO_DELTA_DEGREES: f64 = 0.002;
+
+/// Parse "lat,lon" into coordinates. **Pure.**
+fn parse_position(text: &str) -> Option<(f64, f64)> {
+    let (lat, lon) = text.split_once(',')?;
+    let lat: f64 = lat.trim().parse().ok()?;
+    let lon: f64 = lon.trim().parse().ok()?;
+    (lat.is_finite() && lon.is_finite()).then_some((lat, lon))
+}
+
+/// Distance in degrees between two positions. **Pure.**
+fn delta_degrees(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let dlat = a.0 - b.0;
+    let dlon = a.1 - b.1;
+    (dlat * dlat + dlon * dlon).sqrt()
+}
+
+/// BSSID position within `GEO_DELTA_DEGREES` of an IP geolocation.
+#[must_use]
+pub fn rule_geo_bssid_ip(ctx: &RuleContext<'_>) -> Vec<Correlation> {
+    let mut out = Vec::new();
+    let bssids: Vec<_> = ctx
+        .entities()
+        .iter()
+        .filter(|e| e.kind == EntityKind::MacAddress)
+        .filter_map(|e| {
+            e.evidence.iter().find_map(|ev| {
+                ev.attr_values("position")
+                    .next()
+                    .and_then(parse_position)
+                    .map(|pos| (e, pos))
+            })
+        })
+        .collect();
+    let ips: Vec<_> = ctx
+        .entities()
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .filter_map(|e| {
+            e.evidence.iter().find_map(|ev| {
+                ev.attr_values("loc")
+                    .next()
+                    .and_then(parse_position)
+                    .map(|pos| (e, pos))
+            })
+        })
+        .collect();
+    for (bssid, bpos) in &bssids {
+        for (ip, ipos) in &ips {
+            let d = delta_degrees(*bpos, *ipos);
+            if d <= GEO_DELTA_DEGREES {
+                out.push(Correlation::new(
+                    "geo_bssid_ip",
+                    "BSSID near IP geolocation",
+                    Severity::Medium,
+                    format!("BSSID {} within {:.4}° of IP {}", bssid.value, d, ip.value),
+                    vec![bssid.uid.clone(), ip.uid.clone()],
+                    bssid.scan_id.as_str(),
+                    0,
+                ));
+            }
+        }
+    }
+    out
+}

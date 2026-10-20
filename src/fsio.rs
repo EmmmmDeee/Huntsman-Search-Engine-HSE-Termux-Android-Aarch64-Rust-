@@ -102,6 +102,48 @@ pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
     read_opened(path, &path_meta, file, max)
 }
 
+/// Read an atomically replaced mutable file with bounded revalidation.
+///
+/// Writers may rename a fully written replacement between `lstat` and `open`. In that
+/// case a strict read correctly refuses the mismatched inode, but a scan row or results
+/// file can safely retry from the beginning: each attempt still rejects symlinks,
+/// non-files and opened descriptors that differ from the newly checked inode.
+/// A repeatedly changing path remains an error after three attempts. Only call this
+/// for files that this process intentionally replaces atomically; ordinary reads
+/// retain the stricter single-attempt contract.
+///
+/// # Errors
+/// As [`read_bounded`], including repeated inode replacements.
+pub(crate) fn read_bounded_replacing(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
+    read_bounded_replacing_with(path, max, || {})
+}
+
+fn read_bounded_replacing_with(
+    path: &Path,
+    max: u64,
+    mut after_check: impl FnMut(),
+) -> Result<Vec<u8>, Error> {
+    const MAX_ATTEMPTS: usize = 3;
+    for attempt in 0..MAX_ATTEMPTS {
+        let linked = fs::symlink_metadata(path).map_err(|e| store_err(path, &e))?;
+        require_regular_file(path, &linked)?;
+        after_check();
+        let file = File::open(path).map_err(|e| store_err(path, &e))?;
+        let opened = file.metadata().map_err(|e| store_err(path, &e))?;
+        if !same_inode(&linked, &opened) {
+            if attempt + 1 < MAX_ATTEMPTS {
+                continue;
+            }
+            return Err(Error::Store(format!(
+                "{}: {CHANGED_WHILE_OPENING}",
+                path.display()
+            )));
+        }
+        return read_opened(path, &linked, file, max);
+    }
+    unreachable!("the bounded replacement reader makes at least one attempt")
+}
+
 /// The descriptor half of [`read_bounded`]: `file` must be the inode `linked` (the `lstat`
 /// result for `path`) describes and a regular file; then at most `max` bytes are read from it.
 fn read_opened(path: &Path, linked: &fs::Metadata, file: File, max: u64) -> Result<Vec<u8>, Error> {
@@ -406,6 +448,70 @@ mod tests {
             .to_string();
         assert!(error.contains(CHANGED_WHILE_OPENING), "{error}");
         assert!(error.contains(&checked.display().to_string()), "{error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_reader_revalidates_after_atomic_rename() {
+        let dir = scratch("atomic-replace-read");
+        let path = dir.join("scan.json");
+        write_atomic_private(&path, b"old", 32).unwrap();
+        let mut replacements = 0;
+        let result = read_bounded_replacing_with(&path, 32, || {
+            if replacements == 0 {
+                write_atomic_private(&path, b"new", 32).unwrap();
+            }
+            replacements += 1;
+        })
+        .unwrap();
+        assert_eq!(result, b"new");
+        assert_eq!(
+            replacements, 2,
+            "the stale inode was rejected then rechecked"
+        );
+        assert_eq!(read_bounded(&path, 32).unwrap(), b"new");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_reader_refuses_a_symlink_planted_between_check_and_open() {
+        let dir = scratch("atomic-replace-link");
+        let path = dir.join("scan.json");
+        let other = dir.join("other.json");
+        write_atomic_private(&path, b"expected", 32).unwrap();
+        fs::write(&other, b"unrelated").unwrap();
+        let failure = read_bounded_replacing_with(&path, 32, || {
+            if !fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+            {
+                fs::remove_file(&path).unwrap();
+                std::os::unix::fs::symlink(&other, &path).unwrap();
+            }
+        })
+        .expect_err("a new symlink must never be accepted as an atomic replacement");
+        assert!(failure.to_string().contains(REFUSED_SYMLINK));
+        assert_eq!(fs::read(&other).unwrap(), b"unrelated");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_reader_stops_after_bounded_inode_changes() {
+        let dir = scratch("atomic-replace-bound");
+        let path = dir.join("scan.json");
+        write_atomic_private(&path, b"seed", 32).unwrap();
+        let mut changes = 0;
+        let failure = read_bounded_replacing_with(&path, 32, || {
+            changes += 1;
+            write_atomic_private(&path, b"changed", 32).unwrap();
+        })
+        .expect_err("a constantly replaced file must never bypass the identity check");
+        assert_eq!(changes, 3);
+        assert!(failure.to_string().contains(CHANGED_WHILE_OPENING));
         let _ = fs::remove_dir_all(&dir);
     }
 
