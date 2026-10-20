@@ -101,7 +101,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
             "plan [--session-dir DIR] SEED [SEED ...] | plan --load-session DIR ID\nRun the offline investigation spine on one or more seeds: normalise them into entities and relations, analyse that one state, and plan the external routes without fetching them. --session-dir DIR saves the run as a session, and --load-session DIR ID prints a saved one. Offline."
         }
         "query" => {
-            "query QUERY...\nQuery the rebuilt keyless Bing, Brave, and Mojeek subset through the shared fetch boundary; provider failures remain independent."
+            "query [--adaptive] QUERY...\nQuery the rebuilt keyless Bing, Brave, and Mojeek subset. --adaptive emits JSON with up to 3 feedback-directed query rounds, URL attribution by engine, typed outcomes and explicit limits (up to 9 engine requests)."
         }
         "sf" => SF_USAGE,
         "scans" => SCANS_HELP,
