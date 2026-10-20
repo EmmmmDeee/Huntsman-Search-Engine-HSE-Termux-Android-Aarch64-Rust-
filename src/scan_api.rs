@@ -13,6 +13,7 @@
 //! | `startscan` | `POST /api/scans?target=T[&name=N][&kind=K][&usecase=U][&modules=a,b][&types=A,B][&depth=D]` |
 //! | `scanstatus` | `GET /api/scans/ID` |
 //! | `scansummary` | `GET /api/scans/ID/summary` |
+//! | (shared analysis over saved entities) | `GET /api/scans/ID/analyze` |
 //! | `scaneventresults`, `scaneventresultsunique` | `GET /api/scans/ID/elements[?type=T][&unique=1][&hidefp=1][&correlation=C]` |
 //! | `scancorrelations`, `scancorrelationsexport` | `GET /api/scans/ID/correlations[?format=csv|tsv|xlsx|json]` |
 //! | `sf.py -C` | `POST /api/scans/ID/correlate` |
@@ -34,7 +35,9 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
+use crate::analysis::analyze_snapshot;
 use crate::api_leg::Api;
+use crate::pipeline::{PipelineLimits, snapshot_from_entities};
 use crate::correlator::rule_catalog;
 use crate::module::reachable_modules;
 use crate::scan_compare;
@@ -235,6 +238,7 @@ impl ScanApi {
             (["scans", "search"], false) => self.search(&param),
             (["scans", id], false) => self.status(id),
             (["scans", id, "summary"], false) => self.summary(id),
+            (["scans", id, "analyze"], false) => self.analyze(id),
             (["scans", id, "elements"], false) => self.elements(id, &param),
             (["scans", id, "correlations"], false) => self.correlations(id, param.get("format")),
             (["scans", id, "correlate"], true) => match self.service.correlate(id) {
@@ -386,6 +390,54 @@ impl ScanApi {
             .results(id)
             .map_err(|failure| service_error(&failure.into()))?;
         Ok((record, results))
+    }
+
+    /// Run the shared deterministic analysis over saved entities, without network requests or
+    /// modifications to the original scan. Provider coverage and upstream independence cannot
+    /// be reconstructed from merged entities, so the response makes both limitations explicit.
+    fn analyze(&self, id: &str) -> ApiResponse {
+        let (record, results) = match self.results(id) {
+            Ok(found) => found,
+            Err(response) => return response,
+        };
+        if record.status.is_active() {
+            return error(409, "scan is active; analyze it after its worker stops");
+        }
+        let Some(results) = results else {
+            return error(409, "scan has no saved results to analyze");
+        };
+
+        let limits = PipelineLimits::default();
+        let count = results.entities.len().min(limits.max_entities);
+        let mut snapshot = snapshot_from_entities(&results.entities[..count], id, &limits);
+        snapshot.truncated |= count < results.entities.len();
+        let report = analyze_snapshot(&snapshot);
+
+        ok(
+            200,
+            &json!({
+                "scan": {
+                    "id": record.id,
+                    "target": record.target,
+                    "status": record.status,
+                },
+                "source": "saved_scan_entities",
+                "limitations": {
+                    "original_evidence": "retained_in_saved_results",
+                    "provider_coverage": "not_reconstructed",
+                    "evidence_ancestry": "not_reconstructed",
+                    "scan_complete": record.status == ScanStatus::Finished,
+                    "truncated": snapshot.truncated,
+                },
+                "counts": {
+                    "saved_entities": results.entities.len(),
+                    "analyzed_entities": snapshot.entities.len(),
+                    "derived_relations": snapshot.relations.len(),
+                    "source_outcomes": results.outcomes.len(),
+                },
+                "report": report,
+            }),
+        )
     }
 
     fn status(&self, id: &str) -> ApiResponse {
@@ -890,7 +942,7 @@ fn route_exists(segments: &[&str], write: bool) -> bool {
                 | [
                     "scans",
                     _,
-                    "summary" | "elements" | "correlations" | "log" | "graph" | "export"
+                    "summary" | "analyze" | "elements" | "correlations" | "log" | "graph" | "export"
                 ]
         )
     }
@@ -1367,6 +1419,49 @@ mod tests {
         assert_eq!(row["sources"][0]["module"], "internetdb");
         assert_eq!(row["report"], "report");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saved_scan_analysis_is_read_only_and_distinguishes_derived_from_collected_evidence() {
+        let (api, dir) = api("saved-analysis");
+        let id = finished(&api);
+        let original = api.service().store().results(&id).unwrap().unwrap();
+        let saved_path = dir.join(&id).join("results.json");
+        let original_bytes = std::fs::read(&saved_path).unwrap();
+
+        let path = format!("/api/scans/{id}/analyze");
+        let response = api.handle("GET", &path, "");
+        assert_eq!(response.status, 200, "{}", response.text());
+        let value = body(&response);
+        assert_eq!(value["scan"]["id"], id);
+        assert_eq!(value["scan"]["status"], "FINISHED");
+        assert_eq!(value["source"], "saved_scan_entities");
+        assert_eq!(value["counts"]["saved_entities"], original.entities.len());
+        assert_eq!(value["counts"]["source_outcomes"], original.outcomes.len());
+        assert_eq!(value["limitations"]["scan_complete"], true);
+        assert_eq!(value["limitations"]["provider_coverage"], "not_reconstructed");
+        assert_eq!(value["limitations"]["evidence_ancestry"], "not_reconstructed");
+        assert_eq!(value["limitations"]["original_evidence"], "retained_in_saved_results");
+        assert!(value["report"].is_object());
+        assert_eq!(api.service().store().results(&id).unwrap(), Some(original));
+        assert_eq!(std::fs::read(&saved_path).unwrap(), original_bytes);
+        assert_eq!(api.handle("POST", &path, "").status, 405);
+
+        let created = api
+            .service()
+            .create(&ScanRequest {
+                target: "8.8.8.8".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap()
+            .0;
+        assert_eq!(
+            api.handle("GET", &format!("/api/scans/{}/analyze", created.id), "")
+                .status,
+            409
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
