@@ -47,8 +47,7 @@ fn network_code(row: &serde_json::Value, key: &str, min: usize, max: usize) -> O
         serde_json::Value::String(s) => s.clone(),
         _ => return None,
     };
-    (raw.len() >= min && raw.len() <= max && raw.bytes().all(|c| c.is_ascii_digit()))
-        .then_some(raw)
+    (raw.len() >= min && raw.len() <= max && raw.bytes().all(|c| c.is_ascii_digit())).then_some(raw)
 }
 
 fn cell_signal(row: &serde_json::Value) -> Option<f64> {
@@ -72,7 +71,13 @@ fn parse_row(row: &serde_json::Value) -> Option<CellObservation> {
         let system = bounded_id(row, "system", u64::from(u16::MAX))?;
         let network = bounded_id(row, "network", u64::from(u16::MAX))?;
         let base = bounded_id(row, "basestation", u64::from(u16::MAX))?;
-        (None, None, network, base, format!("cdma:{system}:{network}:{base}"))
+        (
+            None,
+            None,
+            network,
+            base,
+            format!("cdma:{system}:{network}:{base}"),
+        )
     } else {
         let mcc = network_code(row, "mcc", 3, 3)?;
         let mnc = network_code(row, "mnc", 1, 3)?;
@@ -119,7 +124,9 @@ pub fn parse_scan(bytes: &[u8]) -> Result<CellScan, Error> {
     let raw: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|e| Error::Invalid(format!("invalid Termux cellular JSON: {e}")))?;
     if let Some(message) = raw.get("API_ERROR") {
-        return Err(Error::Invalid(format!("Termux cellular API error: {message}")));
+        return Err(Error::Invalid(format!(
+            "Termux cellular API error: {message}"
+        )));
     }
     let rows = raw
         .as_array()
@@ -167,7 +174,9 @@ pub fn render(scan: &CellScan) -> String {
             .sighting
             .signal_dbm
             .map_or_else(|| "unknown".to_owned(), |dbm| format!("{dbm:.0}"));
-        let registered = row.registered.map_or("unknown", |v| if v { "yes" } else { "no" });
+        let registered = row
+            .registered
+            .map_or("unknown", |v| if v { "yes" } else { "no" });
         let _ = writeln!(
             text,
             "cell\tid={}\ttechnology={}\tregistered={}\tdbm={}\tfreshness=unknown",
