@@ -159,7 +159,12 @@ fn routing_leg(
         )
     };
     let asns = routing.origin_asns();
-    let announced = routing.describe(evidence(routing.summary()));
+    let announced = routing
+        .attributes()
+        .into_iter()
+        .fold(evidence(routing.summary()), |evidence, (key, value)| {
+            evidence.with_attr(key, value)
+        });
     push_entity(
         &mut report.entities,
         EntityKind::Netblock,

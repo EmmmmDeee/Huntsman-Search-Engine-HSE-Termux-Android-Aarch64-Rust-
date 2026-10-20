@@ -396,7 +396,10 @@ fn ripestat_leg(lookup: &mut Lookup<'_>, routing: &ripestat::Routing) {
         lookup.nothing(api);
         return;
     }
-    let evidence = routing.describe(lookup.evidence(api, routing.summary()));
+    let evidence = routing.attributes().into_iter().fold(
+        lookup.evidence(api, routing.summary()),
+        |evidence, (key, value)| evidence.with_attr(key, value),
+    );
     lookup.on_address(evidence, &[]);
     for origin in &routing.origins {
         let asn = format!("AS{}", origin.asn);

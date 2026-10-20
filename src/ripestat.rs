@@ -14,7 +14,6 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::api_leg::{self, Answer, Api, LegError};
-use crate::entity::Evidence;
 use crate::http::{Transport, percent_encode_component};
 use crate::keys::Keys;
 
@@ -94,36 +93,40 @@ impl Routing {
         }
     }
 
-    /// `evidence` holding everything the answer says about the address or block: the covering
-    /// prefix, whether it is announced and whether it is a less-specific one, every origin AS,
-    /// related and `see_also` prefix, the registry block's resource, description and registry,
-    /// `RIPEstat`'s messages, and the whole answer as `raw_answer`. Every lookup that reads
-    /// `prefix-overview` records it this way. **Pure.**
+    /// Everything the answer says about the address or block, as `(attribute, value)` pairs in
+    /// a fixed order: the covering prefix, the registry block's resource, description and
+    /// registry, whether it is announced and whether it is a less-specific one, every origin AS,
+    /// related and `see_also` prefix, `RIPEstat`'s messages, and the whole answer as
+    /// `raw_answer`. A value or list the answer leaves out is left out. Every lookup that reads
+    /// `prefix-overview` records these on its evidence. **Pure.**
     #[must_use]
-    pub fn describe(&self, evidence: Evidence) -> Evidence {
+    pub fn attributes(&self) -> Vec<(&'static str, String)> {
+        let optional = [
+            ("prefix", self.prefix.as_deref()),
+            ("registry_block", self.block.as_deref()),
+            ("block_resource", self.block_resource.as_deref()),
+            ("block_registry", self.block_name.as_deref()),
+        ];
+        let mut attributes: Vec<(&'static str, String)> = optional
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let value = value.map(str::trim).filter(|v| !v.is_empty())?;
+                Some((key, value.to_owned()))
+            })
+            .collect();
+        attributes.push(("announced", self.announced.to_string()));
+        if self.less_specific {
+            attributes.push(("less_specific", "true".to_owned()));
+        }
         let lists = [
             ("origin_asns", self.origin_asns().join(",")),
             ("related_prefixes", self.related.join(",")),
             ("see_also", self.see_also.join(",")),
             ("messages", self.messages.join("; ")),
         ];
-        let mut evidence = evidence.with_optional_attrs([
-            ("prefix", self.prefix.as_deref()),
-            ("registry_block", self.block.as_deref()),
-            ("block_resource", self.block_resource.as_deref()),
-            ("block_registry", self.block_name.as_deref()),
-            (
-                "announced",
-                Some(if self.announced { "true" } else { "false" }),
-            ),
-            ("less_specific", self.less_specific.then_some("true")),
-        ]);
-        for (key, value) in lists {
-            if !value.is_empty() {
-                evidence = evidence.with_attr(key, value);
-            }
-        }
-        evidence.with_attr("raw_answer", &self.raw)
+        attributes.extend(lists.into_iter().filter(|(_, value)| !value.is_empty()));
+        attributes.push(("raw_answer", self.raw.clone()));
+        attributes
     }
 }
 
