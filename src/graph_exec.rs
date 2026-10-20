@@ -2858,4 +2858,71 @@ mod tests {
             Err(GraphError::CheckpointMismatch)
         ));
     }
+
+    #[test]
+    fn overflowing_resource_totals_never_dispatch_over_budget_tasks() {
+        for concurrency in [1, 2, 4] {
+            for costs in [
+                vec![u64::MAX, 1],
+                vec![u64::MAX - 1, 1, 1],
+                vec![u64::MAX - 1, 2],
+                vec![u64::MAX / 2 + 1, u64::MAX / 2 + 1],
+            ] {
+                let calls = Arc::new(AtomicUsize::new(0));
+                let tasks: Vec<_> = costs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &cost)| {
+                        let mut task = spec(&format!("task-{index}"), &[]);
+                        task.resource_units = cost;
+                        task
+                    })
+                    .collect();
+                let mut handlers = HandlerRegistry::new();
+                for task in &tasks {
+                    let calls = Arc::clone(&calls);
+                    handlers.insert(
+                        task.id.clone(),
+                        handler(move |context| {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            Ok(output(json!(true), &context.task_id))
+                        }),
+                    );
+                }
+                let expected = if costs.len() == 3 { 2 } else { 1 };
+                let graph = GraphDefinition {
+                    run_id: "overflowing-resource-total".into(),
+                    tasks,
+                };
+                let report = GraphExecutor::new(ExecutionPolicy {
+                    max_concurrency: concurrency,
+                    max_total_resource_units: u64::MAX,
+                    ..policy()
+                })
+                .execute(&graph, &handlers, &Arc::new(AtomicBool::new(false)))
+                .unwrap();
+
+                assert_eq!(
+                    calls.load(Ordering::SeqCst),
+                    expected,
+                    "over-budget dispatch: concurrency={concurrency}, costs={costs:?}"
+                );
+                assert_eq!(report.summary().succeeded, expected);
+                assert_eq!(report.summary().blocked, costs.len() - expected);
+                assert_eq!(report.termination, Some(RunTermination::ResourceLimit));
+                let admitted: u128 = report
+                    .tasks
+                    .iter()
+                    .filter(|(_, record)| record.attempts > 0)
+                    .map(|(id, _)| {
+                        let task = graph.tasks.iter().find(|task| &task.id == id).unwrap();
+                        u128::from(task.resource_units)
+                    })
+                    .sum();
+                assert!(admitted <= u128::from(u64::MAX));
+                assert_eq!(u128::from(report.consumed_resource_units), admitted);
+            }
+        }
+    }
+
 }
