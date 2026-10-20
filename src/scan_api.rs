@@ -242,6 +242,7 @@ impl ScanApi {
             (["scans", id, "summary"], false) => self.summary(id),
             (["scans", id, "analyze"], false) => self.analyze(id),
             (["scans", id, "reality"], false) => self.reality(id, param.get("uid")),
+            (["scans", _, "reality"], true) => error(405, "entity reality is read-only"),
             (["scans", id, "elements"], false) => self.elements(id, &param),
             (["scans", id, "correlations"], false) => self.correlations(id, param.get("format")),
             (["scans", id, "correlate"], true) => match self.service.correlate(id) {
