@@ -2395,6 +2395,91 @@ mod tests {
     }
 
     #[test]
+    fn stopping_active_graph_batch_preserves_completed_lookup_failures() {
+        let (entered_tx, entered_rx) = mpsc::channel::<String>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let entered_tx = Mutex::new(entered_tx);
+        let release_rx = Mutex::new(release_rx);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        let (service, dir) = with_lookup(
+            "stop-graph-failures",
+            Arc::new(move |kind: ScanKind, selector: &str, _: &Selection| {
+                if kind == ScanKind::Domain {
+                    let evidence = Evidence::new(
+                        EvidenceProvenance::for_scan("test", "seed"),
+                        "discovered address",
+                    );
+                    return Ok(LookupOutput {
+                        entities: ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
+                            .into_iter()
+                            .map(|ip| {
+                                Entity::builder(EntityKind::IpAddress, ip, 0.95, "test")
+                                    .evidence(evidence.clone())
+                                    .build()
+                            })
+                            .collect(),
+                        ..LookupOutput::default()
+                    });
+                }
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                entered_tx
+                    .lock()
+                    .unwrap()
+                    .send(selector.to_owned())
+                    .unwrap();
+                release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+                Err(format!("synthetic provider outage for {selector}"))
+            }),
+        );
+        let record = service
+            .start(&ScanRequest {
+                target: "example.org".into(),
+                kind: Some("domain".into()),
+                options: ScanOptions {
+                    depth: 1,
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let first = entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let second = entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_ne!(first, second);
+        service.stop(&record.id).unwrap();
+        release_tx.send(()).unwrap();
+        release_tx.send(()).unwrap();
+        let finished = service
+            .wait(&record.id, Instant::now() + Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(finished.status, ScanStatus::Aborted);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(finished.errors, 2);
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        assert_eq!(results.termination, Some(TerminationReason::Cancelled));
+        assert_eq!(results.outcomes.len(), 2);
+        assert!(results.outcomes.iter().all(|outcome| {
+            outcome.module == "graph_exec"
+                && outcome.kind == SourceOutcomeKind::Inconclusive
+                && outcome.found.is_none()
+        }));
+        for selector in [first, second] {
+            let diagnostic = format!("synthetic provider outage for {selector}");
+            assert!(results.outcomes.iter().any(|outcome| {
+                outcome
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains(&diagnostic))
+            }));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_rerun_is_a_new_scan_with_the_same_target_and_options() {
         let (service, dir) = with_lookup(
             "rerun",
