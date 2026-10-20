@@ -62,8 +62,8 @@ fn age_from_boot(uptime_secs: Option<f64>, timestamp_us: Option<u64>) -> Option<
 }
 
 /// Read a capture file with no trustworthy device boot-clock provenance.
-/// Android ScanResult timestamps are relative to the *original device boot*.
-/// Comparing them to this machine's /proc/uptime can fabricate a fresh reading.
+/// Android `ScanResult` timestamps are relative to the *original device boot*.
+/// Comparing them to this machine's `/proc/uptime` can fabricate a fresh reading.
 /// The file may also be manually created: its reported origin is unverified.
 pub fn parse_replay(bytes: &[u8]) -> Result<WifiScan, Error> {
     let mut replay = parse_scan(bytes, None)?;
