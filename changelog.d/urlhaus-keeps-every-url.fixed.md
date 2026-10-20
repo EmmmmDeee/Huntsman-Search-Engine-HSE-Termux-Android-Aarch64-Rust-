@@ -1,0 +1,1 @@
+- URLhaus (with `HUNTSMAN_ABUSECH_KEY`) keeps every malware URL it lists for a host, each URL's id and `URLhaus` page, every reporter, every threat and malware tag (no longer cut at 10), every blocklist verdict, the first and last date a URL was added, the host's `URLhaus` page and the whole answer as `raw_answer`.

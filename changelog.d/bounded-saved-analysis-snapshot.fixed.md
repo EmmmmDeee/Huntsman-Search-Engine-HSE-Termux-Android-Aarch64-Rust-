@@ -1,0 +1,1 @@
+- Cap merged entities at the shared pipeline budget before constructing relations in `snapshot_from_entities`; flag dropped entities as truncation and retain the independent relation cap, so callers cannot bypass the resource limit by omitting their own trimming.
