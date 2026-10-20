@@ -1160,7 +1160,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: false,
         category: ModuleCategory::Sensor,
         attack_techniques: &[],
-        description: "Termux:API Android OS-cached GSM/WCDMA/LTE/NR cell observations; no claimed UTC, age or location",
+        description: "Termux:API Android OS-cached GSM/WCDMA/LTE/NR/CDMA identities; no claimed UTC, age or device location",
     },
     ReachableModule {
         name: "oui",
