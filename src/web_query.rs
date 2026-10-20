@@ -246,7 +246,10 @@ pub fn adaptive_search<T: Transport + ?Sized>(
     )?;
 
     let stop_reason = if has_viable_provider(&rounds[0]) {
-        let second = if normalized_query.starts_with('"') && normalized_query.ends_with('"') && normalized_query.len() > 2 {
+        let second = if normalized_query.starts_with('"')
+            && normalized_query.ends_with('"')
+            && normalized_query.len() > 2
+        {
             let bare = normalized_query.trim_matches('"').trim();
             (bare != normalized_query).then(|| (bare.to_owned(), "unquoted_recall"))
         } else if normalized_query.split_whitespace().count() > 1 {
