@@ -403,23 +403,28 @@ pub fn normalize_observations(
 /// the analysis spine produces for those entities, not a reduced view. Coverage and ancestry are
 /// empty: a reconstruction from merged entities carries no provider-coverage events or
 /// evidence-ancestry graph, and the analysis that reads them degrades honestly to the entities and
-/// the relations they imply. Relations are capped by `limits.max_relations`, and an overflow sets
-/// the snapshot's `truncated` flag.
+/// the relations they imply. Entities are bounded before relation derivation, so an
+/// oversized caller cannot bypass `limits.max_entities` by omitting a pre-truncation.
+/// Relations are capped by `limits.max_relations`; either overflow sets `truncated`.
 #[must_use]
 pub fn snapshot_from_entities(
     entities: &[Entity],
     scan_id: &str,
     limits: &PipelineLimits,
 ) -> AnalysisSnapshot {
-    let mut relations = derive_relations(entities, scan_id);
+    // Bound input *before* deriving relations, not just after graph construction.
+    // The analysis entry point is public, and not every caller trims its own set.
+    let limited = &entities[..entities.len().min(limits.max_entities)];
+    let entity_overflow = limited.len() != entities.len();
+    let mut relations = derive_relations(limited, scan_id);
     let relation_overflow = relations.len() > limits.max_relations;
     relations.truncate(limits.max_relations);
     AnalysisSnapshot {
-        entities: entities.to_vec(),
+        entities: limited.to_vec(),
         relations,
         coverage: Vec::new(),
         ancestry: EvidenceAncestryGraph::default(),
-        truncated: relation_overflow,
+        truncated: entity_overflow || relation_overflow,
     }
 }
 
@@ -427,6 +432,51 @@ pub fn snapshot_from_entities(
 mod tests {
     use super::{PipelineLimits, snapshot_from_entities};
     use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+
+    #[test]
+    fn reconstructed_snapshot_enforces_entity_budget_before_relation_derivation() {
+        let entities = vec![
+            Entity::new(EntityKind::Domain, "first.example", 0.9, "scan-1"),
+            Entity::new(EntityKind::IpAddress, "192.0.2.11", 0.9, "scan-1"),
+            Entity::new(EntityKind::Domain, "excluded.example", 0.9, "scan-1"),
+        ];
+        let limits = PipelineLimits {
+            max_entities: 2,
+            ..PipelineLimits::default()
+        };
+        let snapshot = snapshot_from_entities(&entities, "scan-1", &limits);
+        assert!(snapshot.truncated, "discarded entities must be disclosed");
+        assert_eq!(snapshot.entities, entities[..2]);
+        assert!(snapshot.relations.iter().all(|relation| {
+            snapshot
+                .entities
+                .iter()
+                .any(|entity| entity.uid == relation.from_uid)
+                && snapshot
+                    .entities
+                    .iter()
+                    .any(|entity| entity.uid == relation.to_uid)
+        }));
+        assert_eq!(entities.len(), 3, "the caller's source must remain unchanged");
+    }
+
+    #[test]
+    fn reconstructed_snapshot_with_zero_entity_budget_stays_empty_and_truncated() {
+        let entities = vec![Entity::new(
+            EntityKind::Domain,
+            "example.com",
+            0.9,
+            "scan-1",
+        )];
+        let limits = PipelineLimits {
+            max_entities: 0,
+            ..PipelineLimits::default()
+        };
+        let snapshot = snapshot_from_entities(&entities, "scan-1", &limits);
+        assert!(snapshot.entities.is_empty());
+        assert!(snapshot.relations.is_empty());
+        assert!(snapshot.truncated);
+    }
 
     /// Two confirmed domains resolving to one address imply a hosting relation. Reconstructing a
     /// snapshot from the merged entities must derive that relation, so a consumer that only has the
