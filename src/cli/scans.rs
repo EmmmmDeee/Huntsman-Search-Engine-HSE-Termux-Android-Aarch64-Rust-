@@ -26,8 +26,8 @@ use huntsman_recon::sf_types;
 use huntsman_recon::textnorm::escape_controls;
 use serde_json::Value;
 
-pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [-m MODULE[,MODULE...]] [--depth N] [--json] | scans list [--json] | scans show ID | scans summary ID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans export ID|ID,ID... [-f csv|tsv|xlsx|json|gexf] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans compare EARLIER LATER [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans search VALUE [ID...] [-t TYPE] [--hide-fp] [--json] | scans rules [--json] | scans types
-Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read, and scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. --depth N follows what the scan finds, as Spiderfoot does: each email, username, domain, phone, IP address and BSSID a lookup finds is looked up in turn, N hops past the target (0, the default, runs the target's lookup only), under the shared lookup and entity budgets; each element then names the element it was found from, so the elements form the scan's discovery tree. -t keeps only those element types; -u passive skips the keyed breach lookup of every email. -m (or --modules) asks only the modules named, by Huntsman's name (see modules) or Spiderfoot's, where sfp_whois stands for every module that does its work: a module not chosen sends nothing, a lookup that asks none of them is skipped, a target none of them looks up is refused, and offline modules always run. fp flags elements as false positives, and with them every element found from them; --unset clears them the same way, refused while an element's source is still flagged. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); xlsx (or excel) is Spiderfoot's workbook, a sheet per element type, with every value whole and never read as a formula; several ids give one export with the Scan Name first, JSON unless -f says csv, tsv or xlsx. compare sets a later scan against an earlier one, which Spiderfoot cannot: the change in each data type, then every element it found that the earlier did not (+) and every one it no longer finds (-), matched by type and value, and the correlations each has that the other lacks; -f writes the added and removed elements as CSV, TSV or Excel. search finds elements in every saved scan, or the scans named, as Spiderfoot's search box reads a query: /regex/ anywhere, a *wildcard* as the whole value, or text anywhere, all regardless of case, in an element's data, its source element's data or its module; -t keeps one type, and an empty VALUE with -t lists that type everywhere. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
+pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [-m MODULE[,MODULE...]] [--depth N] [--json] | scans list [--json] | scans show ID | scans summary ID | scans analyze ID [--json] | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans export ID|ID,ID... [-f csv|tsv|xlsx|json|gexf] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans compare EARLIER LATER [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans search VALUE [ID...] [-t TYPE] [--hide-fp] [--json] | scans rules [--json] | scans types
+Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. scans analyze runs shared offline analysis over saved entities without mutating them; derived relations are available, while upstream evidence ancestry and provider coverage cannot be reconstructed and are explicitly marked unavailable. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read, and scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. --depth N follows what the scan finds, as Spiderfoot does: each email, username, domain, phone, IP address and BSSID a lookup finds is looked up in turn, N hops past the target (0, the default, runs the target's lookup only), under the shared lookup and entity budgets; each element then names the element it was found from, so the elements form the scan's discovery tree. -t keeps only those element types; -u passive skips the keyed breach lookup of every email. -m (or --modules) asks only the modules named, by Huntsman's name (see modules) or Spiderfoot's, where sfp_whois stands for every module that does its work: a module not chosen sends nothing, a lookup that asks none of them is skipped, a target none of them looks up is refused, and offline modules always run. fp flags elements as false positives, and with them every element found from them; --unset clears them the same way, refused while an element's source is still flagged. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); xlsx (or excel) is Spiderfoot's workbook, a sheet per element type, with every value whole and never read as a formula; several ids give one export with the Scan Name first, JSON unless -f says csv, tsv or xlsx. compare sets a later scan against an earlier one, which Spiderfoot cannot: the change in each data type, then every element it found that the earlier did not (+) and every one it no longer finds (-), matched by type and value, and the correlations each has that the other lacks; -f writes the added and removed elements as CSV, TSV or Excel. search finds elements in every saved scan, or the scans named, as Spiderfoot's search box reads a query: /regex/ anywhere, a *wildcard* as the whole value, or text anywhere, all regardless of case, in an element's data, its source element's data or its module; -t keeps one type, and an empty VALUE with -t lists that type everywhere. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
 
 /// The synopsis line of [`SCANS_HELP`], for a usage error.
 fn usage() -> &'static str {
@@ -426,13 +426,14 @@ pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
 }
 
 /// Every `scans` subcommand.
-const SUBCOMMANDS: [&str; 16] = [
+const SUBCOMMANDS: [&str; 17] = [
     "run",
     "list",
     "compare",
     "search",
     "show",
     "summary",
+    "analyze",
     "elements",
     "correlations",
     "correlate",
@@ -502,6 +503,39 @@ fn rules_listing(parsed: &Parsed) -> ExitCode {
     } else {
         ExitCode::from(EX_DATAERR)
     }
+}
+
+/// A concise CLI view of the shared analysis. Full output is available via --json;
+/// provider coverage and upstream independence are never inferred from merged entities.
+fn print_analysis(result: &Value) {
+    println!(
+        "scan={} status={} target={}",
+        one_line(result["scan"]["id"].as_str().unwrap_or_default()),
+        one_line(result["scan"]["status"].as_str().unwrap_or_default()),
+        one_line(result["scan"]["target"].as_str().unwrap_or_default()),
+    );
+    let counts = &result["counts"];
+    println!(
+        "saved_entities={} analyzed_entities={} derived_relations={} source_outcomes={}",
+        counts["saved_entities"],
+        counts["analyzed_entities"],
+        counts["derived_relations"],
+        counts["source_outcomes"],
+    );
+    let limitations = &result["limitations"];
+    println!(
+        "source=saved_scan_entities scan_complete={} truncated={} evidence_ancestry=not_reconstructed provider_coverage=not_reconstructed",
+        limitations["scan_complete"],
+        limitations["truncated"],
+    );
+    let report = &result["report"];
+    println!(
+        "coreference={} correlations={} pivots={} termination={}",
+        report["coreference"].as_array().map_or(0, Vec::len),
+        report["correlations"].as_array().map_or(0, Vec::len),
+        report["pivots"].as_array().map_or(0, Vec::len),
+        one_line(report["termination"].as_str().unwrap_or("see --json")),
+    );
 }
 
 fn print_correlations(rows: &Value) {
@@ -601,6 +635,10 @@ fn one_scan(api: &ScanApi, parsed: &Parsed, command: &str, id: &str) -> ExitCode
     let get = |path: String, query: &str| api.handle("GET", &path, query);
     match command {
         "show" => emit(&get(format!("/api/scans/{id}"), "")),
+        "analyze" => {
+            let response = get(format!("/api/scans/{id}/analyze"), "");
+            table_or_json(&response, parsed, print_analysis)
+        }
         "summary" | "log" => emit(&get(
             format!("/api/scans/{id}/{command}"),
             &query(&[("level", parsed.value("level"))]),
