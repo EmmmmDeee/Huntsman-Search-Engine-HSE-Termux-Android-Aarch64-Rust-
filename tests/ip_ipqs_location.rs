@@ -8,6 +8,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// The documented IP reputation response fields, filled for a Dutch address.
 const IPQS: &str = r#"{"success":true,"message":"Success","fraud_score":12,"country_code":"NL","region":"North Holland","city":"Amsterdam","ISP":"Example Hosting","ASN":64500,"organization":"Example Hosting B.V.","is_crawler":false,"timezone":"Europe/Amsterdam","mobile":false,"host":"exit-12.example.net","proxy":false,"vpn":false,"tor":false,"active_vpn":false,"active_tor":false,"recent_abuse":false,"bot_status":false,"connection_type":"Data Center","abuse_velocity":"none","zip_code":"1012","latitude":52.37,"longitude":4.89,"request_id":"r0"}"#;
@@ -38,7 +39,7 @@ impl Transport for OnlyIpqs {
 fn entities() -> Vec<Entity> {
     let keys =
         Keys::parse("HUNTSMAN_IPQS_KEY=ipqs-test-key-0815").unwrap_or_else(|e| panic!("{e}"));
-    match run(&OnlyIpqs, &keys, "1.2.3.4", 1_760_000_000) {
+    match run(&OnlyIpqs, &keys, &Feeds::none(), "1.2.3.4", 1_760_000_000) {
         IpRun::Printed { report, .. } => report.entities,
         IpRun::Network(why) | IpRun::Failed(why) => panic!("ip 1.2.3.4 did not print: {why}"),
     }
