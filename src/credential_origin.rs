@@ -11,7 +11,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::sha256::{hex32, sha256};
+use crate::sha256::{Sha256, hex32};
 
 const FINGERPRINT_TAG: &[u8] = b"huntsman-credential-fingerprint-v1\0";
 
@@ -25,10 +25,13 @@ impl CredentialFingerprint {
     /// Fingerprint a secret. The secret is not retained.
     #[must_use]
     pub fn of_secret(secret: &str) -> Self {
-        let mut buf = Vec::with_capacity(FINGERPRINT_TAG.len() + secret.len());
-        buf.extend_from_slice(FINGERPRINT_TAG);
-        buf.extend_from_slice(secret.as_bytes());
-        Self(hex32(&sha256(&buf)))
+        // A secret must not be duplicated in a transient heap allocation
+        // merely to prepend its domain tag. The hash consumes both parts
+        // directly; the digest remains byte-for-byte backward compatible.
+        let mut hasher = Sha256::new();
+        hasher.update(FINGERPRINT_TAG);
+        hasher.update(secret.as_bytes());
+        Self(hex32(&hasher.finalize()))
     }
 
     #[must_use]
@@ -120,6 +123,7 @@ impl AuthenticationAuthority {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sha256::sha256;
 
     fn reference(provenance: &str) -> OperatorCredentialRef {
         OperatorCredentialRef {
@@ -143,6 +147,28 @@ mod tests {
         assert!(CredentialFingerprint::try_from("hunter2".to_owned()).is_err());
         let json = r#"{"provider_hint":null,"fingerprint":"hunter2","source_module":"m","source_context":"c","observed_at_unix":1}"#;
         assert!(serde_json::from_str::<DiscoveredCredential>(json).is_err());
+    }
+
+    #[test]
+    fn fingerprint_matches_legacy_concatenation_for_boundary_and_unicode_inputs() {
+        for length in [0, 1, 7, 31, 32, 55, 56, 63, 64, 65, 127, 128, 257, 4_096] {
+            let secret = "X".repeat(length);
+            let mut tagged = Vec::from(FINGERPRINT_TAG);
+            tagged.extend_from_slice(secret.as_bytes());
+            assert_eq!(
+                CredentialFingerprint::of_secret(&secret).as_str(),
+                hex32(&sha256(&tagged)),
+                "secret length {length}"
+            );
+        }
+        for secret in ["", "€ café \n 🔑", "line\r\nbreak", "\0binary\0input"] {
+            let mut tagged = Vec::from(FINGERPRINT_TAG);
+            tagged.extend_from_slice(secret.as_bytes());
+            assert_eq!(
+                CredentialFingerprint::of_secret(secret).as_str(),
+                hex32(&sha256(&tagged))
+            );
+        }
     }
 
     #[test]

@@ -169,7 +169,7 @@ fn help_and_version_are_available() {
         ("phone", "phone NUMBER [--save FILE]"),
         (
             "scan",
-            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network]",
+            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network]",
         ),
         ("investigate", "investigate TEXT..."),
         ("modules", "modules [--json]"),
@@ -444,6 +444,10 @@ fn modules_lists_only_reachable_catalog_entries() {
         "robtex",
         "hackertarget",
         "stopforumspam",
+        "isc",
+        "maltiverse",
+        "phishstats",
+        "cleantalk",
         "xposed_or_not",
     ] {
         assert!(stdout.contains(name), "missing reachable module {name}");
@@ -536,31 +540,316 @@ fn sf_metadata_and_offline_phone_path_work() {
     let stdout = String::from_utf8_lossy(&types.stdout);
     assert!(stdout.contains("EMAILADDR"), "{stdout:?}");
     assert!(stdout.contains("PHONE_NUMBER"), "{stdout:?}");
+}
 
-    let scan = bin()
-        .args(["sf", "-s", "+61412345678", "-u", "passive", "-o", "json"])
-        .output()
-        .unwrap();
-    assert_eq!(scan.status.code(), Some(0));
+/// `sf -s` saves its scan with the others, as `sf.py` does, so `scans` reads it and `sf -C`
+/// correlates it again.
+#[test]
+fn sf_scan_is_a_saved_scan_that_scans_reads_and_sf_correlates() {
+    let home = scratch("sf-saved");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let scan = run(&["sf", "-s", "+61412345678", "-u", "passive", "-o", "json"]);
+    let stderr = String::from_utf8_lossy(&scan.stderr);
+    assert_eq!(scan.status.code(), Some(0), "{stderr}");
     let value: serde_json::Value = serde_json::from_slice(&scan.stdout).unwrap();
     assert_eq!(value[0]["event_type"], "PHONE_NUMBER");
     assert_eq!(value[0]["data"], "+61412345678");
+
+    let list = run(&["scans", "list", "--json"]);
+    assert_eq!(list.status.code(), Some(0));
+    let list: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    let [saved] = list.as_array().unwrap().as_slice() else {
+        panic!("one saved scan: {list}");
+    };
+    assert_eq!(saved["target"], "+61412345678");
+    assert_eq!(saved["target_type"], "PHONE_NUMBER");
+    assert_eq!(saved["status"], "FINISHED");
+    let id = saved["id"].as_str().unwrap();
+    assert!(stderr.contains(id), "{stderr}");
+    assert_eq!(
+        saved["elements"].as_u64(),
+        Some(value.as_array().unwrap().len() as u64)
+    );
+
+    let correlate = run(&["sf", "-C", id]);
+    assert_eq!(
+        correlate.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&correlate.stderr)
+    );
+    assert!(String::from_utf8_lossy(&correlate.stdout).starts_with("ID\tRISK\tRULE"));
+    assert_eq!(run(&["sf", "-C", "no-such-scan"]).status.code(), Some(66));
+    let quiet = run(&["sf", "-q", "-s", "+61412345678"]);
+    assert_eq!(quiet.status.code(), Some(0));
+    assert!(quiet.stderr.is_empty(), "{:?}", quiet.stderr);
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// `scans compare` sets a later scan against an earlier one: the change per type, then what was
+/// added and removed, or the same as a file.
+#[test]
+fn scans_compare_lists_what_a_later_scan_added_and_removed() {
+    let home = scratch("scans-compare");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let id = |args: &[&str]| {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+    let earlier = id(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+    let later = id(&["scans", "run", "+61412345679", "-u", "passive", "--json"]);
+
+    let table = run(&["scans", "compare", &earlier, &later]);
+    let stdout = String::from_utf8_lossy(&table.stdout);
+    assert_eq!(
+        table.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&table.stderr)
+    );
+    assert!(
+        stdout.starts_with(&format!("earlier={earlier} ")),
+        "{stdout}"
+    );
+    assert!(stdout.contains(&format!("\nlater={later} ")), "{stdout}");
+    assert!(
+        stdout.contains("\nTYPE\tEARLIER\tLATER\tADDED\tREMOVED\tKEPT\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("\nPHONE_NUMBER\t1\t1\t1\t1\t0\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("+\tPHONE_NUMBER\t") && line.ends_with("\t+61412345679")),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("-\tPHONE_NUMBER\t") && line.ends_with("\t+61412345678")),
+        "{stdout}"
+    );
+
+    let json = run(&["scans", "compare", &earlier, &later, "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(json["unchanged"], false);
+    let same = run(&["scans", "compare", &earlier, &earlier, "--json"]);
+    let same: serde_json::Value = serde_json::from_slice(&same.stdout).unwrap();
+    assert_eq!(same["unchanged"], true);
+
+    let csv = run(&["scans", "compare", &earlier, &later, "-f", "csv"]);
+    assert_eq!(csv.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&csv.stdout)
+            .starts_with("Change,Scan Name,Updated,Type,Module,Source,F/P,Data\r\n")
+    );
+    assert_eq!(run(&["scans", "compare", &earlier]).status.code(), Some(64));
+    assert_eq!(
+        run(&["scans", "compare", &earlier, "0000000000000000"])
+            .status
+            .code(),
+        Some(66)
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// `scans search` finds elements in every saved scan, or only the ones named, each with its scan.
+#[test]
+fn scans_search_finds_values_in_every_scan_or_the_ones_named() {
+    let home = scratch("scans-search");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let id = |args: &[&str]| {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+    let first = id(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+    let second = id(&["scans", "run", "+61412345679", "-u", "passive", "--json"]);
+    let lines = |args: &[&str]| -> Vec<String> {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    };
+    let phone = |line: &String, scan: &str, number: &str| {
+        line.starts_with(&format!("{scan}\t"))
+            && line.contains("\tPHONE_NUMBER\t")
+            && line.ends_with(&format!("\t{number}"))
+    };
+    // Text anywhere: both numbers, each under its own scan.
+    let both = lines(&["scans", "search", "61412345", "-t", "PHONE_NUMBER"]);
+    assert_eq!(
+        both[0],
+        "SCAN\tID\tUPDATED\tTYPE\tMODULE\tSOURCE\tF/P\tDATA"
+    );
+    assert!(
+        both.iter().any(|line| phone(line, &first, "+61412345678")),
+        "{both:?}"
+    );
+    assert!(
+        both.iter().any(|line| phone(line, &second, "+61412345679")),
+        "{both:?}"
+    );
+    // A wildcard is the whole value; a regex is anywhere; named scans only.
+    let one = lines(&["scans", "search", "*79", "-t", "PHONE_NUMBER"]);
+    assert_eq!(one.len(), 2, "{one:?}");
+    assert!(phone(&one[1], &second, "+61412345679"), "{one:?}");
+    let named = lines(&["scans", "search", "/5678$/", &first, "-t", "PHONE_NUMBER"]);
+    assert_eq!(named.len(), 2, "{named:?}");
+    assert!(phone(&named[1], &first, "+61412345678"), "{named:?}");
+    assert_eq!(
+        lines(&["scans", "search", "61412345", &second, "-t", "PHONE_NUMBER"]).len(),
+        2
+    );
+    let json = run(&[
+        "scans",
+        "search",
+        "61412345",
+        "-t",
+        "PHONE_NUMBER",
+        "--json",
+    ]);
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert!(
+        json.as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["scan_name"].is_string() && row["scan_target"].is_string())
+    );
+    assert_eq!(run(&["scans", "search"]).status.code(), Some(64));
+    assert_eq!(run(&["scans", "search", "/(a/"]).status.code(), Some(64));
+    assert_eq!(
+        run(&["scans", "search", "x", "0000000000000000"])
+            .status
+            .code(),
+        Some(66)
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// `sf.py`'s output flags shape the rows, `-d` prints the scan's log, `-l` is `serve --bind`,
+/// and the combinations `sf.py` refuses are refused before any request.
+#[test]
+fn sf_takes_sf_py_output_flags_debug_and_listen() {
+    let home = scratch("sf-flags");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let csv = run(&[
+        "sf",
+        "-q",
+        "-s",
+        "+61412345678",
+        "-o",
+        "csv",
+        "-D",
+        ";",
+        "-H",
+        "-r",
+    ]);
+    assert_eq!(
+        csv.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&csv.stderr)
+    );
+    let csv = String::from_utf8_lossy(&csv.stdout);
+    let first = csv.lines().next().unwrap();
+    assert!(!first.starts_with("Source"), "{csv}");
+    assert_eq!(first.matches(';').count(), 3, "{csv}");
+    // A CSV cell a spreadsheet would read as a formula keeps its leading quote guard.
+    assert!(first.ends_with(";'+61412345678"), "{csv}");
+
+    let debug = run(&["sf", "-s", "+61412345678", "-d", "-F", "PHONE_NUMBER"]);
+    let stderr = String::from_utf8_lossy(&debug.stderr);
+    assert_eq!(debug.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("[INFO] huntsman: scan created"), "{stderr}");
+    assert_eq!(String::from_utf8_lossy(&debug.stdout).lines().count(), 2);
+
+    // -m picks the modules the saved scan asks, and a target none of them looks up is bad data.
+    let chosen = run(&[
+        "sf",
+        "-s",
+        "+61412345678",
+        "-m",
+        "sfp_numverify",
+        "-F",
+        "PHONE_NUMBER",
+    ]);
+    let stderr = String::from_utf8_lossy(&chosen.stderr);
+    assert_eq!(chosen.status.code(), Some(0), "{stderr}");
+    assert_eq!(String::from_utf8_lossy(&chosen.stdout).lines().count(), 2);
+    let unasked = run(&["sf", "-s", "+61412345678", "-m", "sfp_gravatar"]);
+    let stderr = String::from_utf8_lossy(&unasked.stderr);
+    assert_eq!(unasked.status.code(), Some(65), "{stderr}");
+    assert!(
+        stderr.contains("none of the chosen modules (sfp_gravatar) looks up the target"),
+        "{stderr}"
+    );
+
+    let listen = run(&["sf", "-l", "not-a-socket"]);
+    assert_eq!(listen.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&listen.stderr).contains("invalid serve bind"));
+    for refused in [
+        &["sf", "-s", "example.org", "-f"][..],
+        &["sf", "-s", "example.org", "-D", ";"],
+        &["sf", "-s", "example.org", "-m", "sfp_not_a_module"],
+    ] {
+        let out = run(refused);
+        assert_eq!(out.status.code(), Some(64), "{refused:?}");
+        assert!(out.stdout.is_empty(), "{refused:?}");
+    }
+    let _ = fs::remove_dir_all(&home);
 }
 
 #[test]
-fn sf_rejects_unrebuilt_target_classes_explicitly() {
-    let out = bin()
-        .args(["sf", "-s", "example.org", "-u", "all"])
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(65));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not available yet"));
+fn sf_refuses_a_target_no_lookup_can_take() {
+    let home = scratch("sf-refuses");
+    for (target, why) in [
+        ("192.0.2.0/24", "not valid for a netblock scan"),
+        ("192.0.2.1", "not valid for a ip scan"),
+        ("Jane 123", "two alphabetic tokens"),
+    ] {
+        let out = bin()
+            .args(["sf", "-s", target])
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(65), "{target}: {stderr}");
+        assert!(stderr.contains(why), "{target}: {stderr}");
+        assert!(out.stdout.is_empty(), "{target}");
+    }
+    let _ = fs::remove_dir_all(&home);
 }
 
 /// `sf -s` exits as the plain lookup it runs would for the same outcome. A trust store without a
-/// certificate fails every request before a socket opens, so both ASIC registers are unusable:
-/// `people` exits 69, and `sf -s` of the same name must too. It exited 65, the status of bad
-/// data, from a status table of its own that also sent an egress refusal to 69 instead of 77.
+/// certificate fails every request before a socket opens, so every source is unusable: `people`,
+/// `domain` and `ip` refuse, and `sf -s` of the same target must exit with the same status and
+/// message. It exited 65, the status of bad data, from a status table of its own that also sent an
+/// egress refusal to 69 instead of 77; it now runs the plain lookups' own `collect` and keeps the
+/// refusal it gave.
 #[test]
 fn sf_scan_exits_as_the_plain_lookup_does() {
     let dir = scratch("sf-status");
@@ -569,22 +858,36 @@ fn sf_scan_exits_as_the_plain_lookup_does() {
     let run = |args: &[&str]| {
         bin()
             .args(args)
+            .env("HOME", &dir)
             .env("HUNTSMAN_CA_BUNDLE", &bundle)
             .output()
             .unwrap()
     };
-    let people = run(&["people", "Jane Citizen"]);
-    assert_eq!(
-        people.status.code(),
-        Some(69),
-        "{}",
-        String::from_utf8_lossy(&people.stderr)
-    );
-    let sf = run(&["sf", "-s", "Jane Citizen"]);
-    let stderr = String::from_utf8_lossy(&sf.stderr);
-    assert_eq!(sf.status.code(), people.status.code(), "sf: {stderr}");
-    assert!(sf.stdout.is_empty(), "{:?}", sf.stdout);
-    assert!(stderr.contains("HUNTSMAN_CA_BUNDLE"), "{stderr}");
+    for (plain, target) in [
+        ("people", "Jane Citizen"),
+        ("domain", "example.org"),
+        ("ip", "1.1.1.1"),
+    ] {
+        let lookup = run(&[plain, target]);
+        assert!(
+            matches!(lookup.status.code(), Some(69 | 77)),
+            "{plain}: {:?} {}",
+            lookup.status.code(),
+            String::from_utf8_lossy(&lookup.stderr)
+        );
+        let sf = run(&["sf", "-s", target]);
+        let stderr = String::from_utf8_lossy(&sf.stderr);
+        assert_eq!(
+            sf.status.code(),
+            lookup.status.code(),
+            "sf {target}: {stderr}"
+        );
+        assert!(sf.stdout.is_empty(), "{:?}", sf.stdout);
+        assert_eq!(stderr, String::from_utf8_lossy(&lookup.stderr), "{target}");
+    }
+    let people = run(&["sf", "-s", "Jane Citizen"]);
+    assert_eq!(people.status.code(), Some(69));
+    assert!(String::from_utf8_lossy(&people.stderr).contains("HUNTSMAN_CA_BUNDLE"));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -777,10 +1080,10 @@ fn identifier_geohash_and_coarsen_commands() {
 }
 
 #[test]
-fn stolen_tax_ignores_a_key_in_the_default_file() {
-    // The default file serves the other keyed lookups. stolen-tax reads only --keys FILE or the
-    // environment, so a valid key placed in the default file is still a missing key here, and
-    // the refusal happens before any request.
+fn stolen_tax_uses_a_key_in_the_default_file() {
+    // Every lookup reads the keys `credential-status` reports, so a key placed only in the
+    // default file is used, not refused as missing (66). A CA bundle that cannot be parsed fails
+    // the TLS handshake, so the key is never sent and the run ends as unavailable (69).
     let home = scratch("stolen-default-file");
     let default_file = home.join(".huntsman.env");
     fs::write(
@@ -793,18 +1096,19 @@ fn stolen_tax_ignores_a_key_in_the_default_file() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&default_file, fs::Permissions::from_mode(0o600)).unwrap();
     }
+    let bundle = home.join("not-a-ca.pem");
+    fs::write(&bundle, "not a certificate\n").unwrap();
     let out = bin()
         .args(["recon", "stolen-tax", "a@example.com"])
         .env_remove("HUNTSMAN_STOLEN_TAX_KEY")
         .env("HOME", &home)
+        .env("HUNTSMAN_CA_BUNDLE", &bundle)
         .output()
         .unwrap();
-    assert_eq!(
-        out.status.code(),
-        Some(66),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(69), "{stderr}");
+    assert!(!stderr.contains("no API key"), "{stderr}");
+    assert!(!stderr.contains("fixture-not-a-key"), "{stderr}");
     assert_eq!(out.stdout.len(), 0);
     let _ = fs::remove_dir_all(&home);
 }

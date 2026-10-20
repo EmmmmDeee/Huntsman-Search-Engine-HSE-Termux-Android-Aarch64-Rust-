@@ -4,6 +4,11 @@ use super::*;
 use crate::http::{Request, Response, TransportFailure};
 use crate::source_outcome::SourceOutcomeKind;
 
+/// Every IP leg for `ip`, with no threat feed consulted: the feeds' own tests cover them.
+fn run<T: Transport + ?Sized>(transport: &T, keys: &Keys, ip: &str, now_unix: u64) -> IpRun {
+    super::run(transport, keys, &Feeds::none(), ip, now_unix)
+}
+
 const ABUSE_KEY: &str = "abuse-test-key-0123456789abcdef";
 const VT_KEY: &str = "vt-test-key-0123456789abcdef0123";
 
@@ -18,6 +23,8 @@ const SHODAN: &str = r#"{"ip_str":"1.1.1.1","ports":[53,443],"hostnames":["one.o
 const URLSCAN_NONE: &str = r#"{"results":[],"total":0,"took":49,"has_more":false}"#;
 const IPINFO: &str = r#"{"ip":"1.1.1.1","hostname":"one.one.one.one","city":"Brisbane","region":"Queensland","country":"AU","loc":"-27.4820,153.0136","org":"AS13335 Cloudflare, Inc.","postal":"9010","anycast":true}"#;
 const SHODAN_KEY: &str = "shodan-test-key-0123456789abcdef";
+/// The address's reverse zone, as the DNS JSON API answers its PTR query.
+const PTR: &str = r#"{"Status":0,"Answer":[{"name":"1.1.1.1.in-addr.arpa.","type":12,"data":"one.one.one.one."}]}"#;
 
 /// Answers by URL prefix and records every request.
 struct Routes {
@@ -83,6 +90,17 @@ impl Transport for Routes {
 
 fn keyless() -> Routes {
     Routes::new(vec![
+        ("https://cloudflare-dns.com/", 200, PTR),
+        (
+            "https://data.iana.org/rdap/ipv4.json",
+            200,
+            r#"{"services":[[["1.0.0.0/8"],["https://rdap.apnic.net/"]]]}"#,
+        ),
+        (
+            "https://rdap.apnic.net/ip/1.1.1.1",
+            200,
+            crate::rdap::tests::APNIC,
+        ),
         ("https://internetdb.shodan.io/", 200, INTERNETDB),
         ("https://stat.ripe.net/", 200, RIPESTAT),
         ("https://api.greynoise.io/", 404, GREYNOISE_UNSEEN),
@@ -104,7 +122,19 @@ fn keyless() -> Routes {
             200,
             r#"{"success":1,"ip":{"value":"1.1.1.1","appears":0,"frequency":0}}"#,
         ),
+        (
+            "https://isc.sans.edu/",
+            200,
+            r#"{"ip":{"number":"1.1.1.1","count":null,"attacks":null}}"#,
+        ),
+        ("https://api.maltiverse.com/", 404, "{}"),
+        ("https://api.phishstats.info/", 200, "[]"),
         ("https://api.shodan.io/", 200, SHODAN),
+        (
+            "https://api.mnemonic.no/",
+            200,
+            r#"{"responseCode":200,"count":0,"data":[]}"#,
+        ),
     ])
 }
 
@@ -151,6 +181,10 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     assert_eq!(
         transport.hosts(),
         [
+            "cloudflare-dns.com",
+            "data.iana.org",
+            "rdap.apnic.net",
+            "api.mnemonic.no",
             "internetdb.shodan.io",
             "stat.ripe.net",
             "api.greynoise.io",
@@ -161,7 +195,10 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "ipinfo.io",
             "freeapi.robtex.com",
             "api.hackertarget.com",
-            "api.stopforumspam.org"
+            "api.stopforumspam.org",
+            "isc.sans.edu",
+            "api.maltiverse.com",
+            "api.phishstats.info"
         ]
     );
     assert_eq!(outcome(&report, "internetdb"), SourceOutcomeKind::Success);
@@ -172,10 +209,35 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     assert_eq!(outcome(&report, "otx"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "urlscan"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "ipinfo"), SourceOutcomeKind::Success);
-    for source in ["robtex", "hackertarget", "stopforumspam"] {
+    for source in [
+        "robtex",
+        "hackertarget",
+        "stopforumspam",
+        "isc",
+        "maltiverse",
+        "phishstats",
+    ] {
         assert_eq!(outcome(&report, source), SourceOutcomeKind::ValidZero);
     }
-    assert_eq!(report.outcomes.len(), 11, "an unkeyed leg reports nothing");
+    assert_eq!(outcome(&report, RESOLVE_SOURCE), SourceOutcomeKind::Success);
+    assert_eq!(outcome(&report, "rdap"), SourceOutcomeKind::Success);
+    assert_eq!(outcome(&report, "mnemonic"), SourceOutcomeKind::ValidZero);
+    // The DNS blocklists are keyless and always asked; this transport has no system resolver.
+    for source in [
+        "spamhaus",
+        "spamcop",
+        "uceprotect",
+        "dronebl",
+        "sorbs",
+        "surbl",
+    ] {
+        assert_eq!(
+            outcome(&report, source),
+            SourceOutcomeKind::DnsFailure,
+            "{source}"
+        );
+    }
+    assert_eq!(report.outcomes.len(), 23, "an unkeyed leg reports nothing");
 
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
     assert!(ip.has_tag(tags::VULNERABLE));
@@ -316,4 +378,77 @@ fn a_configured_shodan_key_runs_shodan_with_the_key_only_in_its_query() {
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
     assert!(ip.evidence_sources().contains("shodan"));
     entity(&report, &EntityKind::Domain, "one.one");
+}
+
+/// The address's PTR records are asked first, over the `DoH` resolvers and the lookup's transport,
+/// as Spiderfoot's `sfp_dnsresolve` reverse-resolves an address: every record is listed on the
+/// address as published, and each name in canonical form is a domain pivot tagged `ptr`, the
+/// address's own name in the saved scan. An address with no PTR record is a validated zero.
+/// Before, no lookup asked the reverse zone itself.
+#[test]
+fn the_reverse_zone_names_the_address() {
+    let mut transport = keyless();
+    transport.routes[0] = (
+        "https://cloudflare-dns.com/",
+        200,
+        r#"{"Status":0,"Answer":[{"type":12,"data":"one.one.one.one."},{"type":12,"data":"localhost."}]}"#,
+    );
+    let (_, report) = printed(run(&transport, &Keys::default(), "1.1.1.1", 1));
+    let ptr = report
+        .outcomes
+        .iter()
+        .find(|o| o.module == RESOLVE_SOURCE)
+        .expect("a dnsresolve row");
+    assert_eq!(ptr.kind, SourceOutcomeKind::Success);
+    assert_eq!(ptr.found, Some(2));
+    let request = &transport.sent()[0];
+    assert!(
+        request.url.contains("name=1.1.1.1.in-addr.arpa") && request.url.contains("type=PTR"),
+        "{}",
+        request.url
+    );
+
+    let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
+    let listed: Vec<&str> = ip
+        .evidence
+        .iter()
+        .filter(|e| e.provenance.source == RESOLVE_SOURCE)
+        .flat_map(|e| e.attr_values("ptr"))
+        .collect();
+    assert_eq!(listed, ["one.one.one.one", "localhost"]);
+    let name = entity(&report, &EntityKind::Domain, "one.one.one.one");
+    assert!(name.has_tag(tags::PTR));
+    let named = name
+        .evidence
+        .iter()
+        .find(|e| e.provenance.source == RESOLVE_SOURCE)
+        .expect("the PTR evidence");
+    assert_eq!(named.attr_values("ip").collect::<Vec<_>>(), ["1.1.1.1"]);
+    assert_eq!(
+        named.attr_values("record_type").collect::<Vec<_>>(),
+        ["PTR"]
+    );
+    assert!(
+        !report.entities.iter().any(|e| e.value == "localhost"),
+        "a name that is not a domain is listed, not a pivot"
+    );
+
+    let target = crate::sf_elements::Target {
+        value: "1.1.1.1",
+        kind: "IP_ADDRESS",
+    };
+    let elements = crate::sf_elements::elements(target, &report.entities, 1);
+    let kinds: Vec<&str> = elements
+        .iter()
+        .filter(|element| element.data == "one.one.one.one" && element.module == RESOLVE_SOURCE)
+        .map(|element| element.kind.as_str())
+        .collect();
+    assert_eq!(kinds, ["INTERNET_NAME"]);
+
+    transport.routes[0] = ("https://cloudflare-dns.com/", 200, r#"{"Status":3}"#);
+    let (_, report) = printed(run(&transport, &Keys::default(), "1.1.1.1", 1));
+    assert_eq!(
+        outcome(&report, RESOLVE_SOURCE),
+        SourceOutcomeKind::ValidZero
+    );
 }

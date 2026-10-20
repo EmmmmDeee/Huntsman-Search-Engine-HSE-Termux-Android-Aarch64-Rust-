@@ -112,7 +112,10 @@ pub fn url(indicator: Indicator<'_>) -> Option<String> {
     match indicator {
         Indicator::Ip(ip) => Some(format!("https://api.shodan.io/shodan/host/{ip}")),
         Indicator::Domain(domain) => Some(format!("https://api.shodan.io/dns/domain/{domain}")),
-        Indicator::Email(_) | Indicator::Phone(_) => None,
+        Indicator::Email(_)
+        | Indicator::Phone(_)
+        | Indicator::Cell(_)
+        | Indicator::MacAddress(_) => None,
     }
 }
 
@@ -165,7 +168,10 @@ pub fn decode(answer: Answer, indicator: Indicator<'_>) -> Result<Option<Finding
     match indicator {
         Indicator::Ip(ip) => host(api_leg::decode(&body)?, ip).map(Some),
         Indicator::Domain(domain) => dns(&api_leg::decode(&body)?, domain),
-        Indicator::Email(_) | Indicator::Phone(_) => Ok(None),
+        Indicator::Email(_)
+        | Indicator::Phone(_)
+        | Indicator::Cell(_)
+        | Indicator::MacAddress(_) => Ok(None),
     }
 }
 
@@ -466,7 +472,7 @@ fn host(mut raw: Value, ip: &str) -> Result<Finding, LegError> {
     .opt_attr("last_update", host.last_update.as_deref())
     .tag_if(!host.vulns.is_empty() || read.has_vulns(), tags::VULNERABLE)
     .tag_if(host.tags.iter().any(|t| t == "vpn"), "vpn")
-    .tag_if(host.tags.iter().any(|t| t == "tor"), "tor-exit");
+    .tag_if(host.tags.iter().any(|t| t == "tor"), tags::TOR_EXIT);
     finding = place(finding, &host, &raw);
     for name in host.hostnames.iter().chain(&host.domains) {
         finding = finding.pivot(

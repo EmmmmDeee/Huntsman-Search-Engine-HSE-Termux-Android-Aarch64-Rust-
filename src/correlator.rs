@@ -16,7 +16,7 @@ pub use rules::{
     rule_au_021_api_key_exposure, rule_au_060_transitive_identity_closure,
     rule_au_062_multipath_corroboration, rule_au_063_corroboration_gap,
     rule_au_070_connection_broker, rule_au_071_robust_identity_cluster,
-    rule_au_109_shared_registrant, rule_au_110_shared_hosting_ip, source_family,
+    rule_au_109_shared_registrant, rule_au_110_shared_hosting_ip, rule_geo_bssid_ip, source_family,
     tagged_matching_sources, text_mentions_ip,
 };
 

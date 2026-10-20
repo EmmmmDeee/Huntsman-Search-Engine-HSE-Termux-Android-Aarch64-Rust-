@@ -2,7 +2,7 @@
 
 use std::env;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use super::fail;
@@ -70,12 +70,18 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
     };
     let canonical = canonical_selector(kind, &query.selector)
         .ok_or_else(|| bad_selector("selector is not valid for this kind"))?;
-    match collect(kind, &canonical) {
+    match collect(
+        kind,
+        &canonical,
+        &huntsman_recon::module_selection::Selection::all(),
+    ) {
         Ok(found) => Ok(LookupReport {
             route: kind.command(),
             text: found.text,
             entities: found.entities,
             outcomes: found.outcomes,
+            scan: None,
+            status: None,
         }),
         Err(refused) => Err(LookupError {
             status: match refused {
@@ -221,9 +227,14 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
                 .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
                     web_analyze(seeds, analyze_history.as_deref())
                 }));
-            match scans {
+            let server = match scans {
                 Some(scans) => server.with_scans(scans),
                 None => server,
+            };
+            // The Settings page saves keys into the file lookups read, so only an absolute HOME.
+            match env::var_os("HOME").map(PathBuf::from) {
+                Some(home) if home.is_absolute() => server.with_keys_home(home),
+                _ => server,
             }
         }
         Err(Error::Store(message)) => return fail(EX_UNAVAILABLE, &message),

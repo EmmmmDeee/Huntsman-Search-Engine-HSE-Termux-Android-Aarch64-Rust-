@@ -1,0 +1,1 @@
+- New Scan's By Module tab no longer says choosing modules is "not applied yet". Clone of a scan that chose modules no longer quietly drops them and runs every module.
