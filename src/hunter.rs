@@ -9,8 +9,10 @@
 //! answer is marked partial.
 //!
 //! The same key also verifies one address ([`VERIFY`], an indicator source for `email`): one
-//! `GET https://api.hunter.io/v2/email-verifier?email={address}`, keeping Hunter's verdict, score,
-//! the disposable, webmail, accept-all and blocked flags, and how many public pages carry it.
+//! `GET https://api.hunter.io/v2/email-verifier?email={address}`, keeping everything it answers:
+//! Hunter's verdict and result, score, each check (format, gibberish, MX records, SMTP server, SMTP
+//! check) and flag (disposable, webmail, accept-all, blocked), every public page that carries the
+//! address with when it was seen there, and the whole answer as `raw_answer`.
 
 use serde::Deserialize;
 
@@ -199,7 +201,19 @@ struct Verification {
     #[serde(default)]
     status: Option<String>,
     #[serde(default)]
+    result: Option<String>,
+    #[serde(default)]
     score: Option<u8>,
+    #[serde(default)]
+    regexp: Option<bool>,
+    #[serde(default)]
+    gibberish: Option<bool>,
+    #[serde(default)]
+    mx_records: Option<bool>,
+    #[serde(default)]
+    smtp_server: Option<bool>,
+    #[serde(default)]
+    smtp_check: Option<bool>,
     #[serde(default)]
     disposable: Option<bool>,
     #[serde(default)]
@@ -210,6 +224,42 @@ struct Verification {
     block: Option<bool>,
     #[serde(default)]
     sources: Vec<serde_json::Value>,
+}
+
+/// One public page Hunter found the address on.
+#[derive(Deserialize)]
+struct SourcePage {
+    #[serde(default)]
+    uri: Option<String>,
+    #[serde(default)]
+    domain: Option<String>,
+    #[serde(default)]
+    extracted_on: Option<String>,
+    #[serde(default)]
+    last_seen_on: Option<String>,
+    #[serde(default)]
+    still_on_page: Option<bool>,
+}
+
+impl SourcePage {
+    /// `uri | first seen D | last seen D | still on the page`, a part the answer leaves out left
+    /// out. **Pure.**
+    fn row(&self) -> Option<String> {
+        let page = api_leg::clean(self.uri.as_deref().or(self.domain.as_deref()))?;
+        let mut parts = vec![page];
+        if let Some(day) = api_leg::clean(self.extracted_on.as_deref()) {
+            parts.push(format!("first seen {day}"));
+        }
+        if let Some(day) = api_leg::clean(self.last_seen_on.as_deref()) {
+            parts.push(format!("last seen {day}"));
+        }
+        match self.still_on_page {
+            Some(true) => parts.push("still on the page".into()),
+            Some(false) => parts.push("no longer on the page".into()),
+            None => {}
+        }
+        Some(parts.join(" | "))
+    }
 }
 
 /// The verifier URL for `email`. **Pure.**
@@ -245,6 +295,7 @@ pub fn verify(
 /// # Errors
 /// [`LegError::Decode`] for an error envelope, another shape, or another address.
 pub fn decode_verification(body: &[u8], email: &str) -> Result<Finding, LegError> {
+    let whole: serde_json::Value = api_leg::decode(body)?;
     let data = api_leg::decode::<VerifyEnvelope>(body)?.data;
     if data
         .email
@@ -258,6 +309,31 @@ pub fn decode_verification(body: &[u8], email: &str) -> Result<Finding, LegError
         .attr("verification", &status)
         .opt_attr("score", data.score.map(|s| s.min(100).to_string()))
         .attr("public_sources", data.sources.len().to_string())
+        .opt_attr("result", data.result.as_deref());
+    for (check, value) in [
+        ("format_valid", data.regexp),
+        ("gibberish", data.gibberish),
+        ("mx_records", data.mx_records),
+        ("smtp_server", data.smtp_server),
+        ("smtp_check", data.smtp_check),
+        ("disposable", data.disposable),
+        ("webmail", data.webmail),
+        ("accept_all", data.accept_all),
+        ("blocked", data.block),
+    ] {
+        finding = finding.opt_attr(check, value.map(|v| v.to_string()));
+    }
+    // A page is read on its own, so one Hunter writes in another shape costs only itself.
+    let pages = data.sources.iter().filter_map(|page| {
+        serde_json::from_value::<SourcePage>(page.clone())
+            .ok()?
+            .row()
+    });
+    for page in pages {
+        finding = finding.attr("source_pages", page);
+    }
+    finding = finding
+        .attr("raw_answer", whole.to_string())
         .tag_if(data.disposable == Some(true), "disposable")
         .tag_if(data.webmail == Some(true), "webmail")
         .tag_if(data.accept_all == Some(true), "accept_all")
@@ -323,6 +399,33 @@ mod tests {
         assert_eq!(f.summary, "Hunter verifier: valid");
         assert!(f.attrs.contains(&("score", "100".into())));
         assert!(f.attrs.contains(&("public_sources", "1".into())));
+        for (check, value) in [
+            ("result", "deliverable"),
+            ("format_valid", "true"),
+            ("gibberish", "false"),
+            ("mx_records", "true"),
+            ("smtp_server", "true"),
+            ("smtp_check", "true"),
+            ("accept_all", "false"),
+            ("blocked", "false"),
+        ] {
+            assert!(
+                f.attrs.contains(&(check, value.into())),
+                "{check}: {:?}",
+                f.attrs
+            );
+        }
+        assert!(f.attrs.contains(&(
+            "source_pages",
+            "http://beta.paperbook.app/x | first seen 2020-12-01 | last seen 2021-01-12 | still on the page".into()
+        )));
+        assert!(
+            f.attrs
+                .iter()
+                .any(|(k, v)| *k == "raw_answer" && v.contains("_deprecation_notice")),
+            "{:?}",
+            f.attrs
+        );
         assert!(f.tags.is_empty());
         assert!(decode_verification(VERIFIED.as_bytes(), "ada@example.com").is_err());
     }
