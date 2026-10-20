@@ -386,46 +386,8 @@ fn ripestat_leg(lookup: &mut Lookup<'_>, routing: &ripestat::Routing) {
         lookup.nothing(api);
         return;
     }
-    let asns: Vec<String> = routing
-        .origins
-        .iter()
-        .map(|o| format!("AS{}", o.asn))
-        .collect();
-    let summary = if asns.is_empty() {
-        format!(
-            "Not announced; registry block {}",
-            routing
-                .block_resource
-                .as_deref()
-                .or(routing.block.as_deref())
-                .unwrap_or("unnamed")
-        )
-    } else {
-        format!("Announced by {}", asns.join(", "))
-    };
-    let lists = [
-        ("origin_asns", asns.join(",")),
-        ("related_prefixes", routing.related.join(",")),
-        ("see_also", routing.see_also.join(",")),
-        ("messages", routing.messages.join("; ")),
-    ];
-    let mut evidence = lookup.evidence(api, summary).with_optional_attrs([
-        ("prefix", routing.prefix.as_deref()),
-        ("registry_block", routing.block.as_deref()),
-        ("block_resource", routing.block_resource.as_deref()),
-        ("block_registry", routing.block_name.as_deref()),
-        (
-            "announced",
-            Some(if routing.announced { "true" } else { "false" }),
-        ),
-        ("less_specific", routing.less_specific.then_some("true")),
-    ]);
-    for (key, value) in lists {
-        if !value.is_empty() {
-            evidence = evidence.with_attr(key, value);
-        }
-    }
-    lookup.on_address(evidence.with_attr("raw_answer", &routing.raw), &[]);
+    let evidence = routing.describe(lookup.evidence(api, routing.summary()));
+    lookup.on_address(evidence, &[]);
     for origin in &routing.origins {
         let asn = format!("AS{}", origin.asn);
         let evidence = lookup

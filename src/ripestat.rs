@@ -14,6 +14,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::api_leg::{self, Answer, Api, LegError};
+use crate::entity::Evidence;
 use crate::http::{Transport, percent_encode_component};
 use crate::keys::Keys;
 
@@ -57,13 +58,72 @@ pub struct Routing {
 }
 
 impl Routing {
-    /// Whether the answer says anything about the address. **Pure.**
+    /// Whether the answer says anything about the address or block. **Pure.**
     #[must_use]
     pub fn says_anything(&self) -> bool {
         !self.origins.is_empty()
             || self.block.is_some()
             || self.block_resource.is_some()
             || !self.related.is_empty()
+    }
+
+    /// Every origin AS of the covering prefix, written `AS13335`. **Pure.**
+    #[must_use]
+    pub fn origin_asns(&self) -> Vec<String> {
+        self.origins
+            .iter()
+            .map(|origin| format!("AS{}", origin.asn))
+            .collect()
+    }
+
+    /// The summary of the record on the address or block: the AS numbers that announce the
+    /// covering prefix, or the registry block when none does. **Pure.**
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let asns = self.origin_asns();
+        if asns.is_empty() {
+            format!(
+                "Not announced; registry block {}",
+                self.block_resource
+                    .as_deref()
+                    .or(self.block.as_deref())
+                    .unwrap_or("unnamed")
+            )
+        } else {
+            format!("Announced by {}", asns.join(", "))
+        }
+    }
+
+    /// `evidence` holding everything the answer says about the address or block: the covering
+    /// prefix, whether it is announced and whether it is a less-specific one, every origin AS,
+    /// related and `see_also` prefix, the registry block's resource, description and registry,
+    /// `RIPEstat`'s messages, and the whole answer as `raw_answer`. Every lookup that reads
+    /// `prefix-overview` records it this way. **Pure.**
+    #[must_use]
+    pub fn describe(&self, evidence: Evidence) -> Evidence {
+        let lists = [
+            ("origin_asns", self.origin_asns().join(",")),
+            ("related_prefixes", self.related.join(",")),
+            ("see_also", self.see_also.join(",")),
+            ("messages", self.messages.join("; ")),
+        ];
+        let mut evidence = evidence.with_optional_attrs([
+            ("prefix", self.prefix.as_deref()),
+            ("registry_block", self.block.as_deref()),
+            ("block_resource", self.block_resource.as_deref()),
+            ("block_registry", self.block_name.as_deref()),
+            (
+                "announced",
+                Some(if self.announced { "true" } else { "false" }),
+            ),
+            ("less_specific", self.less_specific.then_some("true")),
+        ]);
+        for (key, value) in lists {
+            if !value.is_empty() {
+                evidence = evidence.with_attr(key, value);
+            }
+        }
+        evidence.with_attr("raw_answer", &self.raw)
     }
 }
 

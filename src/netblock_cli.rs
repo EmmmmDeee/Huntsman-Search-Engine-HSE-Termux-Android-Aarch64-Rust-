@@ -104,7 +104,7 @@ pub fn run<T: Transport + ?Sized + Sync>(
     report.outcomes.extend(registration.outcome);
     if transport.runs_module(ripestat::SOURCE) {
         match ripestat::lookup(transport, &value, now_unix) {
-            Ok(routing) if routing.origins.is_empty() => report.outcomes.push(
+            Ok(routing) if !routing.says_anything() => report.outcomes.push(
                 SourceExecutionOutcome::valid_zero(ripestat::SOURCE, now_unix),
             ),
             Ok(routing) => routing_leg(&mut report, &value, &scan_id, &routing, now_unix),
@@ -143,8 +143,8 @@ pub fn run<T: Transport + ?Sized + Sync>(
     }
 }
 
-/// The covering prefix and its origin AS numbers on the block, and each AS and its holder as a
-/// pivot tied to the block.
+/// Everything `RIPEstat` says about the block on it ([`ripestat::Routing::describe`]), and each
+/// origin AS and its holder as a pivot tied to the block.
 fn routing_leg(
     report: &mut Report,
     block: &str,
@@ -158,17 +158,8 @@ fn routing_leg(
             summary,
         )
     };
-    let asns: Vec<String> = routing
-        .origins
-        .iter()
-        .map(|origin| format!("AS{}", origin.asn))
-        .collect();
-    let announced = evidence(format!("Announced by {}", asns.join(", ")))
-        .with_attr("origin_asns", asns.join(","))
-        .with_optional_attrs([
-            ("prefix", routing.prefix.as_deref()),
-            ("registry_block", routing.block.as_deref()),
-        ]);
+    let asns = routing.origin_asns();
+    let announced = routing.describe(evidence(routing.summary()));
     push_entity(
         &mut report.entities,
         EntityKind::Netblock,
@@ -208,7 +199,7 @@ fn routing_leg(
         }
     }
     report.outcomes.push(
-        SourceExecutionOutcome::success(ripestat::SOURCE, now_unix, routing.origins.len())
+        SourceExecutionOutcome::success(ripestat::SOURCE, now_unix, routing.origins.len().max(1))
             .with_http_status(200),
     );
 }
