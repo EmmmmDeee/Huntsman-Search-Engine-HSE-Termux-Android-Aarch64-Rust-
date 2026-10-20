@@ -11,8 +11,7 @@ use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::wifi_radar::{self, MAX_SCAN_BYTES};
 
-const USAGE: &str =
-    "usage: huntsman-recon radar wifi [--json] [--file TERMUX_SCAN_JSON]";
+const USAGE: &str = "usage: huntsman-recon radar wifi [--json] [--file TERMUX_SCAN_JSON]";
 
 fn uptime_secs() -> Option<f64> {
     let data = read_bounded(Path::new("/proc/uptime"), 128).ok()?;
