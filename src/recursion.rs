@@ -206,6 +206,97 @@ fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
     targets
 }
 
+/// One discovery link projected from the crawl's lineage onto the entity graph: the uid of the
+/// entity whose lookup ran and the uid of the entity that lookup produced, weighted by the produced
+/// entity's confidence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LineageLink {
+    pub from_uid: String,
+    pub to_uid: String,
+    pub confidence: f64,
+}
+
+/// Project the crawl's discovery lineage ([`RecursionReport::edges`]) into uid→uid links over the
+/// crawl's own entities, so the shared analysis graph reflects the pivots the crawl actually walked
+/// — not only the linkage re-derivable from entity content.
+///
+/// A recursive crawl's value is cross-kind pivoting (phone → e-mail → username → domain → IP). When
+/// the reached entities share no handle, address or registrant, content derivation
+/// ([`relation::derive_all`](crate::relation::derive_all)) finds no edge between them, so the
+/// analysis would report the very entities the crawl pivoted on as unlinked orphans, rank no pivot,
+/// and understate the crawl's structure. The lineage holds that linkage authoritatively; this makes
+/// it available to the graph.
+///
+/// Each endpoint is resolved by the SAME routing that recorded the edge — the `from` side by the
+/// entity's expansion target ([`expansion_kind`] + [`canonical_selector`]), the `to` side by the
+/// produced entity's kind and value — so a link is emitted only when BOTH endpoints are a retained
+/// entity. No dangling edge is produced (an edge whose source was a seed never collected as an
+/// entity, or whose endpoint was dropped, is skipped) and a self-link is dropped. Pairs reached by
+/// several lookups collapse in [`Graph::build`](crate::graph::Graph::build), so repeats here are
+/// harmless. Links are sorted and de-duplicated for a deterministic result.
+#[must_use]
+pub fn lineage_links(report: &RecursionReport) -> Vec<LineageLink> {
+    use std::collections::HashMap;
+    // The produced entity, by (kind, value) exactly as the edge recorded it.
+    let mut by_value: HashMap<(&str, &str), &str> = HashMap::new();
+    // The source entity, by (expansion command word, canonical selector) — the inverse of the
+    // routing that built the edge's `from` fields.
+    let mut by_route: HashMap<(String, String), &str> = HashMap::new();
+    let mut confidence: HashMap<&str, f64> = HashMap::new();
+    for entity in &report.entities {
+        by_value
+            .entry((entity.kind.as_str(), entity.value.as_str()))
+            .or_insert_with(|| entity.uid.as_str());
+        confidence
+            .entry(entity.uid.as_str())
+            .or_insert(entity.confidence);
+        if let Some(kind) = expansion_kind(&entity.kind) {
+            if let Some(selector) = canonical_selector(kind, &entity.value) {
+                by_route
+                    .entry((kind.command().to_owned(), selector))
+                    .or_insert_with(|| entity.uid.as_str());
+            }
+        }
+        // Mirror the one secondary expansion target: an e-mail entity also dispatches an exposure
+        // lookup (see [`expansions`]), whose edges record `from_kind = exposure` — a route the
+        // primary `expansion_kind` inverse never covers. Register it too, so the e-mail → breach /
+        // exposure pivots resolve into the graph instead of being dropped as unroutable. Harmless
+        // when the policy ran no exposure leg: no such edge then exists to match.
+        if entity.kind == EntityKind::Email {
+            if let Some(selector) = canonical_selector(ScanKind::Exposure, &entity.value) {
+                by_route
+                    .entry((ScanKind::Exposure.command().to_owned(), selector))
+                    .or_insert_with(|| entity.uid.as_str());
+            }
+        }
+    }
+    let mut links: Vec<LineageLink> = Vec::new();
+    for edge in &report.edges {
+        let Some(&from_uid) = by_route.get(&(edge.from_kind.clone(), edge.from_selector.clone()))
+        else {
+            continue;
+        };
+        let Some(&to_uid) = by_value.get(&(edge.to_kind.as_str(), edge.to_value.as_str())) else {
+            continue;
+        };
+        if from_uid == to_uid {
+            continue;
+        }
+        links.push(LineageLink {
+            from_uid: from_uid.to_owned(),
+            to_uid: to_uid.to_owned(),
+            confidence: confidence.get(to_uid).copied().unwrap_or(0.0),
+        });
+    }
+    links.sort_by(|left, right| {
+        left.from_uid
+            .cmp(&right.from_uid)
+            .then_with(|| left.to_uid.cmp(&right.to_uid))
+    });
+    links.dedup();
+    links
+}
+
 /// A de-duplicated queue of targets: at most one lookup per `(kind, selector)`. Centralises the
 /// crawl's dedup invariant, so the seed frontier, each generation's next frontier, and the
 /// expansion queue share one definition of "the same lookup" and cannot drift apart.
@@ -574,6 +665,101 @@ fn crawl<C: SelectorCollector>(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn lineage_links_resolve_both_endpoints_or_drop_the_edge() {
+        // The crawl pivoted e-mail -> phone. The link must resolve to both entities' uids, weighted
+        // by the produced entity's confidence. An edge to a value no retained entity has is dropped,
+        // never projected as a dangling graph edge.
+        let email = Entity::new(EntityKind::Email, "a@example.com", 0.9, "recurse");
+        let mut phone = Entity::new(EntityKind::Phone, "+15551230000", 0.4, "recurse");
+        phone.generation = 1;
+        let good = PivotEdge {
+            from_kind: ScanKind::Email.command().to_owned(),
+            from_selector: canonical_selector(ScanKind::Email, &email.value)
+                .expect("the e-mail canonicalises"),
+            to_kind: phone.kind.as_str().to_owned(),
+            to_value: phone.value.clone(),
+            generation: 1,
+        };
+        let dangling = PivotEdge {
+            from_kind: ScanKind::Email.command().to_owned(),
+            from_selector: canonical_selector(ScanKind::Email, &email.value).unwrap(),
+            to_kind: "phone".to_owned(),
+            to_value: "+19999999999".to_owned(),
+            generation: 1,
+        };
+        let report = RecursionReport {
+            accepted_seeds: Vec::new(),
+            rejected_seeds: Vec::new(),
+            entities: vec![email.clone(), phone.clone()],
+            edges: vec![good, dangling],
+            outcomes: Vec::new(),
+            generations: Vec::new(),
+            dispatches: 0,
+            visited: 0,
+            termination: TerminationReason::FixedPoint,
+            truncated: false,
+        };
+        let links = lineage_links(&report);
+        assert_eq!(
+            links.len(),
+            1,
+            "only the resolvable edge yields a link: {links:?}"
+        );
+        assert_eq!(links[0].from_uid, email.uid);
+        assert_eq!(links[0].to_uid, phone.uid);
+        assert!(
+            (links[0].confidence - phone.confidence).abs() < f64::EPSILON,
+            "the link weight is the produced entity's confidence"
+        );
+    }
+
+    #[test]
+    fn email_exposure_pivot_resolves_through_the_exposure_route() {
+        // An e-mail entity dispatches a second lookup — the exposure leg — whose edges record
+        // `from_kind = exposure`, not `email`. The lineage projection must invert THAT route too, or
+        // every e-mail → breach pivot (the exposure leg's whole output) is dropped and the breach
+        // findings orphan in the analysis graph. Baseline (exposure route unregistered): zero links.
+        let email = Entity::new(EntityKind::Email, "a@example.com", 0.9, "recurse");
+        let mut leaked = Entity::new(EntityKind::Email, "leaked@example.com", 0.5, "recurse");
+        leaked.generation = 1;
+        let exposure_edge = PivotEdge {
+            from_kind: ScanKind::Exposure.command().to_owned(),
+            from_selector: canonical_selector(ScanKind::Exposure, &email.value)
+                .expect("the e-mail canonicalises as an exposure selector"),
+            to_kind: leaked.kind.as_str().to_owned(),
+            to_value: leaked.value.clone(),
+            generation: 1,
+        };
+        let report = RecursionReport {
+            accepted_seeds: Vec::new(),
+            rejected_seeds: Vec::new(),
+            entities: vec![email.clone(), leaked.clone()],
+            edges: vec![exposure_edge],
+            outcomes: Vec::new(),
+            generations: Vec::new(),
+            dispatches: 0,
+            visited: 0,
+            termination: TerminationReason::FixedPoint,
+            truncated: false,
+        };
+        let links = lineage_links(&report);
+        assert_eq!(
+            links.len(),
+            1,
+            "the exposure-leg pivot resolves to a link: {links:?}"
+        );
+        assert_eq!(links[0].from_uid, email.uid, "the source is the e-mail");
+        assert_eq!(
+            links[0].to_uid, leaked.uid,
+            "the target is the breach-derived entity"
+        );
+        assert!(
+            (links[0].confidence - leaked.confidence).abs() < f64::EPSILON,
+            "the link weight is the produced entity's confidence"
+        );
+    }
 
     /// A scripted collector: it returns the entities mapped to each (kind, selector) and records
     /// every dispatch, so a test can assert the exact crawl shape with no network.

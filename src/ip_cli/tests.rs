@@ -108,7 +108,11 @@ fn keyless() -> Routes {
         ("https://www.virustotal.com/", 200, VIRUSTOTAL),
         ("https://pulsedive.com/", 404, PULSEDIVE_UNKNOWN),
         ("https://app.netlas.io/", 404, ""),
-        ("https://otx.alienvault.com/", 404, ""),
+        (
+            "https://otx.alienvault.com/",
+            200,
+            r#"{"indicator":"1.1.1.1","pulse_info":{"count":0,"pulses":[]},"validation":[]}"#,
+        ),
         ("https://urlscan.io/", 200, URLSCAN_NONE),
         ("https://ipinfo.io/", 200, IPINFO),
         (
@@ -329,13 +333,44 @@ fn a_non_public_address_is_refused_before_any_request() {
     assert!(IpArgs::parse(&["10.0.0.1".into()]).is_err());
 }
 
+/// No network at all is "no usable response" (exit 69) with the first reason, and only a request
+/// the egress policy refused is a refusal (exit 77), as the CLI's exit codes say. Before, it
+/// was the other way round: no network at all exited 77 and a refusal of every leg 69.
 #[test]
-fn no_network_at_all_is_a_network_refusal() {
+fn no_network_at_all_fails_and_a_refusal_is_a_network_refusal() {
     let transport = Routes::new(Vec::new());
-    assert!(matches!(
-        run(&transport, &Keys::default(), "8.8.8.8", 1),
-        IpRun::Network(_)
-    ));
+    match run(&transport, &Keys::default(), "8.8.8.8", 1) {
+        IpRun::Failed(message) => assert_eq!(
+            message,
+            "no source answered for ip 8.8.8.8: internetdb: no response (ConnectFailure)"
+        ),
+        IpRun::Network(message) => panic!("network: {message}"),
+        IpRun::Printed { text, .. } => panic!("printed: {text}"),
+    }
+
+    match run(&Refusing, &Keys::default(), "8.8.8.8", 1) {
+        IpRun::Network(message) => {
+            assert!(
+                message.starts_with("internetdb: request refused"),
+                "{message}"
+            );
+        }
+        IpRun::Failed(message) => panic!("failed: {message}"),
+        IpRun::Printed { text, .. } => panic!("printed: {text}"),
+    }
+}
+
+/// Every request refused by the egress policy, as for a host that resolves to 0.0.0.0.
+struct Refusing;
+
+impl Transport for Refusing {
+    fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
+        Err(TransportFailure {
+            kind: SourceOutcomeKind::ConnectFailure,
+            detail: "egress-policy: destination (0.0.0.0) is not publicly routable".into(),
+            blocked: true,
+        })
+    }
 }
 
 #[test]
@@ -372,7 +407,7 @@ fn a_configured_shodan_key_runs_shodan_with_the_key_only_in_its_query() {
     assert_eq!(
         carrying,
         [format!(
-            "https://api.shodan.io/shodan/host/1.1.1.1?minify=true&key={SHODAN_KEY}"
+            "https://api.shodan.io/shodan/host/1.1.1.1?key={SHODAN_KEY}"
         )]
     );
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
