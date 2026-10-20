@@ -1,5 +1,5 @@
 //! End-to-end bridge from a persisted scan to the shared offline analysis.
-/// The binary reads exactly the store seeded by this test; no provider or network calls run.
+//! The binary reads exactly the store seeded by this test; no provider or network calls run.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,9 +39,9 @@ fn fixture() -> (PathBuf, String, Vec<u8>) {
             owner: None,
         })
         .unwrap();
-    let evidence = Evidence::new(EvidenceProvenance::for_scan("dns", &id), "A record")
+    let evidence = Evidence::new(EvidenceProvenance::for_scan("dns", id.as_str()), "A record")
         .with_attr("ip", "192.0.2.4");
-    let entity = Entity::builder(EntityKind::Domain, "example.com", 0.9, &id)
+    let entity = Entity::builder(EntityKind::Domain, "example.com", 0.9, id.as_str())
         .evidence(evidence)
         .build();
     store
