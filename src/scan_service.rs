@@ -1147,7 +1147,8 @@ impl ScanService {
     ) -> Result<(), ServiceError> {
         // Keep the state lock over read/modify/write so a stop cannot be overwritten.
         let mut state = self.state();
-        let result = (|| {
+        let mut wrote_row = false;
+        let result: Result<(), StoreError> = (|| {
             let mut record = self.store.get(id)?;
             if !record.status.is_active() {
                 return Ok(());
@@ -1170,7 +1171,9 @@ impl ScanService {
                 }
                 _ => {}
             }
-            persist(&record)
+            persist(&record)?;
+            wrote_row = true;
+            Ok(())
         })();
         if let Err(error) = &result {
             state
@@ -1178,6 +1181,10 @@ impl ScanService {
                 .entry(id.to_owned())
                 .or_insert_with(|| error.to_string());
             self.freed.notify_all();
+        } else if wrote_row {
+            // Only a committed transition can clear an earlier storage error.
+            // An ignored transition (terminal row or pending abort) is not recovery.
+            state.status_failures.remove(id);
         }
         result.map_err(ServiceError::from)
     }
@@ -2184,6 +2191,17 @@ mod tests {
         service.delete(&created.id).unwrap_err();
         // A persistence fault stays observable until a successful recovery or deletion.
         assert!(service.state().status_failures.contains_key(&created.id));
+
+        service
+            .set_status(&created.id, ScanStatus::Finished, Some(456))
+            .unwrap();
+        assert!(!service.state().status_failures.contains_key(&created.id));
+        let recovered = service
+            .wait(&created.id, Instant::now() + Duration::from_millis(20))
+            .unwrap();
+        assert_eq!(recovered.status, ScanStatus::Finished);
+        assert_eq!(recovered.ended, Some(456));
+        service.delete(&created.id).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
