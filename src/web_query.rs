@@ -128,7 +128,7 @@ fn search_with_observations<T: Transport + ?Sized>(
     let mut hits = Vec::new();
     let mut outcomes = Vec::new();
     for engine in ENGINES {
-        let result = search_engine(transport, engine, &query, now_unix)?;
+        let result = search_engine(transport, engine, query, now_unix)?;
         hits.extend(result.hits);
         outcomes.push(result.outcome);
     }
@@ -230,47 +230,45 @@ pub fn adaptive_search<T: Transport + ?Sized>(
             "adaptive query is too long or contains control characters".into(),
         ));
     }
-    let seed = canonical_whitespace(input);
-    if seed.is_empty() {
+    let normalized_query = canonical_whitespace(input);
+    if normalized_query.is_empty() {
         return Err(Error::Invalid("adaptive query must not be empty".into()));
     }
     let mut rounds = Vec::new();
-    let mut seen = BTreeMap::new();
-    let initial_novel = append_round(
+    let mut discovery_index = BTreeMap::new();
+    let baseline_gain = append_round(
         transport,
-        &seed,
+        &normalized_query,
         "baseline",
         now_unix,
         &mut rounds,
-        &mut seen,
+        &mut discovery_index,
     )?;
 
-    let stop_reason = if !has_viable_provider(&rounds[0]) {
-        "all_engines_unavailable_or_unparseable"
-    } else {
-        let second = if seed.starts_with('"') && seed.ends_with('"') && seed.len() > 2 {
-            let bare = seed.trim_matches('"').trim();
-            (bare != seed).then(|| (bare.to_owned(), "unquoted_recall"))
-        } else if seed.split_whitespace().count() > 1 {
-            Some((format!("\"{seed}\""), "exact_phrase"))
+    let stop_reason = if has_viable_provider(&rounds[0]) {
+        let second = if normalized_query.starts_with('"') && normalized_query.ends_with('"') && normalized_query.len() > 2 {
+            let bare = normalized_query.trim_matches('"').trim();
+            (bare != normalized_query).then(|| (bare.to_owned(), "unquoted_recall"))
+        } else if normalized_query.split_whitespace().count() > 1 {
+            Some((format!("\"{normalized_query}\""), "exact_phrase"))
         } else {
             None
         };
         if let Some((refined, strategy)) = second {
-            let novelty = append_round(
+            let refinement_gain = append_round(
                 transport,
                 &refined,
                 strategy,
                 now_unix,
                 &mut rounds,
-                &mut seen,
+                &mut discovery_index,
             )?;
-            let tokens: Vec<&str> = seed.split_whitespace().collect();
+            let tokens: Vec<&str> = normalized_query.split_whitespace().collect();
             if !has_viable_provider(&rounds[1]) {
                 "refinement_sources_unavailable"
-            } else if novelty == 0 && initial_novel > 0 {
+            } else if refinement_gain == 0 && baseline_gain > 0 {
                 "diminishing_marginal_discovery"
-            } else if tokens.len() >= 3 && !seed.contains('"') {
+            } else if tokens.len() >= 3 && !normalized_query.contains('"') {
                 let broader = tokens[..tokens.len() - 1].join(" ");
                 let _ = append_round(
                     transport,
@@ -278,7 +276,7 @@ pub fn adaptive_search<T: Transport + ?Sized>(
                     "broader_low_confidence_recall",
                     now_unix,
                     &mut rounds,
-                    &mut seen,
+                    &mut discovery_index,
                 )?;
                 "bounded_three_round_budget"
             } else {
@@ -287,8 +285,10 @@ pub fn adaptive_search<T: Transport + ?Sized>(
         } else {
             "no_safe_additional_query_variant"
         }
+    } else {
+        "all_engines_unavailable_or_unparseable"
     };
-    let hits = seen
+    let hits = discovery_index
         .into_iter()
         .map(|(url, observation)| AdaptiveHit {
             url,
@@ -299,7 +299,7 @@ pub fn adaptive_search<T: Transport + ?Sized>(
         })
         .collect();
     Ok(AdaptiveSearchReport {
-        input: seed,
+        input: normalized_query,
         rounds,
         hits,
         stop_reason,
