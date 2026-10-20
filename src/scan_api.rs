@@ -14,6 +14,7 @@
 //! | `scanstatus` | `GET /api/scans/ID` |
 //! | `scansummary` | `GET /api/scans/ID/summary` |
 //! | (shared analysis over saved entities) | `GET /api/scans/ID/analyze` |
+//! | (source-attributed entity assessment) | `GET /api/scans/ID/reality?uid=ENTITY_UID` |
 //! | `scaneventresults`, `scaneventresultsunique` | `GET /api/scans/ID/elements[?type=T][&unique=1][&hidefp=1][&correlation=C]` |
 //! | `scancorrelations`, `scancorrelationsexport` | `GET /api/scans/ID/correlations[?format=csv|tsv|xlsx|json]` |
 //! | `sf.py -C` | `POST /api/scans/ID/correlate` |
@@ -38,6 +39,7 @@ use serde_json::{Value, json};
 use crate::analysis::analyze_snapshot;
 use crate::api_leg::Api;
 use crate::correlator::rule_catalog;
+use crate::entity_reality;
 use crate::module::reachable_modules;
 use crate::pipeline::{PipelineLimits, snapshot_from_entities};
 use crate::scan_compare;
@@ -239,6 +241,8 @@ impl ScanApi {
             (["scans", id], false) => self.status(id),
             (["scans", id, "summary"], false) => self.summary(id),
             (["scans", id, "analyze"], false) => self.analyze(id),
+            (["scans", id, "reality"], false) => self.reality(id, param.get("uid")),
+            (["scans", _, "reality"], true) => error(405, "entity reality is read-only"),
             (["scans", id, "elements"], false) => self.elements(id, &param),
             (["scans", id, "correlations"], false) => self.correlations(id, param.get("format")),
             (["scans", id, "correlate"], true) => match self.service.correlate(id) {
@@ -449,6 +453,50 @@ impl ScanApi {
                     "flagged_elements": flagged_elements,
                 },
                 "report": report,
+            }),
+        )
+    }
+
+    /// Attribute recorded assertions to sources without converting them into verified truth.
+    /// The saved evidence is read without network requests or store modification.
+    fn reality(&self, id: &str, uid: Option<&str>) -> ApiResponse {
+        let Some(uid) = uid.filter(|uid| !uid.trim().is_empty()) else {
+            return error(400, "reality requires an entity uid");
+        };
+        let (record, results) = match self.results(id) {
+            Ok(found) => found,
+            Err(response) => return response,
+        };
+        if record.status.is_active() {
+            return error(409, "scan is active; assess it after its worker stops");
+        }
+        let Some(results) = results else {
+            return error(409, "scan has no saved results to assess");
+        };
+        // An element-level false positive cannot be safely projected to merged entity
+        // evidence. Refuse the report rather than silently laundering flagged sources.
+        if results.elements.iter().any(|element| element.fp) {
+            return error(
+                409,
+                "scan contains false-positive elements; entity evidence cannot be safely filtered",
+            );
+        }
+        let Some(entity) = results.entities.iter().find(|entity| entity.uid == uid) else {
+            return error(404, "entity uid is not present in the saved scan");
+        };
+        ok(
+            200,
+            &json!({
+                "scan": {
+                    "id": record.id,
+                    "status": record.status,
+                    "complete": record.status == ScanStatus::Finished,
+                },
+                "entity": entity_reality::assess(entity),
+                "source": "saved_entity_evidence",
+                "provider_coverage": "not_reconstructed",
+                "independent_source_proof": "not_reconstructed",
+                "source_authenticity": "not_established",
             }),
         )
     }
@@ -1519,6 +1567,57 @@ mod tests {
         assert_eq!(store.results(&id).unwrap(), Some(results));
         assert_eq!(std::fs::read(&path).unwrap(), before);
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn entity_reality_reports_attributions_but_never_claims_identity_proof() {
+        let (api, dir) = api("entity-reality");
+        let id = finished(&api);
+        let store = api.service().store();
+        let results = store.results(&id).unwrap().unwrap();
+        let entity = &results.entities[0];
+        let original = std::fs::read(dir.join(&id).join("results.json")).unwrap();
+        let route = format!("/api/scans/{id}/reality");
+        let response = api.handle("GET", &route, &format!("uid={}", entity.uid));
+        assert_eq!(response.status, 200, "{}", response.text());
+        let value = body(&response);
+        assert_eq!(value["entity"]["uid"], entity.uid);
+        assert_eq!(
+            value["entity"]["identity_status"],
+            "not_established_by_identifier_or_source_attribution"
+        );
+        assert_eq!(value["entity"]["assertions"][0]["dimension"], "capability");
+        assert_eq!(value["independent_source_proof"], "not_reconstructed");
+        assert_eq!(value["source_authenticity"], "not_established");
+        assert_eq!(api.handle("GET", &route, "").status, 400);
+        assert_eq!(api.handle("GET", &route, "uid=missing").status, 404);
+        assert_eq!(api.handle("POST", &route, "uid=missing").status, 405);
+        assert_eq!(
+            std::fs::read(dir.join(&id).join("results.json")).unwrap(),
+            original
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn entity_reality_refuses_flagged_saved_evidence() {
+        let (api, dir) = api("entity-reality-fp");
+        let id = finished(&api);
+        let store = api.service().store();
+        let mut results = store.results(&id).unwrap().unwrap();
+        let uid = results.entities[0].uid.clone();
+        results.elements[0].fp = true;
+        store.save_results(&results).unwrap();
+        assert_eq!(
+            api.handle(
+                "GET",
+                &format!("/api/scans/{id}/reality"),
+                &format!("uid={uid}")
+            )
+            .status,
+            409
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
