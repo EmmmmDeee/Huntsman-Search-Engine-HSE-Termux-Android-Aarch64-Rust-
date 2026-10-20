@@ -210,6 +210,7 @@ virustotal	adapter	VirusTotal leg reached through ip_cli and domain_cli when its
 web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
 whoxy	adapter	Whoxy WHOIS leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set
+wifi_radar	adapter	Termux API OS-cached WiFi scan observations reached through radar wifi command and typed RF results
 wigle	adapter	WiGLE network-search leg reached through network_cli from network, scan -k network and /api/lookup
 x509	leaf	dependency-free X.509 DER reader and PEM writer behind certspotter
 xlsx	exporter	dependency-free Excel workbook writer behind scan_export's xlsx exports
