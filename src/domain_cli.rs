@@ -57,6 +57,9 @@ const CRTSH_SOURCE: &str = "crtsh";
 const DOMAIN_CONFIDENCE: f64 = 0.90;
 /// An address, host or mailbox the domain's own records name: its zone published it.
 const RECORD_CONFIDENCE: f64 = 0.85;
+/// An address or host a provider last saw the domain's records or certificate name: an earlier
+/// observation than the zone's own answer.
+const SEEN_CONFIDENCE: f64 = 0.80;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -378,7 +381,7 @@ fn keyed_legs<T: Transport + ?Sized>(
             Ok(Some(report)) => {
                 found
                     .entities
-                    .push(virustotal_entity(domain, scan_id, &report));
+                    .extend(virustotal_entities(domain, scan_id, &report));
                 found.leg(SourceExecutionOutcome::success(api.source, now_unix, 1));
             }
             Ok(None) => found.leg(SourceExecutionOutcome::valid_zero(api.source, now_unix)),
@@ -699,13 +702,16 @@ fn mx_parts(record: &str) -> (Option<&str>, &str) {
     }
 }
 
-fn virustotal_entity(domain: &str, scan_id: &str, report: &virustotal::Report) -> Entity {
-    let mut entity = Entity::new(EntityKind::Domain, domain, 0.90, scan_id);
+/// `VirusTotal`'s report as the domain's evidence, every detail and the whole answer on it, and
+/// each address and host name its last DNS records and HTTPS certificate name as a pivot.
+fn virustotal_entities(domain: &str, scan_id: &str, report: &virustotal::Report) -> Vec<Entity> {
+    let mut entity = Entity::new(EntityKind::Domain, domain, DOMAIN_CONFIDENCE, scan_id);
     if report.malicious > 0 {
         entity.tag(crate::tags::MALICIOUS);
     }
+    let provenance = || EvidenceProvenance::for_scan(virustotal::SOURCE, scan_id);
     let mut evidence = Evidence::new(
-        EvidenceProvenance::for_scan(virustotal::SOURCE, scan_id),
+        provenance(),
         format!(
             "VirusTotal: {} of {} engines flag the domain",
             report.flagged(),
@@ -722,8 +728,63 @@ fn virustotal_entity(domain: &str, scan_id: &str, report: &virustotal::Report) -
     if let Some(created) = report.creation_date {
         evidence = evidence.with_attr("creation_date_unix", created.to_string());
     }
-    entity.add_evidence(evidence);
-    entity
+    for (name, value) in &report.details {
+        evidence = evidence.with_attr(name.as_str(), value.as_str());
+    }
+    let addresses: Vec<String> = report
+        .addresses
+        .iter()
+        .filter_map(|raw| canonical_ip(raw))
+        .collect();
+    for address in &addresses {
+        evidence = evidence.with_attr("ip", address.as_str());
+    }
+    entity.add_evidence(evidence.with_attr("raw_answer", report.raw_answer.as_str()));
+    let mut entities = vec![entity];
+    for address in &addresses {
+        let evidence = Evidence::new(
+            provenance(),
+            format!("Address in VirusTotal's last DNS records of {domain}"),
+        )
+        .with_attr("domain", domain);
+        push_entity(
+            &mut entities,
+            EntityKind::IpAddress,
+            address,
+            SEEN_CONFIDENCE,
+            scan_id,
+            evidence,
+            &[],
+        );
+    }
+    for (role, raw) in &report.hosts {
+        let (name, is_sub) = crate::domains::classify_domain_candidate(raw, domain);
+        if name == domain || canonical_domain(&name).is_none() {
+            continue;
+        }
+        let summary = if role == "certificate" {
+            format!("Name on the HTTPS certificate VirusTotal last saw for {domain}")
+        } else {
+            format!(
+                "{} record of {domain} in VirusTotal's last DNS records",
+                role.to_ascii_uppercase()
+            )
+        };
+        let evidence = Evidence::new(provenance(), summary)
+            .with_attr("domain", domain)
+            .with_attr("record_type", role.to_ascii_uppercase());
+        let subdomain: &[&str] = if is_sub { &[tags::SUBDOMAIN] } else { &[] };
+        push_entity(
+            &mut entities,
+            EntityKind::Domain,
+            &name,
+            SEEN_CONFIDENCE,
+            scan_id,
+            evidence,
+            subdomain,
+        );
+    }
+    entities
 }
 
 /// Hunter's published addresses at `domain`: one email entity each, the organisation Hunter
@@ -873,7 +934,8 @@ mod tests {
             categories: vec!["phishing".into()],
             ..virustotal::Report::default()
         };
-        let entity = virustotal_entity("example.com", "scan", &report);
+        let entities = virustotal_entities("example.com", "scan", &report);
+        let entity = &entities[0];
         assert!(entity.has_tag(crate::tags::MALICIOUS));
         assert_eq!(
             entity.evidence[0].summary,
