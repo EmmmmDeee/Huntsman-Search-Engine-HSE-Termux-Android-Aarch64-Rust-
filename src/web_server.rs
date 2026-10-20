@@ -2011,6 +2011,90 @@ mod tests {
         assert!(allowed.contains("\"modules\""));
     }
 
+    #[test]
+    fn wifi_radar_requires_same_origin_lookup_header_and_public_bind_token() {
+        let config = ServeConfig::parse("0.0.0.0:8080", Some("secret".into())).unwrap();
+        let handler: RadarHandler = Arc::new(|| {
+            crate::wifi_radar::parse_scan(
+                br#"[{"bssid":"3C:5A:B4:11:22:33","ssid":"test","rssi":-58,"timestamp":100000000}]"#,
+                Some(1000.0),
+            )
+            .map_err(|e| LookupError {
+                status: 422,
+                message: e.to_string(),
+            })
+        });
+        let routes = Routes {
+            radar: Some(Radar {
+                handler,
+                live: Arc::new(AtomicUsize::new(0)),
+            }),
+            ..Routes::default()
+        };
+        let request = |method: &str, headers: &str| {
+            text(respond(
+                &format!("{method} /api/radar/wifi HTTP/1.1\r\n{headers}\r\n"),
+                &config,
+                &routes,
+            ))
+        };
+        let auth = "Authorization: Bearer secret\r\n";
+        let lookup = "X-Huntsman-Lookup: 1\r\n";
+        assert!(request("GET", lookup).starts_with("HTTP/1.1 401"));
+        assert!(request("GET", auth).starts_with("HTTP/1.1 403"));
+        assert!(request("GET", &format!("{auth}{lookup}Sec-Fetch-Site: cross-site\r\n"))
+            .starts_with("HTTP/1.1 403"));
+        assert!(request("POST", &format!("{auth}{lookup}"))
+            .starts_with("HTTP/1.1 405"));
+        assert!(request("HEAD", &format!("{auth}{lookup}"))
+            .starts_with("HTTP/1.1 405"));
+        let result = request("GET", &format!("{auth}{lookup}Sec-Fetch-Site: same-origin\r\n"));
+        assert!(result.starts_with("HTTP/1.1 200"), "{result}");
+        let body: serde_json::Value =
+            serde_json::from_str(result.split("\r\n\r\n").nth(1).unwrap_or_default()).unwrap();
+        assert_eq!(body["source"], "termux-wifi-scaninfo");
+        assert_eq!(body["status"], "stale_only");
+        assert_eq!(body["observations"][0]["age_secs"], 900.0);
+        assert!(body["observations"][0]["sighting"]["latitude"].is_null());
+
+        // Without an installed sensor adapter the route refuses rather than
+        // manufacturing a zero-observation success response.
+        let missing = text(respond(
+            &format!("GET /api/radar/wifi HTTP/1.1\r\n{auth}{lookup}\r\n"),
+            &config,
+            &Routes::default(),
+        ));
+        assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+    }
+
+    #[test]
+    fn wifi_radar_busy_and_adapter_error_are_failures_not_empty_scans() {
+        let config = ServeConfig::parse("127.0.0.1:8080", None).unwrap();
+        let live = Arc::new(AtomicUsize::new(1));
+        let routes = Routes {
+            radar: Some(Radar {
+                handler: Arc::new(|| Err(LookupError {
+                    status: 503,
+                    message: "Termux:API unavailable".into(),
+                })),
+                live: Arc::clone(&live),
+            }),
+            ..Routes::default()
+        };
+        let ask = || {
+            text(respond(
+                "GET /api/radar/wifi HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+                &config,
+                &routes,
+            ))
+        };
+        assert!(ask().starts_with("HTTP/1.1 503"));
+        live.store(0, Ordering::SeqCst);
+        let error = ask();
+        assert!(error.starts_with("HTTP/1.1 503"));
+        assert!(error.contains("Termux:API unavailable"));
+    }
+
     /// A tab open across an upgrade notices it: the page is served with the id of the page this
     /// build embeds, health names the same id, and filling it in leaves the policy's hashes valid.
     #[test]
