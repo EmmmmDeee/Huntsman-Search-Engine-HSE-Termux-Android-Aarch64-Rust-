@@ -330,6 +330,9 @@ enum LookupDispatch {
 
 struct State {
     running: usize,
+    // An OS process may host more than one independent ScanService. Only this instance
+    // can signal workers it started; the persisted PID alone is not ownership proof.
+    owned_scans: BTreeSet<String>,
     aborts: BTreeSet<String>,
     graph_cancellations: BTreeMap<String, Arc<AtomicBool>>,
     // Volatile failures let wait/run report a row that could not be persisted.
@@ -824,6 +827,7 @@ impl ScanService {
             rule_errors,
             state: Mutex::new(State {
                 running: 0,
+                owned_scans: BTreeSet::new(),
                 aborts: BTreeSet::new(),
                 graph_cancellations: BTreeMap::new(),
                 status_failures: BTreeMap::new(),
@@ -990,6 +994,9 @@ impl ScanService {
             owner: Some(std::process::id()),
         };
         self.store.create(&record)?;
+        // Register before returning the CREATED row, so an immediate stop can be
+        // delivered even if the worker thread has not yet entered execute().
+        self.state().owned_scans.insert(record.id.clone());
         self.log(
             &record.id,
             "huntsman",
@@ -1044,6 +1051,7 @@ impl ScanService {
                 service.execute(&id, &plan);
             });
         if let Err(error) = spawned {
+            self.state().owned_scans.remove(&record.id);
             let mut failed = record;
             failed.status = ScanStatus::ErrorFailed;
             failed.ended = Some(now_ms());
@@ -1210,6 +1218,7 @@ impl ScanService {
     /// The worker: wait for a place, run the lookups, save what they found.
     fn execute(&self, id: &str, plan: &ScanPlan) {
         if self.set_status(id, ScanStatus::Starting, None).is_err() {
+            self.state().owned_scans.remove(id);
             return;
         }
         {
@@ -1226,6 +1235,7 @@ impl ScanService {
         {
             let mut state = self.state();
             state.running -= 1;
+            state.owned_scans.remove(id);
             state.aborts.remove(id);
             state.graph_cancellations.remove(id);
         }
@@ -1521,7 +1531,7 @@ impl ScanService {
     ///
     /// # Errors
     /// [`ServiceError::NotFound`] for no such scan, [`ServiceError::Conflict`] when it is not
-    /// running or is not owned by this process.
+    /// running or is not owned by this service instance.
     pub fn stop(&self, id: &str) -> Result<ScanRecord, ServiceError> {
         // Hold the same lock as worker status transitions and save's row update.
         // Otherwise a stop could read RUNNING and replace a newly FINISHED row.
@@ -1537,6 +1547,13 @@ impl ScanService {
         if record.owner != Some(std::process::id()) {
             return Err(ServiceError::Conflict(format!(
                 "scan {id} is not owned by this process; stop it in its owning process"
+            )));
+        }
+        // Same PID is insufficient: separate ScanService instances do not share
+        // an abort set, graph cancellation signals, or execution slots.
+        if !state.owned_scans.contains(id) {
+            return Err(ServiceError::Conflict(format!(
+                "scan {id} is not owned by this service instance; stop it through its owning service"
             )));
         }
         state.aborts.insert(id.to_owned());
@@ -1574,7 +1591,9 @@ impl ScanService {
             )));
         }
         self.store.delete(id)?;
-        self.state().status_failures.remove(id);
+        let mut state = self.state();
+        state.owned_scans.remove(id);
+        state.status_failures.remove(id);
         Ok(())
     }
 
@@ -2306,6 +2325,48 @@ mod tests {
         assert!(!controller.state().aborts.contains(&record.id));
         assert!(!cancellation.load(Ordering::Acquire));
         assert_eq!(service.store().log(&record.id).unwrap(), before_log);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn same_process_different_service_cannot_acknowledge_foreign_stop() {
+        let (owner, dir) = with_lookup(
+            "same-process-service-stop",
+            Arc::new(|_: ScanKind, _: &str, _: &Selection| Ok(LookupOutput::default())),
+        );
+        let (mut record, _) = owner
+            .create(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        record.status = ScanStatus::Running;
+        owner.store().update(&record).unwrap();
+        let other = ScanService::new(owner.store().clone(), Arc::clone(&owner.lookup));
+        let signal = other.graph_cancellation(&record.id);
+        let before = std::fs::read(dir.join(&record.id).join("scan.json")).unwrap();
+        let before_log = owner.store().log(&record.id).unwrap();
+
+        // Both instances have the same PID, but only the creator can signal the scan.
+        assert_eq!(record.owner, Some(std::process::id()));
+        assert!(owner.state().owned_scans.contains(&record.id));
+        assert!(!other.state().owned_scans.contains(&record.id));
+        let error = other.stop(&record.id).unwrap_err();
+        assert!(matches!(error, ServiceError::Conflict(_)));
+        assert_eq!(error.status(), 409);
+        assert!(error.to_string().contains("owning service"));
+        assert_eq!(
+            std::fs::read(dir.join(&record.id).join("scan.json")).unwrap(),
+            before
+        );
+        assert_eq!(owner.store().log(&record.id).unwrap(), before_log);
+        assert!(!other.state().aborts.contains(&record.id));
+        assert!(!signal.load(Ordering::Acquire));
+
+        // Its actual owning instance can still deliver the request.
+        let stopped = owner.stop(&record.id).unwrap();
+        assert_eq!(stopped.status, ScanStatus::AbortRequested);
+        assert!(owner.state().aborts.contains(&record.id));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
