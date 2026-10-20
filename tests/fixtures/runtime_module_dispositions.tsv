@@ -19,6 +19,7 @@ benchmark	diagnostic	benchmarking support
 bluesky_user	adapter	public Bluesky profile source client
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
 canonical	runtime	canonicalization for entities and provenance
+cell_radar	adapter	Termux API cached cellular identities reached through radar cell without root or assumed location
 circuit	leaf	bounded circuit/cache state
 ckan	adapter	CKAN source adapter
 claim_coverage	leaf	shadow-mode claim coverage accounting
