@@ -184,16 +184,25 @@ fn hse_baseline_is_termux_first_and_self_documenting() {
 
 #[test]
 fn hse_baseline_runs_the_full_workspace_check_set() {
+    // The baseline must run every check the acceptance gate runs (xtask/src/gate.rs, `gate
+    // full`), so a green baseline cannot hide a red gate in CI. That includes the changelog
+    // fragment check and the self-check the gate runs in every mode, and the two
+    // `clippy::unwrap_used` passes the gate runs separately from the workspace pass — these were
+    // the checks a green baseline used to skip.
     let text = script_text();
     for check in [
+        "cargo run --locked -p xtask -- changelog check",
         "cargo fmt --all -- --check",
         "cargo check --workspace --all-targets --locked",
+        "cargo clippy -p huntsman-recon --lib --bins --locked -- -D clippy::unwrap_used",
+        "cargo clippy -p xtask --bins --locked -- -D clippy::unwrap_used",
         "cargo clippy --workspace --all-targets --locked -- -D warnings",
         "cargo test --workspace --locked",
+        "cargo run --locked -- check",
     ] {
         assert!(
             text.contains(check),
-            "{SCRIPT} must run the baseline check {check:?}"
+            "{SCRIPT} must run the gate check {check:?}"
         );
     }
 }

@@ -222,9 +222,14 @@ phase_branch() {
 }
 
 phase_checks() {
-  # Every cargo command uses --workspace, so no member crate is skipped.
+  # These mirror the repository's own acceptance gate (xtask/src/gate.rs, `gate full`), so a
+  # green baseline here means a green gate in CI — not merely that some checks passed. Every
+  # cargo command uses --workspace or the gate's own package scope, so no member crate is skipped.
   cd "$REPO_DIR" || abort "cannot enter $REPO_DIR"
   export CARGO_BUILD_JOBS="$JOBS"
+
+  # The gate refuses a malformed changelog fragment before any build, in every mode.
+  step "changelog check" cargo run --locked -p xtask -- changelog check
 
   if cargo fmt --version >/dev/null 2>&1; then
     step "fmt check" cargo fmt --all -- --check
@@ -233,6 +238,11 @@ phase_checks() {
   fi
   step "cargo check" cargo check --workspace --all-targets --locked
   if cargo clippy --version >/dev/null 2>&1; then
+    # Production code carries no unwrap(): the gate lints the library and both binaries for it on
+    # their own, because a manifest-level deny would also reach the test binaries. The workspace
+    # pass that follows denies all other warnings across every target.
+    step "clippy no-unwrap (recon)" cargo clippy -p huntsman-recon --lib --bins --locked -- -D clippy::unwrap_used
+    step "clippy no-unwrap (xtask)" cargo clippy -p xtask --bins --locked -- -D clippy::unwrap_used
     step "clippy" cargo clippy --workspace --all-targets --locked -- -D warnings
   else
     missing "clippy" "clippy"
@@ -242,6 +252,8 @@ phase_checks() {
   else
     step "tests" cargo test --workspace --locked
   fi
+  # The gate's final step: the binary's own self-check must pass and leave the tree clean.
+  step "self-check" cargo run --locked -- check
   if [ "${RUN_RELEASE:-0}" = 1 ]; then
     step "release build" cargo build --workspace --release --locked
   else
