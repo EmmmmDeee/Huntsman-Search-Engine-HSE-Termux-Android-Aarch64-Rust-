@@ -72,6 +72,79 @@ fn valid_zero_is_clean_negative_only_when_not_truncated() {
 }
 
 #[test]
+fn observation_limit_marks_only_provider_targets_with_dropped_findings() {
+    let mut complete = event(SourceOutcomeKind::ValidZero, 0, false);
+    complete.provider_id = "complete".to_string();
+    let mut affected = event(SourceOutcomeKind::Success, 2, false);
+    affected.provider_id = "affected".to_string();
+
+    let make_observation = |value: &str| RawObservation {
+        provider_id: "affected".to_string(),
+        upstream: None,
+        target: target(),
+        kind: EntityKind::Email,
+        value: value.to_string(),
+        summary: "fixture".to_string(),
+        attributes: BTreeMap::new(),
+        observed_at_unix: Some(10),
+    };
+    let limits = PipelineLimits {
+        max_entities: 1,
+        ..PipelineLimits::default()
+    };
+    let batch = bounded_batch(
+        ObservationBatch {
+            events: vec![complete, affected],
+            observations: vec![
+                make_observation("one@example.com"),
+                make_observation("two@example.com"),
+            ],
+            independence_assertions: Vec::new(),
+            truncated: false,
+        },
+        &limits,
+    );
+    assert!(batch.truncated);
+    assert_eq!(batch.observations.len(), 1);
+    assert!(!batch.events[0].truncated);
+    assert!(batch.events[1].truncated);
+    let coverage = coverage_events(&batch);
+    assert!(matches!(
+        coverage[0].kind,
+        EventKind::ModuleDone { found: 0, .. }
+    ));
+    assert!(matches!(
+        coverage[1].kind,
+        EventKind::ModuleError { .. }
+    ));
+}
+
+#[test]
+fn event_limit_does_not_relabel_a_retained_clean_negative_as_incomplete() {
+    let mut omitted = event(SourceOutcomeKind::Success, 1, false);
+    omitted.provider_id = "omitted".to_string();
+    let batch = bounded_batch(
+        ObservationBatch {
+            events: vec![event(SourceOutcomeKind::ValidZero, 0, false), omitted],
+            observations: Vec::new(),
+            independence_assertions: Vec::new(),
+            truncated: false,
+        },
+        &PipelineLimits {
+            max_dispatches: 1,
+            ..PipelineLimits::default()
+        },
+    );
+    assert!(batch.truncated);
+    assert_eq!(batch.events.len(), 1);
+    assert!(!batch.events[0].truncated);
+    assert!(matches!(
+        coverage_events(&batch)[0].kind,
+        EventKind::ModuleDone { found: 0, .. }
+    ));
+}
+
+#[test]
 fn upstream_origin_survives_collection_bridge() {
     let origin = UpstreamOrigin {
         provider: Some("oathnet".to_string()),
