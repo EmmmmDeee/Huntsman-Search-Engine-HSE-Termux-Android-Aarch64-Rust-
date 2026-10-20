@@ -92,7 +92,7 @@ pub const TIMEOUT: Duration = Duration::from_secs(120);
 /// monolith's two same-key retries (`attempt_with_key`, `retries = 2`).
 pub const ATTEMPTS_PER_PATH: u8 = 3;
 /// Longest pause between `429` attempts, and the pause when `Retry-After` is absent
-/// or not delta-seconds: the monolith's `retry_after_secs(headers, 4, 4)`.
+/// or unreadable.
 pub const RETRY_PAUSE_CAP: Duration = Duration::from_secs(4);
 
 // Confidence tiers carried over from the monolith's `core::confidence`.
@@ -337,6 +337,7 @@ fn query_path<T: Transport + ?Sized>(
                     .response
                     .as_ref()
                     .and_then(|r| r.header_value("retry-after")),
+                now_unix,
             );
             if deadline.sleep_within(pause) {
                 last_429 = Some(fetched.outcome.kind);
@@ -354,13 +355,12 @@ fn query_path<T: Transport + ?Sized>(
     }
 }
 
-/// The pause before the next `429` attempt: `Retry-After` as delta-seconds, or
-/// [`RETRY_PAUSE_CAP`] when absent or unparseable (an HTTP-date included), never
-/// more than [`RETRY_PAUSE_CAP`]. The monolith's `parse_retry_after_secs(v, 4, 4)`.
-/// **Pure.**
-fn retry_pause(value: Option<&str>) -> Duration {
+/// The pause before the next `429` attempt: what `Retry-After` asks for, as
+/// delta-seconds or an HTTP-date counted from `now_unix`, or [`RETRY_PAUSE_CAP`]
+/// when absent or unparseable, never more than [`RETRY_PAUSE_CAP`]. **Pure.**
+fn retry_pause(value: Option<&str>, now_unix: u64) -> Duration {
     value
-        .and_then(|v| v.trim().parse::<u64>().ok())
+        .and_then(|v| crate::http::retry_after_secs(v, now_unix))
         .map_or(RETRY_PAUSE_CAP, |secs| {
             Duration::from_secs(secs).min(RETRY_PAUSE_CAP)
         })

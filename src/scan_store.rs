@@ -14,6 +14,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -46,6 +47,11 @@ const ROW_FILE: &str = "scan.json";
 const RESULTS_FILE: &str = "results.json";
 const LOG_FILE: &str = "log.jsonl";
 
+// Serializes appends across ScanStore instances in one process. No cross-process guarantee.
+static LOG_APPEND_LOCK: Mutex<()> = Mutex::new(());
+// Serializes capacity admission and scan creation across store instances in this process.
+static SCAN_CREATE_LOCK: Mutex<()> = Mutex::new(());
+
 /// Why a store operation failed.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum StoreError {
@@ -53,6 +59,8 @@ pub enum StoreError {
     NotFound(String),
     #[error("{0}")]
     Invalid(String),
+    #[error("scan store capacity reached ({0}); delete finished scans before starting another")]
+    Capacity(usize),
     #[error("scan store: {0}")]
     Io(String),
 }
@@ -63,6 +71,32 @@ fn io_error(path: &Path, error: &std::io::Error) -> StoreError {
 
 fn fsio_error(error: &crate::error::Error) -> StoreError {
     StoreError::Io(error.to_string())
+}
+
+/// Only a confirmed non-directory or a concurrently removed entry is skipped.
+/// Other directory metadata failures must not silently hide a registered scan.
+fn is_scan_directory(
+    path: &Path,
+    file_type: std::io::Result<fs::FileType>,
+) -> Result<bool, StoreError> {
+    match file_type {
+        Ok(kind) => Ok(kind.is_dir()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error(path, &error)),
+    }
+}
+
+/// An optional scan artifact is absent only on `NotFound`, never on an I/O failure.
+/// Pass the checked metadata result so the classification is independently testable.
+fn optional_file_missing(
+    path: &Path,
+    metadata: std::io::Result<fs::Metadata>,
+) -> Result<bool, StoreError> {
+    match metadata {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(io_error(path, &error)),
+    }
 }
 
 /// A scan's state, by Spiderfoot's names.
@@ -281,6 +315,18 @@ pub enum LogLevel {
     Error,
 }
 
+impl LogLevel {
+    /// Its name as the log shows it: `INFO`, `WARNING` or `ERROR`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "INFO",
+            Self::Warning => "WARNING",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
 /// One line of a scan's log: Spiderfoot's Time, Component, Type and Event columns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -352,30 +398,108 @@ impl ScanStore {
         Ok(self.dir.join(id))
     }
 
-    /// Save a new scan's row.
+    /// Distinguish an absent scan from a filesystem failure while checking its row.
+    /// A nonregular row cannot establish that the scan is registered.
+    fn require_row(&self, id: &str) -> Result<(), StoreError> {
+        let path = self.scan_dir(id)?.join(ROW_FILE);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => Ok(()),
+            Ok(_) => Err(StoreError::Io(format!(
+                "{}: not a regular scan row",
+                path.display()
+            ))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(StoreError::NotFound(id.to_owned()))
+            }
+            Err(error) => Err(io_error(&path, &error)),
+        }
+    }
+
+    /// Save a new scan's row without making the store impossible to list.
     ///
     /// # Errors
-    /// [`StoreError::Invalid`] when a scan with that id exists; [`StoreError::Io`] on a write
-    /// failure.
+    /// [`StoreError::Invalid`] when an id exists; [`StoreError::Capacity`] when full;
+    /// [`StoreError::Io`] on an enumeration or write failure.
     pub fn create(&self, record: &ScanRecord) -> Result<(), StoreError> {
+        self.create_with_limit(record, MAX_SCANS)
+    }
+
+    fn create_with_limit(&self, record: &ScanRecord, max_scans: usize) -> Result<(), StoreError> {
+        let _guard = SCAN_CREATE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = self.scan_dir(&record.id)?;
         if fs::symlink_metadata(&dir).is_ok() {
             return Err(StoreError::Invalid(format!("scan {} exists", record.id)));
         }
+        // Count the same valid scan directories that `list` counts, but avoid
+        // reading and deserializing every row just to admit one new scan.
+        let mut count = 0;
+        for entry in fs::read_dir(&self.dir).map_err(|error| io_error(&self.dir, &error))? {
+            let entry = entry.map_err(|error| io_error(&self.dir, &error))?;
+            if !entry.file_name().to_str().is_some_and(valid_id) {
+                continue;
+            }
+            if is_scan_directory(&entry.path(), entry.file_type())? {
+                count += 1;
+                if count >= max_scans {
+                    return Err(StoreError::Capacity(max_scans));
+                }
+            }
+        }
         fs::create_dir(&dir).map_err(|error| io_error(&dir, &error))?;
-        private_dir(&dir)?;
-        self.update(record)
+        let created = private_dir(&dir).and_then(|()| self.write_row(record));
+        if let Err(error) = created {
+            // Only remove the directory if it remains empty. A concurrent writer's
+            // files must never be removed by rollback, even if the first write failed.
+            if let Err(cleanup) = fs::remove_dir(&dir) {
+                return Err(StoreError::Io(format!(
+                    "{error}; failed to remove incomplete scan directory {}: {cleanup}",
+                    dir.display()
+                )));
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
-    /// Replace a scan's row.
+    /// Replace an existing scan's row without creating an unregistered scan.
     ///
     /// # Errors
-    /// [`StoreError::NotFound`] for an id the store cannot hold; [`StoreError::Io`] on a write
-    /// failure.
+    /// [`StoreError::NotFound`] when the scan has no persisted row; [`StoreError::Io`] for
+    /// an unreadable or nonregular row, or a write failure.
     pub fn update(&self, record: &ScanRecord) -> Result<(), StoreError> {
         let path = self.scan_dir(&record.id)?.join(ROW_FILE);
-        let body = serde_json::to_vec_pretty(record)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(StoreError::Io(format!(
+                    "{}: not a regular scan row",
+                    path.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StoreError::NotFound(record.id.clone()));
+            }
+            Err(error) => return Err(io_error(&path, &error)),
+        }
+        self.write_row(record)
+    }
+
+    /// Write an initial or replacement scan row; only `create` may use this before a row exists.
+    fn write_row(&self, record: &ScanRecord) -> Result<(), StoreError> {
+        let path = self.scan_dir(&record.id)?.join(ROW_FILE);
+        let limit = usize::try_from(MAX_ROW_BYTES).unwrap_or(usize::MAX);
+        let body = match crate::json::to_bounded_json(record, limit, true) {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(required_bytes)) => {
+                return Err(StoreError::Io(format!(
+                    "{}: exceeds {MAX_ROW_BYTES} bytes (needs {required_bytes})",
+                    path.display()
+                )));
+            }
+            Err(error) => return Err(StoreError::Invalid(error.to_string())),
+        };
         crate::fsio::write_atomic_private(&path, &body, MAX_ROW_BYTES).map_err(|e| fsio_error(&e))
     }
 
@@ -386,10 +510,9 @@ impl ScanStore {
     /// cannot be read or parsed.
     pub fn get(&self, id: &str) -> Result<ScanRecord, StoreError> {
         let path = self.scan_dir(id)?.join(ROW_FILE);
-        if fs::symlink_metadata(&path).is_err() {
-            return Err(StoreError::NotFound(id.to_owned()));
-        }
-        let bytes = crate::fsio::read_bounded(&path, MAX_ROW_BYTES).map_err(|e| fsio_error(&e))?;
+        self.require_row(id)?;
+        let bytes = crate::fsio::read_bounded_replacing(&path, MAX_ROW_BYTES)
+            .map_err(|e| fsio_error(&e))?;
         let record: ScanRecord = serde_json::from_slice(&bytes)
             .map_err(|error| StoreError::Io(format!("{}: {error}", path.display())))?;
         if record.format_version != FORMAT_VERSION || record.id != id {
@@ -415,7 +538,10 @@ impl ScanStore {
             let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            if !valid_id(&id) || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            if !valid_id(&id) {
+                continue;
+            }
+            if !is_scan_directory(&entry.path(), entry.file_type())? {
                 continue;
             }
             if records.len() == MAX_SCANS {
@@ -436,12 +562,33 @@ impl ScanStore {
     /// Save what a scan found.
     ///
     /// # Errors
-    /// [`StoreError::NotFound`] for an id the store cannot hold; [`StoreError::Io`] on a write
-    /// failure or results over [`MAX_RESULTS_BYTES`].
+    /// [`StoreError::NotFound`] when the scan has no valid saved row; [`StoreError::Io`] on a
+    /// write failure or results over [`MAX_RESULTS_BYTES`].
     pub fn save_results(&self, results: &ScanResults) -> Result<(), StoreError> {
+        // Reject a version that this same store could not load. Without this
+        // check, an incompatible result replaces a readable artifact atomically,
+        // and every later results() call rejects the persisted file.
+        if results.format_version != FORMAT_VERSION {
+            return Err(StoreError::Invalid(format!(
+                "unsupported scan results format {} (expected {FORMAT_VERSION})",
+                results.format_version
+            )));
+        }
+        // The atomic writer creates parents; without this precondition, saving
+        // an unregistered scan would create a directory with no scan.json.
+        self.get(&results.scan_id)?;
         let path = self.scan_dir(&results.scan_id)?.join(RESULTS_FILE);
-        let body =
-            serde_json::to_vec(results).map_err(|error| StoreError::Invalid(error.to_string()))?;
+        let limit = usize::try_from(MAX_RESULTS_BYTES).unwrap_or(usize::MAX);
+        let body = match crate::json::to_bounded_json(results, limit, false) {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(required_bytes)) => {
+                return Err(StoreError::Io(format!(
+                    "{}: exceeds {MAX_RESULTS_BYTES} bytes (needs {required_bytes})",
+                    path.display()
+                )));
+            }
+            Err(error) => return Err(StoreError::Invalid(error.to_string())),
+        };
         crate::fsio::write_atomic_private(&path, &body, MAX_RESULTS_BYTES)
             .map_err(|e| fsio_error(&e))
     }
@@ -453,15 +600,13 @@ impl ScanStore {
     /// cannot be read or parsed.
     pub fn results(&self, id: &str) -> Result<Option<ScanResults>, StoreError> {
         let dir = self.scan_dir(id)?;
-        if fs::symlink_metadata(dir.join(ROW_FILE)).is_err() {
-            return Err(StoreError::NotFound(id.to_owned()));
-        }
+        self.require_row(id)?;
         let path = dir.join(RESULTS_FILE);
-        if fs::symlink_metadata(&path).is_err() {
+        if optional_file_missing(&path, fs::symlink_metadata(&path))? {
             return Ok(None);
         }
-        let bytes =
-            crate::fsio::read_bounded(&path, MAX_RESULTS_BYTES).map_err(|e| fsio_error(&e))?;
+        let bytes = crate::fsio::read_bounded_replacing(&path, MAX_RESULTS_BYTES)
+            .map_err(|e| fsio_error(&e))?;
         let results: ScanResults = serde_json::from_slice(&bytes)
             .map_err(|error| StoreError::Io(format!("{}: {error}", path.display())))?;
         if results.format_version != FORMAT_VERSION || results.scan_id != id {
@@ -477,23 +622,25 @@ impl ScanStore {
     /// single entry saying the log is full.
     ///
     /// # Errors
-    /// [`StoreError::NotFound`] for an id the store cannot hold; [`StoreError::Io`] on a write
-    /// failure or a symlink in place of the log.
+    /// [`StoreError::NotFound`] when no scan row exists; [`StoreError::Io`] on a write
+    /// failure, an unreadable scan row or a symlink in place of the log.
     pub fn append_log(&self, id: &str, entry: &LogEntry) -> Result<(), StoreError> {
+        // The lock applies to every store instance in this process and covers
+        // both the size decision and the append. Another process must still
+        // coordinate separately: std has no portable cross-process append lock
+        // on the project's Rust 1.87 baseline.
+        let _guard = LOG_APPEND_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // An orphaned scan directory must not accept logs as if it were a scan.
+        self.require_row(id)?;
         let path = self.scan_dir(id)?.join(LOG_FILE);
-        let size = match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
-                return Err(StoreError::Io(format!(
-                    "{}: not a regular file",
-                    path.display()
-                )));
-            }
-            Ok(meta) => meta.len(),
-            Err(_) => 0,
-        };
-        let mut line =
-            serde_json::to_string(entry).map_err(|error| StoreError::Invalid(error.to_string()))?;
-        line.push('\n');
+        let mut file = checked_open_for_append(&path)?;
+        let size = file
+            .metadata()
+            .map_err(|error| io_error(&path, &error))?
+            .len();
+
         let full = LogEntry {
             time: entry.time,
             component: "huntsman".into(),
@@ -501,26 +648,35 @@ impl ScanStore {
             message: format!("log full at {MAX_LOG_BYTES} bytes; later entries are not kept"),
         };
         let mut full_line =
-            serde_json::to_string(&full).map_err(|error| StoreError::Invalid(error.to_string()))?;
-        full_line.push('\n');
-        let line = if size + (line.len() as u64) + (full_line.len() as u64) <= MAX_LOG_BYTES {
-            line
-        } else if size + (full_line.len() as u64) <= MAX_LOG_BYTES && !log_is_full(&path) {
-            full_line
+            serde_json::to_vec(&full).map_err(|error| StoreError::Invalid(error.to_string()))?;
+        full_line.push(b'\n');
+
+        // A very large log message must not allocate an unbounded encoded
+        // string merely to be discarded. A single oversized entry consumes
+        // only the log-full marker, if room is available.
+        let limit = usize::try_from(MAX_LOG_BYTES).unwrap_or(usize::MAX);
+        let mut line = crate::json::to_bounded_json(entry, limit, false)
+            .map_err(|error| StoreError::Invalid(error.to_string()))?
+            .ok();
+        if let Some(bytes) = &mut line {
+            bytes.push(b'\n');
+        }
+
+        let selected = if let Some(bytes) = line.as_ref().filter(|bytes| {
+            size.saturating_add(bytes.len() as u64)
+                .saturating_add(full_line.len() as u64)
+                <= MAX_LOG_BYTES
+        }) {
+            bytes.as_slice()
+        } else if size.saturating_add(full_line.len() as u64) <= MAX_LOG_BYTES
+            && !log_is_full(&path)
+        {
+            full_line.as_slice()
         } else {
             return Ok(());
         };
-        let mut options = OpenOptions::new();
-        options.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&path)
-            .map_err(|error| io_error(&path, &error))?;
-        file.write_all(line.as_bytes())
+
+        file.write_all(selected)
             .map_err(|error| io_error(&path, &error))
     }
 
@@ -532,11 +688,9 @@ impl ScanStore {
     /// cannot be read.
     pub fn log(&self, id: &str) -> Result<Vec<LogEntry>, StoreError> {
         let dir = self.scan_dir(id)?;
-        if fs::symlink_metadata(dir.join(ROW_FILE)).is_err() {
-            return Err(StoreError::NotFound(id.to_owned()));
-        }
+        self.require_row(id)?;
         let path = dir.join(LOG_FILE);
-        if fs::symlink_metadata(&path).is_err() {
+        if optional_file_missing(&path, fs::symlink_metadata(&path))? {
             return Ok(Vec::new());
         }
         let bytes = crate::fsio::read_bounded(&path, MAX_LOG_BYTES).map_err(|e| fsio_error(&e))?;
@@ -570,7 +724,10 @@ impl ScanStore {
                 "{}: not a directory",
                 dir.display()
             ))),
-            Err(_) => Err(StoreError::NotFound(id.to_owned())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(StoreError::NotFound(id.to_owned()))
+            }
+            Err(error) => Err(io_error(&dir, &error)),
         }
     }
 
@@ -617,9 +774,79 @@ fn other_process_alive(pid: u32) -> bool {
     pid != std::process::id() && Path::new("/proc").join(pid.to_string()).exists()
 }
 
+/// Open an append descriptor only after confirming that the path is a regular
+/// file and that its opened inode is the inode checked before the open.
+/// Creation uses `create_new`, so an attacker cannot plant a symlink in the
+/// missing-file window and have it followed.
+fn checked_open_for_append(path: &Path) -> Result<std::fs::File, StoreError> {
+    checked_open_for_append_with(path, || {})
+}
+
+fn checked_open_for_append_with(
+    path: &Path,
+    after_check: impl FnOnce(),
+) -> Result<std::fs::File, StoreError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| StoreError::Io(format!("{}: no parent", path.display())))?;
+    let directory = fs::symlink_metadata(parent).map_err(|error| io_error(parent, &error))?;
+    if directory.file_type().is_symlink() || !directory.is_dir() {
+        return Err(StoreError::Io(format!(
+            "{}: not a regular directory",
+            parent.display()
+        )));
+    }
+
+    let checked = match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
+            return Err(StoreError::Io(format!(
+                "{}: not a regular file",
+                path.display()
+            )));
+        }
+        Ok(meta) => Some(meta),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(io_error(path, &error)),
+    };
+    after_check();
+
+    let mut options = OpenOptions::new();
+    options.append(true);
+    if checked.is_none() {
+        options.create_new(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path).map_err(|error| io_error(path, &error))?;
+    let opened = file.metadata().map_err(|error| io_error(path, &error))?;
+    if !opened.is_file()
+        || checked
+            .as_ref()
+            .is_some_and(|meta| !crate::fsio::same_inode(meta, &opened))
+    {
+        return Err(StoreError::Io(format!(
+            "{}: file changed between check and open",
+            path.display()
+        )));
+    }
+    Ok(file)
+}
+
 fn log_is_full(path: &Path) -> bool {
-    crate::fsio::read_bounded(path, MAX_LOG_BYTES)
-        .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("\"message\":\"log full at"))
+    let Ok(bytes) = crate::fsio::read_bounded(path, MAX_LOG_BYTES) else {
+        return false;
+    };
+    let marker = format!("log full at {MAX_LOG_BYTES} bytes; later entries are not kept");
+    bytes.split(|byte| *byte == b'\n').any(|line| {
+        serde_json::from_slice::<LogEntry>(line).is_ok_and(|entry| {
+            entry.component == "huntsman"
+                && entry.level == LogLevel::Warning
+                && entry.message == marker
+        })
+    })
 }
 
 fn unreadable(id: &str, error: &StoreError) -> ScanRecord {
@@ -692,6 +919,104 @@ mod tests {
     }
 
     #[test]
+    fn scan_listing_classifies_metadata_io_as_failure_not_absence() {
+        let dir = scratch("list-metadata-io");
+        let store = ScanStore::open(&dir).unwrap();
+        let scan = record(&new_id("listed", 32, 0), 32, ScanStatus::Finished);
+        store.create(&scan).unwrap();
+        let extra = new_id("ordinary-file", 33, 0);
+        fs::write(dir.join(&extra), b"not a scan directory").unwrap();
+
+        assert_eq!(store.list().unwrap(), vec![scan.clone()]);
+        let scan_type = fs::symlink_metadata(dir.join(&scan.id))
+            .unwrap()
+            .file_type();
+        assert_eq!(
+            is_scan_directory(&dir.join(&scan.id), Ok(scan_type)),
+            Ok(true)
+        );
+        let file_type = fs::symlink_metadata(dir.join(&extra)).unwrap().file_type();
+        assert_eq!(
+            is_scan_directory(&dir.join(&extra), Ok(file_type)),
+            Ok(false)
+        );
+
+        let removed_during_list = is_scan_directory(
+            &dir.join(&scan.id),
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+        );
+        assert_eq!(removed_during_list, Ok(false));
+
+        let injected_failure = is_scan_directory(
+            &dir.join(&scan.id),
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        );
+        assert!(
+            matches!(injected_failure, Err(StoreError::Io(_))),
+            "a failed metadata query must not silently hide a scan"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_creation_rejects_capacity_without_damaging_existing_scans() {
+        let dir = scratch("capacity");
+        let store = ScanStore::open(&dir).unwrap();
+        let first = record(&new_id("first", 1, 0), 1, ScanStatus::Finished);
+        let second = record(&new_id("second", 2, 0), 2, ScanStatus::Finished);
+        let third = record(&new_id("third", 3, 0), 3, ScanStatus::Created);
+
+        store.create_with_limit(&first, 2).unwrap();
+        store.create_with_limit(&second, 2).unwrap();
+        let refused = store.create_with_limit(&third, 2);
+        assert_eq!(refused, Err(StoreError::Capacity(2)));
+        assert!(!dir.join(&third.id).exists());
+        assert_eq!(store.get(&first.id).unwrap(), first);
+        assert_eq!(store.get(&second.id).unwrap(), second);
+        assert_eq!(store.list().unwrap().len(), 2);
+
+        store.delete(&first.id).unwrap();
+        store.create_with_limit(&third, 2).unwrap();
+        assert_eq!(store.list().unwrap().len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_scan_creation_cannot_exceed_same_process_capacity() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = scratch("capacity-concurrent");
+        let store = ScanStore::open(&dir).unwrap();
+        let gate = Arc::new(Barrier::new(3));
+        let mut threads = Vec::new();
+        for i in 0_u64..2 {
+            let store = store.clone();
+            let gate = Arc::clone(&gate);
+            threads.push(std::thread::spawn(move || {
+                let row = record(
+                    &new_id("same-capacity", u128::from(10 + i), i),
+                    10 + i,
+                    ScanStatus::Created,
+                );
+                gate.wait();
+                store.create_with_limit(&row, 1)
+            }));
+        }
+        gate.wait();
+        let mut successes = 0;
+        for thread in threads {
+            match thread.join().unwrap() {
+                Ok(()) => successes += 1,
+                Err(StoreError::Capacity(1)) => {}
+                Err(error) => panic!("unexpected scan admission error: {error}"),
+            }
+        }
+        assert_eq!(successes, 1);
+        assert_eq!(store.list().unwrap().len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn rows_round_trip_and_list_newest_first() {
         let dir = scratch("list");
         let store = ScanStore::open(&dir).unwrap();
@@ -718,6 +1043,160 @@ mod tests {
         assert!(valid_id(&new_id("x", 0, 0)));
         assert_ne!(new_id("x", 0, 0), new_id("x", 0, 1));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn optional_scan_files_distinguish_absence_from_metadata_errors() {
+        let dir = scratch("optional-file-errors");
+        let store = ScanStore::open(&dir).unwrap();
+        let row = record(&new_id("optional-files", 305, 0), 305, ScanStatus::Created);
+        store.create(&row).unwrap();
+
+        let absent_path = dir.join(&row.id).join(RESULTS_FILE);
+        assert_eq!(
+            optional_file_missing(&absent_path, fs::symlink_metadata(&absent_path)),
+            Ok(true)
+        );
+        assert_eq!(store.results(&row.id).unwrap(), None);
+        assert!(store.log(&row.id).unwrap().is_empty());
+
+        let io_failure = optional_file_missing(
+            &absent_path,
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        );
+        assert!(
+            matches!(io_failure, Err(StoreError::Io(_))),
+            "metadata access failures must not masquerade as missing results or logs"
+        );
+        fs::write(&absent_path, b"present").unwrap();
+        assert_eq!(
+            optional_file_missing(&absent_path, fs::symlink_metadata(&absent_path)),
+            Ok(false)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_results_cannot_create_a_scan_without_a_record() {
+        let dir = scratch("results-no-row");
+        let store = ScanStore::open(&dir).unwrap();
+        let id = new_id("missing-row", 303, 0);
+        let results = ScanResults {
+            format_version: FORMAT_VERSION,
+            scan_id: id.clone(),
+            text: "orphaned".into(),
+            entities: Vec::new(),
+            outcomes: Vec::new(),
+            elements: Vec::new(),
+            correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
+        };
+        assert_eq!(
+            store.save_results(&results),
+            Err(StoreError::NotFound(id.clone()))
+        );
+        assert!(
+            !dir.join(&id).exists(),
+            "results must not create a scan directory"
+        );
+        assert!(store.list().unwrap().is_empty());
+
+        let row = record(&id, 303, ScanStatus::Finished);
+        store.create(&row).unwrap();
+        store.save_results(&results).unwrap();
+        assert_eq!(store.results(&id).unwrap(), Some(results));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn incompatible_results_version_is_rejected_before_overwriting_a_valid_artifact() {
+        let dir = scratch("results-version-write");
+        let store = ScanStore::open(&dir).unwrap();
+        let id = new_id("results-version-write", 305, 0);
+        store
+            .create(&record(&id, 305, ScanStatus::Finished))
+            .unwrap();
+        let mut results = ScanResults {
+            format_version: FORMAT_VERSION,
+            scan_id: id.clone(),
+            text: "verified baseline".into(),
+            entities: Vec::new(),
+            outcomes: Vec::new(),
+            elements: Vec::new(),
+            correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
+        };
+        store.save_results(&results).unwrap();
+        let path = dir.join(&id).join(RESULTS_FILE);
+        let original_bytes = fs::read(&path).unwrap();
+
+        results.format_version = FORMAT_VERSION + 1;
+        results.text = "unreadable replacement".into();
+        assert!(matches!(
+            store.save_results(&results),
+            Err(StoreError::Invalid(message)) if message.contains("unsupported scan results format")
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        results.format_version = FORMAT_VERSION;
+        results.text = "verified baseline".into();
+        assert_eq!(store.results(&id).unwrap(), Some(results));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_log_does_not_create_an_orphaned_scan_log() {
+        let dir = scratch("orphan-log");
+        let store = ScanStore::open(&dir).unwrap();
+        let id = new_id("orphan", 304, 0);
+        let entry = LogEntry {
+            time: 1,
+            component: "huntsman".into(),
+            level: LogLevel::Info,
+            message: "a real event".into(),
+        };
+
+        assert_eq!(
+            store.append_log(&id, &entry),
+            Err(StoreError::NotFound(id.clone()))
+        );
+        assert!(!dir.join(&id).exists());
+
+        // Even a pre-existing empty directory cannot stand in for a scan row.
+        fs::create_dir(dir.join(&id)).unwrap();
+        assert_eq!(
+            store.append_log(&id, &entry),
+            Err(StoreError::NotFound(id.clone()))
+        );
+        assert!(!dir.join(&id).join(LOG_FILE).exists());
+        fs::remove_dir(dir.join(&id)).unwrap();
+
+        let row = record(&id, 304, ScanStatus::Created);
+        store.create(&row).unwrap();
+        store.append_log(&id, &entry).unwrap();
+        assert_eq!(store.log(&id).unwrap(), [entry]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deleting_scans_propagates_filesystem_metadata_failures() {
+        let dir = scratch("delete-metadata-io");
+        let store = ScanStore::open(&dir).unwrap();
+        let id = new_id("delete-metadata-io", 370, 0);
+        let row = record(&id, 370, ScanStatus::Finished);
+        store.create(&row).unwrap();
+        store.delete(&id).unwrap();
+        assert_eq!(store.delete(&id), Err(StoreError::NotFound(id.clone())));
+
+        // A non-directory ancestor raises ENOTDIR, not ENOENT: this is a
+        // damaged store path, not proof that the scan is absent.
+        fs::remove_dir(&dir).unwrap();
+        fs::write(&dir, b"not a scan store directory").unwrap();
+        assert!(matches!(store.delete(&id), Err(StoreError::Io(_))));
+        fs::remove_file(&dir).unwrap();
     }
 
     #[test]
@@ -798,6 +1277,33 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_non_directory_scan_path_is_io_failure_not_a_missing_scan() {
+        let dir = scratch("scan-not-directory");
+        let store = ScanStore::open(&dir).unwrap();
+        let id = new_id("not-a-directory", 101, 0);
+        fs::write(dir.join(&id), b"not a scan directory").unwrap();
+        assert!(matches!(store.get(&id), Err(StoreError::Io(_))));
+        assert!(matches!(store.results(&id), Err(StoreError::Io(_))));
+        assert!(matches!(store.log(&id), Err(StoreError::Io(_))));
+
+        let absent = new_id("absent", 102, 0);
+        assert_eq!(
+            store.get(&absent),
+            Err(StoreError::NotFound(absent.clone()))
+        );
+        assert_eq!(
+            store.results(&absent),
+            Err(StoreError::NotFound(absent.clone()))
+        );
+        assert_eq!(
+            store.log(&absent),
+            Err(StoreError::NotFound(absent.clone()))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn an_unreadable_row_is_listed_as_failed_instead_of_hidden() {
         let dir = scratch("corrupt");
@@ -852,6 +1358,195 @@ mod tests {
         assert_eq!(mode(&dir.join(&row.id)), 0o700);
         assert_eq!(mode(&dir.join(&row.id).join(ROW_FILE)), 0o600);
         assert_eq!(mode(&dir.join(&row.id).join(LOG_FILE)), 0o600);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_initial_row_write_leaves_no_phantom_scan_and_id_can_be_reused() {
+        let dir = scratch("failed-create");
+        let store = ScanStore::open(&dir).unwrap();
+        let mut oversized = record(&new_id("too-large", 201, 0), 201, ScanStatus::Created);
+        oversized.name = "x".repeat(usize::try_from(MAX_ROW_BYTES).unwrap());
+        assert!(matches!(store.create(&oversized), Err(StoreError::Io(_))));
+        assert!(
+            !dir.join(&oversized.id).exists(),
+            "a failed create must not leave a scan directory without a row"
+        );
+        assert!(store.list().unwrap().is_empty());
+
+        let mut valid = oversized;
+        valid.name = "retry".into();
+        store.create(&valid).unwrap();
+        assert_eq!(store.get(&valid.id).unwrap(), valid);
+        assert_eq!(store.list().unwrap().len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_refuses_missing_and_deleted_scan_rows_without_creating_directories() {
+        let dir = scratch("update-missing-row");
+        let store = ScanStore::open(&dir).unwrap();
+        let row = record(&new_id("update-absent", 401, 0), 401, ScanStatus::Created);
+        assert_eq!(
+            store.update(&row),
+            Err(StoreError::NotFound(row.id.clone()))
+        );
+        assert!(!dir.join(&row.id).exists());
+        assert!(store.list().unwrap().is_empty());
+
+        store.create(&row).unwrap();
+        let mut finished = row.clone();
+        finished.status = ScanStatus::Finished;
+        store.update(&finished).unwrap();
+        assert_eq!(store.get(&row.id).unwrap(), finished);
+
+        store.delete(&row.id).unwrap();
+        assert_eq!(
+            store.update(&finished),
+            Err(StoreError::NotFound(row.id.clone()))
+        );
+        assert!(!dir.join(&row.id).exists());
+        assert!(store.list().unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn oversized_row_update_never_replaces_previous_scan() {
+        let dir = scratch("oversized-row");
+        let store = ScanStore::open(&dir).unwrap();
+        let original = record(&new_id("oversized", 100, 0), 100, ScanStatus::Finished);
+        store.create(&original).unwrap();
+        let before = fs::read(dir.join(&original.id).join(ROW_FILE)).unwrap();
+        let mut larger = original.clone();
+        larger.name = "x".repeat(usize::try_from(MAX_ROW_BYTES).unwrap());
+        assert!(matches!(store.update(&larger), Err(StoreError::Io(_))));
+        assert_eq!(store.get(&original.id).unwrap(), original);
+        assert_eq!(
+            fs::read(dir.join(&original.id).join(ROW_FILE)).unwrap(),
+            before
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_refuses_symlink_swapped_between_check_and_open() {
+        let dir = scratch("log-link-swap");
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join(LOG_FILE);
+        let unrelated = dir.join("unrelated.jsonl");
+        fs::write(&log, b"old\n").unwrap();
+        fs::write(&unrelated, b"protected\n").unwrap();
+        let result = checked_open_for_append_with(&log, || {
+            fs::remove_file(&log).unwrap();
+            std::os::unix::fs::symlink(&unrelated, &log).unwrap();
+        });
+        assert!(matches!(result, Err(StoreError::Io(_))));
+        assert_eq!(fs::read(&unrelated).unwrap(), b"protected\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_refuses_existing_log_symlink_and_nonregular_file() {
+        let dir = scratch("log-nonregular");
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join(LOG_FILE);
+        let unrelated = dir.join("unrelated");
+        fs::write(&unrelated, b"unchanged").unwrap();
+        std::os::unix::fs::symlink(&unrelated, &log).unwrap();
+        assert!(checked_open_for_append(&log).is_err());
+        fs::remove_file(&log).unwrap();
+        fs::create_dir(&log).unwrap();
+        assert!(checked_open_for_append(&log).is_err());
+        assert_eq!(fs::read(&unrelated).unwrap(), b"unchanged");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spoofed_log_full_message_does_not_suppress_real_marker() {
+        let dir = scratch("marker-spoof");
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join(LOG_FILE);
+        let fake = LogEntry {
+            time: 1,
+            component: "source".into(),
+            level: LogLevel::Info,
+            message: format!("log full at {MAX_LOG_BYTES} bytes; later entries are not kept"),
+        };
+        fs::write(&log, serde_json::to_vec(&fake).unwrap()).unwrap();
+        assert!(!log_is_full(&log));
+        let genuine = LogEntry {
+            component: "huntsman".into(),
+            level: LogLevel::Warning,
+            ..fake
+        };
+        fs::write(&log, serde_json::to_vec(&genuine).unwrap()).unwrap();
+        assert!(log_is_full(&log));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn oversized_entry_writes_one_marker_and_never_overshoots_budget() {
+        let dir = scratch("oversized-log-message");
+        let store = ScanStore::open(&dir).unwrap();
+        let record = record(&new_id("large-log", 31, 0), 31, ScanStatus::Running);
+        store.create(&record).unwrap();
+        let enormous = LogEntry {
+            time: 31,
+            component: "source".into(),
+            level: LogLevel::Error,
+            message: "x".repeat(usize::try_from(MAX_LOG_BYTES).unwrap()),
+        };
+        store.append_log(&record.id, &enormous).unwrap();
+        store.append_log(&record.id, &enormous).unwrap();
+        let log = store.log(&record.id).unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].level, LogLevel::Warning);
+        assert!(log[0].message.starts_with("log full at"));
+        assert!(
+            fs::metadata(dir.join(&record.id).join(LOG_FILE))
+                .unwrap()
+                .len()
+                <= MAX_LOG_BYTES
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn same_process_concurrent_log_writers_do_not_lose_entries() {
+        let dir = scratch("concurrent-append");
+        let store = ScanStore::open(&dir).unwrap();
+        let row = record(&new_id("concurrent-log", 41, 0), 41, ScanStatus::Running);
+        store.create(&row).unwrap();
+        std::thread::scope(|scope| {
+            for worker in 0..8 {
+                let id = &row.id;
+                let store = &store;
+                scope.spawn(move || {
+                    for number in 0..25 {
+                        store
+                            .append_log(
+                                id,
+                                &LogEntry {
+                                    time: number,
+                                    component: format!("worker-{worker}"),
+                                    level: LogLevel::Info,
+                                    message: format!("entry-{number}"),
+                                },
+                            )
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(store.log(&row.id).unwrap().len(), 200);
+        assert!(
+            fs::metadata(dir.join(&row.id).join(LOG_FILE))
+                .unwrap()
+                .len()
+                <= MAX_LOG_BYTES
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

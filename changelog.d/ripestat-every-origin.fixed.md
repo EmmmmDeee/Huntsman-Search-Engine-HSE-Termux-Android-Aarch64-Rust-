@@ -1,0 +1,1 @@
+- RIPEstat routing keeps every origin AS of a prefix instead of the first eight.

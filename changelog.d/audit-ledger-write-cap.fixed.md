@@ -1,0 +1,1 @@
+- A saved ledger is no longer capped at 1 MiB. `--save` on a large lookup (a domain with thousands of names) failed after the lookup had spent its requests; the writer and the reader now share the 32 MiB saved-artifact ceiling, so anything saved can be loaded again.

@@ -1,15 +1,18 @@
 //! Shared persistence core for lookup front-ends.
 //!
 //! Lookup-specific save modules provide only provenance mapping and the
-//! "does not show" boundary. Chain construction, outcome labelling, evidence
-//! levels, ledger append order, and atomic persistence live here once.
+//! "does not show" boundary. Chain construction, the complete record each claim
+//! carries, evidence levels, ledger append order, and atomic persistence live
+//! here once.
 
 use std::path::Path;
 
-use crate::entity::Entity;
+use serde::Serialize;
+
+use crate::entity::{Entity, EntityKind, Evidence};
 use crate::error::Error;
 use crate::ledger::{self, Claim, LedgerEntry};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::SourceExecutionOutcome;
 use crate::stage::{EvidenceLevel, Status};
 
 pub type ProvenanceFn = for<'a> fn(&'a str) -> (&'a str, &'static str);
@@ -143,6 +146,7 @@ pub const USERNAME_EXPOSURE_POLICY: SavePolicy = SavePolicy {
 fn domain_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "crtsh" => ("crtsh", "src/crtsh.rs"),
+        "certspotter" => ("certspotter", "src/certspotter.rs"),
         "dns" => ("dns", "src/dns.rs"),
         "virustotal" => ("virustotal", "src/virustotal.rs"),
         "hunter" => ("hunter", "src/hunter.rs"),
@@ -188,7 +192,22 @@ fn indicator_provenance(source: &str) -> Option<(&str, &'static str)> {
         "robtex" => ("robtex", "src/robtex.rs"),
         "hackertarget" => ("hackertarget", "src/hackertarget.rs"),
         "stopforumspam" => ("stopforumspam", "src/stopforumspam.rs"),
+        "isc" => ("isc", "src/isc.rs"),
+        "maltiverse" => ("maltiverse", "src/maltiverse.rs"),
+        "phishstats" => ("phishstats", "src/phishstats.rs"),
         "xposed_or_not" => ("xposed_or_not", "src/xposedornot.rs"),
+        "rdap" => ("rdap", "src/rdap.rs"),
+        "mnemonic" => ("mnemonic", "src/mnemonic.rs"),
+        "dnsresolve" => ("dnsresolve", "src/dns.rs"),
+        list @ ("spamhaus" | "spamcop" | "uceprotect" | "dronebl" | "sorbs" | "surbl") => {
+            (list, "src/dnsbl.rs")
+        }
+        filter @ ("adguard_dns" | "cleanbrowsing" | "cloudflaredns" | "comodo"
+        | "dns_for_family" | "opendns" | "quad9" | "yandexdns") => (filter, "src/dns_filter.rs"),
+        feed @ ("abusech" | "alienvaultiprep" | "blocklistde" | "botvrij" | "cinsscore"
+        | "cleantalk" | "coinblocker" | "cybercrimetracker" | "emergingthreats"
+        | "greensnow" | "openphish" | "phishtank" | "stevenblack_hosts" | "torexits"
+        | "voipbl" | "vxvault") => (feed, "src/threat_feeds.rs"),
         _ => return None,
     })
 }
@@ -198,6 +217,34 @@ pub const IP_POLICY: SavePolicy = SavePolicy {
     does_not_show: "an address-reputation lead is not an identity-resolution verdict",
     outcome_provenance: ip_provenance,
     entity_provenance: ip_provenance,
+};
+
+fn netblock_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        "ripestat" => ("ripestat", "src/ripestat.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/netblock_cli.rs")),
+    }
+}
+
+pub const NETBLOCK_POLICY: SavePolicy = SavePolicy {
+    default_source: "rdap",
+    does_not_show: "an address-block lead is not an identity-resolution verdict",
+    outcome_provenance: netblock_provenance,
+    entity_provenance: netblock_provenance,
+};
+
+fn asn_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        "ripestat" => ("ripestat", "src/ripestat.rs"),
+        other => indicator_provenance(other).unwrap_or((source, "src/asn_cli.rs")),
+    }
+}
+
+pub const ASN_POLICY: SavePolicy = SavePolicy {
+    default_source: "ripestat",
+    does_not_show: "an autonomous-system lead is not an identity-resolution verdict",
+    outcome_provenance: asn_provenance,
+    entity_provenance: asn_provenance,
 };
 
 fn network_provenance(source: &str) -> (&str, &'static str) {
@@ -233,8 +280,15 @@ pub fn save(
 
 /// Build the ledger entries without performing I/O.
 ///
+/// The entries follow the order a report prints in: each source outcome, then each entity, then
+/// every evidence record behind that entity. Each claim is the whole record it names, serialised as
+/// JSON, so no field of an outcome, an entity or an evidence record is left out, and every attribute
+/// of an evidence record is kept. Each claim names the module that made its record, so a record
+/// never takes another record's provenance.
+///
 /// # Errors
-/// Refuses an empty report so a skipped lookup cannot be persisted as if it ran.
+/// Refuses an empty report so a skipped lookup cannot be persisted as if it ran, and refuses a
+/// record that cannot be serialised rather than saving part of it.
 pub fn chain(
     entities: &[Entity],
     outcomes: &[SourceExecutionOutcome],
@@ -244,38 +298,42 @@ pub fn chain(
         return Err(Error::Invalid("nothing to save".into()));
     }
 
-    let mut previous = ledger::GENESIS.to_owned();
-    let mut entries = Vec::with_capacity(outcomes.len().saturating_add(entities.len()));
-
+    let mut claims = Vec::new();
     for outcome in outcomes {
-        let entry = ledger::append(&previous, &outcome_claim(outcome, policy));
-        previous.clone_from(&entry.hash);
-        entries.push(entry);
+        claims.push(outcome_claim(outcome, policy)?);
     }
     for entity in entities {
-        let entry = ledger::append(&previous, &entity_claim(entity, policy));
+        claims.push(entity_claim(entity, policy)?);
+        for evidence in &entity.evidence {
+            claims.push(evidence_claim(entity, evidence, policy)?);
+        }
+    }
+
+    let mut previous = ledger::GENESIS.to_owned();
+    let mut entries = Vec::with_capacity(claims.len());
+    for claim in &claims {
+        let entry = ledger::append(&previous, claim);
         previous.clone_from(&entry.hash);
         entries.push(entry);
     }
     Ok(entries)
 }
 
-fn outcome_claim(outcome: &SourceExecutionOutcome, policy: SavePolicy) -> Claim {
-    let found = outcome
-        .found
-        .map_or_else(|| "none".to_owned(), |count| count.to_string());
+/// One record as JSON. A record that will not serialise is refused, never saved in part.
+fn record_text<T: Serialize + ?Sized>(record: &T, what: &str) -> Result<String, Error> {
+    serde_json::to_string(record)
+        .map_err(|err| Error::Invalid(format!("{what} cannot be saved: {err}")))
+}
+
+/// The module a record names: its own source, or the policy's default when it names none.
+fn record_source<'a>(source: &'a str, default: &'a str) -> &'a str {
+    if source.is_empty() { default } else { source }
+}
+
+fn outcome_claim(outcome: &SourceExecutionOutcome, policy: SavePolicy) -> Result<Claim, Error> {
     let (source, component) = (policy.outcome_provenance)(&outcome.module);
-    let mut claim = format!(
-        "{} {} found={found}",
-        outcome.module,
-        kind_label(outcome.kind)
-    );
-    if let Some(detail) = crate::lookup_report::outcome_detail(outcome) {
-        claim.push_str(" detail=");
-        claim.push_str(&detail);
-    }
-    Claim {
-        claim,
+    Ok(Claim {
+        claim: record_text(outcome, "a source outcome")?,
         source: source.into(),
         component: component.into(),
         technique_id: None,
@@ -286,65 +344,98 @@ fn outcome_claim(outcome: &SourceExecutionOutcome, policy: SavePolicy) -> Claim 
             EvidenceLevel::Assertion
         },
         does_not_show: policy.does_not_show.into(),
-    }
+    })
 }
 
-fn entity_claim(entity: &Entity, policy: SavePolicy) -> Claim {
-    let observed_source = entity
+fn entity_claim(entity: &Entity, policy: SavePolicy) -> Result<Claim, Error> {
+    let observed = entity
         .evidence
         .first()
-        .map(|evidence| evidence.provenance.source.as_str())
-        .filter(|source| !source.is_empty())
-        .unwrap_or(policy.default_source);
-    let (source, component) = (policy.entity_provenance)(observed_source);
-    Claim {
-        claim: format!("{} {}", entity.kind, entity.raw_value),
+        .map_or("", |evidence| evidence.provenance.source.as_str());
+    let (source, component) =
+        (policy.entity_provenance)(record_source(observed, policy.default_source));
+    Ok(Claim {
+        claim: entity_text(entity)?,
         source: source.into(),
         component: component.into(),
         technique_id: None,
         status: Status::Unverified,
         evidence_level: EvidenceLevel::PrimaryEvidence,
         does_not_show: policy.does_not_show.into(),
-    }
+    })
 }
 
-#[must_use]
-pub const fn kind_label(kind: SourceOutcomeKind) -> &'static str {
-    match kind {
-        SourceOutcomeKind::Success => "success",
-        SourceOutcomeKind::ValidZero => "valid_zero",
-        SourceOutcomeKind::AuthRequired => "auth_required",
-        SourceOutcomeKind::AuthRejected => "auth_rejected",
-        SourceOutcomeKind::EntitlementDenied => "entitlement_denied",
-        SourceOutcomeKind::QuotaExhausted => "quota_exhausted",
-        SourceOutcomeKind::RateLimited => "rate_limited",
-        SourceOutcomeKind::BotWaf => "bot_waf",
-        SourceOutcomeKind::DnsFailure => "dns_failure",
-        SourceOutcomeKind::ConnectFailure => "connect_failure",
-        SourceOutcomeKind::TlsFailure => "tls_failure",
-        SourceOutcomeKind::TtfbTimeout => "ttfb_timeout",
-        SourceOutcomeKind::BodyTimeout => "body_timeout",
-        SourceOutcomeKind::Upstream4xx => "upstream_4xx",
-        SourceOutcomeKind::Upstream5xx => "upstream_5xx",
-        SourceOutcomeKind::RedirectChanged => "redirect_changed",
-        SourceOutcomeKind::ProtocolDrift => "protocol_drift",
-        SourceOutcomeKind::InteractionDrift => "interaction_drift",
-        SourceOutcomeKind::SchemaDrift => "schema_drift",
-        SourceOutcomeKind::ParserDrift => "parser_drift",
-        SourceOutcomeKind::SemanticDrift => "semantic_drift",
-        SourceOutcomeKind::ZeroYieldAnomaly => "zero_yield_anomaly",
-        SourceOutcomeKind::ConfirmedDead => "confirmed_dead",
-        SourceOutcomeKind::Inconclusive => "inconclusive",
-    }
+/// The entity's own fields as JSON. Its evidence records follow as claims of their own, so they are
+/// left out here rather than saved twice.
+fn entity_text(entity: &Entity) -> Result<String, Error> {
+    let mut fields = serde_json::to_value(entity)
+        .map_err(|err| Error::Invalid(format!("an entity cannot be saved: {err}")))?;
+    let Some(object) = fields.as_object_mut() else {
+        return Err(Error::Invalid(
+            "an entity cannot be saved: it is not a record".into(),
+        ));
+    };
+    object.remove("evidence");
+    Ok(fields.to_string())
+}
+
+/// One evidence record with the entity it belongs to, so its claim reads on its own.
+#[derive(Serialize)]
+struct EvidenceRecord<'a> {
+    entity_uid: &'a str,
+    kind: &'a EntityKind,
+    raw_value: &'a str,
+    evidence: &'a Evidence,
+}
+
+fn evidence_claim(
+    entity: &Entity,
+    evidence: &Evidence,
+    policy: SavePolicy,
+) -> Result<Claim, Error> {
+    let (source, component) = (policy.entity_provenance)(record_source(
+        &evidence.provenance.source,
+        policy.default_source,
+    ));
+    let record = EvidenceRecord {
+        entity_uid: &entity.uid,
+        kind: &entity.kind,
+        raw_value: &entity.raw_value,
+        evidence,
+    };
+    Ok(Claim {
+        claim: record_text(&record, "an evidence record")?,
+        source: source.into(),
+        component: component.into(),
+        technique_id: None,
+        status: Status::Unverified,
+        evidence_level: if evidence.is_inferred {
+            EvidenceLevel::Assertion
+        } else {
+            EvidenceLevel::PrimaryEvidence
+        },
+        does_not_show: policy.does_not_show.into(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
+    use crate::confidence::VerificationMethod;
+    use crate::entity::EvidenceProvenance;
+    use crate::source_outcome::SourceOutcomeKind;
 
     fn provenance(source: &str) -> (&str, &'static str) {
         (source, "test")
+    }
+
+    /// `beta` is its own module; every other source is `alpha`'s, so a test can tell which module
+    /// each record names.
+    fn named(source: &str) -> (&str, &'static str) {
+        match source {
+            "beta" => ("beta", "src/beta.rs"),
+            _ => ("alpha", "src/alpha.rs"),
+        }
     }
 
     const POLICY: SavePolicy = SavePolicy {
@@ -353,6 +444,29 @@ mod tests {
         outcome_provenance: provenance,
         entity_provenance: provenance,
     };
+
+    const NAMED: SavePolicy = SavePolicy {
+        default_source: "fallback",
+        does_not_show: "not independently verified",
+        outcome_provenance: named,
+        entity_provenance: named,
+    };
+
+    fn scanned(source: &str, summary: &str) -> Evidence {
+        Evidence::new(EvidenceProvenance::for_scan(source, "scan"), summary)
+    }
+
+    fn entity_with(evidence: impl IntoIterator<Item = Evidence>) -> Entity {
+        let mut entity = Entity::new(EntityKind::Email, "a@example.com", 0.9, "scan");
+        for item in evidence {
+            entity.add_evidence(item);
+        }
+        entity
+    }
+
+    fn claim_json(entry: &LedgerEntry) -> serde_json::Value {
+        serde_json::from_str(&entry.claim.claim).unwrap()
+    }
 
     #[test]
     fn empty_report_is_refused() {
@@ -364,31 +478,25 @@ mod tests {
 
     #[test]
     fn outcomes_precede_entities_and_failure_is_assertion() {
-        let mut entity = Entity::new(EntityKind::Email, "a@example.com", 0.9, "scan");
-        entity.add_evidence(Evidence::new(
-            EvidenceProvenance::for_scan("source", "scan"),
-            "fixture",
-        ));
+        let entity = entity_with([scanned("source", "fixture")]);
         let mut outcome = SourceExecutionOutcome::success("source", 1, 0);
         outcome.kind = SourceOutcomeKind::RateLimited;
         outcome.found = None;
 
         let entries = chain(&[entity], &[outcome], POLICY).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].claim.claim, "source rate_limited found=none");
-
-        let mut failed = SourceExecutionOutcome::success("source", 1, 0);
-        failed.kind = SourceOutcomeKind::Inconclusive;
-        failed.found = None;
-        failed.detail = Some("register\tpage\nchanged".to_owned());
-        let failed_entries = chain(&[], &[failed], POLICY).unwrap();
         assert_eq!(
-            failed_entries[0].claim.claim,
-            "source inconclusive found=none detail=register\\tpage\\nchanged"
+            entries.len(),
+            3,
+            "one outcome, one entity, one evidence record"
         );
         assert_eq!(entries[0].claim.evidence_level, EvidenceLevel::Assertion);
-        assert_eq!(entries[1].claim.claim, "email a@example.com");
+        let outcome_record = claim_json(&entries[0]);
+        assert_eq!(outcome_record["module"], "source");
+        assert_eq!(outcome_record["kind"], "rate_limited");
+        assert!(outcome_record["found"].is_null());
+        assert_eq!(claim_json(&entries[1])["kind"], "email");
         assert_eq!(entries[1].claim.source, "source");
+        assert_eq!(entries[2].claim.source, "source");
         assert!(
             entries
                 .iter()
@@ -397,7 +505,92 @@ mod tests {
     }
 
     #[test]
-    fn all_outcome_labels_are_stable() {
+    fn every_evidence_record_is_saved_with_the_module_that_made_it() {
+        let entity = entity_with([scanned("alpha", "first"), scanned("beta", "second")]);
+        let entries = chain(&[entity], &[], NAMED).unwrap();
+        assert_eq!(entries.len(), 3, "the entity, then each of its two records");
+        assert_eq!(entries[1].claim.source, "alpha");
+        assert_eq!(entries[1].claim.component, "src/alpha.rs");
+        assert_eq!(entries[2].claim.source, "beta");
+        assert_eq!(entries[2].claim.component, "src/beta.rs");
+        assert_eq!(claim_json(&entries[2])["evidence"]["summary"], "second");
+    }
+
+    #[test]
+    fn an_evidence_record_round_trips_with_every_attribute() {
+        let entity = entity_with([scanned("alpha", "breach \"quoted\"\nline")
+            .with_attr("name", "Ada Example")
+            .with_attr("note", "tab\tand \u{1b}[31m escape")
+            .with_verification(VerificationMethod::EmailLinked)]);
+        let entries = chain(std::slice::from_ref(&entity), &[], POLICY).unwrap();
+        let record = claim_json(&entries[1]);
+        let restored: Evidence = serde_json::from_value(record["evidence"].clone()).unwrap();
+        assert_eq!(restored, entity.evidence[0]);
+        assert_eq!(record["entity_uid"], entity.uid.as_str());
+    }
+
+    #[test]
+    fn an_entity_keeps_its_own_fields_and_no_evidence_is_saved_twice() {
+        let mut entity = entity_with([scanned("alpha", "one"), scanned("alpha", "two")]);
+        entity.tags = vec!["breach".into()];
+        let entries = chain(std::slice::from_ref(&entity), &[], POLICY).unwrap();
+        assert_eq!(entries.len(), 3);
+        let record = claim_json(&entries[0]);
+        assert_eq!(record["uid"], entity.uid.as_str());
+        assert_eq!(record["raw_value"], "a@example.com");
+        assert_eq!(record["tags"][0], "breach");
+        assert_eq!(record["confidence"], 0.9);
+        assert!(record.get("evidence").is_none());
+    }
+
+    #[test]
+    fn inferred_evidence_is_an_assertion_and_direct_evidence_is_primary() {
+        let entity = entity_with([
+            scanned("alpha", "direct"),
+            scanned("alpha", "derived").inferred(),
+        ]);
+        let entries = chain(&[entity], &[], POLICY).unwrap();
+        assert_eq!(
+            entries[1].claim.evidence_level,
+            EvidenceLevel::PrimaryEvidence
+        );
+        assert_eq!(entries[2].claim.evidence_level, EvidenceLevel::Assertion);
+    }
+
+    #[test]
+    fn a_record_that_names_no_source_takes_the_policy_default() {
+        let entity = entity_with([scanned("", "anonymous")]);
+        let entries = chain(&[entity], &[], POLICY).unwrap();
+        assert_eq!(entries[0].claim.source, "fallback");
+        assert_eq!(entries[1].claim.source, "fallback");
+    }
+
+    #[test]
+    fn a_saved_report_loads_back_and_its_chain_is_intact() {
+        let dir = std::env::temp_dir().join(format!("huntsman-lookup-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("report.json");
+        let entity = entity_with([
+            scanned("alpha", "one").with_attr("name", "Ada"),
+            scanned("beta", "two"),
+        ]);
+        let outcome = SourceExecutionOutcome::success("alpha", 1, 2);
+        let saved = save(&path, &[entity], &[outcome], NAMED).unwrap();
+        let loaded = ledger::load_chain(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        let loaded = loaded.unwrap();
+        assert_eq!(
+            saved.len(),
+            4,
+            "one outcome, one entity, two evidence records"
+        );
+        assert_eq!(loaded, saved);
+        assert!(ledger::chain_intact(&loaded));
+    }
+
+    #[test]
+    fn every_outcome_kind_is_saved_under_its_wire_label() {
         let labels = [
             SourceOutcomeKind::Success,
             SourceOutcomeKind::ValidZero,
@@ -424,7 +617,7 @@ mod tests {
             SourceOutcomeKind::ConfirmedDead,
             SourceOutcomeKind::Inconclusive,
         ]
-        .map(kind_label);
+        .map(|kind| serde_json::to_value(kind).unwrap());
         assert_eq!(
             labels,
             [
@@ -441,8 +634,8 @@ mod tests {
                 "tls_failure",
                 "ttfb_timeout",
                 "body_timeout",
-                "upstream_4xx",
-                "upstream_5xx",
+                "upstream4xx",
+                "upstream5xx",
                 "redirect_changed",
                 "protocol_drift",
                 "interaction_drift",

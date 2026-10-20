@@ -18,18 +18,18 @@ use crate::fsio::{CHANGED_WHILE_OPENING, NOT_REGULAR_FILE, REFUSED_SYMLINK};
 /// of a hundred thousand runs, far more than a regression store accumulates.
 /// The cap keeps a hostile or runaway `--file` from exhausting memory on the
 /// Termux/Android target: every external input in the crate is capped.
-pub const MAX_HISTORY_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_RUN_HISTORY_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Read the whole history file through [`crate::fsio::read_bounded`].
 /// `Ok(None)` means the file does not exist. A symlink, a non-file, or a file
-/// over [`MAX_HISTORY_BYTES`] is an IO error.
+/// over [`MAX_RUN_HISTORY_BYTES`] is an IO error.
 fn read_history(path: &Path) -> Result<Option<Vec<u8>>, HistoryError> {
     match std::fs::symlink_metadata(path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(HistoryError::Io(e)),
         Ok(_) => {}
     }
-    crate::fsio::read_bounded(path, MAX_HISTORY_BYTES)
+    crate::fsio::read_bounded(path, MAX_RUN_HISTORY_BYTES)
         .map(Some)
         .map_err(|e| HistoryError::Io(io::Error::other(e.to_string())))
 }
@@ -499,7 +499,7 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; 
     fn a_history_over_the_cap_is_refused_on_load_and_append() {
         let path = scratch("oversize");
         let file = std::fs::File::create(&path).unwrap();
-        file.set_len(MAX_HISTORY_BYTES + 1).unwrap();
+        file.set_len(MAX_RUN_HISTORY_BYTES + 1).unwrap();
         drop(file);
         assert!(matches!(load(&path), Err(HistoryError::Io(_))));
         assert!(matches!(
