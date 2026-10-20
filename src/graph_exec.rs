@@ -1024,6 +1024,8 @@ fn run_one(
             deadline,
             cancelled: Arc::clone(cancelled),
         };
+        // Retry permission belongs to this invocation, not an earlier transient failure.
+        record.retryable = false;
         let result = catch_unwind(AssertUnwindSafe(|| handler(context)));
         let elapsed = attempt_started.elapsed();
         // A scan stop forbids further work but must not discard a successful lookup that
@@ -2938,14 +2940,14 @@ mod tests {
         let observed_calls = Arc::clone(&calls);
         handlers.insert(
             "lookup".into(),
-            handler(move |context| {
-                match observed_calls.fetch_add(1, Ordering::SeqCst) {
+            handler(
+                move |context| match observed_calls.fetch_add(1, Ordering::SeqCst) {
                     0 => Err(TaskFailure::transient("temporary transport error")),
                     1 if panics => panic!("permanent handler panic"),
                     1 => Ok(output(json!("not a number"), &context.task_id)),
                     _ => Ok(output(json!(3), &context.task_id)),
-                }
-            }),
+                },
+            ),
         );
         let executor = GraphExecutor::new(policy());
         let cancelled = Arc::new(AtomicBool::new(false));
