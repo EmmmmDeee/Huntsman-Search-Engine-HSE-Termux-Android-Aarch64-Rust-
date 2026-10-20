@@ -267,8 +267,12 @@ mod tests {
     #[test]
     fn competing_reports_are_not_automatically_falsehoods() {
         let subject = Entity::builder(EntityKind::Organisation, "Example Ltd", 0.9, "scan")
-            .evidence(Evidence::new(EvidenceProvenance::new("source-a"), "a").with_attr("owner", "A"))
-            .evidence(Evidence::new(EvidenceProvenance::new("source-b"), "b").with_attr("owner", "B"))
+            .evidence(
+                Evidence::new(EvidenceProvenance::new("source-a"), "a").with_attr("owner", "A"),
+            )
+            .evidence(
+                Evidence::new(EvidenceProvenance::new("source-b"), "b").with_attr("owner", "B"),
+            )
             .build();
         let report = assess(&subject);
         assert_eq!(report.competing_values.len(), 1);
@@ -282,17 +286,21 @@ mod tests {
     #[test]
     fn credential_subjects_and_secret_attributes_are_not_exposed() {
         let key = Entity::builder(EntityKind::ApiKey, "secret-key-value", 0.9, "scan")
-            .evidence(Evidence::new(EvidenceProvenance::new("secret-source"), "found")
-                .with_attr("api_key", "secret-key-value"))
+            .evidence(
+                Evidence::new(EvidenceProvenance::new("secret-source"), "found")
+                    .with_attr("api_key", "secret-key-value"),
+            )
             .build();
         let report = assess(&key);
         assert!(!report.public_label.contains("secret-key-value"));
         assert!(report.assertions.is_empty());
 
         let org = Entity::builder(EntityKind::Organisation, "Example", 0.7, "scan")
-            .evidence(Evidence::new(EvidenceProvenance::new("source"), "found")
-                .with_attr("api_token", "secret-key-value")
-                .with_attr("acn", "123456789"))
+            .evidence(
+                Evidence::new(EvidenceProvenance::new("source"), "found")
+                    .with_attr("api_token", "secret-key-value")
+                    .with_attr("acn", "123456789"),
+            )
             .build();
         let report = assess(&org);
         assert_eq!(report.assertions.len(), 1);
