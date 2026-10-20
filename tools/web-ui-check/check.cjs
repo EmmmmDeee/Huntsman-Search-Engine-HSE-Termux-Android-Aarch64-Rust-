@@ -97,6 +97,9 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
   async function newScan(page, name, depth) {
     await page.goto(base + '/#/newscan', { waitUntil: 'networkidle' });
     await page.fill('#starget', TARGET);
+    // The browser preserves the last chosen scan kind. Each independent
+    // acceptance scan specifies auto so a prior network pivot cannot bleed in.
+    await page.selectOption('#skind', 'auto');
     await page.fill('#sname', name);
     await page.fill('#sdepth', String(depth));
     const t = Date.now();
@@ -245,6 +248,28 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check(`${scheme}: exported Wi-Fi cache preserves source and uncertainty`,
         exported.source === 'termux-wifi-scaninfo' && exported.status === 'stale_only' &&
         exported.observations[0].age_secs === 900, exported);
+
+      // A local cached BSSID is a lead for Huntsman's existing network lookup,
+      // not permission to spend network egress or operator keys automatically.
+      let radarScanPosts = 0;
+      const countScanPost = request => {
+        if (new URL(request.url()).pathname === '/api/scans' && request.method() === 'POST') radarScanPosts++;
+      };
+      page.on('request', countScanPost);
+      await page.click('#rrows button');
+      await page.waitForSelector('#view-newscan:not([hidden])', { timeout: 5000 });
+      const handoff = await page.evaluate(() => ({
+        target: document.getElementById('starget').value,
+        kind: document.getElementById('skind').value,
+        depth: document.getElementById('sdepth').value,
+        name: document.getElementById('sname').value
+      }));
+      check(`${scheme}: Radar BSSID pivots into a prefilled NETWORK scan, not a geolocation`,
+        handoff.target === '3c:5a:b4:11:22:33' && handoff.kind === 'network' &&
+        handoff.depth === '0' && handoff.name.includes('3c:5a:b4:11:22:33'), handoff);
+      check(`${scheme}: investigating a cached BSSID does not automatically run a scan`,
+        radarScanPosts === 0, radarScanPosts);
+      page.off('request', countScanPost);
       await page.unroute('**/api/radar/wifi');
       page.off('request', countRadar);
 
