@@ -630,12 +630,15 @@ impl SelectorCollector for ScanCollector<'_> {
                 .collect(),
         };
         let cancellation = self.service.graph_cancellation(self.id);
+        // A stop may cancel the graph record after a lookup has returned a real failure.
+        let lookup_failures = Arc::new(Mutex::new(BTreeMap::new()));
         let mut handlers = HandlerRegistry::new();
         for (index, target) in targets.iter().enumerate() {
             let task_id = format!("lookup-{index:04}");
             let lookup = Arc::clone(&self.service.lookup);
             let admission = Arc::clone(&self.service.admission);
             let cancellation_for_task = Arc::clone(&cancellation);
+            let lookup_failures_for_task = Arc::clone(&lookup_failures);
             let chosen = self.chosen.clone();
             let kind = target.kind;
             let selector = target.selector.clone();
@@ -655,8 +658,13 @@ impl SelectorCollector for ScanCollector<'_> {
                                 )
                             })?;
                         context.check_deadline()?;
-                        let output =
-                            lookup(kind, &selector, &chosen).map_err(TaskFailure::permanent)?;
+                        let output = lookup(kind, &selector, &chosen).map_err(|error| {
+                            let _ = lookup_failures_for_task
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .insert(context.task_id.clone(), error.clone());
+                            TaskFailure::permanent(error)
+                        })?;
                         let value = serde_json::to_value(output).map_err(|error| {
                             TaskFailure::permanent(format!(
                                 "lookup output serialization failed: {error}"
@@ -736,6 +744,16 @@ impl SelectorCollector for ScanCollector<'_> {
                         &format!("graph executor omitted task record {task_id}"),
                     );
                 };
+                let lookup_error = lookup_failures
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&task_id);
+                if let Some(error) = lookup_error.filter(|_| record.state == TaskState::Cancelled) {
+                    let mut failed = record.clone();
+                    failed.state = TaskState::Failed;
+                    failed.error = Some(error);
+                    return self.reduce_graph_record(target, &task_id, &failed);
+                }
                 self.reduce_graph_record(target, &task_id, record)
             })
             .collect()
