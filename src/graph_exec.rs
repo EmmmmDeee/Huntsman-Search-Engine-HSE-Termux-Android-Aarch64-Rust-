@@ -1441,9 +1441,9 @@ impl GraphExecutor {
                     continue;
                 }
                 if consumed
-                    .saturating_add(wave_cost)
-                    .saturating_add(spec.resource_units)
-                    > self.policy.max_total_resource_units
+                    .checked_add(wave_cost)
+                    .and_then(|total| total.checked_add(spec.resource_units))
+                    .is_none_or(|total| total > self.policy.max_total_resource_units)
                 {
                     budget_blocked.push(id.clone());
                     continue;
@@ -2924,5 +2924,4 @@ mod tests {
             }
         }
     }
-
 }
