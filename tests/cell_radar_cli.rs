@@ -41,8 +41,8 @@ fn cell_info_cli_keeps_android_rat_identity_and_unknown_time() {
     assert_eq!(data["source"], "unverified_json_file");
     assert_eq!(data["acquisition"], "offline_replay_no_capture_provenance");
     assert_eq!(data["status"], "freshness_unknown");
-    assert_eq!(data["observed"], 3);
-    assert_eq!(data["rejected"], 1);
+    assert_eq!(data["observed"], 4);
+    assert_eq!(data["rejected"], 0);
     assert_eq!(
         data["observations"][0]["sighting"]["network_id"],
         "gsm:505-01-17-91"
@@ -51,6 +51,14 @@ fn cell_info_cli_keeps_android_rat_identity_and_unknown_time() {
         data["observations"][2]["sighting"]["network_id"],
         "nr:505-01-20-68719476735"
     );
+    assert_eq!(
+        data["observations"][3]["sighting"]["network_id"],
+        "cdma:1-2-3"
+    );
+    assert!(data["observations"][3]["mcc"].is_null());
+    assert!(data["observations"][3]["mnc"].is_null());
+    assert!(data["observations"][3]["sighting"]["latitude"].is_null());
+    assert!(data["observations"][3]["sighting"]["longitude"].is_null());
     assert_eq!(data["observations"][0]["registered"], true);
     assert_eq!(data["observations"][0]["freshness"], "unknown");
     assert!(data["observations"][0]["sighting"]["latitude"].is_null());

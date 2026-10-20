@@ -18,8 +18,9 @@ pub const MAX_CELL_SCAN_BYTES: u64 = 1_048_576;
 pub struct CellObservation {
     pub sighting: RfSighting,
     pub technology: &'static str,
-    pub mcc: String,
-    pub mnc: String,
+    /// Mobile country and network codes; unavailable for CDMA identities.
+    pub mcc: Option<String>,
+    pub mnc: Option<String>,
     pub area_code: u64,
     pub cell_id: u64,
     pub registered: Option<bool>,
@@ -58,11 +59,41 @@ fn bounded_id(row: &Value, name: &str, max: u64) -> Option<u64> {
     (id <= max).then_some(id)
 }
 
-/// Parse Termux:API's current GSM/WCDMA/LTE/NR schema into typed RF evidence.
+fn signal_dbm(row: &Value) -> Option<f64> {
+    row.get("dbm")
+        .and_then(Value::as_i64)
+        .filter(|v| (-160..=-1).contains(v))
+        .and_then(|v| i32::try_from(v).ok())
+        .map(f64::from)
+}
+
+/// CDMA cell identity belongs to the cellular network, not the handset.
+/// Android base-station coordinates are deliberately left unconsumed.
+fn parse_cdma_row(row: &Value) -> Option<CellObservation> {
+    let system = bounded_id(row, "system", 65_535)?;
+    let network = bounded_id(row, "network", 65_535)?;
+    let base = bounded_id(row, "basestation", 65_535)?;
+    let id = format!("cdma:{system}-{network}-{base}");
+    let mut sighting = RfSighting::new(&id, RadioKind::Cellular, RfSource::CellRadar);
+    sighting.raw_type = Some("cdma".to_owned());
+    sighting.signal_dbm = signal_dbm(row);
+    Some(CellObservation {
+        sighting,
+        technology: "cdma",
+        mcc: None,
+        mnc: None,
+        area_code: network,
+        cell_id: base,
+        registered: row.get("registered").and_then(Value::as_bool),
+        freshness: "unknown",
+    })
+}
+
+/// Parse Termux:API's GSM/WCDMA/LTE/NR/CDMA schema into typed RF evidence.
 ///
-/// CDMA records and malformed/unknown technology records are counted as
-/// rejected, not misrepresented as GSM cells; CDMA needs different identity
-/// fields and will require a separately tested adapter.
+/// CDMA uses system, network, and base-station identifiers, not mobile
+/// country/network codes. Any CDMA tower coordinates supplied by Android
+/// remain unused and are never treated as the handset's position.
 ///
 /// Android may redact the cell identity and return an empty array on modern
 /// handsets. An empty or rejected-only result is inconclusive, not proof of
@@ -89,6 +120,14 @@ pub fn parse_cells(bytes: &[u8]) -> Result<CellScan, Error> {
             rejected += 1;
             continue;
         };
+        if technology == "cdma" {
+            if let Some(cell) = parse_cdma_row(row) {
+                observations.push(cell);
+            } else {
+                rejected += 1;
+            }
+            continue;
+        }
         let (type_name, area_field, cell_field, area_max, cell_max) = match technology {
             "gsm" => ("gsm", "lac", "cid", 65_535, 65_535),
             "wcdma" => ("wcdma", "lac", "cid", 65_535, 268_435_455),
@@ -120,17 +159,12 @@ pub fn parse_cells(bytes: &[u8]) -> Result<CellScan, Error> {
         let id = format!("{type_name}:{mcc}-{mnc}-{area_code}-{cell_id}");
         let mut sighting = RfSighting::new(&id, RadioKind::Cellular, RfSource::CellRadar);
         sighting.raw_type = Some(type_name.to_owned());
-        sighting.signal_dbm = row
-            .get("dbm")
-            .and_then(Value::as_i64)
-            .filter(|v| (-160..=-1).contains(v))
-            .and_then(|v| i32::try_from(v).ok())
-            .map(f64::from);
+        sighting.signal_dbm = signal_dbm(row);
         observations.push(CellObservation {
             sighting,
             technology: type_name,
-            mcc,
-            mnc,
+            mcc: Some(mcc),
+            mnc: Some(mnc),
             area_code,
             cell_id,
             registered: row.get("registered").and_then(Value::as_bool),
@@ -216,10 +250,42 @@ mod tests {
 
     #[test]
     fn missing_or_redacted_cell_identifiers_are_rejected() {
-        let raw = br#"[{"type":"lte","mcc":505,"mnc":1,"tac":2147483647,"ci":123},{"type":"nr","mcc":null,"mnc":"01","tac":12,"nci":34},{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":2147483647},{"type":"cdma","system":1,"network":2,"basestation":3},{"type":"gsm","mcc":505,"mnc":1,"lac":1,"cid":3}]"#;
+        let raw = br#"[{"type":"lte","mcc":505,"mnc":1,"tac":2147483647,"ci":123},{"type":"nr","mcc":null,"mnc":"01","tac":12,"nci":34},{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":2147483647},{"type":"cdma","system":1,"network":2},{"type":"gsm","mcc":505,"mnc":1,"lac":1,"cid":3}]"#;
         let scan = parse_cells(raw).unwrap();
         assert_eq!((scan.observed, scan.rejected), (1, 4));
         assert_eq!(scan.observations[0].sighting.network_id, "gsm:505-01-1-3");
+    }
+
+    #[test]
+    fn cdma_base_station_ids_are_kept_without_claiming_handset_coordinates() {
+        // Android returns CDMA latitude/longitude as base-station metadata.
+        // Those are not the device's observed coordinates.
+        let raw = br#"[{"type":"cdma","registered":true,"system":11,"network":22,"basestation":33,"latitude":1234567,"longitude":2345678,"dbm":-85}]"#;
+        let scan = parse_cells(raw).unwrap();
+        assert_eq!((scan.observed, scan.rejected), (1, 0));
+        let cell = &scan.observations[0];
+        assert_eq!(cell.technology, "cdma");
+        assert_eq!(cell.sighting.network_id, "cdma:11-22-33");
+        assert_eq!(cell.mcc, None);
+        assert_eq!(cell.mnc, None);
+        assert_eq!(cell.area_code, 22);
+        assert_eq!(cell.cell_id, 33);
+        assert_eq!(cell.registered, Some(true));
+        assert_eq!(cell.sighting.signal_dbm, Some(-85.0));
+        assert_eq!(cell.sighting.observed_epoch, None);
+        assert!(!cell.sighting.has_usable_position());
+        assert_eq!(cell.freshness, "unknown");
+        let replay = parse_replay(raw).unwrap();
+        assert_eq!(replay.source, "unverified_json_file");
+        assert_eq!(replay.observations[0].sighting.latitude, None);
+    }
+
+    #[test]
+    fn incomplete_or_out_of_range_cdma_does_not_become_a_tower_sighting() {
+        let raw = br#"[{"type":"cdma","system":11,"network":22},{"type":"cdma","system":65536,"network":22,"basestation":33},{"type":"cdma","system":11,"network":22,"basestation":65536}]"#;
+        let scan = parse_cells(raw).unwrap();
+        assert_eq!((scan.observed, scan.rejected), (0, 3));
+        assert_eq!(scan.status, "inconclusive");
     }
 
     #[test]
