@@ -82,9 +82,20 @@ fn analyze_saved_scan_round_trips_evidence_and_prints_explicit_limits() {
     assert_eq!(value["scan"]["id"], id);
     assert_eq!(value["counts"]["saved_entities"], 1);
     assert_eq!(value["counts"]["source_outcomes"], 1);
-    assert_eq!(value["limitations"]["provider_coverage"], "not_reconstructed");
-    assert_eq!(value["limitations"]["evidence_ancestry"], "not_reconstructed");
+    assert_eq!(
+        value["limitations"]["provider_coverage"],
+        "not_reconstructed"
+    );
+    assert_eq!(
+        value["limitations"]["evidence_ancestry"],
+        "not_reconstructed"
+    );
     assert_eq!(value["limitations"]["scan_complete"], true);
+    assert_eq!(
+        value["limitations"]["false_positive_annotations"],
+        "not_applied_to_entity_analysis"
+    );
+    assert_eq!(value["counts"]["flagged_elements"], 0);
     assert!(value["report"].is_object());
 
     let text = run(&dir, &id, false);
@@ -93,7 +104,10 @@ fn analyze_saved_scan_round_trips_evidence_and_prints_explicit_limits() {
     assert!(printed.contains("saved_entities=1"));
     assert!(printed.contains("provider_coverage=not_reconstructed"));
     assert!(printed.contains("evidence_ancestry=not_reconstructed"));
-    assert_eq!(std::fs::read(dir.join(&id).join("results.json")).unwrap(), before);
+    assert_eq!(
+        std::fs::read(dir.join(&id).join("results.json")).unwrap(),
+        before
+    );
 
     let missing = run(&dir, "aaaaaaaaaaaaaaaa", true);
     assert!(!missing.status.success());
