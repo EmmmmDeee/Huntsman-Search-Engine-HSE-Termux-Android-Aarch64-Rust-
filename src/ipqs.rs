@@ -7,7 +7,9 @@
 //! errors, with `success: false` and a `message`: a bad key is reported as a rejected key and
 //! spent credits as a plan refusal, never as a zero.
 //!
-//! An address gives the fraud score, proxy/VPN/Tor/abuse flags, ISP, AS and hostname. An email
+//! An address gives the fraud score, proxy/VPN/Tor/abuse flags (and whether the VPN or Tor exit
+//! is active now), ISP, AS, hostname, city, region, postcode, time zone and position; the
+//! position is also a coordinates pivot. An email
 //! gives validity, deliverability, disposable/honeypot/leaked flags, first-seen and domain age,
 //! and any names or numbers IPQS associates with it. A number gives validity, line type, carrier,
 //! VOIP/prepaid/risky/leaked flags and region.
@@ -15,6 +17,7 @@
 use serde::Deserialize;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
+use crate::canonical::canonical_coordinates;
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
@@ -62,6 +65,20 @@ struct IpBody {
     country_code: Option<String>,
     #[serde(default)]
     city: Option<String>,
+    #[serde(default)]
+    region: Option<String>,
+    #[serde(default)]
+    zip_code: Option<String>,
+    #[serde(default)]
+    timezone: Option<String>,
+    #[serde(default)]
+    latitude: Option<f64>,
+    #[serde(default)]
+    longitude: Option<f64>,
+    #[serde(default)]
+    active_vpn: bool,
+    #[serde(default)]
+    active_tor: bool,
     #[serde(rename = "ISP", default)]
     isp: Option<String>,
     #[serde(rename = "ASN", default)]
@@ -269,6 +286,8 @@ fn ip(body: &IpBody, score: u8) -> Finding {
         (body.bot_status, "bot"),
         (body.is_crawler, "crawler"),
         (body.mobile, "mobile"),
+        (body.active_vpn, "active_vpn"),
+        (body.active_tor, "active_tor"),
     ]);
     let mut finding = Finding::new(summary("IP", score, &set))
         .list_attr("flags", &set)
@@ -278,9 +297,23 @@ fn ip(body: &IpBody, score: u8) -> Finding {
         .opt_attr("org", body.organization.as_deref())
         .opt_attr("country", body.country_code.as_deref())
         .opt_attr("city", body.city.as_deref())
+        .opt_attr("region", body.region.as_deref())
+        .opt_attr("postal_code", known(body.zip_code.as_deref()))
+        .opt_attr("timezone", body.timezone.as_deref())
         .tag_if(body.vpn, "vpn")
         .tag_if(body.proxy, "proxy")
         .tag_if(body.tor, "tor-exit");
+    let position = body
+        .latitude
+        .zip(body.longitude)
+        .and_then(|(lat, lon)| canonical_coordinates(&format!("{lat},{lon}")));
+    if let Some(position) = position {
+        finding = finding.attr("coordinates", &position).pivot(
+            PivotKind::Coordinates,
+            position,
+            "Position IPQualityScore gives for the address",
+        );
+    }
     if let Some(asn) = body.asn.filter(|a| *a > 0) {
         finding = finding.attr("asn", format!("AS{asn}")).pivot(
             PivotKind::Asn,
@@ -296,6 +329,11 @@ fn ip(body: &IpBody, score: u8) -> Finding {
         );
     }
     finding
+}
+
+/// `value` unless IPQS wrote `N/A`, its word for a field it has no value for.
+fn known(value: Option<&str>) -> Option<&str> {
+    value.filter(|v| !v.trim().eq_ignore_ascii_case("n/a"))
 }
 
 fn associated(list: Option<&Associated>) -> Vec<String> {
@@ -392,11 +430,31 @@ mod tests {
         let f = decode(IP.as_bytes(), Indicator::Ip("1.2.3.4")).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(
             f.summary,
-            "IPQualityScore IP: fraud score 88, proxy, vpn, recent_abuse"
+            "IPQualityScore IP: fraud score 88, proxy, vpn, recent_abuse, active_vpn"
         );
         assert_eq!(f.tags, ["vpn", "proxy", tags::MALICIOUS]);
         assert!(f.attrs.contains(&("asn", "AS64500".into())));
         assert!(f.pivots.iter().any(|p| p.value == "vpn-exit-7.example.net"));
+    }
+
+    #[test]
+    fn the_documented_ip_answer_keeps_where_the_address_is() {
+        let f = decode(IP.as_bytes(), Indicator::Ip("1.2.3.4")).unwrap_or_else(|e| panic!("{e}"));
+        assert!(f.attrs.contains(&("region", "North Holland".into())));
+        assert!(f.attrs.contains(&("timezone", "Europe/Amsterdam".into())));
+        assert!(
+            f.attrs
+                .contains(&("coordinates", "52.370000,4.890000".into()))
+        );
+        assert!(
+            f.attrs.iter().all(|(k, _)| *k != "postal_code"),
+            "IPQS's N/A is no postcode"
+        );
+        assert!(
+            f.pivots
+                .iter()
+                .any(|p| p.kind == PivotKind::Coordinates && p.value == "52.370000,4.890000")
+        );
     }
 
     #[test]
