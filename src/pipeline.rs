@@ -446,7 +446,7 @@ mod tests {
         };
         let snapshot = snapshot_from_entities(&entities, "scan-1", &limits);
         assert!(snapshot.truncated, "discarded entities must be disclosed");
-        assert_eq!(snapshot.entities, entities[..2]);
+        assert_eq!(snapshot.entities.as_slice(), &entities[..2]);
         assert!(snapshot.relations.iter().all(|relation| {
             snapshot
                 .entities
