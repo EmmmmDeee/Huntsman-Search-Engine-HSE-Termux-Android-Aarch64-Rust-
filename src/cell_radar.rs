@@ -67,6 +67,28 @@ fn signal_dbm(row: &Value) -> Option<f64> {
         .map(f64::from)
 }
 
+/// CDMA cell identity belongs to the cellular network, not the handset.
+/// Android base-station coordinates are deliberately left unconsumed.
+fn parse_cdma_row(row: &Value) -> Option<CellObservation> {
+    let system = bounded_id(row, "system", 65_535)?;
+    let network = bounded_id(row, "network", 65_535)?;
+    let base = bounded_id(row, "basestation", 65_535)?;
+    let id = format!("cdma:{system}-{network}-{base}");
+    let mut sighting = RfSighting::new(&id, RadioKind::Cellular, RfSource::CellRadar);
+    sighting.raw_type = Some("cdma".to_owned());
+    sighting.signal_dbm = signal_dbm(row);
+    Some(CellObservation {
+        sighting,
+        technology: "cdma",
+        mcc: None,
+        mnc: None,
+        area_code: network,
+        cell_id: base,
+        registered: row.get("registered").and_then(Value::as_bool),
+        freshness: "unknown",
+    })
+}
+
 /// Parse Termux:API's GSM/WCDMA/LTE/NR/CDMA schema into typed RF evidence.
 ///
 /// CDMA uses system, network, and base-station identifiers, not mobile
@@ -99,33 +121,11 @@ pub fn parse_cells(bytes: &[u8]) -> Result<CellScan, Error> {
             continue;
         };
         if technology == "cdma" {
-            let identity = match (
-                bounded_id(row, "system", 65_535),
-                bounded_id(row, "network", 65_535),
-                bounded_id(row, "basestation", 65_535),
-            ) {
-                (Some(system), Some(network), Some(base)) => {
-                    Some((format!("cdma:{system}-{network}-{base}"), network, base))
-                }
-                _ => None,
-            };
-            let Some((id, area_code, cell_id)) = identity else {
+            if let Some(cell) = parse_cdma_row(row) {
+                observations.push(cell);
+            } else {
                 rejected += 1;
-                continue;
-            };
-            let mut sighting = RfSighting::new(&id, RadioKind::Cellular, RfSource::CellRadar);
-            sighting.raw_type = Some("cdma".to_owned());
-            sighting.signal_dbm = signal_dbm(row);
-            observations.push(CellObservation {
-                sighting,
-                technology: "cdma",
-                mcc: None,
-                mnc: None,
-                area_code,
-                cell_id,
-                registered: row.get("registered").and_then(Value::as_bool),
-                freshness: "unknown",
-            });
+            }
             continue;
         }
         let (type_name, area_field, cell_field, area_max, cell_max) = match technology {
