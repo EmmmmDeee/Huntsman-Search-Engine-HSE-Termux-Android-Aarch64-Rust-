@@ -23,6 +23,7 @@ use super::profiles::{
 };
 use huntsman_recon::analysis::{self, InvestigationReport};
 use huntsman_recon::correlator::Correlation;
+use huntsman_recon::graph::{EntityRelation, RelationKind};
 use huntsman_recon::pipeline::{self, PipelineLimits};
 use huntsman_recon::recursion::{
     self, RecursionPolicy, RecursionReport, SelectorCollector, Step, Target,
@@ -468,8 +469,27 @@ fn recursion_analysis(report: &RecursionReport) -> InvestigationReport {
         .entities
         .first()
         .map_or("recurse", |entity| entity.scan_id.as_str());
-    let snapshot =
-        pipeline::snapshot_from_entities(&report.entities, scan_id, &PipelineLimits::default());
+    let limits = PipelineLimits::default();
+    let mut snapshot = pipeline::snapshot_from_entities(&report.entities, scan_id, &limits);
+    // Merge the crawl's own discovery lineage into the analysis graph. The pivots the crawl walked
+    // (phone -> e-mail -> username -> domain -> IP) are authoritative linkage that entity-content
+    // derivation cannot recover; without them the analysis reports the pivoted entities as orphans,
+    // ranks no pivot and understates the crawl's structure. `Graph::build` collapses each lineage
+    // link onto any content edge for the same pair, so degree is never double-counted, and the
+    // correlation rules are unaffected — they re-derive their own relations from the entities and
+    // never read `snapshot.relations`.
+    for link in recursion::lineage_links(report) {
+        snapshot.relations.push(EntityRelation::new(
+            link.from_uid,
+            link.to_uid,
+            RelationKind::AssociatedWith,
+            link.confidence,
+        ));
+    }
+    if snapshot.relations.len() > limits.max_relations {
+        snapshot.relations.truncate(limits.max_relations);
+        snapshot.truncated = true;
+    }
     analysis::analyze_snapshot(&snapshot)
 }
 
@@ -628,8 +648,8 @@ fn print_recursion_analysis(
 mod tests {
     use super::{per_seed_save_path, recursion_analysis, recursion_json};
     use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
-    use huntsman_recon::recursion::{RecursionReport, Target};
-    use huntsman_recon::scan_route::ScanKind;
+    use huntsman_recon::recursion::{PivotEdge, RecursionReport, Target};
+    use huntsman_recon::scan_route::{ScanKind, canonical_selector};
     use huntsman_recon::termination::TerminationReason;
 
     /// A report carrying only the entities a crawl would have reached, for driving the correlation
@@ -647,6 +667,52 @@ mod tests {
             termination: TerminationReason::FixedPoint,
             truncated: false,
         }
+    }
+
+    #[test]
+    fn the_crawl_feeds_its_pivot_lineage_into_the_analysis_graph() {
+        // A crawl pivots e-mail -> phone: the two share no handle, address or registrant, so content
+        // derivation finds no relation between them. Without the lineage the analysis reports both
+        // as unlinked orphans with no ranked pivot — exactly the linkage a recursive crawl exists to
+        // produce, thrown away. The crawl's own discovery edge must reach the graph: a relation, a
+        // non-zero pivot degree, and one fewer isolated seed than the same entities with no lineage.
+        let email = Entity::new(EntityKind::Email, "a@example.com", 0.9, "recurse");
+        let mut phone = Entity::new(EntityKind::Phone, "+15551230000", 0.8, "recurse");
+        phone.generation = 1;
+        let edge = PivotEdge {
+            from_kind: ScanKind::Email.command().to_owned(),
+            from_selector: canonical_selector(ScanKind::Email, &email.value)
+                .expect("the e-mail seed canonicalises"),
+            to_kind: phone.kind.as_str().to_owned(),
+            to_value: phone.value.clone(),
+            generation: 1,
+        };
+
+        let baseline = recursion_analysis(&report_of(vec![email.clone(), phone.clone()]));
+        assert_eq!(
+            baseline.metrics.total_relations, 0,
+            "the e-mail and phone share no content linkage, so content derivation yields no relation"
+        );
+
+        let mut linked = report_of(vec![email, phone]);
+        linked.edges = vec![edge];
+        let report = recursion_analysis(&linked);
+        assert!(
+            report.metrics.total_relations >= 1,
+            "the crawl's pivot lineage must reach the analysis as a relation: {:?}",
+            report.metrics
+        );
+        assert!(
+            report.pivots.iter().any(|pivot| pivot.degree >= 1),
+            "a lineage edge must give a ranked pivot a non-zero degree: {:?}",
+            report.pivots
+        );
+        assert!(
+            report.gaps.isolated_seeds < baseline.gaps.isolated_seeds,
+            "wiring the lineage in must leave fewer isolated entities (was {}, now {})",
+            baseline.gaps.isolated_seeds,
+            report.gaps.isolated_seeds
+        );
     }
 
     #[test]
