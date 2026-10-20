@@ -488,10 +488,30 @@ fn abuseipdb_leg(lookup: &mut Lookup<'_>, check: &abuseipdb::Check) {
             ("usage_type", check.usage_type.as_deref()),
             ("isp", check.isp.as_deref()),
             ("network_domain", check.domain.as_deref()),
+            ("country_name", check.country_name.as_deref()),
         ]);
     if let Some(allow_listed) = check.allow_listed {
         evidence = evidence.with_attr("allow_listed", allow_listed.to_string());
     }
+    if let Some(public) = check.public {
+        evidence = evidence.with_attr("public", public.to_string());
+    }
+    if let Some(version) = check.ip_version {
+        evidence = evidence.with_attr("ip_version", version.to_string());
+    }
+    for category in &check.categories {
+        evidence = evidence.with_attr("report_categories", category.as_str());
+    }
+    for report in &check.reports {
+        evidence = evidence.with_attr("reports", report.as_str());
+    }
+    if check.reports_unread {
+        evidence = evidence.with_attr(
+            "reports_unread",
+            "the answer with every report is past the body limit",
+        );
+    }
+    let evidence = evidence.with_attr("raw_answer", check.raw_answer.as_str());
     lookup.on_address(evidence, &tags);
     if let Some(domain) = check.domain.as_deref() {
         lookup.hostname(
