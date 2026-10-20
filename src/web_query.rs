@@ -1017,7 +1017,7 @@ mod tests {
         assert_eq!(report.stop_reason, "all_engines_unavailable_or_unparseable");
 
         assert!(adaptive_search(&Fake::new(vec![]), "   ", 790).is_err());
-        assert!(adaptive_search(&Fake::new(vec![]), "bad\\nquery", 790).is_err());
+        assert!(adaptive_search(&Fake::new(vec![]), "bad\nquery", 790).is_err());
         assert!(adaptive_search(&Fake::new(vec![]), &"a".repeat(513), 790).is_err());
     }
 
