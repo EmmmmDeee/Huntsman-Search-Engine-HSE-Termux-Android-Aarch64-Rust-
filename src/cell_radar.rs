@@ -195,7 +195,10 @@ mod tests {
         assert_eq!((scan.observed, scan.rejected), (4, 0));
         assert_eq!(scan.status, "freshness_unknown");
         assert_eq!(scan.observations[0].sighting.network_id, "gsm:505-01-17-91");
-        assert_eq!(scan.observations[2].sighting.network_id, "lte:505-01-19-12345");
+        assert_eq!(
+            scan.observations[2].sighting.network_id,
+            "lte:505-01-19-12345"
+        );
         assert_eq!(
             scan.observations[3].sighting.network_id,
             "nr:505-01-20-68719476735"
@@ -224,8 +227,7 @@ mod tests {
         assert!(parse_cells(br#"{"API_ERROR":"permission denied"}"#).is_err());
         assert!(parse_cells(br#"{"anything":1}"#).is_err());
         assert!(parse_cells(b"null").is_err());
-        let scan = parse_replay(br#"[{"type":"gsm","mcc":505,"mnc":1,"lac":1,"cid":3}]"#)
-            .unwrap();
+        let scan = parse_replay(br#"[{"type":"gsm","mcc":505,"mnc":1,"lac":1,"cid":3}]"#).unwrap();
         assert_eq!(scan.source, "unverified_json_file");
         assert_eq!(scan.acquisition, "offline_replay_no_capture_provenance");
         assert_eq!(scan.observations[0].freshness, "unknown");
@@ -233,7 +235,8 @@ mod tests {
 
     #[test]
     fn text_output_never_claims_freshness_or_position() {
-        let raw = br#"[{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":1234,"registered":true,"dbm":-80}]"#;
+        let raw =
+            br#"[{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":1234,"registered":true,"dbm":-80}]"#;
         let scan = parse_cells(raw).unwrap();
         let rendered = render(&scan);
         assert!(rendered.contains("registered=yes"));
