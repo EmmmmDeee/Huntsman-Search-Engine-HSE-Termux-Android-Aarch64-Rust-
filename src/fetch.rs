@@ -494,8 +494,7 @@ fn finish(
     note: Option<&str>,
     scrub: &dyn Fn(&str) -> String,
 ) -> Fetched {
-    let text = response.text();
-    let mut kind = classify_fetch(response.status, &text);
+    let mut kind = classify_fetch(response.status, &response.text_view());
     if kind == SourceOutcomeKind::AuthRequired && sent.is_some() {
         kind = SourceOutcomeKind::AuthRejected;
     }
@@ -518,7 +517,7 @@ fn finish(
     if matches!(response.status, 429 | 503) {
         if let Some(secs) = response
             .header_value("retry-after")
-            .and_then(parse_retry_after)
+            .and_then(|value| crate::http::retry_after_secs(value, now_unix))
         {
             outcome = outcome.with_retry_after(secs.min(MAX_RETRY_AFTER_SECS));
         }
@@ -630,11 +629,6 @@ fn in_site(host: &str, site: &str) -> bool {
         || host
             .strip_suffix(site)
             .is_some_and(|rest| rest.ends_with('.'))
-}
-
-/// Delta-seconds only; HTTP-date values are ignored rather than guessed at.
-fn parse_retry_after(v: &str) -> Option<u64> {
-    v.trim().parse().ok()
 }
 
 /// `url` with any `user:pass@` removed from its authority. **Pure.**
@@ -841,6 +835,16 @@ mod tests {
             &[("retry-after", "Wed, 21 Oct 2026 07:28:00 GMT")],
             "",
         ))]);
+        let at = fetch(
+            &f,
+            Request::get("https://a.example/"),
+            None,
+            &FetchOptions::default(),
+            "t",
+            1_792_567_600,
+        );
+        assert_eq!(at.expect("f").outcome.retry_after_secs, Some(80));
+        let f = Fake::new(vec![Ok(resp(429, &[("retry-after", "soon")], ""))]);
         assert_eq!(
             run(&f, "https://a.example/", None, 0)
                 .expect("f")

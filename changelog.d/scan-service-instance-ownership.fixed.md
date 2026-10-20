@@ -1,0 +1,1 @@
+- Reject stop requests from another `ScanService` in the same process when it cannot signal the owning worker; retain immediate cancellation for locally created scans and clean up per-instance ownership after completion or failure.

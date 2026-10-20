@@ -2,19 +2,22 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0a0d11">
+<meta name="theme-color" content="#11151b" id="themecolor">
 <meta name="color-scheme" content="dark light">
 <meta name="referrer" content="no-referrer">
+<meta name="huntsman-page" content="">
 <title>Huntsman Search Engine</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
-:root{--bg:#0a0d11;--el:#11151b;--el2:#171d25;--hover:#1e2530;--line:#232a35;--line2:#333d4d;--fg:#e4e8ef;--muted:#8b94a3;--dim:#5f6b7d;--acc:#1cb8f5;--acc2:#5ed0ff;--accd:rgba(28,184,245,.15);--acct:#04303f;--ok:#2bbf6a;--okd:rgba(43,191,106,.15);--warn:#d9a441;--warnd:rgba(217,164,65,.15);--bad:#e0554f;--badd:rgba(224,85,79,.15);--sh:0 1px 2px rgba(0,0,0,.5);--r:6px;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;color-scheme:dark}
-:root.light{--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#838da0;--acc:#0a86bf;--acc2:#066a99;--accd:rgba(10,134,191,.1);--acct:#fff;--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}
+:root{--bg:#0a0d11;--el:#11151b;--el2:#171d25;--hover:#1e2530;--line:#232a35;--line2:#333d4d;--fg:#e4e8ef;--muted:#8b94a3;--dim:#7a879a;--acc:#1cb8f5;--acc2:#5ed0ff;--accd:rgba(28,184,245,.15);--acct:#04303f;--ok:#2bbf6a;--okd:rgba(43,191,106,.15);--warn:#d9a441;--warnd:rgba(217,164,65,.15);--bad:#e6736e;--badd:rgba(230,115,110,.15);--g0:#38bdf8;--g1:#4ade80;--g2:#fbbf24;--g3:#f87171;--g4:#a78bfa;--g5:#f472b6;--g6:#22d3ee;--g7:#fb923c;--g8:#94a3b8;--g9:#a3e635;--sh:0 1px 2px rgba(0,0,0,.5);--r:6px;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;color-scheme:dark}
+:root.light{--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#626c80;--acc:#086996;--acc2:#05587f;--accd:rgba(8,105,150,.1);--acct:#fff;--ok:#186c3c;--okd:rgba(24,108,60,.12);--warn:#7a5818;--warnd:rgba(122,88,24,.12);--bad:#b1251f;--badd:rgba(177,37,31,.1);--g0:#0369a1;--g1:#15803d;--g2:#a16207;--g3:#b91c1c;--g4:#7c3aed;--g5:#be185d;--g6:#0e7490;--g7:#c2410c;--g8:#475569;--g9:#4d7c0f;--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}
+@media (prefers-color-scheme:light){:root:not(.dark){--bg:#eef1f4;--el:#fff;--el2:#f3f5f7;--hover:#e8edf2;--line:#dbe1e8;--line2:#c3cbd6;--fg:#1b212b;--muted:#5b6474;--dim:#626c80;--acc:#086996;--acc2:#05587f;--accd:rgba(8,105,150,.1);--acct:#fff;--ok:#186c3c;--okd:rgba(24,108,60,.12);--warn:#7a5818;--warnd:rgba(122,88,24,.12);--bad:#b1251f;--badd:rgba(177,37,31,.1);--g0:#0369a1;--g1:#15803d;--g2:#a16207;--g3:#b91c1c;--g4:#7c3aed;--g5:#be185d;--g6:#0e7490;--g7:#c2410c;--g8:#475569;--g9:#4d7c0f;--sh:0 1px 2px rgba(20,30,45,.08);color-scheme:light}}
 *,*::before,*::after{box-sizing:border-box}
 [hidden]{display:none!important}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--sans)}
 svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .appbar{position:fixed;top:0;left:0;right:0;z-index:10;display:flex;align-items:center;gap:10px;height:calc(52px + env(safe-area-inset-top));padding:env(safe-area-inset-top) max(8px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left));background:var(--el);border-bottom:1px solid var(--line);box-shadow:var(--sh)}
 .brand{display:flex;align-items:center;gap:7px;min-width:0;min-height:44px;color:var(--fg);text-decoration:none}
 .brand svg.i{width:20px;height:20px;color:var(--acc)}
@@ -27,67 +30,183 @@ svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-widt
 .pill.warn{background:var(--warnd);color:var(--warn)}
 .pill.bad{background:var(--badd);color:var(--bad)}
 .iconbtn{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border:0;border-radius:var(--r);background:none;color:var(--muted);cursor:pointer}
-.iconbtn:hover{background:var(--hover);color:var(--fg)}
+.iconbtn:hover,.iconbtn[aria-current]{background:var(--hover);color:var(--fg)}
 .navbar{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;background:var(--el);border-top:1px solid var(--line);padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);box-shadow:0 -1px 2px rgba(0,0,0,.4)}
 .navlink{position:relative;flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:56px;color:var(--dim);font-size:11px;font-weight:500;text-decoration:none;-webkit-tap-highlight-color:transparent}
 .navlink svg.i{width:20px;height:20px}
 .navlink:hover{color:var(--muted)}
 .navlink.active{color:var(--acc)}
 .navlink.active::before{content:"";position:absolute;top:0;width:26px;height:2px;background:var(--acc);border-radius:0 0 2px 2px}
-main{max-width:1100px;margin:0 auto;padding:calc(64px + env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) calc(72px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
-h1{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:600;margin:0 0 12px}
+main{max-width:1240px;margin:0 auto;padding:calc(64px + env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) calc(72px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
+h1{display:flex;align-items:center;gap:8px;min-width:0;font-size:17px;font-weight:600;margin:0 0 12px;overflow-wrap:anywhere}
 h1 svg.i{color:var(--acc)}
+.head{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;margin:0 0 12px}
+.head h1{margin:0}
 .panel{background:var(--el);border:1px solid var(--line);border-radius:var(--r);margin:0 0 14px;box-shadow:var(--sh);overflow:hidden}
 .panel-heading{display:flex;align-items:center;gap:8px;min-height:44px;padding:4px 4px 4px 14px;background:var(--el2);border-bottom:1px solid var(--line);font-size:12.5px;font-weight:600}
-.panel-heading .btn{margin-left:auto}
 .panel-body{padding:14px}
 .badge{display:inline-block;min-width:20px;padding:1px 7px;border-radius:999px;background:var(--bg);color:var(--muted);font:600 10.5px/1.6 var(--mono);text-align:center}
 .help{margin:10px 0 0;color:var(--muted);font-size:12.5px}
-form{display:grid;grid-template-columns:1fr;gap:8px}
-@media (min-width:640px){#lookup{grid-template-columns:9em 1fr auto}#analyze{grid-template-columns:1fr auto;align-items:start}}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr);gap:0 14px}
+@media (min-width:768px){.grid2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+form.row{display:grid;grid-template-columns:1fr;gap:8px}
+@media (min-width:640px){#analyze{grid-template-columns:1fr auto;align-items:start}}
 input,select,textarea{min-height:44px;width:100%;padding:8px 12px;border:1px solid var(--line2);border-radius:var(--r);background:var(--bg);color:var(--fg);font:15px var(--sans)}
-#q,#seeds,#token{font-family:var(--mono)}
+input[type=checkbox],input[type=radio]{width:18px;height:18px;min-height:0;margin:0;padding:0;accent-color:var(--acc);flex:none}
+.mono,#seeds,#token,#scq{font-family:var(--mono)}
 textarea{resize:vertical}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--accd)}
 ::placeholder{color:var(--dim)}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:8px 16px;border:1px solid var(--line2);border-radius:var(--r);background:var(--el2);color:var(--fg);font:500 14px var(--sans);cursor:pointer;white-space:nowrap}
+.fl{display:block;margin:12px 0 4px;color:var(--muted);font-size:12.5px;font-weight:600}
+.fl:first-child{margin-top:0}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:8px 14px;border:1px solid var(--line2);border-radius:var(--r);background:var(--el2);color:var(--fg);font:500 13.5px var(--sans);cursor:pointer;white-space:nowrap;text-decoration:none}
 .btn:hover{background:var(--hover)}
 .btn:disabled{opacity:.5;cursor:not-allowed}
+.btn[aria-pressed=true]{border-color:var(--acc);color:var(--acc);background:var(--accd)}
 .btn-primary{background:var(--acc);border-color:var(--acc);color:var(--acct);font-weight:600}
 .btn-primary:hover{background:var(--acc2);border-color:var(--acc2)}
+.btn-danger{color:var(--bad);border-color:var(--bad)}
 .btn-ghost{border-color:transparent;background:none;color:var(--acc);font-size:12.5px}
+.panel-heading .btn{margin-left:auto}
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 12px}
+.toolbar .grow{flex:1 1 12em;width:auto}
+.toolbar select{width:auto;flex:0 1 auto}
+.seg{display:inline-flex}
+.seg .btn:first-child{border-radius:var(--r) 0 0 var(--r)}
+.seg .btn+.btn{border-radius:0 var(--r) var(--r) 0;margin-left:-1px}
+.chk{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 6px;cursor:pointer;font-size:13px}
+.chk input{margin:13px}
+.cb{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;margin:-8px -6px -8px -12px;cursor:pointer;flex:none}
+.pick{display:flex;align-items:flex-start;gap:4px;min-width:0}
+.pick>details{flex:1 1 auto;min-width:0}
+.pick>.link{flex:0 1 auto;min-width:44px;overflow-wrap:anywhere}
+.checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(15em,1fr));gap:0 12px}
+.link{display:inline-flex;align-items:center;min-height:44px;min-width:44px;color:var(--acc);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere;cursor:pointer}
+.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:0 8px;margin:-8px 0 4px;color:var(--muted);font-size:13px}
+.tabs{display:flex;flex-wrap:wrap;gap:0 2px;margin:0 0 12px;border-bottom:1px solid var(--line)}
+.tab{flex:none;display:inline-flex;align-items:center;min-height:44px;padding:0 13px;border:0;border-bottom:2px solid transparent;background:none;color:var(--muted);font:500 13px var(--sans);text-decoration:none;cursor:pointer;white-space:nowrap}
+.tab:hover{color:var(--fg)}
+.tab[aria-current=page],.tab[aria-selected=true]{color:var(--acc);border-bottom-color:var(--acc)}
+.counters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px}
+@media (min-width:480px){.counters{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.counter{min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r);background:var(--el2)}
+.lab{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.val{font:600 19px/1.35 var(--mono);color:var(--fg);overflow-wrap:anywhere}
+.val.ok,.counter.ok .val{color:var(--ok)}.val.bad,.counter.bad .val{color:var(--bad)}.val.warn,.counter.warn .val{color:var(--warn)}.counter.info .val{color:var(--acc)}
+#cstatus{font-size:14px}
 .stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:0 0 14px}
 @media (min-width:768px){.stats{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .stat{min-width:0;padding:10px 14px;background:var(--el);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--sh)}
-.lab{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
-.val{font:600 19px/1.35 var(--mono);color:var(--fg);overflow-wrap:anywhere}
-.val.ok{color:var(--ok)}.val.bad{color:var(--bad)}.val.warn{color:var(--warn)}
+.bars{padding:6px 0}
+.bar{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 12px;min-height:44px;padding:6px 14px;color:var(--fg);text-decoration:none}
+.bar:hover{background:var(--hover)}
+.bar-l{font-size:12.5px;overflow-wrap:anywhere}
+.bar-n{font:600 12px var(--mono);color:var(--muted)}
+.bar-t{grid-column:1/-1;height:8px;border-radius:4px;background:var(--el2);overflow:hidden}
+.bar-f{display:block;height:100%;min-width:2px;border-radius:4px;background:var(--acc)}
 .alert{margin:0 0 14px;padding:10px 14px;border:1px solid var(--bad);border-radius:var(--r);background:var(--badd);color:var(--bad);font-size:13px;overflow-wrap:anywhere}
 .alert.warn{border-color:var(--warn);background:var(--warnd);color:var(--warn)}
+.alert.upgrade:not([hidden]){display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between}
+.when{margin:0 0 12px;color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}
 .table-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
 th{padding:8px 12px;text-align:left;background:var(--el2);color:var(--dim);border-bottom:1px solid var(--line);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.sortable th{cursor:pointer}
+th[aria-sort=ascending]::after{content:" ▲"}th[aria-sort=descending]::after{content:" ▼"}
 td{padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
 tbody tr:nth-child(even){background:var(--el2)}
 tbody tr:last-child td{border-bottom:0}
+tr.err td{background:var(--badd)}
 td.none{color:var(--dim)}
-.label{display:inline-block;padding:2px 7px;border-radius:3px;background:var(--line2);color:var(--muted);font:600 10.5px/1.5 var(--mono)}
+.label{display:inline-block;padding:2px 7px;border-radius:3px;background:var(--hover);color:var(--muted);font:600 10.5px/1.5 var(--mono)}
 .label.ok{background:var(--okd);color:var(--ok)}.label.info{background:var(--accd);color:var(--acc)}.label.warn{background:var(--warnd);color:var(--warn)}.label.bad{background:var(--badd);color:var(--bad)}
+.risks{display:inline-flex;gap:3px}
+.acts{display:flex;flex-wrap:wrap;gap:4px}
+.nw,#log td:first-child{white-space:nowrap}
+.tree,.tree ul{margin:0;padding:0;list-style:none}
+.tree{padding:8px 14px;font-size:12.5px}
+.tree ul{margin-left:6px;padding-left:10px;border-left:1px solid var(--line)}
+.tree li{padding:3px 0}
+.tree .label{margin-right:2px}
+.tree .hit>.data{font-weight:700;color:var(--fg)}
+.acts .btn{min-width:44px;padding:6px 10px;font-size:12.5px}
 pre{margin:0;padding:12px 14px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 var(--mono);color:var(--fg)}
+.data{font:12.5px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
 .note{margin:0;padding:8px 14px;color:var(--muted);font-size:12px;border-top:1px solid var(--line)}
-.note:empty{display:none}
+.note:empty,#cnote:empty{display:none}
 details summary{cursor:pointer;min-height:44px;display:flex;align-items:center;padding:0 14px;font-size:12.5px;font-weight:600;background:var(--el2)}
 details[open] summary{border-bottom:1px solid var(--line)}
+.raw summary,.corr summary{gap:8px;padding:0;background:none;font-weight:400;list-style:none}
+.raw[open] summary,.corr[open] summary{border-bottom:0}
+.raw summary .data{min-width:0}
+.raw summary .label{flex:none}
+.raw summary::-webkit-details-marker,.corr summary::-webkit-details-marker,.menu summary::-webkit-details-marker{display:none}
+.raw summary::before,.corr summary::before{content:"";flex:none;width:7px;height:7px;margin:0 3px;border:solid var(--dim);border-width:0 2px 2px 0;transform:rotate(-45deg)}
+.raw[open] summary::before,.corr[open] summary::before{transform:rotate(45deg)}
+.corr summary{font-weight:600}
+.filter{padding:8px 14px;border-bottom:1px solid var(--line)}
+.ent-b{padding:4px 0 8px 15px;font-size:12.5px}
+.ent-b .pivot{margin-top:8px}
+.ent-m{margin:0 0 6px;color:var(--muted)}
+dl{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:2px 10px;margin:4px 0 0;font-size:12px}
+dt{color:var(--dim);overflow-wrap:break-word}
+dd{margin:0;font-family:var(--mono);overflow-wrap:anywhere}
+dd dl{margin:0}
+.kv{gap:0;margin:0;font-size:12.5px;grid-template-columns:fit-content(45%) minmax(0,1fr)}
+.kv dt,.kv dd{padding:7px 14px;border-bottom:1px solid var(--line)}
+.kv dt{background:var(--el2);font-weight:600}
+.types{gap:1px 10px}
+.types dd{color:var(--muted)}
+.more{width:100%;border-width:1px 0 0;border-radius:0}
+.menu{position:relative}
+.menu summary{list-style:none}
+.menu-list.end{left:auto;right:0}
+.menu-list{position:absolute;top:100%;left:0;z-index:5;display:flex;flex-direction:column;min-width:10em;margin-top:4px;padding:4px;background:var(--el);border:1px solid var(--line2);border-radius:var(--r);box-shadow:0 4px 14px rgba(0,0,0,.35)}
+.menu-list button{min-height:44px;padding:0 12px;border:0;border-radius:4px;background:none;color:var(--fg);font:13.5px var(--sans);text-align:left;cursor:pointer}
+.menu-list button:hover{background:var(--hover)}
+.uc td{vertical-align:middle}
+.uc td:first-child{width:44px;padding-right:0}
+.uc .cb{margin:-8px 0}
+.uc td:only-child{width:auto;padding:7px 14px}
+.help.pad{margin:0;padding:10px 14px;border-bottom:1px solid var(--line)}
+.uc label{display:block;cursor:pointer}
+.uc b{display:block}
+.uc label .help{display:block;margin:4px 0 0}
+.spin{width:16px;height:16px;border:2px solid var(--line2);border-top-color:var(--acc);border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+.graph{height:62vh;min-height:300px;margin:0 0 10px;background:var(--el);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.graph svg{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+#gedges path{fill:none;stroke:var(--line2);stroke-width:1;vector-effect:non-scaling-stroke}
+#gnodes path{fill:none;stroke:currentColor;stroke-width:10px;stroke-linecap:round;vector-effect:non-scaling-stroke}
+#gnodes .grim{color:var(--el);stroke-width:12px}
+#gnodes .groot{stroke-width:18px}
+#gnodes .gring{color:var(--fg);stroke-width:16px}
+#gnodes .gring.groot{stroke-width:24px}
+.groot{color:var(--fg)}
+.g0{color:var(--g0)}.g1{color:var(--g1)}.g2{color:var(--g2)}.g3{color:var(--g3)}.g4{color:var(--g4)}.g5{color:var(--g5)}.g6{color:var(--g6)}.g7{color:var(--g7)}.g8{color:var(--g8)}.g9{color:var(--g9)}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 14px;font-size:12px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;background:currentColor}
 @media (max-width:420px){.brand-sub{display:none}}
 @media (max-width:767px){
 .table-wrap table,.table-wrap tbody,.table-wrap tr,.table-wrap td{display:block;width:auto}
 .table-wrap thead{display:none}
 .table-wrap tbody tr,.table-wrap tbody tr:nth-child(even){padding:4px 0;background:none;border-bottom:1px solid var(--line)}
 .table-wrap tbody tr:last-child{border-bottom:0}
+.table-wrap tbody tr.err{background:var(--badd)}
+.table-wrap tr.err td{background:none}
 .table-wrap td{display:flex;gap:4px 12px;padding:4px 14px;border:0}
 .table-wrap td::before{content:attr(data-label);flex:0 0 32%;padding-top:2px;color:var(--dim);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-.table-wrap td.none::before{display:none}
+.table-wrap td:not([data-label])::before,.table-wrap td.none::before{display:none}
 .table-wrap td:empty{display:none}
+.table-wrap td>details{flex:1 1 auto;min-width:0}
+.table-wrap td.wide{flex-wrap:wrap}
+.table-wrap td.wide::before{flex-basis:100%}
+.table-wrap td.wide>.pick{flex:1 1 100%}
+.ent-b{padding-left:0}
+.ent-b dl{grid-template-columns:minmax(0,1fr);gap:0}
+.ent-b dd{padding:0 0 4px 10px;border-left:1px solid var(--line)}
 }
 @media (min-width:768px){
 .navbar{top:calc(52px + env(safe-area-inset-top));bottom:auto;gap:2px;padding:0 12px;border-top:0;border-bottom:1px solid var(--line);box-shadow:var(--sh)}
@@ -96,50 +215,146 @@ details[open] summary{border-bottom:1px solid var(--line)}
 .navlink.active{background:var(--accd)}
 .navlink.active::before{top:auto;bottom:0;width:100%;height:2px;border-radius:2px 2px 0 0}
 main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
+.acts{flex-wrap:nowrap}
 }
+.keyedit summary{margin-top:6px;padding:0 10px;border-radius:var(--r)}.keyedit form{display:grid;gap:6px;padding:8px 0 0}.keyedit label{font:12.5px var(--mono)}.keyedit input{margin:0}#kimp label{font:13px var(--sans)}
 </style>
 <header class="appbar">
-<a class="brand" href="#/lookup"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg><span class="brand-text">Huntsman<span class="brand-sub"><span class="sep">·</span>Search Engine</span></span><span class="ver" id="ver"></span></a>
-<div class="bar-end"><span class="pill" id="state">connecting</span><button class="iconbtn" id="theme" type="button" aria-label="Toggle light or dark theme"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z"/></svg></button></div>
+<a class="brand" href="#/scans"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg><span class="brand-text">Huntsman<span class="brand-sub"><span class="sep">·</span>Search Engine</span></span><span class="ver" id="ver"></span></a>
+<div class="bar-end"><span class="pill" id="state">connecting</span><button class="iconbtn" id="theme" type="button" aria-label="Toggle dark mode"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z"/></svg></button><a class="iconbtn" id="nav-about" href="#/about" aria-label="About and server status"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></a></div>
 </header>
 <nav class="navbar" aria-label="Primary">
-<a class="navlink" id="nav-lookup" href="#/lookup"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-5-5"/></svg><span>Look up</span></a>
-<a class="navlink" id="nav-analyze" href="#/analyze"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 6h9M6.2 8.2l4.6 7.6M17.8 8.2l-4.6 7.6"/></svg><span>Analyze</span></a>
-<a class="navlink" id="nav-status" href="#/status"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Status</span></a>
+<a class="navlink" data-view="newscan" href="#/newscan"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg><span>New Scan</span></a>
+<a class="navlink" data-view="scans" href="#/scans"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg><span>Scans</span></a>
+<a class="navlink" data-view="analyze" href="#/analyze"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 6h9M6.2 8.2l4.6 7.6M17.8 8.2l-4.6 7.6"/></svg><span>Analyze</span></a>
+<a class="navlink" data-view="settings" href="#/settings"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg><span>Settings</span></a>
 </nav>
 <main>
 <p class="alert warn" id="authnote" role="alert" hidden></p>
-<section id="view-lookup">
-<h1><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-5-5"/></svg>New lookup</h1>
-<div class="panel"><div class="panel-body">
-<form id="lookup">
-<select id="kind" aria-label="kind">
-<option value="auto">auto</option><option value="people">people</option><option value="email">email</option>
-<option value="exposure">exposure</option><option value="username">username</option><option value="phone">phone</option>
-<option value="domain">domain</option><option value="ip">ip</option><option value="network">network</option>
-</select>
-<input id="q" required maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="name, email, @handle, phone, domain, IP or BSSID" aria-label="selector">
-<button class="btn btn-primary" id="run" type="submit">Look up</button>
-</form>
-<p class="help">Runs one lookup through the same front-ends as the CLI. It makes network requests; exposure and network spend operator keys, and phone, domain and ip use the free-tier keys you have set.</p>
-</div></div>
-<p class="alert" id="lerror" role="alert" hidden></p>
-<div id="result" hidden>
-<div class="stats">
-<div class="stat"><div class="lab">route</div><div class="val" id="route"></div></div>
-<div class="stat"><div class="lab">entities</div><div class="val" id="lentities"></div></div>
-<div class="stat"><div class="lab">sources answered</div><div class="val" id="lsources"></div></div>
-<div class="stat"><div class="lab">time</div><div class="val" id="status"></div></div>
-</div>
-<div class="panel"><div class="panel-heading">Sources <span class="badge" id="outcomes-n"></span><button class="btn btn-ghost" id="download" type="button">Download JSON</button></div>
-<div class="table-wrap"><table><thead><tr><th>source</th><th>outcome</th><th>found</th></tr></thead><tbody id="outcomes"></tbody></table></div></div>
-<div class="panel"><div class="panel-heading">Report</div><pre id="text"></pre></div>
+<p class="alert warn upgrade" id="upgraded" role="alert" hidden><span>Huntsman was updated while this page was open. Reload to use the new version.</span><button class="btn" id="reload" type="button">Reload</button></p>
+<section id="view-scans" hidden>
+<div class="head"><h1>Scans</h1><span class="spin" id="sspin" hidden></span></div>
+<p class="alert" id="serror" role="alert" hidden></p>
+<div class="panel" id="sempty" hidden><div class="panel-body"><b>No scan history</b><p class="help">There is currently no history of previously run scans. Start one from <a class="link" href="#/newscan">New Scan</a>.</p></div></div>
+<div id="slist" hidden>
+<div class="toolbar"><label class="chk"><input type="checkbox" id="sall">All</label><select id="sfilter" aria-label="Filter scans"><option value="">Filter: None</option><option value="running">Filter: Running</option><option value="finished">Filter: Finished</option><option value="failed">Filter: Failed/Aborted</option></select><button class="btn" id="srefresh" type="button">Refresh</button></div>
+<form class="toolbar" id="allsearch"><input type="search" id="allq" class="grow" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="Search every scan: text, *wild*, /re/" aria-label="Search every scan: plain text, a *wild*card or a /regular expression/"><button class="btn" type="submit">Search</button></form>
+<div id="allhits" hidden><div class="toolbar"><span class="when grow" id="allcount"></span><button class="btn" id="allclose" type="button">Close</button></div><div class="panel" id="allresults"></div></div>
+<div class="toolbar" id="sbulk" hidden><span class="when" id="snsel"></span><button class="btn" id="sstop" type="button">Stop</button><button class="btn" id="srerun" type="button">Re-run</button><button class="btn" id="scompare" type="button">Compare</button><details class="menu" id="sexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-mformat="csv">CSV</button><button type="button" data-mformat="xlsx">Excel</button><button type="button" data-mformat="json">JSON</button><button type="button" data-mformat="tsv">TSV</button></div></details><button class="btn btn-danger" id="sdelete" type="button">Delete</button></div>
+<div class="panel"><div class="table-wrap"><table class="sortable"><thead><tr><th>Name</th><th>Target</th><th>Started</th><th>Finished</th><th>Status</th><th>Elements</th><th>Correlations</th><th>Action</th></tr></thead><tbody id="scans"></tbody></table></div></div>
 </div>
 </section>
-<section id="view-analyze" hidden>
-<h1><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 6h9M6.2 8.2l4.6 7.6M17.8 8.2l-4.6 7.6"/></svg>Multi-hop analysis</h1>
+<section id="view-newscan" hidden>
+<h1>New Scan</h1>
+<form id="newscan" novalidate>
+<div class="grid2">
 <div class="panel"><div class="panel-body">
-<form id="analyze">
+<label class="fl" for="sname">Scan Name</label>
+<input id="sname" maxlength="120" autocomplete="off" placeholder="The name of this scan.">
+<label class="fl" for="starget">Scan Target</label>
+<input id="starget" class="mono" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" placeholder="The target of your scan.">
+<label class="fl" for="skind">Target type</label>
+<select id="skind"><option value="auto">Detect from the target</option><option value="domain">Domain name</option><option value="ip">IP address</option><option value="netblock">Address block (CIDR)</option><option value="asn">AS number</option><option value="email">E-mail address</option><option value="exposure">E-mail breach exposure</option><option value="phone">Phone number</option><option value="username">Username</option><option value="people">Human name</option><option value="network">Wi-Fi BSSID or location</option></select>
+<label class="fl" for="sdepth">Recursion depth</label>
+<input id="sdepth" type="number" min="0" step="1" value="0" inputmode="numeric" aria-describedby="sdepth-h">
+<p class="help" id="sdepth-h">How many hops the scan follows what it finds, as Spiderfoot feeds each finding to the modules that take it: every email, username, domain, phone, IP address and BSSID found is looked up in turn. 0 looks up the target only.</p>
+</div></div>
+<div class="panel"><div class="panel-body">
+<p class="help">Your scan target may be one of the following. Huntsman detects the target type from the format of your input:</p>
+<dl class="types"><dt>Domain Name</dt><dd>example.com</dd><dt>IPv4 Address</dt><dd>1.2.3.4</dd><dt>IPv6 Address</dt><dd>2606:4700:4700::1111</dd><dt>Subnet</dt><dd>1.2.3.0/24</dd><dt>IPv6 Subnet</dt><dd>2606:4700::/32</dd><dt>Network ASN</dt><dd>AS1234 or 1234</dd><dt>E-mail address</dt><dd>bob@example.com</dd><dt>Phone Number</dt><dd>+12345678901 (E.164)</dd><dt>Human Name</dt><dd>John Smith</dd><dt>Username</dt><dd>@jsmith2000</dd><dt>Wi-Fi BSSID</dt><dd>00:11:22:33:44:55</dd><dt>Location</dt><dd>-33.8688,151.2093</dd></dl>
+</div></div>
+</div>
+<div class="tabs" role="tablist" aria-label="What to run">
+<button class="tab" role="tab" id="nt-usecase" aria-controls="np-usecase" aria-selected="true" type="button">By Use Case</button>
+<button class="tab" role="tab" id="nt-types" aria-controls="np-types" aria-selected="false" type="button">By Required Data</button>
+<button class="tab" role="tab" id="nt-modules" aria-controls="np-modules" aria-selected="false" type="button">By Module</button>
+</div>
+<div class="toolbar" id="nselectors" hidden><button class="btn" id="nall" type="button">Select All</button><button class="btn" id="nnone" type="button">De-Select All</button></div>
+<div class="panel" id="np-usecase" role="tabpanel" aria-labelledby="nt-usecase"><table class="uc"><tbody>
+<tr><td><label class="cb"><input type="radio" name="usecase" value="all" id="uc-all" checked></label></td><td><label for="uc-all"><b>All</b>Get anything and everything about the target. Every module is enabled (slow), so every possible piece of information about the target is obtained and analysed.</label></td></tr>
+<tr><td><label class="cb"><input type="radio" name="usecase" value="footprint" id="uc-footprint"></label></td><td><label for="uc-footprint"><b>Footprint</b>Understand what information this target exposes to the Internet: its network perimeter, associated identities and other information found through web crawling and search engines.</label></td></tr>
+<tr><td><label class="cb"><input type="radio" name="usecase" value="investigate" id="uc-investigate"></label></td><td><label for="uc-investigate"><b>Investigate</b>Best for when you suspect the target to be malicious but need more information. Some basic footprinting is done, and blacklists and other sources that may know of the target's maliciousness are queried.</label></td></tr>
+<tr><td><label class="cb"><input type="radio" name="usecase" value="passive" id="uc-passive"></label></td><td><label for="uc-passive"><b>Passive</b>When you don't want the target to even suspect they are being investigated. Only modules that do not touch the target or its affiliates are enabled.</label></td></tr>
+</tbody></table></div>
+<div class="panel" id="np-types" role="tabpanel" aria-labelledby="nt-types" hidden><div class="panel-body"><div class="checks" id="typelist"></div></div></div>
+<div class="panel" id="np-modules" role="tabpanel" aria-labelledby="nt-modules" hidden><p class="help pad">Choose the modules the scan asks, as Spiderfoot's By Module scan does. A module is asked only by the lookups listed under it, for the target and for what the scan follows; one that no scan lookup asks runs as its own command and cannot be chosen here.</p><table class="uc"><tbody id="modlist"></tbody></table></div>
+<p class="alert" id="nerror" role="alert" hidden></p>
+<div><button class="btn btn-primary" id="runscan" type="submit">Run Scan Now</button></div>
+</form>
+</section>
+<section id="view-scan" hidden>
+<p class="crumbs"><a class="link" href="#/scans">Scans</a><span aria-hidden="true">›</span><span id="sccrumb"></span></p>
+<div class="head"><h1 id="scname">Scan</h1><span class="label" id="scstatus"></span><span class="spin" id="scspin" hidden></span></div>
+<p class="when" id="scmeta"></p>
+<nav class="tabs" id="sctabs" aria-label="Scan sections"><a class="tab" data-tab="summary">Summary</a><a class="tab" data-tab="correlations">Correlations</a><a class="tab" data-tab="browse">Browse</a><a class="tab" data-tab="graph">Graph</a><a class="tab" data-tab="settings">Scan Settings</a><a class="tab" data-tab="log">Log</a></nav>
+<div class="toolbar">
+<button class="btn" id="screfresh" type="button">Refresh</button>
+<details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="xlsx">Excel</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button></div></details>
+<button class="btn" id="scstop" type="button" hidden>Stop</button>
+<button class="btn" id="screrun" type="button">Re-run</button>
+<button class="btn" id="sccompare" type="button">Compare</button>
+<button class="btn" id="scclone" type="button">Clone</button>
+<button class="btn btn-danger" id="scdelete" type="button">Delete</button>
+</div>
+<form class="toolbar" id="scsearch"><input type="search" id="scq" class="grow" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="Search: text, *wild*, /re/" aria-label="Search this scan: plain text, a *wild*card or a /regular expression/"><button class="btn" type="submit">Search</button></form>
+<p class="alert" id="scerror" role="alert" hidden></p>
+<div id="pane-summary">
+<div class="grid2">
+<div class="panel"><div class="panel-heading">Scan Status</div><div class="counters"><div class="counter"><div class="lab">Total</div><div class="val" id="ctotal">?</div></div><div class="counter"><div class="lab">Unique</div><div class="val" id="cunique">?</div></div><div class="counter"><div class="lab">Status</div><div class="val" id="cstatus">?</div></div><div class="counter"><div class="lab">Errors</div><div class="val" id="cerrors">?</div></div></div></div>
+<div class="panel"><div class="panel-heading">Correlations</div><div class="counters"><div class="counter bad"><div class="lab">High</div><div class="val" id="chigh">?</div></div><div class="counter warn"><div class="lab">Medium</div><div class="val" id="cmedium">?</div></div><div class="counter info"><div class="lab">Low</div><div class="val" id="clow">?</div></div><div class="counter ok"><div class="lab">Info</div><div class="val" id="cinfo">?</div></div></div></div>
+</div>
+<div class="panel"><div class="panel-heading">Data Types <span class="badge" id="bars-n"></span></div><div class="bars" id="bars"></div></div>
+<div class="panel"><div class="panel-heading">Sources <span class="badge" id="srcs-n"></span></div><div class="table-wrap"><table class="sortable"><thead><tr><th>Source</th><th>Outcome</th><th>Detail</th></tr></thead><tbody id="srcs"></tbody></table></div></div>
+</div>
+<div id="pane-correlations" hidden>
+<div class="toolbar"><button class="btn" id="recorrelate" type="button">Re-run Correlations</button><details class="menu" id="cexport"><summary class="btn">Export Correlations</summary><div class="menu-list"><button type="button" data-cformat="csv">CSV</button><button type="button" data-cformat="xlsx">Excel</button><button type="button" data-cformat="json">JSON</button><button type="button" data-cformat="tsv">TSV</button></div></details></div>
+<p class="help" id="cnote" role="status"></p>
+<div class="panel"><div class="table-wrap"><table><thead><tr><th>Correlation</th><th>Rule</th><th>Risk</th><th>Data Elements</th></tr></thead><tbody id="corrs"></tbody></table></div></div></div>
+<div id="pane-browse" hidden>
+<div class="panel" id="btypes"><div class="table-wrap"><table class="sortable"><thead><tr><th>Type</th><th>Unique Data Elements</th><th>Total Data Elements</th><th>Last Data Element</th></tr></thead><tbody id="types"></tbody></table></div></div>
+<div id="btype" hidden>
+<p class="crumbs"><a class="link" id="bback">Browse</a><span aria-hidden="true">›</span><span id="bname"></span></p>
+<div class="toolbar"><span class="seg" role="group" aria-label="View"><button class="btn" id="bfull" type="button" aria-pressed="true">Full</button><button class="btn" id="bunique" type="button" aria-pressed="false">Unique</button><button class="btn" id="bpath" type="button" aria-pressed="false">Discovery Path</button></span><label class="chk" id="bfpl"><input type="checkbox" id="bhidefp"><span id="bfpn">Hide false positives</span></label><input type="search" id="bfilter" class="grow" autocomplete="off" placeholder="Filter these elements" aria-label="Filter these elements"></div>
+<div class="toolbar" id="bfp"><button class="btn" id="bsetfp" type="button">Set false positive</button><button class="btn" id="bunsetfp" type="button">Unset false positive</button></div>
+<div class="panel" id="bbody"></div>
+</div>
+</div>
+<div id="pane-graph" hidden>
+<div class="toolbar"><span class="seg" role="group" aria-label="Layout"><button class="btn" id="grandom" type="button" aria-pressed="false">Random</button><button class="btn" id="gforce" type="button" aria-pressed="true">Force</button></span><button class="btn" id="gfit" type="button">Fit</button><button class="btn" id="gsave" type="button">Save image</button></div>
+<div class="graph"><svg id="gsvg" role="img" aria-label="Graph of the scan's data elements"><g id="gview"><g id="gedges"></g><g id="gnodes"></g></g></svg></div>
+<p class="when" id="ginfo" role="status"></p>
+<div class="legend" id="glegend"></div>
+</div>
+<div id="pane-settings" hidden>
+<div class="panel"><div class="panel-heading">Meta Information</div><dl class="kv" id="meta"></dl></div>
+<div class="panel"><div class="panel-heading">Scan Options</div><dl class="kv" id="opts"></dl></div>
+<div class="panel"><div class="panel-heading">Discovery Tree <span class="badge" id="lineage-n"></span></div><p class="help pad">Each lookup the scan ran, by hop from the target, and every entity it found.</p><div id="lineage"></div></div>
+<div class="panel"><div class="panel-heading">Lookup Report</div><pre id="sreport"></pre></div>
+</div>
+<div id="pane-log" hidden>
+<div class="toolbar"><select id="llevel" aria-label="Log entries"><option value="">All entries</option><option value="ERROR">Errors only</option></select><input type="search" id="lfilter" class="grow" autocomplete="off" placeholder="Filter the log" aria-label="Filter the log"><button class="btn" id="ldownload" type="button">Download logs</button></div>
+<div class="panel"><div class="table-wrap"><table class="sortable"><thead><tr><th>Time</th><th>Component</th><th>Type</th><th>Event</th></tr></thead><tbody id="log"></tbody></table></div></div>
+</div>
+<div id="pane-search" hidden>
+<p class="crumbs"><a class="link" id="sback">Browse</a><span aria-hidden="true">›</span><span id="shits"></span></p>
+<div class="panel" id="sresults"></div>
+</div>
+</section>
+<section id="view-compare" hidden>
+<p class="crumbs"><a class="link" href="#/scans">Scans</a><span aria-hidden="true">›</span><span>Compare</span></p>
+<h1>Compare Scans</h1>
+<p class="when" id="cmpmeta"></p>
+<div class="toolbar"><button class="btn" id="cmpswap" type="button">Swap</button><details class="menu" id="cmpexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-xformat="csv">CSV</button><button type="button" data-xformat="xlsx">Excel</button><button type="button" data-xformat="json">JSON</button><button type="button" data-xformat="tsv">TSV</button></div></details></div>
+<p class="alert" id="cmperror" role="alert" hidden></p>
+<div class="panel"><div class="panel-heading">Data Types</div><div class="table-wrap"><table class="sortable"><thead><tr><th>Type</th><th>Earlier</th><th>Later</th><th>Added</th><th>Removed</th><th>Kept</th></tr></thead><tbody id="cmptypes"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Correlations <span class="badge" id="cmpcorr-n"></span></div><div class="table-wrap"><table><thead><tr><th>Change</th><th>Risk</th><th>Correlation</th></tr></thead><tbody id="cmpcorr"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Added <span class="badge" id="cmpadd-n"></span></div><p class="help pad">Found by the later scan and not by the earlier one.</p><div id="cmpadd"></div></div>
+<div class="panel"><div class="panel-heading">Removed <span class="badge" id="cmprem-n"></span></div><p class="help pad">Found by the earlier scan and no longer by the later one.</p><div id="cmprem"></div></div>
+</section>
+<section id="view-analyze" hidden>
+<h1>Multi-hop analysis</h1>
+<div class="panel"><div class="panel-body">
+<form class="row" id="analyze">
 <textarea id="seeds" required rows="4" maxlength="2048" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="a seed per line: name, email, @handle, phone, domain or IP" aria-label="seeds"></textarea>
 <button class="btn btn-primary" id="arun" type="submit">Analyze</button>
 </form>
@@ -153,9 +368,9 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="stat"><div class="lab">links</div><div class="val" id="alinks"></div></div>
 <div class="stat"><div class="lab">seeds linked</div><div class="val" id="alinked"></div></div>
 </div>
-<div class="panel"><div class="panel-heading">Summary<button class="btn btn-ghost" id="adownload" type="button">Download JSON</button></div><p class="note" id="astatus"></p></div>
+<div class="panel"><div class="panel-heading">Summary<button class="btn btn-ghost" id="adownload" type="button">Download JSON</button></div><p class="note" id="astatus" role="status"></p></div>
 <div class="panel"><div class="panel-heading">Entities <span class="badge" id="aentities-n"></span></div>
-<div class="table-wrap"><table><thead><tr><th>kind</th><th>value</th><th>confidence</th></tr></thead><tbody id="aentities"></tbody></table></div></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>kind</th><th>value</th><th>confidence</th></tr></thead><tbody id="aentities"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Links <span class="badge" id="arelations-n"></span></div>
 <div class="table-wrap"><table><thead><tr><th>from</th><th>relation</th><th>to</th></tr></thead><tbody id="arelations"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Next pivots <span class="badge" id="apivots-n"></span></div>
@@ -172,8 +387,20 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="table-wrap"><table><thead><tr><th>seed</th><th>reason</th></tr></thead><tbody id="arejected"></tbody></table></div></div>
 </div>
 </section>
-<section id="view-status" hidden>
-<h1><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Server status</h1>
+<section id="view-settings" hidden>
+<h1>Settings</h1>
+<p class="alert" id="gerror" role="alert" hidden></p>
+<div class="panel"><div class="panel-heading">Global Settings</div><dl class="kv" id="gopts"></dl><p class="alert warn" id="kwarn" role="alert" hidden></p><details class="keyedit pad" id="kimp" hidden><summary>Import API keys</summary><form id="kimp-f"><label for="kimp-file">Spiderfoot's settings export (SpiderFoot.cfg) or a keys file</label><input type="file" id="kimp-file" accept=".cfg,.env,.txt,text/plain"><label for="kimp-text">or paste its lines</label><textarea id="kimp-text" rows="3" autocomplete="off" spellcheck="false"></textarea><button class="btn" type="submit">Import</button><p class="help" id="kimp-m" role="status"></p></form></details></div>
+<div class="panel"><div class="panel-heading">Modules <span class="badge" id="mods-n"></span></div>
+<div class="filter"><input type="search" id="mfilter" autocomplete="off" placeholder="Filter modules" aria-label="Filter modules"></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>Module</th><th>Category</th><th>Access</th><th>API Key</th><th>Description</th></tr></thead><tbody id="mods"></tbody></table></div></div>
+<div class="panel" id="rules-p" hidden><div class="panel-heading">Correlation Rules <span class="badge" id="rules-n"></span></div>
+<p class="help pad">Every saved scan runs these. Rules of your own in Spiderfoot's format go in <span class="mono">~/.huntsman/correlations</span>: one with a shipped rule's id replaces it.</p>
+<div class="table-wrap"><table><thead><tr><th>Rule</th><th>Risk</th><th>Origin</th></tr></thead><tbody id="rules"></tbody></table></div></div>
+</section>
+<section id="view-about" hidden>
+<h1>About</h1>
+<p class="help">Huntsman is an OSINT engine in one Rust binary that runs on Android in Termux without root. Scans, their data elements and their logs stay on this device.</p>
 <div class="stats">
 <div class="stat"><div class="lab">server</div><div class="val" id="sstate">…</div></div>
 <div class="stat"><div class="lab">version</div><div class="val" id="sversion">…</div></div>
@@ -194,9 +421,23 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <script>
 const $=id=>document.getElementById(id);
 const root=document.documentElement;
-const store={get(k){try{return localStorage.getItem(k)||''}catch(_){return ''}},set(k,v){try{if(v)localStorage.setItem(k,v);else localStorage.removeItem(k)}catch(_){}}};
-if(store.get('hse-theme')==='light') root.classList.add('light');
-$('theme').onclick=()=>store.set('hse-theme',root.classList.toggle('light')?'light':'');
+// Per-viewer conveniences only. Storage can be missing or refuse a write (private tabs, a full
+// quota), so every access is guarded and the page works without it; a write that fails removes
+// the old value rather than leave it standing for the new one.
+const keep=area=>({get(k){try{return area().getItem(k)||''}catch(_){return ''}},set(k,v){try{if(v)area().setItem(k,v);else area().removeItem(k)}catch(_){try{area().removeItem(k)}catch(_){}}}});
+const store=keep(()=>localStorage),sess=keep(()=>sessionStorage);
+// The theme follows the phone's light or dark setting until the toggle picks one, and the
+// browser's own bar takes the app bar's colour.
+const sys=matchMedia('(prefers-color-scheme: light)');
+let isLight=false;
+function theme(){
+  const t=store.get('hse-theme');isLight=t?t==='light':sys.matches;
+  root.classList.toggle('light',t==='light');root.classList.toggle('dark',t==='dark');
+  $('themecolor').content=isLight?'#ffffff':'#11151b';
+}
+theme();
+if(sys.addEventListener)sys.addEventListener('change',theme);
+$('theme').onclick=()=>{store.set('hse-theme',isLight?'dark':'light');theme()};
 // Only a public bind needs a token. A loopback server, as on the phone, never asks, so the
 // token panel stays hidden there and no call carries one.
 let token=store.get('hse-token'),needsToken=false;
@@ -206,107 +447,903 @@ let token=store.get('hse-token'),needsToken=false;
   $('token').value=token;
 }
 $('token').oninput=()=>{token=$('token').value.trim();store.set('hse-token',token)};
-$('token').onchange=()=>refresh();
+$('token').onchange=()=>health();
 function headers(extra){const h=Object.assign({},extra);if(needsToken&&token)h.Authorization='Bearer '+token;return h}
-async function call(path,extra){const r=await fetch(path,{headers:headers(extra),cache:'no-store'});const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}return {r,text,body}}
+async function call(path,extra,opts){const r=await fetch(path,Object.assign({headers:headers(extra),cache:'no-store'},opts));const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}return {r,text,body}}
 const reason=({text,body})=>(body&&body.error)||text.trim();
+// fetch rejects only when nothing answered: the server stopped (Android ends Termux's background
+// processes) or the address changed. Say so, and watch for it to come back.
+const unreachable=e=>{health();return 'Huntsman did not answer at '+location.host+' ('+e.message+'). On the phone, start it in Termux with: huntsman start'};
 function askToken(){
   needsToken=true;$('tokenpanel').hidden=false;$('authnote').hidden=false;
-  $('authnote').textContent=token?'The server refused this token. Enter the exact HSE_AUTH_TOKEN under Status.':'This server is on a public address and needs its HSE_AUTH_TOKEN. Enter it under Status.';
+  $('authnote').textContent=token?'The server refused this token. Enter the exact HSE_AUTH_TOKEN under About.':'This server is on a public address and needs its HSE_AUTH_TOKEN. Enter it under About.';
 }
 const refused=res=>{if(res.r.status===401){askToken();return true}return false};
-const views=['lookup','analyze','status'];
-function route(){
-  const m=/^#\/(\w+)/.exec(location.hash),view=m&&views.includes(m[1])?m[1]:'lookup';
-  for(const v of views){$('view-'+v).hidden=v!==view;$('nav-'+v).classList.toggle('active',v===view);if(v===view)$('nav-'+v).setAttribute('aria-current','page');else $('nav-'+v).removeAttribute('aria-current')}
+// Scans spend egress and keys, so every scan call carries the lookup header, which a page on
+// another site cannot send without a preflight this server never approves.
+const LH={'X-Huntsman-Lookup':'1'};
+class Failure extends Error{}
+async function api(path,opts){
+  // The first health answer says whether this server needs the token, so no scan call goes
+  // without one it needs.
+  await started;
+  let res;
+  try{res=await call(path,LH,opts)}catch(e){throw new Failure(unreachable(e))}
+  if(!res.r.ok){refused(res);throw new Failure('HTTP '+res.r.status+' · '+reason(res))}
+  return res.body;
 }
-addEventListener('hashchange',route);route();
-function pill(text,tone){$('state').textContent=text;$('state').className='pill '+tone;$('sstate').textContent=text;$('sstate').className='val '+tone}
-async function refresh(){
-  let open=true,online=true;
-  for(const [id,path] of [['health','/api/health'],['modules','/api/modules'],['command','/api/command']]){
-    try{
-      const res=await call(path);$(id).textContent=res.text;
-      if(id==='health'&&res.body){
-        $('ver').textContent='v'+res.body.version;$('sversion').textContent=res.body.version;
-        $('sauth').textContent=res.body.auth==='token'?'token':'none';
-        if(res.body.auth==='token'){needsToken=true;$('tokenpanel').hidden=false;if(!token){askToken();open=false}}
-        else{needsToken=false;token='';store.set('hse-token','');$('tokenpanel').hidden=true}
-      }
-      if(id==='modules'&&res.body)$('smodules').textContent=res.body.count;
-      if(refused(res))open=false;
-    }catch(e){$(id).textContent=String(e);online=false}
-  }
-  if(!online)pill('offline','bad');else if(!open)pill('token','warn');else pill('online','ok');
-  if(open)$('authnote').hidden=true;
-}
-function cell(row,text,label){const td=document.createElement('td');td.textContent=text==null?'':String(text);if(label)td.dataset.label=label;row.appendChild(td);return td}
+const enc=encodeURIComponent;
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=String(text);return e}
+function put(tr,label,content){const td=el('td');if(label)td.dataset.label=label;if(content instanceof Node)td.append(content);else if(content!=null)td.textContent=String(content);tr.append(td);return td}
+function cell(row,text,label){return put(row,label,text==null?'':text)}
 function fill(id,items,cols){
   const tb=$(id),heads=[...tb.parentNode.querySelectorAll('th')].map(th=>th.textContent);tb.replaceChildren();
   for(const it of items){const tr=document.createElement('tr');cols(it).forEach((c,i)=>cell(tr,c,heads[i]));tb.appendChild(tr)}
   if(!items.length){const tr=document.createElement('tr'),td=cell(tr,'none');td.className='none';td.colSpan=heads.length;tb.appendChild(tr)}
   const n=$(id+'-n');if(n)n.textContent=items.length;
 }
+function none(tb,text,span){const tr=el('tr'),td=put(tr,'',text);td.className='none';td.colSpan=span;tb.append(tr)}
+function button(text,onclick,cls){const b=el('button','btn'+(cls?' '+cls:''),text);b.type='button';b.onclick=onclick;return b}
+function tick(label,on,change){const l=el('label','cb'),i=el('input');i.type='checkbox';i.checked=!!on;i.setAttribute('aria-label',label);i.onchange=()=>change(i.checked);l.append(i);return l}
+function kv(id,pairs){const dl=$(id);dl.replaceChildren();for(const [k,v] of pairs)dl.append(el('dt','',k),el('dd','',v==null||v===''?'none':v))}
 function fail(id,text){$(id).hidden=false;$(id).textContent=text}
-function save(body,name){
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([JSON.stringify(body,null,2)],{type:'application/json'}));
-  a.download=name+'-'+Date.now()+'.json';a.click();URL.revokeObjectURL(a.href);
+function download(blob,name){
+  const a=document.createElement('a'),url=URL.createObjectURL(blob);
+  a.href=url;a.download=name;a.click();
+  // Revoked at once, a phone's browser can lose the file before it has read the blob.
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
 }
-const tone={success:'ok',valid_zero:'info',auth_required:'warn',auth_rejected:'warn',entitlement_denied:'warn',quota_exhausted:'warn',rate_limited:'warn'};
-let last=null;
-$('lookup').onsubmit=async ev=>{
-  ev.preventDefault();
-  const q=$('q').value.trim(); if(!q) return;
-  const params=new URLSearchParams({kind:$('kind').value,q});
-  $('run').disabled=true;$('lerror').hidden=true;$('result').hidden=true;last=null;
-  $('run').textContent='Running…';
-  const started=Date.now();
-  try{
-    const res=await call('/api/lookup?'+params,{'X-Huntsman-Lookup':'1'}),body=res.body;
-    const secs=((Date.now()-started)/1000).toFixed(1)+'s';
-    if(!res.r.ok||!body){refused(res);fail('lerror','HTTP '+res.r.status+' · '+secs+' · '+reason(res));return}
-    last=body;$('result').hidden=false;
-    $('route').textContent=body.route;$('lentities').textContent=body.entities.length;$('status').textContent=secs;
-    $('lsources').textContent=body.outcomes.filter(o=>o.kind==='success'||o.kind==='valid_zero').length+' / '+body.outcomes.length;
-    fill('outcomes',body.outcomes,o=>[o.module,'',o.found]);
-    [...$('outcomes').rows].forEach((tr,i)=>{const o=body.outcomes[i];if(!o)return;const s=document.createElement('span');s.className='label '+(tone[o.kind]||'bad');s.textContent=o.kind;tr.cells[1].replaceChildren(s)});
-    $('text').textContent=body.text;
-  }catch(e){fail('lerror',String(e))}finally{$('run').disabled=false;$('run').textContent='Look up'}
-};
-$('download').onclick=()=>{if(last)save(last,'huntsman-'+last.route)};
-let alast=null;
+function save(body,name){download(new Blob([JSON.stringify(body,null,2)],{type:'application/json'}),name+'-'+Date.now()+'.json')}
 const show=v=>v==null?'':typeof v==='object'?JSON.stringify(v):String(v);
+const pad=n=>String(n).padStart(2,'0');
+function when(ms){if(!ms)return '';const d=new Date(Number(ms));return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds())}
+const tone={success:'ok',valid_zero:'info',auth_required:'warn',auth_rejected:'warn',entitlement_denied:'warn',quota_exhausted:'warn',rate_limited:'warn'};
+// Spiderfoot's scan states and correlation risks, and the colours its pages give them.
+const ACTIVE=['CREATED','STARTING','STARTED','RUNNING','INITIALIZING','ABORT-REQUESTED'];
+const live=s=>ACTIVE.includes(s);
+const stTone=s=>s==='FINISHED'?'ok':/FAIL/.test(s)?'bad':/ABORT/.test(s)?'warn':'info';
+const RISK=[['high','High','bad'],['medium','Medium','warn'],['low','Low','info'],['info','Info','ok']];
+const riskTone=r=>(RISK.find(x=>x[0]===String(r||'').toLowerCase())||[0,0,''])[2];
+function risks(c){const w=el('span','risks');for(const [k,name,t] of RISK){const b=el('span','label '+t,(c&&c[k])||0);b.append(el('span','sr',' '+name));w.append(b)}return w}
+// One view at a time. A view's loads carry the generation they started in, so an answer that
+// arrives after the operator moved on is dropped, and its follow-up poll never starts.
+const VIEWS=['scans','newscan','scan','compare','analyze','settings','about'];
+let view='',gen=0,timer=0,resume=null,detailed=false;
+function later(fn,ms=5000){clearTimeout(timer);const g=gen;resume=fn;timer=setTimeout(()=>{if(g===gen&&!document.hidden)fn()},ms)}
+function route(){
+  const parts=location.hash.replace(/^#\/?/,'').split('/').map(p=>{try{return decodeURIComponent(p)}catch(_){return p}});
+  let v=({lookup:'newscan',status:'about'})[parts[0]]||parts[0];
+  if(!VIEWS.includes(v)||(v==='scan'&&!parts[1])||(v==='compare'&&!parts[2]))v='scans';
+  gen++;clearTimeout(timer);resume=null;view=v;dropGraph();
+  for(const x of VIEWS)$('view-'+x).hidden=x!==v;
+  const nav=v==='scan'||v==='compare'?'scans':v;
+  for(const a of document.querySelectorAll('.navlink,#nav-about')){const on=(a.dataset.view||'about')===nav;a.classList.toggle('active',on);if(on)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current')}
+  if(v==='scans')loadScans();
+  else if(v==='newscan')newTab(ntab);
+  else if(v==='scan')openScan(parts.slice(1));
+  else if(v==='compare')openCompare(parts.slice(1,3));
+  else if(v==='settings')loadSettings();
+  else if(v==='about'&&!detailed)details();
+}
+addEventListener('hashchange',route);
+function pill(text,tone){$('state').textContent=text;$('state').className='pill '+tone;$('sstate').textContent=text;$('sstate').className='val '+tone}
+let retry=0;
+// The page this server serves, which every health answer names. One that names another page
+// means the server was upgraded while this tab was open, so the tab runs the old page against
+// the new server until it reloads.
+const PAGE_ID=(document.querySelector('meta[name=huntsman-page]')||{}).content||'';
+$('reload').onclick=()=>location.reload();
+// Health is all a page that comes back into view asks for, besides a scan list or scan that is
+// still running. The module list and the command contract do not change while a server runs,
+// so they load when About first opens and on Refresh, not on every return to the tab.
+async function health(){
+  clearTimeout(retry);
+  let open=true;
+  try{
+    const res=await call('/api/health'),b=res.body;$('health').textContent=res.text;
+    if(b){
+      if(PAGE_ID&&b.page&&b.page!==PAGE_ID)$('upgraded').hidden=false;
+      $('ver').textContent='v'+b.version;$('sversion').textContent=b.version;
+      $('sauth').textContent=b.auth==='token'?'token':'none';
+      if(b.auth==='token'){
+        needsToken=true;$('tokenpanel').hidden=false;
+        // A stored token is tried with HEAD, which answers 401 or 200 and carries no body.
+        if(!token){askToken();open=false}else if(refused(await call('/api/command',{},{method:'HEAD'})))open=false;
+      }
+      else{needsToken=false;token='';store.set('hse-token','');$('tokenpanel').hidden=true}
+    }
+  }catch(e){
+    $('health').textContent=String(e);pill('offline','bad');
+    if(!document.hidden)retry=setTimeout(health,5000);
+    return;
+  }
+  pill(open?'online':'token',open?'ok':'warn');
+  if(open)$('authnote').hidden=true;
+}
+async function details(){
+  detailed=true;
+  await Promise.all([['modules','/api/modules'],['command','/api/command']].map(async([id,path])=>{
+    try{
+      const res=await call(path);$(id).textContent=res.text;
+      if(id==='modules'&&res.body)$('smodules').textContent=res.body.count;
+      if(refused(res))pill('token','warn');
+    }catch(e){$(id).textContent=String(e);detailed=false}
+  }));
+}
+// Scans: Spiderfoot's list, with a selection the toolbar acts on.
+let scans=[];const picked=new Set();
+const FILTERS={running:s=>live(s.status),finished:s=>s.status==='FINISHED',failed:s=>/ABORT|FAIL/.test(s.status)};
+async function loadScans(){
+  const g=gen;$('sspin').hidden=false;
+  try{const list=await api('/api/scans');if(g!==gen)return;scans=Array.isArray(list)?list:[];$('serror').hidden=true;showScans()}
+  catch(e){if(g===gen)fail('serror',e.message)}
+  if(g!==gen)return;
+  $('sspin').hidden=true;
+  if(scans.some(s=>live(s.status)))later(loadScans);else resume=null;
+}
+function showScans(){
+  for(const id of [...picked])if(!scans.some(s=>s.id===id))picked.delete(id);
+  const f=FILTERS[$('sfilter').value],shown=f?scans.filter(f):scans,tb=$('scans');
+  tb.replaceChildren();
+  for(const s of shown){
+    const tr=el('tr'),name=s.name||s.target,a=el('a','link',name),act=el('span','acts');
+    a.href='#/scan/'+enc(s.id);
+    const pick=el('span','pick');pick.append(tick('Select '+name,picked.has(s.id),on=>{if(on)picked.add(s.id);else picked.delete(s.id);bulk()}),a);
+    put(tr,'Name',pick);put(tr,'Target',el('span','mono',s.target));put(tr,'Started',when(s.started||s.created)).className='nw';put(tr,'Finished',when(s.ended)).className='nw';
+    put(tr,'Status',el('span','label '+stTone(s.status),s.status));put(tr,'Elements',s.elements);put(tr,'Correlations',risks(s.correlations));
+    act.append(live(s.status)?button('Stop',()=>act1('stop',[s.id])):button('Delete',()=>act1('delete',[s.id])),button('Re-run',()=>act1('rerun',[s.id])),button('Export',()=>exportJson([s.id])));
+    put(tr,'Action',act);tb.append(tr);
+  }
+  if(!shown.length)none(tb,'No scan matches this filter.',8);
+  $('sempty').hidden=scans.length>0;$('slist').hidden=!scans.length;bulk();
+}
+function bulk(){
+  const n=picked.size;$('snsel').textContent=n+' selected';$('sbulk').hidden=!n;
+  for(const id of ['sstop','srerun','sdelete'])$(id).disabled=!n;
+  $('scompare').disabled=n!==2;
+  if(!n)$('sexport').open=false;
+  $('sall').checked=n>0&&n===scans.length;
+}
+$('sall').onchange=()=>{picked.clear();if($('sall').checked)for(const s of scans)picked.add(s.id);showScans()};
+$('sfilter').onchange=showScans;
+$('srefresh').onclick=loadScans;
+async function act1(action,ids){
+  const what=ids.length===1?'this scan':ids.length+' scans';
+  if(action==='delete'&&!confirm('Delete '+what+' and all of its data?'))return;
+  if(action==='stop'&&!confirm('Stop '+what+'? What it found so far is kept.'))return;
+  const where=view==='scan'?'scerror':'serror';let next=null;
+  try{for(const id of ids){const r=await api('/api/scans/'+enc(id)+'/'+action,{method:'POST'});if(r&&r.id&&!next)next=r.id;picked.delete(id)}}
+  catch(e){fail(where,e.message)}
+  if(action==='rerun'&&next&&ids.length===1)location.hash='#/scan/'+enc(next);
+  else if(view==='scan')action==='delete'?location.hash='#/scans':loadScan(true);
+  else loadScans();
+}
+$('sstop').onclick=()=>act1('stop',[...picked].filter(id=>scans.some(s=>s.id===id&&live(s.status))));
+$('srerun').onclick=()=>act1('rerun',[...picked]);
+$('scompare').onclick=()=>{const two=scans.filter(s=>picked.has(s.id)).sort((a,b)=>(a.created||0)-(b.created||0));if(two.length===2)compareScans(two[0].id,two[1].id)};
+$('sdelete').onclick=()=>act1('delete',[...picked]);
+// The selected scans in one file, Spiderfoot's multi-scan export: a Scan Name column leads each row.
+$('sexport').addEventListener('click',e=>{
+  const b=e.target.closest('button[data-mformat]');if(!b)return;
+  $('sexport').open=false;exportJson([...picked],b.dataset.mformat);
+});
+async function exportJson(ids,format='json'){
+  try{await fetchFile('/api/scans/export?'+new URLSearchParams({ids:ids.join(','),format}),'huntsman-scans.'+format)}
+  catch(e){fail(view==='scan'?'scerror':'serror',e.message)}
+}
+// New Scan: a target and Spiderfoot's three ways of choosing what runs.
+let ntab='usecase',modules=null;
+const loaded={};
+function newTab(t){
+  ntab=t;
+  for(const x of ['usecase','types','modules']){$('nt-'+x).setAttribute('aria-selected',String(x===t));$('nt-'+x).tabIndex=x===t?0:-1;$('np-'+x).hidden=x!==t}
+  $('nselectors').hidden=t==='usecase';
+  if(t!=='usecase'&&!loaded[t])(t==='types'?loadTypes:loadMods)();
+}
+for(const x of ['usecase','types','modules'])$('nt-'+x).onclick=()=>newTab(x);
+function option(box,value,text,keyed){const l=el('label','chk'),i=el('input');i.type='checkbox';i.checked=true;i.value=value;l.append(i,text);if(keyed)l.append(el('span','label warn','key'));box.append(l)}
+async function loadTypes(){
+  const box=$('typelist');box.replaceChildren(el('p','help','Loading data types…'));
+  try{const list=await api('/api/eventtypes');box.replaceChildren();for(const t of list)option(box,t.type,t.description||t.type);loaded.types=true}
+  catch(e){box.replaceChildren(el('p','help',e.message))}
+}
+async function moduleList(){if(!modules){const b=await api('/api/modules');modules=b.modules||[]}return modules}
+// Each module with the lookups that ask it, from the scan API's settings; a server without them
+// lists /api/modules, every module open to choose.
+async function loadMods(){
+  const tb=$('modlist');tb.replaceChildren();
+  try{
+    let list;try{list=(await api('/api/settings')).modules}catch(_){list=await moduleList()}
+    const kinds=Object.fromEntries([...$('skind').options].map(o=>[o.value,o.textContent]));
+    for(const m of list){
+      const tr=el('tr'),i=el('input'),box=el('label','cb'),text=el('label'),name=el('b','',m.name),asks=m.lookups,open=!asks||asks.length>0;
+      i.type='checkbox';i.value=m.name;i.id='mod-'+m.name;i.checked=open;i.disabled=!open;i.dataset.names=(m.spiderfoot||[m.name]).join(' ');text.htmlFor=i.id;
+      if(m.access==='operator_key')name.append(' ',el('span','label warn','key'));
+      text.append(name,m.description);
+      if(asks)text.append(el('span','help',asks.length?'Asked by: '+asks.map(k=>kinds[k]||k).join(', ')+(m.configured===false?'. Its key is not set, so it is skipped until one is.':''):'Runs as its own command'+(m.command?' (huntsman '+m.command+')':'')+'; no scan lookup asks it.'));
+      box.append(i);put(tr,'',box);put(tr,'',text);tb.append(tr);
+    }
+    loaded.modules=true;
+  }catch(e){none(tb,e.message,2)}
+}
+function setAll(on){for(const i of $('np-'+ntab).querySelectorAll('input[type=checkbox]'))if(!i.disabled)i.checked=on}
+$('nall').onclick=()=>setAll(true);$('nnone').onclick=()=>setAll(false);
+$('newscan').onsubmit=async ev=>{
+  ev.preventDefault();
+  const target=$('starget').value.trim();
+  if(!target){fail('nerror','Enter a scan target.');$('starget').focus();return}
+  const depth=$('sdepth').value.trim()||'0';
+  if($('sdepth').validity.badInput||!/^\d+$/.test(depth)){fail('nerror','Recursion depth is a whole number of hops, 0 or more.');$('sdepth').focus();return}
+  const p=new URLSearchParams({target,name:$('sname').value.trim()||target,kind:$('skind').value,depth});
+  if(ntab==='usecase')p.set('usecase',document.querySelector('input[name=usecase]:checked').value);
+  else{
+    const on=[...$('np-'+ntab).querySelectorAll('input:checked')].map(i=>i.value);
+    if(!on.length){fail('nerror',ntab==='types'?'Select at least one data type.':'Select at least one module.');return}
+    p.set(ntab,on.join(','));
+  }
+  const b=$('runscan');b.disabled=true;$('nerror').hidden=true;
+  try{const r=await api('/api/scans?'+p,{method:'POST'});location.hash='#/scan/'+enc(r.id)+'/summary'}
+  catch(e){fail('nerror',e.message)}finally{b.disabled=false}
+};
+// One scan: Spiderfoot's sections over the scan API. Answers are cached for the scan and dropped
+// at each poll while it runs, so a section shows what the scan has found so far.
+const TABS=['summary','correlations','browse','graph','settings','log'];
+let sid='',scan=null,tab='summary',btype='',cache={},bmode='full',blist=[],polls=0;const fpsel=new Set();
+const base=()=>'/api/scans/'+enc(sid);
+function get(key,path){if(!(key in cache))cache[key]=api(path).catch(e=>{delete cache[key];throw e});return cache[key]}
+const elements=type=>get('el:'+type,base()+'/elements'+(type?'?type='+enc(type):''));
+function openScan([id,t,type]){
+  if(id!==sid){sid=id;scan=null;cache={};polls=0;fpsel.clear();$('scname').textContent='Scan';$('sccrumb').textContent=id;$('scstatus').textContent='';$('scmeta').textContent='';$('bfilter').value='';$('scq').value=''}
+  tab=TABS.includes(t)?t:'summary';btype=tab==='browse'&&type?type:'';
+  for(const a of $('sctabs').children){a.href='#/scan/'+enc(sid)+'/'+a.dataset.tab;if(a.dataset.tab===tab)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current')}
+  for(const p of TABS.concat('search'))$('pane-'+p).hidden=p!==tab;
+  $('scerror').hidden=true;$('scexport').open=false;
+  loadScan(true);
+}
+async function loadScan(fresh){
+  const g=gen;$('scspin').hidden=false;
+  let s;
+  try{s=await api(base())}catch(e){if(g===gen){fail('scerror',e.message);$('scspin').hidden=true}return}
+  if(g!==gen)return;
+  const was=scan&&scan.status,running=live(s.status),ended=!!was&&live(was)&&!running;
+  scan=s;head();$('scerror').hidden=true;
+  if(running||ended)cache={};
+  if(fresh||ended||running&&(tab==='summary'||tab==='log'||tab==='browse'&&!btype))await pane();
+  if(g!==gen)return;
+  $('scspin').hidden=!running;
+  if(running)later(()=>loadScan(false),Math.min(5000,1000*2**polls++));else resume=null;
+}
+function head(){
+  const s=scan,name=s.name||s.target;
+  $('scname').textContent=name;$('sccrumb').textContent=name;
+  $('scstatus').textContent=s.status;$('scstatus').className='label '+stTone(s.status);
+  $('scmeta').textContent=[s.target,s.target_type||s.kind,s.options&&s.options.depth&&'depth '+s.options.depth,s.started&&'started '+when(s.started),s.ended&&'finished '+when(s.ended)].filter(Boolean).join(' · ');
+  $('scstop').hidden=!live(s.status);$('scdelete').hidden=live(s.status);
+}
+async function pane(){
+  try{
+    if(tab==='summary')await summary();
+    else if(tab==='correlations')await correlations();
+    else if(tab==='browse')await(btype?browseType():browseTypes());
+    else if(tab==='graph')await graph();
+    else if(tab==='settings')scanSettings();
+    else await logView();
+  }catch(e){fail('scerror',e.message)}
+}
+$('screfresh').onclick=()=>{cache={};loadScan(true)};
+$('scstop').onclick=()=>act1('stop',[sid]);
+$('screrun').onclick=()=>act1('rerun',[sid]);
+$('scclone').onclick=()=>clone(scan);
+// This scan against the last scan of the same target before it: what a re-run changed.
+$('sccompare').onclick=async()=>{
+  try{
+    const list=await api('/api/scans'),s=scan;if(!s)return;
+    const prev=list.filter(x=>x.target===s.target&&x.id!==s.id&&(x.created||0)<(s.created||0)).sort((a,b)=>(b.created||0)-(a.created||0))[0];
+    if(prev)compareScans(prev.id,s.id);else fail('scerror','No earlier scan of '+s.target+' to compare with. Re-run this scan, then compare the two.');
+  }catch(e){fail('scerror',e.message)}
+};
+$('scdelete').onclick=()=>act1('delete',[sid]);
+const errors=s=>Array.isArray(s.errors)?s.errors.length:(s.errors||0);
+// A source's outcome as the scan saved it: what it found, its HTTP status, when to retry, and why.
+const why=o=>[o.found!=null&&'found '+o.found,o.http_status&&'HTTP '+o.http_status,o.retry_after_secs&&'retry after '+o.retry_after_secs+' s',o.detail].filter(Boolean).join(' · ');
+async function summary(){
+  const types=await get('summary',base()+'/summary');
+  let total=0,unique=0;for(const t of types){total+=t.total;unique+=t.unique}
+  $('ctotal').textContent=total;$('cunique').textContent=unique;$('cstatus').textContent=scan.status;$('cerrors').textContent=errors(scan);
+  for(const [k] of RISK)$('c'+k).textContent=(scan.correlations&&scan.correlations[k])||0;
+  const box=$('bars'),max=Math.max(1,...types.map(t=>t.unique));box.replaceChildren();
+  for(const t of [...types].sort((a,b)=>b.unique-a.unique||String(a.type).localeCompare(b.type))){
+    const b=el('a','bar'),track=el('span','bar-t'),f=el('span','bar-f');
+    b.href='#/scan/'+enc(sid)+'/browse/'+enc(t.type);
+    b.title=t.unique+' unique of '+t.total+', '+Math.round(100*t.unique/Math.max(1,unique))+'% of the unique elements';
+    f.style.width=(100*t.unique/max).toFixed(1)+'%';track.append(f);
+    b.append(el('span','bar-l',t.description||t.type),el('span','bar-n',t.unique+' / '+t.total),track);box.append(b);
+  }
+  if(!types.length)box.append(el('p','help',live(scan.status)?'No data yet. This section updates while the scan runs.':'No data.'));
+  $('bars-n').textContent=types.length;
+  const src=scan.sources||[];$('srcs-n').textContent=src.length;
+  fill('srcs',src,o=>[o.module,'',why(o)]);
+  [...$('srcs').rows].forEach((tr,i)=>{const o=src[i];if(o)tr.cells[1].replaceChildren(el('span','label '+(tone[o.outcome]||'bad'),o.outcome))});
+}
+// A data element as Spiderfoot lists it, opening to the whole raw record it came from.
+function value(v){
+  if(v==null||v==='')return el('span','',v==null?'none':'(empty)');
+  if(typeof v!=='object')return el('span','data',v);
+  const dl=el('dl');
+  for(const [k,x] of Array.isArray(v)?v.entries():Object.entries(v)){const dd=el('dd');dd.append(value(x));dl.append(el('dt','',k),dd)}
+  return dl;
+}
+function rawView(x){
+  const b=el('div','ent-b'),meta=[x.type];
+  if(x.confidence!=null)meta.push('confidence '+x.confidence);
+  if(x.entity)meta.push('entity '+show(x.entity));
+  b.append(el('p','ent-m',meta.join(' · ')),value(x.raw));
+  if(PIVOT.has(x.type))b.append(button('New Scan of this',()=>pivot(x),'pivot'));
+  return b;
+}
+function elemRow(x,withType,select){
+  const tr=el('tr'),d=el('details','raw'),sum=el('summary');
+  sum.append(el('span','data',x.data));if(x.fp)sum.append(el('span','label warn','false positive'));
+  d.append(sum);
+  d.addEventListener('toggle',()=>{if(d.open&&d.childElementCount===1)d.append(rawView(x))});
+  if(withType)put(tr,'Type',x.description||x.type);
+  const pick=el('span','pick');
+  if(select)pick.append(tick('Select '+x.data,select.has(x.id),on=>{if(on)select.add(x.id);else select.delete(x.id)}));
+  pick.append(d);put(tr,'Data Element',pick).classList.add('wide');
+  put(tr,'Source Data Element',el('span','data',x.source_data));put(tr,'Source Module',x.module);put(tr,'Identified',when(x.created)).className='nw';
+  return tr;
+}
+// Rows arrive 200 at a time, so a scan with thousands of elements stays quick on a phone.
+function table(cols,rows,render,empty='No data elements.'){
+  const wrap=el('div'),tw=el('div','table-wrap'),t=el('table'),hr=el('tr'),tb=el('tbody'),head=el('thead'),more=button('',()=>page(),'more');
+  for(const c of cols)hr.append(el('th','',c));
+  head.append(hr);t.append(head,tb);tw.append(t);wrap.append(tw,more);
+  let shown=0;
+  function page(){const end=Math.min(rows.length,shown+200);for(;shown<end;shown++)tb.append(render(rows[shown]));const left=rows.length-shown;more.hidden=!left;more.textContent='Show '+Math.min(200,left)+' more of '+left}
+  page();if(!rows.length)none(tb,empty,cols.length);
+  return wrap;
+}
+const ELEM=['Data Element','Source Data Element','Source Module','Identified'];
+const elemTable=(list,withType,select)=>table((withType?['Type']:[]).concat(ELEM),list,x=>elemRow(x,withType,select));
+// A rule as Spiderfoot writes it, shown on request: the YAML is long and most readers want the finding.
+function logicView(text){const d=el('details','raw'),sum=el('summary');sum.append(el('span','','Rule logic'));d.append(sum,el('pre','',text));return d}
+const ruleMeta=c=>[c.name&&c.name!==c.rule?c.name:'',c.rule||c.id,c.origin].filter(Boolean).join(' · ');
+async function correlations(){
+  const list=await get('correlations',base()+'/correlations'),tb=$('corrs'),order=r=>RISK.findIndex(x=>x[0]===String(r||'').toLowerCase());
+  $('recorrelate').disabled=live(scan.status);$('cnote').textContent='';
+  tb.replaceChildren();
+  for(const c of [...list].sort((a,b)=>order(a.risk)-order(b.risk))){
+    const tr=el('tr'),d=el('details','corr'),ids=new Set(c.elements||[]);
+    d.append(el('summary','',c.title||c.name||c.rule));
+    if(c.description)d.append(el('p','ent-m',c.description));
+    d.append(el('p','ent-m','rule '+ruleMeta(c)));
+    if(c.logic)d.append(logicView(c.logic));
+    d.addEventListener('toggle',async()=>{
+      if(!d.open||d.built)return;d.built=true;
+      try{d.append(elemTable((await elements('')).filter(x=>ids.has(x.id)),true))}catch(e){d.built=false;fail('scerror',e.message)}
+    });
+    put(tr,'',d).classList.add('wide');put(tr,'Rule',c.name||c.rule);put(tr,'Risk',el('span','label '+riskTone(c.risk),String(c.risk||'').toUpperCase()));put(tr,'Data Elements',ids.size);tb.append(tr);
+  }
+  if(!list.length)none(tb,live(scan.status)?'No correlations yet. They are reported once the scan has finished.':'No correlations.',4);
+}
+// Spiderfoot's sf.py -C: every rule again over the saved elements, after false positives change.
+$('recorrelate').onclick=async()=>{
+  const b=$('recorrelate');b.disabled=true;$('cnote').textContent='';
+  try{
+    const found=await api(base()+'/correlate',{method:'POST'});
+    cache={};$('scerror').hidden=true;await loadScan(true);
+    $('cnote').textContent='Correlations re-run: '+found.length+' found.';
+  }catch(e){fail('scerror',e.message)}finally{b.disabled=live(scan.status)}
+};
+$('cexport').addEventListener('click',async e=>{
+  const b=e.target.closest('button[data-cformat]');if(!b)return;
+  $('cexport').open=false;
+  try{await fetchFile(base()+'/correlations?format='+b.dataset.cformat,'huntsman-'+sid+'-correlations.'+b.dataset.cformat)}catch(err){fail('scerror',err.message)}
+});
+async function browseTypes(){
+  $('btypes').hidden=false;$('btype').hidden=true;
+  const types=await get('summary',base()+'/summary'),tb=$('types');tb.replaceChildren();
+  for(const t of types){
+    const tr=el('tr'),a=el('a','link',t.description||t.type);a.href='#/scan/'+enc(sid)+'/browse/'+enc(t.type);
+    put(tr,'Type',a);put(tr,'Unique Data Elements',t.unique);put(tr,'Total Data Elements',t.total);put(tr,'Last Data Element',when(t.last)).className='nw';tb.append(tr);
+  }
+  if(!types.length)none(tb,live(scan.status)?'No data yet. If the scan is still running, try again soon.':'No data.',4);
+}
+async function browseType(){
+  $('btypes').hidden=true;$('btype').hidden=false;$('bback').href='#/scan/'+enc(sid)+'/browse';
+  const [list,types]=await Promise.all([elements(btype),get('summary',base()+'/summary')]),t=types.find(x=>x.type===btype);
+  blist=list;$('bname').textContent=(t&&t.description||btype)+' ('+list.length+')';
+  const fps=list.filter(x=>x.fp).length;$('bfpn').textContent='Hide '+fps+' false positive'+(fps===1?'':'s');
+  renderBrowse();
+}
+const hay=x=>(String(x.data)+' '+String(x.source_data)+' '+String(x.module)).toLowerCase();
+let rgen=0;
+async function renderBrowse(){
+  const r=++rgen,f=$('bfilter').value.trim().toLowerCase(),hide=$('bhidefp').checked,rows=blist.filter(x=>!(hide&&x.fp)&&(!f||hay(x).includes(f)));
+  for(const m of ['full','unique','path'])$('b'+m).setAttribute('aria-pressed',String(bmode===m));$('bfp').hidden=bmode!=='full';
+  let body;
+  if(bmode==='path')try{body=paths(rows,await elements(''))}catch(e){fail('scerror',e.message);return}
+  else if(bmode==='unique'){
+    const count=new Map();for(const x of rows)count.set(x.data,(count.get(x.data)||0)+1);
+    body=table(['Unique Data Element','Occurrences'],[...count].sort((a,b)=>b[1]-a[1]),([v,n])=>{const tr=el('tr');put(tr,'Unique Data Element',el('span','data',v));put(tr,'Occurrences',n);return tr});
+  }else body=elemTable(rows,false,fpsel);
+  if(r===rgen)$('bbody').replaceChildren(body);
+}
+$('bfull').onclick=()=>{bmode='full';renderBrowse()};$('bunique').onclick=()=>{bmode='unique';renderBrowse()};$('bpath').onclick=()=>{bmode='path';renderBrowse()};
+// Discovery Path, Spiderfoot's dendrogram as a tree that reads on a phone: each element of the
+// type under the element it was found from, and so on back to the scan's target.
+function paths(rows,all){
+  const ROOT='',by=new Map(all.map(x=>[x.id,x])),kids=new Map(),tops=new Set(),hit=new Set(rows.map(x=>x.id));
+  const up=e=>e.source==null?null:by.has(e.source)?e.source:ROOT;
+  for(const x of rows){
+    let c=x.id,e=x;const seen=new Set([c]);
+    for(;;){
+      const p=e?up(e):null;
+      if(p==null||seen.has(p))break;
+      if(!kids.has(p))kids.set(p,new Set());kids.get(p).add(c);seen.add(p);c=p;e=by.get(p);
+    }
+    tops.add(c);
+  }
+  const node=id=>{
+    const li=el('li',hit.has(id)?'hit':''),e=by.get(id);
+    li.append(el('span','label',e?e.type:'ROOT'),' ',el('span','data',e?e.data:scan.target));
+    if(kids.has(id)){const ul=el('ul');for(const k of kids.get(id))ul.append(node(k));li.append(ul)}
+    return li;
+  };
+  const ul=el('ul','tree');for(const t of tops)ul.append(node(t));
+  if(!rows.length)ul.append(el('li','none','No data elements.'));
+  return ul;
+}
+$('bhidefp').onchange=renderBrowse;$('bfilter').oninput=renderBrowse;
+async function setFp(on){
+  if(!fpsel.size){fail('scerror','Select the data elements to flag first.');return}
+  try{await api(base()+'/fp?'+new URLSearchParams({ids:[...fpsel].join(','),fp:on?'1':'0'}),{method:'POST'});fpsel.clear();cache={};$('scerror').hidden=true;await browseType()}
+  catch(e){fail('scerror',e.message)}
+}
+$('bsetfp').onclick=()=>setFp(true);$('bunsetfp').onclick=()=>setFp(false);
+// Search, as Spiderfoot's box reads it: /regex/, a *wild*card, or a plain value anywhere in the
+// element, over the type being browsed or the whole scan. The server's matcher decides, the one
+// `scans search` and every-scan search use too.
+const search=(value,more)=>api('/api/scans/search?'+new URLSearchParams({value,...more}));
+$('scsearch').onsubmit=async ev=>{
+  ev.preventDefault();
+  const q=$('scq').value.trim(),type=tab==='browse'?btype:'';
+  if(!q)return;
+  try{
+    const hits=await search(q,type?{ids:sid,type}:{ids:sid});
+    for(const p of TABS)$('pane-'+p).hidden=true;
+    dropGraph();$('pane-search').hidden=false;$('scerror').hidden=true;
+    $('sback').href='#/scan/'+enc(sid)+'/browse'+(type?'/'+enc(type):'');
+    $('shits').textContent='Search results for '+q+' ('+hits.length+' records)';
+    $('sresults').replaceChildren(elemTable(hits,!type));
+  }catch(e){fail('scerror',e.message)}
+};
+// The same search over every saved scan, which Spiderfoot's page cannot do: each hit names its scan.
+$('allsearch').onsubmit=async ev=>{
+  ev.preventDefault();
+  const q=$('allq').value.trim();
+  if(!q)return;
+  try{
+    const hits=await search(q,{});
+    $('serror').hidden=true;$('allhits').hidden=false;
+    $('allcount').textContent='Search results for '+q+' in '+new Set(hits.map(x=>x.scan_id)).size+' scans ('+hits.length+' records)';
+    $('allresults').replaceChildren(table(['Scan','Type'].concat(ELEM),hits,x=>{
+      const tr=elemRow(x,true),a=el('a','link',x.scan_name||x.scan_target);
+      a.href='#/scan/'+enc(x.scan_id)+'/browse/'+enc(x.type);
+      const td=put(tr,'Scan',a);tr.prepend(td);return tr;
+    }));
+  }catch(e){fail('serror',e.message)}
+};
+$('allclose').onclick=()=>{$('allhits').hidden=true;$('allresults').replaceChildren()};
+$('sback').onclick=ev=>{if(location.hash===$('sback').getAttribute('href')){ev.preventDefault();route()}};
+// Graph: the elements and the elements they came from, laid out by a small force simulation
+// that runs a few milliseconds a frame, panned and zoomed by touch, mouse or wheel. However many
+// elements a scan has, no frame spends more than SLICE_MS arranging them, so the page answers a
+// tap while the layout settles; a layout stops after LAYOUT_MS of work, keeping the place it
+// reached, and stops as soon as the page leaves the graph.
+const NS='http://www.w3.org/2000/svg',svg=$('gsvg'),SLICE_MS=12,LAYOUT_MS=20000,BIG=600;
+let G=null,raf=0;
+function stopLayout(){cancelAnimationFrame(raf);raf=0}
+// Leaving the graph lets its elements go: coming back draws it again from the saved answer.
+function dropGraph(){stopLayout();if(G){G=null;$('gedges').replaceChildren();$('gnodes').replaceChildren()}}
+async function graph(){drawGraph(await get('graph',base()+'/graph'),'force')}
+function drawGraph(g,layout){
+  stopLayout();
+  const nodes=(g.nodes||[]).map(n=>({id:n.id,type:n.type,data:n.data,x:0,y:0,vx:0,vy:0}));
+  const at=new Map(nodes.map(n=>[n.id,n])),counts=new Map();
+  for(const n of nodes)counts.set(n.type,(counts.get(n.type)||0)+1);
+  const types=[...counts.keys()].sort((a,b)=>counts.get(b)-counts.get(a)),cls=new Map(types.map((t,i)=>[t,'g'+i%10]));
+  // Every link is one segment of a single path, and every element is a dot, a round-capped
+  // stretch of no length, in the one path of its data type: however big the graph, the page holds
+  // a few paths for it, so moving every element restyles a few paths, not thousands of circles.
+  const path=c=>{const p=document.createElementNS(NS,'path');if(c)p.setAttribute('class',c);return p};
+  const edges=[],links=path(),rim=path('grim'),ring=[path('gring'),path('gpick')],layers=new Map();
+  for(const e of g.edges||[]){const a=at.get(e.source),b=at.get(e.target);if(a&&b&&a!==b)edges.push([a,b])}
+  const linked=new Set();for(const [a,b] of edges){linked.add(b)}
+  for(const n of nodes){
+    n.root=n.type==='ROOT'||(!linked.has(n)&&scan&&n.data===scan.target);n.cls=n.root?'groot':cls.get(n.type);
+    if(!layers.has(n.cls))layers.set(n.cls,{el:path(n.cls),nodes:[]});
+    layers.get(n.cls).nodes.push(n);
+  }
+  $('gedges').replaceChildren(links);$('gnodes').replaceChildren(rim,...[...layers.values()].map(l=>l.el),...ring);
+  G={nodes,edges,links,rim,ring,layers:[...layers.values()],k:1,tx:0,ty:0,sel:null};
+  svg.setAttribute('aria-label','Graph of '+nodes.length+' data elements and '+edges.length+' links');
+  const lg=$('glegend');lg.replaceChildren();
+  for(const t of types.slice(0,20)){const s=el('span'),i=el('i',cls.get(t));s.append(i,t+' ('+counts.get(t)+')');lg.append(s)}
+  $('ginfo').textContent=nodes.length?'Tap an element to see it. Drag to pan, pinch or scroll to zoom, drag an element to move it.':'Insufficient data to produce a graph.';
+  arrange(layout);
+}
+function arrange(layout){
+  if(!G)return;
+  stopLayout();
+  $('grandom').setAttribute('aria-pressed',String(layout==='random'));$('gforce').setAttribute('aria-pressed',String(layout==='force'));
+  // A big graph starts spread wider, a few elements to a repulsion cell, so a step costs a few
+  // neighbours per element rather than every element near the middle.
+  const ns=G.nodes,big=ns.length>BIG,span=40*Math.sqrt(ns.length+1),gap=big?42:8;
+  ns.forEach((n,i)=>{n.fixed=n.root&&layout==='force';n.vx=n.vy=0;if(n.fixed){n.x=n.y=0}else if(layout==='random'){n.x=(Math.random()-.5)*span;n.y=(Math.random()-.5)*span}else{const a=i*2.4,r=gap*Math.sqrt(i+1);n.x=r*Math.cos(a);n.y=r*Math.sin(a)}});
+  render();fit();
+  if(layout!=='force'||ns.length<2)return;
+  let alpha=1,at=0,grid=null,spent=0,moved=false;
+  const step=()=>{
+    const t0=performance.now(),busy=()=>performance.now()-t0;
+    while(alpha>.02&&spent+busy()<LAYOUT_MS&&busy()<SLICE_MS){
+      if(!big){repelAll(alpha);settle(alpha);alpha*=.985;moved=true;continue}
+      if(!at)grid=cells(ns);
+      at=repelFrom(grid,alpha,at,t0);
+      if(at>=ns.length){settle(alpha);alpha*=.985;at=0;moved=true}
+    }
+    spent+=busy();
+    if(moved){render();moved=false}
+    if(alpha>.02&&spent<LAYOUT_MS)raf=requestAnimationFrame(step);else{raf=0;fit()}
+  };
+  raf=requestAnimationFrame(step);
+}
+const push=(a,b,rep)=>{let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy;if(d2<.01){dx=Math.random()-.5;dy=Math.random()-.5;d2=.5}if(d2>90000)return;const f=rep/d2;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f};
+function repelAll(alpha){const ns=G.nodes,n=ns.length,rep=alpha*1200;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)push(ns[i],ns[j],rep)}
+// Past a few hundred elements, only neighbours within a cell or two repel each other.
+const cellKey=(x,y)=>x+','+y;
+function cells(ns){const cell=new Map();for(const p of ns){const k=cellKey(Math.floor(p.x/150),Math.floor(p.y/150));if(!cell.has(k))cell.set(k,[]);cell.get(k).push(p)}return cell}
+// Repel the elements from index `from` on until the frame's slice is spent; the index to go on from.
+function repelFrom(cell,alpha,from,t0){
+  const ns=G.nodes,rep=alpha*1200;
+  for(let i=from;i<ns.length;i++){
+    if(!(i&31)&&i>from&&performance.now()-t0>=SLICE_MS)return i;
+    const p=ns[i],cx=Math.floor(p.x/150),cy=Math.floor(p.y/150);
+    for(let x=cx-1;x<=cx+1;x++)for(let y=cy-1;y<=cy+1;y++)for(const q of cell.get(cellKey(x,y))||[])if(q!==p&&q.id>p.id)push(p,q,rep);
+  }
+  return ns.length;
+}
+// Links pull, the middle draws everything in a little, then every element moves.
+function settle(alpha){
+  for(const [a,b] of G.edges){const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1,f=alpha*.15*(d-40)/d;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f}
+  for(const p of G.nodes){if(p.fixed){p.vx=p.vy=0;continue}p.vx=(p.vx-p.x*alpha*.005)*.6;p.vy=(p.vy-p.y*alpha*.005)*.6;p.x+=Math.max(-25,Math.min(25,p.vx));p.y+=Math.max(-25,Math.min(25,p.vy))}
+}
+const dot=n=>'M'+n.x.toFixed(1)+' '+n.y.toFixed(1)+'h0';
+function render(){
+  let d='',rim='';
+  for(const n of G.nodes)n.at=n.x.toFixed(1)+' '+n.y.toFixed(1);
+  for(const [a,b] of G.edges)d+='M'+a.at+'L'+b.at;
+  G.links.setAttribute('d',d);
+  for(const l of G.layers){d='';for(const n of l.nodes)d+='M'+n.at+'h0';l.el.setAttribute('d',d);if(!l.nodes[0].root)rim+=d}
+  G.rim.setAttribute('d',rim);
+  ring();
+}
+// The chosen element is drawn again on top, ringed.
+function ring(){
+  const n=G.sel,[r,c]=G.ring,d=n?dot(n):'';
+  r.setAttribute('class',n&&n.root?'gring groot':'gring');c.setAttribute('class',n?'gpick '+n.cls:'gpick');r.setAttribute('d',d);c.setAttribute('d',d);
+}
+// The element drawn under a point of the screen, the nearest if dots overlap there.
+function nodeAt(cx,cy){
+  const r=svg.getBoundingClientRect(),x=(cx-r.left-G.tx)/G.k,y=(cy-r.top-G.ty)/G.k;
+  let best=null,near=Infinity;
+  for(const n of G.nodes){const dx=n.x-x,dy=n.y-y,d=dx*dx+dy*dy,reach=((n.root?9:5)+3)/G.k;if(d<=reach*reach&&d<near){near=d;best=n}}
+  return best;
+}
+function place(){$('gview').setAttribute('transform','translate('+G.tx.toFixed(1)+' '+G.ty.toFixed(1)+') scale('+G.k.toFixed(4)+')')}
+function fit(){
+  if(!G||!G.nodes.length)return;
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  for(const n of G.nodes){x0=Math.min(x0,n.x);y0=Math.min(y0,n.y);x1=Math.max(x1,n.x);y1=Math.max(y1,n.y)}
+  const r=svg.getBoundingClientRect(),k=Math.min(4,(r.width-30)/Math.max(1,x1-x0),(r.height-30)/Math.max(1,y1-y0));
+  G.k=Math.max(.02,k);G.tx=r.width/2-(x0+x1)/2*G.k;G.ty=r.height/2-(y0+y1)/2*G.k;place();
+}
+function pick(n){
+  G.sel=n;ring();
+  if(!n)return;
+  const near=G.edges.filter(([a,b])=>a===n||b===n).length;
+  $('ginfo').textContent=n.type+': '+n.data+' · '+near+' link'+(near===1?'':'s');
+}
+{
+  const pts=new Map();let drag=null,moved=false,pinch=null;
+  const zoom=(k,cx,cy)=>{const r=svg.getBoundingClientRect(),wx=(cx-r.left-G.tx)/G.k,wy=(cy-r.top-G.ty)/G.k;G.k=Math.max(.02,Math.min(8,k));G.tx=cx-r.left-wx*G.k;G.ty=cy-r.top-wy*G.k;place()};
+  svg.addEventListener('pointerdown',e=>{
+    if(!G)return;
+    svg.setPointerCapture(e.pointerId);pts.set(e.pointerId,{x:e.clientX,y:e.clientY});moved=false;
+    drag=pts.size===1?nodeAt(e.clientX,e.clientY):null;
+    if(pts.size===2){const [a,b]=[...pts.values()];pinch={d:Math.hypot(a.x-b.x,a.y-b.y)||1,k:G.k};drag=null}
+  });
+  svg.addEventListener('pointermove',e=>{
+    const p=pts.get(e.pointerId);if(!p||!G)return;
+    const dx=e.clientX-p.x,dy=e.clientY-p.y;if(Math.abs(dx)+Math.abs(dy)>2)moved=true;p.x=e.clientX;p.y=e.clientY;
+    if(pinch&&pts.size===2){const [a,b]=[...pts.values()];zoom(pinch.k*Math.hypot(a.x-b.x,a.y-b.y)/pinch.d,(a.x+b.x)/2,(a.y+b.y)/2)}
+    else if(drag){drag.x+=dx/G.k;drag.y+=dy/G.k;drag.fixed=true;drag.vx=drag.vy=0;render()}
+    else if(pts.size===1){G.tx+=dx;G.ty+=dy;place()}
+  });
+  const up=e=>{if(!pts.delete(e.pointerId))return;if(pts.size<2)pinch=null;if(!moved&&e.type==='pointerup'&&G)pick(nodeAt(e.clientX,e.clientY));drag=null};
+  svg.addEventListener('pointerup',up);svg.addEventListener('pointercancel',up);
+  svg.addEventListener('wheel',e=>{if(!G)return;e.preventDefault();zoom(G.k*Math.exp(-e.deltaY*.0015),e.clientX,e.clientY)},{passive:false});
+}
+$('grandom').onclick=()=>arrange('random');$('gforce').onclick=()=>arrange('force');$('gfit').onclick=fit;
+$('gsave').onclick=()=>{
+  if(!G)return;
+  const copy=svg.cloneNode(true),r=svg.getBoundingClientRect(),bg=document.createElementNS(NS,'rect'),fills=new Map();
+  copy.setAttribute('xmlns',NS);copy.setAttribute('width',Math.round(r.width));copy.setAttribute('height',Math.round(r.height));copy.removeAttribute('role');
+  bg.setAttribute('width','100%');bg.setAttribute('height','100%');bg.setAttribute('fill',getComputedStyle(svg.parentNode).backgroundColor);copy.insertBefore(bg,copy.firstChild);
+  // The page's styles do not travel with the file, so each path carries how it is drawn.
+  const was=[...svg.querySelectorAll('path')],drawn=['fill','stroke','stroke-width','stroke-linecap','vector-effect'];
+  [...copy.querySelectorAll('path')].forEach((c,i)=>{const k=was[i].getAttribute('class')||'';if(!fills.has(k)){const s=getComputedStyle(was[i]);fills.set(k,drawn.map(p=>s.getPropertyValue(p)))}fills.get(k).forEach((v,j)=>c.setAttribute(drawn[j],v));c.removeAttribute('class')});
+  download(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml'}),'huntsman-'+sid+'-graph.svg');
+};
+// Two saved scans side by side, which Spiderfoot cannot do: what the later scan found that the
+// earlier did not, what it no longer finds, and the correlations each has that the other lacks.
+let cmp=[];
+const compareScans=(a,b)=>{location.hash='#/compare/'+enc(a)+'/'+enc(b)};
+async function openCompare(ids){
+  const g=gen;cmp=ids;$('cmperror').hidden=true;$('cmpexport').open=false;$('cmpmeta').textContent='Comparing…';
+  try{
+    const c=await api('/api/scans/compare?'+new URLSearchParams({ids:cmp.join(',')}));if(g!==gen)return;
+    const side=(label,s)=>label+': '+(s.name||s.target)+' ('+s.target+', '+when(s.started||s.created)+')';
+    $('cmpmeta').textContent=[side('Earlier',c.base),side('Later',c.other),c.unchanged&&'No change'].filter(Boolean).join(' · ');
+    fill('cmptypes',c.types,t=>[t.description||t.type,t.base,t.other,t.added,t.removed,t.kept]);
+    const cs=c.correlations.added.map(x=>['Added',x]).concat(c.correlations.removed.map(x=>['Removed',x]));
+    fill('cmpcorr',cs,([k,x])=>[k,'',x.title||x.name||x.rule]);$('cmpcorr-n').textContent=cs.length;
+    [...$('cmpcorr').rows].forEach((tr,i)=>{const x=cs[i]&&cs[i][1];if(x)tr.cells[1].replaceChildren(el('span','label '+riskTone(x.risk),x.risk))});
+    $('cmpadd-n').textContent=c.added.length;$('cmpadd').replaceChildren(elemTable(c.added,true));
+    $('cmprem-n').textContent=c.removed.length;$('cmprem').replaceChildren(elemTable(c.removed,true));
+  }catch(e){if(g===gen){fail('cmperror',e.message);$('cmpmeta').textContent=''}}
+}
+$('cmpswap').onclick=()=>compareScans(cmp[1],cmp[0]);
+$('cmpexport').addEventListener('click',async e=>{
+  const b=e.target.closest('button[data-xformat]');if(!b)return;
+  $('cmpexport').open=false;
+  try{await fetchFile('/api/scans/compare?'+new URLSearchParams({ids:cmp.join(','),format:b.dataset.xformat}),'huntsman-compare.'+b.dataset.xformat)}catch(err){fail('cmperror',err.message)}
+});
+// Why a scan stopped following what it found: the crawl's own reason, and what it means.
+const STOP={fixed_point:'nothing new was left to look up',resource_limit:'the lookup or entity budget ran out with findings left to follow',cancelled:'stop requested; the lookups still queued did not run',time_limit:'the time limit ran out',request_budget:'the request budget ran out',provider_budget:'a provider\'s request budget ran out',marginal_gain_limit:'new lookups had stopped finding anything new',fatal_error:'a lookup failed and the crawl could not go on'};
+function stopped(s){
+  const t=s.termination,d=(s.options||{}).depth||0;
+  if(!t)return live(s.status)?'still following what it finds':'not recorded';
+  const why=t==='max_depth'?(d?'depth '+d+' reached; a deeper scan would look up more of its findings':'depth 0 follows nothing it finds; a deeper scan would look up its findings in turn'):STOP[t];
+  return why?t+': '+why:t;
+}
+// New Scan filled in, to change before it runs: Spiderfoot's Clone of a scan, or a scan of a value
+// a scan found.
+async function prefill(f){
+  const types=f.types||[],mods=(f.modules||[]).map(m=>String(m).toLowerCase());
+  $('sname').value=f.name;$('starget').value=f.target;$('skind').value=f.kind||'auto';if(!$('skind').value)$('skind').value='auto';$('sdepth').value=String(f.depth||0);
+  const uc=document.querySelector('input[name=usecase][value="'+CSS.escape(f.usecase||'all')+'"]');if(uc)uc.checked=true;
+  ntab='usecase';
+  if(types.length){
+    if(!loaded.types)await loadTypes();
+    for(const i of $('typelist').querySelectorAll('input'))i.checked=types.includes(i.value);
+    ntab='types';
+  }
+  // A scan may have chosen a module by a Spiderfoot name standing for several (sfp_whois).
+  if(mods.length){
+    if(!loaded.modules)await loadMods();
+    for(const i of $('modlist').querySelectorAll('input'))i.checked=(i.dataset.names||i.value).split(' ').some(n=>mods.includes(n));
+    ntab='modules';
+  }
+  $('nerror').hidden=true;location.hash='#/newscan';
+}
+const clone=s=>s&&prefill({...s.options,name:s.name||s.target,target:s.target,kind:s.kind});
+// Spiderfoot types whose value is itself a scan target. An element of one starts New Scan on that
+// value, with the use case and depth of the scan that found it, as Spiderfoot hands each event to
+// the modules that take it.
+const PIVOT=new Set(['INTERNET_NAME','DOMAIN_NAME','DOMAIN_NAME_PARENT','AFFILIATE_INTERNET_NAME','AFFILIATE_DOMAIN_NAME','CO_HOSTED_SITE','CO_HOSTED_SITE_DOMAIN','SIMILARDOMAIN','IP_ADDRESS','IPV6_ADDRESS','AFFILIATE_IPADDR','AFFILIATE_IPV6_ADDRESS','NETBLOCK_OWNER','NETBLOCKV6_OWNER','NETBLOCK_MEMBER','NETBLOCKV6_MEMBER','BGP_AS_OWNER','BGP_AS_MEMBER','EMAILADDR','EMAILADDR_GENERIC','AFFILIATE_EMAILADDR','PHONE_NUMBER','USERNAME','HUMAN_NAME','HSE_MAC_ADDRESS']);
+const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:'auto',usecase:o.usecase,depth:o.depth})};
+function scanSettings(){
+  const s=scan,o=s.options||{},list=v=>Array.isArray(v)?v.join(', '):v;
+  kv('meta',[['Name',s.name],['Internal ID',s.id],['Target',s.target],['Target type',s.target_type],['Lookup',s.kind],['Created',when(s.created)],['Started',when(s.started)],['Completed',when(s.ended)],['Status',s.status],['Data elements',s.elements]]);
+  const h=s.honoured||{},applied=v=>v===true?'applied':v===false?'not applied yet: every module of the target\'s lookup ran':v;
+  kv('opts',[['Use case',o.usecase],['Use case applied',applied(h.usecase)],['Data types selected',list(o.types)||'all'],['Data types applied',applied(h.types)],['Modules selected',list(o.modules)||'all'],['Modules applied',applied(h.modules)],['Recursion depth',o.depth?o.depth+(o.depth===1?' hop':' hops')+' past the target':'0: the target\'s own lookup only'],['Recursion applied',applied(h.depth)],['Stopped following because',stopped(s)],['Modules run',list(s.modules_run)]]);
+  const tree=s.lineage||[];$('lineage-n').textContent=tree.length;
+  $('lineage').replaceChildren(table(['Hop','Lookup','Found'],tree,e=>{const tr=el('tr');put(tr,'Hop',e.generation).className='nw';put(tr,'Lookup',el('span','data',e.from_kind+': '+e.from_selector));put(tr,'Found',el('span','data',e.to_kind+': '+e.to_value)).classList.add('wide');return tr},live(s.status)?'Nothing found yet.':'No lookups were kept for this scan.'));
+  $('sreport').textContent=s.report||'No report yet.';
+}
+let logs=[];
+async function logView(){logs=await get('log',base()+'/log');showLog()}
+function showLog(){
+  const lv=$('llevel').value,f=$('lfilter').value.trim().toLowerCase();
+  const rows=logs.filter(x=>(!lv||x.level===lv)&&(!f||[x.component,x.level,x.message].join(' ').toLowerCase().includes(f)));
+  fill('log',rows,x=>[when(x.time),x.component,x.level,x.message]);
+  [...$('log').rows].forEach((tr,i)=>{if(rows[i]&&rows[i].level==='ERROR')tr.className='err'});
+}
+$('llevel').onchange=showLog;$('lfilter').oninput=showLog;
+const csv=v=>{const s=v==null?'':String(v);return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
+$('ldownload').onclick=()=>download(new Blob([['Date','Component','Type','Event'].join(',')+'\r\n'+logs.map(x=>[when(x.time),x.component,x.level,x.message].map(csv).join(',')).join('\r\n')],{type:'text/csv'}),'huntsman-'+sid+'-log.csv');
+// Exports come from the server, which writes every element whole; the page only saves them.
+async function exportFile(format){
+  const p=new URLSearchParams({format}),type=tab==='browse'?btype:'';if(type)p.set('type',type);
+  await fetchFile(base()+'/export?'+p,'huntsman-'+sid+(type?'-'+type:'')+'.'+format);
+}
+// An export is read as a file, under the name the server gives it.
+async function fetchFile(path,name){
+  let r;
+  try{r=await fetch(path,{headers:headers(LH),cache:'no-store'})}catch(e){throw new Failure(unreachable(e))}
+  if(!r.ok){const text=await r.text();let body=null;try{body=JSON.parse(text)}catch(_){}refused({r});throw new Failure('HTTP '+r.status+' · '+reason({text,body}))}
+  const m=/filename="?([^";]+)"?/.exec(r.headers.get('content-disposition')||'');
+  download(await r.blob(),m?m[1]:name);
+}
+$('scexport').addEventListener('click',async e=>{
+  const b=e.target.closest('button[data-format]');if(!b)return;
+  $('scexport').open=false;
+  try{await exportFile(b.dataset.format)}catch(err){fail('scerror',err.message)}
+});
+// A menu near the right edge opens leftward, so it never runs off a phone's screen: placed from
+// its button before it opens, so it never paints off the edge, then checked once it has opened.
+const edge=()=>document.documentElement.clientWidth-8;
+document.addEventListener('click',e=>{
+  const s=e.target.closest&&e.target.closest('details.menu>summary');if(!s||s.parentNode.open)return;
+  const l=s.parentNode.querySelector('.menu-list');
+  l.classList.toggle('end',s.getBoundingClientRect().left+parseFloat(getComputedStyle(l).minWidth)>edge());
+},true);
+document.addEventListener('toggle',e=>{
+  const m=e.target;if(!(m instanceof HTMLDetailsElement)||!m.classList.contains('menu')||!m.open)return;
+  const l=m.querySelector('.menu-list');if(l.getBoundingClientRect().right>edge())l.classList.add('end');
+},true);
+document.addEventListener('click',e=>{for(const m of document.querySelectorAll('details.menu[open]'))if(!m.contains(e.target))m.open=false});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')for(const m of document.querySelectorAll('details.menu[open]'))m.open=false});
+// Settings: every module, what it needs, and what this server knows of itself. Keys stay in the
+// environment and ~/.huntsman.env on the device; the page never sees one.
+const ACCESS={operator_key:['API key','warn'],keyless:['keyless','ok'],offline:['offline','info'],local:['local','info'],mixed:['mixed','info']};
+let settings=null,keyslots=null,keynote=null;
+async function loadSettings(){
+  await started;
+  const base=[['Server address',location.host],['Version',$('sversion').textContent],['Sign-in',$('sauth').textContent]];
+  kv('gopts',base);$('gerror').hidden=true;
+  // The server's settings carry each module's key status; without saved scans, the module list.
+  try{settings=await api('/api/settings')}catch(_){try{settings={modules:await moduleList(),global:[]}}catch(e){fail('gerror',e.message);return}}
+  // Which keys the page may save, and whether each is set; a server without a keys file answers none.
+  try{keyslots=await api('/api/settings/keys')}catch(_){keyslots=null}
+  kv('gopts',base.concat((settings.global||[]).map(g=>[g.description?g.description[0].toUpperCase()+g.description.slice(1):g.key,show(g.value)]),keyslots?[['Keys file',keyslots.file]]:[]));
+  $('kimp').hidden=!keyslots;keyWarning();showMods();
+  try{showRules(await api('/api/correlationrules'))}catch(_){$('rules-p').hidden=true}
+}
+function showRules(rules){
+  const tb=$('rules');tb.replaceChildren();$('rules-p').hidden=false;$('rules-n').textContent=rules.length;
+  for(const r of rules){
+    const tr=el('tr'),d=el('details','corr');
+    d.append(el('summary','',r.name||r.id));
+    if(r.descr)d.append(el('p','ent-m',r.descr));
+    d.append(el('p','ent-m mono',r.id));
+    if(r.logic)d.append(logicView(r.logic));
+    put(tr,'',d).classList.add('wide');put(tr,'Risk',el('span','label '+riskTone(r.risk),String(r.risk||'').toUpperCase()));put(tr,'Origin',r.origin);tb.append(tr);
+  }
+}
+function showMods(){
+  if(!settings)return;
+  const list=settings.modules||[],f=$('mfilter').value.trim().toLowerCase(),rows=list.filter(m=>!f||[m.name,m.category,m.access,m.description].concat(m.key_env||[]).join(' ').toLowerCase().includes(f));
+  $('mods-n').textContent=list.length;
+  fill('mods',rows,m=>[m.name,m.category,'','',m.description]);
+  [...$('mods').rows].forEach((tr,i)=>{
+    const m=rows[i];if(!m)return;
+    const a=ACCESS[m.access]||[m.access,''];tr.cells[2].replaceChildren(el('span','label '+a[1],a[0]));
+    if(m.configured==null)return;
+    const k=el('span','',''),names=(m.key_env||[]).join(', ');
+    k.append(el('span','label '+(m.configured?'ok':'warn'),m.configured?'set':'not set'));if(names)k.append(' ',el('span','mono',names));
+    const ed=keyEditor(m);if(ed)k.append(ed);
+    tr.cells[3].replaceChildren(k);
+  });
+}
+// Spiderfoot takes each module's API key in its settings. Here Save writes the key into the keys
+// file every lookup reads, so the next lookup uses it. The key goes in the request body, and the
+// page never gets it back: it learns only whether each slot is set.
+function keyEditor(m){
+  const rows=keyslots?(m.key_env||[]).map(s=>keyslots.slots.find(k=>k.slot===s)).filter(Boolean):[];
+  if(!rows.length)return null;
+  const d=el('details','keyedit'),f=el('form'),msg=el('p','help');
+  msg.setAttribute('role','status');
+  d.append(el('summary','',m.configured?'Change key':'Set key'));
+  for(const k of rows){
+    const i=el('input'),l=el('label','',k.slot);
+    i.id=l.htmlFor='key-'+m.name+'-'+k.slot;i.type='password';i.autocomplete='off';i.spellcheck=false;i.dataset.slot=k.slot;
+    i.placeholder=k.saved?'saved; type a new key to replace it':k.set?'set in the environment; a saved key replaces it':'';
+    f.append(l,i);
+    if(k.saved)f.append(button('Remove '+k.slot,()=>saveKey(m,k.slot,''),'btn-ghost'));
+  }
+  const save=el('button','btn','Save');save.type='submit';f.append(save,msg);
+  f.onsubmit=async e=>{
+    e.preventDefault();
+    const typed=[...f.querySelectorAll('input')].filter(i=>i.value.trim());
+    if(!typed.length){msg.textContent='Type a key first.';return}
+    for(const i of typed)if(!await saveKey(m,i.dataset.slot,i.value))return;
+  };
+  if(keynote&&keynote.name===m.name){d.open=true;msg.textContent=keynote.text}
+  d.append(f);return d;
+}
+function keyWarning(){const w=keyslots&&keyslots.warning;$('kwarn').hidden=!w;$('kwarn').textContent=w||''}
+async function saveKey(m,slot,value){
+  keynote={name:m.name,text:'Saving…'};
+  try{keyslots=await api('/api/settings/keys',{method:'POST',body:new URLSearchParams({slot,value})})}
+  catch(e){keynote.text=e.message;showMods();return false}
+  keynote.text=value?slot+' saved to '+keyslots.file+'. The next lookup uses it.':slot+' removed from '+keyslots.file+'.';
+  try{settings=await api('/api/settings')}catch(_){}
+  keyWarning();showMods();return true;
+}
+// Spiderfoot's Import API Keys: its SpiderFoot.cfg export, or a keys file, saved in one go. The
+// server reads which slot each key belongs to and answers with the slots, never a value.
+$('kimp-f').onsubmit=async e=>{
+  e.preventDefault();
+  const m=$('kimp-m'),t=$('kimp-text'),f=$('kimp-file').files[0],text=t.value.trim()?t.value:f?await f.text():'';
+  if(!text.trim()){m.textContent='Choose a file or paste its lines first.';return}
+  m.textContent='Importing…';
+  try{keyslots=await api('/api/settings/keys',{method:'POST',body:new URLSearchParams({import:text})})}catch(err){m.textContent=err.message;return}
+  t.value='';$('kimp-file').value='';
+  const i=keyslots.imported||{slots:[],unused:[],settings:0},n=i.slots.length;
+  m.textContent='Imported '+n+(n===1?' key':' keys')+' into '+keyslots.file+': '+i.slots.join(', ')+'. The next lookup uses '+(n===1?'it':'them')+'.'
+    +(i.unused.length?' No Huntsman source takes '+i.unused.join(', ')+'.':'')
+    +(i.settings?' '+i.settings+(i.settings===1?' Spiderfoot setting that is not a key was':' Spiderfoot settings that are not keys were')+' left out.':'');
+  try{settings=await api('/api/settings')}catch(_){}
+  keyWarning();showMods();
+};
+$('mfilter').oninput=showMods;
+// Table headers sort their rows, as Spiderfoot's tables do.
+document.addEventListener('click',e=>{
+  const th=e.target.closest('table.sortable th');if(!th||!th.textContent.trim())return;
+  const tb=th.closest('table').tBodies[0],i=th.cellIndex,dir=th.getAttribute('aria-sort')==='ascending'?-1:1;
+  for(const x of th.parentNode.children)x.removeAttribute('aria-sort');
+  th.setAttribute('aria-sort',dir>0?'ascending':'descending');
+  const rows=[...tb.rows].filter(r=>r.cells.length>i&&!r.querySelector('.none')),text=r=>r.cells[i].textContent.trim();
+  const num=rows.every(r=>!text(r)||!isNaN(parseFloat(text(r))));
+  rows.sort((a,b)=>dir*(num?(parseFloat(text(a))||0)-(parseFloat(text(b))||0):text(a).localeCompare(text(b))));
+  tb.append(...rows);
+});
+let alast=null;
+function showAnalysis(saved){
+  const body=saved.body;
+  alast=body;$('aresult').hidden=false;
+  const names=new Map(body.entities.map(e=>[e.uid,show(e.kind)+': '+e.value]));
+  const who=uid=>names.get(uid)||uid;
+  $('aseeds').textContent=body.accepted.length;$('aentities-c').textContent=body.entities.length;
+  $('alinks').textContent=body.relations.length;$('alinked').textContent=body.gaps.linked_seeds+' / '+body.gaps.total_seeds;
+  $('astatus').textContent=body.accepted.length+' seeds · '+body.entities.length+' entities · '+body.relations.length+' links · '+show(body.termination)+' · '+new Date(saved.at).toLocaleTimeString();
+  fill('aentities',body.entities,e=>[show(e.kind),e.value,Number(e.confidence).toFixed(2)]);
+  fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind),who(x.to_uid)]);
+  fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,p.articulation?'yes':'']);
+  fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,c.entity_uids.map(who).join(', ')]);
+  $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';
+  const cross=body.cross_scan;
+  $('ascan').textContent=cross==null?'No saved scans were given to this server.':cross==='None'?'No saved scan shares an entity with these seeds.':'';
+  const bridged=cross&&cross!=='None'?(cross.Transitive?cross.Transitive.links.map(l=>[who(l.via_entity_uid),show(l.tier),l.origin_scan_id+' -> '+l.target_scan_id]):(cross.Historical||cross.Relation).matches.map(b=>[who(b.entity.uid),show(b.tier),b.overlapping_scans.join(', ')])):[];
+  fill('ascans',bridged,r=>r);
+  fill('agaps',body.gaps.orphans,o=>[who(o.uid),show(o.isolation),o.action]);
+  fill('aplanned',body.planned,p=>[show(p.kind)+': '+p.value,p.source,p.url||'',p.utility==null?'':Number(p.utility).toFixed(2)]);
+  fill('arejected',body.rejected,x=>[x.seed,x.reason]);
+}
 $('analyze').onsubmit=async ev=>{
   ev.preventDefault();
   const seeds=$('seeds').value.trim(); if(!seeds) return;
-  $('arun').disabled=true;$('aerror').hidden=true;$('aresult').hidden=true;alast=null;
+  $('arun').disabled=true;$('aerror').hidden=true;$('aresult').hidden=true;alast=null;sess.set('hse-analysis','');
   $('arun').textContent='Analyzing…';
   try{
     const res=await call('/api/analyze?'+new URLSearchParams({seeds})),body=res.body;
     if(!res.r.ok||!body){refused(res);fail('aerror','HTTP '+res.r.status+' · '+reason(res));return}
-    alast=body;$('aresult').hidden=false;
-    const names=new Map(body.entities.map(e=>[e.uid,show(e.kind)+': '+e.value]));
-    const who=uid=>names.get(uid)||uid;
-    $('aseeds').textContent=body.accepted.length;$('aentities-c').textContent=body.entities.length;
-    $('alinks').textContent=body.relations.length;$('alinked').textContent=body.gaps.linked_seeds+' / '+body.gaps.total_seeds;
-    $('astatus').textContent=body.accepted.length+' seeds · '+body.entities.length+' entities · '+body.relations.length+' links · '+show(body.termination);
-    fill('aentities',body.entities,e=>[show(e.kind),e.value,Number(e.confidence).toFixed(2)]);
-    fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind),who(x.to_uid)]);
-    fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,p.articulation?'yes':'']);
-    fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,c.entity_uids.map(who).join(', ')]);
-    $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';
-    const cross=body.cross_scan;
-    $('ascan').textContent=cross==null?'No saved scans were given to this server.':cross==='None'?'No saved scan shares an entity with these seeds.':'';
-    const bridged=cross&&cross!=='None'?(cross.Transitive?cross.Transitive.links.map(l=>[who(l.via_entity_uid),show(l.tier),l.origin_scan_id+' -> '+l.target_scan_id]):(cross.Historical||cross.Relation).matches.map(b=>[who(b.entity.uid),show(b.tier),b.overlapping_scans.join(', ')])):[];
-    fill('ascans',bridged,r=>r);
-    fill('agaps',body.gaps.orphans,o=>[who(o.uid),show(o.isolation),o.action]);
-    fill('aplanned',body.planned,p=>[show(p.kind)+': '+p.value,p.source,p.url||'',p.utility==null?'':Number(p.utility).toFixed(2)]);
-    fill('arejected',body.rejected,x=>[x.seed,x.reason]);
-  }catch(e){fail('aerror',String(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
+    const saved={seeds,at:Date.now(),body};
+    showAnalysis(saved);sess.set('hse-analysis',JSON.stringify(saved));
+  }catch(e){fail('aerror',unreachable(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
 };
 $('adownload').onclick=()=>{if(alast)save(alast,'huntsman-analysis')};
-$('refresh').onclick=refresh;refresh();
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh()});
+// Android discards a background tab and reloads it when it is opened again. Scans live on the
+// server; this tab's last analysis comes back with it instead of having to be run again.
+{
+  const raw=sess.get('hse-analysis');
+  if(raw)try{const s=JSON.parse(raw);$('seeds').value=s.seeds;showAnalysis(s)}catch(_){sess.set('hse-analysis','');$('aresult').hidden=true}
+}
+$('refresh').onclick=()=>{health();details()};
+// Settings and About show the version and sign-in the first health answer carries.
+const started=health();route();
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){health();if(resume){clearTimeout(timer);resume()}}});
 </script>
 </html>

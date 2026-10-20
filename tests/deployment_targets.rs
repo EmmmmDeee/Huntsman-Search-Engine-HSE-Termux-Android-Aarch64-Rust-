@@ -173,3 +173,27 @@ fn termux_installer_is_arm64_userland_and_self_accepting() {
         .expect("bash must execute in CI");
     assert!(status.success(), "Termux installer must parse as bash");
 }
+
+#[test]
+fn railway_docs_match_the_image_and_the_token_contract() {
+    let install = fs::read_to_string("docs/INSTALL.md").expect("install guide");
+    let railway = fs::read_to_string("docs/RAILWAY.md").expect("Railway guide");
+
+    // The entrypoint never prints the generated token, and the image builds only this crate.
+    assert!(
+        install.contains("never prints the value"),
+        "INSTALL.md must say the token is never printed"
+    );
+    assert!(
+        !install.contains("emits the newly"),
+        "INSTALL.md must not say the generated token is printed to logs"
+    );
+    assert!(
+        railway.contains("does not build the legacy `hse` monolith"),
+        "RAILWAY.md must say the root Dockerfile does not build the legacy monolith"
+    );
+    assert!(
+        !railway.contains("remains at the root `Dockerfile`"),
+        "RAILWAY.md must not call the root Dockerfile the legacy adapter"
+    );
+}
