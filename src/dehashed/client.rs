@@ -44,7 +44,9 @@ pub const MAX_PAGE: u32 = 1_000;
 pub enum DehashedError {
     #[error("dehashed: invalid query: {0}")]
     Query(#[from] super::query::QueryError),
-    #[error("dehashed: no API key (set {API_KEY_ENV} in ~/.huntsman.env or the environment, or ~/.config/dehashed/api_key)")]
+    #[error(
+        "dehashed: no API key (set {API_KEY_ENV} in ~/.huntsman.env or the environment, or ~/.config/dehashed/api_key)"
+    )]
     MissingKey,
     #[error(
         "dehashed: the key file was refused: it must be a regular file (not a symlink) owned by you with mode 0600"
@@ -280,8 +282,7 @@ fn decode(response: &Response) -> Result<SearchResponse, DehashedError> {
 /// The same errors as [`key_from_environment`] when the shared keys contain
 /// no DeHashed credential.
 pub fn key_from_sources(keys: &Keys) -> Result<Secret, DehashedError> {
-    keys.get(API_KEY_ENV)
-        .map_or_else(key_from_environment, Ok)
+    keys.get(API_KEY_ENV).map_or_else(key_from_environment, Ok)
 }
 
 /// Load the API key from [`API_KEY_ENV`], then from `~/.config/dehashed/api_key`.
