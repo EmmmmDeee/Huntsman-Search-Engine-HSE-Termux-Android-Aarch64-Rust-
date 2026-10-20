@@ -341,7 +341,10 @@ fn keys_set_stdin(slot: &str) -> ExitCode {
         .take(MAX_KEY_BYTES as u64 + 2)
         .read_to_end(&mut bytes)
     {
-        return fail(EX_IOERR, &format!("cannot read credential from stdin: {error}"));
+        return fail(
+            EX_IOERR,
+            &format!("cannot read credential from stdin: {error}"),
+        );
     }
     if bytes.last() == Some(&b'\n') {
         bytes.pop();
