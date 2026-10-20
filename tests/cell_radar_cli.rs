@@ -31,7 +31,11 @@ fn lte_nr_and_wcdma_replay_emit_typed_cell_identity_not_location() {
         .arg(&file)
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["source"], "unverified_json_file");
     assert_eq!(json["status"], "os_cached_freshness_unknown");
@@ -64,10 +68,17 @@ fn cdma_tower_metadata_never_becomes_handset_location() {
         br#"[{"type":"cdma","registered":true,"system":11,"network":22,"basestation":33,"latitude":900000,"longitude":300000,"dbm":-83}]"#,
     )
     .unwrap();
-    let out = bin().args(["radar", "cell", "--json", "--file"]).arg(&file).output().unwrap();
+    let out = bin()
+        .args(["radar", "cell", "--json", "--file"])
+        .arg(&file)
+        .output()
+        .unwrap();
     assert!(out.status.success());
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(json["observations"][0]["sighting"]["network_id"], "cdma:11:22:33");
+    assert_eq!(
+        json["observations"][0]["sighting"]["network_id"],
+        "cdma:11:22:33"
+    );
     assert!(json["observations"][0]["sighting"]["latitude"].is_null());
     fs::remove_file(file).unwrap();
 }
@@ -76,7 +87,11 @@ fn cdma_tower_metadata_never_becomes_handset_location() {
 fn empty_cell_cache_does_not_corroborate_absence_of_towers() {
     let file = fixture_path("empty");
     fs::write(&file, b"[]").unwrap();
-    let out = bin().args(["radar", "cell", "--json", "--file"]).arg(&file).output().unwrap();
+    let out = bin()
+        .args(["radar", "cell", "--json", "--file"])
+        .arg(&file)
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(i32::from(EX_UNAVAILABLE)));
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["status"], "inconclusive");
@@ -88,12 +103,20 @@ fn empty_cell_cache_does_not_corroborate_absence_of_towers() {
 fn missing_identity_and_api_error_never_become_zero_result_successes() {
     let file = fixture_path("invalid");
     fs::write(&file, br#"[{"type":"nr","mcc":"505","mnc":"01","tac":1}]"#).unwrap();
-    let out = bin().args(["radar", "cell", "--json", "--file"]).arg(&file).output().unwrap();
+    let out = bin()
+        .args(["radar", "cell", "--json", "--file"])
+        .arg(&file)
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(i32::from(EX_UNAVAILABLE)));
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rejected"], 1);
     fs::write(&file, br#"{"API_ERROR":"location permission denied"}"#).unwrap();
-    let out = bin().args(["radar", "cell", "--file"]).arg(&file).output().unwrap();
+    let out = bin()
+        .args(["radar", "cell", "--file"])
+        .arg(&file)
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(i32::from(EX_DATAERR)));
     fs::remove_file(file).unwrap();
 }
@@ -110,6 +133,10 @@ fn missing_capture_and_bad_arguments_fail_loudly() {
     }
     let missing = fixture_path("missing");
     let _ = fs::remove_file(&missing);
-    let out = bin().args(["radar", "cell", "--file"]).arg(&missing).output().unwrap();
+    let out = bin()
+        .args(["radar", "cell", "--file"])
+        .arg(&missing)
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(i32::from(EX_NOINPUT)));
 }
