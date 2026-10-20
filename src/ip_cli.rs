@@ -205,7 +205,6 @@ pub fn run<T: Transport + ?Sized>(
     }
     if ripestat::API.runs(transport, keys) {
         match ripestat::lookup(transport, &ip, now_unix) {
-            Ok(routing) if routing.origins.is_empty() => lookup.nothing(&ripestat::API),
             Ok(routing) => ripestat_leg(&mut lookup, &routing),
             Err(err) => lookup.failed(&ripestat::API, &err),
         }
@@ -393,18 +392,14 @@ fn internetdb_leg(lookup: &mut Lookup<'_>, host: &internetdb::Host) {
 
 fn ripestat_leg(lookup: &mut Lookup<'_>, routing: &ripestat::Routing) {
     let api = &ripestat::API;
-    let asns: Vec<String> = routing
-        .origins
-        .iter()
-        .map(|o| format!("AS{}", o.asn))
-        .collect();
-    let evidence = lookup
-        .evidence(api, format!("Announced by {}", asns.join(", ")))
-        .with_attr("origin_asns", asns.join(","))
-        .with_optional_attrs([
-            ("prefix", routing.prefix.as_deref()),
-            ("registry_block", routing.block.as_deref()),
-        ]);
+    if !routing.says_anything() {
+        lookup.nothing(api);
+        return;
+    }
+    let evidence = routing.attributes().into_iter().fold(
+        lookup.evidence(api, routing.summary()),
+        |evidence, (key, value)| evidence.with_attr(key, value),
+    );
     lookup.on_address(evidence, &[]);
     for origin in &routing.origins {
         let asn = format!("AS{}", origin.asn);
@@ -423,7 +418,7 @@ fn ripestat_leg(lookup: &mut Lookup<'_>, routing: &ripestat::Routing) {
             lookup.pivot(EntityKind::Organisation, holder, evidence);
         }
     }
-    lookup.found(api, routing.origins.len());
+    lookup.found(api, routing.origins.len().max(1));
 }
 
 fn greynoise_leg(lookup: &mut Lookup<'_>, sighting: &greynoise::Sighting) {

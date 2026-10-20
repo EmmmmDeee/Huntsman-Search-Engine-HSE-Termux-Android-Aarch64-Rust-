@@ -226,3 +226,77 @@ fn a_block_that_is_not_public_is_refused_before_any_request() {
     let args = NetblockArgs::parse(&["1.1.1.7/24".to_owned()]).expect("a public block");
     assert_eq!(args.netblock, "1.1.1.0/24");
 }
+
+/// [`registry`], with `RIPEstat` giving `routing` for the block.
+fn routed(routing: &'static str) -> RoutedTransport {
+    RoutedTransport::new(&[
+        ("https://cloudflare-dns.com/", 200, UNNAMED),
+        ("https://data.iana.org/rdap/ipv4.json", 200, IPV4_BOOTSTRAP),
+        ("https://specific.test/ip/1.1.1.0/30", 200, APNIC),
+        ("https://stat.ripe.net/", 200, routing),
+    ])
+}
+
+/// The block's `ripestat` record.
+fn routing_record(report: &Report) -> &Evidence {
+    find(report, &EntityKind::Netblock, "1.1.1.0/30")
+        .evidence
+        .iter()
+        .find(|evidence| evidence.provenance.source == ripestat::SOURCE)
+        .unwrap_or_else(|| panic!("no ripestat record in {:#?}", report.entities))
+}
+
+/// `RIPEstat` for a block inside a longer announced prefix, with its related prefixes, its
+/// `see_also` resources and a message.
+const ALIGNED: &str = r#"{"messages":[["warning","Given resource is not announced but result has been aligned to first-level less-specific (1.1.1.0/24)."]],"see_also":[{"relation":"less-specific","resource":"1.1.0.0/23"}],"status":"ok","data":{"is_less_specific":true,"announced":true,"asns":[{"asn":13335,"holder":"CLOUDFLARENET - Cloudflare, Inc."}],"related_prefixes":["1.1.0.0/23"],"resource":"1.1.1.0/24","type":"prefix","block":{"resource":"1.0.0.0/8","desc":"APNIC (Status: ALLOCATED)","name":"IANA IPv4 Address Space Registry"}}}"#;
+
+/// A block's routing record holds everything `RIPEstat` said, as an address's does.
+#[test]
+fn a_block_keeps_everything_ripestat_says() {
+    let report = printed(run(&routed(ALIGNED), "1.1.1.0/30", 1));
+    let record = routing_record(&report);
+    let held = |key: &str| record.attributes.get(key).map(String::as_str);
+    assert_eq!(record.summary, "Announced by AS13335");
+    assert_eq!(held("prefix"), Some("1.1.1.0/24"));
+    assert_eq!(held("origin_asns"), Some("AS13335"));
+    assert_eq!(held("related_prefixes"), Some("1.1.0.0/23"));
+    assert_eq!(held("see_also"), Some("less-specific 1.1.0.0/23"));
+    assert_eq!(held("less_specific"), Some("true"));
+    assert_eq!(held("block_resource"), Some("1.0.0.0/8"));
+    assert_eq!(
+        held("block_registry"),
+        Some("IANA IPv4 Address Space Registry")
+    );
+    assert_eq!(
+        held("messages"),
+        Some(
+            "warning: Given resource is not announced but result has been aligned to first-level less-specific (1.1.1.0/24)."
+        )
+    );
+    let raw = held("raw_answer").unwrap_or_else(|| panic!("no raw_answer: {record:#?}"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(raw).ok(),
+        serde_json::from_str::<serde_json::Value>(ALIGNED).ok()
+    );
+}
+
+/// `RIPEstat` for a block no AS announces: only the registry block it sits in.
+const UNANNOUNCED: &str = r#"{"status":"ok","data":{"is_less_specific":false,"announced":false,"asns":[],"related_prefixes":[],"resource":"1.1.1.0/30","type":"prefix","block":{"resource":"1.0.0.0/8","desc":"APNIC (Status: ALLOCATED)","name":"IANA IPv4 Address Space Registry"}}}"#;
+
+/// A block no AS announces still has the registry block `RIPEstat` names, not a zero.
+#[test]
+fn an_unannounced_block_keeps_its_registry_block() {
+    let report = printed(run(&routed(UNANNOUNCED), "1.1.1.0/30", 1));
+    let record = routing_record(&report);
+    assert_eq!(record.summary, "Not announced; registry block 1.0.0.0/8");
+    assert_eq!(
+        record.attributes.get("announced").map(String::as_str),
+        Some("false")
+    );
+    assert_eq!(
+        record.attributes.get("registry_block").map(String::as_str),
+        Some("APNIC (Status: ALLOCATED)")
+    );
+    let row = outcome(&report, ripestat::SOURCE);
+    assert_eq!(row.kind, SourceOutcomeKind::Success, "{row:?}");
+}
