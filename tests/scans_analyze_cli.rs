@@ -175,7 +175,10 @@ fn reality_cli_exposes_attributed_evidence_without_mutating_saved_scan() {
     assert_eq!(value["entity"]["assertions"][0]["attribute"], "ip");
     assert_eq!(value["source_authenticity"], "not_established");
     assert_eq!(value["independent_source_proof"], "not_reconstructed");
-    assert_eq!(std::fs::read(dir.join(&id).join("results.json")).unwrap(), before);
+    assert_eq!(
+        std::fs::read(dir.join(&id).join("results.json")).unwrap(),
+        before
+    );
 
     let missing = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
         .args(["scans", "reality", &id, "missing", "--dir"])
