@@ -186,7 +186,11 @@ fn search_engine<T: Transport + ?Sized>(
 
 fn cached_response(url: &str, now_unix: u64) -> Option<Response> {
     let cached = RESPONSE_CACHE.get(url)?;
-    (now_unix.saturating_sub(cached.stored_at_unix) <= CACHE_TTL_SECS).then_some(cached.response)
+    // Never reuse a future-dated response after a clock rollback.
+    now_unix
+        .checked_sub(cached.stored_at_unix)
+        .is_some_and(|age| age <= CACHE_TTL_SECS)
+        .then_some(cached.response)
 }
 
 fn response_is_cacheable(response: &Response) -> bool {
@@ -200,7 +204,7 @@ fn response_is_cacheable(response: &Response) -> bool {
     !cache_control
         .split(',')
         .map(str::trim)
-        .any(|directive| directive == "no-store")
+        .any(|directive| matches!(directive, "no-store" | "no-cache" | "max-age=0"))
         && classify_fetch(response.status, &response.text()) == SourceOutcomeKind::Inconclusive
 }
 
@@ -276,7 +280,9 @@ fn outcome(
 
 #[must_use]
 pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
-    let mut urls = BTreeSet::new();
+    // Set membership deduplicates while the vector preserves provider ranking.
+    let mut seen = BTreeSet::new();
+    let mut hits = Vec::new();
     for href in href_values(html) {
         let decoded = decode_minimal_html_entities(href);
         let Some(url) = canonical_url(&decoded) else {
@@ -285,17 +291,17 @@ pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
         if is_engine_or_navigation_url(&url) {
             continue;
         }
-        urls.insert(url);
-        if urls.len() >= MAX_RESULTS_PER_ENGINE {
-            break;
+        if seen.insert(url.clone()) {
+            hits.push(SearchHit {
+                engine: engine.into(),
+                url,
+            });
+            if hits.len() >= MAX_RESULTS_PER_ENGINE {
+                break;
+            }
         }
     }
-    urls.into_iter()
-        .map(|url| SearchHit {
-            engine: engine.into(),
-            url,
-        })
-        .collect()
+    hits
 }
 
 fn href_values(html: &str) -> Vec<&str> {
@@ -306,7 +312,16 @@ fn href_values(html: &str) -> Vec<&str> {
         let Some(rel) = find_ascii_case_insensitive(&bytes[index..], b"href") else {
             break;
         };
-        index += rel + 4;
+        let candidate = index + rel;
+        // data-href and nothref are not navigational attributes.
+        if candidate > 0
+            && !bytes[candidate - 1].is_ascii_whitespace()
+            && bytes[candidate - 1] != b'<'
+        {
+            index = candidate + 4;
+            continue;
+        }
+        index = candidate + 4;
         while index < bytes.len() && bytes[index].is_ascii_whitespace() {
             index += 1;
         }
