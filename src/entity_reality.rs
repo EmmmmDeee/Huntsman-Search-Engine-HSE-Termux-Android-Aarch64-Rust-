@@ -13,7 +13,7 @@ use crate::entity::{Entity, EntityKind};
 
 const MAX_EVIDENCE: usize = 128;
 const MAX_ASSERTIONS: usize = 128;
-const MAX_VALUE_BYTES: usize = 1_024;
+const MAX_ASSERTION_VALUE_BYTES: usize = 1_024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -223,7 +223,7 @@ pub fn assess(entity: &Entity) -> EntityReality {
                 .map(str::trim)
                 .filter(|part| !part.is_empty())
             {
-                if value.len() > MAX_VALUE_BYTES {
+                if value.len() > MAX_ASSERTION_VALUE_BYTES {
                     omitted_assertions += 1;
                     continue;
                 }
