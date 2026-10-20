@@ -5,10 +5,11 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 
-use crate::cli::{MAX_ARTIFACT_BYTES, fail};
+use crate::cli::{MAX_PLAIN_FILE_BYTES, fail};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
+use huntsman_recon::module_selection::Selection;
 use huntsman_recon::scan_batch::parse_seed_list;
 use huntsman_recon::scan_route::{
     ScanKind, canonical_selector, explicit_people_is_name, infer_kind, inferred_people_is_name,
@@ -17,10 +18,12 @@ use huntsman_recon::scan_route::{
 use huntsman_recon::textnorm::escape_controls;
 
 use super::profiles::{
-    Refused, collect, domain_cmd, email_cmd, exposure_cmd, ip_cmd, network_cmd, people_cmd,
-    phone_cmd, username_cmd,
+    Refused, asn_cmd, collect, domain_cmd, email_cmd, exposure_cmd, ip_cmd, netblock_cmd,
+    network_cmd, people_cmd, phone_cmd, username_cmd,
 };
-use huntsman_recon::correlator::{self, Correlation};
+use huntsman_recon::analysis::{self, InvestigationReport};
+use huntsman_recon::correlator::Correlation;
+use huntsman_recon::pipeline::{self, PipelineLimits};
 use huntsman_recon::recursion::{
     self, RecursionPolicy, RecursionReport, SelectorCollector, Step, Target,
 };
@@ -106,7 +109,7 @@ pub(in crate::cli) fn scan_cmd(args: &[String]) -> ExitCode {
 }
 
 fn scan_batch_file(path: &str, kind: Option<&str>, save_dir: Option<&str>) -> ExitCode {
-    let bytes = match read_bounded(Path::new(path), MAX_ARTIFACT_BYTES) {
+    let bytes = match read_bounded(Path::new(path), MAX_PLAIN_FILE_BYTES) {
         Ok(bytes) => bytes,
         Err(Error::Store(message)) => return fail(EX_NOINPUT, &message),
         Err(error) => return fail(EX_DATAERR, &error.to_string()),
@@ -186,7 +189,7 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
     let Some(selector) = forwarded.first() else {
         return fail(
             EX_USAGE,
-            "usage: huntsman-recon scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network] [--save FILE] | scan --input-file FILE [-k KIND] [--save-dir DIR]",
+            "usage: huntsman-recon scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network] [--save FILE] | scan --input-file FILE [-k KIND] [--save-dir DIR]",
         );
     };
     // A leading space must not hide an option from this check, or the selector would be judged
@@ -234,6 +237,8 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
         ScanKind::Phone => phone_cmd(&forwarded),
         ScanKind::Domain => domain_cmd(&forwarded),
         ScanKind::Ip => ip_cmd(&forwarded),
+        ScanKind::Netblock => netblock_cmd(&forwarded),
+        ScanKind::Asn => asn_cmd(&forwarded),
         ScanKind::Network => network_cmd(&forwarded),
         ScanKind::People => people_cmd(&forwarded),
     }
@@ -253,7 +258,7 @@ struct LiveCollector;
 
 impl SelectorCollector for LiveCollector {
     fn collect(&mut self, target: &Target) -> Step {
-        match collect(target.kind, &target.selector) {
+        match collect(target.kind, &target.selector, &Selection::all()) {
             Ok(collected) => Step {
                 entities: collected.entities,
                 outcomes: collected.outcomes,
@@ -366,17 +371,18 @@ fn recurse_scan(args: &[String]) -> ExitCode {
     }
     let mut collector = LiveCollector;
     let report = recursion::run(&seeds, &policy, &mut collector);
-    // Compute the correlation findings once and hand them to whichever renderer runs: the text and
-    // JSON outputs show the same analysis, never a different one.
-    let correlations = recursion_correlations(&report);
+    // Analyse everything the crawl reached with the shared spine once, and hand the result to
+    // whichever renderer runs: the text and JSON outputs show the same analysis, never a different
+    // one.
+    let analysis = recursion_analysis(&report);
     if json {
-        let view = recursion_json(seeds.len(), &report, &correlations);
+        let view = recursion_json(seeds.len(), &report, &analysis);
         match serde_json::to_string_pretty(&view) {
             Ok(body) => println!("{body}"),
             Err(error) => return fail(EX_DATAERR, &format!("json: {error}")),
         }
     } else {
-        print_recursion(seeds.len(), &report, &correlations);
+        print_recursion(seeds.len(), &report, &analysis);
     }
     if report.accepted_seeds.is_empty() {
         return fail(EX_DATAERR, "no actionable seeds");
@@ -384,10 +390,12 @@ fn recurse_scan(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// A machine-readable view of the whole crawl result: the same linkage, lineage, correlations and
+/// A machine-readable view of the whole crawl result: the same linkage, lineage, analysis and
 /// source outcomes the text output carries, as one JSON object a downstream consumer can parse. A
 /// seed's kind is its stable command word (not the internal variant name), matching the text
-/// output; nothing is summarised or redacted away. Borrows the report, so building it is free.
+/// output; nothing is summarised or redacted away. `metrics`, `gaps` and `pivots` are the shared
+/// analysis spine's by-kind summary, capability gaps and graph-pivot ranking over everything
+/// reached. Borrows the report and its analysis, so building it is free.
 #[derive(Serialize)]
 struct RecursionJson<'a> {
     seeds: usize,
@@ -397,6 +405,9 @@ struct RecursionJson<'a> {
     entities: &'a [huntsman_recon::entity::Entity],
     lineage: &'a [huntsman_recon::recursion::PivotEdge],
     correlations: &'a [Correlation],
+    metrics: &'a huntsman_recon::metrics::ScanMetrics,
+    gaps: &'a huntsman_recon::gap::GapReport,
+    pivots: &'a [huntsman_recon::pivot::PivotScore],
     outcomes: &'a [SourceExecutionOutcome],
     dispatches: usize,
     visited: usize,
@@ -411,11 +422,11 @@ struct SeedJson<'a> {
     selector: &'a str,
 }
 
-/// Assemble the JSON view from the finished report and the correlations computed over it.
+/// Assemble the JSON view from the finished report and the analysis computed over it.
 fn recursion_json<'a>(
     seed_count: usize,
     report: &'a RecursionReport,
-    correlations: &'a [Correlation],
+    analysis: &'a InvestigationReport,
 ) -> RecursionJson<'a> {
     RecursionJson {
         seeds: seed_count,
@@ -431,7 +442,10 @@ fn recursion_json<'a>(
         generations: &report.generations,
         entities: &report.entities,
         lineage: &report.edges,
-        correlations,
+        correlations: &analysis.correlations,
+        metrics: &analysis.metrics,
+        gaps: &analysis.gaps,
+        pivots: &analysis.pivots,
         outcomes: &report.outcomes,
         dispatches: report.dispatches,
         visited: report.visited,
@@ -440,25 +454,29 @@ fn recursion_json<'a>(
     }
 }
 
-/// Run the shared correlation engine over everything the crawl reached. This is the exact analysis
-/// `correlate` and the web UI run — reused, not reinvented — so the recursive crawl surfaces the
-/// cross-entity patterns (shared identities, reused breach secrets, co-located hosts, …) that a flat
-/// entity list leaves implicit, the way `SpiderFoot`'s correlation rules do over a whole scan. The
-/// rules derive the relations they need from the entities themselves, so none are passed; the scan
-/// id mirrors the analysis spine's own fallback. Nothing is redacted: correlation is additive
-/// analysis over the already-collected entities, never a filter on them.
-fn recursion_correlations(report: &RecursionReport) -> Vec<Correlation> {
+/// Analyse everything the crawl reached with the shared analysis spine — the exact
+/// [`analyze_snapshot`](analysis::analyze_snapshot) report `plan`, `serve` and `correlate` produce
+/// — reused, not reinvented, so the recursive crawl surfaces the same cross-entity correlations
+/// (shared identities, reused breach secrets, co-located hosts, …), by-kind summary, capability
+/// gaps and graph-pivot ranking the way `SpiderFoot` does over a whole scan, rather than a bespoke
+/// subset. The crawl engine yields merged entities directly, so the snapshot is reconstructed from
+/// them with the relations they imply ([`pipeline::snapshot_from_entities`]); the scan id mirrors
+/// the spine's own fallback. Nothing is redacted: analysis is additive over the already-collected
+/// entities, never a filter on them.
+fn recursion_analysis(report: &RecursionReport) -> InvestigationReport {
     let scan_id = report
         .entities
         .first()
         .map_or("recurse", |entity| entity.scan_id.as_str());
-    correlator::evaluate_rules(&report.entities, &[], scan_id)
+    let snapshot =
+        pipeline::snapshot_from_entities(&report.entities, scan_id, &PipelineLimits::default());
+    analysis::analyze_snapshot(&snapshot)
 }
 
 /// Print the crawl result in full: no uid masking, no counts in place of values — the real linkage
-/// map, as the tool exists to produce. The correlations are computed once by the caller and shared
-/// with the JSON renderer, so both outputs show the same analysis.
-fn print_recursion(seed_count: usize, report: &RecursionReport, correlations: &[Correlation]) {
+/// map, as the tool exists to produce. The analysis is computed once by the caller and shared with
+/// the JSON renderer, so both outputs show the same report.
+fn print_recursion(seed_count: usize, report: &RecursionReport, analysis: &InvestigationReport) {
     println!(
         "recurse seeds={seed_count} accepted={} rejected={}",
         report.accepted_seeds.len(),
@@ -501,34 +519,7 @@ fn print_recursion(seed_count: usize, report: &RecursionReport, correlations: &[
             edge.generation
         );
     }
-    println!("correlations={}", correlations.len());
-    let by_uid: std::collections::HashMap<&str, &huntsman_recon::entity::Entity> = report
-        .entities
-        .iter()
-        .map(|entity| (entity.uid.as_str(), entity))
-        .collect();
-    for correlation in correlations {
-        println!(
-            "rule={} ({}) severity={:?} rank={:.2}\t{}",
-            escape_controls(&correlation.rule_id),
-            escape_controls(&correlation.rule_name),
-            correlation.severity,
-            correlation.rank,
-            escape_controls(&correlation.description)
-        );
-        // Resolve every uid the correlation cites back to its real kind and value, so the finding
-        // names the entities it links, not opaque ids.
-        for uid in &correlation.entity_uids {
-            match by_uid.get(uid.as_str()) {
-                Some(entity) => println!(
-                    "\t{}:{}",
-                    entity.kind.as_str(),
-                    escape_controls(&entity.value)
-                ),
-                None => println!("\t{}", escape_controls(uid)),
-            }
-        }
-    }
+    print_recursion_analysis(&report.entities, analysis);
     println!("outcomes={}", report.outcomes.len());
     for outcome in &report.outcomes {
         let found = outcome
@@ -552,10 +543,91 @@ fn print_recursion(seed_count: usize, report: &RecursionReport, correlations: &[
     );
 }
 
+/// Print the shared analysis spine's report over everything the crawl reached: the correlation
+/// findings (each citing the real kind:value of every entity it links), the by-kind element and
+/// relation summary `SpiderFoot` leads a scan with, the capability gaps (which seeds nothing linked
+/// to), and the graph-pivot ranking (which discovered entity is the linkage linchpin). Every value
+/// in full — no uid masking, no counts in place of values, nothing summarised away.
+fn print_recursion_analysis(
+    entities: &[huntsman_recon::entity::Entity],
+    analysis: &InvestigationReport,
+) {
+    let by_uid: std::collections::HashMap<&str, &huntsman_recon::entity::Entity> = entities
+        .iter()
+        .map(|entity| (entity.uid.as_str(), entity))
+        .collect();
+    let label = |uid: &str| -> String {
+        by_uid.get(uid).map_or_else(
+            || escape_controls(uid),
+            |entity| {
+                format!(
+                    "{}:{}",
+                    entity.kind.as_str(),
+                    escape_controls(&entity.value)
+                )
+            },
+        )
+    };
+    println!("correlations={}", analysis.correlations.len());
+    for correlation in &analysis.correlations {
+        println!(
+            "rule={} ({}) severity={:?} rank={:.2}\t{}",
+            escape_controls(&correlation.rule_id),
+            escape_controls(&correlation.rule_name),
+            correlation.severity,
+            correlation.rank,
+            escape_controls(&correlation.description)
+        );
+        // Resolve every uid the correlation cites back to its real kind and value, so the finding
+        // names the entities it links, not opaque ids.
+        for uid in &correlation.entity_uids {
+            println!("\t{}", label(uid));
+        }
+    }
+    let metrics = &analysis.metrics;
+    println!(
+        "summary entities={} relations={} linked_fraction={:.2} sources={}",
+        metrics.total_entities,
+        metrics.total_relations,
+        metrics.linked_entity_fraction,
+        metrics.distinct_evidence_sources
+    );
+    for (kind, count) in &metrics.entities_by_kind {
+        println!("kind\t{}\t{count}", escape_controls(kind));
+    }
+    for (kind, count) in &metrics.relations_by_kind {
+        println!("relation\t{}\t{count}", escape_controls(kind));
+    }
+    let gaps = &analysis.gaps;
+    println!(
+        "gaps seeds={} linked={} isolated={} linked_fraction={:.2}",
+        gaps.total_seeds, gaps.linked_seeds, gaps.isolated_seeds, gaps.linked_fraction
+    );
+    for orphan in &gaps.orphans {
+        println!(
+            "orphan\t{}:{}\t{}",
+            escape_controls(&orphan.kind),
+            escape_controls(&orphan.value),
+            orphan.action
+        );
+    }
+    println!("pivots={}", analysis.pivots.len());
+    for pivot in &analysis.pivots {
+        println!(
+            "pivot\t{}\tdegree={} reachable={} closeness={:.2} articulation={}",
+            label(&pivot.uid),
+            pivot.degree,
+            pivot.reachable,
+            pivot.closeness,
+            pivot.articulation
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{per_seed_save_path, recursion_correlations, recursion_json};
-    use huntsman_recon::entity::{Entity, EntityKind};
+    use super::{per_seed_save_path, recursion_analysis, recursion_json};
+    use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
     use huntsman_recon::recursion::{RecursionReport, Target};
     use huntsman_recon::scan_route::ScanKind;
     use huntsman_recon::termination::TerminationReason;
@@ -587,7 +659,7 @@ mod tests {
             Entity::new(EntityKind::Email, "person@example.com", 0.9, "recurse"),
             Entity::new(EntityKind::Username, "person", 0.9, "recurse"),
         ]);
-        let correlations = recursion_correlations(&report);
+        let correlations = recursion_analysis(&report).correlations;
         assert!(
             correlations
                 .iter()
@@ -619,7 +691,7 @@ mod tests {
             "recurse",
         )]);
         assert!(
-            recursion_correlations(&report).is_empty(),
+            recursion_analysis(&report).correlations.is_empty(),
             "a lone entity should produce no correlation"
         );
     }
@@ -637,8 +709,8 @@ mod tests {
             kind: ScanKind::Email,
             selector: "person@example.com".to_owned(),
         }];
-        let correlations = recursion_correlations(&report);
-        let view = recursion_json(1, &report, &correlations);
+        let analysis = recursion_analysis(&report);
+        let view = recursion_json(1, &report, &analysis);
         let value = serde_json::to_value(&view).expect("the view serialises");
 
         assert_eq!(value["seeds"], 1);
@@ -662,6 +734,65 @@ mod tests {
         assert!(
             rules.contains(&"AU-002"),
             "the json view dropped the identity-cluster correlation: {value}"
+        );
+        // The shared-spine analysis travels too: the by-kind summary, the capability gaps, and the
+        // pivot ranking are all present as structured objects, one pivot per entity.
+        assert_eq!(value["metrics"]["total_entities"], 2);
+        assert!(value["gaps"].is_object(), "the json view dropped the gaps");
+        assert_eq!(
+            value["pivots"].as_array().expect("pivots array").len(),
+            2,
+            "a pivot score per entity should travel in the json: {value}"
+        );
+    }
+
+    /// Builds a confirmed domain entity carrying the `ip` attribute that implies a hosting relation.
+    fn hosted_on(domain: &str, ip: &str) -> Entity {
+        let mut entity = Entity::new(EntityKind::Domain, domain, 0.9, "recurse");
+        entity.add_evidence(
+            Evidence::new(EvidenceProvenance::for_scan("dns", "recurse"), "A record")
+                .with_attr("ip", ip),
+        );
+        entity
+    }
+
+    #[test]
+    fn the_crawl_analysis_derives_the_graph_relations_its_entities_imply() {
+        // Two domains the crawl reached resolve to one address: a hosting link the flat entity list
+        // leaves implicit. Before, the recurse output ran only the correlation rules and surfaced no
+        // graph metrics at all; now it runs the shared `analyze_snapshot` spine, so the derived
+        // relations reach the metrics, gap and pivot analysis — the shared address shows up as a
+        // relation and as a graph hub, not an edgeless list.
+        let report = report_of(vec![
+            hosted_on("alpha.example", "192.0.2.10"),
+            hosted_on("beta.example", "192.0.2.10"),
+            Entity::new(EntityKind::IpAddress, "192.0.2.10", 0.9, "recurse"),
+        ]);
+        let analysis = recursion_analysis(&report);
+        assert!(
+            analysis.metrics.total_relations >= 1,
+            "the derived hosting relation never reached the metrics: {:?}",
+            analysis.metrics
+        );
+        assert_eq!(
+            analysis.metrics.total_entities, 3,
+            "the by-kind summary must count every reached entity",
+        );
+        assert!(
+            analysis.pivots.iter().any(|pivot| pivot.degree > 0),
+            "no discovered entity became a graph pivot: {:?}",
+            analysis.pivots
+        );
+        // The co-located-hosting correlation only fires when the relations the entities imply are
+        // part of the analysis — proof the crawl now runs the full spine, not a correlation-only
+        // subset.
+        assert!(
+            analysis
+                .correlations
+                .iter()
+                .any(|correlation| correlation.rule_id == "AU-110"),
+            "the shared-hosting correlation did not fire: {:?}",
+            analysis.correlations
         );
     }
 

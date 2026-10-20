@@ -137,7 +137,7 @@ pub fn techniques_for_entity_kind(kind: &EntityKind) -> &'static [&'static str] 
         EntityKind::IpAddress => &["T1590.005"],
         EntityKind::Domain => &["T1590.001", "T1596.002", "T1593.002", "T1594"],
         EntityKind::Url => &["T1594"],
-        EntityKind::Asn => &["T1590.004"],
+        EntityKind::Asn | EntityKind::Netblock => &["T1590.004"],
         EntityKind::Address | EntityKind::Coordinates => &["T1591.001"],
         EntityKind::AbnAcn => &["T1591.002", "T1591.004"],
         EntityKind::MacAddress | EntityKind::DeviceId | EntityKind::Ssid | EntityKind::Document => {
@@ -233,6 +233,7 @@ const MAPPED_ENTITY_KINDS: &[EntityKind] = &[
     EntityKind::Domain,
     EntityKind::Url,
     EntityKind::Asn,
+    EntityKind::Netblock,
     EntityKind::Address,
     EntityKind::Coordinates,
     EntityKind::Organisation,

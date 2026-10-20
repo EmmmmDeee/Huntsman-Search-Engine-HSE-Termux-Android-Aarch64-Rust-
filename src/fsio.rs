@@ -102,6 +102,48 @@ pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
     read_opened(path, &path_meta, file, max)
 }
 
+/// Read an atomically replaced mutable file with bounded revalidation.
+///
+/// Writers may rename a fully written replacement between `lstat` and `open`. In that
+/// case a strict read correctly refuses the mismatched inode, but a scan row or results
+/// file can safely retry from the beginning: each attempt still rejects symlinks,
+/// non-files and opened descriptors that differ from the newly checked inode.
+/// A repeatedly changing path remains an error after three attempts. Only call this
+/// for files that this process intentionally replaces atomically; ordinary reads
+/// retain the stricter single-attempt contract.
+///
+/// # Errors
+/// As [`read_bounded`], including repeated inode replacements.
+pub(crate) fn read_bounded_replacing(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
+    read_bounded_replacing_with(path, max, || {})
+}
+
+fn read_bounded_replacing_with(
+    path: &Path,
+    max: u64,
+    mut after_check: impl FnMut(),
+) -> Result<Vec<u8>, Error> {
+    const MAX_ATTEMPTS: usize = 3;
+    for attempt in 0..MAX_ATTEMPTS {
+        let linked = fs::symlink_metadata(path).map_err(|e| store_err(path, &e))?;
+        require_regular_file(path, &linked)?;
+        after_check();
+        let file = File::open(path).map_err(|e| store_err(path, &e))?;
+        let opened = file.metadata().map_err(|e| store_err(path, &e))?;
+        if !same_inode(&linked, &opened) {
+            if attempt + 1 < MAX_ATTEMPTS {
+                continue;
+            }
+            return Err(Error::Store(format!(
+                "{}: {CHANGED_WHILE_OPENING}",
+                path.display()
+            )));
+        }
+        return read_opened(path, &linked, file, max);
+    }
+    unreachable!("the bounded replacement reader makes at least one attempt")
+}
+
 /// The descriptor half of [`read_bounded`]: `file` must be the inode `linked` (the `lstat`
 /// result for `path`) describes and a regular file; then at most `max` bytes are read from it.
 fn read_opened(path: &Path, linked: &fs::Metadata, file: File, max: u64) -> Result<Vec<u8>, Error> {
@@ -141,6 +183,10 @@ pub fn write_atomic(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
 /// Atomically and durably write a private file, creating it mode 600 on Unix before any bytes
 /// land. Use it for anything holding credentials or the people a lookup found: ledgers,
 /// sessions, scan artifacts, tokens. Replacing an older, more open file leaves it mode 600.
+///
+/// # Errors
+/// As [`write_atomic`], and on Unix when the filesystem leaves the new file readable by others
+/// (see `private_mode_verdict`); on shared storage that case warns and writes.
 pub fn write_atomic_private(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
     write_atomic_mode(path, body, max, true)
 }
@@ -164,6 +210,9 @@ fn write_atomic_mode(path: &Path, body: &[u8], max: u64, private: bool) -> Resul
         .ok_or_else(|| Error::Store(format!("{}: no file name", path.display())))?;
     let (mut file, tmp) = create_temp_file(&parent, name, private, &TEMP_SEQUENCE)?;
     let result = (|| {
+        if private {
+            check_private_mode(path, &file)?;
+        }
         file.write_all(body).map_err(|e| store_err(&tmp, &e))?;
         file.sync_all().map_err(|e| store_err(&tmp, &e))?;
         fs::rename(&tmp, path).map_err(|e| store_err(path, &e))
@@ -184,6 +233,67 @@ fn sync_directory(dir: &Path) {
     if let Ok(handle) = File::open(dir) {
         let _ = handle.sync_all();
     }
+}
+
+/// Android's shared storage. Its FAT, exFAT and FUSE mounts do not keep Unix mode bits, so a
+/// private file there cannot be made private.
+#[cfg(unix)]
+const SHARED_STORAGE_ROOTS: [&str; 5] = [
+    "/sdcard",
+    "/storage",
+    "/mnt/sdcard",
+    "/mnt/media_rw",
+    "/mnt/runtime",
+];
+
+#[cfg(unix)]
+fn is_shared_storage(path: &Path) -> bool {
+    SHARED_STORAGE_ROOTS
+        .iter()
+        .any(|root| path.starts_with(root))
+}
+
+/// Judge the mode a private file was created with. A private file has no group or other bits:
+/// the creation request is 600 and the umask can only narrow it, so wider bits mean the
+/// filesystem did not honour the request. Off shared storage that refuses the write; on shared
+/// storage, where the mode cannot be enforced, it warns on stderr and lets the write land. The
+/// warning is a plain write, not `eprintln!`, so a closed stderr cannot abort the save.
+#[cfg(unix)]
+fn private_mode_verdict(path: &Path, mode: u32) -> Result<(), Error> {
+    let group_and_other = mode & 0o077;
+    if group_and_other == 0 {
+        return Ok(());
+    }
+    if is_shared_storage(path) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "{}: mode {mode:o} on shared storage, which does not keep Unix modes; readable by others",
+            path.display()
+        );
+        return Ok(());
+    }
+    Err(Error::Store(format!(
+        "{}: created with mode {mode:o}, readable by others; this filesystem does not honour Unix modes, so a private file is refused",
+        path.display()
+    )))
+}
+
+/// Check the new temp file before any bytes land, so a refused write leaves nothing behind.
+#[cfg(unix)]
+fn check_private_mode(path: &Path, file: &File) -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = file
+        .metadata()
+        .map_err(|e| store_err(path, &e))?
+        .permissions()
+        .mode()
+        & 0o777;
+    private_mode_verdict(path, mode)
+}
+
+#[cfg(not(unix))]
+fn check_private_mode(_path: &Path, _file: &File) -> Result<(), Error> {
+    Ok(())
 }
 
 fn create_temp_file(
@@ -339,6 +449,109 @@ mod tests {
         assert!(error.contains(CHANGED_WHILE_OPENING), "{error}");
         assert!(error.contains(&checked.display().to_string()), "{error}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_reader_revalidates_after_atomic_rename() {
+        let dir = scratch("atomic-replace-read");
+        let path = dir.join("scan.json");
+        write_atomic_private(&path, b"old", 32).unwrap();
+        let mut replacements = 0;
+        let result = read_bounded_replacing_with(&path, 32, || {
+            if replacements == 0 {
+                write_atomic_private(&path, b"new", 32).unwrap();
+            }
+            replacements += 1;
+        })
+        .unwrap();
+        assert_eq!(result, b"new");
+        assert_eq!(
+            replacements, 2,
+            "the stale inode was rejected then rechecked"
+        );
+        assert_eq!(read_bounded(&path, 32).unwrap(), b"new");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_reader_refuses_a_symlink_planted_between_check_and_open() {
+        let dir = scratch("atomic-replace-link");
+        let path = dir.join("scan.json");
+        let other = dir.join("other.json");
+        write_atomic_private(&path, b"expected", 32).unwrap();
+        fs::write(&other, b"unrelated").unwrap();
+        let failure = read_bounded_replacing_with(&path, 32, || {
+            if !fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+            {
+                fs::remove_file(&path).unwrap();
+                std::os::unix::fs::symlink(&other, &path).unwrap();
+            }
+        })
+        .expect_err("a new symlink must never be accepted as an atomic replacement");
+        assert!(failure.to_string().contains(REFUSED_SYMLINK));
+        assert_eq!(fs::read(&other).unwrap(), b"unrelated");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_reader_stops_after_bounded_inode_changes() {
+        let dir = scratch("atomic-replace-bound");
+        let path = dir.join("scan.json");
+        write_atomic_private(&path, b"seed", 32).unwrap();
+        let mut changes = 0;
+        let failure = read_bounded_replacing_with(&path, 32, || {
+            changes += 1;
+            write_atomic_private(&path, b"changed", 32).unwrap();
+        })
+        .expect_err("a constantly replaced file must never bypass the identity check");
+        assert_eq!(changes, 3);
+        assert!(failure.to_string().contains(CHANGED_WHILE_OPENING));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_private_file_is_created_with_no_group_or_other_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("private-mode");
+        let path = dir.join("tokens.json");
+        write_atomic_private(&path, b"{}", 10).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_mode_readable_by_others_is_refused_off_shared_storage() {
+        let refused = private_mode_verdict(
+            Path::new("/data/data/com.termux/files/home/.huntsman/tokens.json"),
+            0o644,
+        );
+        let err = refused.expect_err("a private file readable by others is refused");
+        assert!(err.to_string().contains("readable by others"), "{err}");
+        assert!(private_mode_verdict(Path::new("/data/x/tokens.json"), 0o600).is_ok());
+        assert!(private_mode_verdict(Path::new("/data/x/tokens.json"), 0o400).is_ok());
+        assert!(private_mode_verdict(Path::new("/data/x/tokens.json"), 0o640).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_storage_warns_and_writes_instead_of_refusing() {
+        assert!(private_mode_verdict(Path::new("/sdcard/Download/tokens.json"), 0o666).is_ok());
+        assert!(
+            private_mode_verdict(Path::new("/storage/emulated/0/huntsman/x.json"), 0o644).is_ok()
+        );
+        assert!(is_shared_storage(Path::new("/storage/emulated/0/x")));
+        assert!(!is_shared_storage(Path::new("/storagex/huntsman")));
+        assert!(!is_shared_storage(Path::new(
+            "/data/data/com.termux/files/home/.huntsman"
+        )));
     }
 
     #[cfg(unix)]
