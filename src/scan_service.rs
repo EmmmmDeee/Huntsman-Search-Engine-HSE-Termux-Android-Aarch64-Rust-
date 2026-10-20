@@ -1238,7 +1238,7 @@ impl ScanService {
                     LogLevel::Error,
                     format!("cannot load persisted scan options: {error}"),
                 );
-                self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+                let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
                 return;
             }
         };
@@ -1246,7 +1246,7 @@ impl ScanService {
             Ok(chosen) => chosen,
             Err(error) => {
                 self.log(id, "huntsman", LogLevel::Error, error.to_string());
-                self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+                let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
                 return;
             }
         };
@@ -1304,7 +1304,7 @@ impl ScanService {
                 LogLevel::Error,
                 format!("could not save the results: {error}"),
             );
-            self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+            let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
             return;
         }
         self.log(
