@@ -525,7 +525,7 @@ fn print_analysis(result: &Value) {
     );
     let limitations = &result["limitations"];
     println!(
-        "source=saved_scan_entities scan_complete={} truncated={} evidence_ancestry=not_reconstructed provider_coverage=not_reconstructed false_positive_annotations=not_applied_to_entity_analysis",
+        "source=saved_scan_entities scan_complete={} truncated={} evidence_ancestry=not_reconstructed provider_coverage=not_reconstructed false_positive_annotations=none_present",
         limitations["scan_complete"], limitations["truncated"],
     );
     let report = &result["report"];
