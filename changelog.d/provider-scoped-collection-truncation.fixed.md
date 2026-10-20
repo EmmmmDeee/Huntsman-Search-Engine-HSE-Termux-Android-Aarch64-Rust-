@@ -1,0 +1,1 @@
+- Distinguish batch-level collection truncation from provider-level incomplete execution: only retained provider/target events with discarded observations are marked truncated. Keep unaffected valid-zero results as clean negatives, preserve existing provider flags, and keep the aggregate batch truncation signal.
