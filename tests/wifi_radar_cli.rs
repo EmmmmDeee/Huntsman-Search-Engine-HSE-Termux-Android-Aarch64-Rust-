@@ -81,7 +81,7 @@ fn termux_api_error_is_reported_as_failure_not_empty_results() {
         .unwrap();
     assert_eq!(out.status.code(), Some(i32::from(EX_DATAERR)));
     assert!(String::from_utf8_lossy(&out.stderr).contains("Location needs to be enabled"));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout.len(), 0);
     fs::remove_file(input).unwrap();
 }
 
