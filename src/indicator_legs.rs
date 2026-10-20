@@ -198,7 +198,7 @@ fn fold(
 mod tests {
     use super::*;
     use crate::http::{Request, Response, TransportFailure};
-    use crate::indicator_sources::{IndicatorKind, Pivot};
+    use crate::indicator_sources::IndicatorKind;
     use crate::source_outcome::SourceOutcomeKind;
     use std::sync::Mutex;
 
@@ -347,27 +347,20 @@ mod tests {
 
     #[test]
     fn pivots_are_kept_only_in_canonical_form() {
-        let finding = Finding {
-            summary: "s".into(),
-            attrs: vec![("k", "v".into())],
-            tags: vec!["malicious"],
-            pivots: [
-                (PivotKind::Ip, "10.0.0.1"),
-                (PivotKind::Ip, "8.8.8.8"),
-                (PivotKind::Domain, "ns1.example.net."),
-                (PivotKind::Domain, "not a domain"),
-                (PivotKind::Asn, "as13335"),
-                (PivotKind::Email, "nope"),
-                (PivotKind::Ip, "1.1.1.1"),
-            ]
-            .into_iter()
-            .map(|(kind, value)| Pivot {
-                kind,
-                value: value.into(),
-                summary: "p",
-            })
-            .collect(),
-        };
+        let finding = [
+            (PivotKind::Ip, "10.0.0.1"),
+            (PivotKind::Ip, "8.8.8.8"),
+            (PivotKind::Domain, "ns1.example.net."),
+            (PivotKind::Domain, "not a domain"),
+            (PivotKind::Asn, "as13335"),
+            (PivotKind::Email, "nope"),
+            (PivotKind::Ip, "1.1.1.1"),
+        ]
+        .into_iter()
+        .fold(
+            Finding::new("s").attr("k", "v").tag("malicious"),
+            |finding, (kind, value)| finding.pivot(kind, value, "p"),
+        );
         let mut entities = Vec::new();
         let count = fold(&mut entities, Indicator::Ip("1.1.1.1"), "s", "x", finding);
         let values: Vec<&str> = entities.iter().map(|e| e.raw_value.as_str()).collect();
