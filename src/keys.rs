@@ -15,13 +15,17 @@ use std::fmt;
 use std::fs::{File, Metadata};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use crate::credential_origin::CredentialFingerprint;
 use crate::environment;
 use crate::error::Error;
-use crate::fsio::read_bounded;
+use crate::fsio::{read_bounded, same_inode, write_atomic_private};
 
 const MAX_KEYS_FILE_BYTES: u64 = 64 * 1024;
+
+/// The longest key [`store_slot`] writes. Provider keys and tokens are far shorter.
+pub const MAX_KEY_BYTES: usize = 4096;
 
 /// Keys file read from `$HOME` when no `--keys FILE` is given.
 pub const DEFAULT_KEYS_FILE: &str = ".huntsman.env";
@@ -162,11 +166,9 @@ impl Keys {
     pub fn parse(text: &str) -> Result<Self, Error> {
         let mut entries = BTreeMap::new();
         for (idx, raw) in text.lines().enumerate() {
-            let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') {
+            let Some(line) = statement(raw) else {
                 continue;
-            }
-            let line = line.strip_prefix("export ").map_or(line, str::trim_start);
+            };
             let Some((name, value)) = line.split_once('=') else {
                 return Err(Error::Invalid(format!(
                     "keys line {}: expected NAME=value",
@@ -273,6 +275,22 @@ impl Keys {
                 warning: None,
             }),
         }
+    }
+
+    /// The keys a lookup uses: the ones `credential-status` reports, read by
+    /// [`Keys::resolve`] from `$HOME/.huntsman.env` (when it passes the default-file gate)
+    /// and the process environment. A configured key is never left unused because it sits in
+    /// the file instead of the environment. A file that cannot be read or parsed does not stop
+    /// the lookup: the result is then [`Keys::from_env`] and a warning that names the error,
+    /// never a value.
+    #[must_use]
+    pub fn for_lookup(home: Option<&OsStr>) -> ResolvedKeys {
+        Self::resolve(None, home).unwrap_or_else(|error| ResolvedKeys {
+            keys: Self::from_env(),
+            warning: Some(format!(
+                "warning: not loading ~/{DEFAULT_KEYS_FILE}: {error}"
+            )),
+        })
     }
 
     /// File entry first, then the environment. Blank or placeholder values read as
@@ -479,16 +497,141 @@ pub(crate) fn read_private_file(
     Ok(Some(Ok(bytes)))
 }
 
-/// Did `open` reach the inode `lstat` described (not a replacement or a link)?
-#[cfg(unix)]
-fn same_inode(linked: &Metadata, opened: &Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    (linked.dev(), linked.ino()) == (opened.dev(), opened.ino())
+/// A keys-file line as [`Keys::parse`] reads it: `None` for a blank or `#` comment line, otherwise
+/// the line trimmed and without a leading `export `.
+fn statement(raw: &str) -> Option<&str> {
+    let line = raw.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    Some(line.strip_prefix("export ").map_or(line, str::trim_start))
 }
 
-#[cfg(not(unix))]
-fn same_inode(_linked: &Metadata, _opened: &Metadata) -> bool {
-    true
+/// Whether a keys-file line sets `slot`.
+fn assigns(raw: &str, slot: &str) -> bool {
+    statement(raw)
+        .and_then(|line| line.split_once('='))
+        .is_some_and(|(name, _)| name.trim() == slot)
+}
+
+/// `SLOT='value'`: single quotes keep the value whole for [`Keys::parse`], and keep a shell that
+/// sources the file from expanding it. A value holding a single quote is double-quoted when a
+/// shell would not expand it there either.
+fn key_line(slot: &str, value: &str) -> Result<String, Error> {
+    if !value.contains('\'') {
+        return Ok(format!("{slot}='{value}'"));
+    }
+    if !value.contains(['"', '$', '`', '\\']) {
+        return Ok(format!("{slot}=\"{value}\""));
+    }
+    Err(Error::Invalid(
+        "a key holding a single quote and a shell character cannot be saved here; \
+         add it to the keys file by hand"
+            .into(),
+    ))
+}
+
+/// The keys file's text before [`store_slots`] rewrites it, or nothing when there is no file. A
+/// file the default-file gate refuses is left alone, except one that is only too open: the
+/// rewrite leaves it mode 600, and lookups read it again.
+fn read_for_rewrite(path: &Path) -> Result<String, Error> {
+    let bytes = match read_private_file(path, MAX_KEYS_FILE_BYTES)? {
+        None => return Ok(String::new()),
+        Some(Ok(bytes)) => bytes,
+        Some(Err(DefaultFileRefusal::LoosePermissions { .. })) => {
+            read_bounded(path, MAX_KEYS_FILE_BYTES)?
+        }
+        Some(Err(refusal)) => {
+            return Err(Error::Store(format!(
+                "not changing {}: {}",
+                path.display(),
+                refusal.reason()
+            )));
+        }
+    };
+    String::from_utf8(bytes).map_err(|_| Error::Invalid("keys file is not utf-8".into()))
+}
+
+/// Sets `slot` to `value` in the keys file at `path`, or removes it when `value` is `None`, and
+/// keeps every other line as it was: [`store_slots`] with one change.
+///
+/// # Errors
+/// As [`store_slots`].
+pub fn store_slot(path: &Path, slot: &str, value: Option<&str>) -> Result<(), Error> {
+    store_slots(path, &[(slot, value)])
+}
+
+/// Applies `changes` to the keys file at `path` in one rewrite: each sets its slot to the value,
+/// or removes the slot when the value is `None`, and a later change to a slot replaces an earlier
+/// one. Every other line stays as it was. The first line that set a slot takes its new value and
+/// any later one goes, since a later line would override it; a slot no line set is appended, in
+/// the order of `changes`. The result must read back through [`Keys::parse`] with exactly these
+/// values (and without the removed slots) before it replaces the file, atomically and at mode
+/// 600, so a save never leaves a file that lookups would refuse or read differently, and a change
+/// that cannot be saved saves nothing. Saves in this process run one at a time, so two never
+/// lose each other's keys.
+///
+/// # Errors
+/// `Error::Invalid` for no change, a bad slot name, a blank, placeholder, over-long or
+/// unquotable value, or a file whose other lines do not parse (by line number, never a value);
+/// `Error::Store` for a file the default-file gate refuses for any reason but loose permissions,
+/// or an I/O failure.
+pub fn store_slots(path: &Path, changes: &[(&str, Option<&str>)]) -> Result<(), Error> {
+    static SAVING: Mutex<()> = Mutex::new(());
+    if changes.is_empty() {
+        return Err(Error::Invalid("no key to save".into()));
+    }
+    // Each slot once, at its first change, with its last value and the line that sets it.
+    let mut planned: Vec<(&str, Option<Secret>, Option<String>)> = Vec::new();
+    for &(slot, value) in changes {
+        if !valid_slot(slot) {
+            return Err(Error::Invalid("bad slot name".into()));
+        }
+        let secret = value.map(Secret::new).transpose()?;
+        if secret
+            .as_ref()
+            .is_some_and(|secret| secret.expose().len() > MAX_KEY_BYTES)
+        {
+            return Err(Error::Invalid(format!(
+                "a key is at most {MAX_KEY_BYTES} bytes"
+            )));
+        }
+        let line = secret
+            .as_ref()
+            .map(|secret| key_line(slot, secret.expose()))
+            .transpose()?;
+        match planned.iter_mut().find(|(known, _, _)| *known == slot) {
+            Some(change) => *change = (slot, secret, line),
+            None => planned.push((slot, secret, line)),
+        }
+    }
+    let _saving = SAVING.lock().unwrap_or_else(PoisonError::into_inner);
+    let current = read_for_rewrite(path)?;
+    let mut text = String::with_capacity(current.len() + 80 * planned.len());
+    for raw in current.lines() {
+        if let Some((_, _, line)) = planned.iter_mut().find(|(slot, _, _)| assigns(raw, slot)) {
+            if let Some(line) = line.take() {
+                text.push_str(&line);
+                text.push('\n');
+            }
+            continue;
+        }
+        text.push_str(raw);
+        text.push('\n');
+    }
+    for line in planned.iter_mut().filter_map(|(_, _, line)| line.take()) {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    let reread = Keys::parse(&text)?;
+    if planned.iter().any(|(slot, secret, _)| {
+        reread.entries.get(*slot).map(Secret::expose) != secret.as_ref().map(Secret::expose)
+    }) {
+        return Err(Error::Invalid(
+            "the key would not read back as written; add it to the keys file by hand".into(),
+        ));
+    }
+    write_atomic_private(path, text.as_bytes(), MAX_KEYS_FILE_BYTES)
 }
 
 /// The permission bits (`mode & 0o777`) when group or others have any access to
@@ -731,6 +874,50 @@ mod tests {
                 .expose(),
             "TEST_ONLY_VALUE_DEFAULT"
         );
+        assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lookup_uses_a_key_set_only_in_the_default_file() {
+        let home = fake_home("lookup");
+        write_mode(
+            &home.join(DEFAULT_KEYS_FILE),
+            "HSE_TEST_LOOKUP_KEY=TEST_ONLY_VALUE_LOOKUP\n",
+            0o600,
+        );
+        let resolved = Keys::for_lookup(Some(home.as_os_str()));
+        assert!(resolved.warning.is_none());
+        assert_eq!(
+            resolved
+                .keys
+                .get("HSE_TEST_LOOKUP_KEY")
+                .expect("a key in the default file reaches the lookup")
+                .expose(),
+            "TEST_ONLY_VALUE_LOOKUP"
+        );
+        assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_malformed_default_file_leaves_a_lookup_its_environment_keys() {
+        let home = fake_home("lookup-bad");
+        write_mode(
+            &home.join(DEFAULT_KEYS_FILE),
+            "HSE_TEST_BAD=TEST_ONLY_VALUE_BAD\nnot a line\n",
+            0o600,
+        );
+        let resolved = Keys::for_lookup(Some(home.as_os_str()));
+        let warning = resolved.warning.expect("the skipped file is named");
+        assert!(
+            warning.starts_with("warning: not loading ~/.huntsman.env:"),
+            "{warning}"
+        );
+        assert!(!warning.contains("TEST_ONLY_VALUE_BAD"), "{warning}");
+        assert_eq!(resolved.keys.slots(), [] as [&str; 0]);
         assert!(resolved.keys.get("PATH").is_some(), "env fallback kept");
         std::fs::remove_dir_all(&home).expect("cleanup");
     }
@@ -1050,5 +1237,216 @@ mod tests {
         let text = crate::dehashed::client::DehashedError::KeyFilePermissions.to_string();
         assert!(!text.contains(GATE_SECRET));
         assert!(text.contains("0600"), "{text}");
+    }
+
+    // --- Saving one key into the keys file ---
+
+    const SAVED_KEY: &str = "TEST_ONLY_SAVED_KEY_7d41";
+
+    fn read_back(path: &Path) -> Keys {
+        Keys::parse(&std::fs::read_to_string(path).expect("read")).expect("parses")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_key_creates_a_private_file_that_reads_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = fake_home("store-new");
+        let path = home.join(DEFAULT_KEYS_FILE);
+        store_slot(&path, "HUNTSMAN_T_KEY", Some(&format!("  {SAVED_KEY}  "))).expect("saved");
+        let mode = std::fs::metadata(&path).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            format!("HUNTSMAN_T_KEY='{SAVED_KEY}'\n")
+        );
+        let resolved = Keys::resolve(None, Some(home.as_os_str())).expect("resolve");
+        assert!(resolved.warning.is_none(), "{:?}", resolved.warning);
+        assert_eq!(
+            resolved.keys.get("HUNTSMAN_T_KEY").expect("set").expose(),
+            SAVED_KEY
+        );
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_replaces_only_its_own_slot_and_drops_a_later_line_that_would_override_it() {
+        let home = fake_home("store-replace");
+        let path = home.join(DEFAULT_KEYS_FILE);
+        let before = "# my keys\nexport HUNTSMAN_A_KEY=first-1234\n\nHUNTSMAN_B_KEY=\"other-5678\" # kept\nHUNTSMAN_A_KEY=later-9999\n";
+        write_mode(&path, before, 0o600);
+        store_slot(&path, "HUNTSMAN_A_KEY", Some(SAVED_KEY)).expect("saved");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            format!(
+                "# my keys\nHUNTSMAN_A_KEY='{SAVED_KEY}'\n\nHUNTSMAN_B_KEY=\"other-5678\" # kept\n"
+            )
+        );
+        let keys = read_back(&path);
+        assert_eq!(keys.get("HUNTSMAN_A_KEY").expect("a").expose(), SAVED_KEY);
+        assert_eq!(
+            keys.get("HUNTSMAN_B_KEY").expect("b").expose(),
+            "other-5678"
+        );
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn several_changes_land_in_one_rewrite_and_a_later_change_to_a_slot_wins() {
+        let home = fake_home("store-many");
+        let path = home.join(DEFAULT_KEYS_FILE);
+        write_mode(
+            &path,
+            "HUNTSMAN_A_KEY=old-1234\nHUNTSMAN_B_KEY=gone-5678\n# end\n",
+            0o600,
+        );
+        store_slots(
+            &path,
+            &[
+                ("HUNTSMAN_C_KEY", Some("first-c-1111")),
+                ("HUNTSMAN_A_KEY", Some(SAVED_KEY)),
+                ("HUNTSMAN_B_KEY", None),
+                ("HUNTSMAN_D_KEY", Some("new-d-2222")),
+                ("HUNTSMAN_C_KEY", Some("last-c-3333")),
+            ],
+        )
+        .expect("saved");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            format!(
+                "HUNTSMAN_A_KEY='{SAVED_KEY}'\n# end\nHUNTSMAN_C_KEY='last-c-3333'\nHUNTSMAN_D_KEY='new-d-2222'\n"
+            )
+        );
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_change_that_cannot_be_saved_saves_none_of_the_others() {
+        let home = fake_home("store-none");
+        let path = home.join(DEFAULT_KEYS_FILE);
+        let before = "HUNTSMAN_A_KEY=old-1234\n";
+        write_mode(&path, before, 0o600);
+        for bad in [
+            ("HUNTSMAN_B_KEY", Some("changeme")),
+            ("not a slot", Some("value-5678")),
+            ("HUNTSMAN_B_KEY", Some("a'b\"c$d")),
+        ] {
+            let error = store_slots(&path, &[("HUNTSMAN_A_KEY", Some(SAVED_KEY)), bad])
+                .expect_err("refused");
+            assert!(matches!(error, Error::Invalid(_)), "{error}");
+            assert!(!error.to_string().contains(SAVED_KEY));
+            assert_eq!(std::fs::read_to_string(&path).expect("read"), before);
+        }
+        assert!(matches!(store_slots(&path, &[]), Err(Error::Invalid(_))));
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_a_key_drops_every_line_that_set_it_and_nothing_else() {
+        let home = fake_home("store-remove");
+        let path = home.join(DEFAULT_KEYS_FILE);
+        write_mode(
+            &path,
+            "HUNTSMAN_A_KEY=one-1234\nHUNTSMAN_B_KEY=two-5678\nexport HUNTSMAN_A_KEY = three-9999\n",
+            0o600,
+        );
+        store_slot(&path, "HUNTSMAN_A_KEY", None).expect("removed");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "HUNTSMAN_B_KEY=two-5678\n"
+        );
+        // Removing a slot the file never had leaves it as it was.
+        store_slot(&path, "HUNTSMAN_C_KEY", None).expect("nothing to remove");
+        assert_eq!(read_back(&path).slots(), vec!["HUNTSMAN_B_KEY"]);
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[test]
+    fn a_key_with_quotes_or_a_comment_mark_reads_back_whole() {
+        let home = fake_home("store-quotes");
+        let path = home.join(DEFAULT_KEYS_FILE);
+        for value in ["a#b c #d", "it's-1234", "say \"hi\" #1", "$(not run)`x`"] {
+            store_slot(&path, "HUNTSMAN_Q_KEY", Some(value)).expect(value);
+            assert_eq!(
+                read_back(&path)
+                    .get("HUNTSMAN_Q_KEY")
+                    .expect(value)
+                    .expose(),
+                value
+            );
+        }
+        // A single quote with a shell character cannot be quoted safely for both readers.
+        let refused = store_slot(&path, "HUNTSMAN_Q_KEY", Some("it's $HOME")).expect_err("refused");
+        assert!(refused.to_string().contains("by hand"), "{refused}");
+        assert!(!refused.to_string().contains("HOME"), "{refused}");
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bad_slot_or_value_is_refused_and_the_file_is_left_alone() {
+        let home = fake_home("store-refused");
+        let path = home.join(DEFAULT_KEYS_FILE);
+        write_mode(&path, "HUNTSMAN_A_KEY=one-1234\n", 0o600);
+        let long = "k".repeat(MAX_KEY_BYTES + 1);
+        for (slot, value) in [
+            ("lower_case", SAVED_KEY),
+            ("HUNTSMAN=X", SAVED_KEY),
+            ("HUNTSMAN_A_KEY", ""),
+            ("HUNTSMAN_A_KEY", "changeme"),
+            ("HUNTSMAN_A_KEY", "two\nHUNTSMAN_B_KEY=injected"),
+            ("HUNTSMAN_A_KEY", long.as_str()),
+        ] {
+            let refused = store_slot(&path, slot, Some(value)).expect_err(slot);
+            assert!(!refused.to_string().contains("injected"), "{refused}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "HUNTSMAN_A_KEY=one-1234\n"
+        );
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_another_line_of_which_does_not_parse_is_not_rewritten() {
+        let home = fake_home("store-malformed");
+        let path = home.join(DEFAULT_KEYS_FILE);
+        let before = "HUNTSMAN_A_KEY=one-1234\nnot a key line\n";
+        write_mode(&path, before, 0o600);
+        let refused = store_slot(&path, "HUNTSMAN_B_KEY", Some(SAVED_KEY)).expect_err("refused");
+        assert!(refused.to_string().contains("line 2"), "{refused}");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), before);
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_file_is_refused_and_a_too_open_one_is_saved_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = fake_home("store-gate");
+        let target = home.join("elsewhere.env");
+        write_mode(&target, "HUNTSMAN_A_KEY=one-1234\n", 0o600);
+        let link = home.join(DEFAULT_KEYS_FILE);
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        let refused = store_slot(&link, "HUNTSMAN_B_KEY", Some(SAVED_KEY)).expect_err("symlink");
+        assert!(refused.to_string().contains("symlink"), "{refused}");
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read"),
+            "HUNTSMAN_A_KEY=one-1234\n"
+        );
+        std::fs::remove_file(&link).expect("unlink");
+        write_mode(&link, "HUNTSMAN_A_KEY=one-1234\n", 0o644);
+        store_slot(&link, "HUNTSMAN_B_KEY", Some(SAVED_KEY)).expect("saved");
+        let mode = std::fs::metadata(&link).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the rewrite closes a too-open file");
+        let keys = Keys::load(&link).expect("loads now");
+        assert_eq!(keys.get("HUNTSMAN_A_KEY").expect("a").expose(), "one-1234");
+        assert_eq!(keys.get("HUNTSMAN_B_KEY").expect("b").expose(), SAVED_KEY);
+        std::fs::remove_dir_all(&home).expect("cleanup");
     }
 }

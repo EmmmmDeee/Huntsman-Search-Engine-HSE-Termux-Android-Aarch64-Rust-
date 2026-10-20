@@ -1,7 +1,8 @@
 //! SPF (RFC 7208) parsing and analysis.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 
+use crate::netblock::{Ipv4Cidr, Ipv6Cidr};
 use crate::signals::record_tag;
 
 #[must_use]
@@ -321,76 +322,6 @@ impl SpfRecord {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Ipv4Cidr {
-    addr: Ipv4Addr,
-    prefix: u8,
-}
-
-impl Ipv4Cidr {
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        let (addr_raw, prefix_raw) = raw.split_once('/').unwrap_or((raw, "32"));
-        let addr: Ipv4Addr = addr_raw.trim().parse().ok()?;
-        let prefix: u8 = prefix_raw.trim().parse().ok()?;
-        (prefix <= 32).then_some(Self { addr, prefix })
-    }
-
-    fn mask(self) -> u32 {
-        if self.prefix == 0 {
-            0
-        } else {
-            u32::MAX << (32 - self.prefix)
-        }
-    }
-
-    #[must_use]
-    pub fn contains(self, ip: Ipv4Addr) -> bool {
-        let mask = self.mask();
-        (u32::from(ip) & mask) == (u32::from(self.addr) & mask)
-    }
-
-    #[must_use]
-    pub fn prefix_len(self) -> u8 {
-        self.prefix
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Ipv6Cidr {
-    addr: Ipv6Addr,
-    prefix: u8,
-}
-
-impl Ipv6Cidr {
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        let (addr_raw, prefix_raw) = raw.split_once('/').unwrap_or((raw, "128"));
-        let addr: Ipv6Addr = addr_raw.trim().parse().ok()?;
-        let prefix: u8 = prefix_raw.trim().parse().ok()?;
-        (prefix <= 128).then_some(Self { addr, prefix })
-    }
-
-    fn mask(self) -> u128 {
-        if self.prefix == 0 {
-            0
-        } else {
-            u128::MAX << (128 - self.prefix)
-        }
-    }
-
-    #[must_use]
-    pub fn contains(self, ip: Ipv6Addr) -> bool {
-        let mask = self.mask();
-        (u128::from(ip) & mask) == (u128::from(self.addr) & mask)
-    }
-
-    #[must_use]
-    pub fn prefix_len(self) -> u8 {
-        self.prefix
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,20 +388,5 @@ mod tests {
         assert!(issues.contains(&SpfIssue::DeprecatedPtr));
         assert!(issues.contains(&SpfIssue::MacrosPresent));
         assert!(issues.contains(&SpfIssue::UnreachableMechanisms(1)));
-    }
-
-    #[test]
-    fn cidr_math_is_safe() {
-        assert!(
-            Ipv4Cidr::parse("0.0.0.0/0")
-                .expect("cidr")
-                .contains("1.2.3.4".parse().expect("ip"))
-        );
-        assert!(
-            Ipv6Cidr::parse("::/0")
-                .expect("cidr")
-                .contains("2001:db8::1".parse().expect("ip"))
-        );
-        assert!(Ipv4Cidr::parse("10.0.0.0/33").is_none());
     }
 }

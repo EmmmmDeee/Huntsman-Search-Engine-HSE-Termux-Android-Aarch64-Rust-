@@ -75,24 +75,25 @@ pub enum EmailRun {
 }
 
 type Collected = Result<(Vec<Entity>, SourceExecutionOutcome), Error>;
-type Source<T> = fn(&T, &str, &str, u64) -> Collected;
+type Source<T> = (&'static str, fn(&T, &str, &str, u64) -> Collected);
 
-/// The keyless public lookups `email` runs, in order. Each is one request.
+/// The keyless public lookups `email` runs, in order, each with its module. Each is one request.
 fn sources<T: Transport + ?Sized>() -> [Source<T>; 3] {
     [
-        |t, email, scan, now| {
+        (gravatar::SRC, |t, email, scan, now| {
             gravatar::lookup(t, email, scan, now).map(|r| (r.entities, r.outcome))
-        },
-        |t, email, scan, now| {
+        }),
+        (duolingo::SRC, |t, email, scan, now| {
             duolingo::lookup(t, email, scan, now).map(|r| (r.entities, r.outcome))
-        },
-        |t, email, scan, now| {
+        }),
+        (openpgp_keys::SRC, |t, email, scan, now| {
             openpgp_keys::lookup(t, email, scan, now).map(|r| (r.entities, r.outcome))
-        },
+        }),
     ]
 }
 
-/// Run one deterministic email enrichment plus the keyless public lookups.
+/// Run one deterministic email enrichment plus the keyless public lookups the transport's lookup
+/// asks ([`Transport::runs_module`]).
 #[must_use]
 pub fn run<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> EmailRun {
     let Some(email) = canonical_email(email) else {
@@ -104,7 +105,10 @@ pub fn run<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> 
         outcomes: Vec::new(),
     };
 
-    for source in sources::<T>() {
+    for (module, source) in sources::<T>() {
+        if !transport.runs_module(module) {
+            continue;
+        }
         match source(transport, &email, &scan_id, now_unix) {
             Ok((entities, outcome)) => {
                 report.entities.extend(entities);

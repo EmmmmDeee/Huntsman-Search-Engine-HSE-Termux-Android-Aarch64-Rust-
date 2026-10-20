@@ -4,7 +4,9 @@
 //! One lookup is one `GET https://api.apilayer.com/number_verification/validate?number={digits}`
 //! with the key in the `apikey` header, the same origin and header `credential-status --probe`
 //! checks. It runs only when `HUNTSMAN_NUMVERIFY_KEY` is set. The number is sent as E.164 digits
-//! without the `+`. An answer for another number is refused.
+//! without the `+`. An answer for another number is refused. Everything the answer holds is kept:
+//! the local and international formats, the country prefix, code and name, the location, carrier
+//! and line type, and the whole answer as `raw_answer`.
 
 use serde::Deserialize;
 
@@ -29,11 +31,20 @@ pub const API: Api = Api {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Verification {
     pub valid: bool,
+    /// The number as dialled inside its country.
+    pub local_format: Option<String>,
+    /// The number as dialled from abroad, with its `+` prefix.
+    pub international_format: Option<String>,
+    /// The country's calling prefix, such as `+1`.
+    pub country_prefix: Option<String>,
     pub country_code: Option<String>,
+    pub country_name: Option<String>,
     pub location: Option<String>,
     pub carrier: Option<String>,
     /// `mobile`, `landline`, `special_services`, `toll_free`, `premium_rate`, ...
     pub line_type: Option<String>,
+    /// The whole answer as compact JSON.
+    pub raw_answer: String,
 }
 
 #[derive(Deserialize)]
@@ -42,7 +53,15 @@ struct Body {
     #[serde(default)]
     number: Option<String>,
     #[serde(default)]
+    local_format: Option<String>,
+    #[serde(default)]
+    international_format: Option<String>,
+    #[serde(default)]
+    country_prefix: Option<String>,
+    #[serde(default)]
     country_code: Option<String>,
+    #[serde(default)]
+    country_name: Option<String>,
     #[serde(default)]
     location: Option<String>,
     #[serde(default)]
@@ -88,6 +107,7 @@ pub fn verify<T: Transport + ?Sized>(
 /// # Errors
 /// [`LegError::Decode`] for a body that is not the documented shape or is about another number.
 pub fn decode(body: &[u8], e164: &str) -> Result<Verification, LegError> {
+    let whole: serde_json::Value = api_leg::decode(body)?;
     let body: Body = api_leg::decode(body)?;
     if let Some(number) = body.number.as_deref().map(str::trim) {
         if !number.is_empty() && Some(number) != digits(e164) {
@@ -96,10 +116,15 @@ pub fn decode(body: &[u8], e164: &str) -> Result<Verification, LegError> {
     }
     Ok(Verification {
         valid: body.valid,
+        local_format: api_leg::clean(body.local_format.as_deref()),
+        international_format: api_leg::clean(body.international_format.as_deref()),
+        country_prefix: api_leg::clean(body.country_prefix.as_deref()),
         country_code: api_leg::clean(body.country_code.as_deref()),
+        country_name: api_leg::clean(body.country_name.as_deref()),
         location: api_leg::clean(body.location.as_deref()),
         carrier: api_leg::clean(body.carrier.as_deref()),
         line_type: api_leg::clean(body.line_type.as_deref()).map(|t| t.to_ascii_lowercase()),
+        raw_answer: whole.to_string(),
     })
 }
 
@@ -118,6 +143,11 @@ mod tests {
         assert_eq!(v.line_type.as_deref(), Some("mobile"));
         assert_eq!(v.location.as_deref(), Some("Novato"));
         assert_eq!(v.country_code.as_deref(), Some("US"));
+        assert_eq!(v.local_format.as_deref(), Some("4158586273"));
+        assert_eq!(v.international_format.as_deref(), Some("+14158586273"));
+        assert_eq!(v.country_prefix.as_deref(), Some("+1"));
+        assert_eq!(v.country_name.as_deref(), Some("United States of America"));
+        assert!(v.raw_answer.contains(r#""carrier":"AT&T Mobility LLC""#));
     }
 
     #[test]

@@ -10,9 +10,6 @@ use std::process::ExitCode;
 pub const EX_REFUSED: u8 = 1;
 /// Exit status for a usage error or malformed input (EX_USAGE).
 pub const EX_USAGE: u8 = 64;
-/// Exit status for a command that is not implemented yet. Only a placeholder while the
-/// migration is in progress; a finished command never returns it.
-pub const EX_UNIMPLEMENTED: u8 = 70;
 
 #[derive(Debug)]
 pub enum Error {
@@ -63,11 +60,4 @@ pub fn report(prefix: &str, error: &Error) -> ExitCode {
 pub fn usage(text: &str) -> ExitCode {
     eprintln!("{text}");
     ExitCode::from(EX_USAGE)
-}
-
-/// The placeholder for a command whose port has not landed yet.
-#[must_use]
-pub fn unimplemented(name: &str) -> ExitCode {
-    eprintln!("xtask: `{name}` is not implemented yet");
-    ExitCode::from(EX_UNIMPLEMENTED)
 }

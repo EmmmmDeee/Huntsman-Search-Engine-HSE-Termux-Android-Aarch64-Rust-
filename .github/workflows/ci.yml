@@ -91,6 +91,10 @@ jobs:
       # Keep the MSRV and stable verdicts independent: with fail-fast, a stable
       # failure cancels the 1.87 leg before it reports.
       fail-fast: false
+      # The MSRV leg and one pinned stable release. The gate does not track the floating
+      # `stable` channel: a new release's lints turned main red with no change to the code.
+      # Bump the pin deliberately, with the one in tests/ci_toolchains.rs, after the gate
+      # passes on the new release.
       matrix:
         toolchain: ["1.87", "1.99"]
     steps:
@@ -105,6 +109,9 @@ jobs:
       - name: Run deterministic repair gate (MSRV)
         if: matrix.toolchain == '1.87'
         run: cargo run --locked -p xtask -- gate msrv
+      - name: Measure sequential versus graph scheduling (offline)
+        if: matrix.toolchain == '1.99'
+        run: cargo run --locked --example graph_exec_bench
 
 
   railway-container:
@@ -140,8 +147,6 @@ jobs:
   android-aarch64:
     name: Android aarch64 cross-build
     runs-on: ubuntu-24.04
-    env:
-      HUNTSMAN_HIBP_NO_EMBED: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
@@ -165,6 +170,11 @@ jobs:
           grep -Eq 'Machine:[[:space:]]+AArch64' "$HEADER"
           "$TOOLCHAIN/llvm-readelf" -l "$BIN" > "$PROGRAM"
           grep -F '/system/bin/linker64' "$PROGRAM"
+          # Devices with 16 KiB pages refuse an ELF whose LOAD segments are aligned to less.
+          grep -q '^ *LOAD' "$PROGRAM"
+          for align in $(awk '$1 == "LOAD" { print $NF }' "$PROGRAM"); do
+            [ $((align)) -ge 16384 ] || { echo "::error::a LOAD segment is aligned to $align; devices with 16 KiB pages need 0x4000 or more"; exit 1; }
+          done
           mkdir -p dist
           cp "$BIN" dist/huntsman-recon-aarch64-linux-android
           (
