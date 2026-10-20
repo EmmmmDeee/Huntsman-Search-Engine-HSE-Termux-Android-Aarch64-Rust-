@@ -1134,27 +1134,27 @@ impl ScanService {
         let state = self.state();
         let mut record = self.store.get(id)?;
         if !record.status.is_active() {
+        return Ok(());
+        }
+        if matches!(status, ScanStatus::Starting | ScanStatus::Running)
+            && (record.status == ScanStatus::AbortRequested || state.aborts.contains(id))
+        {
             return Ok(());
         }
-            if matches!(status, ScanStatus::Starting | ScanStatus::Running)
-                && (record.status == ScanStatus::AbortRequested || state.aborts.contains(id))
-            {
-                return Ok(());
+        let status = if status == ScanStatus::Finished && state.aborts.contains(id) {
+            ScanStatus::Aborted
+        } else {
+            status
+        };
+        record.status = status;
+        match status {
+            ScanStatus::Running => record.started = at,
+            ScanStatus::Aborted | ScanStatus::Finished | ScanStatus::ErrorFailed => {
+            record.ended = at;
             }
-            let status = if status == ScanStatus::Finished && state.aborts.contains(id) {
-                ScanStatus::Aborted
-            } else {
-                status
-            };
-            record.status = status;
-            match status {
-                ScanStatus::Running => record.started = at,
-                ScanStatus::Aborted | ScanStatus::Finished | ScanStatus::ErrorFailed => {
-                    record.ended = at;
-                }
-                _ => {}
-            }
-            self.store.update(&record)?;
+            _ => {}
+        }
+        self.store.update(&record)?;
         Ok(())
     }
 
