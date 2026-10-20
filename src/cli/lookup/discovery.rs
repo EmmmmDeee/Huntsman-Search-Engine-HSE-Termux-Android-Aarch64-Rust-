@@ -65,11 +65,38 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
     if args.is_empty() {
         return fail(EX_USAGE, "usage: huntsman-recon query QUERY...");
     }
-    let query = args.join(" ");
+    let adaptive = args.first().is_some_and(|arg| arg == "--adaptive");
+    let terms = if adaptive { &args[1..] } else { args };
+    if terms.is_empty() {
+        return fail(
+            EX_USAGE,
+            "usage: huntsman-recon query [--adaptive] QUERY...",
+        );
+    }
+    let query = terms.join(" ");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs());
     let transport = UreqTransport::new(&TransportConfig::default());
+
+    if adaptive {
+        return match web_query::adaptive_search(&transport, &query, now) {
+            Ok(report) => {
+                match serde_json::to_string_pretty(&report) {
+                    Ok(serialized) => println!("{serialized}"),
+                    Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
+                }
+                if report.hits.is_empty() {
+                    ExitCode::from(EX_UNAVAILABLE)
+                } else {
+                    ExitCode::SUCCESS
+                }
+            }
+            Err(Error::Invalid(message)) => fail(EX_USAGE, &message),
+            Err(Error::Network(message)) => fail(EX_NOPERM, &message),
+            Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
+        };
+    }
 
     match web_query::search(&transport, &query, now) {
         Ok(report) => {

@@ -1,0 +1,1 @@
+- Add opt-in `query --adaptive` with bounded feedback-guided query refinements, per-engine URL discovery attribution, typed source outcomes and diminishing-return termination. Repeated search index sightings remain unverified leads, never independently corroborated facts; the ordinary query output remains unchanged.

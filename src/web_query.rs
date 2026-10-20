@@ -4,7 +4,7 @@
 //! shared fetch boundary. Each engine runs independently; one blocked or broken
 //! provider never erases results from another.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::thread;
 
@@ -19,6 +19,7 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_
 use crate::textnorm::escape_controls;
 
 const MAX_RESULTS_PER_ENGINE: usize = 20;
+const MAX_ADAPTIVE_QUERY_BYTES: usize = 512;
 const CACHE_TTL_SECS: u64 = 300;
 const CACHE_CAPACITY: usize = 256;
 const RETRY_POLICY: BackoffPolicy = BackoffPolicy::new(2, 100, 500, true);
@@ -113,15 +114,206 @@ pub fn search<T: Transport + ?Sized>(
         return Err(Error::Invalid("query must not be empty".into()));
     }
 
+    let (report, _) = search_with_observations(transport, &query, now_unix)?;
+    Ok(report)
+}
+
+/// Keep every engine's URL observation before compatibility-preserving deduplication.
+/// An engine discovery is a lead, not independent corroboration of the page's claims.
+fn search_with_observations<T: Transport + ?Sized>(
+    transport: &T,
+    query: &str,
+    now_unix: u64,
+) -> Result<(SearchReport, Vec<SearchHit>), Error> {
     let mut hits = Vec::new();
     let mut outcomes = Vec::new();
     for engine in ENGINES {
-        let result = search_engine(transport, engine, &query, now_unix)?;
+        let result = search_engine(transport, engine, query, now_unix)?;
         hits.extend(result.hits);
         outcomes.push(result.outcome);
     }
+    let observations = hits.clone();
     dedupe_hits(&mut hits);
-    Ok(SearchReport { hits, outcomes })
+    Ok((SearchReport { hits, outcomes }, observations))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AdaptiveHit {
+    pub url: String,
+    pub discovered_by_engines: Vec<String>,
+    pub found_in_queries: Vec<String>,
+    pub appearances: usize,
+    pub evidence_status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AdaptiveRound {
+    pub query: String,
+    pub strategy: &'static str,
+    pub observed_url_count: usize,
+    pub novel_url_count: usize,
+    pub outcomes: Vec<SourceExecutionOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AdaptiveSearchReport {
+    pub input: String,
+    pub rounds: Vec<AdaptiveRound>,
+    pub hits: Vec<AdaptiveHit>,
+    pub stop_reason: &'static str,
+    pub limitations: Vec<&'static str>,
+}
+
+#[derive(Default)]
+struct HitObservation {
+    engines: BTreeSet<String>,
+    queries: BTreeSet<String>,
+    appearances: usize,
+}
+
+fn append_round<T: Transport + ?Sized>(
+    transport: &T,
+    query: &str,
+    strategy: &'static str,
+    now_unix: u64,
+    reports: &mut Vec<AdaptiveRound>,
+    seen: &mut BTreeMap<String, HitObservation>,
+) -> Result<usize, Error> {
+    let (report, observations) = search_with_observations(transport, query, now_unix)?;
+    let mut novel = 0;
+    for hit in &observations {
+        let entry = seen.entry(hit.url.clone()).or_insert_with(|| {
+            novel += 1;
+            HitObservation::default()
+        });
+        entry.engines.insert(hit.engine.clone());
+        entry.queries.insert(query.to_owned());
+        entry.appearances += 1;
+    }
+    reports.push(AdaptiveRound {
+        query: query.to_owned(),
+        strategy,
+        observed_url_count: observations.len(),
+        novel_url_count: novel,
+        outcomes: report.outcomes,
+    });
+    Ok(novel)
+}
+
+fn has_viable_provider(round: &AdaptiveRound) -> bool {
+    round.outcomes.iter().any(|o| {
+        matches!(
+            o.kind,
+            SourceOutcomeKind::Success
+                | SourceOutcomeKind::ValidZero
+                | SourceOutcomeKind::ZeroYieldAnomaly
+        )
+    })
+}
+
+/// An opt-in, deterministic, outcome-adaptive multi-query search.
+/// Each of at most three rounds asks at most three guarded search engines.
+///
+/// URL overlap between engines is discoverability metadata, NEVER proof that
+/// two independent primary documents agree. Query variants produce leads only.
+///
+/// # Errors
+/// Rejects empty, oversized or control-character-bearing queries. Transport
+/// boundary setup errors propagate; individual engine errors remain outcomes.
+pub fn adaptive_search<T: Transport + ?Sized>(
+    transport: &T,
+    input: &str,
+    now_unix: u64,
+) -> Result<AdaptiveSearchReport, Error> {
+    if input.len() > MAX_ADAPTIVE_QUERY_BYTES || input.chars().any(char::is_control) {
+        return Err(Error::Invalid(
+            "adaptive query is too long or contains control characters".into(),
+        ));
+    }
+    let normalized_query = canonical_whitespace(input);
+    if normalized_query.is_empty() {
+        return Err(Error::Invalid("adaptive query must not be empty".into()));
+    }
+    let mut rounds = Vec::new();
+    let mut discovery_index = BTreeMap::new();
+    let baseline_gain = append_round(
+        transport,
+        &normalized_query,
+        "baseline",
+        now_unix,
+        &mut rounds,
+        &mut discovery_index,
+    )?;
+
+    let stop_reason = if has_viable_provider(&rounds[0]) {
+        let second = if normalized_query.starts_with('"')
+            && normalized_query.ends_with('"')
+            && normalized_query.len() > 2
+        {
+            let bare = normalized_query.trim_matches('"').trim();
+            (bare != normalized_query).then(|| (bare.to_owned(), "unquoted_recall"))
+        } else if normalized_query.split_whitespace().count() > 1 {
+            Some((format!("\"{normalized_query}\""), "exact_phrase"))
+        } else {
+            None
+        };
+        if let Some((refined, strategy)) = second {
+            let refinement_gain = append_round(
+                transport,
+                &refined,
+                strategy,
+                now_unix,
+                &mut rounds,
+                &mut discovery_index,
+            )?;
+            let tokens: Vec<&str> = normalized_query.split_whitespace().collect();
+            if !has_viable_provider(&rounds[1]) {
+                "refinement_sources_unavailable"
+            } else if refinement_gain == 0 && baseline_gain > 0 {
+                "diminishing_marginal_discovery"
+            } else if tokens.len() >= 3 && !normalized_query.contains('"') {
+                let broader = tokens[..tokens.len() - 1].join(" ");
+                let _ = append_round(
+                    transport,
+                    &broader,
+                    "broader_low_confidence_recall",
+                    now_unix,
+                    &mut rounds,
+                    &mut discovery_index,
+                )?;
+                "bounded_three_round_budget"
+            } else {
+                "no_safe_additional_query_variant"
+            }
+        } else {
+            "no_safe_additional_query_variant"
+        }
+    } else {
+        "all_engines_unavailable_or_unparseable"
+    };
+    let hits = discovery_index
+        .into_iter()
+        .map(|(url, observation)| AdaptiveHit {
+            url,
+            discovered_by_engines: observation.engines.into_iter().collect(),
+            found_in_queries: observation.queries.into_iter().collect(),
+            appearances: observation.appearances,
+            evidence_status: "search_discovery_only_not_independent_fact_verification",
+        })
+        .collect();
+    Ok(AdaptiveSearchReport {
+        input: normalized_query,
+        rounds,
+        hits,
+        stop_reason,
+        limitations: vec![
+            "search_results_are_leads_not_evidence_of_page_claims",
+            "engine_overlap_does_not_establish_independent_primary_sources",
+            "search_index_and_html_parser_coverage_are_incomplete",
+            "no_live_page_authenticity_or_claim_verification",
+            "no_cross_run_learning_or_persistent_adaptation",
+        ],
+    })
 }
 
 struct EngineReport {
@@ -768,6 +960,87 @@ mod tests {
         ]);
         let report = search(&fake, "alice duplicate-url-dedupe", 1).unwrap();
         assert_eq!(report.hits.len(), 1);
+    }
+
+    #[test]
+    fn adaptive_search_preserves_engine_overlap_as_discovery_not_corroboration() {
+        let shared = r#"<a href="https://example.org/shared">shared</a>"#;
+        let first = r#"<a href="https://example.net/first">first</a>"#;
+        let second = r#"<a href="https://example.org/second">second</a>"#;
+        let fake = Fake::new(vec![
+            Ok(response(200, shared)),
+            Ok(response(200, shared)),
+            Ok(response(200, first)),
+            Ok(response(200, second)),
+            Ok(response(200, shared)),
+            Ok(response(200, second)),
+        ]);
+        let report = adaptive_search(&fake, "unique-adaptive-trial alpha", 123).unwrap();
+        assert_eq!(report.rounds.len(), 2);
+        assert_eq!(report.rounds[0].novel_url_count, 2);
+        assert_eq!(report.rounds[1].novel_url_count, 1);
+        assert_eq!(report.hits.len(), 3);
+        assert_eq!(report.stop_reason, "no_safe_additional_query_variant");
+        let shared = report
+            .hits
+            .iter()
+            .find(|hit| hit.url == "https://example.org/shared")
+            .unwrap();
+        assert_eq!(shared.discovered_by_engines, vec!["bing", "brave"]);
+        assert_eq!(shared.appearances, 3);
+        assert_eq!(
+            shared.evidence_status,
+            "search_discovery_only_not_independent_fact_verification"
+        );
+    }
+
+    #[test]
+    fn adaptive_search_only_broadens_after_zero_yield_and_discloses_it() {
+        let empty = response(200, "<html>no external anchors</html>");
+        let fake = Fake::new(vec![
+            Ok(empty.clone()),
+            Ok(empty.clone()),
+            Ok(empty.clone()),
+            Ok(empty.clone()),
+            Ok(empty.clone()),
+            Ok(empty.clone()),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/recovered">found</a>"#,
+            )),
+            Ok(empty.clone()),
+            Ok(empty),
+        ]);
+        let report = adaptive_search(&fake, "needle rare threeword", 456).unwrap();
+        assert_eq!(report.rounds.len(), 3);
+        assert_eq!(report.rounds[2].strategy, "broader_low_confidence_recall");
+        assert_eq!(report.rounds[2].query, "needle rare");
+        assert_eq!(report.rounds[2].novel_url_count, 1);
+        assert_eq!(report.hits.len(), 1);
+        assert_eq!(report.stop_reason, "bounded_three_round_budget");
+        assert!(
+            report.rounds[0]
+                .outcomes
+                .iter()
+                .all(|outcome| outcome.kind == SourceOutcomeKind::ZeroYieldAnomaly)
+        );
+    }
+
+    #[test]
+    fn adaptive_search_refuses_unavailable_sources_and_invalid_queries() {
+        let fake = Fake::new(vec![
+            Ok(response(403, "<html>Cloudflare Just a moment</html>")),
+            Ok(response(403, "<html>Cloudflare Just a moment</html>")),
+            Ok(response(403, "<html>Cloudflare Just a moment</html>")),
+        ]);
+        let report = adaptive_search(&fake, "unique-provider-block alpha", 789).unwrap();
+        assert_eq!(report.rounds.len(), 1);
+        assert!(report.hits.is_empty());
+        assert_eq!(report.stop_reason, "all_engines_unavailable_or_unparseable");
+
+        assert!(adaptive_search(&Fake::new(vec![]), "   ", 790).is_err());
+        assert!(adaptive_search(&Fake::new(vec![]), "bad\nquery", 790).is_err());
+        assert!(adaptive_search(&Fake::new(vec![]), &"a".repeat(513), 790).is_err());
     }
 
     #[test]
