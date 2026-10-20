@@ -7,9 +7,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::fail;
+use huntsman_recon::cell_radar::{self, MAX_CELL_SCAN_BYTES};
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
-use huntsman_recon::cell_radar::{self, MAX_CELL_SCAN_BYTES};
 use huntsman_recon::wifi_radar::{self, MAX_SCAN_BYTES};
 
 const USAGE: &str = "usage: huntsman-recon radar wifi|cell [--json] [--file TERMUX_SCAN_JSON]";
@@ -152,7 +152,6 @@ pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     }
 }
-
 
 /// Cellular observations use the same bounded Termux process as the Wi-Fi
 /// collector. Android supplies no observation timestamp for this schema.
