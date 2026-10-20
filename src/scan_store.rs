@@ -565,6 +565,15 @@ impl ScanStore {
     /// [`StoreError::NotFound`] when the scan has no valid saved row; [`StoreError::Io`] on a
     /// write failure or results over [`MAX_RESULTS_BYTES`].
     pub fn save_results(&self, results: &ScanResults) -> Result<(), StoreError> {
+        // Reject a version that this same store could not load. Without this
+        // check, an incompatible result replaces a readable artifact atomically,
+        // and every later results() call rejects the persisted file.
+        if results.format_version != FORMAT_VERSION {
+            return Err(StoreError::Invalid(format!(
+                "unsupported scan results format {} (expected {FORMAT_VERSION})",
+                results.format_version
+            )));
+        }
         // The atomic writer creates parents; without this precondition, saving
         // an unregistered scan would create a directory with no scan.json.
         self.get(&results.scan_id)?;
@@ -1097,6 +1106,43 @@ mod tests {
         store.create(&row).unwrap();
         store.save_results(&results).unwrap();
         assert_eq!(store.results(&id).unwrap(), Some(results));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn incompatible_results_version_is_rejected_before_overwriting_a_valid_artifact() {
+        let dir = scratch("results-version-write");
+        let store = ScanStore::open(&dir).unwrap();
+        let id = new_id("results-version-write", 305, 0);
+        store
+            .create(&record(&id, 305, ScanStatus::Finished))
+            .unwrap();
+        let mut results = ScanResults {
+            format_version: FORMAT_VERSION,
+            scan_id: id.clone(),
+            text: "verified baseline".into(),
+            entities: Vec::new(),
+            outcomes: Vec::new(),
+            elements: Vec::new(),
+            correlations: Vec::new(),
+            lineage: Vec::new(),
+            termination: None,
+        };
+        store.save_results(&results).unwrap();
+        let path = dir.join(&id).join(RESULTS_FILE);
+        let original_bytes = fs::read(&path).unwrap();
+
+        results.format_version = FORMAT_VERSION + 1;
+        results.text = "unreadable replacement".into();
+        assert!(matches!(
+            store.save_results(&results),
+            Err(StoreError::Invalid(message)) if message.contains("unsupported scan results format")
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        results.format_version = FORMAT_VERSION;
+        results.text = "verified baseline".into();
+        assert_eq!(store.results(&id).unwrap(), Some(results));
+
         let _ = fs::remove_dir_all(&dir);
     }
 
