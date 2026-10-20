@@ -332,6 +332,8 @@ struct State {
     running: usize,
     aborts: BTreeSet<String>,
     graph_cancellations: BTreeMap<String, Arc<AtomicBool>>,
+    // Volatile failures let wait/run report a row that could not be persisted.
+    status_failures: BTreeMap<String, String>,
 }
 
 /// What following a scan's findings produced beside the findings themselves.
@@ -806,6 +808,7 @@ impl ScanService {
                 running: 0,
                 aborts: BTreeSet::new(),
                 graph_cancellations: BTreeMap::new(),
+                status_failures: BTreeMap::new(),
             }),
             freed: Condvar::new(),
             admission: Arc::new(LookupAdmission::default()),
@@ -1079,6 +1082,9 @@ impl ScanService {
             // A scan saves its final status before it takes this lock to give up its place and
             // notify `freed`, so a row read under the lock cannot miss that notice.
             let state = self.state();
+            if let Some(error) = state.status_failures.get(id) {
+                return Err(ServiceError::Store(error.clone()));
+            }
             let record = self.store.get(id)?;
             let now = Instant::now();
             if !record.status.is_active() || now >= until {
@@ -1098,6 +1104,9 @@ impl ScanService {
     pub fn run(&self, request: &ScanRequest) -> Result<ScanRecord, ServiceError> {
         let (record, plan) = self.create(request)?;
         self.execute(&record.id, &plan);
+        if let Some(error) = self.state().status_failures.get(&record.id) {
+            return Err(ServiceError::Store(error.clone()));
+        }
         Ok(self.store.get(&record.id)?)
     }
 
@@ -1118,19 +1127,35 @@ impl ScanService {
         )
     }
 
-    fn set_status(&self, id: &str, status: ScanStatus, at: Option<u64>) {
-        // The state lock also serializes stop requests and the scan row's final counters.
-        // A detached read/modify/write could resurrect RUNNING after ABORT-REQUESTED, or
-        // overwrite the operator's stop with FINISHED.
-        let state = self.state();
-        if let Ok(mut record) = self.store.get(id) {
+    fn set_status(
+        &self,
+        id: &str,
+        status: ScanStatus,
+        at: Option<u64>,
+    ) -> Result<(), ServiceError> {
+        self.set_status_with(id, status, at, |record| self.store.update(record))
+    }
+
+    /// A testable persistence boundary: errors remain observable even when the
+    /// underlying scan row cannot store the failure itself.
+    fn set_status_with(
+        &self,
+        id: &str,
+        status: ScanStatus,
+        at: Option<u64>,
+        persist: impl FnOnce(&ScanRecord) -> Result<(), StoreError>,
+    ) -> Result<(), ServiceError> {
+        // Keep the state lock over read/modify/write so a stop cannot be overwritten.
+        let mut state = self.state();
+        let result = (|| {
+            let mut record = self.store.get(id)?;
             if !record.status.is_active() {
-                return;
+                return Ok(());
             }
             if matches!(status, ScanStatus::Starting | ScanStatus::Running)
                 && (record.status == ScanStatus::AbortRequested || state.aborts.contains(id))
             {
-                return;
+                return Ok(());
             }
             let status = if status == ScanStatus::Finished && state.aborts.contains(id) {
                 ScanStatus::Aborted
@@ -1145,13 +1170,23 @@ impl ScanService {
                 }
                 _ => {}
             }
-            let _ = self.store.update(&record);
+            persist(&record)
+        })();
+        if let Err(error) = &result {
+            state
+                .status_failures
+                .entry(id.to_owned())
+                .or_insert_with(|| error.to_string());
+            self.freed.notify_all();
         }
+        result.map_err(ServiceError::from)
     }
 
     /// The worker: wait for a place, run the lookups, save what they found.
     fn execute(&self, id: &str, plan: &ScanPlan) {
-        self.set_status(id, ScanStatus::Starting, None);
+        if self.set_status(id, ScanStatus::Starting, None).is_err() {
+            return;
+        }
         {
             let mut state = self.state();
             while state.running >= MAX_RUNNING && !state.aborts.contains(id) {
@@ -1177,17 +1212,22 @@ impl ScanService {
                 LogLevel::Error,
                 "the scan failed unexpectedly; what it saved is kept",
             );
-            self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+            let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
         }
     }
 
     fn collect(&self, id: &str, plan: &ScanPlan) {
         if self.aborted(id) {
             self.log(id, "huntsman", LogLevel::Info, "stopped before it started");
-            self.set_status(id, ScanStatus::Aborted, Some(now_ms()));
+            let _ = self.set_status(id, ScanStatus::Aborted, Some(now_ms()));
             return;
         }
-        self.set_status(id, ScanStatus::Running, Some(now_ms()));
+        if self
+            .set_status(id, ScanStatus::Running, Some(now_ms()))
+            .is_err()
+        {
+            return;
+        }
         let options = match self.store.get(id) {
             Ok(record) => record.options,
             Err(error) => {
@@ -1201,7 +1241,7 @@ impl ScanService {
                     LogLevel::Error,
                     format!("cannot load persisted scan options: {error}"),
                 );
-                self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+                let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
                 return;
             }
         };
@@ -1209,7 +1249,7 @@ impl ScanService {
             Ok(chosen) => chosen,
             Err(error) => {
                 self.log(id, "huntsman", LogLevel::Error, error.to_string());
-                self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+                let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
                 return;
             }
         };
@@ -1267,7 +1307,7 @@ impl ScanService {
                 LogLevel::Error,
                 format!("could not save the results: {error}"),
             );
-            self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+            let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
             return;
         }
         self.log(
@@ -1276,7 +1316,7 @@ impl ScanService {
             LogLevel::Info,
             format!("scan {}", status.as_str()),
         );
-        self.set_status(id, status, Some(now_ms()));
+        let _ = self.set_status(id, status, Some(now_ms()));
     }
 
     /// How far the scan followed what it found, and why it stopped there.
@@ -1502,7 +1542,9 @@ impl ScanService {
                 record.status.as_str()
             )));
         }
-        Ok(self.store.delete(id)?)
+        self.store.delete(id)?;
+        self.state().status_failures.remove(id);
+        Ok(())
     }
 
     /// Start a new scan with a finished scan's target, kind, name and options.
@@ -2117,6 +2159,35 @@ mod tests {
     }
 
     #[test]
+    fn failed_status_persistence_is_reported_without_overwriting_the_saved_row() {
+        let (service, dir) = with_lookup(
+            "status-persistence-failure",
+            Arc::new(|_, _, _| Ok(LookupOutput::default())),
+        );
+        let (created, _) = service
+            .create(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let error = service.set_status_with(&created.id, ScanStatus::Finished, Some(123), |_| {
+            Err(StoreError::Io("synthetic disk write failure".into()))
+        });
+        assert!(matches!(error, Err(ServiceError::Store(_))));
+        assert_eq!(
+            service.store().get(&created.id).unwrap().status,
+            ScanStatus::Created
+        );
+        let observed = service.wait(&created.id, Instant::now() + Duration::from_millis(20));
+        assert!(matches!(observed, Err(ServiceError::Store(ref message))
+            if message.contains("synthetic disk write failure")));
+        service.delete(&created.id).unwrap_err();
+        // A persistence fault stays observable until a successful recovery or deletion.
+        assert!(service.state().status_failures.contains_key(&created.id));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn cancellation_is_monotonic_across_worker_start_and_finish() {
         let (service, dir) = with_lookup(
             "monotonic-status",
@@ -2133,19 +2204,27 @@ mod tests {
 
         // The queued worker may observe the stop after starting. Neither transition
         // may erase the operator's cancellation request or invent a start time.
-        service.set_status(&created.id, ScanStatus::Starting, None);
-        service.set_status(&created.id, ScanStatus::Running, Some(123));
+        service
+            .set_status(&created.id, ScanStatus::Starting, None)
+            .unwrap();
+        service
+            .set_status(&created.id, ScanStatus::Running, Some(123))
+            .unwrap();
         let row = service.store().get(&created.id).unwrap();
         assert_eq!(row.status, ScanStatus::AbortRequested);
         assert!(row.started.is_none());
 
         // A worker that chose FINISHED just before stop() acquired the state lock
         // must still commit ABORTED when it eventually updates its row.
-        service.set_status(&created.id, ScanStatus::Finished, Some(456));
+        service
+            .set_status(&created.id, ScanStatus::Finished, Some(456))
+            .unwrap();
         let row = service.store().get(&created.id).unwrap();
         assert_eq!(row.status, ScanStatus::Aborted);
         assert_eq!(row.ended, Some(456));
-        service.set_status(&created.id, ScanStatus::Running, Some(789));
+        service
+            .set_status(&created.id, ScanStatus::Running, Some(789))
+            .unwrap();
         assert_eq!(
             service.store().get(&created.id).unwrap().status,
             ScanStatus::Aborted,
