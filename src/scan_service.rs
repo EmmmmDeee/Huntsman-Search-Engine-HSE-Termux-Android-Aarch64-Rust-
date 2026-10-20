@@ -330,9 +330,6 @@ enum LookupDispatch {
 
 struct State {
     running: usize,
-    // An OS process may host more than one independent ScanService. Only this instance
-    // can signal workers it started; the persisted PID alone is not ownership proof.
-    owned_scans: BTreeSet<String>,
     aborts: BTreeSet<String>,
     graph_cancellations: BTreeMap<String, Arc<AtomicBool>>,
     // Volatile failures let wait/run report a row that could not be persisted.
@@ -796,6 +793,9 @@ pub struct ScanService {
     rules: Vec<Rule>,
     rule_errors: Vec<RuleError>,
     state: Mutex<State>,
+    // Per-instance ownership is distinct from PID. Kept outside state so start_or_join
+    // can register a scan while holding the state lock without re-locking it.
+    owned_scans: Mutex<BTreeSet<String>>,
     freed: Condvar,
     admission: Arc<LookupAdmission>,
     worker_slots: Arc<AtomicUsize>,
@@ -827,11 +827,11 @@ impl ScanService {
             rule_errors,
             state: Mutex::new(State {
                 running: 0,
-                owned_scans: BTreeSet::new(),
                 aborts: BTreeSet::new(),
                 graph_cancellations: BTreeMap::new(),
                 status_failures: BTreeMap::new(),
             }),
+            owned_scans: Mutex::new(BTreeSet::new()),
             freed: Condvar::new(),
             admission: Arc::new(LookupAdmission::default()),
             worker_slots: Arc::new(AtomicUsize::new(0)),
@@ -933,6 +933,12 @@ impl ScanService {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn owned(&self) -> MutexGuard<'_, BTreeSet<String>> {
+        self.owned_scans
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn log(&self, id: &str, component: &str, level: LogLevel, message: impl Into<String>) {
         // A log the store cannot write must not stop the scan; the row still records the outcome.
         let _ = self.store.append_log(
@@ -996,7 +1002,7 @@ impl ScanService {
         self.store.create(&record)?;
         // Register before returning the CREATED row, so an immediate stop can be
         // delivered even if the worker thread has not yet entered execute().
-        self.state().owned_scans.insert(record.id.clone());
+        self.owned().insert(record.id.clone());
         self.log(
             &record.id,
             "huntsman",
@@ -1051,7 +1057,7 @@ impl ScanService {
                 service.execute(&id, &plan);
             });
         if let Err(error) = spawned {
-            self.state().owned_scans.remove(&record.id);
+            self.owned().remove(&record.id);
             let mut failed = record;
             failed.status = ScanStatus::ErrorFailed;
             failed.ended = Some(now_ms());
@@ -1218,7 +1224,7 @@ impl ScanService {
     /// The worker: wait for a place, run the lookups, save what they found.
     fn execute(&self, id: &str, plan: &ScanPlan) {
         if self.set_status(id, ScanStatus::Starting, None).is_err() {
-            self.state().owned_scans.remove(id);
+            self.owned().remove(id);
             return;
         }
         {
@@ -1235,10 +1241,10 @@ impl ScanService {
         {
             let mut state = self.state();
             state.running -= 1;
-            state.owned_scans.remove(id);
             state.aborts.remove(id);
             state.graph_cancellations.remove(id);
         }
+        self.owned().remove(id);
         self.freed.notify_all();
         if outcome.is_err() {
             self.log(
@@ -1551,7 +1557,7 @@ impl ScanService {
         }
         // Same PID is insufficient: separate ScanService instances do not share
         // an abort set, graph cancellation signals, or execution slots.
-        if !state.owned_scans.contains(id) {
+        if !self.owned().contains(id) {
             return Err(ServiceError::Conflict(format!(
                 "scan {id} is not owned by this service instance; stop it through its owning service"
             )));
@@ -1592,7 +1598,7 @@ impl ScanService {
         }
         self.store.delete(id)?;
         let mut state = self.state();
-        state.owned_scans.remove(id);
+        self.owned().remove(id);
         state.status_failures.remove(id);
         Ok(())
     }
@@ -2349,8 +2355,8 @@ mod tests {
 
         // Both instances have the same PID, but only the creator can signal the scan.
         assert_eq!(record.owner, Some(std::process::id()));
-        assert!(owner.state().owned_scans.contains(&record.id));
-        assert!(!other.state().owned_scans.contains(&record.id));
+        assert!(owner.owned().contains(&record.id));
+        assert!(!other.owned().contains(&record.id));
         let error = other.stop(&record.id).unwrap_err();
         assert!(matches!(error, ServiceError::Conflict(_)));
         assert_eq!(error.status(), 409);
