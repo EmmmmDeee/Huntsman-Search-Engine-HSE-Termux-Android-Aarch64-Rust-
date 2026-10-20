@@ -457,7 +457,11 @@ mod tests {
                     .iter()
                     .any(|entity| entity.uid == relation.to_uid)
         }));
-        assert_eq!(entities.len(), 3, "the caller's source must remain unchanged");
+        assert_eq!(
+            entities.len(),
+            3,
+            "the caller's source must remain unchanged"
+        );
     }
 
     #[test]
