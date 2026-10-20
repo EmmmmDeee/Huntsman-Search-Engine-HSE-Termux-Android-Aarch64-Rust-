@@ -1092,7 +1092,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
     },
     ReachableModule {
         name: "stolen_tax",
-        command: "recon stolen-tax QUERY",
+        command: "recon stolen-tax QUERY | exposure ADDR",
         access: "operator_key",
         network: true,
         category: ModuleCategory::Breach,
@@ -1110,12 +1110,21 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
     },
     ReachableModule {
         name: "dehashed",
-        command: "dehashed search (--email|--username|--domain) --purpose PURPOSE",
+        command: "dehashed search (--email|--username|--domain) --purpose PURPOSE | exposure ADDR",
         access: "operator_key",
         network: true,
         category: ModuleCategory::Breach,
         attack_techniques: &["T1589.001", "T1589.002"],
         description: "explicit DeHashed exact-match search with a declared purpose",
+    },
+    ReachableModule {
+        name: "hibp_account",
+        command: "exposure ADDR",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Breach,
+        attack_techniques: &["T1589.001", "T1589.002"],
+        description: "HIBP breaches that list an email address (key)",
     },
     ReachableModule {
         name: "oathnet",
@@ -1143,6 +1152,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         category: ModuleCategory::Sensor,
         attack_techniques: &[],
         description: "the IEEE vendor assignment of a BSSID's OUI",
+    },
+    ReachableModule {
+        name: "wigle_bluetooth",
+        command: "network BSSID|LAT,LON",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Geo,
+        attack_techniques: &["T1590"],
+        description: "WiGLE Bluetooth sightings of a device address or around a coordinate",
     },
 ];
 
@@ -1310,6 +1328,49 @@ mod tests {
         assert_eq!(techniques("crtsh"), Some(&["T1596.003"][..]));
         assert_eq!(techniques("dns"), Some(&["T1590.001"][..]));
         assert_eq!(techniques("web_server"), Some(&[][..]));
+    }
+
+    #[test]
+    fn every_source_a_lookup_records_is_a_reachable_module() {
+        // The label each lookup leg records its outcome and evidence under. A leg missing from
+        // the catalogue is absent from `modules`, `sf -M`, the web UI and the ATT&CK coverage.
+        let named = [
+            crate::internetdb::SOURCE,
+            crate::ripestat::SOURCE,
+            crate::greynoise::SOURCE,
+            crate::abuseipdb::SOURCE,
+            crate::virustotal::SOURCE,
+            crate::hunter::SOURCE,
+            crate::numverify::SOURCE,
+            crate::gravatar::SRC,
+            crate::duolingo::SRC,
+            crate::openpgp_keys::SRC,
+            crate::github_user::SRC,
+            crate::bluesky_user::SRC,
+            crate::exposure_cli::SOURCE,
+            crate::exposure_cli::STOLEN_TAX_SOURCE,
+            crate::exposure_cli::OATHNET_SOURCE,
+            crate::exposure_cli::DEHASHED_SOURCE,
+            crate::network_cli::OUI_SOURCE,
+            crate::wigle::SOURCE,
+            crate::wigle::BLUETOOTH_SOURCE,
+        ];
+        let registry = crate::indicator_legs::SOURCES
+            .iter()
+            .map(|source| source.api.source);
+        let missing: Vec<&str> = named
+            .into_iter()
+            .chain(registry)
+            .filter(|label| {
+                !reachable_modules()
+                    .iter()
+                    .any(|module| module.name == *label)
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "lookup legs missing from the module catalogue: {missing:?}"
+        );
     }
 
     #[test]
