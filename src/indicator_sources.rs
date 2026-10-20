@@ -73,6 +73,8 @@ pub enum PivotKind {
     Asn,
     Organisation,
     Email,
+    /// A position, `lat,lon` in decimal degrees.
+    Coordinates,
 }
 
 /// Another indicator the provider ties to the one asked about.
