@@ -1,0 +1,10 @@
+{
+  "accepted":[{"kind":"domain","value":"example.test"}],
+  "rejected":[],
+  "entities":[
+    {"uid":"uid-domain","kind":"domain","value":"example.test","raw_value":"example.test","confidence":0.25,"corroboration":0,"observed_at_unix":0,"evidence":[{"provenance":{"source":"operator_input","recorded_at_unix":0},"summary":"operator-supplied investigation seed"}],"scan_id":"synthetic"},
+    {"uid":"uid-ip","kind":"ip_address","value":"192.0.2.40","raw_value":"192.0.2.40","confidence":0.60,"corroboration":0,"observed_at_unix":0,"evidence":[],"scan_id":"synthetic"}
+  ],
+  "relations":[{"from_uid":"uid-domain","to_uid":"uid-ip","kind":"associated_with","confidence":0.7,"label":"possible association","evidence":[{"provenance":{"source":"synthetic_example","recorded_at_unix":0},"summary":"Fictional sample only"}]}],
+  "pivots":[],"correlations":[],"cross_scan":null,"gaps":{},"planned":[],"termination":"FixedPoint","truncated":false
+}
