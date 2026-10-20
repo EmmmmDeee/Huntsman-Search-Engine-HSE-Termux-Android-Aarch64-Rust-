@@ -77,13 +77,18 @@ pub(super) fn email_request(purpose: Purpose) -> SearchRequest {
 
 #[test]
 fn dehashed_uses_configured_shared_key_without_leaking_it() {
-    let keys = crate::keys::Keys::parse(&format!("{}={KEY}", super::client::API_KEY_ENV))
-        .unwrap();
+    let keys = crate::keys::Keys::parse(&format!("{}={KEY}", super::client::API_KEY_ENV)).unwrap();
     let fake = Fake::with(200, r#"{"entries": [], "total": 0}"#, &[]);
-    let args = ["search", "--email", "a@example.com", "--purpose", "own-account"]
-        .iter()
-        .map(|value| (*value).to_owned())
-        .collect::<Vec<_>>();
+    let args = [
+        "search",
+        "--email",
+        "a@example.com",
+        "--purpose",
+        "own-account",
+    ]
+    .iter()
+    .map(|value| (*value).to_owned())
+    .collect::<Vec<_>>();
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = cli::run(
         &args,
