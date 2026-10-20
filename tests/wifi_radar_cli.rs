@@ -12,7 +12,10 @@ fn bin() -> Command {
 }
 
 fn path(suffix: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("huntsman-wifi-radar-{}-{suffix}.json", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "huntsman-wifi-radar-{}-{suffix}.json",
+        std::process::id()
+    ))
 }
 
 #[test]
@@ -28,13 +31,23 @@ fn termux_json_replays_as_real_rf_sightings_without_fabricated_location() {
         .arg(&input)
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(parsed["source"], "termux-wifi-scaninfo");
-    assert_eq!(parsed["acquisition"], "android_cached_scan_results_not_active_scan");
+    assert_eq!(
+        parsed["acquisition"],
+        "android_cached_scan_results_not_active_scan"
+    );
     assert_eq!(parsed["status"], "freshness_unknown");
     assert_eq!(parsed["observed"], 1);
-    assert_eq!(parsed["observations"][0]["sighting"]["network_id"], "3c:5a:b4:11:22:33");
+    assert_eq!(
+        parsed["observations"][0]["sighting"]["network_id"],
+        "3c:5a:b4:11:22:33"
+    );
     assert_eq!(parsed["observations"][0]["band"], "5GHz");
     assert!(parsed["observations"][0]["sighting"]["latitude"].is_null());
     assert!(parsed["observations"][0]["sighting"]["observed_epoch"].is_null());
