@@ -292,7 +292,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel" id="rresult" hidden>
 <div class="panel-heading">OS-cached observations <span class="badge" id="rrows-n"></span></div>
 <p class="note" id="rsummary"></p>
-<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>Age (s)</th><th>Freshness</th></tr></thead><tbody id="rrows"></tbody></table></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>Age (s)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rrows"></tbody></table></div>
 </div>
 </section>
 <section id="view-scan" hidden>
@@ -584,13 +584,23 @@ async function details(){
   }));
 }
 // Radio acquisition is explicit; visiting the Radar page never probes the phone.
-let radarLast=null;
+let radarLast=null,radarReadAt=null;
+function radarPivot(o){
+  const bssid=o.sighting?.network_id||'';
+  // A scan target is prefilled, never started without operator approval.
+  if(!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(bssid))return '';
+  return button('Investigate',()=>prefill({
+    target:bssid,name:'Wi-Fi '+bssid,kind:'network',depth:0
+  }),'btn-ghost');
+}
 $('rread').onclick=async()=>{
   const button=$('rread');button.disabled=true;$('rerror').hidden=true;
-  $('rstatus').textContent='Reading Android OS scan cache…';
+  $('rstatus').textContent=radarLast
+    ?'Requesting a new OS-cache read. The earlier result is preserved until this request finishes.'
+    :'Reading Android OS scan cache…';
   try{
     const scan=await api('/api/radar/wifi');
-    radarLast=scan;$('rdownload').disabled=false;$('rresult').hidden=false;
+    radarLast=scan;radarReadAt=new Date();$('rdownload').disabled=false;$('rresult').hidden=false;
     const observations=Array.isArray(scan.observations)?scan.observations:[];
     fill('rrows',observations,o=>[
       o.sighting?.network_id||'',
@@ -598,16 +608,25 @@ $('rread').onclick=async()=>{
       o.sighting?.signal_dbm??'',
       o.band||'unknown',
       o.age_secs==null?'unknown':Math.round(o.age_secs),
-      o.freshness||'unknown'
+      o.freshness||'unknown',
+      radarPivot(o)
     ]);
-    $('rsummary').textContent='Source: '+scan.source+' · status: '+scan.status+
+    $('rsummary').textContent='Cache requested at '+radarReadAt.toLocaleString()+
+      ' (browser clock; not observation time) · Source: '+scan.source+' · status: '+scan.status+
       ' · records: '+scan.observed+' · rejected: '+scan.rejected;
     $('rstatus').textContent=scan.status==='inconclusive'
       ?'Android returned no usable cached observations. Nearby networks may still exist.'
       :scan.status==='stale_only'
       ?'All returned observations are stale (older than five minutes); these are not current proximity evidence.'
       :'OS-cached results only, not an active scan. Freshness is unknown where no age could be calculated.';
-  }catch(e){$('rstatus').textContent='No new radar results available.';fail('rerror',e.message)}
+  }catch(e){
+    $('rstatus').textContent=radarLast
+      ?'Refresh failed. The table and export contain a PREVIOUS cache read, not new observations.'
+      :'No radar observations available.';
+    if(radarLast)$('rsummary').textContent='PREVIOUS READ ONLY · not the latest attempt · browser requested at '+
+      radarReadAt.toLocaleString()+' · status: '+radarLast.status;
+    fail('rerror',e.message);
+  }
   finally{button.disabled=false}
 };
 $('rdownload').onclick=()=>{if(radarLast)save(radarLast,'huntsman-wifi-radar')};
