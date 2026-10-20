@@ -90,7 +90,10 @@ impl RfSource {
 
     #[must_use]
     pub const fn is_local_sensor(self) -> bool {
-        matches!(self, Self::BluetoothRadar | Self::WifiRadar | Self::CellRadar)
+        matches!(
+            self,
+            Self::BluetoothRadar | Self::WifiRadar | Self::CellRadar
+        )
     }
 }
 
