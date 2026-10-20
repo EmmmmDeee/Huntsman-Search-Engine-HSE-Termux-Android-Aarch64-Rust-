@@ -1,0 +1,2 @@
+- The console's New Scan → By Module tab chooses what a scan runs, as Spiderfoot's does. Each module is a tick box showing the lookups that ask it and whether its key is missing. Select All and De-Select All work here as they do for data types. The scan sends `modules=` and asks only the ticked modules. Clone restores a by-module scan's modules, including ones chosen by a Spiderfoot name that stands for several, such as `sfp_whois`.
+- `GET /api/settings` lists every name a scan may choose each module by (`spiderfoot`).

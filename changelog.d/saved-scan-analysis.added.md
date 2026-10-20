@@ -1,0 +1,1 @@
+- Add `scans analyze ID [--json]` and read-only `GET /api/scans/ID/analyze` to run shared bounded graph analysis over saved scan entities without re-querying providers or modifying evidence, explicitly marking unavailable upstream ancestry and coverage.

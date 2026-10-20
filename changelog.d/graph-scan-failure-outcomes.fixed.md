@@ -1,0 +1,2 @@
+- Preserve unsuccessful sequential and graph lookups as timestamped, typed source outcomes in saved scans. Retain task and provider diagnostics instead of making failed work resemble a valid empty result.
+- Detect and account for missing or excess recursive collector batch results with explicit inconclusive outcomes while preserving provider-confirmed valid-zero semantics and existing bounded scheduling.

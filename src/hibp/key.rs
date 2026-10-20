@@ -2,7 +2,7 @@
 //!
 //! Production key precedence is `HIBP_API_KEY`, the caller's
 //! `HUNTSMAN_HIBP_KEY` slot (or that environment variable), then private
-//! `~/.config/hibp/api_key`. No production build embeds an API key.
+//! `~/.config/hibp/api_key`. Keys are read at run time only; no build reads one.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -43,8 +43,6 @@ pub enum KeyOrigin {
     Env(&'static str),
     HuntsmanSlot,
     File(PathBuf),
-    /// Compatibility-only origin. Production key loaders never construct it.
-    Embedded,
     Provided,
 }
 
@@ -88,16 +86,6 @@ impl KeySource for FileSource {
     }
 }
 
-/// Compatibility marker retained for callers/tests that previously inspected
-/// build-time embedding. Production binaries can no longer carry such a key.
-pub struct EmbeddedSource;
-impl EmbeddedSource {
-    #[must_use]
-    pub const fn is_present() -> bool {
-        false
-    }
-}
-
 #[must_use]
 pub fn default_key_file() -> Option<PathBuf> {
     let home = environment::home()?;
@@ -132,19 +120,16 @@ impl KeyLoader {
             environment::hibp_api_key(),
             huntsman_slot.or(env_slot.as_deref()),
             default_key_file(),
-            "",
         )
     }
 
-    /// The fourth argument is retained for source compatibility. In production
-    /// it is deliberately ignored. Unit tests may inject it to exercise the old
-    /// precedence contract without placing a secret in any built artifact.
+    /// The sources in precedence order: the `HIBP_API_KEY` value, the caller's
+    /// `HUNTSMAN_HIBP_KEY` slot, then the private key file.
     #[must_use]
     pub fn from_parts(
         env_value: Option<String>,
         huntsman_slot: Option<&str>,
         key_file: Option<PathBuf>,
-        test_embedded: &str,
     ) -> Self {
         let mut sources: Vec<Box<dyn KeySource>> = vec![
             Box::new(ValueSource {
@@ -156,13 +141,6 @@ impl KeyLoader {
         if let Some(path) = key_file {
             sources.push(Box::new(FileSource(path)));
         }
-        #[cfg(test)]
-        sources.push(Box::new(ValueSource::new(
-            Some(test_embedded),
-            KeyOrigin::Embedded,
-        )));
-        #[cfg(not(test))]
-        let _ = test_embedded;
         Self { sources }
     }
 

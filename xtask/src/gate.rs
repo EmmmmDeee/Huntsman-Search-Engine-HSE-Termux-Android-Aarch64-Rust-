@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
+use crate::changelog;
 use crate::error::{self, Error, Result};
 use crate::proc::{GateLock, RunRecord, git_stdout, repository_root, run_step};
 
@@ -114,6 +115,10 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<PathBuf> {
     let _lock = GateLock::acquire(root)?;
     let mut record = RunRecord::create(root, mode.name())?;
     let before = baseline(root)?;
+
+    // A malformed changelog fragment is refused before any build, in every mode.
+    let fragments = changelog::check(root)?;
+    println!("xtask: changelog fragments: {fragments} valid");
 
     for script in tracked_shell_scripts(root)? {
         if script == "scripts/railway-entrypoint.sh" {

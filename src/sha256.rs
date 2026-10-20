@@ -69,73 +69,141 @@ const K: [u32; 64] = [
     0xc671_78f2,
 ];
 
+/// Incremental SHA-256 with a constant-size, 64-byte input buffer.
+///
+/// The bit length uses the SHA-256 mandated 64-bit modulo arithmetic. Caller
+/// data is consumed in place rather than copied into a whole-message buffer.
+/// Finalization consumes the state; it cannot accidentally be finalized twice.
+pub struct Sha256 {
+    state: [u32; 8],
+    total_bytes: u64,
+    buffer: [u8; 64],
+    buffered: usize,
+}
+
+impl Default for Sha256 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Sha256 {
+    /// Start a fresh SHA-256 calculation.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            state: [
+                0x6a09_e667,
+                0xbb67_ae85,
+                0x3c6e_f372,
+                0xa54f_f53a,
+                0x510e_527f,
+                0x9b05_688c,
+                0x1f83_d9ab,
+                0x5be0_cd19,
+            ],
+            total_bytes: 0,
+            buffer: [0_u8; 64],
+            buffered: 0,
+        }
+    }
+
+    /// Append another chunk; it need not align to a SHA-256 block boundary.
+    pub fn update(&mut self, mut input: &[u8]) {
+        self.total_bytes = self.total_bytes.wrapping_add(input.len() as u64);
+        if self.buffered > 0 {
+            let take = input.len().min(64 - self.buffered);
+            self.buffer[self.buffered..self.buffered + take].copy_from_slice(&input[..take]);
+            self.buffered += take;
+            input = &input[take..];
+            if self.buffered < 64 {
+                return;
+            }
+            compress(&mut self.state, &self.buffer);
+            self.buffered = 0;
+        }
+
+        let mut chunks = input.chunks_exact(64);
+        for block in &mut chunks {
+            compress(&mut self.state, block);
+        }
+        let remainder = chunks.remainder();
+        self.buffer[..remainder.len()].copy_from_slice(remainder);
+        self.buffered = remainder.len();
+    }
+
+    /// Finalize with SHA-256 padding and return the 32-byte digest.
+    #[must_use]
+    pub fn finalize(mut self) -> [u8; 32] {
+        let mut final_blocks = [0_u8; 128];
+        final_blocks[..self.buffered].copy_from_slice(&self.buffer[..self.buffered]);
+        final_blocks[self.buffered] = 0x80;
+        let padded_len = if self.buffered < 56 { 64 } else { 128 };
+        let bit_len = self.total_bytes.wrapping_mul(8);
+        final_blocks[padded_len - 8..padded_len].copy_from_slice(&bit_len.to_be_bytes());
+        for block in final_blocks[..padded_len].chunks_exact(64) {
+            compress(&mut self.state, block);
+        }
+
+        let mut out = [0_u8; 32];
+        for (index, word) in self.state.iter().enumerate() {
+            out[index * 4..index * 4 + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        out
+    }
+}
+
+/// SHA-256 of a single byte slice, compatible with the incremental hasher.
+/// Hashing does not allocate input-sized copies or padding.
 #[must_use]
 pub fn sha256(data: &[u8]) -> [u8; 32] {
-    let mut h: [u32; 8] = [
-        0x6a09_e667,
-        0xbb67_ae85,
-        0x3c6e_f372,
-        0xa54f_f53a,
-        0x510e_527f,
-        0x9b05_688c,
-        0x1f83_d9ab,
-        0x5be0_cd19,
-    ];
-    let bit_len = (data.len() as u64).saturating_mul(8);
-    let mut msg = data.to_vec();
-    msg.push(0x80);
-    while (msg.len() % 64) != 56 {
-        msg.push(0);
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize()
+}
+
+fn compress(h: &mut [u32; 8], chunk: &[u8]) {
+    let mut w = [0u32; 64];
+    for i in 0..16 {
+        w[i] = u32::from_be_bytes([
+            chunk[i * 4],
+            chunk[i * 4 + 1],
+            chunk[i * 4 + 2],
+            chunk[i * 4 + 3],
+        ]);
     }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
-    for chunk in msg.chunks(64) {
-        let mut w = [0u32; 64];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1],
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
-        }
-        let mut a = h;
-        for i in 0..64 {
-            let s1 = a[4].rotate_right(6) ^ a[4].rotate_right(11) ^ a[4].rotate_right(25);
-            let ch = (a[4] & a[5]) ^ (!a[4] & a[6]);
-            let t1 = a[7]
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K[i])
-                .wrapping_add(w[i]);
-            let s0 = a[0].rotate_right(2) ^ a[0].rotate_right(13) ^ a[0].rotate_right(22);
-            let maj = (a[0] & a[1]) ^ (a[0] & a[2]) ^ (a[1] & a[2]);
-            let t2 = s0.wrapping_add(maj);
-            a[7] = a[6];
-            a[6] = a[5];
-            a[5] = a[4];
-            a[4] = a[3].wrapping_add(t1);
-            a[3] = a[2];
-            a[2] = a[1];
-            a[1] = a[0];
-            a[0] = t1.wrapping_add(t2);
-        }
-        for i in 0..8 {
-            h[i] = h[i].wrapping_add(a[i]);
-        }
+    for i in 16..64 {
+        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[i - 7])
+            .wrapping_add(s1);
     }
-    let mut out = [0u8; 32];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    let mut a = *h;
+    for i in 0..64 {
+        let s1 = a[4].rotate_right(6) ^ a[4].rotate_right(11) ^ a[4].rotate_right(25);
+        let ch = (a[4] & a[5]) ^ (!a[4] & a[6]);
+        let t1 = a[7]
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(K[i])
+            .wrapping_add(w[i]);
+        let s0 = a[0].rotate_right(2) ^ a[0].rotate_right(13) ^ a[0].rotate_right(22);
+        let maj = (a[0] & a[1]) ^ (a[0] & a[2]) ^ (a[1] & a[2]);
+        let t2 = s0.wrapping_add(maj);
+        a[7] = a[6];
+        a[6] = a[5];
+        a[5] = a[4];
+        a[4] = a[3].wrapping_add(t1);
+        a[3] = a[2];
+        a[2] = a[1];
+        a[1] = a[0];
+        a[0] = t1.wrapping_add(t2);
     }
-    out
+    for i in 0..8 {
+        h[i] = h[i].wrapping_add(a[i]);
+    }
 }
 
 #[must_use]
@@ -220,5 +288,112 @@ mod tests {
             )),
             "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
         );
+    }
+    #[test]
+    fn binary_vectors_across_padding_and_block_boundaries() {
+        for (length, expected) in [
+            (
+                55_usize,
+                "4b587256d77fdf91e5d2b485b7bef8e498fac5dc88c724c30267a0d96222f9b7",
+            ),
+            (
+                56,
+                "4360272affef439b717f1c6c3b12b806dd844353fa53bbd0ef63c963fe3109db",
+            ),
+            (
+                63,
+                "d6166e0436d0b0e9296e171c13bb88fbc2dbcd1da6b9470b452ae06a9495e9a7",
+            ),
+            (
+                64,
+                "ca982c0fc8d1c35f64001571c33f1f34c109ad6c6420637d3d7633bd5c3c649a",
+            ),
+            (
+                65,
+                "d96cbc7f13f43e80ddedc86753166e0843d2898ffbb662e6c93c412690b49568",
+            ),
+            (
+                119,
+                "0618e277fa04810cee36404f1704459e982579ca7da339f7e27ed2bc987f2abd",
+            ),
+            (
+                120,
+                "7ae11528fbabe9755b6b55d01dd8e4a50e45182cff7e3d161b1d49c03eadd947",
+            ),
+            (
+                127,
+                "da06012c921524baa736ca49c74c26edff631841368f9aa03c866e186b9da089",
+            ),
+            (
+                128,
+                "4ea84049cfc1c375698f9df7d58de283151599431d5a7b804195ec62c29ca0e4",
+            ),
+            (
+                129,
+                "7c20a32fb7fb904575bca1c6a1f2c30c754f6a82661718f8e68f5137b9f8487d",
+            ),
+            (
+                257,
+                "de524d79c4f2ae863da0fafe9a68d9be00c05a2afddf72b7620d3820c48e71f8",
+            ),
+            (
+                4097,
+                "7094d261c319e162a1edb93c47322ba1ac6ea44c3e16b05351fbd1749d9bbd27",
+            ),
+        ] {
+            let bytes: Vec<u8> = (0..length)
+                .map(|i| u8::try_from((i * 17 + 91) % 256).expect("byte is reduced modulo 256"))
+                .collect();
+            assert_eq!(hex32(&sha256(&bytes)), expected, "length {length}");
+        }
+    }
+
+    #[test]
+    fn streaming_chunks_match_single_slice_across_padding_boundaries() {
+        for length in 0..=1_024 {
+            let bytes = (0..length)
+                .map(|position| {
+                    u8::try_from((position * 31 + 17) % 256)
+                        .expect("test byte is reduced modulo 256")
+                })
+                .collect::<Vec<_>>();
+            let expected = sha256(&bytes);
+            for chunk in [1, 3, 7, 13, 63, 64, 65, 127, 128, 1_024] {
+                let mut hasher = Sha256::new();
+                hasher.update(b"");
+                for part in bytes.chunks(chunk) {
+                    hasher.update(part);
+                    hasher.update(b"");
+                }
+                assert_eq!(
+                    hasher.finalize(),
+                    expected,
+                    "length {length}, chunk size {chunk}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_million_byte_nist_vector_without_whole_message_copy() {
+        let mut hasher = Sha256::new();
+        for _ in 0..1_000 {
+            hasher.update(&[b'a'; 1_000]);
+        }
+        assert_eq!(
+            hex32(&hasher.finalize()),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
+    }
+
+    #[test]
+    fn streaming_multiple_updates_and_fresh_default_are_compatible() {
+        let expected = sha256(b"abc");
+        let mut hasher = Sha256::default();
+        hasher.update(b"a");
+        hasher.update(b"b");
+        hasher.update(b"c");
+        assert_eq!(hasher.finalize(), expected);
+        assert_eq!(Sha256::default().finalize(), sha256(b""));
     }
 }
