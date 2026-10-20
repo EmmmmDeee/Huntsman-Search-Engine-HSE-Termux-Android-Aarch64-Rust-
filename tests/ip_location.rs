@@ -8,6 +8,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// Recorded without a key for `8.8.8.8` on 2026-10-14.
 const IPINFO: &str = r#"{"ip":"8.8.8.8","hostname":"dns.google","city":"Mountain View","region":"California","country":"US","loc":"38.0088,-122.1175","org":"AS15169 Google LLC","postal":"94043","timezone":"America/Los_Angeles","readme":"https://ipinfo.io/missingauth","anycast":true}"#;
@@ -33,7 +34,13 @@ impl Transport for OnlyIpinfo {
 }
 
 fn entities() -> Vec<Entity> {
-    match run(&OnlyIpinfo, &Keys::default(), "8.8.8.8", 1_760_000_000) {
+    match run(
+        &OnlyIpinfo,
+        &Keys::default(),
+        &Feeds::none(),
+        "8.8.8.8",
+        1_760_000_000,
+    ) {
         IpRun::Printed { report, .. } => report.entities,
         IpRun::Network(why) | IpRun::Failed(why) => panic!("ip 8.8.8.8 did not print: {why}"),
     }
