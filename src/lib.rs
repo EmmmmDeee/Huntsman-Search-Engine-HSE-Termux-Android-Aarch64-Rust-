@@ -29,6 +29,7 @@ pub mod benchmark;
 pub mod bluesky_user;
 pub mod breach_hybrid;
 pub mod canonical;
+pub mod cell_radar;
 pub mod certspotter;
 pub mod circuit;
 pub mod ckan;

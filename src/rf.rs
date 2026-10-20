@@ -62,6 +62,7 @@ pub enum RfSource {
     WigleApi,
     BluetoothRadar,
     WifiRadar,
+    CellRadar,
 }
 
 impl RfSource {
@@ -72,6 +73,7 @@ impl RfSource {
             Self::WigleApi => "wigle-api",
             Self::BluetoothRadar => "bt-radar",
             Self::WifiRadar => "wifi-radar",
+            Self::CellRadar => "cell-radar",
         }
     }
 
@@ -81,13 +83,17 @@ impl RfSource {
             "wigle-api" => Self::WigleApi,
             "bt-radar" => Self::BluetoothRadar,
             "wifi-radar" => Self::WifiRadar,
+            "cell-radar" => Self::CellRadar,
             _ => Self::WigleKml,
         }
     }
 
     #[must_use]
     pub const fn is_local_sensor(self) -> bool {
-        matches!(self, Self::BluetoothRadar | Self::WifiRadar)
+        matches!(
+            self,
+            Self::BluetoothRadar | Self::WifiRadar | Self::CellRadar
+        )
     }
 }
 
