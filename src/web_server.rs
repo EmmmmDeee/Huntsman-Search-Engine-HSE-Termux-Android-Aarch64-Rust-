@@ -2248,9 +2248,9 @@ mod tests {
         assert!(INDEX_HTML.contains(r#"<nav class="navbar" aria-label="Primary">"#));
         let script = inline_block(INDEX_HTML, "script");
         assert!(script.contains(
-            "const VIEWS=['scans','newscan','scan','compare','analyze','settings','about'];"
+            "const VIEWS=['scans','newscan','scan','compare','analyze','radar','settings','about'];"
         ));
-        for view in ["newscan", "scans", "analyze", "settings"] {
+        for view in ["newscan", "scans", "analyze", "radar", "settings"] {
             assert!(
                 INDEX_HTML.contains(&format!(
                     r##"<a class="navlink" data-view="{view}" href="#/{view}">"##
@@ -2260,7 +2260,7 @@ mod tests {
         }
         assert!(INDEX_HTML.contains(r##"<a class="iconbtn" id="nav-about" href="#/about""##));
         for view in [
-            "scans", "newscan", "scan", "compare", "analyze", "settings", "about",
+            "scans", "newscan", "scan", "compare", "analyze", "radar", "settings", "about",
         ] {
             assert!(
                 INDEX_HTML.contains(&format!(r#"<section id="view-{view}" hidden>"#)),
