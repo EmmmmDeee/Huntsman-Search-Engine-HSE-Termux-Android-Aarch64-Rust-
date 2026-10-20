@@ -951,6 +951,77 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_search_preserves_engine_overlap_as_discovery_not_corroboration() {
+        let shared = r#"<a href="https://example.org/shared">shared</a>"#;
+        let first = r#"<a href="https://example.net/first">first</a>"#;
+        let second = r#"<a href="https://example.org/second">second</a>"#;
+        let fake = Fake::new(vec![
+            Ok(response(200, shared)),
+            Ok(response(200, shared)),
+            Ok(response(200, first)),
+            Ok(response(200, second)),
+            Ok(response(200, shared)),
+            Ok(response(200, second)),
+        ]);
+        let report = adaptive_search(&fake, "unique-adaptive-trial alpha", 123).unwrap();
+        assert_eq!(report.rounds.len(), 2);
+        assert_eq!(report.rounds[0].novel_url_count, 2);
+        assert_eq!(report.rounds[1].novel_url_count, 1);
+        assert_eq!(report.hits.len(), 3);
+        assert_eq!(report.stop_reason, "no_safe_additional_query_variant");
+        let shared = report
+            .hits
+            .iter()
+            .find(|hit| hit.url == "https://example.org/shared")
+            .unwrap();
+        assert_eq!(shared.discovered_by_engines, vec!["bing", "brave"]);
+        assert_eq!(shared.appearances, 3);
+        assert_eq!(
+            shared.evidence_status,
+            "search_discovery_only_not_independent_fact_verification"
+        );
+    }
+
+    #[test]
+    fn adaptive_search_only_broadens_after_zero_yield_and_discloses_it() {
+        let empty = response(200, "<html>no external anchors</html>");
+        let fake = Fake::new(vec![
+            Ok(empty.clone()), Ok(empty.clone()), Ok(empty.clone()),
+            Ok(empty.clone()), Ok(empty.clone()), Ok(empty.clone()),
+            Ok(response(200, r#"<a href="https://example.org/recovered">found</a>"#)),
+            Ok(empty.clone()), Ok(empty),
+        ]);
+        let report = adaptive_search(&fake, "needle rare threeword", 456).unwrap();
+        assert_eq!(report.rounds.len(), 3);
+        assert_eq!(report.rounds[2].strategy, "broader_low_confidence_recall");
+        assert_eq!(report.rounds[2].query, "needle rare");
+        assert_eq!(report.rounds[2].novel_url_count, 1);
+        assert_eq!(report.hits.len(), 1);
+        assert_eq!(report.stop_reason, "bounded_three_round_budget");
+        assert!(report.rounds[0]
+            .outcomes
+            .iter()
+            .all(|outcome| outcome.kind == SourceOutcomeKind::ZeroYieldAnomaly));
+    }
+
+    #[test]
+    fn adaptive_search_refuses_unavailable_sources_and_invalid_queries() {
+        let fake = Fake::new(vec![
+            Ok(response(403, "<html>Cloudflare Just a moment</html>")),
+            Ok(response(403, "<html>Cloudflare Just a moment</html>")),
+            Ok(response(403, "<html>Cloudflare Just a moment</html>")),
+        ]);
+        let report = adaptive_search(&fake, "unique-provider-block alpha", 789).unwrap();
+        assert_eq!(report.rounds.len(), 1);
+        assert!(report.hits.is_empty());
+        assert_eq!(report.stop_reason, "all_engines_unavailable_or_unparseable");
+
+        assert!(adaptive_search(&Fake::new(vec![]), "   ", 790).is_err());
+        assert!(adaptive_search(&Fake::new(vec![]), "bad\\nquery", 790).is_err());
+        assert!(adaptive_search(&Fake::new(vec![]), &"a".repeat(513), 790).is_err());
+    }
+
+    #[test]
     fn cache_hit_reuses_identical_parsed_result_without_second_send() {
         let engine = EngineSpec {
             name: "cache_test",
