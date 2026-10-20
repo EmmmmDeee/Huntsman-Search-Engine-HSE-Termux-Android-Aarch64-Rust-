@@ -1251,6 +1251,7 @@ impl GraphExecutor {
             {
                 return Err(GraphError::CheckpointMismatch);
             }
+            let mut minimum_consumed = 0_u64;
             for (id, record) in &checkpoint.report.tasks {
                 let Some(spec) = graph.by_id.get(id) else {
                     return Err(GraphError::CheckpointMismatch);
@@ -1259,6 +1260,11 @@ impl GraphExecutor {
                     || (record.state == TaskState::Succeeded && record.attempts == 0)
                 {
                     return Err(GraphError::CheckpointMismatch);
+                }
+                if record.attempts > 0 {
+                    minimum_consumed = minimum_consumed
+                        .checked_add(spec.resource_units)
+                        .ok_or(GraphError::CheckpointMismatch)?;
                 }
                 if record.state == TaskState::Succeeded {
                     let output = record
@@ -1293,6 +1299,11 @@ impl GraphExecutor {
                 } else if record.output.is_some() {
                     return Err(GraphError::CheckpointMismatch);
                 }
+            }
+            // Zero-attempt tasks may have reserved units, but recorded attempts
+            // must never cost more than the checkpoint says was consumed.
+            if minimum_consumed > checkpoint.report.consumed_resource_units {
+                return Err(GraphError::CheckpointMismatch);
             }
         }
         for id in &graph.topological_order {
@@ -3070,8 +3081,7 @@ mod tests {
     #[test]
     fn checkpoint_rejects_overflowing_minimum_attempted_resource_cost() {
         let child_calls = Arc::new(AtomicUsize::new(0));
-        let (definition, handlers, mut saved) =
-            saved_parent_wave(u64::MAX, u64::MAX, &child_calls);
+        let (definition, handlers, mut saved) = saved_parent_wave(u64::MAX, u64::MAX, &child_calls);
         let child = saved.report.tasks.get_mut("child").unwrap();
         child.state = TaskState::Failed;
         child.attempts = 1;
@@ -3081,7 +3091,12 @@ mod tests {
             max_total_resource_units: u64::MAX,
             ..policy()
         })
-        .resume(&definition, &handlers, &Arc::new(AtomicBool::new(false)), saved);
+        .resume(
+            &definition,
+            &handlers,
+            &Arc::new(AtomicBool::new(false)),
+            saved,
+        );
 
         assert!(matches!(result, Err(GraphError::CheckpointMismatch)));
         assert_eq!(child_calls.load(Ordering::SeqCst), 0);
@@ -3098,7 +3113,12 @@ mod tests {
             max_total_resource_units: 2,
             ..policy()
         })
-        .resume(&definition, &handlers, &Arc::new(AtomicBool::new(false)), saved)
+        .resume(
+            &definition,
+            &handlers,
+            &Arc::new(AtomicBool::new(false)),
+            saved,
+        )
         .unwrap();
 
         assert_eq!(report.consumed_resource_units, 2);
