@@ -58,7 +58,7 @@ Commands:
   dehashed              DeHashed exact-match search (opt-in; needs a key and --purpose)
   recon                 One crt.sh, DNS/mail, or stolen.tax lookup (network access)
   seeknow               SeekNow/See-Know lookup (opt-in; needs HUNTSMAN_SEEKNOW_KEY)
-  keys                  Validate a private keys file; print slots and fingerprints
+  keys                  Inspect a private keys file, or set/remove a slot via private storage
   credential-status     Show provider credential completeness without values
   verify                Verify a saved evidence ledger
   correlate             Run the correlation rules over a saved scan artifact, and pivot it across a history of saved scans (offline)
