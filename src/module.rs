@@ -1145,6 +1145,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "WiGLE WiFi and Bluetooth sightings of a BSSID, an SSID or around a coordinate",
     },
     ReachableModule {
+        name: "wifi_radar",
+        command: "radar wifi [--json] [--file TERMUX_SCAN_JSON]",
+        access: "local_sensor",
+        network: false,
+        category: ModuleCategory::Sensor,
+        attack_techniques: &[],
+        description: "Termux:API Android OS-cached WiFi scan observations; cache age disclosed, no active scan",
+    },
+    ReachableModule {
         name: "oui",
         command: "network BSSID",
         access: "offline",
