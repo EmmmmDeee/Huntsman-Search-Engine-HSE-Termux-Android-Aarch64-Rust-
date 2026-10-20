@@ -8,6 +8,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// Recorded without a key for `185.220.101.1` on 2026-10-15.
 const STOPFORUMSPAM: &str = r#"{"success":1,"ip":{"value":"185.220.101.1","appears":1,"frequency":92,"lastseen":"2026-10-14 23:38:15","torexit":1,"asn":60729,"country":"de","confidence":95.34}}"#;
@@ -39,6 +40,7 @@ fn entities() -> Vec<Entity> {
     match run(
         &OnlyStopForumSpam,
         &Keys::default(),
+        &Feeds::none(),
         "185.220.101.1",
         1_760_000_000,
     ) {
