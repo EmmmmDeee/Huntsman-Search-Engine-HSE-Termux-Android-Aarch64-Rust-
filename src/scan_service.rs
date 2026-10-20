@@ -1503,7 +1503,7 @@ impl ScanService {
     ///
     /// # Errors
     /// [`ServiceError::NotFound`] for no such scan, [`ServiceError::Conflict`] when it is not
-    /// running.
+    /// running or is not owned by this process.
     pub fn stop(&self, id: &str) -> Result<ScanRecord, ServiceError> {
         // Hold the same lock as worker status transitions and save's row update.
         // Otherwise a stop could read RUNNING and replace a newly FINISHED row.
@@ -1513,6 +1513,12 @@ impl ScanService {
             return Err(ServiceError::Conflict(format!(
                 "scan {id} is {}, not running",
                 record.status.as_str()
+            )));
+        }
+        // Only this process can signal its workers; a row update cannot stop a foreign worker.
+        if record.owner != Some(std::process::id()) {
+            return Err(ServiceError::Conflict(format!(
+                "scan {id} is not owned by this process; stop it in its owning process"
             )));
         }
         state.aborts.insert(id.to_owned());
