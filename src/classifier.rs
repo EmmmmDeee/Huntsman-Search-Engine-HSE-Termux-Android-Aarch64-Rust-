@@ -69,6 +69,9 @@ pub fn classify(raw: &str) -> Classified {
     if parse_ipv4(value) {
         return classified(EntityKind::IpAddress, value, 0.92, "parsed");
     }
+    if let Some(block) = crate::netblock::Netblock::parse(value) {
+        return classified(EntityKind::Netblock, &block.to_string(), 0.90, "cidr");
+    }
     if let Some(mac) = parse_mac_address(value) {
         return classified(EntityKind::MacAddress, &mac, 0.90, "six-octet");
     }
@@ -732,6 +735,19 @@ mod tests {
         for raw in ["ASIA", "AS", "AS12x", "ASN12345678901"] {
             assert_ne!(classify(raw).kind, EntityKind::Asn, "{raw}");
         }
+    }
+
+    #[test]
+    fn a_cidr_block_is_a_netblock_written_as_its_first_address() {
+        for (raw, value) in [
+            ("192.0.2.77/24", "192.0.2.0/24"),
+            ("2001:DB8::1/48", "2001:db8::/48"),
+        ] {
+            let found = classify(raw);
+            assert_eq!(found.kind, EntityKind::Netblock, "{raw}");
+            assert_eq!(found.value, value, "{raw}");
+        }
+        assert_ne!(classify("192.0.2.0/33").kind, EntityKind::Netblock);
     }
 
     #[test]

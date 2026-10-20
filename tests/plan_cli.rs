@@ -79,6 +79,33 @@ fn a_saved_session_reloads() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A session file that is read but does not hold a session is bad data (65), as a malformed
+/// ledger is for `verify`; only a file that cannot be read is unreadable input (66). The message
+/// names the file and what is wrong with it. A session an older build wrote, which lacks a field
+/// this build needs, is the second case.
+#[test]
+fn a_malformed_session_file_is_bad_data_not_unreadable_input() {
+    let dir = scratch("malformed");
+    let sessions = dir.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    for body in ["{\"id\": \"broken\"", "{\"id\": \"broken\"}"] {
+        fs::write(sessions.join("broken.json"), body).unwrap();
+        let out = plan(&["--load-session", dir.to_str().unwrap(), "broken"]);
+        let text = stderr(&out);
+        assert_eq!(
+            out.status.code(),
+            Some(i32::from(EX_DATAERR)),
+            "{body}: {text}"
+        );
+        assert!(out.stdout.is_empty(), "{body}: {}", stdout(&out));
+        assert!(
+            text.contains("broken.json") && text.contains("not a session"),
+            "{body}: {text}"
+        );
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// A request to save that cannot be honoured stops the run before it starts. The old binary
 /// dropped a `--session-dir` with no value, and took a mistyped option for a seed; either way it
 /// exited 0 without saving.

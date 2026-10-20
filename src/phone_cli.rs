@@ -117,7 +117,8 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
     }
 }
 
-/// [`run`], then the Numverify leg and every indicator source for the number that `keys` enables.
+/// [`run`], then the Numverify leg and every indicator source for the number that `keys` enables
+/// and the transport's lookup asks ([`Transport::runs_module`]).
 #[must_use]
 pub fn run_keyed<T: Transport + ?Sized>(
     transport: &T,
@@ -135,7 +136,7 @@ pub fn run_keyed<T: Transport + ?Sized>(
     };
     let (canonical, scan_id) = (entity.raw_value.clone(), entity.scan_id.clone());
     let indicator = Indicator::Phone(&canonical);
-    let numverify_wanted = numverify::API.wanted(keys);
+    let numverify_wanted = numverify::API.runs(transport, keys);
     if !numverify_wanted && indicator_legs::planned(indicator, keys).is_empty() {
         return match render(&report) {
             Ok(text) => PhoneRun::Printed { text, report },
@@ -185,7 +186,12 @@ fn numverify_evidence(entity: &mut Entity, v: &numverify::Verification) {
         ("line_type", v.line_type.as_deref()),
         ("location", v.location.as_deref()),
         ("country_iso", v.country_code.as_deref()),
-    ]);
+        ("country_name", v.country_name.as_deref()),
+        ("country_prefix", v.country_prefix.as_deref()),
+        ("local_format", v.local_format.as_deref()),
+        ("international_format", v.international_format.as_deref()),
+    ])
+    .with_attr("raw_answer", v.raw_answer.as_str());
     entity.add_evidence(evidence);
 }
 

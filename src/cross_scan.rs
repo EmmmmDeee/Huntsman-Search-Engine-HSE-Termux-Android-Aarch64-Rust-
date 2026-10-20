@@ -229,62 +229,75 @@ pub fn collect_direct_bridges<S: CrossScanStore>(
 }
 
 /// Expands weak bridges through related scans up to the configured limits.
+/// Visits are reserved before insertion into the queue: high-fan-out seeds
+/// cannot exhaust the frontier or visit budget before results are emitted.
+/// Incompleteness is represented conservatively by the bounded returned set;
+/// this function does not imply that unvisited scans were checked.
 ///
 /// # Errors
-/// Returns storage-layer lookup failures.
+/// Returns storage-layer lookup failures for scans that were actually visited.
 pub fn transitive_closure<S: CrossScanStore>(
     store: &S,
     origin_scan_id: &str,
     seeds: &[BridgedEntity],
     options: CrossScanOptions,
 ) -> Result<Vec<TransitiveLink>, Error> {
+    if options.max_frontier == 0 || options.max_visited <= 1 {
+        return Ok(Vec::new());
+    }
+
     let mut queue = VecDeque::new();
-    let mut visited_scans = BTreeSet::from([origin_scan_id.to_string()]);
-    let mut seen_edges = BTreeSet::new();
+    let mut visited_scans = BTreeSet::from([origin_scan_id.to_owned()]);
     let mut links = Vec::new();
 
+    // A discovered scan reserves both one visited slot and one output slot.
+    // The origin is counted in max_visited but never becomes a link.
     for seed in seeds {
         for scan_id in &seed.overlapping_scans {
-            if scan_id == origin_scan_id || !visited_scans.insert(scan_id.clone()) {
-                continue;
+            if visited_scans.len() >= options.max_visited
+                || visited_scans.len() > options.max_frontier
+            {
+                break;
             }
-            queue.push_back((scan_id.clone(), seed.entity.uid.clone(), 1usize, seed.tier));
+            if visited_scans.insert(scan_id.clone()) {
+                queue.push_back((scan_id.clone(), seed.entity.uid.clone(), 1usize, seed.tier));
+            }
         }
     }
 
     while let Some((scan_id, via_entity_uid, depth, tier)) = queue.pop_front() {
-        if links.len() >= options.max_frontier || visited_scans.len() > options.max_visited {
-            break;
-        }
-        let edge_key = (
-            origin_scan_id.to_string(),
-            via_entity_uid.clone(),
-            scan_id.clone(),
-        );
-        if !seen_edges.insert(edge_key) {
-            continue;
-        }
         links.push(TransitiveLink {
-            origin_scan_id: origin_scan_id.to_string(),
-            via_entity_uid: via_entity_uid.clone(),
+            origin_scan_id: origin_scan_id.to_owned(),
+            via_entity_uid,
             target_scan_id: scan_id.clone(),
             depth,
             tier,
         });
 
-        if depth >= 2 {
+        if depth >= 2
+            || visited_scans.len() >= options.max_visited
+            || visited_scans.len() > options.max_frontier
+        {
             continue;
         }
-
         for entity in store.entities_for_scan(&scan_id)? {
             if !is_bridgeable(&entity) {
                 continue;
             }
             for neighbor in overlapping_scans(store, &scan_id, &entity)? {
-                if neighbor == origin_scan_id || !visited_scans.insert(neighbor.clone()) {
-                    continue;
+                if visited_scans.len() >= options.max_visited
+                    || visited_scans.len() > options.max_frontier
+                {
+                    break;
                 }
-                queue.push_back((neighbor, entity.uid.clone(), depth + 1, BridgeTier::Related));
+                if visited_scans.insert(neighbor.clone()) {
+                    queue.push_back((neighbor, entity.uid.clone(), depth + 1, BridgeTier::Related));
+                }
+            }
+            if visited_scans.len() >= options.max_visited
+                || visited_scans.len() > options.max_frontier
+            {
+                break;
             }
         }
     }
@@ -525,5 +538,117 @@ mod tests {
             category_from_entities(&store, "scan-a", &current, CrossScanOptions::default())
                 .unwrap();
         assert_eq!(category, CrossScanCategory::None);
+    }
+
+    #[test]
+    fn a_large_seed_fanout_never_exceeds_either_budget() {
+        let mut store = FakeStore::default();
+        let shared = entity(EntityKind::IpAddress, "203.0.113.10", 0.9, "origin");
+        store.insert(shared.clone());
+        for number in 0..250 {
+            store.insert(entity(
+                EntityKind::IpAddress,
+                "203.0.113.10",
+                0.9,
+                &format!("scan-{number:03}"),
+            ));
+        }
+        let seeds = collect_direct_bridges(&store, "origin", &[shared]).unwrap();
+        let small = transitive_closure(
+            &store,
+            "origin",
+            &seeds,
+            CrossScanOptions {
+                max_frontier: 7,
+                max_visited: 4,
+            },
+        )
+        .unwrap();
+        assert_eq!(small.len(), 3);
+        assert_eq!(
+            small
+                .iter()
+                .map(|link| link.target_scan_id.as_str())
+                .collect::<Vec<_>>(),
+            ["scan-000", "scan-001", "scan-002"],
+        );
+        let frontier_limited = transitive_closure(
+            &store,
+            "origin",
+            &seeds,
+            CrossScanOptions {
+                max_frontier: 2,
+                max_visited: 100,
+            },
+        )
+        .unwrap();
+        assert_eq!(frontier_limited.len(), 2);
+    }
+
+    #[test]
+    fn zero_budget_never_claims_any_cross_scan_links() {
+        let mut store = FakeStore::default();
+        store.insert(entity(EntityKind::IpAddress, "203.0.113.20", 0.9, "origin"));
+        store.insert(entity(EntityKind::IpAddress, "203.0.113.20", 0.9, "other"));
+        let seeds = collect_direct_bridges(
+            &store,
+            "origin",
+            &store.entities_for_scan("origin").unwrap(),
+        )
+        .unwrap();
+        for options in [
+            CrossScanOptions {
+                max_frontier: 0,
+                max_visited: 100,
+            },
+            CrossScanOptions {
+                max_frontier: 100,
+                max_visited: 1,
+            },
+            CrossScanOptions {
+                max_frontier: 100,
+                max_visited: 0,
+            },
+        ] {
+            assert!(
+                transitive_closure(&store, "origin", &seeds, options)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn budgets_still_allow_second_hop_when_slots_remain() {
+        let mut store = FakeStore::default();
+        store.insert(entity(EntityKind::IpAddress, "198.51.100.1", 0.9, "scan-a"));
+        store.insert(entity(EntityKind::IpAddress, "198.51.100.1", 0.9, "scan-b"));
+        store.insert(entity(EntityKind::IpAddress, "198.51.100.2", 0.9, "scan-b"));
+        store.insert(entity(EntityKind::IpAddress, "198.51.100.2", 0.9, "scan-c"));
+        let seeds = collect_direct_bridges(
+            &store,
+            "scan-a",
+            &store.entities_for_scan("scan-a").unwrap(),
+        )
+        .unwrap();
+        let links = transitive_closure(
+            &store,
+            "scan-a",
+            &seeds,
+            CrossScanOptions {
+                max_frontier: 2,
+                max_visited: 3,
+            },
+        )
+        .unwrap();
+        assert_eq!(links.len(), 2);
+        assert_eq!(
+            (links[0].target_scan_id.as_str(), links[0].depth),
+            ("scan-b", 1)
+        );
+        assert_eq!(
+            (links[1].target_scan_id.as_str(), links[1].depth),
+            ("scan-c", 2)
+        );
     }
 }

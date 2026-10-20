@@ -68,7 +68,10 @@ impl TargetKind {
             EntityKind::IpAddress => Some(Self::IpAddress),
             EntityKind::Coordinates => Some(Self::Coordinates),
             EntityKind::Address => Some(Self::Address),
-            EntityKind::Credential | EntityKind::Document | EntityKind::Other => None,
+            EntityKind::Credential
+            | EntityKind::Document
+            | EntityKind::Netblock
+            | EntityKind::Other => None,
             EntityKind::CryptoAddress => Some(Self::CryptoAddress),
             EntityKind::DeviceId => Some(Self::DeviceId),
             EntityKind::Ssid => Some(Self::Ssid),
