@@ -3,6 +3,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use huntsman_recon::scan_store::{
@@ -11,7 +14,11 @@ use huntsman_recon::scan_store::{
 use huntsman_recon::source_outcome::SourceExecutionOutcome;
 
 fn fixture() -> (PathBuf, String, Vec<u8>) {
-    let dir = std::env::temp_dir().join(format!("hse-scan-analysis-cli-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "hse-scan-analysis-cli-{}-{}",
+        std::process::id(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     let store = ScanStore::open(&dir).unwrap();
     let id = new_id("example.com", 1919, 0);
