@@ -1127,7 +1127,12 @@ impl ScanService {
         )
     }
 
-    fn set_status(&self, id: &str, status: ScanStatus, at: Option<u64>) -> Result<(), ServiceError> {
+    fn set_status(
+        &self,
+        id: &str,
+        status: ScanStatus,
+        at: Option<u64>,
+    ) -> Result<(), ServiceError> {
         // The state lock also serializes stop requests and the scan row's final counters.
         // A detached read/modify/write could resurrect RUNNING after ABORT-REQUESTED, or
         // overwrite the operator's stop with FINISHED.
@@ -2185,19 +2190,27 @@ mod tests {
 
         // The queued worker may observe the stop after starting. Neither transition
         // may erase the operator's cancellation request or invent a start time.
-        service.set_status(&created.id, ScanStatus::Starting, None).unwrap();
-        service.set_status(&created.id, ScanStatus::Running, Some(123)).unwrap();
+        service
+            .set_status(&created.id, ScanStatus::Starting, None)
+            .unwrap();
+        service
+            .set_status(&created.id, ScanStatus::Running, Some(123))
+            .unwrap();
         let row = service.store().get(&created.id).unwrap();
         assert_eq!(row.status, ScanStatus::AbortRequested);
         assert!(row.started.is_none());
 
         // A worker that chose FINISHED just before stop() acquired the state lock
         // must still commit ABORTED when it eventually updates its row.
-        service.set_status(&created.id, ScanStatus::Finished, Some(456)).unwrap();
+        service
+            .set_status(&created.id, ScanStatus::Finished, Some(456))
+            .unwrap();
         let row = service.store().get(&created.id).unwrap();
         assert_eq!(row.status, ScanStatus::Aborted);
         assert_eq!(row.ended, Some(456));
-        service.set_status(&created.id, ScanStatus::Running, Some(789)).unwrap();
+        service
+            .set_status(&created.id, ScanStatus::Running, Some(789))
+            .unwrap();
         assert_eq!(
             service.store().get(&created.id).unwrap().status,
             ScanStatus::Aborted,
