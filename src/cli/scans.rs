@@ -516,17 +516,17 @@ fn print_analysis(result: &Value) {
     );
     let counts = &result["counts"];
     println!(
-        "saved_entities={} analyzed_entities={} derived_relations={} source_outcomes={}",
+        "saved_entities={} analyzed_entities={} derived_relations={} source_outcomes={} flagged_elements={}",
         counts["saved_entities"],
         counts["analyzed_entities"],
         counts["derived_relations"],
         counts["source_outcomes"],
+        counts["flagged_elements"],
     );
     let limitations = &result["limitations"];
     println!(
-        "source=saved_scan_entities scan_complete={} truncated={} evidence_ancestry=not_reconstructed provider_coverage=not_reconstructed",
-        limitations["scan_complete"],
-        limitations["truncated"],
+        "source=saved_scan_entities scan_complete={} truncated={} evidence_ancestry=not_reconstructed provider_coverage=not_reconstructed false_positive_annotations=not_applied_to_entity_analysis",
+        limitations["scan_complete"], limitations["truncated"],
     );
     let report = &result["report"];
     println!(
