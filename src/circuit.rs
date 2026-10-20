@@ -31,7 +31,8 @@ impl BackoffPolicy {
 
     #[must_use]
     pub const fn should_retry(&self, attempt: u32) -> bool {
-        attempt + 1 < self.max_attempts
+        // Saturating subtraction avoids overflow for an exhausted u32 counter.
+        attempt < self.max_attempts.saturating_sub(1)
     }
 
     #[must_use]
@@ -351,6 +352,22 @@ mod tests {
         let jittered = BackoffPolicy::new(3, 4_000, 8_000, true);
         let first = jittered.delay(0);
         assert!((0..100).any(|_| jittered.delay(0) != first));
+    }
+
+    #[test]
+    fn retry_budget_never_overflows_at_saturated_counters() {
+        let exhausted = BackoffPolicy::new(3, 1, 1, false);
+        assert!(!exhausted.should_retry(u32::MAX));
+        assert!(!exhausted.should_retry(u32::MAX - 1));
+        assert!(exhausted.should_retry(1));
+        assert!(!exhausted.should_retry(2));
+        assert!(!BackoffPolicy::new(0, 1, 1, false).should_retry(0));
+        assert!(!BackoffPolicy::new(1, 1, 1, false).should_retry(0));
+
+        let largest = BackoffPolicy::new(u32::MAX, 1, 1, false);
+        assert!(largest.should_retry(u32::MAX - 2));
+        assert!(!largest.should_retry(u32::MAX - 1));
+        assert!(!largest.should_retry(u32::MAX));
     }
 
     #[test]

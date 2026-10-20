@@ -1,0 +1,1 @@
+- Preserve source relevance order and de-duplicate keyless search hits; ignore data-href and other non-navigation attributes; reject stale or non-revalidatable cached pages, including after clock rollback; and prevent retry-counter overflow at saturated values.
