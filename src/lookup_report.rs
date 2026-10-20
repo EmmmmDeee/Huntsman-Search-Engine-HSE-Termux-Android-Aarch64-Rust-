@@ -1,6 +1,7 @@
-//! The text report of an identifier lookup: the entities found, the outcome of each source, and the
-//! lineage of the observations behind them. The email, username and people front-ends print this
-//! report, so their formats cannot drift apart.
+//! The text report of an identifier lookup: the entities found, the outcome of each source, the
+//! relations between the entities, and the lineage of the observations behind them. The email,
+//! username, people, domain, network and exposure front-ends print this report, so their formats
+//! cannot drift apart.
 //!
 //! The rows are tab-separated records, and the values in them come from third parties: a profile
 //! name, a register entry, a dataset name. Every value is written through
@@ -11,11 +12,13 @@
 //! each entity is followed by every evidence record behind it, and each evidence record by every
 //! attribute it carries.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use crate::entity::{Entity, Evidence};
 use crate::identity_resolution::AutoMergePolicy;
 use crate::lineage::{lineage_tsv_line, observations_from, resolve_with_lineage};
+use crate::relation::{self, Relation};
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::textnorm::escape_controls;
 
@@ -106,11 +109,28 @@ pub fn outcome_row(outcome: &SourceExecutionOutcome) -> String {
     row
 }
 
+/// The row that names one relation between two entities of a report: `relation`, its kind, each
+/// end as kind and the value the entity row shows, and its confidence.
+#[must_use]
+pub fn relation_row(relation: &Relation, from: &Entity, to: &Entity) -> String {
+    format!(
+        "relation\t{}\t{}\t{}\t{}\t{}\t{:.2}",
+        relation.kind,
+        from.kind,
+        escape_controls(&from.raw_value),
+        to.kind,
+        escape_controls(&to.raw_value),
+        relation.confidence
+    )
+}
+
 /// The report of one lookup. The first line is `entities=N`. Each entity follows as a
 /// tab-separated line (kind, value, confidence, tags), then each evidence record behind it and each
 /// attribute of that evidence (see [`evidence_rows`]). Then each source outcome (module, kind,
-/// found count, and `detail=` when the source gave a reason), and the lineage block closes the
-/// report.
+/// found count, and `detail=` when the source gave a reason), then `relations=N` and a
+/// [`relation_row`] for each relation the analysis derives between the entities
+/// ([`relation::derive_all`], as the pipeline and `correlate` do), and the lineage block closes
+/// the report. A report with no relation has no relations block.
 ///
 /// # Errors
 /// The first formatting or lineage-resolution error, as text.
@@ -128,8 +148,39 @@ pub fn render(entities: &[Entity], outcomes: &[SourceExecutionOutcome]) -> Resul
     for outcome in outcomes {
         writeln!(out, "{}", outcome_row(outcome)).map_err(|err| err.to_string())?;
     }
+    append_relations(entities, &mut out)?;
     append_lineage(entities, &mut out)?;
     Ok(out)
+}
+
+/// The relations between the report's entities, one row each, sorted so the same entities
+/// always print the same block.
+fn append_relations(entities: &[Entity], out: &mut String) -> Result<(), String> {
+    let Some(scan_id) = entities.first().map(|entity| entity.scan_id.as_str()) else {
+        return Ok(());
+    };
+    let by_uid = entities
+        .iter()
+        .map(|entity| (entity.uid.as_str(), entity))
+        .collect::<HashMap<_, _>>();
+    let mut rows = relation::derive_all(entities, scan_id)
+        .iter()
+        .filter_map(|relation| {
+            let from = by_uid.get(relation.from_uid.as_str())?;
+            let to = by_uid.get(relation.to_uid.as_str())?;
+            Some(relation_row(relation, from, to))
+        })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return Ok(());
+    }
+    rows.sort();
+    rows.dedup();
+    writeln!(out, "relations={}", rows.len()).map_err(|err| err.to_string())?;
+    for row in rows {
+        writeln!(out, "{row}").map_err(|err| err.to_string())?;
+    }
+    Ok(())
 }
 
 fn append_lineage(entities: &[Entity], out: &mut String) -> Result<(), String> {
@@ -155,6 +206,87 @@ mod tests {
     /// Text a third party controls: a terminal escape, a forged row, a forged column, a carriage
     /// return, DEL and NUL.
     const HOSTILE: &str = "Ada\u{1b}[2J\nforged\tcolumn\r\u{7f}\u{0} Lovelace";
+
+    #[test]
+    fn a_report_lists_the_relations_between_its_entities_with_their_values_escaped() {
+        let employer = format!("Example {HOSTILE} Pty Ltd");
+        let mut person = Entity::new(EntityKind::Person, HOSTILE, 0.7, "scan");
+        person.add_evidence(
+            Evidence::new(EvidenceProvenance::new("profile"), "a public profile")
+                .with_attr("employer", &employer),
+        );
+        let org = Entity::new(EntityKind::Organisation, &employer, 0.55, "scan");
+        let text = render(&[person, org], &[]).unwrap();
+        let relations = text
+            .lines()
+            .skip_while(|line| !line.starts_with("relations="))
+            .take_while(|line| !line.starts_with("lineage="))
+            .collect::<Vec<_>>();
+        let shown = escape_controls(HOSTILE);
+        assert_eq!(
+            relations,
+            [
+                "relations=1".to_owned(),
+                format!(
+                    "relation\temployed_by\tperson\t{shown}\torganisation\tExample {shown} Pty Ltd\t0.55"
+                ),
+            ],
+            "{text}"
+        );
+        assert!(
+            unexpected_controls(&text, &['\n', '\t']).is_empty(),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn a_report_with_no_relation_has_no_relations_block() {
+        let text = render(
+            &[Entity::new(EntityKind::Email, "a@example.com", 0.9, "scan")],
+            &[],
+        )
+        .unwrap();
+        assert!(!text.contains("relations="), "{text}");
+    }
+
+    /// The front-ends print the report as it renders, so an email lookup shows the relations
+    /// between what it found: here only what it derives from the address itself, with every
+    /// public source answering that it has nothing.
+    #[test]
+    fn an_email_lookup_prints_the_relations_between_its_entities() {
+        use crate::email_cli::{self, EmailRun};
+        use crate::http::Response;
+        use crate::test_support::ScriptedTransport;
+        let reply = |status, body: &str| {
+            Ok(Response {
+                status,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: body.as_bytes().to_vec(),
+                truncated: false,
+            })
+        };
+        let transport = ScriptedTransport::new(vec![
+            reply(404, ""),
+            reply(200, r#"{"users":[]}"#),
+            reply(404, "No key found"),
+        ]);
+        let EmailRun::Printed { text, .. } = email_cli::run(&transport, "jane.doe@acme.example", 1)
+        else {
+            panic!("email lookup did not print");
+        };
+        assert!(
+            text.contains(
+                "\nrelation\tbelongs_to_domain\temail\tjane.doe@acme.example\tdomain\tacme.example\t0.80\n"
+            ),
+            "{text}"
+        );
+        let block = text.find("\nrelations=").expect("a relations block");
+        assert!(
+            block > text.find("\nopenpgp_keys\t").expect("the outcome rows")
+                && block < text.find("\nlineage=").expect("the lineage block"),
+            "relations follow the outcomes and precede the lineage: {text}"
+        );
+    }
 
     fn entity_from(kind: EntityKind, value: &str, datasets: &[&str]) -> Entity {
         let mut entity = Entity::new(kind, value, 0.9, "scan");
