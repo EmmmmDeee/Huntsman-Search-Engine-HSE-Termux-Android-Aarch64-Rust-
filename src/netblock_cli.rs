@@ -143,7 +143,7 @@ pub fn run<T: Transport + ?Sized + Sync>(
     }
 }
 
-/// Everything `RIPEstat` says about the block on it ([`ripestat::Routing::describe`]), and each
+/// Everything `RIPEstat` says about the block on it ([`ripestat::Routing::attributes`]), and each
 /// origin AS and its holder as a pivot tied to the block.
 fn routing_leg(
     report: &mut Report,
