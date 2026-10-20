@@ -1,0 +1,1 @@
+- Add `keys set SLOT --stdin` and `keys remove SLOT` for atomic mode-600 credential management, without accepting secret values in argv or printing them; retain `keys FILE` read-only fingerprint inspection.

@@ -1,0 +1,1 @@
+- `asn AS-NUMBER` looks up one public autonomous system, Spiderfoot's `BGP_AS_OWNER` target: its RDAP registration, and from RIPEstat its holder, every prefix it announces (each a `NETBLOCK_OWNER`) and every BGP neighbour, all at once and uncapped. `scan`, `scans run` and the web UI's New Scan route an AS number to it.

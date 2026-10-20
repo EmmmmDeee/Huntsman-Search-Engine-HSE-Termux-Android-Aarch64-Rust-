@@ -79,11 +79,11 @@ pub enum EmailRun {
 }
 
 type Collected = Result<(Vec<Entity>, SourceExecutionOutcome), Error>;
-type Source<T> = fn(&T, &str, &str, u64) -> Collected;
+type Source<T> = (&'static str, fn(&T, &str, &str, u64) -> Collected);
 
-/// The keyless public lookups `email` runs, in order, each with the label it reports under.
+/// The keyless public lookups `email` runs, in order, each with the module it reports under.
 /// Each is one request.
-fn sources<T: Transport + ?Sized>() -> [(&'static str, Source<T>); 3] {
+fn sources<T: Transport + ?Sized>() -> [Source<T>; 3] {
     [
         (gravatar::SRC, |t, email, scan, now| {
             gravatar::lookup(t, email, scan, now).map(|r| (r.entities, r.outcome))
@@ -161,9 +161,10 @@ impl Gathered {
     }
 }
 
-/// The address's derivations and the keyless public lookups. A source the transport refused
-/// (the egress policy, for a host that resolves to a non-public address) is a failed row, like a
-/// source that timed out; the other sources still run.
+/// The address's derivations and the keyless public lookups the transport's lookup asks
+/// ([`Transport::runs_module`]). A source the transport refused (the egress policy, for a host
+/// that resolves to a non-public address) is a failed row, like a source that timed out; the
+/// other sources still run.
 fn gather<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> Option<Gathered> {
     let email = canonical_email(email)?;
     let scan_id = crate::entity::scan_id("email", &email);
@@ -177,6 +178,9 @@ fn gather<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> O
         unanswered: None,
     };
     for (module, source) in sources::<T>() {
+        if !transport.runs_module(module) {
+            continue;
+        }
         match source(transport, &gathered.email, &scan_id, now_unix) {
             Ok((entities, outcome)) => {
                 gathered.report.entities.extend(entities);
