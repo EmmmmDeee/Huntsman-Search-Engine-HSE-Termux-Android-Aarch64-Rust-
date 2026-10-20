@@ -1,0 +1,1 @@
+- Introduce an explicitly triggered Android Wi-Fi cache reader in the mobile browser, with provenance, stale-age labels, bounded collection and JSON export. Guard its HTTP endpoint with same-origin checks and existing authentication.
