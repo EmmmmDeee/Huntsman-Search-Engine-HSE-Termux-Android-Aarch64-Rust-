@@ -201,6 +201,10 @@ pub struct Evidence {
     pub merged_provenance: Vec<EvidenceProvenance>,
 }
 
+/// What joins the values of an attribute that holds several: [`Evidence::with_attr`] joins a
+/// repeated key's values with it and [`Evidence::attr_values`] lists them by it.
+const VALUE_SEPARATOR: &str = "; ";
+
 impl Evidence {
     #[must_use]
     pub fn new(provenance: EvidenceProvenance, summary: impl Into<String>) -> Self {
@@ -221,8 +225,8 @@ impl Evidence {
         let value = value.into();
         match self.attributes.get_mut(&key) {
             Some(existing) => {
-                if !existing.split("; ").any(|seen| seen == value) {
-                    existing.push_str("; ");
+                if !holds_whole(existing, &value) {
+                    existing.push_str(VALUE_SEPARATOR);
                     existing.push_str(&value);
                 }
             }
@@ -250,7 +254,7 @@ impl Evidence {
         self.attributes
             .get(key)
             .into_iter()
-            .flat_map(|value| value.split("; "))
+            .flat_map(|value| value.split(VALUE_SEPARATOR))
             .map(str::trim)
             .filter(|value| !value.is_empty())
     }
@@ -669,18 +673,51 @@ fn same_evidence_identity(left: &Evidence, right: &Evidence) -> bool {
     })
 }
 
+/// Whether the attribute value `held` already holds `value` whole: as all of it, or as a run of
+/// its values that the separator bounds at both ends. **Pure.**
+fn holds_whole(held: &str, value: &str) -> bool {
+    held == value
+        || held
+            .strip_prefix(value)
+            .is_some_and(|rest| rest.starts_with(VALUE_SEPARATOR))
+        || held
+            .strip_suffix(value)
+            .is_some_and(|rest| rest.ends_with(VALUE_SEPARATOR))
+        || held.contains(&format!("{VALUE_SEPARATOR}{value}{VALUE_SEPARATOR}"))
+}
+
+/// Folds `incoming` into the attribute value `held` so that it holds both whole, `held`'s values
+/// first. A `held` that already holds `incoming` is kept, and an `incoming` that holds `held`
+/// replaces it. Where `incoming` begins with values `held` ends with, those are written once;
+/// otherwise the two are joined. Nothing is split apart, reordered or dropped, so a value with the
+/// separator in its own text survives any number of merges byte for byte.
+fn fold_value(held: &mut String, incoming: String) {
+    if holds_whole(held, &incoming) {
+        return;
+    }
+    if holds_whole(&incoming, held) {
+        *held = incoming;
+        return;
+    }
+    let rest = incoming
+        .rmatch_indices(VALUE_SEPARATOR)
+        .find(|&(at, _)| {
+            held.strip_suffix(&incoming[..at])
+                .is_some_and(|before| before.ends_with(VALUE_SEPARATOR))
+        })
+        .map_or(incoming.as_str(), |(at, _)| {
+            &incoming[at + VALUE_SEPARATOR.len()..]
+        });
+    held.push_str(VALUE_SEPARATOR);
+    held.push_str(rest);
+}
+
+/// Folds `incoming` into `existing`, one observation ([`same_evidence_identity`]). Every value either
+/// record holds is kept whole, in the order it was observed ([`fold_value`]).
 fn merge_evidence(existing: &mut Evidence, incoming: Evidence) {
     for (key, value) in incoming.attributes {
         match existing.attributes.get_mut(&key) {
-            Some(current) if current != &value => {
-                let mut merged = current
-                    .split("; ")
-                    .map(ToOwned::to_owned)
-                    .collect::<BTreeSet<_>>();
-                merged.extend(value.split("; ").map(ToOwned::to_owned));
-                *current = merged.into_iter().collect::<Vec<_>>().join("; ");
-            }
-            Some(_) => {}
+            Some(held) => fold_value(held, value),
             None => {
                 existing.attributes.insert(key, value);
             }
@@ -960,5 +997,25 @@ mod tests {
             left.evidence[0].attributes.get("site").map(String::as_str),
             Some("forum-a; forum-b")
         );
+    }
+
+    /// A fold holds both values whole, the held value's first, and writes once the values where
+    /// one continues the other. A value is only ever matched whole, never by a piece of its text.
+    #[test]
+    fn a_fold_holds_both_values_whole() {
+        let fold = |held: &str, incoming: &str| {
+            let mut held = held.to_owned();
+            fold_value(&mut held, incoming.to_owned());
+            held
+        };
+        assert_eq!(fold("a; b; c", "b"), "a; b; c");
+        assert_eq!(fold("a; b; c", "b; c"), "a; b; c");
+        assert_eq!(fold("b", "a; b; c"), "a; b; c");
+        assert_eq!(fold("a; b", "b; c"), "a; b; c");
+        assert_eq!(fold("a; b; c", "b; c; d"), "a; b; c; d");
+        assert_eq!(fold("x; b", "b; x"), "x; b; x");
+        assert_eq!(fold("ab", "b"), "ab; b");
+        assert_eq!(fold("a; b", "ab; c"), "a; b; ab; c");
+        assert_eq!(fold("a; bc", "c"), "a; bc; c");
     }
 }
