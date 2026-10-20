@@ -1,6 +1,7 @@
 //! Netlas: what Netlas's internet scans hold for one IP or domain.
 //!
-//! One lookup is one `GET https://app.netlas.io/api/host/{indicator}/`. Netlas answers without a
+//! One lookup is one `GET https://app.netlas.io/api/host/{indicator}/`, for a domain or an IPv4
+//! address: given an IPv6 address the endpoint answers about netlas.io itself. Netlas answers without a
 //! key at a low daily limit; with `HUNTSMAN_NETLAS_KEY` set (a free Community key) the key goes in
 //! the `X-API-Key` header and the limit is the account's. Netlas answers a domain it has never
 //! scanned with `200` and only the name, a valid zero, and gives a `404` only for a path it does
@@ -36,7 +37,7 @@ pub const API: Api = Api {
 };
 pub const INTEL: Source = Source {
     api: &API,
-    kinds: &[IndicatorKind::Ip, IndicatorKind::Domain],
+    kinds: &[IndicatorKind::Ipv4, IndicatorKind::Domain],
     lookup,
 };
 
