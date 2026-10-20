@@ -82,7 +82,8 @@ pub fn parse_scan(bytes: &[u8], uptime_secs: Option<f64>) -> Result<WifiScan, Er
             continue;
         }
 
-        let timestamp = row.get("timestamp")
+        let timestamp = row
+            .get("timestamp")
             .and_then(serde_json::Value::as_u64)
             .filter(|ts| *ts > 0);
         let age_secs = match (uptime_secs, timestamp) {
@@ -172,7 +173,10 @@ mod tests {
         assert_eq!(scan.observed, 1);
         assert_eq!(scan.observations[0].age_secs, Some(20.0));
         assert_eq!(scan.observations[0].band, Some("2.4GHz"));
-        assert_eq!(scan.observations[0].sighting.network_id, "3c:5a:b4:11:22:33");
+        assert_eq!(
+            scan.observations[0].sighting.network_id,
+            "3c:5a:b4:11:22:33"
+        );
         assert_eq!(scan.observations[0].sighting.signal_dbm, Some(-57.0));
         assert_eq!(scan.observations[0].sighting.observed_epoch, None);
         assert!(!scan.observations[0].sighting.has_usable_position());
