@@ -1024,6 +1024,8 @@ fn run_one(
             deadline,
             cancelled: Arc::clone(cancelled),
         };
+        // Retry permission belongs to this invocation, not an earlier transient failure.
+        record.retryable = false;
         let result = catch_unwind(AssertUnwindSafe(|| handler(context)));
         let elapsed = attempt_started.elapsed();
         // A scan stop forbids further work but must not discard a successful lookup that
@@ -1441,9 +1443,9 @@ impl GraphExecutor {
                     continue;
                 }
                 if consumed
-                    .saturating_add(wave_cost)
-                    .saturating_add(spec.resource_units)
-                    > self.policy.max_total_resource_units
+                    .checked_add(wave_cost)
+                    .and_then(|total| total.checked_add(spec.resource_units))
+                    .is_none_or(|total| total > self.policy.max_total_resource_units)
                 {
                     budget_blocked.push(id.clone());
                     continue;
@@ -2857,5 +2859,133 @@ mod tests {
             ),
             Err(GraphError::CheckpointMismatch)
         ));
+    }
+
+    #[test]
+    fn overflowing_resource_totals_never_dispatch_over_budget_tasks() {
+        for concurrency in [1, 2, 4] {
+            for costs in [
+                vec![u64::MAX, 1],
+                vec![u64::MAX - 1, 1, 1],
+                vec![u64::MAX - 1, 2],
+                vec![u64::MAX / 2 + 1, u64::MAX / 2 + 1],
+            ] {
+                let calls = Arc::new(AtomicUsize::new(0));
+                let tasks: Vec<_> = costs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &cost)| {
+                        let mut task = spec(&format!("task-{index}"), &[]);
+                        task.resource_units = cost;
+                        task
+                    })
+                    .collect();
+                let mut handlers = HandlerRegistry::new();
+                for task in &tasks {
+                    let calls = Arc::clone(&calls);
+                    handlers.insert(
+                        task.id.clone(),
+                        handler(move |context| {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            Ok(output(json!(true), &context.task_id))
+                        }),
+                    );
+                }
+                let expected = if costs.len() == 3 { 2 } else { 1 };
+                let graph = GraphDefinition {
+                    run_id: "overflowing-resource-total".into(),
+                    tasks,
+                };
+                let report = GraphExecutor::new(ExecutionPolicy {
+                    max_concurrency: concurrency,
+                    max_total_resource_units: u64::MAX,
+                    ..policy()
+                })
+                .execute(&graph, &handlers, &Arc::new(AtomicBool::new(false)))
+                .unwrap();
+
+                assert_eq!(
+                    calls.load(Ordering::SeqCst),
+                    expected,
+                    "over-budget dispatch: concurrency={concurrency}, costs={costs:?}"
+                );
+                assert_eq!(report.summary().succeeded, expected);
+                assert_eq!(report.summary().blocked, costs.len() - expected);
+                assert_eq!(report.termination, Some(RunTermination::ResourceLimit));
+                let admitted: u128 = report
+                    .tasks
+                    .iter()
+                    .filter(|(_, record)| record.attempts > 0)
+                    .map(|(id, _)| {
+                        let task = graph.tasks.iter().find(|task| &task.id == id).unwrap();
+                        u128::from(task.resource_units)
+                    })
+                    .sum();
+                assert!(admitted <= u128::from(u64::MAX));
+                assert_eq!(u128::from(report.consumed_resource_units), admitted);
+            }
+        }
+    }
+
+    fn permanent_failure_after_transient_is_not_resumed(panics: bool) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut task = spec("lookup", &[]);
+        task.max_retries = 2;
+        task.output_schema = ValueSchema::Number;
+        let definition = GraphDefinition {
+            run_id: "permanent-after-transient".into(),
+            tasks: vec![task],
+        };
+        let mut handlers = HandlerRegistry::new();
+        let observed_calls = Arc::clone(&calls);
+        handlers.insert(
+            "lookup".into(),
+            handler(
+                move |context| match observed_calls.fetch_add(1, Ordering::SeqCst) {
+                    0 => Err(TaskFailure::transient("temporary transport error")),
+                    1 if panics => panic!("permanent handler panic"),
+                    1 => Ok(output(json!("not a number"), &context.task_id)),
+                    _ => Ok(output(json!(3), &context.task_id)),
+                },
+            ),
+        );
+        let executor = GraphExecutor::new(policy());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let report = executor
+            .execute(&definition, &handlers, &cancelled)
+            .unwrap();
+        let resumed = executor
+            .resume(
+                &definition,
+                &handlers,
+                &cancelled,
+                ExecutionCheckpoint::from_report(report.clone()),
+            )
+            .unwrap();
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a permanent failure must not inherit retry permission"
+        );
+        assert_eq!(report.tasks["lookup"].state, TaskState::Failed);
+        assert_eq!(report.tasks["lookup"].attempts, 2);
+        assert!(!report.tasks["lookup"].retryable);
+        assert_eq!(resumed.tasks, report.tasks);
+        assert_eq!(resumed.termination, Some(RunTermination::Failed));
+        assert_eq!(
+            resumed.consumed_resource_units,
+            report.consumed_resource_units
+        );
+    }
+
+    #[test]
+    fn panic_after_transient_failure_is_not_resumed() {
+        permanent_failure_after_transient_is_not_resumed(true);
+    }
+
+    #[test]
+    fn malformed_output_after_transient_failure_is_not_resumed() {
+        permanent_failure_after_transient_is_not_resumed(false);
     }
 }
