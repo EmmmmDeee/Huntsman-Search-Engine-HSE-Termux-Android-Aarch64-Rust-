@@ -208,22 +208,44 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check(`${scheme}: browser bar matches the app bar`, first.bar === (scheme === 'light' ? '#ffffff' : '#11151b'), first);
       await audit(page, `${scheme} scans`);
 
-      // The Radar view never reads hardware merely because it opened.
-      // CI has no Termux:API companion; an explicit request must fail with a
-      // useful error, never manufacture a zero-observation success.
-      let radarCalls = 0;
+      // Synthetic OS-cache fixture ONLY for browser rendering. Separate Rust HTTP
+      // tests cover missing Termux:API, refusal and actual server response codes.
+      const radarFixture = {
+        source: 'termux-wifi-scaninfo', acquisition: 'android_cached_scan_results_not_active_scan',
+        status: 'stale_only', observed: 1, rejected: 0,
+        observations: [{
+          sighting: { network_id: '3c:5a:b4:11:22:33', name: 'fixture', signal_dbm: -58 },
+          band: '5GHz', age_secs: 900, freshness: 'stale'
+        }]
+      };
+      let radarCalls = 0, lookupHeader = false;
       const countRadar = request => { if (new URL(request.url()).pathname === '/api/radar/wifi') radarCalls++; };
       page.on('request', countRadar);
+      await page.route('**/api/radar/wifi', async route => {
+        lookupHeader = route.request().headers()['x-huntsman-lookup'] === '1';
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(radarFixture) });
+      });
       await page.goto(base + '/#/radar', { waitUntil: 'networkidle' });
       check(`${scheme}: Radar is a reachable mobile view`, await page.isVisible('#view-radar'), 'missing');
-      check(`${scheme}: Radar is opt-in, no automatic sensor query`, radarCalls === 0, radarCalls);
+      check(`${scheme}: Radar never queries the sensor merely because it opened`, radarCalls === 0, radarCalls);
       await audit(page, `${scheme} radar`);
       await page.click('#rread');
-      await page.waitForSelector('#rerror:not([hidden])', { timeout: 20000 }).catch(() => {});
-      check(`${scheme}: Radar requests sensor data once after explicit action`, radarCalls === 1, radarCalls);
-      check(`${scheme}: missing phone plugin is visible, not a fake clean scan`,
-        await page.isVisible('#rerror') && await page.isHidden('#rresult') && await page.isDisabled('#rdownload'),
-        await page.textContent('#rerror'));
+      await page.waitForSelector('#rresult:not([hidden])', { timeout: 10000 }).catch(() => {});
+      check(`${scheme}: Radar requests an OS-cache observation only once after explicit action`,
+        radarCalls === 1 && lookupHeader, { radarCalls, lookupHeader });
+      const radarText = await page.textContent('#rrows');
+      check(`${scheme}: Radar shows cached values and stale labels without inventing positions`,
+        await page.isHidden('#rerror') && radarText.includes('3c:5a:b4:11:22:33') &&
+        radarText.includes('900') && radarText.includes('stale') && await page.isEnabled('#rdownload'),
+        radarText);
+      const [radarDownload] = await Promise.all([
+        page.waitForEvent('download', { timeout: 10000 }), page.click('#rdownload')
+      ]);
+      const exported = JSON.parse(fs.readFileSync(await radarDownload.path(), 'utf8'));
+      check(`${scheme}: exported Wi-Fi cache preserves source and uncertainty`,
+        exported.source === 'termux-wifi-scaninfo' && exported.status === 'stale_only' &&
+        exported.observations[0].age_secs === 900, exported);
+      await page.unroute('**/api/radar/wifi');
       page.off('request', countRadar);
 
       // New Scan: Spiderfoot's three ways of choosing what runs, each listing what the server has.
