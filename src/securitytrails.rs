@@ -3,7 +3,9 @@
 //! One lookup is one `GET https://api.securitytrails.com/v1/domain/{domain}/subdomains` with the key
 //! in the `APIKEY` header, run whenever `HUNTSMAN_SECTRAILS_KEY` is set (free: 50 queries a
 //! month). Each subdomain label becomes a pivot to `label.domain`; the total count is kept even
-//! when the plan caps the list.
+//! when the plan caps the list. The documented answer always carries `subdomains` (`SecurityTrails`
+//! API reference, List Subdomains): a body without it, such as a `message` object, is not an
+//! answer.
 
 use serde::Deserialize;
 
@@ -32,7 +34,6 @@ pub const INTEL: Source = Source {
 
 #[derive(Deserialize)]
 struct Body {
-    #[serde(default)]
     subdomains: Vec<String>,
     #[serde(default)]
     subdomain_count: Option<u64>,
@@ -114,6 +115,21 @@ mod tests {
             ["www.example.com", "mail.example.com", "api.dev.example.com"]
         );
         assert_eq!(f.tags, ["truncated"]);
+    }
+
+    #[test]
+    fn a_json_answer_without_subdomains_is_drift_not_a_zero() {
+        for body in [
+            "{}",
+            r#"{"message":"The requested domain has invalid characters"}"#,
+            r#"{"subdomains":null,"subdomain_count":0}"#,
+        ] {
+            let decoded = decode(body.as_bytes(), "example.com");
+            assert!(
+                matches!(decoded, Err(LegError::Decode(_))),
+                "{body}: {decoded:?}"
+            );
+        }
     }
 
     #[test]
