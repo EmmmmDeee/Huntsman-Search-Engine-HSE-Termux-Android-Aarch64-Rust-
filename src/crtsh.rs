@@ -4,7 +4,10 @@
 //! old tree as `1dfb5c9d`). Free and keyless: `GET https://crt.sh/?q=…&output=json`.
 //! SAN names become `Domain` entities (subdomains of the seed's apex are boosted and
 //! tagged), SAN addresses become `Email` entities, and a non-public issuing CA becomes
-//! an `Organisation`. Nothing is capped: every distinct name is a pivot.
+//! an `Organisation`. Nothing is capped: every distinct name is a pivot, and its evidence
+//! covers every certificate that names it: each crt.sh id (the whole certificate is
+//! `https://crt.sh/?id=…`), serial, issuer and issuing CA id, how many there are, the
+//! earliest start and latest end of validity, and when the first and newest were logged.
 //!
 //! crt.sh is slow and flaps: healthy JSON was measured at ~5–11 s, so requests get a
 //! 30 s timeout. HTTP 502 / 503 / 429 keep their bounded retry budget; one transient
@@ -12,7 +15,7 @@
 //! the same fixed pause. Challenge pages, DNS/TLS failures, 404/500, truncated or
 //! malformed 2xx bodies still fail once, typed.
 
-use std::collections::BTreeSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -113,9 +116,15 @@ pub enum CrtShError {
     Decode(String),
 }
 
-/// One crt.sh certificate row. Only the fields used for entities are declared.
+/// One crt.sh certificate row.
 #[derive(Debug, Default, Deserialize)]
 struct CrtEntry {
+    #[serde(default)]
+    id: Option<u64>,
+    #[serde(default)]
+    issuer_ca_id: Option<u64>,
+    #[serde(default)]
+    entry_timestamp: Option<String>,
     #[serde(default)]
     common_name: Option<String>,
     #[serde(default)]
@@ -316,6 +325,87 @@ fn cert_evidence(entry: &CrtEntry, summary: &str, scan_id: &str) -> Evidence {
     ev
 }
 
+/// Values in the order first given, each once. **Pure.**
+#[derive(Default)]
+struct Distinct {
+    values: Vec<String>,
+    seen: HashSet<String>,
+}
+
+impl Distinct {
+    fn push(&mut self, value: Option<String>) {
+        if let Some(value) = value.filter(|v| !v.trim().is_empty()) {
+            if self.seen.insert(value.clone()) {
+                self.values.push(value);
+            }
+        }
+    }
+}
+
+/// The earliest and latest of some times crt.sh writes in one ISO 8601 form, so the text
+/// orders as the time. **Pure.**
+fn span<'a>(times: impl Iterator<Item = Option<&'a str>>) -> (Option<&'a str>, Option<&'a str>) {
+    let times: Vec<&str> = times.flatten().filter(|t| !t.is_empty()).collect();
+    (times.iter().copied().min(), times.iter().copied().max())
+}
+
+/// [`cert_evidence`] of the first certificate that names an entity, and across every one that
+/// names it: each crt.sh id, serial, issuer and issuing CA id, the common names, how many
+/// certificates there are, the earliest start and latest end of validity, and when the first
+/// and newest were logged. Issuer names hold commas, so they are joined with `; `, the
+/// separator [`Evidence::attr_values`] splits on. **Pure.**
+fn certificates_evidence(certs: &[&CrtEntry], summary: &str, scan_id: &str) -> Evidence {
+    let Some(first) = certs.first() else {
+        return cert_evidence(&CrtEntry::default(), summary, scan_id);
+    };
+    let (mut ids, mut serials, mut issuers, mut ca_ids, mut common) = (
+        Distinct::default(),
+        Distinct::default(),
+        Distinct::default(),
+        Distinct::default(),
+        Distinct::default(),
+    );
+    for cert in certs {
+        ids.push(cert.id.map(|id| id.to_string()));
+        serials.push(cert.serial_number.clone());
+        issuers.push(cert.issuer_name.clone());
+        ca_ids.push(cert.issuer_ca_id.map(|id| id.to_string()));
+        common.push(cert.common_name.as_deref().map(str::to_lowercase));
+    }
+    let count = if ids.values.is_empty() {
+        certs.len()
+    } else {
+        ids.values.len()
+    };
+    let (first_start, _) = span(certs.iter().map(|c| c.not_before.as_deref()));
+    let (_, last_end) = span(certs.iter().map(|c| c.not_after.as_deref()));
+    let (first_logged, last_logged) = span(certs.iter().map(|c| c.entry_timestamp.as_deref()));
+    let mut ev =
+        cert_evidence(first, summary, scan_id).with_attr("certificates", count.to_string());
+    for (key, values, separator) in [
+        ("cert_ids", &ids.values, ","),
+        ("cert_serials", &serials.values, ","),
+        ("issuers", &issuers.values, "; "),
+        ("issuer_ca_ids", &ca_ids.values, ","),
+        ("common_names", &common.values, ","),
+    ] {
+        if !values.is_empty() {
+            ev = ev.with_attr(key, values.join(separator));
+        }
+    }
+    for (key, value) in [
+        ("first_not_before", first_start),
+        ("last_not_after", last_end),
+        ("first_logged", first_logged),
+        ("last_logged", last_logged),
+    ] {
+        if let Some(value) = value {
+            ev = ev.with_attr(key, value);
+        }
+    }
+    ev
+}
+
 /// First non-empty `O=` value of an X.509 distinguished name. **Pure.**
 fn parse_dn_org(dn: &str) -> Option<String> {
     dn_attributes(dn)
@@ -376,91 +466,163 @@ fn is_public_ca(org: &str) -> bool {
         .any(|prefix| lower.starts_with(prefix))
 }
 
+/// Every name a certificate row lists: its SAN lines and its common name. **Pure.**
+fn names_of(entry: &CrtEntry) -> impl Iterator<Item = &str> {
+    entry
+        .name_value
+        .as_deref()
+        .unwrap_or("")
+        .split('\n')
+        .chain(entry.common_name.as_deref())
+}
+
+/// One entity of the lookup and every certificate that names it.
+struct Named<'a> {
+    entity: Entity,
+    summary: String,
+    certs: Vec<&'a CrtEntry>,
+}
+
+impl<'a> Named<'a> {
+    fn new(entity: Entity, summary: impl Into<String>) -> Self {
+        Self {
+            entity,
+            summary: summary.into(),
+            certs: Vec::new(),
+        }
+    }
+
+    /// Count `entry` once, however many of its names lead here.
+    fn named_by(&mut self, entry: &'a CrtEntry) {
+        if !self
+            .certs
+            .last()
+            .is_some_and(|last| std::ptr::eq(*last, entry))
+        {
+            self.certs.push(entry);
+        }
+    }
+}
+
+/// The entity a certificate name stands for, keyed by its identity, or `None` for a name
+/// that is not surfaced: a wildcard, a role mailbox, a too-short address or a bare label.
+/// **Pure.**
+fn name_entity(name: &str, base: &str, scan_id: &str) -> Option<(String, Named<'static>)> {
+    if name.is_empty() || name.starts_with('*') {
+        return None;
+    }
+    if crate::canonical::canonical_email(name).is_some() {
+        if name.len() < MIN_EMAIL_LEN || crate::domains::is_infrastructure_email(name) {
+            return None;
+        }
+        let mut e = Entity::new(EntityKind::Email, name, HIGH_PLUS, scan_id);
+        e.tag(tags::CT_LOG);
+        return Some((
+            format!("email {name}"),
+            Named::new(e, "Email in certificate SAN"),
+        ));
+    }
+    if !name.contains('.') {
+        return None;
+    }
+    // Dedup and classify on the canonical host (`www.` stripped), the same identity the
+    // monolith's entity normaliser gave a Domain, so `www.example.com` and `example.com` are
+    // one name, and the dot-boundary check keeps `evilexample.com` external.
+    let (canonical, is_sub) = crate::domains::classify_domain_candidate(name, base);
+    let conf = if is_sub { VERY_HIGH } else { LOW_MEDIUM };
+    let mut e = Entity::new(EntityKind::Domain, &canonical, conf, scan_id);
+    // The spelling the certificate carried, as the monolith kept it.
+    name.clone_into(&mut e.raw_value);
+    e.tag(tags::CT_LOG);
+    if is_sub {
+        e.tag(tags::SUBDOMAIN);
+    }
+    Some((
+        format!("domain {canonical}"),
+        Named::new(e, "Certificate Transparency log"),
+    ))
+}
+
 /// CT rows → deduplicated Domain / Email / Organisation entities, every one kept,
 /// confidence-descending then uid. Wildcards are skipped, role mailboxes are not
-/// surfaced, and the apex is never its own subdomain. **Pure.**
+/// surfaced, and the apex is never its own subdomain. Each entity's evidence covers every
+/// certificate that names it ([`certificates_evidence`]). **Pure.**
 fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec<Entity> {
     let base = domain_base.trim().to_lowercase();
-    let mut seen_domains = BTreeSet::new();
-    let mut seen_emails = BTreeSet::new();
-    let mut seen_issuers = BTreeSet::new();
-    let mut out = Vec::new();
+    let mut named: Vec<Named<'_>> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
 
     for entry in entries {
-        let names = entry
-            .name_value
-            .as_deref()
-            .unwrap_or("")
-            .split('\n')
-            .chain(entry.common_name.as_deref());
-        for raw in names {
+        for raw in names_of(entry) {
             let name = raw.trim().to_lowercase();
-            if name.is_empty() || name.starts_with('*') {
+            let Some((key, fresh)) = name_entity(&name, &base, scan_id) else {
                 continue;
-            }
-            if crate::canonical::canonical_email(&name).is_some() {
-                if name.len() < MIN_EMAIL_LEN
-                    || crate::domains::is_infrastructure_email(&name)
-                    || !seen_emails.insert(name.clone())
-                {
-                    continue;
-                }
-                let mut e = Entity::new(EntityKind::Email, &name, HIGH_PLUS, scan_id);
-                e.tag(tags::CT_LOG);
-                e.add_evidence(cert_evidence(entry, "Email in certificate SAN", scan_id));
-                out.push(e);
-            } else if name.contains('.') {
-                // Dedup and classify on the canonical host (`www.` stripped), the
-                // same identity the monolith's entity normaliser gave a Domain, so
-                // `www.example.com` and `example.com` are one name, and the
-                // dot-boundary check keeps `evilexample.com` external.
-                let (canonical, is_sub) = crate::domains::classify_domain_candidate(&name, &base);
-                if !seen_domains.insert(canonical.clone()) {
-                    continue;
-                }
-                let conf = if is_sub { VERY_HIGH } else { LOW_MEDIUM };
-                let mut e = Entity::new(EntityKind::Domain, &canonical, conf, scan_id);
-                // The spelling the certificate carried, as the monolith kept it.
-                e.raw_value = name;
-                e.tag(tags::CT_LOG);
-                if is_sub {
-                    e.tag(tags::SUBDOMAIN);
-                }
-                e.add_evidence(cert_evidence(
-                    entry,
-                    "Certificate Transparency log",
-                    scan_id,
-                ));
-                out.push(e);
-            }
+            };
+            let at = *index.entry(key).or_insert_with(|| {
+                named.push(fresh);
+                named.len() - 1
+            });
+            named[at].named_by(entry);
         }
     }
 
     // A non-public issuing CA reveals custom or enterprise PKI: every domain it
     // signed shares an operator. Once per distinct `O=`.
+    let mut signed: Vec<(String, Vec<&CrtEntry>)> = Vec::new();
+    let mut seen_issuers: HashMap<String, usize> = HashMap::new();
     for entry in entries {
-        let Some(dn) = entry.issuer_name.as_deref() else {
+        let Some(org) = entry.issuer_name.as_deref().and_then(parse_dn_org) else {
             continue;
         };
-        let Some(org) = parse_dn_org(dn) else {
-            continue;
-        };
-        if is_public_ca(&org) || !seen_issuers.insert(org.to_lowercase()) {
+        if is_public_ca(&org) {
             continue;
         }
+        let at = *seen_issuers.entry(org.to_lowercase()).or_insert_with(|| {
+            signed.push((org, Vec::new()));
+            signed.len() - 1
+        });
+        signed[at].1.push(entry);
+    }
+
+    let mut out: Vec<Entity> = named
+        .into_iter()
+        .map(
+            |Named {
+                 mut entity,
+                 summary,
+                 certs,
+             }| {
+                entity.add_evidence(certificates_evidence(&certs, &summary, scan_id));
+                entity
+            },
+        )
+        .collect();
+    for (org, certs) in signed {
         let mut o = Entity::new(EntityKind::Organisation, org.as_str(), MEDIUM_HIGH, scan_id);
         o.tag(tags::CT_LOG);
         o.tag("certificate-issuer");
         o.tag(tags::DERIVED);
-        o.add_evidence(
-            cert_evidence(
-                entry,
-                &format!("Certificate issuer organisation: {org}"),
-                scan_id,
-            )
-            .with_attr("issuer_dn", dn)
-            .with_attr("signed_domain", domain_base),
-        );
+        let dn = certs
+            .first()
+            .and_then(|c| c.issuer_name.as_deref())
+            .unwrap_or_default();
+        let mut signed_names = Distinct::default();
+        for cert in &certs {
+            for name in names_of(cert) {
+                signed_names.push(Some(name.trim().to_lowercase()));
+            }
+        }
+        let mut ev = certificates_evidence(
+            &certs,
+            &format!("Certificate issuer organisation: {org}"),
+            scan_id,
+        )
+        .with_attr("issuer_dn", dn)
+        .with_attr("signed_domain", domain_base);
+        if !signed_names.values.is_empty() {
+            ev = ev.with_attr("signed_names", signed_names.values.join(","));
+        }
+        o.add_evidence(ev);
         out.push(o);
     }
 
