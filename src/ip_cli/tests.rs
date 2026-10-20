@@ -108,7 +108,11 @@ fn keyless() -> Routes {
         ("https://www.virustotal.com/", 200, VIRUSTOTAL),
         ("https://pulsedive.com/", 404, PULSEDIVE_UNKNOWN),
         ("https://app.netlas.io/", 404, ""),
-        ("https://otx.alienvault.com/", 404, ""),
+        (
+            "https://otx.alienvault.com/",
+            200,
+            r#"{"indicator":"1.1.1.1","pulse_info":{"count":0,"pulses":[]},"validation":[]}"#,
+        ),
         ("https://urlscan.io/", 200, URLSCAN_NONE),
         ("https://ipinfo.io/", 200, IPINFO),
         (
