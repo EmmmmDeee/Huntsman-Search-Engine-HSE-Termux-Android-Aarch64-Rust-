@@ -2252,72 +2252,58 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_from_another_service_prevents_late_finished_status() {
+    fn stopping_a_foreign_owned_scan_is_an_explicit_conflict() {
         let (service, dir) = with_lookup(
-            "shared-stop-status",
+            "foreign-stop",
             Arc::new(|_: ScanKind, _: &str, _: &Selection| Ok(LookupOutput::default())),
         );
-        let (created, _) = service
+        let (mut record, _) = service
             .create(&ScanRequest {
                 target: "1.1.1.1".into(),
                 ..ScanRequest::default()
             })
             .unwrap();
+        record.status = ScanStatus::Running;
+        record.owner = Some(std::process::id().wrapping_add(1));
+        service.store().update(&record).unwrap();
         let controller = ScanService::new(service.store().clone(), Arc::clone(&service.lookup));
-        controller.stop(&created.id).unwrap();
-        service
-            .set_status(&created.id, ScanStatus::Finished, Some(456))
-            .unwrap();
-        let row = service.store().get(&created.id).unwrap();
-        assert_eq!(row.status, ScanStatus::Aborted);
-        assert_eq!(row.ended, Some(456));
+        let cancellation = controller.graph_cancellation(&record.id);
+        let before = std::fs::read(dir.join(&record.id).join("scan.json")).unwrap();
+
+        let error = controller.stop(&record.id).unwrap_err();
+        assert!(matches!(error, ServiceError::Conflict(_)));
+        assert_eq!(error.status(), 409);
+        assert!(error.to_string().contains("owning process"));
+        assert_eq!(
+            std::fs::read(dir.join(&record.id).join("scan.json")).unwrap(),
+            before
+        );
+        assert!(!controller.state().aborts.contains(&record.id));
+        assert!(!cancellation.load(Ordering::Acquire));
+        assert!(service.store().log(&record.id).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_stop_from_another_service_cancels_queued_lookups_and_keeps_results() {
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel::<()>();
-        let release_rx = Mutex::new(release_rx);
-        let entered_tx = Mutex::new(entered_tx);
-        let calls = Arc::new(AtomicUsize::new(0));
-        let observed_calls = Arc::clone(&calls);
+    fn stopping_a_scan_without_a_known_owner_is_an_explicit_conflict() {
         let (service, dir) = with_lookup(
-            "shared-stop-lookup",
-            Arc::new(move |kind: ScanKind, selector: &str, _: &Selection| {
-                observed_calls.fetch_add(1, Ordering::SeqCst);
-                if kind == ScanKind::Email {
-                    entered_tx.lock().unwrap().send(()).unwrap();
-                    release_rx
-                        .lock()
-                        .unwrap()
-                        .recv_timeout(Duration::from_secs(10))
-                        .unwrap();
-                }
-                Ok(found(kind, selector))
-            }),
+            "unknown-owner-stop",
+            Arc::new(|_: ScanKind, _: &str, _: &Selection| Ok(LookupOutput::default())),
         );
-        let record = service
-            .start(&ScanRequest {
-                target: "jane@example.org".into(),
+        let (mut record, _) = service
+            .create(&ScanRequest {
+                target: "1.1.1.1".into(),
                 ..ScanRequest::default()
             })
             .unwrap();
-        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        let controller = ScanService::new(service.store().clone(), Arc::clone(&service.lookup));
-        assert_eq!(
-            controller.stop(&record.id).unwrap().status,
-            ScanStatus::AbortRequested
-        );
-        release_tx.send(()).unwrap();
-        let finished = service
-            .wait(&record.id, Instant::now() + Duration::from_secs(10))
-            .unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(finished.status, ScanStatus::Aborted);
-        let results = service.store().results(&record.id).unwrap().unwrap();
-        assert!(!results.entities.is_empty());
-        assert_eq!(results.termination, Some(TerminationReason::Cancelled));
+        record.owner = None;
+        service.store().update(&record).unwrap();
+
+        let error = service.stop(&record.id).unwrap_err();
+        assert!(matches!(error, ServiceError::Conflict(_)));
+        assert_eq!(error.status(), 409);
+        assert_eq!(service.store().get(&record.id).unwrap(), record);
+        assert!(!service.state().aborts.contains(&record.id));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
