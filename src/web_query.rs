@@ -503,6 +503,63 @@ mod tests {
     }
 
     #[test]
+    fn parser_preserves_first_seen_provider_ranking_and_deduplicates() {
+        let html = concat!(
+            "<a href=\"https://z.example/item\">first</a>",
+            "<a href=\"https://a.example/item\">second</a>",
+            "<a href=\"https://z.example/item\">duplicate</a>",
+            "<a href=\"https://m.example/item\">third</a>",
+        );
+        let hits = parse_hits(html, "bing");
+        let urls: Vec<_> = hits.iter().map(|hit| hit.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://z.example/item",
+                "https://a.example/item",
+                "https://m.example/item",
+            ]
+        );
+    }
+
+    #[test]
+    fn parser_caps_the_first_distinct_results_without_reordering() {
+        let mut html = String::new();
+        for index in (0..MAX_RESULTS_PER_ENGINE + 2).rev() {
+            std::fmt::Write::write_fmt(
+                &mut html,
+                format_args!("<a href=\"https://example.org/{index:02}\">hit</a>"),
+            )
+            .expect("writing to String is infallible");
+        }
+        let hits = parse_hits(&html, "bing");
+        assert_eq!(hits.len(), MAX_RESULTS_PER_ENGINE);
+        assert_eq!(
+            hits[0].url,
+            format!("https://example.org/{:02}", MAX_RESULTS_PER_ENGINE + 1)
+        );
+        assert_eq!(
+            hits[MAX_RESULTS_PER_ENGINE - 1].url,
+            "https://example.org/02"
+        );
+    }
+
+    #[test]
+    fn parser_rejects_data_href_and_attribute_substring_false_positives() {
+        let html = concat!(
+            "<a data-href=\"https://wrong.example/path\" href=\"https://real.example/path\">real</a>",
+            "<a nothref=\"https://also-wrong.example/path\">not a link</a>",
+            "<a HREF = 'https://second.example/path'>second</a>",
+        );
+        let hits = parse_hits(html, "bing");
+        let urls: Vec<_> = hits.iter().map(|hit| hit.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            ["https://real.example/path", "https://second.example/path"]
+        );
+    }
+
+    #[test]
     fn multi_engine_search_isolates_zero_yield_and_keeps_other_hits() {
         let fake = Fake::new(vec![
             Ok(response(200, r#"<a href="https://example.org/a">A</a>"#)),
@@ -596,6 +653,59 @@ mod tests {
 
         assert_eq!(first.hits[0].url, "https://example.org/first");
         assert_eq!(second.hits[0].url, "https://example.org/second");
+    }
+
+    #[test]
+    fn no_cache_directive_prevents_reusing_a_search_page_without_revalidation() {
+        let engine = EngineSpec {
+            name: "no_cache_directive_test",
+            base_url: "https://no-cache-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Ok(response_with_headers(
+                200,
+                &[("cache-control", "no-cache")],
+                r#"<a href="https://example.org/first">first</a>"#,
+            )),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/second">second</a>"#,
+            )),
+        ]);
+
+        let first = search_engine(&fake, engine, "no-cache-unique-query", 500).unwrap();
+        let second = search_engine(&fake, engine, "no-cache-unique-query", 501).unwrap();
+        assert_eq!(first.hits[0].url, "https://example.org/first");
+        assert_eq!(second.hits[0].url, "https://example.org/second");
+
+        assert!(!response_is_cacheable(&response_with_headers(
+            200,
+            &[("cache-control", "max-age=0")],
+            r#"<a href="https://example.org/third">third</a>"#,
+        )));
+    }
+
+    #[test]
+    fn a_future_dated_cache_entry_is_not_reused_after_clock_rollback() {
+        let engine = EngineSpec {
+            name: "cache_clock_rollback_test",
+            base_url: "https://clock-rollback-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/before">before</a>"#,
+            )),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/after">after</a>"#,
+            )),
+        ]);
+
+        let first = search_engine(&fake, engine, "clock-rollback-unique-query", 900).unwrap();
+        let second = search_engine(&fake, engine, "clock-rollback-unique-query", 899).unwrap();
+        assert_eq!(first.hits[0].url, "https://example.org/before");
+        assert_eq!(second.hits[0].url, "https://example.org/after");
     }
 
     #[test]
