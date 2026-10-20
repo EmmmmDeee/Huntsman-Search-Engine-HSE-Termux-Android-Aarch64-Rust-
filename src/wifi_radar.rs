@@ -46,6 +46,28 @@ fn optional_string(value: Option<&serde_json::Value>) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// A service-set identifier must be an individual hardware address, not
+/// Android's redaction sentinel, zero, or an IEEE group/broadcast address.
+/// Randomised (locally administered) *individual* BSSIDs remain valid.
+#[must_use]
+pub fn valid_wifi_bssid(value: &str) -> bool {
+    if !is_mac(value) {
+        return false;
+    }
+    let address = value.to_ascii_lowercase();
+    if matches!(address.as_str(), "00:00:00:00:00:00" | "02:00:00:00:00:00") {
+        return false;
+    }
+    let Some(first) = address.split(':').next() else {
+        return false;
+    };
+    let Ok(first_byte) = u8::from_str_radix(first, 16) else {
+        return false;
+    };
+    // IEEE 802 I/G low bit distinguishes group/broadcast from individual.
+    first_byte & 1 == 0
+}
+
 /// Age Android boot-relative scan timestamps without precision-losing integer casts.
 /// A timestamp beyond 136 years of uptime has no meaningful handset age.
 fn age_from_boot(uptime_secs: Option<f64>, timestamp_us: Option<u64>) -> Option<f64> {
@@ -97,7 +119,7 @@ pub fn parse_scan(bytes: &[u8], uptime_secs: Option<f64>) -> Result<WifiScan, Er
             rejected += 1;
             continue;
         };
-        if !is_mac(bssid) {
+        if !valid_wifi_bssid(bssid) {
             rejected += 1;
             continue;
         }
@@ -260,6 +282,51 @@ mod tests {
         assert_eq!(report.status, "inconclusive");
         assert_eq!(report.observed, 0);
         assert!(report.observations.is_empty());
+    }
+
+    #[test]
+    fn wi_fi_bssid_rejects_placeholders_groups_and_unassigned_identities() {
+        // Multicast/group MACs and Android's permission sentinel are not
+        // unique individual access-point identities even if the syntax fits.
+        for invalid in [
+            "00:00:00:00:00:00",
+            "02:00:00:00:00:00",
+            "ff:ff:ff:ff:ff:ff",
+            "01:00:5e:00:00:01",
+            "33:33:00:00:00:01",
+            "not-an-address",
+        ] {
+            assert!(!valid_wifi_bssid(invalid), "{invalid}");
+        }
+        // Locally administered randomised unicast BSSIDs are legitimate.
+        for valid in [
+            "3C:5A:B4:11:22:33",
+            "36:32:62:36:31:33",
+            "02:11:22:33:44:55",
+        ] {
+            assert!(valid_wifi_bssid(valid), "{valid}");
+        }
+    }
+
+    #[test]
+    fn invalid_identity_records_never_create_wifi_observations_or_pivots() {
+        let raw = br#"[{"bssid":"02:00:00:00:00:00","rssi":-33,"timestamp":980000000},{"bssid":"01:00:5e:00:00:01","rssi":-48},{"bssid":"ff:ff:ff:ff:ff:ff","rssi":-20},{"bssid":"00:00:00:00:00:00","rssi":-10},{"bssid":"36:32:62:36:31:33","rssi":-60,"timestamp":980000000}]"#;
+        let scan = parse_scan(raw, Some(1000.0)).unwrap();
+        assert_eq!((scan.observed, scan.rejected), (1, 4));
+        assert_eq!(scan.status, "os_cached");
+        assert_eq!(
+            scan.observations[0].sighting.network_id,
+            "36:32:62:36:31:33"
+        );
+        assert_eq!(scan.observations[0].age_secs, Some(20.0));
+
+        let only_redacted = parse_replay(
+            br#"[{"bssid":"02:00:00:00:00:00","rssi":-35}]"#,
+        )
+        .unwrap();
+        assert_eq!(only_redacted.observed, 0);
+        assert_eq!(only_redacted.rejected, 1);
+        assert_eq!(only_redacted.status, "inconclusive");
     }
 
     #[test]
