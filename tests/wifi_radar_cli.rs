@@ -37,10 +37,10 @@ fn termux_json_replays_as_real_rf_sightings_without_fabricated_location() {
         String::from_utf8_lossy(&out.stderr)
     );
     let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(parsed["source"], "termux-wifi-scaninfo");
+    assert_eq!(parsed["source"], "unverified_json_file");
     assert_eq!(
         parsed["acquisition"],
-        "android_cached_scan_results_not_active_scan"
+        "offline_replay_no_boot_provenance"
     );
     assert_eq!(parsed["status"], "freshness_unknown");
     assert_eq!(parsed["observed"], 1);
@@ -51,6 +51,45 @@ fn termux_json_replays_as_real_rf_sightings_without_fabricated_location() {
     assert_eq!(parsed["observations"][0]["band"], "5GHz");
     assert!(parsed["observations"][0]["sighting"]["latitude"].is_null());
     assert!(parsed["observations"][0]["sighting"]["observed_epoch"].is_null());
+    fs::remove_file(input).unwrap();
+}
+
+#[test]
+fn a_replayed_foreign_boot_timestamp_is_never_called_fresh() {
+    // An imported file can have an Android boot timestamp that happens to
+    // match the host uptime. The old CLI incorrectly labelled it recent.
+    let uptime_text = fs::read_to_string("/proc/uptime").unwrap();
+    let seconds: u64 = uptime_text
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .split('.')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let timestamp = seconds.checked_mul(1_000_000).unwrap();
+    let input = path("foreign-boot");
+    fs::write(
+        &input,
+        format!(
+            r#"[{{"bssid":"3C:5A:B4:11:22:33","ssid":"archived","rssi":-52,"timestamp":{timestamp}}}]"#
+        ),
+    )
+    .unwrap();
+    let out = bin()
+        .args(["radar", "wifi", "--json", "--file"])
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(parsed["status"], "freshness_unknown");
+    assert_eq!(parsed["source"], "unverified_json_file");
+    assert_eq!(parsed["acquisition"], "offline_replay_no_boot_provenance");
+    assert_eq!(parsed["observations"][0]["age_secs"], serde_json::Value::Null);
+    assert_eq!(parsed["observations"][0]["freshness"], "unknown");
+    assert_eq!(parsed["observations"][0]["os_timestamp_us"], timestamp);
     fs::remove_file(input).unwrap();
 }
 
