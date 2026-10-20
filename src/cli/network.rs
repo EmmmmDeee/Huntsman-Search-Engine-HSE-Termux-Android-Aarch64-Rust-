@@ -48,7 +48,10 @@ pub(super) fn dehashed_cmd(args: &[String]) -> ExitCode {
         std::sync::Arc::new(UreqTransport::new(&TransportConfig::default()));
     ExitCode::from(cli::run(
         args,
-        client::key_from_environment,
+        || {
+            let keys = crate::cli::credentials::lookup_keys();
+            client::key_from_sources(&keys)
+        },
         http,
         &mut std::io::stdout().lock(),
         &mut std::io::stderr().lock(),
