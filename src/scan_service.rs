@@ -1503,7 +1503,7 @@ impl ScanService {
     ///
     /// # Errors
     /// [`ServiceError::NotFound`] for no such scan, [`ServiceError::Conflict`] when it is not
-    /// running.
+    /// running or is not owned by this process.
     pub fn stop(&self, id: &str) -> Result<ScanRecord, ServiceError> {
         // Hold the same lock as worker status transitions and save's row update.
         // Otherwise a stop could read RUNNING and replace a newly FINISHED row.
@@ -1513,6 +1513,12 @@ impl ScanService {
             return Err(ServiceError::Conflict(format!(
                 "scan {id} is {}, not running",
                 record.status.as_str()
+            )));
+        }
+        // Only this process can signal its workers; a row update cannot stop a foreign worker.
+        if record.owner != Some(std::process::id()) {
+            return Err(ServiceError::Conflict(format!(
+                "scan {id} is not owned by this process; stop it in its owning process"
             )));
         }
         state.aborts.insert(id.to_owned());
@@ -2248,6 +2254,63 @@ mod tests {
             ScanStatus::Aborted,
             "a completed scan must never be resurrected by a late worker transition"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stopping_a_foreign_owned_scan_is_an_explicit_conflict() {
+        let (service, dir) = with_lookup(
+            "foreign-stop",
+            Arc::new(|_: ScanKind, _: &str, _: &Selection| Ok(LookupOutput::default())),
+        );
+        let (mut record, _) = service
+            .create(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        record.status = ScanStatus::Running;
+        record.owner = Some(std::process::id().wrapping_add(1));
+        service.store().update(&record).unwrap();
+        let controller = ScanService::new(service.store().clone(), Arc::clone(&service.lookup));
+        let cancellation = controller.graph_cancellation(&record.id);
+        let before = std::fs::read(dir.join(&record.id).join("scan.json")).unwrap();
+        let before_log = service.store().log(&record.id).unwrap();
+
+        let error = controller.stop(&record.id).unwrap_err();
+        assert!(matches!(error, ServiceError::Conflict(_)));
+        assert_eq!(error.status(), 409);
+        assert!(error.to_string().contains("owning process"));
+        assert_eq!(
+            std::fs::read(dir.join(&record.id).join("scan.json")).unwrap(),
+            before
+        );
+        assert!(!controller.state().aborts.contains(&record.id));
+        assert!(!cancellation.load(Ordering::Acquire));
+        assert_eq!(service.store().log(&record.id).unwrap(), before_log);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stopping_a_scan_without_a_known_owner_is_an_explicit_conflict() {
+        let (service, dir) = with_lookup(
+            "unknown-owner-stop",
+            Arc::new(|_: ScanKind, _: &str, _: &Selection| Ok(LookupOutput::default())),
+        );
+        let (mut record, _) = service
+            .create(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        record.owner = None;
+        service.store().update(&record).unwrap();
+
+        let error = service.stop(&record.id).unwrap_err();
+        assert!(matches!(error, ServiceError::Conflict(_)));
+        assert_eq!(error.status(), 409);
+        assert_eq!(service.store().get(&record.id).unwrap(), record);
+        assert!(!service.state().aborts.contains(&record.id));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
