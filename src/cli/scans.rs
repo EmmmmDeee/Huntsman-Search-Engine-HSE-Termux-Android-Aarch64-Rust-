@@ -26,8 +26,8 @@ use huntsman_recon::sf_types;
 use huntsman_recon::textnorm::escape_controls;
 use serde_json::Value;
 
-pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [--depth N] [--json] | scans list [--json] | scans show ID | scans summary ID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans export ID|ID,ID... [-f csv|tsv|xlsx|json|gexf] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans rules [--json] | scans types
-Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read, and scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. --depth N follows what the scan finds, as Spiderfoot does: each email, username, domain, phone, IP address and BSSID a lookup finds is looked up in turn, N hops past the target (0, the default, runs the target's lookup only), under the shared lookup and entity budgets; each element then names the element it was found from, so the elements form the scan's discovery tree. -t keeps only those element types; -u passive skips the keyed breach lookup of every email. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); xlsx (or excel) is Spiderfoot's workbook, a sheet per element type, with every value whole and never read as a formula; several ids give one export with the Scan Name first, JSON unless -f says csv, tsv or xlsx. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
+pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [-m MODULE[,MODULE...]] [--depth N] [--json] | scans list [--json] | scans show ID | scans summary ID | scans analyze ID [--json] | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans export ID|ID,ID... [-f csv|tsv|xlsx|json|gexf] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans compare EARLIER LATER [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans search VALUE [ID...] [-t TYPE] [--hide-fp] [--json] | scans rules [--json] | scans types
+Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. scans analyze runs shared offline analysis over saved entities without mutating them; derived relations are available, while upstream evidence ancestry and provider coverage cannot be reconstructed and are explicitly marked unavailable. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read, and scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. --depth N follows what the scan finds, as Spiderfoot does: each email, username, domain, phone, IP address and BSSID a lookup finds is looked up in turn, N hops past the target (0, the default, runs the target's lookup only), under the shared lookup and entity budgets; each element then names the element it was found from, so the elements form the scan's discovery tree. -t keeps only those element types; -u passive skips the keyed breach lookup of every email. -m (or --modules) asks only the modules named, by Huntsman's name (see modules) or Spiderfoot's, where sfp_whois stands for every module that does its work: a module not chosen sends nothing, a lookup that asks none of them is skipped, a target none of them looks up is refused, and offline modules always run. fp flags elements as false positives, and with them every element found from them; --unset clears them the same way, refused while an element's source is still flagged. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); xlsx (or excel) is Spiderfoot's workbook, a sheet per element type, with every value whole and never read as a formula; several ids give one export with the Scan Name first, JSON unless -f says csv, tsv or xlsx. compare sets a later scan against an earlier one, which Spiderfoot cannot: the change in each data type, then every element it found that the earlier did not (+) and every one it no longer finds (-), matched by type and value, and the correlations each has that the other lacks; -f writes the added and removed elements as CSV, TSV or Excel. search finds elements in every saved scan, or the scans named, as Spiderfoot's search box reads a query: /regex/ anywhere, a *wildcard* as the whole value, or text anywhere, all regardless of case, in an element's data, its source element's data or its module; -t keeps one type, and an empty VALUE with -t lists that type everywhere. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
 
 /// The synopsis line of [`SCANS_HELP`], for a usage error.
 fn usage() -> &'static str {
@@ -41,8 +41,8 @@ pub(super) fn scan_lookup() -> ScanLookup {
 
 /// [`scan_lookup`], with `refusal` turning a lookup's refusal into the message the scan logs.
 fn lookup_with(refusal: impl Fn(Refused) -> String + Send + Sync + 'static) -> ScanLookup {
-    Arc::new(move |kind, selector| {
-        collect(kind, selector)
+    Arc::new(move |kind, selector, chosen| {
+        collect(kind, selector, chosen)
             .map(|found| LookupOutput {
                 text: found.text,
                 entities: found.entities,
@@ -78,6 +78,11 @@ pub(super) fn default_scan_dir() -> Option<PathBuf> {
     state_dir().map(|state| state.join("scans"))
 }
 
+/// `$HUNTSMAN_HOME/feeds`, else `~/.huntsman/feeds`: the threat feeds' downloaded copies.
+pub(in crate::cli) fn default_feed_dir() -> Option<PathBuf> {
+    state_dir().map(|state| state.join("feeds"))
+}
+
 /// `$HUNTSMAN_HOME/correlations`, else `~/.huntsman/correlations`: the operator's own
 /// Spiderfoot-format correlation rules.
 pub(super) fn default_rules_dir() -> Option<PathBuf> {
@@ -111,7 +116,7 @@ fn open_api_with(
 }
 
 /// Options that take a value, by every spelling, and the name each is read back by.
-const VALUED: [(&str, &str); 16] = [
+const VALUED: [(&str, &str); 18] = [
     ("--dir", "dir"),
     ("--depth", "depth"),
     ("--rules", "rules"),
@@ -123,6 +128,8 @@ const VALUED: [(&str, &str); 16] = [
     ("--usecase", "usecase"),
     ("-t", "types"),
     ("--types", "types"),
+    ("-m", "modules"),
+    ("--modules", "modules"),
     ("-f", "format"),
     ("--format", "format"),
     ("-o", "output"),
@@ -251,6 +258,40 @@ fn print_list(rows: &Value) {
     }
 }
 
+/// `scans search`: every element that matches, in every saved scan or the ones named, each
+/// with its scan.
+fn search(api: &ScanApi, parsed: &Parsed, value: &str, ids: &[&str]) -> ExitCode {
+    let ids = ids.join(",");
+    let response = api.handle(
+        "GET",
+        "/api/scans/search",
+        &query(&[
+            ("value", Some(value)),
+            ("type", parsed.value("types")),
+            ("ids", Some(ids.as_str()).filter(|ids| !ids.is_empty())),
+            ("hidefp", parsed.on("--hide-fp").then_some("1")),
+        ]),
+    );
+    table_or_json(&response, parsed, print_search)
+}
+
+fn print_search(rows: &Value) {
+    println!("SCAN\tID\tUPDATED\tTYPE\tMODULE\tSOURCE\tF/P\tDATA");
+    for row in rows.as_array().into_iter().flatten() {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            one_line(row["scan_id"].as_str().unwrap_or_default()),
+            one_line(row["id"].as_str().unwrap_or_default()),
+            millis(&row["created"]),
+            one_line(row["type"].as_str().unwrap_or_default()),
+            one_line(row["module"].as_str().unwrap_or_default()),
+            one_line(row["source_data"].as_str().unwrap_or_default()),
+            u8::from(row["fp"].as_bool().unwrap_or(false)),
+            one_line(row["data"].as_str().unwrap_or_default()),
+        );
+    }
+}
+
 fn print_elements(rows: &Value) {
     println!("ID\tUPDATED\tTYPE\tMODULE\tSOURCE\tF/P\tDATA");
     for row in rows.as_array().into_iter().flatten() {
@@ -369,17 +410,30 @@ pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
             "scans fp takes a scan id and element ids, comma separated",
         ),
         ("list", _) => fail(EX_USAGE, "scans list takes no argument"),
+        ("compare", [earlier, later]) => compare(&api, &parsed, earlier, later),
+        ("compare", _) => fail(
+            EX_USAGE,
+            "scans compare takes two scan ids, the earlier first",
+        ),
+        ("search", [value, ids @ ..]) => search(&api, &parsed, value, ids),
+        ("search", []) => fail(
+            EX_USAGE,
+            "scans search takes what to find (text, *wildcard* or /regex/), then any scan ids",
+        ),
         (_, [id]) => one_scan(&api, &parsed, command, id),
         _ => fail(EX_USAGE, &format!("scans {command} takes one scan id")),
     }
 }
 
 /// Every `scans` subcommand.
-const SUBCOMMANDS: [&str; 14] = [
+const SUBCOMMANDS: [&str; 17] = [
     "run",
     "list",
+    "compare",
+    "search",
     "show",
     "summary",
+    "analyze",
     "elements",
     "correlations",
     "correlate",
@@ -451,6 +505,39 @@ fn rules_listing(parsed: &Parsed) -> ExitCode {
     }
 }
 
+/// A concise CLI view of the shared analysis. Full output is available via --json;
+/// provider coverage and upstream independence are never inferred from merged entities.
+fn print_analysis(result: &Value) {
+    println!(
+        "scan={} status={} target={}",
+        one_line(result["scan"]["id"].as_str().unwrap_or_default()),
+        one_line(result["scan"]["status"].as_str().unwrap_or_default()),
+        one_line(result["scan"]["target"].as_str().unwrap_or_default()),
+    );
+    let counts = &result["counts"];
+    println!(
+        "saved_entities={} analyzed_entities={} derived_relations={} source_outcomes={} flagged_elements={}",
+        counts["saved_entities"],
+        counts["analyzed_entities"],
+        counts["derived_relations"],
+        counts["source_outcomes"],
+        counts["flagged_elements"],
+    );
+    let limitations = &result["limitations"];
+    println!(
+        "source=saved_scan_entities scan_complete={} truncated={} evidence_ancestry=not_reconstructed provider_coverage=not_reconstructed false_positive_annotations=not_applied_to_entity_analysis",
+        limitations["scan_complete"], limitations["truncated"],
+    );
+    let report = &result["report"];
+    println!(
+        "coreference={} correlations={} pivots={} termination={}",
+        report["coreference"].as_array().map_or(0, Vec::len),
+        report["correlations"].as_array().map_or(0, Vec::len),
+        report["pivots"].as_array().map_or(0, Vec::len),
+        one_line(report["termination"].as_str().unwrap_or("see --json")),
+    );
+}
+
 fn print_correlations(rows: &Value) {
     println!("ID\tRISK\tRULE\tELEMENTS\tCORRELATION");
     for row in rows.as_array().into_iter().flatten() {
@@ -462,6 +549,75 @@ fn print_correlations(rows: &Value) {
             row["elements"].as_array().map_or(0, Vec::len),
             one_line(row["title"].as_str().unwrap_or_default()),
         );
+    }
+}
+
+/// `scans compare`: the change in each data type, then every element the later scan found that
+/// the earlier did not (`+`) and every one it no longer finds (`-`), then the correlations each
+/// has that the other lacks. `--json` prints the API's answer; `-f` or `-o` write its file.
+fn compare(api: &ScanApi, parsed: &Parsed, earlier: &str, later: &str) -> ExitCode {
+    let ids = format!("{earlier},{later}");
+    let response = api.handle(
+        "GET",
+        "/api/scans/compare",
+        &query(&[("ids", Some(&ids)), ("format", parsed.value("format"))]),
+    );
+    if parsed.value("format").is_some() || parsed.value("output").is_some() {
+        return deliver(&response, parsed.value("output"));
+    }
+    table_or_json(&response, parsed, print_comparison)
+}
+
+fn print_comparison(compared: &Value) {
+    let scan = |side: &str| {
+        let row = &compared[side];
+        format!(
+            "{} {} ({}, {})",
+            one_line(row["id"].as_str().unwrap_or_default()),
+            one_line(row["name"].as_str().unwrap_or_default()),
+            one_line(row["target"].as_str().unwrap_or_default()),
+            millis(&row["started"]),
+        )
+    };
+    println!("earlier={}", scan("base"));
+    println!("later={}", scan("other"));
+    if compared["unchanged"].as_bool() == Some(true) {
+        println!("unchanged: both scans found the same values and correlations");
+    }
+    println!("TYPE\tEARLIER\tLATER\tADDED\tREMOVED\tKEPT");
+    for row in compared["types"].as_array().into_iter().flatten() {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            one_line(row["type"].as_str().unwrap_or_default()),
+            row["base"],
+            row["other"],
+            row["added"],
+            row["removed"],
+            row["kept"],
+        );
+    }
+    for (sign, key) in [("+", "added"), ("-", "removed")] {
+        for row in compared[key].as_array().into_iter().flatten() {
+            println!(
+                "{sign}\t{}\t{}\t{}\t{}",
+                one_line(row["type"].as_str().unwrap_or_default()),
+                one_line(row["module"].as_str().unwrap_or_default()),
+                one_line(row["source_data"].as_str().unwrap_or_default()),
+                one_line(row["data"].as_str().unwrap_or_default()),
+            );
+        }
+        for row in compared["correlations"][key]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            println!(
+                "{sign}\tcorrelation\t{}\t{}\t{}",
+                one_line(row["risk"].as_str().unwrap_or_default()),
+                one_line(row["rule"].as_str().unwrap_or_default()),
+                one_line(row["title"].as_str().unwrap_or_default()),
+            );
+        }
     }
 }
 
@@ -479,6 +635,10 @@ fn one_scan(api: &ScanApi, parsed: &Parsed, command: &str, id: &str) -> ExitCode
     let get = |path: String, query: &str| api.handle("GET", &path, query);
     match command {
         "show" => emit(&get(format!("/api/scans/{id}"), "")),
+        "analyze" => {
+            let response = get(format!("/api/scans/{id}/analyze"), "");
+            table_or_json(&response, parsed, print_analysis)
+        }
         "summary" | "log" => emit(&get(
             format!("/api/scans/{id}/{command}"),
             &query(&[("level", parsed.value("level"))]),
@@ -560,7 +720,7 @@ fn run(api: &ScanApi, parsed: &Parsed, rest: &[&str]) -> ExitCode {
         kind: parsed.owned("kind"),
         options: ScanOptions {
             usecase: parsed.owned("usecase").unwrap_or_else(|| "all".into()),
-            modules: Vec::new(),
+            modules: list(parsed.value("modules")),
             types: list(parsed.value("types")),
             depth,
         },
@@ -614,7 +774,7 @@ pub(super) fn sf_scan(scan: &SfScan) -> ExitCode {
             usecase: scan.use_case.clone(),
             types: scan.types.clone(),
             depth: scan.depth,
-            ..ScanOptions::default()
+            modules: scan.modules.clone(),
         },
     };
     let record = api.service().run(&request);

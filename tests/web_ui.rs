@@ -10,6 +10,7 @@ use std::fs;
 use std::sync::Arc;
 
 use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+use huntsman_recon::module_selection::Selection;
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_route::ScanKind;
 use huntsman_recon::scan_service::{LookupOutput, ScanRequest, ScanService};
@@ -21,8 +22,10 @@ use huntsman_recon::{sf_compat, sf_types};
 const PAGE: &str = include_str!("../src/web_ui.html");
 /// The most the page may weigh. It is read from loopback on a phone, but every byte is parsed on
 /// the phone's CPU each time the tab loads. Spiderfoot's own UI loads about 1 MiB of scripts and
-/// styles for the same views; this page is one file with no library.
-const PAGE_BUDGET: usize = 96 * 1024;
+/// styles for the same views; this page is one file with no library. At 92 KB the browser check
+/// measured its content loaded in 59 ms and painted in 64 ms, so the budget leaves room for the
+/// views Spiderfoot lacks without letting the page grow unchecked.
+const PAGE_BUDGET: usize = 112 * 1024;
 /// WCAG 2.2 AA for text under 18.66 px bold or 24 px: the page has none larger.
 const AA: f64 = 4.5;
 /// WCAG 2.2 AA for a graphical object a reader must see (1.4.11), such as a graph node.
@@ -174,6 +177,7 @@ fn every_text_colour_meets_wcag_aa_in_both_themes() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn the_light_theme_follows_the_system_until_the_toggle_picks_one() {
     let style = inline("style");
     assert_eq!(
@@ -210,13 +214,15 @@ fn the_graph_nodes_stand_out_from_the_graph_in_both_themes() {
     assert!(
         style.contains(".graph{height:62vh;min-height:300px;margin:0 0 10px;background:var(--el);")
     );
+    // Each element is a dot drawn in its data type's colour, the colour its class sets.
+    assert!(style.contains("#gnodes path{fill:none;stroke:currentColor;"));
     let mut failures = Vec::new();
     for (theme, t) in themes() {
         let ground = colour(&t["--el"]).0;
         for i in 0..10 {
             let name = format!("--g{i}");
             assert!(
-                style.contains(&format!(".g{i}{{fill:var({name});")),
+                style.contains(&format!(".g{i}{{color:var({name})}}")),
                 "no .g{i} rule"
             );
             let ratio = contrast(colour(&t[&name]).0, ground);
@@ -347,10 +353,34 @@ const PAGE_READS: &[(&str, &str, &str)] = &[
     ("graph", "/edges/0/target", "e.target"),
     ("eventtypes", "/0/type", "t.type"),
     ("eventtypes", "/0/description", "t.description||t.type"),
+    ("compare", "/base/target", "side('Earlier',c.base)"),
+    ("compare", "/other/target", "side('Later',c.other)"),
+    ("compare", "/unchanged", "c.unchanged"),
+    ("compare", "/types/0/type", "t.description||t.type"),
+    ("compare", "/types/0/base", "t.base"),
+    ("compare", "/types/0/other", "t.other"),
+    ("compare", "/types/0/added", "t.added"),
+    ("compare", "/types/0/removed", "t.removed"),
+    ("compare", "/types/0/kept", "t.kept"),
+    ("compare", "/added/0/data", "elemTable(c.added,true)"),
+    ("compare", "/removed/0/data", "elemTable(c.removed,true)"),
+    ("compare", "/correlations/added", "c.correlations.added"),
+    ("compare", "/correlations/removed", "c.correlations.removed"),
+    ("search", "/0/scan_id", "enc(x.scan_id)"),
+    ("search", "/0/scan_name", "x.scan_name||x.scan_target"),
+    ("search", "/0/type", "'/browse/'+enc(x.type)"),
+    ("search", "/0/data", "elemRow(x,true)"),
     ("settings", "/modules/0/name", "m.name"),
     ("settings", "/modules/0/access", "m.access"),
     ("settings", "/modules/0/key_env", "m.key_env"),
     ("settings", "/modules/0/configured", "m.configured"),
+    ("settings", "/modules/0/lookups", "asks=m.lookups"),
+    (
+        "settings",
+        "/modules/0/spiderfoot",
+        "m.spiderfoot||[m.name]",
+    ),
+    ("settings", "/modules/0/command", "m.command"),
     ("settings", "/global/0/key", "g.key"),
     ("settings", "/global/0/description", "g.description"),
     ("settings", "/global/0/value", "g.value"),
@@ -361,7 +391,7 @@ const PAGE_READS: &[(&str, &str, &str)] = &[
 fn contract_scan(tag: &str) -> (ScanApi, String, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("hse-web-ui-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    let lookup = Arc::new(|_kind: ScanKind, selector: &str| {
+    let lookup = Arc::new(|_kind: ScanKind, selector: &str, _: &Selection| {
         let evidence = Evidence::new(EvidenceProvenance::for_scan("phone_intl", "s"), "Australia")
             .with_attr("country_iso", "AU");
         Ok(LookupOutput {
@@ -421,7 +451,33 @@ fn the_page_reads_the_fields_the_scan_api_answers() {
         elements: vec!["e".into()],
     })
     .expect("correlation");
+    // A second scan of another number, so the comparison has something added and removed.
+    let later = api
+        .service()
+        .run(&ScanRequest {
+            target: "+61412345679".into(),
+            name: Some("later".into()),
+            kind: None,
+            options: ScanOptions::default(),
+        })
+        .expect("scan")
+        .id;
+    let earlier = root.rsplit('/').next().expect("scan id").to_owned();
+    let compared = api.handle(
+        "GET",
+        "/api/scans/compare",
+        &format!("ids={earlier},{later}"),
+    );
+    assert_eq!(compared.status, 200, "{}", compared.text());
+    // Both numbers start +614, so a search of every scan finds each.
+    let found = api.handle("GET", "/api/scans/search", "value=%2B614");
+    assert_eq!(found.status, 200, "{}", found.text());
     let answers = [
+        ("search", serde_json::from_slice(&found.body).expect("JSON")),
+        (
+            "compare",
+            serde_json::from_slice(&compared.body).expect("JSON"),
+        ),
         ("list", answer(&api, "/api/scans")),
         ("scan", answer(&api, &root)),
         ("summary", answer(&api, &format!("{root}/summary"))),
@@ -546,6 +602,54 @@ fn new_scan_sends_the_depth_the_api_takes() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn new_scan_by_module_sends_the_ticked_modules_by_the_names_the_api_takes() {
+    let script = inline("script");
+    // Each tick box carries the module's own name, the one `modules=` takes, and the names a
+    // saved scan may have chosen it by, which Clone matches.
+    assert!(
+        script.contains("i.value=m.name"),
+        "a module box has no name"
+    );
+    assert!(script.contains("i.dataset.names=(m.spiderfoot||[m.name]).join(' ')"));
+    assert!(
+        script.contains("p.set(ntab,on.join(','))"),
+        "New Scan does not send the ticked boxes"
+    );
+    assert!(script.contains("for(const x of ['usecase','types','modules'])"));
+    assert!(
+        !PAGE.contains("not applied yet: a scan runs every module"),
+        "By Module still says choosing modules is not applied"
+    );
+    let (api, _root, dir) = contract_scan("modules");
+    let started = api.handle(
+        "POST",
+        "/api/scans",
+        "target=%2B61412345678&modules=numverify",
+    );
+    assert_eq!(started.status, 202, "{}", started.text());
+    let started: serde_json::Value = serde_json::from_slice(&started.body).expect("JSON");
+    assert_eq!(
+        started["options"]["modules"],
+        serde_json::json!(["numverify"])
+    );
+    let id = started["id"].as_str().expect("id");
+    for _ in 0..400 {
+        if !api
+            .service()
+            .store()
+            .get(id)
+            .expect("scan")
+            .status
+            .is_active()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// The Spiderfoot types whose elements open New Scan on their value. Each is a type the catalogue
 /// knows; every type a scan target can be is one of them; and so is the type of every entity a
 /// deeper scan follows (an email, username, domain, phone, IP address or BSSID), so any value the
@@ -607,6 +711,11 @@ fn every_export_the_page_offers_is_one_the_api_writes() {
             "data-mformat",
             "/api/scans/export".to_owned(),
             format!("ids={id}&"),
+        ),
+        (
+            "data-xformat",
+            "/api/scans/compare".to_owned(),
+            format!("ids={id},{id}&"),
         ),
     ] {
         let formats: Vec<&str> = PAGE

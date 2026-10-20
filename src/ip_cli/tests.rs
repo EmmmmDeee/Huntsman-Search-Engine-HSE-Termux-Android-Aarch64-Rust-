@@ -4,6 +4,11 @@ use super::*;
 use crate::http::{Request, Response, TransportFailure};
 use crate::source_outcome::SourceOutcomeKind;
 
+/// Every IP leg for `ip`, with no threat feed consulted: the feeds' own tests cover them.
+fn run<T: Transport + ?Sized>(transport: &T, keys: &Keys, ip: &str, now_unix: u64) -> IpRun {
+    super::run(transport, keys, &Feeds::none(), ip, now_unix)
+}
+
 const ABUSE_KEY: &str = "abuse-test-key-0123456789abcdef";
 const VT_KEY: &str = "vt-test-key-0123456789abcdef0123";
 
@@ -86,6 +91,16 @@ impl Transport for Routes {
 fn keyless() -> Routes {
     Routes::new(vec![
         ("https://cloudflare-dns.com/", 200, PTR),
+        (
+            "https://data.iana.org/rdap/ipv4.json",
+            200,
+            r#"{"services":[[["1.0.0.0/8"],["https://rdap.apnic.net/"]]]}"#,
+        ),
+        (
+            "https://rdap.apnic.net/ip/1.1.1.1",
+            200,
+            crate::rdap::tests::APNIC,
+        ),
         ("https://internetdb.shodan.io/", 200, INTERNETDB),
         ("https://stat.ripe.net/", 200, RIPESTAT),
         ("https://api.greynoise.io/", 404, GREYNOISE_UNSEEN),
@@ -107,7 +122,19 @@ fn keyless() -> Routes {
             200,
             r#"{"success":1,"ip":{"value":"1.1.1.1","appears":0,"frequency":0}}"#,
         ),
+        (
+            "https://isc.sans.edu/",
+            200,
+            r#"{"ip":{"number":"1.1.1.1","count":null,"attacks":null}}"#,
+        ),
+        ("https://api.maltiverse.com/", 404, "{}"),
+        ("https://api.phishstats.info/", 200, "[]"),
         ("https://api.shodan.io/", 200, SHODAN),
+        (
+            "https://api.mnemonic.no/",
+            200,
+            r#"{"responseCode":200,"count":0,"data":[]}"#,
+        ),
     ])
 }
 
@@ -155,6 +182,9 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
         transport.hosts(),
         [
             "cloudflare-dns.com",
+            "data.iana.org",
+            "rdap.apnic.net",
+            "api.mnemonic.no",
             "internetdb.shodan.io",
             "stat.ripe.net",
             "api.greynoise.io",
@@ -165,7 +195,10 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "ipinfo.io",
             "freeapi.robtex.com",
             "api.hackertarget.com",
-            "api.stopforumspam.org"
+            "api.stopforumspam.org",
+            "isc.sans.edu",
+            "api.maltiverse.com",
+            "api.phishstats.info"
         ]
     );
     assert_eq!(outcome(&report, "internetdb"), SourceOutcomeKind::Success);
@@ -176,11 +209,35 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     assert_eq!(outcome(&report, "otx"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "urlscan"), SourceOutcomeKind::ValidZero);
     assert_eq!(outcome(&report, "ipinfo"), SourceOutcomeKind::Success);
-    for source in ["robtex", "hackertarget", "stopforumspam"] {
+    for source in [
+        "robtex",
+        "hackertarget",
+        "stopforumspam",
+        "isc",
+        "maltiverse",
+        "phishstats",
+    ] {
         assert_eq!(outcome(&report, source), SourceOutcomeKind::ValidZero);
     }
     assert_eq!(outcome(&report, RESOLVE_SOURCE), SourceOutcomeKind::Success);
-    assert_eq!(report.outcomes.len(), 12, "an unkeyed leg reports nothing");
+    assert_eq!(outcome(&report, "rdap"), SourceOutcomeKind::Success);
+    assert_eq!(outcome(&report, "mnemonic"), SourceOutcomeKind::ValidZero);
+    // The DNS blocklists are keyless and always asked; this transport has no system resolver.
+    for source in [
+        "spamhaus",
+        "spamcop",
+        "uceprotect",
+        "dronebl",
+        "sorbs",
+        "surbl",
+    ] {
+        assert_eq!(
+            outcome(&report, source),
+            SourceOutcomeKind::DnsFailure,
+            "{source}"
+        );
+    }
+    assert_eq!(report.outcomes.len(), 23, "an unkeyed leg reports nothing");
 
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
     assert!(ip.has_tag(tags::VULNERABLE));

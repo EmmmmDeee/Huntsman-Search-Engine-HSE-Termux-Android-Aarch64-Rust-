@@ -76,7 +76,8 @@ pub enum NetworkRun {
 }
 
 /// Classify the selector and run each `WiGLE` search it calls for when `wigle` carries a
-/// transport and keys.
+/// transport and keys. A transport whose lookup does not ask `wigle`
+/// ([`Transport::runs_module`]) sends no search and leaves no `WiGLE` row.
 #[must_use]
 pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64) -> NetworkRun {
     let Some(selector) = NetworkSelector::parse(selector) else {
@@ -96,6 +97,7 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
     let mut network = None;
     for &database in Database::for_selector(&selector) {
         let outcome = match wigle {
+            Some((transport, _)) if !transport.runs_module(wigle::SOURCE) => continue,
             Some((transport, keys)) if wigle::configured(keys) => wigle_leg(
                 transport,
                 keys,

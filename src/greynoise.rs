@@ -3,11 +3,10 @@
 //! One lookup is one `GET https://api.greynoise.io/v3/community/{ip}`. The Community API answers
 //! without a key at a low daily limit; with `HUNTSMAN_GREYNOISE_KEY` set (a free Community key)
 //! the key goes in the `key` header and the limit is the account's. A `404` whose body has the
-//! address and `noise: false` is the documented "not observed" answer, a valid zero. The API
-//! answers for IPv4 addresses only: an IPv6 address gets `400` "Request is not a valid routable
-//! IPv4 address" (checked 2026-10-15), so [`answers_for`] keeps a lookup from asking. A sighting
-//! keeps everything the answer says: the flags, classification, name, last sighting, the
-//! visualizer link, `GreyNoise`'s message, and the whole answer as `raw_answer`.
+//! address and `noise: false` is the documented "not observed" answer, a valid zero.
+//! This Community endpoint accepts routable IPv4 only; IPv6 receives HTTP 400. A sighting keeps
+//! everything the answer says: the flags, classification, name, last sighting, the visualizer
+//! link, `GreyNoise`'s message, and the whole answer as `raw_answer`.
 
 use serde::Deserialize;
 
@@ -66,7 +65,8 @@ struct Body {
     message: Option<String>,
 }
 
-/// Whether the Community API answers for `ip`: an IPv4 address. **Pure.**
+/// Whether `GreyNoise` Community can answer this address. IPv6 is unsupported.
+/// This capability check sends no network request.
 #[must_use]
 pub fn answers_for(ip: &str) -> bool {
     ip.parse::<std::net::Ipv4Addr>().is_ok()

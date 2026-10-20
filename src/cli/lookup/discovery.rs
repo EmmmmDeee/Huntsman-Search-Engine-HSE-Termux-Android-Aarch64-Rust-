@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::cli::{MAX_ARTIFACT_BYTES, fail};
+use crate::cli::{MAX_PLAIN_FILE_BYTES, fail};
 use huntsman_recon::classifier::{self, classify as classify_indicator};
 use huntsman_recon::entity;
 use huntsman_recon::error::Error;
@@ -31,7 +31,7 @@ pub(in crate::cli) fn investigate_cmd(args: &[String]) -> ExitCode {
             return fail(EX_USAGE, "investigate --file needs exactly one FILE");
         }
         let path = Path::new(&args[1]);
-        let bytes = match read_bounded(path, MAX_ARTIFACT_BYTES) {
+        let bytes = match read_bounded(path, MAX_PLAIN_FILE_BYTES) {
             Ok(bytes) => bytes,
             Err(Error::Store(message)) => return fail(EX_NOINPUT, &message),
             Err(error) => return fail(EX_DATAERR, &error.to_string()),

@@ -19,7 +19,7 @@ use crate::sf_elements::DataElement;
 use crate::sf_types;
 use crate::textnorm::{escape_controls, is_escaped};
 
-pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -l IP:PORT | -C SCAN_ID | -s TARGET [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...] [-f] [-x]] [-F TYPE[,TYPE...]] [--depth N] [-o tab|csv|json] [-H] [-n] [-r] [-S LENGTH] [-D DELIMITER] [-d] [-q]";
+pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -l IP:PORT | -C SCAN_ID | -s TARGET [-u all|footprint|investigate|passive] [-m MODULE[,MODULE...]] [-t TYPE[,TYPE...] [-f] [-x]] [-F TYPE[,TYPE...]] [--depth N] [-o tab|csv|json] [-H] [-n] [-r] [-S LENGTH] [-D DELIMITER] [-d] [-q]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SfMode {
@@ -49,6 +49,9 @@ pub struct SfArgs {
     pub strict: bool,
     /// `--depth N`: how many hops past the target the scan follows, as `scans run --depth`.
     pub depth: u32,
+    /// `-m`: the only modules the scan asks, by Huntsman or Spiderfoot (`sfp_*`) name; empty
+    /// asks every module the use case takes.
+    pub modules: Vec<String>,
     pub include_source: bool,
     /// `-H`: no header line.
     pub no_headers: bool,
@@ -79,6 +82,7 @@ impl Default for SfArgs {
             only_requested: false,
             strict: false,
             depth: 0,
+            modules: Vec::new(),
             include_source: false,
             no_headers: false,
             strip_newlines: false,
@@ -123,6 +127,7 @@ impl SfArgs {
             "-S" => self.max_length = Some(number(value(args, index, flag)?, flag)?),
             "-D" => self.delimiter = Some(value(args, index, flag)?.to_owned()),
             "--depth" => self.depth = number(value(args, index, flag)?, flag)?,
+            "-m" => self.modules.extend(module_list(value(args, index, flag)?)),
             "-C" | "--correlate" => {
                 self.scan_id = Some(value(args, index, flag)?.to_owned());
                 self.set_mode(SfMode::Correlate)?;
@@ -193,6 +198,15 @@ impl SfArgs {
         if (self.only_requested || self.strict) && self.types.is_empty() {
             return Err(Error::Invalid("sf -f and -x need -t TYPE[,TYPE...]".into()));
         }
+        if self.strict && !self.modules.is_empty() {
+            return Err(Error::Invalid(
+                "sf -x picks the modules that take the target, so it takes no -m".into(),
+            ));
+        }
+        if !self.modules.is_empty() {
+            crate::module::selection(&self.modules)
+                .map_err(|error| Error::Invalid(format!("sf -m: {error}")))?;
+        }
         if self.strict && self.depth > 0 {
             return Err(Error::Invalid(
                 "sf -x runs only the lookups that take the target, so it takes no --depth".into(),
@@ -233,6 +247,14 @@ fn type_list(value: &str) -> impl Iterator<Item = String> + '_ {
         .map(str::trim)
         .filter(|item| !item.is_empty())
         .map(str::to_ascii_uppercase)
+}
+
+fn module_list(value: &str) -> impl Iterator<Item = String> + '_ {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_ascii_lowercase)
 }
 
 fn number<T: std::str::FromStr>(value: &str, flag: &str) -> Result<T, Error> {
@@ -284,6 +306,8 @@ pub struct SfScan {
     /// The types the saved scan keeps; empty keeps them all.
     pub types: Vec<String>,
     pub depth: u32,
+    /// The only modules the saved scan asks; empty asks every one the use case takes.
+    pub modules: Vec<String>,
     pub output: SfOutput,
     pub debug: bool,
     pub quiet: bool,
@@ -317,7 +341,7 @@ pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
     })?;
     let kind = scan_kind(target_type).ok_or_else(|| {
         Error::Invalid(format!(
-            "sf target type {target_type} is detected but its scan path is not available yet; sf scans a domain, IP address, email address, phone number, username or name"
+            "sf target type {target_type} is detected but its scan path is not available yet; sf scans a domain, IP address, address block, email address, phone number, username or name"
         ))
     })?;
     // `-F` picks what is printed; otherwise `-f` and `-x` print only the `-t` types, as `sf.py`'s
@@ -336,6 +360,7 @@ pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
         use_case: args.use_case.clone(),
         types: args.types.clone(),
         depth: args.depth,
+        modules: args.modules.clone(),
         output: SfOutput {
             format: args.format.clone(),
             show,
@@ -351,12 +376,14 @@ pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
 }
 
 /// The lookup a saved scan of a target of this Spiderfoot type runs, or `None` for a type no
-/// lookup takes yet (a netblock or an AS number).
+/// lookup takes yet (a bitcoin address).
 #[must_use]
 pub fn scan_kind(target_type: &str) -> Option<ScanKind> {
     match target_type {
         "INTERNET_NAME" => Some(ScanKind::Domain),
         "IP_ADDRESS" | "IPV6_ADDRESS" => Some(ScanKind::Ip),
+        "NETBLOCK_OWNER" | "NETBLOCKV6_OWNER" => Some(ScanKind::Netblock),
+        "BGP_AS_OWNER" => Some(ScanKind::Asn),
         "EMAILADDR" => Some(ScanKind::Email),
         "PHONE_NUMBER" => Some(ScanKind::Phone),
         "USERNAME" => Some(ScanKind::Username),
@@ -713,6 +740,7 @@ fn is_internet_name(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
     use crate::phone_cli::{self, PhoneRun};
     use crate::scan_route::canonical_selector;
     use crate::scan_service::target_type;
@@ -802,6 +830,8 @@ mod tests {
             "+61412345678",
             "jdoe",
             "Jane Doe",
+            "1.1.1.0/24",
+            "2606:4700::/32",
         ] {
             let Ok(SfAction::Scan(scan)) = action(&args(&["-s", raw]).unwrap()) else {
                 panic!("{raw} is not a scan");
@@ -814,13 +844,11 @@ mod tests {
                 "{raw}"
             );
         }
-        for raw in ["192.0.2.0/24", "2001:db8::/32"] {
-            let error = action(&args(&["-s", raw]).unwrap()).unwrap_err();
-            assert!(
-                error.to_string().contains("not available yet"),
-                "{raw}: {error}"
-            );
-        }
+        // sf.py quotes a bare number, which makes `-s 13335` a username; an AS target comes from
+        // the API and runs the asn lookup.
+        assert_eq!(scan_kind("BGP_AS_OWNER"), Some(ScanKind::Asn));
+        assert_eq!(target_type(ScanKind::Asn, "AS13335"), "BGP_AS_OWNER");
+        assert_eq!(scan_kind("BITCOIN_ADDRESS"), None);
     }
 
     #[test]
@@ -865,6 +893,36 @@ mod tests {
             entity: None,
             raw: serde_json::Value::Null,
         }
+    }
+
+    /// Every evidence record an entity carries prints its own row, named for the module that made
+    /// it, so a second module's finding never drops out of `sf` output.
+    #[test]
+    fn every_evidence_record_of_an_entity_prints_its_own_row() {
+        let mut entity = Entity::new(EntityKind::Domain, "a.example.com", 0.9, "scan");
+        entity.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("crtsh", "scan"),
+            "certificate",
+        ));
+        entity.add_evidence(Evidence::new(
+            EvidenceProvenance::for_scan("robtex", "scan"),
+            "passive dns",
+        ));
+        let target = Target {
+            value: "example.com",
+            kind: "INTERNET_NAME",
+        };
+        let saved = elements(target, &[entity], 1);
+        let rendered = render(&output("json"), &saved).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        let modules: Vec<&str> = value
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["module"].as_str())
+            .collect();
+        assert!(modules.contains(&"crtsh"), "{rendered}");
+        assert!(modules.contains(&"robtex"), "{rendered}");
     }
 
     /// The rows are a saved scan's elements, the root left out, each with the data of the
@@ -998,6 +1056,20 @@ mod tests {
         assert_eq!(shaped.output.max_length, Some(40));
         assert!(shaped.output.strip_newlines && shaped.output.no_headers && shaped.debug);
         assert_eq!(shaped.depth, 2);
+        // -m picks the modules the saved scan asks, by Huntsman or Spiderfoot name.
+        assert_eq!(
+            scan(&[
+                "-s",
+                "example.org",
+                "-m",
+                "sfp_dnsresolve, CRTSH",
+                "-m",
+                "rdap"
+            ])
+            .modules,
+            ["sfp_dnsresolve", "crtsh", "rdap"]
+        );
+        assert!(scan(&["-s", "example.org"]).modules.is_empty());
         assert_eq!(
             scan(&["-s", "example.org", "-S", "0"]).output.max_length,
             None
@@ -1023,7 +1095,9 @@ mod tests {
             &["-s", "example.org", "-F", "NOT_A_TYPE"],
             &["-l", "127.0.0.1:5001", "-s", "example.org"],
             &["-l", "127.0.0.1:5001", "-M"],
-            &["-s", "example.org", "-m", "sfp_dnsresolve"],
+            &["-s", "example.org", "-m", "sfp_not_a_module"],
+            &["-s", "example.org", "-m", "nonesuch"],
+            &["-s", "example.org", "-t", "IP_ADDRESS", "-x", "-m", "dns"],
         ] {
             assert!(args(refused).is_err(), "{refused:?}");
         }

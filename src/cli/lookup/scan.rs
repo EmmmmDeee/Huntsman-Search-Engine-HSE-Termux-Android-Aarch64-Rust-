@@ -5,10 +5,11 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 
-use crate::cli::{MAX_ARTIFACT_BYTES, fail};
+use crate::cli::{MAX_PLAIN_FILE_BYTES, fail};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
+use huntsman_recon::module_selection::Selection;
 use huntsman_recon::scan_batch::parse_seed_list;
 use huntsman_recon::scan_route::{
     ScanKind, canonical_selector, explicit_people_is_name, infer_kind, inferred_people_is_name,
@@ -17,8 +18,8 @@ use huntsman_recon::scan_route::{
 use huntsman_recon::textnorm::escape_controls;
 
 use super::profiles::{
-    Refused, collect, domain_cmd, email_cmd, exposure_cmd, ip_cmd, network_cmd, people_cmd,
-    phone_cmd, username_cmd,
+    Refused, asn_cmd, collect, domain_cmd, email_cmd, exposure_cmd, ip_cmd, netblock_cmd,
+    network_cmd, people_cmd, phone_cmd, username_cmd,
 };
 use huntsman_recon::analysis::{self, InvestigationReport};
 use huntsman_recon::correlator::Correlation;
@@ -108,7 +109,7 @@ pub(in crate::cli) fn scan_cmd(args: &[String]) -> ExitCode {
 }
 
 fn scan_batch_file(path: &str, kind: Option<&str>, save_dir: Option<&str>) -> ExitCode {
-    let bytes = match read_bounded(Path::new(path), MAX_ARTIFACT_BYTES) {
+    let bytes = match read_bounded(Path::new(path), MAX_PLAIN_FILE_BYTES) {
         Ok(bytes) => bytes,
         Err(Error::Store(message)) => return fail(EX_NOINPUT, &message),
         Err(error) => return fail(EX_DATAERR, &error.to_string()),
@@ -188,7 +189,7 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
     let Some(selector) = forwarded.first() else {
         return fail(
             EX_USAGE,
-            "usage: huntsman-recon scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network] [--save FILE] | scan --input-file FILE [-k KIND] [--save-dir DIR]",
+            "usage: huntsman-recon scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network] [--save FILE] | scan --input-file FILE [-k KIND] [--save-dir DIR]",
         );
     };
     // A leading space must not hide an option from this check, or the selector would be judged
@@ -236,6 +237,8 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
         ScanKind::Phone => phone_cmd(&forwarded),
         ScanKind::Domain => domain_cmd(&forwarded),
         ScanKind::Ip => ip_cmd(&forwarded),
+        ScanKind::Netblock => netblock_cmd(&forwarded),
+        ScanKind::Asn => asn_cmd(&forwarded),
         ScanKind::Network => network_cmd(&forwarded),
         ScanKind::People => people_cmd(&forwarded),
     }
@@ -255,7 +258,7 @@ struct LiveCollector;
 
 impl SelectorCollector for LiveCollector {
     fn collect(&mut self, target: &Target) -> Step {
-        match collect(target.kind, &target.selector) {
+        match collect(target.kind, &target.selector, &Selection::all()) {
             Ok(collected) => Step {
                 entities: collected.entities,
                 outcomes: collected.outcomes,

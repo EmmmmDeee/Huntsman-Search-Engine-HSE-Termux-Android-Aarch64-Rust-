@@ -7,6 +7,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// The first ten pulse names OTX gave for `185.220.101.1` on 2026-10-15, in its order.
 const PULSES: [&str; 10] = [
@@ -56,7 +57,13 @@ impl Transport for OnlyOtx {
 }
 
 fn entities() -> Vec<Entity> {
-    match run(&OnlyOtx, &Keys::default(), "185.220.101.1", 1_760_000_000) {
+    match run(
+        &OnlyOtx,
+        &Keys::default(),
+        &Feeds::none(),
+        "185.220.101.1",
+        1_760_000_000,
+    ) {
         IpRun::Printed { report, .. } => report.entities,
         IpRun::Network(why) | IpRun::Failed(why) => {
             panic!("ip 185.220.101.1 did not print: {why}")

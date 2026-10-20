@@ -568,6 +568,44 @@ fn retries_are_bounded_and_do_not_shorten_server_retry_after() {
 }
 
 #[test]
+fn an_http_date_retry_after_is_waited_for_not_retried_early() {
+    let (mut client, fake) = keyed();
+    client.config_for_tests(3, Duration::from_secs(60));
+    let in_an_hour = std::time::SystemTime::now() + Duration::from_secs(3600);
+    let secs = in_an_hour
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    // 2026-10-16T05:00:00Z becomes the IMF-fixdate "Fri, 16 Oct 2026 05:00:00 GMT".
+    let iso = crate::timefmt::format_unix(i64::try_from(secs).unwrap());
+    let months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month = months[iso[5..7].parse::<usize>().unwrap() - 1];
+    let date = format!(
+        "Fri, {} {month} {} {} GMT",
+        &iso[8..10],
+        &iso[..4],
+        &iso[11..19]
+    );
+    fake.push(429, "");
+    fake.responses
+        .lock()
+        .unwrap()
+        .back_mut()
+        .unwrap()
+        .headers
+        .push(("Retry-After".into(), date));
+    let error = client.paste_account("a@example.com").unwrap_err();
+    assert!(
+        matches!(error, HibpError::RateLimited { retry_after: Some(d) }
+            if (3590..=3600).contains(&d.as_secs())),
+        "{error:?}"
+    );
+    assert_eq!(fake.requests().len(), 1);
+}
+
+#[test]
 fn retry_zero_then_success() {
     let (client, fake) = keyed();
     fake.push(429, "");

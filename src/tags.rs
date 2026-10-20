@@ -24,6 +24,8 @@ pub const PASTE_EXPOSED: &str = "paste-exposed";
 pub const PASSWORD_AT_RISK: &str = "password-at-risk";
 pub const MULTI_DEVICE: &str = "multi-device";
 pub const MALICIOUS: &str = "malicious";
+/// A Tor exit relay's address.
+pub const TOR_EXIT: &str = "tor-exit";
 pub const VULNERABLE: &str = "vulnerable";
 pub const SOCIAL_PROFILE: &str = "social-profile";
 pub const CANDIDATE: &str = "candidate";
@@ -37,3 +39,9 @@ pub const SOURCE_DOCUMENT: &str = "source-document";
 pub const GEOINT: &str = "geoint";
 pub const COARSE: &str = "coarse";
 pub const HOSTING: &str = "hosting";
+/// The organisation a registration record names as the registrar.
+pub const REGISTRAR: &str = "registrar";
+/// A mailbox or telephone a registration record names for abuse reports.
+pub const ABUSE_CONTACT: &str = "abuse-contact";
+/// A mailbox or telephone a registration record names for another contact role.
+pub const WHOIS_CONTACT: &str = "whois-contact";

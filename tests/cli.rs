@@ -169,7 +169,7 @@ fn help_and_version_are_available() {
         ("phone", "phone NUMBER [--save FILE]"),
         (
             "scan",
-            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|network]",
+            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network]",
         ),
         ("investigate", "investigate TEXT..."),
         ("modules", "modules [--json]"),
@@ -444,6 +444,10 @@ fn modules_lists_only_reachable_catalog_entries() {
         "robtex",
         "hackertarget",
         "stopforumspam",
+        "isc",
+        "maltiverse",
+        "phishstats",
+        "cleantalk",
         "xposed_or_not",
     ] {
         assert!(stdout.contains(name), "missing reachable module {name}");
@@ -582,6 +586,170 @@ fn sf_scan_is_a_saved_scan_that_scans_reads_and_sf_correlates() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// `scans compare` sets a later scan against an earlier one: the change per type, then what was
+/// added and removed, or the same as a file.
+#[test]
+fn scans_compare_lists_what_a_later_scan_added_and_removed() {
+    let home = scratch("scans-compare");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let id = |args: &[&str]| {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+    let earlier = id(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+    let later = id(&["scans", "run", "+61412345679", "-u", "passive", "--json"]);
+
+    let table = run(&["scans", "compare", &earlier, &later]);
+    let stdout = String::from_utf8_lossy(&table.stdout);
+    assert_eq!(
+        table.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&table.stderr)
+    );
+    assert!(
+        stdout.starts_with(&format!("earlier={earlier} ")),
+        "{stdout}"
+    );
+    assert!(stdout.contains(&format!("\nlater={later} ")), "{stdout}");
+    assert!(
+        stdout.contains("\nTYPE\tEARLIER\tLATER\tADDED\tREMOVED\tKEPT\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("\nPHONE_NUMBER\t1\t1\t1\t1\t0\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("+\tPHONE_NUMBER\t") && line.ends_with("\t+61412345679")),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("-\tPHONE_NUMBER\t") && line.ends_with("\t+61412345678")),
+        "{stdout}"
+    );
+
+    let json = run(&["scans", "compare", &earlier, &later, "--json"]);
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(json["unchanged"], false);
+    let same = run(&["scans", "compare", &earlier, &earlier, "--json"]);
+    let same: serde_json::Value = serde_json::from_slice(&same.stdout).unwrap();
+    assert_eq!(same["unchanged"], true);
+
+    let csv = run(&["scans", "compare", &earlier, &later, "-f", "csv"]);
+    assert_eq!(csv.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&csv.stdout)
+            .starts_with("Change,Scan Name,Updated,Type,Module,Source,F/P,Data\r\n")
+    );
+    assert_eq!(run(&["scans", "compare", &earlier]).status.code(), Some(64));
+    assert_eq!(
+        run(&["scans", "compare", &earlier, "0000000000000000"])
+            .status
+            .code(),
+        Some(66)
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// `scans search` finds elements in every saved scan, or only the ones named, each with its scan.
+#[test]
+fn scans_search_finds_values_in_every_scan_or_the_ones_named() {
+    let home = scratch("scans-search");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let id = |args: &[&str]| {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+    let first = id(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+    let second = id(&["scans", "run", "+61412345679", "-u", "passive", "--json"]);
+    let lines = |args: &[&str]| -> Vec<String> {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    };
+    let phone = |line: &String, scan: &str, number: &str| {
+        line.starts_with(&format!("{scan}\t"))
+            && line.contains("\tPHONE_NUMBER\t")
+            && line.ends_with(&format!("\t{number}"))
+    };
+    // Text anywhere: both numbers, each under its own scan.
+    let both = lines(&["scans", "search", "61412345", "-t", "PHONE_NUMBER"]);
+    assert_eq!(
+        both[0],
+        "SCAN\tID\tUPDATED\tTYPE\tMODULE\tSOURCE\tF/P\tDATA"
+    );
+    assert!(
+        both.iter().any(|line| phone(line, &first, "+61412345678")),
+        "{both:?}"
+    );
+    assert!(
+        both.iter().any(|line| phone(line, &second, "+61412345679")),
+        "{both:?}"
+    );
+    // A wildcard is the whole value; a regex is anywhere; named scans only.
+    let one = lines(&["scans", "search", "*79", "-t", "PHONE_NUMBER"]);
+    assert_eq!(one.len(), 2, "{one:?}");
+    assert!(phone(&one[1], &second, "+61412345679"), "{one:?}");
+    let named = lines(&["scans", "search", "/5678$/", &first, "-t", "PHONE_NUMBER"]);
+    assert_eq!(named.len(), 2, "{named:?}");
+    assert!(phone(&named[1], &first, "+61412345678"), "{named:?}");
+    assert_eq!(
+        lines(&["scans", "search", "61412345", &second, "-t", "PHONE_NUMBER"]).len(),
+        2
+    );
+    let json = run(&[
+        "scans",
+        "search",
+        "61412345",
+        "-t",
+        "PHONE_NUMBER",
+        "--json",
+    ]);
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert!(
+        json.as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["scan_name"].is_string() && row["scan_target"].is_string())
+    );
+    assert_eq!(run(&["scans", "search"]).status.code(), Some(64));
+    assert_eq!(run(&["scans", "search", "/(a/"]).status.code(), Some(64));
+    assert_eq!(
+        run(&["scans", "search", "x", "0000000000000000"])
+            .status
+            .code(),
+        Some(66)
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
 /// `sf.py`'s output flags shape the rows, `-d` prints the scan's log, `-l` is `serve --bind`,
 /// and the combinations `sf.py` refuses are refused before any request.
 #[test]
@@ -619,13 +787,34 @@ fn sf_takes_sf_py_output_flags_debug_and_listen() {
     assert!(stderr.contains("[INFO] huntsman: scan created"), "{stderr}");
     assert_eq!(String::from_utf8_lossy(&debug.stdout).lines().count(), 2);
 
+    // -m picks the modules the saved scan asks, and a target none of them looks up is bad data.
+    let chosen = run(&[
+        "sf",
+        "-s",
+        "+61412345678",
+        "-m",
+        "sfp_numverify",
+        "-F",
+        "PHONE_NUMBER",
+    ]);
+    let stderr = String::from_utf8_lossy(&chosen.stderr);
+    assert_eq!(chosen.status.code(), Some(0), "{stderr}");
+    assert_eq!(String::from_utf8_lossy(&chosen.stdout).lines().count(), 2);
+    let unasked = run(&["sf", "-s", "+61412345678", "-m", "sfp_gravatar"]);
+    let stderr = String::from_utf8_lossy(&unasked.stderr);
+    assert_eq!(unasked.status.code(), Some(65), "{stderr}");
+    assert!(
+        stderr.contains("none of the chosen modules (sfp_gravatar) looks up the target"),
+        "{stderr}"
+    );
+
     let listen = run(&["sf", "-l", "not-a-socket"]);
     assert_eq!(listen.status.code(), Some(65));
     assert!(String::from_utf8_lossy(&listen.stderr).contains("invalid serve bind"));
     for refused in [
         &["sf", "-s", "example.org", "-f"][..],
         &["sf", "-s", "example.org", "-D", ";"],
-        &["sf", "-s", "example.org", "-m", "sfp_dnsresolve"],
+        &["sf", "-s", "example.org", "-m", "sfp_not_a_module"],
     ] {
         let out = run(refused);
         assert_eq!(out.status.code(), Some(64), "{refused:?}");
@@ -638,7 +827,7 @@ fn sf_takes_sf_py_output_flags_debug_and_listen() {
 fn sf_refuses_a_target_no_lookup_can_take() {
     let home = scratch("sf-refuses");
     for (target, why) in [
-        ("192.0.2.0/24", "not available yet"),
+        ("192.0.2.0/24", "not valid for a netblock scan"),
         ("192.0.2.1", "not valid for a ip scan"),
         ("Jane 123", "two alphabetic tokens"),
     ] {
