@@ -238,7 +238,12 @@ pub fn adaptive_search<T: Transport + ?Sized>(
     let mut rounds = Vec::new();
     let mut seen = BTreeMap::new();
     let initial_novel = append_round(
-        transport, &seed, "baseline", now_unix, &mut rounds, &mut seen,
+        transport,
+        &seed,
+        "baseline",
+        now_unix,
+        &mut rounds,
+        &mut seen,
     )?;
 
     let stop_reason = if !has_viable_provider(&rounds[0]) {
@@ -254,7 +259,12 @@ pub fn adaptive_search<T: Transport + ?Sized>(
         };
         if let Some((refined, strategy)) = second {
             let novelty = append_round(
-                transport, &refined, strategy, now_unix, &mut rounds, &mut seen,
+                transport,
+                &refined,
+                strategy,
+                now_unix,
+                &mut rounds,
+                &mut seen,
             )?;
             let tokens: Vec<&str> = seed.split_whitespace().collect();
             if !has_viable_provider(&rounds[1]) {
@@ -986,10 +996,18 @@ mod tests {
     fn adaptive_search_only_broadens_after_zero_yield_and_discloses_it() {
         let empty = response(200, "<html>no external anchors</html>");
         let fake = Fake::new(vec![
-            Ok(empty.clone()), Ok(empty.clone()), Ok(empty.clone()),
-            Ok(empty.clone()), Ok(empty.clone()), Ok(empty.clone()),
-            Ok(response(200, r#"<a href="https://example.org/recovered">found</a>"#)),
-            Ok(empty.clone()), Ok(empty),
+            Ok(empty.clone()),
+            Ok(empty.clone()),
+            Ok(empty.clone()),
+            Ok(empty.clone()),
+            Ok(empty.clone()),
+            Ok(empty.clone()),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/recovered">found</a>"#,
+            )),
+            Ok(empty.clone()),
+            Ok(empty),
         ]);
         let report = adaptive_search(&fake, "needle rare threeword", 456).unwrap();
         assert_eq!(report.rounds.len(), 3);
@@ -998,10 +1016,12 @@ mod tests {
         assert_eq!(report.rounds[2].novel_url_count, 1);
         assert_eq!(report.hits.len(), 1);
         assert_eq!(report.stop_reason, "bounded_three_round_budget");
-        assert!(report.rounds[0]
-            .outcomes
-            .iter()
-            .all(|outcome| outcome.kind == SourceOutcomeKind::ZeroYieldAnomaly));
+        assert!(
+            report.rounds[0]
+                .outcomes
+                .iter()
+                .all(|outcome| outcome.kind == SourceOutcomeKind::ZeroYieldAnomaly)
+        );
     }
 
     #[test]
