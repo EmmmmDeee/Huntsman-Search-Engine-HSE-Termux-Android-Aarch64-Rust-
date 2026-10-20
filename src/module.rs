@@ -836,7 +836,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::Threat,
         attack_techniques: &["T1596.005"],
-        description: "Shodan host services and DNS records (key; DNS spends a query credit)",
+        description: "Shodan host with every service banner, CVE and TLS detail, and DNS records (key; DNS spends a query credit)",
     },
     ReachableModule {
         name: "pulsedive",

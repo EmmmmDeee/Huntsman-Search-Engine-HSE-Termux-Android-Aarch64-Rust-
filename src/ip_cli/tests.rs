@@ -403,7 +403,7 @@ fn a_configured_shodan_key_runs_shodan_with_the_key_only_in_its_query() {
     assert_eq!(
         carrying,
         [format!(
-            "https://api.shodan.io/shodan/host/1.1.1.1?minify=true&key={SHODAN_KEY}"
+            "https://api.shodan.io/shodan/host/1.1.1.1?key={SHODAN_KEY}"
         )]
     );
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
