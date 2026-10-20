@@ -167,16 +167,17 @@ pub fn render(scan: &CellScan) -> String {
         scan.source, scan.acquisition, scan.status, scan.observed, scan.rejected
     );
     for row in &scan.observations {
-        let signal = row.sighting.signal_dbm.map_or_else(
-            || "unknown".to_owned(),
-            |n| format!("{n:.0}"),
-        );
+        let signal = row
+            .sighting
+            .signal_dbm
+            .map_or_else(|| "unknown".to_owned(), |n| format!("{n:.0}"));
         let _ = writeln!(
             text,
             "cell\ttype={}\tid={}\tregistered={}\tdbm={}\tfreshness={}",
             row.technology,
             escape_controls(&row.sighting.network_id),
-            row.registered.map_or("unknown", |v| if v { "yes" } else { "no" }),
+            row.registered
+                .map_or("unknown", |v| if v { "yes" } else { "no" }),
             signal,
             row.freshness,
         );
