@@ -137,7 +137,6 @@ fn search_with_observations<T: Transport + ?Sized>(
     Ok((SearchReport { hits, outcomes }, observations))
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AdaptiveHit {
     pub url: String,
@@ -226,10 +225,10 @@ pub fn adaptive_search<T: Transport + ?Sized>(
     input: &str,
     now_unix: u64,
 ) -> Result<AdaptiveSearchReport, Error> {
-    if input.len() > MAX_ADAPTIVE_QUERY_BYTES
-        || input.chars().any(char::is_control)
-    {
-        return Err(Error::Invalid("adaptive query is too long or contains control characters".into()));
+    if input.len() > MAX_ADAPTIVE_QUERY_BYTES || input.chars().any(char::is_control) {
+        return Err(Error::Invalid(
+            "adaptive query is too long or contains control characters".into(),
+        ));
     }
     let seed = canonical_whitespace(input);
     if seed.is_empty() {
