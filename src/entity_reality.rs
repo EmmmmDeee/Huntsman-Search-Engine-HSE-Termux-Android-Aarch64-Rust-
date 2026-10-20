@@ -194,13 +194,31 @@ pub fn assess(entity: &Entity) -> EntityReality {
                 .entry(attribute.clone())
                 .or_default()
                 .insert(value.clone());
+            let status = if indices
+                .iter()
+                .all(|index| traces[*index].role == EvidenceRole::OperatorSeed)
+            {
+                "operator_seed_only"
+            } else if indices
+                .iter()
+                .all(|index| traces[*index].role == EvidenceRole::Inferred)
+            {
+                "inferred_only"
+            } else if indices
+                .iter()
+                .any(|index| traces[*index].role == EvidenceRole::SourceAttributed)
+            {
+                "source_attribution_not_independently_verified"
+            } else {
+                "mixed_seed_and_inference"
+            };
             AttributedAssertion {
                 dimension: dimension(&attribute),
                 attribute,
                 value,
                 evidence_indices: indices.into_iter().collect(),
                 reported_source_families: families.into_iter().collect(),
-                status: "source_attribution_not_independently_verified",
+                status,
             }
         })
         .collect();
@@ -270,6 +288,19 @@ mod tests {
             report.assertions[0].status,
             "source_attribution_not_independently_verified"
         );
+    }
+
+    #[test]
+    fn a_claim_supported_only_by_a_user_seed_is_never_presented_as_source_observed() {
+        let subject = Entity::builder(EntityKind::Organisation, "Example", 0.9, "scan")
+            .evidence(
+                Evidence::new(EvidenceProvenance::new("operator_input"), "query")
+                    .with_attr("owner", "Claimed owner"),
+            )
+            .build();
+        let report = assess(&subject);
+        assert_eq!(report.assertions[0].status, "operator_seed_only");
+        assert_eq!(report.traces[0].role, EvidenceRole::OperatorSeed);
     }
 
     #[test]
