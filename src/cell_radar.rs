@@ -187,8 +187,14 @@ mod tests {
         let scan = parse_scan(input).unwrap();
         assert_eq!((scan.observed, scan.rejected), (3, 0));
         assert_eq!(scan.status, "os_cached_freshness_unknown");
-        assert_eq!(scan.observations[0].sighting.network_id, "lte:505:1:345:123456");
-        assert_eq!(scan.observations[1].sighting.network_id, "nr:505:01:987:68719476734");
+        assert_eq!(
+            scan.observations[0].sighting.network_id,
+            "lte:505:1:345:123456"
+        );
+        assert_eq!(
+            scan.observations[1].sighting.network_id,
+            "nr:505:01:987:68719476734"
+        );
         assert_eq!(scan.observations[1].mnc.as_deref(), Some("01"));
         assert_eq!(scan.observations[0].sighting.signal_dbm, Some(-92.0));
         assert_eq!(scan.observations[2].sighting.signal_dbm, Some(-75.0));
@@ -207,7 +213,10 @@ mod tests {
         let parsed = parse_scan(raw).unwrap();
         assert_eq!(parsed.observed, 2);
         assert_eq!(parsed.observations[0].sighting.network_id, "cdma:11:22:33");
-        assert_eq!(parsed.observations[1].sighting.network_id, "wcdma:505:03:123:3456");
+        assert_eq!(
+            parsed.observations[1].sighting.network_id,
+            "wcdma:505:03:123:3456"
+        );
         assert!(!parsed.observations[0].sighting.has_usable_position());
     }
 
@@ -223,8 +232,7 @@ mod tests {
     fn empty_api_cache_and_replays_do_not_assert_radio_absence() {
         let scan = parse_scan(b"[]").unwrap();
         assert_eq!(scan.status, "inconclusive");
-        let replay = parse_replay(br#"[{"type":"lte","mcc":505,"mnc":1,"tac":1,"ci":2}]"#)
-            .unwrap();
+        let replay = parse_replay(br#"[{"type":"lte","mcc":505,"mnc":1,"tac":1,"ci":2}]"#).unwrap();
         assert_eq!(replay.source, "unverified_json_file");
         assert_eq!(replay.observations[0].freshness, "unknown");
         assert_eq!(replay.observations[0].sighting.observed_epoch, None);
