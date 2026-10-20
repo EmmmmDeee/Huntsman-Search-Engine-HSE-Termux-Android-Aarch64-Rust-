@@ -1251,6 +1251,7 @@ impl GraphExecutor {
             {
                 return Err(GraphError::CheckpointMismatch);
             }
+            let mut minimum_consumed = 0_u64;
             for (id, record) in &checkpoint.report.tasks {
                 let Some(spec) = graph.by_id.get(id) else {
                     return Err(GraphError::CheckpointMismatch);
@@ -1259,6 +1260,11 @@ impl GraphExecutor {
                     || (record.state == TaskState::Succeeded && record.attempts == 0)
                 {
                     return Err(GraphError::CheckpointMismatch);
+                }
+                if record.attempts > 0 {
+                    minimum_consumed = minimum_consumed
+                        .checked_add(spec.resource_units)
+                        .ok_or(GraphError::CheckpointMismatch)?;
                 }
                 if record.state == TaskState::Succeeded {
                     let output = record
@@ -1293,6 +1299,11 @@ impl GraphExecutor {
                 } else if record.output.is_some() {
                     return Err(GraphError::CheckpointMismatch);
                 }
+            }
+            // Zero-attempt tasks may have reserved units, but recorded attempts
+            // must never cost more than the checkpoint says was consumed.
+            if minimum_consumed > checkpoint.report.consumed_resource_units {
+                return Err(GraphError::CheckpointMismatch);
             }
         }
         for id in &graph.topological_order {
@@ -2987,5 +2998,131 @@ mod tests {
     #[test]
     fn malformed_output_after_transient_failure_is_not_resumed() {
         permanent_failure_after_transient_is_not_resumed(false);
+    }
+
+    fn saved_parent_wave(
+        parent_cost: u64,
+        budget: u64,
+        child_calls: &Arc<AtomicUsize>,
+    ) -> (GraphDefinition, HandlerRegistry, ExecutionCheckpoint) {
+        let mut parent = spec("parent", &[]);
+        parent.resource_units = parent_cost;
+        let definition = GraphDefinition {
+            run_id: "checkpoint-resource-accounting".into(),
+            tasks: vec![parent, spec("child", &["parent"])],
+        };
+        let mut handlers = HandlerRegistry::new();
+        handlers.insert(
+            "parent".into(),
+            handler(|_| Ok(output(json!(true), "parent"))),
+        );
+        let observed_calls = Arc::clone(child_calls);
+        handlers.insert(
+            "child".into(),
+            handler(move |_| {
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(output(json!(true), "child"))
+            }),
+        );
+        let snapshots = Mutex::new(Vec::new());
+        GraphExecutor::new(ExecutionPolicy {
+            max_total_resource_units: budget,
+            ..policy()
+        })
+        .execute_checkpointed(
+            &definition,
+            &handlers,
+            &Arc::new(AtomicBool::new(false)),
+            |checkpoint| {
+                snapshots.lock().unwrap().push(checkpoint.clone());
+                Ok(())
+            },
+        )
+        .unwrap();
+        let saved = snapshots
+            .into_inner()
+            .unwrap()
+            .into_iter()
+            .find(|checkpoint| {
+                checkpoint.report.tasks["parent"].state == TaskState::Succeeded
+                    && checkpoint.report.tasks["child"].state == TaskState::Pending
+            })
+            .expect("checkpoint after the parent wave");
+        assert_eq!(saved.report.consumed_resource_units, parent_cost);
+        (definition, handlers, saved)
+    }
+
+    #[test]
+    fn checkpoint_cannot_understate_spent_resources_to_dispatch_extra_work() {
+        let child_calls = Arc::new(AtomicUsize::new(0));
+        let (definition, handlers, mut saved) = saved_parent_wave(1, 1, &child_calls);
+        let executor = GraphExecutor::new(ExecutionPolicy {
+            max_total_resource_units: 1,
+            ..policy()
+        });
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let valid = executor
+            .resume(&definition, &handlers, &cancelled, saved.clone())
+            .unwrap();
+        assert_eq!(valid.tasks["child"].state, TaskState::Blocked);
+        assert_eq!(valid.termination, Some(RunTermination::ResourceLimit));
+        assert_eq!(child_calls.load(Ordering::SeqCst), 0);
+
+        saved.report.consumed_resource_units = 0;
+        let result = executor.resume(&definition, &handlers, &cancelled, saved);
+        assert_eq!(
+            child_calls.load(Ordering::SeqCst),
+            0,
+            "an understated checkpoint must fail before dispatch"
+        );
+        assert!(matches!(result, Err(GraphError::CheckpointMismatch)));
+    }
+
+    #[test]
+    fn checkpoint_rejects_overflowing_minimum_attempted_resource_cost() {
+        let child_calls = Arc::new(AtomicUsize::new(0));
+        let (definition, handlers, mut saved) = saved_parent_wave(u64::MAX, u64::MAX, &child_calls);
+        let child = saved.report.tasks.get_mut("child").unwrap();
+        child.state = TaskState::Failed;
+        child.attempts = 1;
+        child.error = Some("recorded attempt".into());
+
+        let result = GraphExecutor::new(ExecutionPolicy {
+            max_total_resource_units: u64::MAX,
+            ..policy()
+        })
+        .resume(
+            &definition,
+            &handlers,
+            &Arc::new(AtomicBool::new(false)),
+            saved,
+        );
+
+        assert!(matches!(result, Err(GraphError::CheckpointMismatch)));
+        assert_eq!(child_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn checkpoint_preserves_conservative_extra_resource_reservations() {
+        let child_calls = Arc::new(AtomicUsize::new(0));
+        let (definition, handlers, mut saved) = saved_parent_wave(1, 2, &child_calls);
+        let calls_before_resume = child_calls.load(Ordering::SeqCst);
+        saved.report.consumed_resource_units = 2;
+
+        let report = GraphExecutor::new(ExecutionPolicy {
+            max_total_resource_units: 2,
+            ..policy()
+        })
+        .resume(
+            &definition,
+            &handlers,
+            &Arc::new(AtomicBool::new(false)),
+            saved,
+        )
+        .unwrap();
+
+        assert_eq!(report.consumed_resource_units, 2);
+        assert_eq!(report.tasks["child"].state, TaskState::Blocked);
+        assert_eq!(child_calls.load(Ordering::SeqCst), calls_before_resume);
     }
 }
