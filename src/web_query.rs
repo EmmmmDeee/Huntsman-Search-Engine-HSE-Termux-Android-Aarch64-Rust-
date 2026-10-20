@@ -171,16 +171,20 @@ fn search_engine<T: Transport + ?Sized>(
             });
         };
 
-        if response_is_cacheable(&response) {
+        // HTTP 200 is not a successful search. Parse first: a zero-yield page
+        // may be a transient interstitial or provider markup drift, and caching
+        // it would hide new results on repeat searches for the full TTL.
+        let report = parse_engine_response(engine, &response, now_unix);
+        if response_is_cacheable(&response, &report) {
             RESPONSE_CACHE.put(
                 url.clone(),
                 CachedResponse {
-                    response: response.clone(),
+                    response,
                     stored_at_unix: now_unix,
                 },
             );
         }
-        return Ok(parse_engine_response(engine, &response, now_unix));
+        return Ok(report);
     }
 }
 
@@ -193,8 +197,14 @@ fn cached_response(url: &str, now_unix: u64) -> Option<Response> {
         .then_some(cached.response)
 }
 
-fn response_is_cacheable(response: &Response) -> bool {
-    if response.truncated || !(200..300).contains(&response.status) {
+fn response_is_cacheable(response: &Response, report: &EngineReport) -> bool {
+    // Only a semantically successful search is reusable. HTTP success with
+    // no external hits is explicitly a ZeroYieldAnomaly, not negative evidence.
+    if response.truncated
+        || !(200..300).contains(&response.status)
+        || report.outcome.kind != SourceOutcomeKind::Success
+        || report.hits.is_empty()
+    {
         return false;
     }
     let cache_control = response
@@ -205,7 +215,6 @@ fn response_is_cacheable(response: &Response) -> bool {
         .split(',')
         .map(str::trim)
         .any(|directive| matches!(directive, "no-store" | "no-cache" | "max-age=0"))
-        && classify_fetch(response.status, &response.text()) == SourceOutcomeKind::Inconclusive
 }
 
 fn retryable_fetch(kind: SourceOutcomeKind) -> bool {
@@ -305,50 +314,145 @@ pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
 }
 
 fn href_values(html: &str) -> Vec<&str> {
+    // Search results are anchor targets, not arbitrary href-looking bytes in
+    // stylesheets, metadata, comments, JavaScript, or hidden HTML templates.
     let bytes = html.as_bytes();
-    let mut out = Vec::new();
+    let mut hits = Vec::new();
     let mut index = 0;
-    while index + 5 < bytes.len() {
-        let Some(rel) = find_ascii_case_insensitive(&bytes[index..], b"href") else {
+    while index < bytes.len() {
+        if bytes[index] != b'<' {
+            index += 1;
+            continue;
+        }
+        if bytes[index..].starts_with(b"<!--") {
+            let start = index + 4;
+            let Some(skip) = bytes[start..].windows(3).position(|part| part == b"-->") else {
+                break;
+            };
+            index = start + skip + 3;
+            continue;
+        }
+        let Some(end) = tag_end(bytes, index + 1) else {
             break;
         };
-        let candidate = index + rel;
-        // data-href and nothref are not navigational attributes.
-        if candidate > 0
-            && !bytes[candidate - 1].is_ascii_whitespace()
-            && bytes[candidate - 1] != b'<'
-        {
-            index = candidate + 4;
-            continue;
+        let tag = &bytes[index + 1..end];
+        let mut name_start = 0;
+        while name_start < tag.len() && tag[name_start].is_ascii_whitespace() {
+            name_start += 1;
         }
-        index = candidate + 4;
-        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-            index += 1;
+        let closing = tag.get(name_start) == Some(&b'/');
+        if closing {
+            name_start += 1;
         }
-        if bytes.get(index) != Some(&b'=') {
-            continue;
+        let mut name_end = name_start;
+        while name_end < tag.len() && tag[name_end].is_ascii_alphabetic() {
+            name_end += 1;
         }
-        index += 1;
-        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-            index += 1;
+        let name = &tag[name_start..name_end];
+        if !closing {
+            let closer: Option<&[u8]> = if name.eq_ignore_ascii_case(b"script") {
+                Some(b"</script")
+            } else if name.eq_ignore_ascii_case(b"style") {
+                Some(b"</style")
+            } else if name.eq_ignore_ascii_case(b"template") {
+                Some(b"</template")
+            } else if name.eq_ignore_ascii_case(b"textarea") {
+                Some(b"</textarea")
+            } else {
+                None
+            };
+            if let Some(closer) = closer {
+                let Some(skip) = find_ascii_case_insensitive(&bytes[end + 1..], closer) else {
+                    break;
+                };
+                index = end + 1 + skip;
+                continue;
+            }
+            if name.eq_ignore_ascii_case(b"a") {
+                if let Some(href) = anchor_href(html, index + 1 + name_end, end) {
+                    hits.push(href);
+                }
+            }
         }
-        let Some(&quote) = bytes.get(index) else {
-            break;
-        };
-        if !matches!(quote, b'\'' | b'"') {
-            continue;
-        }
-        index += 1;
-        let start = index;
-        while index < bytes.len() && bytes[index] != quote {
-            index += 1;
-        }
-        if let Some(value) = html.get(start..index) {
-            out.push(value);
-        }
-        index = index.saturating_add(1);
+        index = end + 1;
     }
-    out
+    hits
+}
+
+// Find the closing '>' of a tag, not the '>' inside an attribute value.
+fn tag_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut quote = None;
+    for (index, byte) in bytes.iter().enumerate().skip(start) {
+        if let Some(delimiter) = quote {
+            if *byte == delimiter {
+                quote = None;
+            }
+        } else if matches!(*byte, b'\'' | b'"') {
+            quote = Some(*byte);
+        } else if *byte == b'>' {
+            return Some(index);
+        }
+    }
+    None
+}
+
+// HTML attributes have no fixed order, and valid href values may be quoted or
+// unquoted. Only an exact attribute name on an actual <a> tag is a candidate.
+fn anchor_href(html: &str, mut index: usize, end: usize) -> Option<&str> {
+    let bytes = html.as_bytes();
+    while index < end {
+        while index < end && (bytes[index].is_ascii_whitespace() || bytes[index] == b'/') {
+            index += 1;
+        }
+        let name_start = index;
+        while index < end
+            && !bytes[index].is_ascii_whitespace()
+            && !matches!(bytes[index], b'=' | b'/')
+        {
+            index += 1;
+        }
+        if name_start == index {
+            index += 1;
+            continue;
+        }
+        let name = &bytes[name_start..index];
+        let mut equals = index;
+        while equals < end && bytes[equals].is_ascii_whitespace() {
+            equals += 1;
+        }
+        if equals == end || bytes[equals] != b'=' {
+            index = equals;
+            continue;
+        }
+        index = equals + 1;
+        while index < end && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index == end {
+            break;
+        }
+        let (value_start, value_end) = if matches!(bytes[index], b'\'' | b'"') {
+            let delimiter = bytes[index];
+            index += 1;
+            let start = index;
+            while index < end && bytes[index] != delimiter {
+                index += 1;
+            }
+            let finish = index;
+            index = (index + 1).min(end);
+            (start, finish)
+        } else {
+            let start = index;
+            while index < end && !bytes[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            (start, index)
+        };
+        if name.eq_ignore_ascii_case(b"href") {
+            return html.get(value_start..value_end);
+        }
+    }
+    None
 }
 
 fn find_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -503,6 +607,41 @@ mod tests {
     }
 
     #[test]
+    fn parser_never_promotes_page_resources_or_script_literals_to_results() {
+        let html = r#"
+            <link rel="stylesheet" href="https://cdn.example.net/site.css">
+            <meta data-href="https://meta.example.org/fake">
+            <script>const template = '<a href="https://script.example.org/fake">';</script>
+            <style>/* <a href="https://style.example.org/fake"> */</style>
+            <template><a href="https://template.example.org/fake">Hidden</a></template>
+            <!-- <a href="https://comment.example.org/fake">Comment</a> -->
+            <a data-href="https://data.example.org/fake" class="result" href="https://real.example.org/a">Real</a>
+        "#;
+        let hits = parse_hits(html, "bing");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].url, "https://real.example.org/a");
+    }
+
+    #[test]
+    fn parser_supports_unquoted_href_and_embedded_greater_than_in_attributes() {
+        let html = concat!(
+            "<A data-note='greater > sign' HREF=https://example.org/unquoted>First</A>",
+            "<a HREF = 'https://example.net/other?x=1&amp;y=2'>Second</a>",
+            "<a title='contains href=\"https://fake.example/\"' href=\"https://example.com/real\">Third</a>",
+        );
+        let hits = parse_hits(html, "mojeek");
+        let urls: Vec<_> = hits.iter().map(|hit| hit.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://example.org/unquoted",
+                "https://example.net/other?x=1&y=2",
+                "https://example.com/real",
+            ]
+        );
+    }
+
+    #[test]
     fn parser_preserves_first_seen_provider_ranking_and_deduplicates() {
         let html = concat!(
             "<a href=\"https://z.example/item\">first</a>",
@@ -571,6 +710,52 @@ mod tests {
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
         assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::ZeroYieldAnomaly);
         assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::Success);
+    }
+
+    #[test]
+    fn empty_http_success_does_not_hide_later_search_results() {
+        let engine = EngineSpec {
+            name: "cache_zero_yield_test",
+            base_url: "https://cache-zero-yield-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Ok(response(200, "<html><body>Temporarily empty</body></html>")),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/new-result">new</a>"#,
+            )),
+        ]);
+        let first = search_engine(&fake, engine, "rare-needle-unique", 300).unwrap();
+        assert_eq!(first.outcome.kind, SourceOutcomeKind::ZeroYieldAnomaly);
+        assert!(first.hits.is_empty());
+
+        // Within the TTL: if the first page were cached, this call would
+        // incorrectly return zero hits and leave the second fixture unused.
+        let second = search_engine(&fake, engine, "rare-needle-unique", 301).unwrap();
+        assert_eq!(second.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(second.hits[0].url, "https://example.org/new-result");
+    }
+
+    #[test]
+    fn engine_navigation_only_is_not_a_cacheable_search_result() {
+        let engine = EngineSpec {
+            name: "cache_navigation_only_test",
+            base_url: "https://cache-navigation-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Ok(response(
+                200,
+                r#"<a href="https://www.bing.com/search?q=next">Next</a>"#,
+            )),
+            Ok(response(
+                200,
+                r#"<a href="https://example.net/real">real</a>"#,
+            )),
+        ]);
+        let first = search_engine(&fake, engine, "navigation-only-unique", 400).unwrap();
+        assert_eq!(first.outcome.kind, SourceOutcomeKind::ZeroYieldAnomaly);
+        let second = search_engine(&fake, engine, "navigation-only-unique", 401).unwrap();
+        assert_eq!(second.hits[0].url, "https://example.net/real");
     }
 
     #[test]
@@ -678,11 +863,13 @@ mod tests {
         assert_eq!(first.hits[0].url, "https://example.org/first");
         assert_eq!(second.hits[0].url, "https://example.org/second");
 
-        assert!(!response_is_cacheable(&response_with_headers(
+        let response = response_with_headers(
             200,
             &[("cache-control", "max-age=0")],
             r#"<a href="https://example.org/third">third</a>"#,
-        )));
+        );
+        let report = parse_engine_response(engine, &response, 502);
+        assert!(!response_is_cacheable(&response, &report));
     }
 
     #[test]
