@@ -38,6 +38,11 @@ pub(super) fn argument_not_utf8(position: usize, bytes: usize) -> ExitCode {
     )
 }
 
+/// Separate the sensor help from the command dispatcher to keep it bounded.
+fn radar_help() -> &'static str {
+    "radar wifi [--json] [--file TERMUX_SCAN_JSON]\nRead Android OS-cached nearby WiFi results through termux-wifi-scaninfo with no root. This does NOT trigger an active scan. Each record includes BSSID, SSID, RSSI, band and cache age when /proc/uptime permits; age over five minutes is labelled stale. No GPS position or UTC sighting timestamp is inferred. A missing Termux:API installation, disabled location services or an empty OS cache is not evidence that there are no networks. --file replays previously captured Termux JSON without querying hardware; --json returns structured results."
+}
+
 /// The help text of a dispatched command, or `None` for a word that is not one.
 pub(super) fn command_help(command: &str) -> Option<&'static str> {
     let help = match command {
@@ -85,6 +90,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
         "network" => NETWORK_HELP,
+        "radar" => radar_help(),
         "domain" => {
             "domain DOMAIN [--save FILE]\nLook up one domain: certificate-transparency names from crt.sh, every certificate Cert Spotter logged for the domain and its subdomains in full (subject, serial, issuer, validity, revocation, names and the PEM; HUNTSMAN_CERTSPOTTER_KEY raises its limit), DNS records over DNS-over-HTTPS, the Spamhaus DBL and SURBL domain blocklists over the system resolver, and whether the filtering resolvers Spiderfoot asks (AdGuard, CleanBrowsing, Cloudflare, Comodo, DNS for Family, OpenDNS, Quad9, Yandex) block it, each after a name it is known to block (DNS-over-HTTPS, or UDP to the filter's own servers for Comodo, Quad9, DNS for Family and Yandex). The domain and every host and address the lookup found are checked against the threat feeds Spiderfoot downloads (abuse.ch Feodo Tracker and URLhaus, AlienVault IP Reputation, blocklist.de, botvrij.eu, CINS Army, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black's hosts, Tor's exit relays, VoIPBL and VXVault), each downloaded once and kept in $HUNTSMAN_HOME/feeds, else ~/.huntsman/feeds, until it is older than Spiderfoot keeps it. Pulsedive threat risk, Netlas scan data, AlienVault OTX threat pulses, urlscan.io public page scans, Robtex passive DNS and HackerTarget hosts under the domain are asked without a key (HUNTSMAN_PULSEDIVE_KEY, HUNTSMAN_NETLAS_KEY, HUNTSMAN_OTX_KEY, HUNTSMAN_URLSCAN_KEY and HUNTSMAN_HACKERTARGET_KEY raise their limits). With HUNTSMAN_VIRUSTOTAL_KEY set it adds VirusTotal engine verdicts, with HUNTSMAN_HUNTER_KEY the addresses Hunter.io found published for the domain, with HUNTSMAN_SHODAN_KEY Shodan DNS records (one query credit), with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs, with HUNTSMAN_SECTRAILS_KEY SecurityTrails subdomains, and with HUNTSMAN_WHOXY_KEY the live WHOIS record (one Whoxy credit); a leg whose key is not set makes no request, and a key that is set always runs its leg. --save writes an unverified ledger that verify can reload. Makes network requests."
         }

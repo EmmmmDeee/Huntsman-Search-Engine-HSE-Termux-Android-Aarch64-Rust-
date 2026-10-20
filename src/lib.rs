@@ -221,6 +221,7 @@ pub mod virustotal;
 pub mod web_query;
 pub mod web_server;
 pub mod whoxy;
+pub mod wifi_radar;
 pub mod wigle;
 pub mod x509;
 pub mod xlsx;

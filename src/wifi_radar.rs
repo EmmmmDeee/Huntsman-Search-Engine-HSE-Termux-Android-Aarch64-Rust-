@@ -1,0 +1,252 @@
+//! Rootless Android Wi-Fi observations via the Termux:API scan-result cache.
+//! This is *not* an active scan: Android owns the scan schedule. A remembered
+//! result cannot establish a device's present location or proximity.
+
+use std::fmt::Write as _;
+
+use serde::Serialize;
+
+use crate::error::Error;
+use crate::rf::{RadioKind, RfSighting, RfSource, band, is_mac};
+use crate::textnorm::escape_controls;
+
+/// Older OS scan results are marked stale, never silently called live.
+pub const STALE_AFTER_SECS: f64 = 300.0;
+pub const MAX_SCAN_BYTES: u64 = 1_048_576;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WifiObservation {
+    pub sighting: RfSighting,
+    /// Android's raw `ScanResult` timestamp: microseconds since device boot.
+    pub os_timestamp_us: Option<u64>,
+    /// Age inferred from /proc/uptime, or None when no reliable clock exists.
+    pub age_secs: Option<f64>,
+    pub freshness: &'static str,
+    pub frequency_mhz: Option<i64>,
+    pub band: Option<&'static str>,
+    pub channel_bandwidth_mhz: Option<String>,
+    pub capabilities: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WifiScan {
+    pub source: &'static str,
+    pub acquisition: &'static str,
+    pub status: &'static str,
+    pub observed: usize,
+    pub rejected: usize,
+    pub observations: Vec<WifiObservation>,
+}
+
+fn optional_string(value: Option<&serde_json::Value>) -> Option<String> {
+    value
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+}
+
+/// Age Android boot-relative scan timestamps without precision-losing integer casts.
+/// A timestamp beyond 136 years of uptime has no meaningful handset age.
+fn age_from_boot(uptime_secs: Option<f64>, timestamp_us: Option<u64>) -> Option<f64> {
+    let uptime = uptime_secs?;
+    let timestamp = timestamp_us?;
+    if !uptime.is_finite() || uptime < 0.0 {
+        return None;
+    }
+    let seconds = u32::try_from(timestamp / 1_000_000).ok()?;
+    let micros = u32::try_from(timestamp % 1_000_000).ok()?;
+    let observed = f64::from(seconds) + f64::from(micros) / 1_000_000.0;
+    let age = uptime - observed;
+    (age >= 0.0 && age.is_finite()).then_some(age)
+}
+
+/// Parse Android's actual Termux:API schema. Absence of results is
+/// inconclusive: `getScanResults()` can return an empty cached scan.
+/// Refuse `API_ERROR` and unexpected JSON rather than promoting them to zero.
+pub fn parse_scan(bytes: &[u8], uptime_secs: Option<f64>) -> Result<WifiScan, Error> {
+    if usize::try_from(MAX_SCAN_BYTES).is_ok_and(|limit| bytes.len() > limit) {
+        return Err(Error::Invalid("Wi-Fi scan output exceeds 1 MiB".into()));
+    }
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|e| Error::Invalid(format!("invalid Termux Wi-Fi JSON: {e}")))?;
+    if let Some(message) = value.get("API_ERROR").and_then(serde_json::Value::as_str) {
+        return Err(Error::Invalid(format!(
+            "Termux:API Wi-Fi error: {}",
+            escape_controls(message)
+        )));
+    }
+    let rows = value
+        .as_array()
+        .ok_or_else(|| Error::Invalid("expected a Termux Wi-Fi scan JSON array".into()))?;
+    let mut observations = Vec::new();
+    let mut rejected = 0;
+    for row in rows {
+        let Some(bssid) = row.get("bssid").and_then(serde_json::Value::as_str) else {
+            rejected += 1;
+            continue;
+        };
+        if !is_mac(bssid) {
+            rejected += 1;
+            continue;
+        }
+        let Some(rssi) = row.get("rssi").and_then(serde_json::Value::as_i64) else {
+            rejected += 1;
+            continue;
+        };
+        if !(-150..=0).contains(&rssi) {
+            rejected += 1;
+            continue;
+        }
+
+        let timestamp = row
+            .get("timestamp")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|ts| *ts > 0);
+        let age_secs = age_from_boot(uptime_secs, timestamp);
+        let freshness = match age_secs {
+            Some(age) if age > STALE_AFTER_SECS => "stale",
+            Some(_) => "os_cached",
+            None => "unknown",
+        };
+        let frequency_mhz = row
+            .get("frequency_mhz")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|freq| (2300..=7200).contains(freq));
+        let mut sighting = RfSighting::new(bssid, RadioKind::Wifi, RfSource::WifiRadar);
+        sighting.name = optional_string(row.get("ssid"));
+        sighting.signal_dbm = i32::try_from(rssi).ok().map(f64::from);
+        sighting.encryption = optional_string(row.get("capabilities"));
+        // Android's microseconds-since-boot clock is not a UTC timestamp.
+        // Never invent an observed_epoch or device coordinates.
+        observations.push(WifiObservation {
+            sighting,
+            os_timestamp_us: timestamp,
+            age_secs,
+            freshness,
+            frequency_mhz,
+            band: band(frequency_mhz),
+            channel_bandwidth_mhz: optional_string(row.get("channel_bandwidth_mhz")),
+            capabilities: optional_string(row.get("capabilities")),
+        });
+    }
+    let status = if observations.is_empty() {
+        "inconclusive"
+    } else if observations.iter().all(|o| o.freshness == "stale") {
+        "stale_only"
+    } else if observations.iter().any(|o| o.freshness == "os_cached") {
+        "os_cached"
+    } else {
+        "freshness_unknown"
+    };
+    Ok(WifiScan {
+        source: "termux-wifi-scaninfo",
+        acquisition: "android_cached_scan_results_not_active_scan",
+        status,
+        observed: observations.len(),
+        rejected,
+        observations,
+    })
+}
+
+#[must_use]
+pub fn render(scan: &WifiScan) -> String {
+    let mut text = format!(
+        "source={}\tacquisition={}\tstatus={}\tobserved={}\trejected={}\n",
+        scan.source, scan.acquisition, scan.status, scan.observed, scan.rejected
+    );
+    for row in &scan.observations {
+        let age = row
+            .age_secs
+            .map_or_else(|| "unknown".to_owned(), |n| format!("{n:.0}"));
+        let _ = writeln!(
+            text,
+            "wifi\tbssid={}\tssid={}\trssi_dbm={:.0}\tband={}\tage_secs={}\tfreshness={}",
+            escape_controls(&row.sighting.network_id),
+            escape_controls(row.sighting.name.as_deref().unwrap_or("")),
+            row.sighting.signal_dbm.unwrap_or_default(),
+            row.band.unwrap_or("unknown"),
+            age,
+            row.freshness
+        );
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_cached_wifi_is_a_sighting_not_a_location() {
+        let input = br#"[{"bssid":"3C:5A:B4:11:22:33","ssid":"Lab","rssi":-57,"frequency_mhz":2412,"timestamp":980000000,"channel_bandwidth_mhz":"20","capabilities":"[WPA2-PSK]"}]"#;
+        let scan = parse_scan(input, Some(1000.0)).unwrap();
+        assert_eq!(scan.status, "os_cached");
+        assert_eq!(scan.observed, 1);
+        assert_eq!(scan.observations[0].age_secs, Some(20.0));
+        assert_eq!(scan.observations[0].band, Some("2.4GHz"));
+        assert_eq!(
+            scan.observations[0].sighting.network_id,
+            "3c:5a:b4:11:22:33"
+        );
+        assert_eq!(scan.observations[0].sighting.signal_dbm, Some(-57.0));
+        assert_eq!(scan.observations[0].sighting.observed_epoch, None);
+        assert!(!scan.observations[0].sighting.has_usable_position());
+    }
+
+    #[test]
+    fn old_scan_is_explicitly_stale() {
+        let input = br#"[{"bssid":"3C:5A:B4:11:22:33","rssi":-75,"timestamp":100000000}]"#;
+        let scan = parse_scan(input, Some(1000.0)).unwrap();
+        assert_eq!(scan.status, "stale_only");
+        assert_eq!(scan.observations[0].freshness, "stale");
+        assert_eq!(scan.observations[0].age_secs, Some(900.0));
+    }
+
+    #[test]
+    fn uptime_unavailable_or_future_timestamp_never_claims_freshness() {
+        let raw = br#"[{"bssid":"3C:5A:B4:11:22:33","rssi":-60,"timestamp":1000000000}]"#;
+        for uptime in [None, Some(5.0), Some(f64::NAN)] {
+            let report = parse_scan(raw, uptime).unwrap();
+            assert_eq!(report.status, "freshness_unknown");
+            assert_eq!(report.observations[0].age_secs, None);
+        }
+    }
+
+    #[test]
+    fn empty_cache_is_not_proof_of_no_nearby_devices() {
+        let report = parse_scan(b"[]", Some(1000.0)).unwrap();
+        assert_eq!(report.status, "inconclusive");
+        assert_eq!(report.observed, 0);
+        assert!(report.observations.is_empty());
+    }
+
+    #[test]
+    fn malformed_records_are_counted_without_corrupting_valid_results() {
+        let raw = br#"[{"bssid":"not-a-mac","rssi":-30},{"bssid":"3C:5A:B4:11:22:33","rssi":-30},{"bssid":"3C:5A:B4:11:22:34","rssi":900}]"#;
+        let scan = parse_scan(raw, None).unwrap();
+        assert_eq!((scan.observed, scan.rejected), (1, 2));
+    }
+
+    #[test]
+    fn api_errors_and_unexpected_shapes_are_not_valid_zeros() {
+        for raw in [
+            r#"{"API_ERROR":"Location needs to be enabled"}"#,
+            r#"{"arbitrary":"object"}"#,
+            r"null",
+            r#""not an array""#,
+        ] {
+            assert!(parse_scan(raw.as_bytes(), None).is_err(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn control_characters_do_not_inject_report_rows() {
+        let raw = br#"[{"bssid":"3C:5A:B4:11:22:33","ssid":"bad\nwifi\tfake","rssi":-60}]"#;
+        let report = parse_scan(raw, None).unwrap();
+        let rendered = render(&report);
+        assert_eq!(rendered.lines().count(), 2);
+        assert!(rendered.contains(r"\n"));
+        assert!(!rendered.contains("\twifi\tfake"));
+    }
+}
