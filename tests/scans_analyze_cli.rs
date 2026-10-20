@@ -156,3 +156,32 @@ fn analyze_cli_rejects_flagged_evidence_without_making_an_artifact_change() {
 
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn reality_cli_exposes_attributed_evidence_without_mutating_saved_scan() {
+    let (dir, id, before) = fixture();
+    let store = ScanStore::open(&dir).unwrap();
+    let results = store.results(&id).unwrap().unwrap();
+    let uid = &results.entities[0].uid;
+    let output = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
+        .args(["scans", "reality", &id, uid, "--dir"])
+        .arg(&dir)
+        .env("HOME", &dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["entity"]["uid"], *uid);
+    assert_eq!(value["entity"]["assertions"][0]["attribute"], "ip");
+    assert_eq!(value["source_authenticity"], "not_established");
+    assert_eq!(value["independent_source_proof"], "not_reconstructed");
+    assert_eq!(std::fs::read(dir.join(&id).join("results.json")).unwrap(), before);
+
+    let missing = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
+        .args(["scans", "reality", &id, "missing", "--dir"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+    std::fs::remove_dir_all(dir).unwrap();
+}
