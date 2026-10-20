@@ -113,10 +113,7 @@ fn observation_limit_marks_only_provider_targets_with_dropped_findings() {
         coverage[0].kind,
         EventKind::ModuleDone { found: 0, .. }
     ));
-    assert!(matches!(
-        coverage[1].kind,
-        EventKind::ModuleError { .. }
-    ));
+    assert!(matches!(coverage[1].kind, EventKind::ModuleError { .. }));
 }
 
 #[test]
