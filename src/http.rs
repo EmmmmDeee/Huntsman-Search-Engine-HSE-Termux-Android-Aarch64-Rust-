@@ -10,7 +10,7 @@
 
 use std::fmt;
 use std::io::{self, Read};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -156,9 +156,17 @@ impl Response {
         find_header(&self.headers, name)
     }
 
+    /// The body as text, borrowed when it is valid UTF-8 (the common case) and copied with
+    /// replacement characters only when it is not. A classifier that reads the body once
+    /// takes this; [`Self::text`] copies.
+    #[must_use]
+    pub fn text_view(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.body)
+    }
+
     #[must_use]
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.body).into_owned()
+        self.text_view().into_owned()
     }
 }
 
@@ -239,6 +247,143 @@ pub trait Transport {
     /// # Errors
     /// `TransportFailure` when no HTTP response was obtained.
     fn send(&self, request: &Request) -> Result<Response, TransportFailure>;
+
+    /// The addresses `name` resolves to through the system resolver, as a DNS blocklist is asked:
+    /// on a phone that is the network's own resolver, which lists such as Spamhaus answer and
+    /// public `DoH` resolvers are refused by. A name that does not exist resolves to no address.
+    /// A transport without a resolver fails every name.
+    ///
+    /// # Errors
+    /// `TransportFailure` when the resolver gave no answer.
+    fn resolve(&self, name: &str) -> Result<Vec<IpAddr>, TransportFailure> {
+        Err(TransportFailure {
+            kind: SourceOutcomeKind::DnsFailure,
+            detail: format!("no system resolver to ask for {name}"),
+            blocked: false,
+        })
+    }
+
+    /// Send one DNS message to `server` over UDP and return the datagram it sends back, as a
+    /// resolver that offers no DNS-over-HTTPS is asked. A transport without UDP fails every
+    /// exchange.
+    ///
+    /// # Errors
+    /// `TransportFailure` when nothing came back within [`UDP_TIMEOUT`], or the egress policy
+    /// refuses `server` (then nothing was sent).
+    fn exchange_udp(
+        &self,
+        server: SocketAddr,
+        _message: &[u8],
+    ) -> Result<Vec<u8>, TransportFailure> {
+        Err(TransportFailure {
+            kind: SourceOutcomeKind::ConnectFailure,
+            detail: format!("no UDP to ask {server}"),
+            blocked: false,
+        })
+    }
+
+    /// Whether the lookup this transport serves asks `module`, by its Huntsman name: every leg
+    /// asks before it sends, and one that may not sends nothing and leaves no outcome. Only
+    /// [`crate::module_selection::Selected`] runs fewer than every module; a transport that wraps
+    /// another passes the question on.
+    fn runs_module(&self, _module: &str) -> bool {
+        true
+    }
+}
+
+/// The longest one UDP exchange waits for its answer.
+pub const UDP_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Send `message` to `server` from a fresh socket connected to it, so only `server`'s datagrams
+/// are read, and wait at most `timeout` for one.
+fn udp_exchange(
+    server: SocketAddr,
+    message: &[u8],
+    timeout: Duration,
+) -> Result<Vec<u8>, TransportFailure> {
+    let failure = |error: &io::Error| TransportFailure {
+        kind: if matches!(
+            error.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+        ) {
+            SourceOutcomeKind::TtfbTimeout
+        } else {
+            SourceOutcomeKind::ConnectFailure
+        },
+        detail: format!("{server}: {error}"),
+        blocked: false,
+    };
+    let local: SocketAddr = if server.is_ipv4() {
+        (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+    } else {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    };
+    let socket = std::net::UdpSocket::bind(local).map_err(|e| failure(&e))?;
+    socket.connect(server).map_err(|e| failure(&e))?;
+    socket
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| failure(&e))?;
+    socket.send(message).map_err(|e| failure(&e))?;
+    let mut buffer = vec![0_u8; 65_535];
+    let length = socket.recv(&mut buffer).map_err(|e| failure(&e))?;
+    buffer.truncate(length);
+    Ok(buffer)
+}
+
+/// The longest one system-resolver question may take: a blocklist that does not answer is
+/// reported as such instead of holding up the lookup.
+pub const RESOLVE_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Ask the system resolver for `name` on a worker thread, waiting at most `timeout`. A name the
+/// resolver says does not exist, or has no address, resolves to none. **Opens no socket itself:**
+/// the C library's resolver does.
+fn system_resolve(name: &str, timeout: Duration) -> Result<Vec<IpAddr>, TransportFailure> {
+    use std::net::ToSocketAddrs as _;
+    let failure = |detail: String| TransportFailure {
+        kind: SourceOutcomeKind::DnsFailure,
+        detail,
+        blocked: false,
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let asked = name.to_owned();
+    std::thread::Builder::new()
+        .name("resolve".into())
+        .spawn(move || {
+            let answer = (asked.as_str(), 0).to_socket_addrs().map(|addresses| {
+                let mut ips: Vec<IpAddr> = addresses.map(|address| address.ip()).collect();
+                ips.sort_unstable();
+                ips.dedup();
+                ips
+            });
+            let _ = sender.send(answer);
+        })
+        .map_err(|e| failure(format!("resolver thread: {e}")))?;
+    match receiver.recv_timeout(timeout) {
+        Ok(Ok(addresses)) => Ok(addresses),
+        Ok(Err(error)) if names_no_address(&error.to_string()) => Ok(Vec::new()),
+        Ok(Err(error)) => Err(failure(format!("{name}: {error}"))),
+        Err(_) => Err(failure(format!(
+            "{name}: no answer within {}s",
+            timeout.as_secs()
+        ))),
+    }
+}
+
+/// Whether a resolver error says the name has no address, in the words glibc, musl, bionic and
+/// the BSDs use, rather than that no server answered. **Pure.**
+pub(crate) fn names_no_address(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    !message.contains("temporary")
+        && [
+            "not known",
+            "no address associated",
+            "does not resolve",
+            "nodename nor servname",
+            "no such host",
+            "non-recoverable failure in name resolution",
+        ]
+        .iter()
+        .any(|phrase| message.contains(phrase))
 }
 
 /// Strip userinfo and query string: both routinely carry secrets (`user:pass@`,
@@ -457,6 +602,7 @@ pub struct UreqTransport {
     agent: ureq::Agent,
     max_body: usize,
     timeout: Duration,
+    egress: EgressPolicy,
     /// Why the configured trust roots could not be loaded. Every request fails with it,
     /// so a broken bundle never falls back to other roots.
     trust_failure: Option<String>,
@@ -501,8 +647,22 @@ impl UreqTransport {
             agent,
             max_body: config.max_body,
             timeout: config.timeout,
+            egress: config.egress,
             trust_failure,
         }
+    }
+}
+
+impl UreqTransport {
+    /// Why every question fails, when the configured trust roots could not be loaded: a
+    /// misconfigured transport asks nothing, over HTTPS or otherwise, so the operator sees one
+    /// failure instead of a lookup that half works.
+    fn misconfigured(&self) -> Option<TransportFailure> {
+        self.trust_failure.as_ref().map(|reason| TransportFailure {
+            kind: SourceOutcomeKind::TlsFailure,
+            detail: reason.clone(),
+            blocked: false,
+        })
     }
 }
 
@@ -513,13 +673,37 @@ impl Default for UreqTransport {
 }
 
 impl Transport for UreqTransport {
-    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-        if let Some(reason) = &self.trust_failure {
+    fn resolve(&self, name: &str) -> Result<Vec<IpAddr>, TransportFailure> {
+        if let Some(failure) = self.misconfigured() {
+            return Err(failure);
+        }
+        system_resolve(name, RESOLVE_TIMEOUT.min(self.timeout))
+    }
+
+    fn exchange_udp(
+        &self,
+        server: SocketAddr,
+        message: &[u8],
+    ) -> Result<Vec<u8>, TransportFailure> {
+        if let Some(failure) = self.misconfigured() {
+            return Err(failure);
+        }
+        if !self.egress.permits(server.ip()) {
             return Err(TransportFailure {
-                kind: SourceOutcomeKind::TlsFailure,
-                detail: reason.clone(),
-                blocked: false,
+                kind: SourceOutcomeKind::ConnectFailure,
+                detail: format!(
+                    "{BLOCKED_PREFIX} destination ({}) is not publicly routable",
+                    server.ip()
+                ),
+                blocked: true,
             });
+        }
+        udp_exchange(server, message, UDP_TIMEOUT.min(self.timeout))
+    }
+
+    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        if let Some(failure) = self.misconfigured() {
+            return Err(failure);
         }
         let invalid = |detail: String| TransportFailure {
             kind: SourceOutcomeKind::ProtocolDrift,
@@ -624,6 +808,20 @@ fn map_ureq_error(err: &ureq::Error) -> TransportFailure {
     }
 }
 
+/// The seconds to wait that a `Retry-After` value asks for (RFC 9110 §10.2.3): delta-seconds, or an
+/// HTTP-date counted from `now_unix`, a date already past being `0`. `None` when it is neither.
+/// The one reader of the header; each caller applies its own cap.
+#[must_use]
+pub fn retry_after_secs(value: &str, now_unix: u64) -> Option<u64> {
+    let value = value.trim();
+    if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        return value.parse().ok();
+    }
+    let at = crate::timefmt::parse_http_date(value, now_unix)?;
+    let now = i64::try_from(now_unix).unwrap_or(i64::MAX);
+    Some(u64::try_from(at.saturating_sub(now)).unwrap_or(0))
+}
+
 #[cfg(test)]
 mod tests {
     fn bundle_transport(path: &Path) -> UreqTransport {
@@ -681,6 +879,14 @@ mod tests {
             assert!(!failure.blocked);
             assert!(failure.detail.contains(expected), "{}", failure.detail);
             assert!(failure.detail.contains(crate::environment::CA_BUNDLE_ENV));
+            // Nor does it ask the system resolver: the whole transport is closed.
+            let refused = transport.resolve("2.0.0.127.zen.spamhaus.org").unwrap_err();
+            assert_eq!(refused, failure);
+            let query = crate::dns_wire::query(0, "example.com", crate::dns_wire::A).unwrap();
+            let unsent = transport
+                .exchange_udp(SocketAddr::from(([9, 9, 9, 9], 53)), &query)
+                .unwrap_err();
+            assert_eq!(unsent, failure);
         }
         std::fs::remove_file(empty).unwrap();
     }
@@ -874,5 +1080,27 @@ mod tests {
         let (b, t) = read_capped(&data[..], 0).expect("read");
         assert_eq!((b.len(), t), (0, true));
         assert_eq!(read_capped(&[][..], 0).expect("read"), (Vec::new(), false));
+    }
+    #[test]
+    fn text_view_borrows_a_utf8_body_and_copies_only_an_invalid_one() {
+        let valid = Response {
+            status: 200,
+            headers: Vec::new(),
+            body: b"{\"ok\":true}".to_vec(),
+            truncated: false,
+        };
+        assert!(matches!(
+            valid.text_view(),
+            std::borrow::Cow::Borrowed("{\"ok\":true}")
+        ));
+        assert_eq!(valid.text(), "{\"ok\":true}");
+        let invalid = Response {
+            status: 200,
+            headers: Vec::new(),
+            body: vec![b'a', 0xff, b'b'],
+            truncated: false,
+        };
+        assert!(matches!(invalid.text_view(), std::borrow::Cow::Owned(_)));
+        assert_eq!(invalid.text(), "a\u{fffd}b");
     }
 }

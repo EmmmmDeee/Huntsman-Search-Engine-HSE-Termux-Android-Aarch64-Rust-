@@ -46,14 +46,26 @@ pub fn parse_range(
     Ok(entries)
 }
 
+#[must_use]
 pub fn hash_password(password: &str, mode: PasswordHashMode) -> String {
     match mode {
         PasswordHashMode::Sha1 => sha1_hex(password.as_bytes()),
         PasswordHashMode::Ntlm => {
-            let bytes: Vec<_> = password.encode_utf16().flat_map(u16::to_le_bytes).collect();
-            hex(&super::md4::md4(&bytes))
+            // The UTF-16LE copy is the password itself.
+            let bytes = utf16le(password);
+            let digest = super::md4::md4(&bytes);
+            wipe(bytes);
+            hex(&digest)
         }
     }
+}
+
+/// `password` as UTF-16LE, NTLM's input. The buffer is sized exactly up front, so filling it
+/// never reallocates and leaves an unwiped copy behind; the caller wipes it.
+pub(super) fn utf16le(password: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(password.encode_utf16().count() * 2);
+    bytes.extend(password.encode_utf16().flat_map(u16::to_le_bytes));
+    bytes
 }
 
 #[must_use]
