@@ -76,6 +76,36 @@ pub(super) fn email_request(purpose: Purpose) -> SearchRequest {
 }
 
 #[test]
+fn dehashed_uses_configured_shared_key_without_leaking_it() {
+    let keys = crate::keys::Keys::parse(&format!("{}={KEY}", super::client::API_KEY_ENV)).unwrap();
+    let fake = Fake::with(200, r#"{"entries": [], "total": 0}"#, &[]);
+    let args = [
+        "search",
+        "--email",
+        "a@example.com",
+        "--purpose",
+        "own-account",
+    ]
+    .iter()
+    .map(|value| (*value).to_owned())
+    .collect::<Vec<_>>();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = cli::run(
+        &args,
+        || super::client::key_from_sources(&keys),
+        fake.clone(),
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+    assert_eq!(fake.calls(), 1);
+    let sent = fake.requests.lock().unwrap();
+    assert_eq!(sent[0].header_value(API_KEY_HEADER), Some(KEY));
+    assert!(!String::from_utf8_lossy(&out).contains(KEY));
+    assert!(!String::from_utf8_lossy(&err).contains(KEY));
+}
+
+#[test]
 fn sends_one_post_to_the_fixed_origin_with_exact_body_and_key_header() {
     let fake = Fake::with(200, r#"{"entries": [], "total": 0}"#, &[]);
     let outcome = client(&fake)

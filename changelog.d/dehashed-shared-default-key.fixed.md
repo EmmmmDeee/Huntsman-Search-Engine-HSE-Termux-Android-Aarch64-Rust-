@@ -1,0 +1,1 @@
+- Make standalone `dehashed search` load `HUNTSMAN_DEHASHED_KEY` from the common private `~/.huntsman.env`/environment resolver, consistent with `credential-status`, email and exposure lookups. Retain fallback to the legacy private DeHashed key file and never print a credential.
