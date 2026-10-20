@@ -3,60 +3,11 @@ use crate::entity::{Entity, EntityKind};
 
 pub const SATURATION_CORROBORATION: u32 = 2;
 pub const SATURATION_CONFIDENCE: f64 = 0.85;
-pub const DEFAULT_MIN_MARGINAL_YIELD: f64 = 0.75;
-pub const KNEE_FRACTION: f64 = 0.05;
 
 #[must_use]
 pub fn is_saturated(entity: &Entity) -> bool {
     entity.source_count() >= SATURATION_CORROBORATION
         && entity.c_effective() >= SATURATION_CONFIDENCE
-}
-
-#[must_use]
-pub fn top_k_for_round(max_concurrent: usize) -> usize {
-    2 * max_concurrent.max(1) + 8
-}
-
-#[must_use]
-pub fn effective_cutoff(sorted_weights_desc: &[f64], max_concurrent: usize) -> usize {
-    if sorted_weights_desc.is_empty() {
-        return 0;
-    }
-    let cap = top_k_for_round(max_concurrent);
-    let leader = sorted_weights_desc[0];
-    let knee = if leader > 0.0 {
-        let threshold = leader * KNEE_FRACTION;
-        sorted_weights_desc
-            .iter()
-            .take_while(|&&weight| weight >= threshold)
-            .count()
-            .max(1)
-    } else {
-        sorted_weights_desc.len()
-    };
-    knee.min(cap).max(1)
-}
-
-#[must_use]
-pub fn marginal_yield(new_entities: usize, dispatched_targets: usize) -> f64 {
-    if dispatched_targets == 0 {
-        f64::INFINITY
-    } else {
-        #[allow(clippy::cast_precision_loss)]
-        {
-            new_entities as f64 / dispatched_targets as f64
-        }
-    }
-}
-
-#[must_use]
-pub fn should_terminate_adaptive(
-    enabled: bool,
-    new_entities: usize,
-    dispatched_targets: usize,
-    floor: f64,
-) -> bool {
-    enabled && dispatched_targets > 0 && marginal_yield(new_entities, dispatched_targets) < floor
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -295,26 +246,6 @@ mod tests {
         assert!(!is_saturated(&make(0.50, 2)));
         assert!(is_saturated(&make(0.90, 3)));
         assert!(is_saturated(&make(0.50, 5)));
-    }
-
-    #[test]
-    fn cutoff_respects_knee_and_top_k() {
-        let weights = [50.0, 40.0, 10.0, 5.0, 2.0, 2.0, 1.0, 0.5];
-        assert_eq!(effective_cutoff(&weights, 4), 4);
-        assert_eq!(effective_cutoff(&[], 4), 0);
-        assert_eq!(effective_cutoff(&[42.0], 4), 1);
-        let flat = vec![1.0; 20];
-        assert_eq!(effective_cutoff(&flat, 4), 16);
-    }
-
-    #[test]
-    fn adaptive_termination_needs_real_data() {
-        assert!(marginal_yield(0, 0).is_infinite());
-        assert!((marginal_yield(10, 5) - 2.0).abs() < f64::EPSILON);
-        assert!(!should_terminate_adaptive(false, 0, 100, 1.0));
-        assert!(!should_terminate_adaptive(true, 0, 0, 1.0));
-        assert!(!should_terminate_adaptive(true, 10, 5, 1.0));
-        assert!(should_terminate_adaptive(true, 1, 10, 1.0));
     }
 
     #[test]

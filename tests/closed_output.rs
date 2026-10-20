@@ -72,7 +72,11 @@ fn a_lookup_saves_its_ledger_and_exits_141_when_the_reader_has_gone() {
     .output()
     .unwrap();
     assert_eq!(verify.status.code(), Some(0), "{}", stderr(&verify));
-    assert!(String::from_utf8_lossy(&verify.stdout).contains("entries=3"));
+    // Two outcomes, the entity, and one evidence record for each module that found the number. The
+    // second module's record is the one a first-record-only save used to drop.
+    assert!(String::from_utf8_lossy(&verify.stdout).contains("entries=5"));
+    let saved = fs::read_to_string(&ledger).unwrap();
+    assert!(saved.contains("src/phone_cli.rs"), "{saved}");
     let _ = fs::remove_dir_all(&dir);
 }
 

@@ -22,6 +22,9 @@ fn termux_runtime_harness_targets_current_binary_and_api_contract() {
         r#""$HSE_BIN" verify var/ledger.json"#,
         "unset HSE_AUTH_TOKEN",
         r#"exec "$HSE_BIN" serve --bind"#,
+        // The lookup is kept as a saved scan, in the disposable directory, and read back.
+        r#"export HUNTSMAN_HOME="$WORK_DIR/home""#,
+        r#""$base/api/scans/$scan""#,
         "/api/health",
         "/api/modules",
         "/api/command",

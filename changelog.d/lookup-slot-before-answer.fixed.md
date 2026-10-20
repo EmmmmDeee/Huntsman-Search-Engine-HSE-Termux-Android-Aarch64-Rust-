@@ -1,0 +1,1 @@
+- `serve`: a `/api/lookup` that has been answered has already given its place back, so asking again at once is never refused for capacity by the lookup that just finished. The worker used to free its place a moment after sending the answer, which also made the server's capacity test fail now and then.

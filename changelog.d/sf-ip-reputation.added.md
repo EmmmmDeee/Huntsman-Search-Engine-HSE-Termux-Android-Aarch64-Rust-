@@ -1,0 +1,7 @@
+- `ip` asks three more keyless reputation sources, Spiderfoot's `sfp_isc`, `sfp_maltiverse` and `sfp_phishstats`, and `domain` asks Maltiverse too:
+  - The Internet Storm Center (`isc`) gives DShield's reports and targets, every threat feed listing the address with its first and last sighting, the SSH and web honeypot activity seen from it, and its network, AS, abuse contact and cloud.
+  - Maltiverse (`maltiverse`) gives its classification, every blacklist entry with its source, labels, sightings and dates, its threat flags, the AS, registrant and place, and the addresses a host name resolved to.
+  - PhishStats (`phishstats`) gives every phishing URL reported on the address, with every field PhishStats gives it, up to 1,000.
+  - A reported or honeypot-active address, a `malicious` Maltiverse classification and a PhishStats report each make a `MALICIOUS_IPADDR` (or `MALICIOUS_INTERNET_NAME`) in a saved scan. ISC's network becomes a `NETBLOCK_MEMBER`, Maltiverse's place a `GEOINFO`, and each phishing host a `CO_HOSTED_SITE`.
+- The threat feeds read CleanTalk's list of HTTP spammers from the last seven days (`cleantalk`, Spiderfoot's `sfp_cleantalk`).
+- Each of the four can be chosen with `-m` like any other module.

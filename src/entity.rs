@@ -86,6 +86,8 @@ pub enum EntityKind {
     ApiKey,
     MacAddress,
     Asn,
+    /// An address block in CIDR form, written as its first address and prefix length.
+    Netblock,
     Other,
 }
 
@@ -113,6 +115,7 @@ impl EntityKind {
             Self::ApiKey => "api_key",
             Self::MacAddress => "mac_address",
             Self::Asn => "asn",
+            Self::Netblock => "netblock",
             Self::Other => "other",
         }
     }
@@ -191,7 +194,16 @@ pub struct Evidence {
     pub is_inferred: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ancestry_node: Option<EvidenceNodeId>,
+    /// The provenance of every other observation merged into this record, in merge order. Two
+    /// records of one source saying the same thing about one entity merge into one, and this keeps
+    /// the scan and time of each observation the first record alone would have hidden.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merged_provenance: Vec<EvidenceProvenance>,
 }
+
+/// What joins the values of an attribute that holds several: [`Evidence::with_attr`] joins a
+/// repeated key's values with it and [`Evidence::attr_values`] lists them by it.
+const VALUE_SEPARATOR: &str = "; ";
 
 impl Evidence {
     #[must_use]
@@ -203,6 +215,7 @@ impl Evidence {
             verification: None,
             is_inferred: false,
             ancestry_node: None,
+            merged_provenance: Vec::new(),
         }
     }
 
@@ -212,8 +225,8 @@ impl Evidence {
         let value = value.into();
         match self.attributes.get_mut(&key) {
             Some(existing) => {
-                if !existing.split("; ").any(|seen| seen == value) {
-                    existing.push_str("; ");
+                if !holds_whole(existing, &value) {
+                    existing.push_str(VALUE_SEPARATOR);
                     existing.push_str(&value);
                 }
             }
@@ -241,7 +254,7 @@ impl Evidence {
         self.attributes
             .get(key)
             .into_iter()
-            .flat_map(|value| value.split("; "))
+            .flat_map(|value| value.split(VALUE_SEPARATOR))
             .map(str::trim)
             .filter(|value| !value.is_empty())
     }
@@ -584,6 +597,8 @@ pub fn normalise(kind: &EntityKind, value: &str) -> String {
         | EntityKind::MacAddress
         | EntityKind::Asn
         | EntityKind::Other => canonical_whitespace(value),
+        EntityKind::Netblock => crate::netblock::Netblock::parse(value)
+            .map_or_else(|| canonical_whitespace(value), |block| block.to_string()),
     }
 }
 
@@ -634,22 +649,75 @@ const fn is_false(value: &bool) -> bool {
     !*value
 }
 
-fn same_evidence_identity(left: &Evidence, right: &Evidence) -> bool {
-    left.provenance.source == right.provenance.source && left.summary == right.summary
+/// A structured provider answer must be kept as one document. JSON strings may contain
+/// the separator used by legacy attribute-list merges, so splitting a document corrupts it.
+fn is_json_document(value: &str) -> bool {
+    matches!(value.trim_start().as_bytes().first(), Some(b'{' | b'['))
+        && serde_json::from_str::<serde::de::IgnoredAny>(value).is_ok()
 }
 
+fn same_evidence_identity(left: &Evidence, right: &Evidence) -> bool {
+    if left.provenance.source != right.provenance.source || left.summary != right.summary {
+        return false;
+    }
+    // Changed structured documents describe distinct source observations, even when the
+    // summary repeats. Keep both provenance-bearing records instead of splicing raw answers
+    // together or dropping the older document. Equal documents still coalesce as before.
+    !left.attributes.iter().any(|(key, previous)| {
+        right.attributes.get(key).is_some_and(|incoming| {
+            previous != incoming
+                && (key.starts_with("raw_")
+                    || is_json_document(previous)
+                    || is_json_document(incoming))
+        })
+    })
+}
+
+/// Whether the attribute value `held` already holds `value` whole: as all of it, or as a run of
+/// its values that the separator bounds at both ends. **Pure.**
+fn holds_whole(held: &str, value: &str) -> bool {
+    held == value
+        || held
+            .strip_prefix(value)
+            .is_some_and(|rest| rest.starts_with(VALUE_SEPARATOR))
+        || held
+            .strip_suffix(value)
+            .is_some_and(|rest| rest.ends_with(VALUE_SEPARATOR))
+        || held.contains(&format!("{VALUE_SEPARATOR}{value}{VALUE_SEPARATOR}"))
+}
+
+/// Folds `incoming` into the attribute value `held` so that it holds both whole, `held`'s values
+/// first. A `held` that already holds `incoming` is kept, and an `incoming` that holds `held`
+/// replaces it. Where `incoming` begins with values `held` ends with, those are written once;
+/// otherwise the two are joined. Nothing is split apart, reordered or dropped, so a value with the
+/// separator in its own text survives any number of merges byte for byte.
+fn fold_value(held: &mut String, incoming: String) {
+    if holds_whole(held, &incoming) {
+        return;
+    }
+    if holds_whole(&incoming, held) {
+        *held = incoming;
+        return;
+    }
+    let rest = incoming
+        .rmatch_indices(VALUE_SEPARATOR)
+        .find(|&(at, _)| {
+            held.strip_suffix(&incoming[..at])
+                .is_some_and(|before| before.ends_with(VALUE_SEPARATOR))
+        })
+        .map_or(incoming.as_str(), |(at, _)| {
+            &incoming[at + VALUE_SEPARATOR.len()..]
+        });
+    held.push_str(VALUE_SEPARATOR);
+    held.push_str(rest);
+}
+
+/// Folds `incoming` into `existing`, one observation ([`same_evidence_identity`]). Every value either
+/// record holds is kept whole, in the order it was observed ([`fold_value`]).
 fn merge_evidence(existing: &mut Evidence, incoming: Evidence) {
     for (key, value) in incoming.attributes {
         match existing.attributes.get_mut(&key) {
-            Some(current) if current != &value => {
-                let mut merged = current
-                    .split("; ")
-                    .map(ToOwned::to_owned)
-                    .collect::<BTreeSet<_>>();
-                merged.extend(value.split("; ").map(ToOwned::to_owned));
-                *current = merged.into_iter().collect::<Vec<_>>().join("; ");
-            }
-            Some(_) => {}
+            Some(held) => fold_value(held, value),
             None => {
                 existing.attributes.insert(key, value);
             }
@@ -661,6 +729,22 @@ fn merge_evidence(existing: &mut Evidence, incoming: Evidence) {
     existing.is_inferred |= incoming.is_inferred;
     if existing.ancestry_node.is_none() {
         existing.ancestry_node = incoming.ancestry_node;
+    }
+    keep_observations(existing, incoming.provenance, incoming.merged_provenance);
+}
+
+/// Keeps every observation a merge brings in: the incoming record's own provenance, then any it
+/// already carried from its merges. An observation the record already holds is not kept twice.
+fn keep_observations(
+    existing: &mut Evidence,
+    incoming: EvidenceProvenance,
+    earlier: Vec<EvidenceProvenance>,
+) {
+    for observation in std::iter::once(incoming).chain(earlier) {
+        if observation != existing.provenance && !existing.merged_provenance.contains(&observation)
+        {
+            existing.merged_provenance.push(observation);
+        }
     }
 }
 
@@ -686,6 +770,89 @@ mod tests {
 
     fn evidence(source: &str, summary: &str) -> Evidence {
         Evidence::new(EvidenceProvenance::for_scan(source, "scan-1"), summary)
+    }
+
+    /// A record of one scan that a later scan re-finds merges into one record. The later scan's
+    /// observation must survive in the saved entity, not vanish with the merge.
+    #[test]
+    fn a_merged_observation_keeps_its_scan_and_time() {
+        let first = Evidence::new(
+            EvidenceProvenance {
+                recorded_at_unix: 100,
+                ..EvidenceProvenance::for_scan("hunter", "scan-1")
+            },
+            "domain seen",
+        );
+        let mut entity = Entity::new(EntityKind::Domain, "example.com", 0.6, "scan-1");
+        entity.add_evidence(first);
+        let mut later = Entity::new(EntityKind::Domain, "example.com", 0.6, "scan-2");
+        later.add_evidence(Evidence::new(
+            EvidenceProvenance {
+                recorded_at_unix: 200,
+                ..EvidenceProvenance::for_scan("hunter", "scan-2")
+            },
+            "domain seen",
+        ));
+        entity.absorb(later);
+
+        assert_eq!(entity.evidence.len(), 1);
+        assert_eq!(
+            entity.evidence[0].provenance.scan_id.as_deref(),
+            Some("scan-1")
+        );
+        assert_eq!(entity.evidence[0].provenance.recorded_at_unix, 100);
+        let saved = serde_json::to_string(&entity).unwrap();
+        assert!(
+            saved.contains("scan-2"),
+            "the second observation was dropped: {saved}"
+        );
+    }
+
+    /// An observation is kept once however often it merges, and a record that already holds
+    /// merged observations passes all of them on when it is merged into another.
+    #[test]
+    fn observations_are_kept_once_and_pass_on_through_a_later_merge() {
+        let observed = |scan: &str, at: u64| {
+            Evidence::new(
+                EvidenceProvenance {
+                    recorded_at_unix: at,
+                    ..EvidenceProvenance::for_scan("hunter", scan)
+                },
+                "domain seen",
+            )
+        };
+        let entity = |scan: &str, at: u64| {
+            let mut entity = Entity::new(EntityKind::Domain, "example.com", 0.6, scan);
+            entity.add_evidence(observed(scan, at));
+            entity
+        };
+
+        let mut first = entity("scan-1", 100);
+        first.absorb(entity("scan-2", 200));
+        first.absorb(entity("scan-2", 200));
+        assert_eq!(first.evidence[0].merged_provenance.len(), 1);
+
+        let mut newest = entity("scan-9", 900);
+        newest.absorb(first);
+        let record = &newest.evidence[0];
+        assert_eq!(record.provenance.scan_id.as_deref(), Some("scan-9"));
+        let kept: Vec<_> = record
+            .merged_provenance
+            .iter()
+            .filter_map(|observation| observation.scan_id.as_deref())
+            .collect();
+        assert_eq!(kept, ["scan-1", "scan-2"]);
+    }
+
+    /// A record with no merges keeps its saved form exactly, and a saved record from before the
+    /// field existed still loads.
+    #[test]
+    fn a_record_without_merges_keeps_its_saved_form() {
+        let record = evidence("hunter", "domain seen");
+        let saved = serde_json::to_value(&record).unwrap();
+        assert!(saved.get("merged_provenance").is_none(), "{saved}");
+        let restored: Evidence = serde_json::from_value(saved).unwrap();
+        assert!(restored.merged_provenance.is_empty());
     }
 
     #[test]
@@ -830,5 +997,25 @@ mod tests {
             left.evidence[0].attributes.get("site").map(String::as_str),
             Some("forum-a; forum-b")
         );
+    }
+
+    /// A fold holds both values whole, the held value's first, and writes once the values where
+    /// one continues the other. A value is only ever matched whole, never by a piece of its text.
+    #[test]
+    fn a_fold_holds_both_values_whole() {
+        let fold = |held: &str, incoming: &str| {
+            let mut held = held.to_owned();
+            fold_value(&mut held, incoming.to_owned());
+            held
+        };
+        assert_eq!(fold("a; b; c", "b"), "a; b; c");
+        assert_eq!(fold("a; b; c", "b; c"), "a; b; c");
+        assert_eq!(fold("b", "a; b; c"), "a; b; c");
+        assert_eq!(fold("a; b", "b; c"), "a; b; c");
+        assert_eq!(fold("a; b; c", "b; c; d"), "a; b; c; d");
+        assert_eq!(fold("x; b", "b; x"), "x; b; x");
+        assert_eq!(fold("ab", "b"), "ab; b");
+        assert_eq!(fold("a; b", "ab; c"), "a; b; ab; c");
+        assert_eq!(fold("a; bc", "c"), "a; bc; c");
     }
 }
