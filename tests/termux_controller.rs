@@ -320,6 +320,51 @@ fn scan_pipe_saves_verifies_and_reports_the_full_ledger() {
 }
 
 #[test]
+fn scan_pipe_never_replaces_an_earlier_ledger_even_with_the_same_timestamp() {
+    let phone = Phone::new();
+    // Fix the clock so the old timestamp-only naming scheme demonstrably collides.
+    phone.executable("bin/date", "#!/bin/sh\nprintf '20261021_004500\\n'\n");
+    let long_target = format!("{}{}", "é".repeat(200), "a".repeat(200));
+    for target in ["alice@example.com", "alice@example.com", long_target.as_str()] {
+        let out = phone.run(&["scan-pipe", target]);
+        assert!(out.status.success(), "{}", text(&out));
+    }
+
+    let reports = phone.path("home/huntsman-reports");
+    let permissions = fs::metadata(&reports).unwrap().permissions().mode() & 0o777;
+    assert_eq!(permissions, 0o700, "report directory must be private");
+    let mut json_paths = Vec::new();
+    let mut md_paths = Vec::new();
+    for entry in fs::read_dir(&reports).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert!(name.len() <= 255, "overlong filename: {name}");
+        let permissions = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(permissions & 0o077, 0, "{name} must be private");
+        match path.extension().and_then(|extension| extension.to_str()) {
+            Some("json") => json_paths.push(path),
+            Some("md") => md_paths.push(path),
+            other => panic!("unexpected report extension: {other:?}"),
+        }
+    }
+    assert_eq!(json_paths.len(), 3, "each invocation gets its own ledger");
+    assert_eq!(md_paths.len(), 3, "each ledger gets its own report");
+
+    let duplicates = json_paths
+        .iter()
+        .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with("alice@example.com_"))
+        .count();
+    assert_eq!(duplicates, 2, "identical inputs at one timestamp must not collide");
+    for ledger in json_paths {
+        let body = fs::read_to_string(&ledger).unwrap();
+        assert!(body.contains("alice@example.com registered"), "{ledger:?}");
+        let report = fs::read_to_string(ledger.with_extension("md")).unwrap();
+        assert!(report.contains(&body), "the report lost evidence for {ledger:?}");
+        assert!(report.contains("Ledger check: verified"), "{report}");
+    }
+}
+
+#[test]
 fn other_commands_go_to_huntsman_recon_unchanged() {
     let phone = Phone::new();
     let out = phone.run(&["email", "alice@example.com", "--save", "x.json"]);
