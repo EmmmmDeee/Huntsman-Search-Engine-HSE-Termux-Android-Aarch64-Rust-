@@ -73,7 +73,7 @@ fn collect_termux_wifi() -> Result<Vec<u8>, String> {
             "termux-wifi-scaninfo exited with {status}; check Termux:API app, permissions, location services and Android Wi-Fi"
         ));
     }
-    if data.len() > MAX_SCAN_BYTES as usize {
+    if usize::try_from(MAX_SCAN_BYTES).is_ok_and(|limit| data.len() > limit) {
         return Err("Termux Wi-Fi output exceeds 1 MiB".into());
     }
     Ok(data)
