@@ -1148,7 +1148,7 @@ impl ScanService {
         // Keep the state lock over read/modify/write so a stop cannot be overwritten.
         let mut state = self.state();
         let mut wrote_row = false;
-        let result = (|| {
+        let result: Result<(), StoreError> = (|| {
             let mut record = self.store.get(id)?;
             if !record.status.is_active() {
                 return Ok(());
