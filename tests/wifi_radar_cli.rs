@@ -38,10 +38,7 @@ fn termux_json_replays_as_real_rf_sightings_without_fabricated_location() {
     );
     let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(parsed["source"], "unverified_json_file");
-    assert_eq!(
-        parsed["acquisition"],
-        "offline_replay_no_boot_provenance"
-    );
+    assert_eq!(parsed["acquisition"], "offline_replay_no_boot_provenance");
     assert_eq!(parsed["status"], "freshness_unknown");
     assert_eq!(parsed["observed"], 1);
     assert_eq!(
@@ -82,12 +79,19 @@ fn a_replayed_foreign_boot_timestamp_is_never_called_fresh() {
         .arg(&input)
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(parsed["status"], "freshness_unknown");
     assert_eq!(parsed["source"], "unverified_json_file");
     assert_eq!(parsed["acquisition"], "offline_replay_no_boot_provenance");
-    assert_eq!(parsed["observations"][0]["age_secs"], serde_json::Value::Null);
+    assert_eq!(
+        parsed["observations"][0]["age_secs"],
+        serde_json::Value::Null
+    );
     assert_eq!(parsed["observations"][0]["freshness"], "unknown");
     assert_eq!(parsed["observations"][0]["os_timestamp_us"], timestamp);
     fs::remove_file(input).unwrap();
