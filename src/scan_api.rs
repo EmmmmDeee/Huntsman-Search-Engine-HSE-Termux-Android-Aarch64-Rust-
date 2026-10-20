@@ -1470,14 +1470,14 @@ mod tests {
         assert_eq!(std::fs::read(&saved_path).unwrap(), original_bytes);
         assert_eq!(api.handle("POST", &path, "").status, 405);
 
-        let created = api
-            .service()
-            .create(&ScanRequest {
-                target: "8.8.8.8".into(),
-                ..ScanRequest::default()
-            })
-            .unwrap()
-            .0;
+        // Model an admitted but not yet started scan using the public store API.
+        // The test must not call ScanService's private worker-creation helper.
+        let mut created = api.service().store().get(&id).unwrap();
+        created.id = crate::scan_store::new_id("pending", 1919, 0);
+        created.status = ScanStatus::Created;
+        created.started = None;
+        created.ended = None;
+        api.service().store().create(&created).unwrap();
         assert_eq!(
             api.handle("GET", &format!("/api/scans/{}/analyze", created.id), "")
                 .status,
