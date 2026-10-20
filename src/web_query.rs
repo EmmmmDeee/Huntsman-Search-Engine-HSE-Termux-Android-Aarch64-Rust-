@@ -171,16 +171,20 @@ fn search_engine<T: Transport + ?Sized>(
             });
         };
 
-        if response_is_cacheable(&response) {
+        // HTTP 200 is not a successful search. Parse first: a zero-yield page
+        // may be a transient interstitial or provider markup drift, and caching
+        // it would hide new results on repeat searches for the full TTL.
+        let report = parse_engine_response(engine, &response, now_unix);
+        if response_is_cacheable(&response, &report) {
             RESPONSE_CACHE.put(
                 url.clone(),
                 CachedResponse {
-                    response: response.clone(),
+                    response,
                     stored_at_unix: now_unix,
                 },
             );
         }
-        return Ok(parse_engine_response(engine, &response, now_unix));
+        return Ok(report);
     }
 }
 
@@ -193,8 +197,14 @@ fn cached_response(url: &str, now_unix: u64) -> Option<Response> {
         .then_some(cached.response)
 }
 
-fn response_is_cacheable(response: &Response) -> bool {
-    if response.truncated || !(200..300).contains(&response.status) {
+fn response_is_cacheable(response: &Response, report: &EngineReport) -> bool {
+    // Only a semantically successful search is reusable. HTTP success with
+    // no external hits is explicitly a ZeroYieldAnomaly, not negative evidence.
+    if response.truncated
+        || !(200..300).contains(&response.status)
+        || report.outcome.kind != SourceOutcomeKind::Success
+        || report.hits.is_empty()
+    {
         return false;
     }
     let cache_control = response
@@ -205,7 +215,6 @@ fn response_is_cacheable(response: &Response) -> bool {
         .split(',')
         .map(str::trim)
         .any(|directive| matches!(directive, "no-store" | "no-cache" | "max-age=0"))
-        && classify_fetch(response.status, &response.text()) == SourceOutcomeKind::Inconclusive
 }
 
 fn retryable_fetch(kind: SourceOutcomeKind) -> bool {
@@ -574,6 +583,52 @@ mod tests {
     }
 
     #[test]
+    fn empty_http_success_does_not_hide_later_search_results() {
+        let engine = EngineSpec {
+            name: "cache_zero_yield_test",
+            base_url: "https://cache-zero-yield-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Ok(response(200, "<html><body>Temporarily empty</body></html>")),
+            Ok(response(
+                200,
+                r#"<a href="https://example.org/new-result">new</a>"#,
+            )),
+        ]);
+        let first = search_engine(&fake, engine, "rare-needle-unique", 300).unwrap();
+        assert_eq!(first.outcome.kind, SourceOutcomeKind::ZeroYieldAnomaly);
+        assert!(first.hits.is_empty());
+
+        // Within the TTL: if the first page were cached, this call would
+        // incorrectly return zero hits and leave the second fixture unused.
+        let second = search_engine(&fake, engine, "rare-needle-unique", 301).unwrap();
+        assert_eq!(second.outcome.kind, SourceOutcomeKind::Success);
+        assert_eq!(second.hits[0].url, "https://example.org/new-result");
+    }
+
+    #[test]
+    fn engine_navigation_only_is_not_a_cacheable_search_result() {
+        let engine = EngineSpec {
+            name: "cache_navigation_only_test",
+            base_url: "https://cache-navigation-web-query.invalid/search",
+        };
+        let fake = Fake::new(vec![
+            Ok(response(
+                200,
+                r#"<a href="https://www.bing.com/search?q=next">Next</a>"#,
+            )),
+            Ok(response(
+                200,
+                r#"<a href="https://example.net/real">real</a>"#,
+            )),
+        ]);
+        let first = search_engine(&fake, engine, "navigation-only-unique", 400).unwrap();
+        assert_eq!(first.outcome.kind, SourceOutcomeKind::ZeroYieldAnomaly);
+        let second = search_engine(&fake, engine, "navigation-only-unique", 401).unwrap();
+        assert_eq!(second.hits[0].url, "https://example.net/real");
+    }
+
+    #[test]
     fn duplicate_url_across_engines_is_returned_once() {
         let body = r#"<a href="https://example.org/a">A</a>"#;
         let fake = Fake::new(vec![
@@ -678,11 +733,13 @@ mod tests {
         assert_eq!(first.hits[0].url, "https://example.org/first");
         assert_eq!(second.hits[0].url, "https://example.org/second");
 
-        assert!(!response_is_cacheable(&response_with_headers(
+        let response = response_with_headers(
             200,
             &[("cache-control", "max-age=0")],
             r#"<a href="https://example.org/third">third</a>"#,
-        )));
+        );
+        let report = parse_engine_response(engine, &response, 502);
+        assert!(!response_is_cacheable(&response, &report));
     }
 
     #[test]
