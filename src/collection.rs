@@ -1,6 +1,6 @@
 //! Provider-neutral collection envelopes between execution and evidence analysis.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -69,14 +69,35 @@ pub struct ObservationBatch {
 pub fn bounded_batch(mut batch: ObservationBatch, limits: &PipelineLimits) -> ObservationBatch {
     let overflow = batch.observations.len() > limits.max_entities
         || batch.events.len() > limits.max_dispatches;
-    batch.observations.truncate(limits.max_entities);
-    batch.events.truncate(limits.max_dispatches);
-    if overflow {
-        batch.truncated = true;
-        for event in &mut batch.events {
+
+    // A batch-wide limit does not imply every retained provider was incomplete.
+    // Attribute omitted findings only to their originating provider and target.
+    // Raw observations have no scan_id, so matching provider/target pairs in
+    // different scans are conservatively treated as sharing the truncation.
+    let dropped_sources: BTreeSet<_> = batch
+        .observations
+        .iter()
+        .skip(limits.max_entities)
+        .map(|observation| {
+            (
+                observation.provider_id.as_str(),
+                observation.target.kind,
+                observation.target.value.as_str(),
+            )
+        })
+        .collect();
+    for event in batch.events.iter_mut().take(limits.max_dispatches) {
+        if dropped_sources.contains(&(
+            event.provider_id.as_str(),
+            event.target.kind,
+            event.target.value.as_str(),
+        )) {
             event.truncated = true;
         }
     }
+    batch.observations.truncate(limits.max_entities);
+    batch.events.truncate(limits.max_dispatches);
+    batch.truncated |= overflow;
     batch
 }
 
