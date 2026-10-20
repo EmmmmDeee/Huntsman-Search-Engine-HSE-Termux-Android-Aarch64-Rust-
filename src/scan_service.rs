@@ -1222,7 +1222,10 @@ impl ScanService {
             let _ = self.set_status(id, ScanStatus::Aborted, Some(now_ms()));
             return;
         }
-        if self.set_status(id, ScanStatus::Running, Some(now_ms())).is_err() {
+        if self
+            .set_status(id, ScanStatus::Running, Some(now_ms()))
+            .is_err()
+        {
             return;
         }
         let options = match self.store.get(id) {
@@ -2167,12 +2170,9 @@ mod tests {
                 ..ScanRequest::default()
             })
             .unwrap();
-        let error = service.set_status_with(
-            &created.id,
-            ScanStatus::Finished,
-            Some(123),
-            |_| Err(StoreError::Io("synthetic disk write failure".into())),
-        );
+        let error = service.set_status_with(&created.id, ScanStatus::Finished, Some(123), |_| {
+            Err(StoreError::Io("synthetic disk write failure".into()))
+        });
         assert!(matches!(error, Err(ServiceError::Store(_))));
         assert_eq!(
             service.store().get(&created.id).unwrap().status,
@@ -2204,19 +2204,27 @@ mod tests {
 
         // The queued worker may observe the stop after starting. Neither transition
         // may erase the operator's cancellation request or invent a start time.
-        service.set_status(&created.id, ScanStatus::Starting, None).unwrap();
-        service.set_status(&created.id, ScanStatus::Running, Some(123)).unwrap();
+        service
+            .set_status(&created.id, ScanStatus::Starting, None)
+            .unwrap();
+        service
+            .set_status(&created.id, ScanStatus::Running, Some(123))
+            .unwrap();
         let row = service.store().get(&created.id).unwrap();
         assert_eq!(row.status, ScanStatus::AbortRequested);
         assert!(row.started.is_none());
 
         // A worker that chose FINISHED just before stop() acquired the state lock
         // must still commit ABORTED when it eventually updates its row.
-        service.set_status(&created.id, ScanStatus::Finished, Some(456)).unwrap();
+        service
+            .set_status(&created.id, ScanStatus::Finished, Some(456))
+            .unwrap();
         let row = service.store().get(&created.id).unwrap();
         assert_eq!(row.status, ScanStatus::Aborted);
         assert_eq!(row.ended, Some(456));
-        service.set_status(&created.id, ScanStatus::Running, Some(789)).unwrap();
+        service
+            .set_status(&created.id, ScanStatus::Running, Some(789))
+            .unwrap();
         assert_eq!(
             service.store().get(&created.id).unwrap().status,
             ScanStatus::Aborted,
