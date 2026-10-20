@@ -97,6 +97,9 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
   async function newScan(page, name, depth) {
     await page.goto(base + '/#/newscan', { waitUntil: 'networkidle' });
     await page.fill('#starget', TARGET);
+    // The browser preserves the last chosen scan kind. Each independent
+    // acceptance scan specifies auto so a prior network pivot cannot bleed in.
+    await page.selectOption('#skind', 'auto');
     await page.fill('#sname', name);
     await page.fill('#sdepth', String(depth));
     const t = Date.now();
