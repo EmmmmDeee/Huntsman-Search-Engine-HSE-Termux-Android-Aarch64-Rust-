@@ -2924,4 +2924,66 @@ mod tests {
             }
         }
     }
+
+    fn permanent_failure_after_transient_is_not_resumed(panics: bool) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut task = spec("lookup", &[]);
+        task.max_retries = 2;
+        task.output_schema = ValueSchema::Number;
+        let definition = GraphDefinition {
+            run_id: "permanent-after-transient".into(),
+            tasks: vec![task],
+        };
+        let mut handlers = HandlerRegistry::new();
+        let observed_calls = Arc::clone(&calls);
+        handlers.insert(
+            "lookup".into(),
+            handler(move |context| {
+                match observed_calls.fetch_add(1, Ordering::SeqCst) {
+                    0 => Err(TaskFailure::transient("temporary transport error")),
+                    1 if panics => panic!("permanent handler panic"),
+                    1 => Ok(output(json!("not a number"), &context.task_id)),
+                    _ => Ok(output(json!(3), &context.task_id)),
+                }
+            }),
+        );
+        let executor = GraphExecutor::new(policy());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let report = executor
+            .execute(&definition, &handlers, &cancelled)
+            .unwrap();
+        let resumed = executor
+            .resume(
+                &definition,
+                &handlers,
+                &cancelled,
+                ExecutionCheckpoint::from_report(report.clone()),
+            )
+            .unwrap();
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a permanent failure must not inherit retry permission"
+        );
+        assert_eq!(report.tasks["lookup"].state, TaskState::Failed);
+        assert_eq!(report.tasks["lookup"].attempts, 2);
+        assert!(!report.tasks["lookup"].retryable);
+        assert_eq!(resumed.tasks, report.tasks);
+        assert_eq!(resumed.termination, Some(RunTermination::Failed));
+        assert_eq!(
+            resumed.consumed_resource_units,
+            report.consumed_resource_units
+        );
+    }
+
+    #[test]
+    fn panic_after_transient_failure_is_not_resumed() {
+        permanent_failure_after_transient_is_not_resumed(true);
+    }
+
+    #[test]
+    fn malformed_output_after_transient_failure_is_not_resumed() {
+        permanent_failure_after_transient_is_not_resumed(false);
+    }
 }
