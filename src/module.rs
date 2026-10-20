@@ -1154,6 +1154,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "Termux:API Android OS-cached WiFi scan observations; cache age disclosed, no active scan",
     },
     ReachableModule {
+        name: "cell_radar",
+        command: "radar cells [--json] [--file TERMUX_CELL_JSON]",
+        access: "local_sensor",
+        network: false,
+        category: ModuleCategory::Sensor,
+        attack_techniques: &[],
+        description: "Termux:API Android OS-cached GSM/WCDMA/LTE/NR cell observations; no claimed UTC, age or location",
+    },
+    ReachableModule {
         name: "oui",
         command: "network BSSID",
         access: "offline",
