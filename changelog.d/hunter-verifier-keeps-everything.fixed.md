@@ -1,0 +1,1 @@
+- Hunter's email verifier (with `HUNTSMAN_HUNTER_KEY`) keeps its result and every deliverability check (format, gibberish, MX records, SMTP server, SMTP check, disposable, webmail, accept-all, blocked) as attributes, every public page that carries the address with when it was first and last seen there, and the whole answer as `raw_answer`.
