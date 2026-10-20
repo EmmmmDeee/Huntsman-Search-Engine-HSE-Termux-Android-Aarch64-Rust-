@@ -38,6 +38,7 @@ use huntsman_recon::scan_route::ScanKind;
 use huntsman_recon::seeknow_collector::LookupLeg;
 use huntsman_recon::source_outcome::SourceExecutionOutcome;
 use huntsman_recon::stolen_tax;
+use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::threat_feeds::{self, Feeds};
 use huntsman_recon::username_cli::{USERNAME_USAGE, UsernameArgs, UsernameRun};
 use huntsman_recon::wigle;
@@ -141,14 +142,25 @@ fn people(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Ref
         },
         || seeknow_leg(EntityKind::Person, selector, (&keys, chosen), now),
     );
+    compose_people(run, seeknow)
+}
+
+/// One people lookup from what its two parts returned, folded as [`compose_email`] folds an
+/// address's.
+fn compose_people(run: PeopleRun, seeknow: Option<LookupLeg>) -> Result<Collected, Refused> {
+    let policies = (PEOPLE_POLICY, PEOPLE_POLICY);
     match run {
         PeopleRun::Printed { text, report } => {
             let (text, entities, outcomes) =
                 with_seeknow_leg(seeknow, text, report.entities, report.outcomes)?;
-            Ok(done(text, entities, outcomes, PEOPLE_POLICY))
+            Ok(done(text, entities, outcomes, policies.0))
         }
-        PeopleRun::Network(m) => Err(Refused::Network(m)),
-        PeopleRun::Failed(m) => Err(Refused::Unavailable(m)),
+        PeopleRun::Network(m) => {
+            legs_beside("people", Refused::Network(m), seeknow, None, policies)
+        }
+        PeopleRun::Failed(m) => {
+            legs_beside("people", Refused::Unavailable(m), seeknow, None, policies)
+        }
     }
 }
 
@@ -169,21 +181,77 @@ fn email(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Refu
             )
         },
     );
+    compose_email(run, seeknow, exposure)
+}
+
+/// One email lookup from what its three parts returned. The legs fold on the address as they
+/// always did: the `SeekNow` identity leg first, then the breach and exposure legs onto the
+/// combined result. When the address's own sources gave no report, the legs that ran beside them
+/// are still reported ([`legs_beside`]).
+fn compose_email(
+    run: EmailRun,
+    seeknow: Option<LookupLeg>,
+    exposure: Option<ExposureRun>,
+) -> Result<Collected, Refused> {
+    let policies = (EMAIL_POLICY, EMAIL_EXPOSURE_POLICY);
     match run {
         EmailRun::Printed { text, report } => {
-            // Compose the legs on the address as they always folded: the `SeekNow` identity leg
-            // first, then the breach and exposure legs onto the combined result.
             let (text, entities, outcomes) =
                 with_seeknow_leg(seeknow, text, report.entities, report.outcomes)?;
             Ok(with_exposure(
                 exposure,
-                done(text, entities, outcomes, EMAIL_POLICY),
-                EMAIL_EXPOSURE_POLICY,
+                done(text, entities, outcomes, policies.0),
+                policies.1,
             ))
         }
-        EmailRun::Network(m) => Err(Refused::Network(m)),
-        EmailRun::Failed(m) => Err(Refused::Unavailable(m)),
+        EmailRun::Network(m) => {
+            legs_beside("email", Refused::Network(m), seeknow, exposure, policies)
+        }
+        EmailRun::Failed(m) => legs_beside(
+            "email",
+            Refused::Unavailable(m),
+            seeknow,
+            exposure,
+            policies,
+        ),
     }
+}
+
+/// A lookup whose own sources gave no report (`refused`), from the legs that ran beside them:
+/// the `SeekNow` leg's findings and rows, then the breach and exposure legs folded on, and one
+/// line saying why the lookup's own sources gave nothing (`{kind}=unavailable reason=…`). A leg
+/// whose key is set and that answered is never dropped because a keyless source failed.
+///
+/// # Errors
+/// `refused` itself when no leg answered; the report renderer's error.
+fn legs_beside(
+    kind: &str,
+    refused: Refused,
+    seeknow: Option<LookupLeg>,
+    exposure: Option<ExposureRun>,
+    (policy, exposure_policy): (SavePolicy, SavePolicy),
+) -> Result<Collected, Refused> {
+    let answered =
+        |outcomes: &[SourceExecutionOutcome]| outcomes.iter().any(|o| o.kind.is_accepted());
+    let any = seeknow.as_ref().is_some_and(|leg| answered(&leg.outcomes))
+        || matches!(&exposure, Some(ExposureRun::Printed { report, .. }) if answered(&report.outcomes));
+    if !any {
+        return Err(refused);
+    }
+    let (text, entities, outcomes) = match seeknow {
+        Some(leg) => with_seeknow_leg(Some(leg), String::new(), Vec::new(), Vec::new())?,
+        None => (String::new(), Vec::new(), Vec::new()),
+    };
+    let mut found = with_exposure(
+        exposure,
+        done(text, entities, outcomes, policy),
+        exposure_policy,
+    );
+    found.text.push_str(&format!(
+        "{kind}=unavailable reason={}\n",
+        escape_controls(refused.message())
+    ));
+    Ok(found)
 }
 
 /// The `SeekNow` leg for `selector`, or `None` when `HUNTSMAN_SEEKNOW_KEY` is not configured or
@@ -326,19 +394,34 @@ fn username(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, R
             )
         },
     );
+    compose_username(run, seeknow, exposure)
+}
+
+/// One username lookup from what its three parts returned, folded as [`compose_email`] folds an
+/// address's.
+fn compose_username(
+    run: UsernameRun,
+    seeknow: Option<LookupLeg>,
+    exposure: Option<ExposureRun>,
+) -> Result<Collected, Refused> {
+    let policies = (USERNAME_POLICY, USERNAME_EXPOSURE_POLICY);
     match run {
         UsernameRun::Printed { text, report } => {
-            // Compose the legs on the handle as they always folded: the `SeekNow` identity leg
-            // first, then the breach and exposure legs onto the combined result.
             let (text, entities, outcomes) =
                 with_seeknow_leg(seeknow, text, report.entities, report.outcomes)?;
             Ok(with_exposure(
                 exposure,
-                done(text, entities, outcomes, USERNAME_POLICY),
-                USERNAME_EXPOSURE_POLICY,
+                done(text, entities, outcomes, policies.0),
+                policies.1,
             ))
         }
-        UsernameRun::Failed(m) => Err(Refused::Unavailable(m)),
+        UsernameRun::Failed(m) => legs_beside(
+            "username",
+            Refused::Unavailable(m),
+            seeknow,
+            exposure,
+            policies,
+        ),
     }
 }
 
@@ -580,6 +663,166 @@ mod tests {
             argument_status(&Error::invalid("only one --save")),
             EX_USAGE
         );
+    }
+
+    use huntsman_recon::entity::{Evidence, EvidenceProvenance};
+    use huntsman_recon::source_outcome::SourceOutcomeKind;
+
+    const OWN_SOURCES_FAILED: &str = "no source answered for ada@example.com: gravatar: timed out";
+
+    /// A `SeekNow` leg that found one person for the address.
+    fn seeknow_found() -> LookupLeg {
+        let mut person = Entity::new(EntityKind::Person, "Ada Lovelace", 0.7, "scan");
+        person.add_evidence(Evidence::new(
+            EvidenceProvenance::new("seeknow"),
+            "Person SeekNow lists for the address",
+        ));
+        LookupLeg {
+            entities: vec![person],
+            outcomes: vec![SourceExecutionOutcome::success("seeknow", 1, 1)],
+        }
+    }
+
+    /// A `SeekNow` leg whose request failed.
+    fn seeknow_failed() -> LookupLeg {
+        LookupLeg {
+            entities: Vec::new(),
+            outcomes: vec![SourceExecutionOutcome::failed(
+                "seeknow",
+                1,
+                SourceOutcomeKind::ConnectFailure,
+                None,
+                "no route",
+            )],
+        }
+    }
+
+    fn found_by_seeknow(found: &Collected) {
+        assert!(
+            found
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.raw_value == "Ada Lovelace"),
+            "{:#?}",
+            found.entities
+        );
+        assert!(
+            found
+                .outcomes
+                .iter()
+                .any(|o| o.module == "seeknow" && o.kind.is_accepted()),
+            "{:#?}",
+            found.outcomes
+        );
+    }
+
+    /// A paid leg that answered is reported when every one of the address's own sources failed:
+    /// before, the lookup was refused and what the leg found was dropped.
+    #[test]
+    fn an_email_lookup_keeps_what_a_paid_leg_found_when_its_own_sources_fail() {
+        for run in [
+            EmailRun::Failed(OWN_SOURCES_FAILED.into()),
+            EmailRun::Network(OWN_SOURCES_FAILED.into()),
+        ] {
+            let found = compose_email(run, Some(seeknow_found()), None)
+                .unwrap_or_else(|refused| panic!("refused: {}", refused.message()));
+            found_by_seeknow(&found);
+            assert!(
+                found
+                    .text
+                    .contains(&format!("email=unavailable reason={OWN_SOURCES_FAILED}\n")),
+                "{}",
+                found.text
+            );
+            assert_eq!(found.policy.default_source, EMAIL_POLICY.default_source);
+        }
+    }
+
+    #[test]
+    fn a_username_lookup_keeps_what_a_paid_leg_found_when_its_own_sources_fail() {
+        let found = compose_username(
+            UsernameRun::Failed("no source answered for ada".into()),
+            Some(seeknow_found()),
+            None,
+        )
+        .unwrap_or_else(|refused| panic!("refused: {}", refused.message()));
+        found_by_seeknow(&found);
+        assert!(
+            found
+                .text
+                .contains("username=unavailable reason=no source answered for ada\n")
+        );
+    }
+
+    #[test]
+    fn a_people_lookup_keeps_what_a_paid_leg_found_when_its_own_sources_fail() {
+        for run in [
+            PeopleRun::Failed("no source answered for Ada Lovelace".into()),
+            PeopleRun::Network("no source answered for Ada Lovelace".into()),
+        ] {
+            let found = compose_people(run, Some(seeknow_found()))
+                .unwrap_or_else(|refused| panic!("refused: {}", refused.message()));
+            found_by_seeknow(&found);
+            assert!(
+                found
+                    .text
+                    .contains("people=unavailable reason=no source answered for Ada Lovelace\n"),
+                "{}",
+                found.text
+            );
+        }
+        let refused = compose_people(PeopleRun::Failed("nothing".into()), Some(seeknow_failed()))
+            .err()
+            .unwrap_or_else(|| panic!("a lookup nothing answered was reported"));
+        assert_eq!(refused.exit_status(), EX_UNAVAILABLE);
+    }
+
+    /// An exposure leg that answered is reported the same way, saved as an exposure.
+    #[test]
+    fn an_email_lookup_keeps_what_the_breach_legs_found_when_its_own_sources_fail() {
+        let report = exposure_cli::Report {
+            outcomes: vec![SourceExecutionOutcome::success("hibp_account", 1, 1)],
+            ..exposure_cli::Report::default()
+        };
+        let exposure = ExposureRun::Printed {
+            text: String::new(),
+            report,
+        };
+        let found = compose_email(
+            EmailRun::Failed(OWN_SOURCES_FAILED.into()),
+            None,
+            Some(exposure),
+        )
+        .unwrap_or_else(|refused| panic!("refused: {}", refused.message()));
+        assert!(
+            found.outcomes.iter().any(|o| o.module == "hibp_account"),
+            "{:#?}",
+            found.outcomes
+        );
+        assert_eq!(
+            found.policy.default_source,
+            EMAIL_EXPOSURE_POLICY.default_source
+        );
+    }
+
+    /// With no leg that answered, the lookup is refused as before, with its own reason and status.
+    #[test]
+    fn a_lookup_no_leg_answered_is_refused_with_its_own_reason() {
+        for seeknow in [None, Some(seeknow_failed())] {
+            let refused = compose_email(
+                EmailRun::Failed(OWN_SOURCES_FAILED.into()),
+                seeknow,
+                Some(ExposureRun::Failed("no key".into())),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("a lookup nothing answered was reported"));
+            assert_eq!(refused.message(), OWN_SOURCES_FAILED);
+            assert_eq!(refused.exit_status(), EX_UNAVAILABLE);
+        }
+        let refused = compose_email(EmailRun::Network(OWN_SOURCES_FAILED.into()), None, None)
+            .err()
+            .unwrap_or_else(|| panic!("a refused lookup was reported"));
+        assert_eq!(refused.exit_status(), EX_NOPERM);
     }
 
     #[test]
