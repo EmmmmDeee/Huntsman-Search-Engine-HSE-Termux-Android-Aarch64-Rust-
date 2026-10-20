@@ -3,6 +3,7 @@
 //! use fakes and a challenge page is a wall, not a JSON parse error.
 
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -19,6 +20,66 @@ use crate::{
     tlsrpt,
 };
 
+/// The module name of resolving a name or an address another source found, forward (A and
+/// AAAA) or reverse (PTR), as Spiderfoot's `sfp_dnsresolve` does: on outcome rows and evidence.
+pub const RESOLVE_SOURCE: &str = "dnsresolve";
+
+/// Names or addresses resolved at once by [`ask_all`].
+pub const ASK_WORKERS: usize = 8;
+/// Names or addresses that may fail before the first answer, before [`ask_all`] stops asking: the
+/// resolvers are unreachable, so every other one would fail the same way.
+pub const ASK_FAILURES_BEFORE_ABORT: usize = 4;
+
+/// `ask` for each item, [`ASK_WORKERS`] at a time, each answer at its item's index. Once
+/// [`ASK_FAILURES_BEFORE_ABORT`] answers are `failed` before any other came back, no further item
+/// is asked and those items' answers are `None`; so is the answer of a worker that panicked.
+pub fn ask_all<I, R, F, B>(items: &[I], ask: F, failed: B) -> Vec<Option<R>>
+where
+    I: Sync,
+    R: Send,
+    F: Fn(&I) -> R + Sync,
+    B: Fn(&R) -> bool + Sync,
+{
+    let next = AtomicUsize::new(0);
+    let failures = AtomicUsize::new(0);
+    let answered = AtomicUsize::new(0);
+    let work = || {
+        let mut mine = Vec::new();
+        loop {
+            if answered.load(Ordering::SeqCst) == 0
+                && failures.load(Ordering::SeqCst) >= ASK_FAILURES_BEFORE_ABORT
+            {
+                break;
+            }
+            let index = next.fetch_add(1, Ordering::SeqCst);
+            let Some(item) = items.get(index) else {
+                break;
+            };
+            let result = ask(item);
+            let counter = if failed(&result) {
+                &failures
+            } else {
+                &answered
+            };
+            counter.fetch_add(1, Ordering::SeqCst);
+            mine.push((index, result));
+        }
+        mine
+    };
+    let mut out: Vec<Option<R>> = items.iter().map(|_| None).collect();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..ASK_WORKERS.min(items.len()))
+            .map(|_| scope.spawn(work))
+            .collect();
+        for worker in workers {
+            for (index, result) in worker.join().unwrap_or_default() {
+                out[index] = Some(result);
+            }
+        }
+    });
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordType {
     A,
@@ -27,6 +88,7 @@ pub enum RecordType {
     Ns,
     Soa,
     Txt,
+    Ptr,
 }
 
 impl RecordType {
@@ -39,6 +101,7 @@ impl RecordType {
             Self::Ns => "NS",
             Self::Soa => "SOA",
             Self::Txt => "TXT",
+            Self::Ptr => "PTR",
         }
     }
 
@@ -52,6 +115,7 @@ impl RecordType {
             Self::Ns => 2,
             Self::Soa => 6,
             Self::Mx => 15,
+            Self::Ptr => 12,
             Self::Txt => 16,
             Self::Aaaa => 28,
         }
@@ -113,6 +177,17 @@ impl ResolveErrorKind {
             Self::Truncated => "truncated",
         }
     }
+
+    /// The outcome kind of a query no resolver answered with this error. **Pure.**
+    #[must_use]
+    pub const fn outcome_kind(self) -> SourceOutcomeKind {
+        match self {
+            Self::Timeout => SourceOutcomeKind::TtfbTimeout,
+            Self::RateLimited => SourceOutcomeKind::RateLimited,
+            Self::BotWaf => SourceOutcomeKind::BotWaf,
+            Self::Upstream | Self::Truncated | Self::Empty => SourceOutcomeKind::Inconclusive,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,7 +229,7 @@ struct DnsJsonResponse {
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct DnsJsonAnswer {
+pub struct DnsJsonAnswer {
     #[serde(rename = "type", default)]
     rtype: u16,
     #[serde(default)]
@@ -258,9 +333,13 @@ pub fn resolve_with_config<T: Transport + ?Sized>(
 
 fn build_request(server: &ResolverServer, query: &ResolveQuery, timeout: Duration) -> Request {
     let url = append_query_param(
-        &append_query_param(server.doh_url, "name", &query.name),
-        "type",
-        query.record_type.as_str(),
+        &append_query_param(
+            &append_query_param(server.doh_url, "name", &query.name),
+            "type",
+            query.record_type.as_str(),
+        ),
+        "do",
+        "1",
     );
     Request::get(url)
         .header("accept", "application/dns-json")
@@ -314,7 +393,7 @@ fn interpret_fetched(
                 .unwrap_or_else(|| "no HTTP response".into()),
         });
     };
-    if crate::classify::is_challenge(&response.text()) {
+    if crate::classify::is_challenge(&response.text_view()) {
         return Err(ResolveError {
             kind: ResolveErrorKind::BotWaf,
             detail: "challenge page".into(),
@@ -453,6 +532,47 @@ pub fn soa_rname_to_email(rname: &str) -> String {
         cursor += 1;
     }
     String::new()
+}
+
+/// The `in-addr.arpa` name (IPv4, RFC 1035) or nibble-format `ip6.arpa` name (IPv6, RFC 3596)
+/// whose PTR records name `ip`. **Pure.**
+#[must_use]
+pub fn reverse_name(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, c, d] = v4.octets();
+            format!("{d}.{c}.{b}.{a}.in-addr.arpa")
+        }
+        IpAddr::V6(v6) => {
+            let mut name = String::with_capacity(72);
+            for byte in v6.octets().iter().rev() {
+                for nibble in [byte & 0x0f, byte >> 4] {
+                    name.push(char::from_digit(u32::from(nibble), 16).unwrap_or('0'));
+                    name.push('.');
+                }
+            }
+            name.push_str("ip6.arpa");
+            name
+        }
+    }
+}
+
+/// The PTR records of `ip` over the `DoH` pool, as published (a trailing root dot kept).
+///
+/// # Errors
+/// [`ResolveErrorKind::Empty`] when the zone has no PTR record for the address; any other kind
+/// when no resolver answered.
+pub fn lookup_ptr<T: Transport + ?Sized>(
+    transport: &T,
+    ip: IpAddr,
+) -> Result<ResolveAnswer, ResolveError> {
+    resolve_with_pool(
+        transport,
+        &ResolveQuery {
+            name: reverse_name(ip),
+            record_type: RecordType::Ptr,
+        },
+    )
 }
 
 /// Canonical DNS name for a domain, URL or email selector. Nothing is sent.
@@ -827,6 +947,40 @@ mod tests {
             body: body.to_vec(),
             truncated: false,
         }
+    }
+
+    #[test]
+    fn reverse_names_follow_rfc_1035_and_rfc_3596() {
+        assert_eq!(
+            reverse_name(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))),
+            "4.3.2.1.in-addr.arpa"
+        );
+        let v6 = IpAddr::V6(std::net::Ipv6Addr::new(
+            0x2001, 0xdb8, 0, 0, 0, 0, 0x567, 0x89ab,
+        ));
+        assert_eq!(
+            reverse_name(v6),
+            "b.a.9.8.7.6.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
+        );
+    }
+
+    /// A PTR lookup asks for the reverse name's PTR records and keeps only those, as published;
+    /// a CNAME in the chain (RFC 2317 classless delegation) is not a PTR answer.
+    #[test]
+    fn a_ptr_lookup_asks_the_reverse_name_and_keeps_its_ptr_records() {
+        let transport = FakeTransport::new(vec![Ok(doh(
+            br#"{"Status":0,"Answer":[{"type":5,"data":"4.0-25.3.2.1.in-addr.arpa."},{"type":12,"data":"One.One.One.One."}]}"#,
+        ))]);
+        let answer = lookup_ptr(&transport, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(answer.records, ["One.One.One.One."]);
+        let seen = transport.seen.borrow();
+        assert!(
+            seen[0].url.contains("name=1.1.1.1.in-addr.arpa"),
+            "{}",
+            seen[0].url
+        );
+        assert!(seen[0].url.contains("type=PTR"), "{}", seen[0].url);
     }
 
     /// NXDOMAIN and "no record of this type" come from the zone, so the first resolver's

@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::fsio::{read_bounded, write_atomic_private};
+use crate::fsio::{read_bounded_replacing, write_atomic_private};
 use crate::sha256::{hex32, sha256};
 use crate::stage::{EvidenceLevel, Status};
 
@@ -153,7 +153,11 @@ pub fn admitted(entries: &[LedgerEntry]) -> Vec<&LedgerEntry> {
         .collect()
 }
 
-const MAX_LEDGER_BYTES: u64 = 1_048_576;
+/// The ceiling on a saved ledger, for writing and for reading alike. It is the ceiling on a saved
+/// scan artifact: a lookup of a large domain writes one entry per name, and a ledger the writer
+/// accepts must be one the reader loads. The old 1 MiB cap refused a save of a few thousand
+/// entries after the lookup had already spent its requests.
+const MAX_LEDGER_BYTES: u64 = crate::scan_artifact::MAX_ARTIFACT_BYTES;
 
 /// Persist a chain atomically, mode 600 on Unix: a lookup's ledger names the addresses, phones
 /// and handles it found. A broken chain is never written.
@@ -164,7 +168,17 @@ pub fn save_chain(path: &Path, entries: &[LedgerEntry]) -> Result<(), Error> {
     if !chain_intact(entries) {
         return Err(Error::Invalid("refusing to write a broken chain".into()));
     }
-    let body = serde_json::to_vec_pretty(entries).map_err(|e| Error::Store(e.to_string()))?;
+    let limit = usize::try_from(MAX_LEDGER_BYTES).unwrap_or(usize::MAX);
+    let body = match crate::json::to_bounded_json(&entries, limit, true) {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(required_bytes)) => {
+            return Err(Error::Store(format!(
+                "{}: exceeds {MAX_LEDGER_BYTES} bytes (needs {required_bytes})",
+                path.display()
+            )));
+        }
+        Err(error) => return Err(Error::Store(error.to_string())),
+    };
     write_atomic_private(path, &body, MAX_LEDGER_BYTES)
 }
 
@@ -174,7 +188,7 @@ pub fn save_chain(path: &Path, entries: &[LedgerEntry]) -> Result<(), Error> {
 /// `Error::Store` for IO, size, or symlink refusal (unreadable input); `Error::Invalid` for
 /// malformed JSON or a broken chain (bad data). Callers map these to distinct exit codes.
 pub fn load_chain(path: &Path) -> Result<Vec<LedgerEntry>, Error> {
-    let body = read_bounded(path, MAX_LEDGER_BYTES)?;
+    let body = read_bounded_replacing(path, MAX_LEDGER_BYTES)?;
     let entries: Vec<LedgerEntry> =
         serde_json::from_slice(&body).map_err(|e| Error::Invalid(e.to_string()))?;
     if !chain_intact(&entries) {
@@ -199,6 +213,48 @@ mod tests {
             evidence_level: level,
             does_not_show: "not survey grade".into(),
         }
+    }
+
+    #[test]
+    fn ledger_round_trips_after_atomic_replacement_without_losing_chain() {
+        let dir = std::env::temp_dir().join(format!(
+            "huntsman-ledger-replacement-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ledger.json");
+        let first = append(
+            GENESIS,
+            &sample(Status::Verified, EvidenceLevel::DirectObservation, None),
+        );
+        save_chain(&path, std::slice::from_ref(&first)).unwrap();
+        assert_eq!(
+            load_chain(&path).unwrap().as_slice(),
+            std::slice::from_ref(&first)
+        );
+        let mut second_claim = first.claim.clone();
+        second_claim.claim = "second complete entry".into();
+        let second = append(&first.hash, &second_claim);
+        let chain = [first, second];
+        save_chain(&path, &chain).unwrap();
+        assert_eq!(load_chain(&path).unwrap(), chain);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_ledger_reader_still_refuses_symlinks() {
+        let dir = std::env::temp_dir().join(format!("huntsman-ledger-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ledger.json");
+        let other = dir.join("other.json");
+        save_chain(&other, &[]).unwrap();
+        std::os::unix::fs::symlink(&other, &path).unwrap();
+        assert!(matches!(load_chain(&path), Err(Error::Store(_))));
+        assert_eq!(load_chain(&other).unwrap(), []);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -313,6 +369,32 @@ mod tests {
         let second = append(&first.hash, &second_claim);
         assert!(chain_intact(&[first.clone(), second.clone()]));
         assert!(!chain_intact(&[second, first]));
+    }
+
+    #[test]
+    fn a_ledger_of_thousands_of_entries_saves_and_reloads() {
+        let dir = std::env::temp_dir().join(format!("huntsman-ledger-long-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ledger.json");
+        let mut entries = Vec::new();
+        let mut prev = GENESIS.to_owned();
+        for index in 0..5_000 {
+            let mut claim = sample(Status::Verified, EvidenceLevel::DirectObservation, None);
+            claim.claim = format!("name {index}.example.test resolves");
+            let entry = append(&prev, &claim);
+            prev.clone_from(&entry.hash);
+            entries.push(entry);
+        }
+        assert!(
+            serde_json::to_vec_pretty(&entries).unwrap().len() > 1_048_576,
+            "the fixture must be larger than the old 1 MiB cap"
+        );
+        save_chain(&path, &entries).expect("a long ledger saves");
+        let loaded = load_chain(&path).expect("and loads back intact");
+        assert_eq!(loaded.len(), entries.len());
+        assert_eq!(loaded.last(), entries.last());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

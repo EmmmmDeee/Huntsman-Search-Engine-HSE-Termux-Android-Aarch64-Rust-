@@ -1,0 +1,1 @@
+- The serve page exports Excel workbooks wherever it exports: a scan's elements (all or one data type), its correlations, and the scans selected on Scans in one workbook, as Spiderfoot's export menus offer. A menu that would open past the right edge of a phone's screen opens leftward.

@@ -1,0 +1,1 @@
+- When two records of one source say the same thing about one entity, the merged record now keeps the scan and time of every observation. It used to keep the first record's provenance alone, so the later scan that re-found the finding was lost from saved results. Records without a merge save exactly as before.

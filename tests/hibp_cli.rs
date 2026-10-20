@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 mod fixtures;
 
 use huntsman_recon::hibp::cli::HibpCommand;
-use huntsman_recon::hibp::key::{EmbeddedSource, KeyLoader};
+use huntsman_recon::hibp::key::KeyLoader;
 use huntsman_recon::hibp::passwords::{PasswordHashMode, hash_password};
 use huntsman_recon::hibp::rate_limit::RateLimiter;
 use huntsman_recon::hibp::{HibpClient, HibpConfig};
@@ -74,7 +74,7 @@ fn command(key: Option<&str>) -> (HibpCommand, Arc<Fake>) {
         max_429_retries: 0,
         ..HibpConfig::default()
     };
-    let keys = KeyLoader::from_parts(key.map(str::to_owned), None, None, "");
+    let keys = KeyLoader::from_parts(key.map(str::to_owned), None, None);
     let cmd = HibpCommand::new(keys, move |auth| {
         HibpClient::with_config(
             transport.clone(),
@@ -658,36 +658,32 @@ fn binary_registers_hibp_and_keyed_lookups_need_a_key() {
         .output()
         .unwrap();
     assert_eq!(bad.status.code(), Some(65));
-    if EmbeddedSource::is_present() {
-        eprintln!("skipping the binary missing-key run: this build embeds a key");
-    } else {
-        for args in [
-            &["hibp", "account", "a@example.com"][..],
-            &["hibp", "pastes", "a@example.com"],
-            &["hibp", "subscription"],
-        ] {
-            let out = bin(&home).args(args).output().unwrap();
-            // The gate refuses a keyed subcommand with no key before any lookup. The README
-            // documents that as a missing key, which is exit 66.
-            assert_eq!(out.status.code(), Some(66), "{args:?}");
-            let err = String::from_utf8_lossy(&out.stderr);
-            assert!(err.contains("no API key for this keyed lookup"), "{err}");
-            assert!(
-                err.contains("HUNTSMAN_HIBP_KEY"),
-                "refusal must name the key to set: {err}"
-            );
-        }
-        // An unknown subcommand is a usage error from the HIBP command, not a missing key.
-        let unknown = bin(&home)
-            .args(["hibp", "breech", "Adobe"])
-            .output()
-            .unwrap();
-        assert_eq!(unknown.status.code(), Some(64), "{unknown:?}");
+    for args in [
+        &["hibp", "account", "a@example.com"][..],
+        &["hibp", "pastes", "a@example.com"],
+        &["hibp", "subscription"],
+    ] {
+        let out = bin(&home).args(args).output().unwrap();
+        // The gate refuses a keyed subcommand with no key before any lookup. The README
+        // documents that as a missing key, which is exit 66.
+        assert_eq!(out.status.code(), Some(66), "{args:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("no API key for this keyed lookup"), "{err}");
         assert!(
-            !String::from_utf8_lossy(&unknown.stderr).contains("API key"),
-            "an unknown subcommand must not report a missing key"
+            err.contains("HUNTSMAN_HIBP_KEY"),
+            "refusal must name the key to set: {err}"
         );
     }
+    // An unknown subcommand is a usage error from the HIBP command, not a missing key.
+    let unknown = bin(&home)
+        .args(["hibp", "breech", "Adobe"])
+        .output()
+        .unwrap();
+    assert_eq!(unknown.status.code(), Some(64), "{unknown:?}");
+    assert!(
+        !String::from_utf8_lossy(&unknown.stderr).contains("API key"),
+        "an unknown subcommand must not report a missing key"
+    );
     let _ = fs::remove_dir_all(&home);
 }
 
