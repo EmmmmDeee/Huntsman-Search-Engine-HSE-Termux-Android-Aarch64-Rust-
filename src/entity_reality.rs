@@ -107,16 +107,14 @@ fn dimension(name: &str) -> Dimension {
         "legal_name" | "name" | "alias" | "aliases" | "identity" | "display_name" => {
             Dimension::Identity
         }
-        "company_name" | "company" | "employer" | "director_name" | "affiliation"
-        | "member_of" | "appointment" | "role" => Dimension::Affiliation,
+        "company_name" | "company" | "employer" | "director_name" | "affiliation" | "member_of"
+        | "appointment" | "role" => Dimension::Affiliation,
         "owner" | "ownership" | "beneficial_owner" | "shareholder" | "registrant" => {
             Dimension::Ownership
         }
         "control" | "controller" | "operator" | "administrator" => Dimension::Control,
         "incentive" | "funding" | "revenue" | "economic_interest" => Dimension::Incentive,
-        "ports" | "services" | "capability" | "capabilities" | "vulns" => {
-            Dimension::Capability
-        }
+        "ports" | "services" | "capability" | "capabilities" | "vulns" => Dimension::Capability,
         "relationship" | "relation" | "linked_account" | "linked_profile" => {
             Dimension::Relationship
         }
@@ -164,7 +162,11 @@ pub fn assess(entity: &Entity) -> EntityReality {
             if sensitive_attribute(attribute) || attribute == "evidence_role" {
                 continue;
             }
-            for value in raw_value.split("; ").map(str::trim).filter(|part| !part.is_empty()) {
+            for value in raw_value
+                .split("; ")
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+            {
                 if value.len() > MAX_VALUE_BYTES {
                     omitted_assertions += 1;
                     continue;
@@ -256,12 +258,18 @@ mod tests {
             )
             .build();
         let report = assess(&subject);
-        assert_eq!(report.identity_status, "not_established_by_identifier_or_source_attribution");
+        assert_eq!(
+            report.identity_status,
+            "not_established_by_identifier_or_source_attribution"
+        );
         assert_eq!(report.traces[0].role, EvidenceRole::OperatorSeed);
         assert_eq!(report.assertions.len(), 1);
         assert_eq!(report.assertions[0].evidence_indices, vec![0, 1]);
         assert_eq!(report.assertions[0].dimension, Dimension::Ownership);
-        assert_eq!(report.assertions[0].status, "source_attribution_not_independently_verified");
+        assert_eq!(
+            report.assertions[0].status,
+            "source_attribution_not_independently_verified"
+        );
     }
 
     #[test]
