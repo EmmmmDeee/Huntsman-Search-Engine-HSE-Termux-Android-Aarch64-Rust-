@@ -325,7 +325,11 @@ fn scan_pipe_never_replaces_an_earlier_ledger_even_with_the_same_timestamp() {
     // Fix the clock so the old timestamp-only naming scheme demonstrably collides.
     phone.executable("bin/date", "#!/bin/sh\nprintf '20261021_004500\\n'\n");
     let long_target = format!("{}{}", "é".repeat(200), "a".repeat(200));
-    for target in ["alice@example.com", "alice@example.com", long_target.as_str()] {
+    for target in [
+        "alice@example.com",
+        "alice@example.com",
+        long_target.as_str(),
+    ] {
         let out = phone.run(&["scan-pipe", target]);
         assert!(out.status.success(), "{}", text(&out));
     }
@@ -352,14 +356,25 @@ fn scan_pipe_never_replaces_an_earlier_ledger_even_with_the_same_timestamp() {
 
     let duplicates = json_paths
         .iter()
-        .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with("alice@example.com_"))
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("alice@example.com_")
+        })
         .count();
-    assert_eq!(duplicates, 2, "identical inputs at one timestamp must not collide");
+    assert_eq!(
+        duplicates, 2,
+        "identical inputs at one timestamp must not collide"
+    );
     for ledger in json_paths {
         let body = fs::read_to_string(&ledger).unwrap();
         assert!(body.contains("alice@example.com registered"), "{ledger:?}");
         let report = fs::read_to_string(ledger.with_extension("md")).unwrap();
-        assert!(report.contains(&body), "the report lost evidence for {ledger:?}");
+        assert!(
+            report.contains(&body),
+            "the report lost evidence for {ledger:?}"
+        );
         assert!(report.contains("Ledger check: verified"), "{report}");
     }
 }
