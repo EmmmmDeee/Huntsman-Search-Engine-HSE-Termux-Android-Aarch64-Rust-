@@ -4,7 +4,9 @@
 //! without a key at a low daily limit; with `HUNTSMAN_GREYNOISE_KEY` set (a free Community key)
 //! the key goes in the `key` header and the limit is the account's. A `404` whose body has the
 //! address and `noise: false` is the documented "not observed" answer, a valid zero.
-//! This Community endpoint accepts routable IPv4 only; IPv6 receives HTTP 400.
+//! This Community endpoint accepts routable IPv4 only; IPv6 receives HTTP 400. A sighting keeps
+//! everything the answer says: the flags, classification, name, last sighting, the visualizer
+//! link, `GreyNoise`'s message, and the whole answer as `raw_answer`.
 
 use serde::Deserialize;
 
@@ -37,6 +39,11 @@ pub struct Sighting {
     /// The actor or service name `GreyNoise` gives it.
     pub name: Option<String>,
     pub last_seen: Option<String>,
+    /// The address's page on the `GreyNoise` visualizer.
+    pub link: Option<String>,
+    pub message: Option<String>,
+    /// The whole answer as compact JSON.
+    pub raw_answer: String,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +59,10 @@ struct Body {
     name: Option<String>,
     #[serde(default)]
     last_seen: Option<String>,
+    #[serde(default)]
+    link: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 /// Whether `GreyNoise` Community can answer this address. IPv6 is unsupported.
@@ -89,6 +100,7 @@ pub fn decode(answer: Answer, ip: &str) -> Result<Option<Sighting>, LegError> {
         Answer::Body(body) => (body, false),
         Answer::NotFound(body) => (body, true),
     };
+    let whole: serde_json::Value = api_leg::decode(&body)?;
     let body: Body = api_leg::decode(&body)?;
     if body.ip.trim() != ip {
         return Err(LegError::Decode("answer names another address".into()));
@@ -106,6 +118,9 @@ pub fn decode(answer: Answer, ip: &str) -> Result<Option<Sighting>, LegError> {
         classification: api_leg::clean(body.classification.as_deref()),
         name: api_leg::clean(body.name.as_deref()).filter(|n| n != "unknown"),
         last_seen: api_leg::clean(body.last_seen.as_deref()),
+        link: api_leg::clean(body.link.as_deref()),
+        message: api_leg::clean(body.message.as_deref()),
+        raw_answer: whole.to_string(),
     }))
 }
 

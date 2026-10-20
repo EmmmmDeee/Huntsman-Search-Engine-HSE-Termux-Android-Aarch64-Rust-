@@ -1,0 +1,1 @@
+- GreyNoise Community keeps the address's visualizer link, GreyNoise's message and the whole answer as `raw_answer`, beside the flags, classification, name and last sighting it already kept.

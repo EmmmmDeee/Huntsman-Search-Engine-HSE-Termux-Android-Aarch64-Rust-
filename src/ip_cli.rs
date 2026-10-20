@@ -451,7 +451,10 @@ fn greynoise_leg(lookup: &mut Lookup<'_>, sighting: &greynoise::Sighting) {
             ("classification", sighting.classification.as_deref()),
             ("name", sighting.name.as_deref()),
             ("last_seen", sighting.last_seen.as_deref()),
-        ]);
+            ("link", sighting.link.as_deref()),
+            ("message", sighting.message.as_deref()),
+        ])
+        .with_attr("raw_answer", sighting.raw_answer.as_str());
     lookup.on_address(evidence, &tags);
     lookup.found(api, 1);
 }
