@@ -274,13 +274,13 @@ fn decode(response: &Response) -> Result<SearchResponse, DehashedError> {
 }
 
 /// Resolve a provider credential from the shared lookup keys first, then from the
-/// legacy private DeHashed key file. The caller supplies `Keys::for_lookup` so
+/// legacy private `DeHashed` key file. The caller supplies `Keys::for_lookup` so
 /// `~/.huntsman.env` and individual environment slots use the same precedence
 /// as every other provider. No secret is printed or exposed in diagnostics.
 ///
 /// # Errors
 /// The same errors as [`key_from_environment`] when the shared keys contain
-/// no DeHashed credential.
+/// no `DeHashed` credential.
 pub fn key_from_sources(keys: &Keys) -> Result<Secret, DehashedError> {
     keys.get(API_KEY_ENV).map_or_else(key_from_environment, Ok)
 }
