@@ -83,7 +83,11 @@ fn parse_row(row: &serde_json::Value) -> Option<CellObservation> {
             "nr" => ("tac", "nci", (1_u64 << 36) - 1),
             _ => return None,
         };
-        let area_limit = if technology == "nr" { (1_u64 << 24) - 1 } else { u64::from(u16::MAX) };
+        let area_limit = if technology == "nr" {
+            (1_u64 << 24) - 1
+        } else {
+            u64::from(u16::MAX)
+        };
         let area = bounded_id(row, area_key, area_limit)?;
         let cell = bounded_id(row, cell_key, limit)?;
         let identity = format!("{technology}:{mcc}:{mnc}:{area}:{cell}");
@@ -219,7 +223,8 @@ mod tests {
     fn empty_api_cache_and_replays_do_not_assert_radio_absence() {
         let scan = parse_scan(b"[]").unwrap();
         assert_eq!(scan.status, "inconclusive");
-        let replay = parse_replay(br#"[{"type":"lte","mcc":505,"mnc":1,"tac":1,"ci":2}]"#).unwrap();
+        let replay = parse_replay(br#"[{"type":"lte","mcc":505,"mnc":1,"tac":1,"ci":2}]"#)
+            .unwrap();
         assert_eq!(replay.source, "unverified_json_file");
         assert_eq!(replay.observations[0].freshness, "unknown");
         assert_eq!(replay.observations[0].sighting.observed_epoch, None);
@@ -239,7 +244,10 @@ mod tests {
 
     #[test]
     fn invalid_signal_and_untrusted_identity_do_not_inject_output_rows() {
-        let scan = parse_scan(br#"[{"type":"lte","mcc":505,"mnc":1,"tac":1,"ci":2,"dbm":0},{"type":"lte\nfake","mcc":505,"mnc":1,"tac":1,"ci":2}]"#).unwrap();
+        let scan = parse_scan(
+            br#"[{"type":"lte","mcc":505,"mnc":1,"tac":1,"ci":2,"dbm":0},{"type":"lte\nfake","mcc":505,"mnc":1,"tac":1,"ci":2}]"#,
+        )
+        .unwrap();
         assert_eq!((scan.observed, scan.rejected), (1, 1));
         assert_eq!(render(&scan).lines().count(), 2);
         assert!(scan.observations[0].sighting.signal_dbm.is_none());
