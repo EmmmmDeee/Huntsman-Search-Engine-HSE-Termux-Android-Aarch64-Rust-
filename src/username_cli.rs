@@ -51,7 +51,8 @@ pub enum UsernameRun {
     Failed(String),
 }
 
-/// Run deterministic variants and the two keyless public-profile collectors.
+/// Run deterministic variants and the two keyless public-profile collectors, each when the
+/// transport's lookup asks its module ([`Transport::runs_module`]).
 #[must_use]
 pub fn run<T: Transport + ?Sized>(
     transport: &T,
@@ -69,8 +70,12 @@ pub fn run<T: Transport + ?Sized>(
         outcomes: Vec::new(),
     };
 
-    collect_github(transport, keys, &username, &scan_id, now_unix, &mut report);
-    collect_bluesky(transport, &username, &scan_id, now_unix, &mut report);
+    if transport.runs_module(github_user::SRC) {
+        collect_github(transport, keys, &username, &scan_id, now_unix, &mut report);
+    }
+    if transport.runs_module(bluesky_user::SRC) {
+        collect_bluesky(transport, &username, &scan_id, now_unix, &mut report);
+    }
     merge_by_uid(&mut report.entities);
 
     match lookup_report::render(&report.entities, &report.outcomes) {

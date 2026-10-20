@@ -1,0 +1,1 @@
+- A private file (ledgers, sessions, scan artifacts, tokens) is refused when the filesystem leaves it readable by others, instead of being written anyway. On shared storage such as `/sdcard`, which does not keep Unix modes, the write goes ahead with a warning on stderr.
