@@ -109,6 +109,9 @@ jobs:
       - name: Run deterministic repair gate (MSRV)
         if: matrix.toolchain == '1.87'
         run: cargo run --locked -p xtask -- gate msrv
+      - name: Measure sequential versus graph scheduling (offline)
+        if: matrix.toolchain == '1.99'
+        run: cargo run --locked --example graph_exec_bench
 
 
   railway-container:

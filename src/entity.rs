@@ -645,8 +645,28 @@ const fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// A structured provider answer must be kept as one document. JSON strings may contain
+/// the separator used by legacy attribute-list merges, so splitting a document corrupts it.
+fn is_json_document(value: &str) -> bool {
+    matches!(value.trim_start().as_bytes().first(), Some(b'{' | b'['))
+        && serde_json::from_str::<serde::de::IgnoredAny>(value).is_ok()
+}
+
 fn same_evidence_identity(left: &Evidence, right: &Evidence) -> bool {
-    left.provenance.source == right.provenance.source && left.summary == right.summary
+    if left.provenance.source != right.provenance.source || left.summary != right.summary {
+        return false;
+    }
+    // Changed structured documents describe distinct source observations, even when the
+    // summary repeats. Keep both provenance-bearing records instead of splicing raw answers
+    // together or dropping the older document. Equal documents still coalesce as before.
+    !left.attributes.iter().any(|(key, previous)| {
+        right.attributes.get(key).is_some_and(|incoming| {
+            previous != incoming
+                && (key.starts_with("raw_")
+                    || is_json_document(previous)
+                    || is_json_document(incoming))
+        })
+    })
 }
 
 fn merge_evidence(existing: &mut Evidence, incoming: Evidence) {

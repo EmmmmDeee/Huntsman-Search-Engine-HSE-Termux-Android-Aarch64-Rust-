@@ -177,6 +177,7 @@ fn every_text_colour_meets_wcag_aa_in_both_themes() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn the_light_theme_follows_the_system_until_the_toggle_picks_one() {
     let style = inline("style");
     assert_eq!(

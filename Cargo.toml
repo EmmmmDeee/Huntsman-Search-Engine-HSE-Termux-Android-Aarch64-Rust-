@@ -27,6 +27,8 @@ serde_json = "1.0"
 thiserror = "2.0"
 # The one blocking HTTP client behind the guarded fetch layer (rustls, no async runtime).
 ureq = "3"
+# DNSSEC signature verification (RSA, ECDSA, Ed25519).
+ring = "0.17"
 
 # Every release build uses this profile: the phone's `cargo install` (install.sh), CI's Android
 # cross-build, the Railway container (Dockerfile) and the trusted xtask builds in the issue-fix
