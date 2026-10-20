@@ -320,10 +320,7 @@ mod tests {
         );
         assert_eq!(scan.observations[0].age_secs, Some(20.0));
 
-        let only_redacted = parse_replay(
-            br#"[{"bssid":"02:00:00:00:00:00","rssi":-35}]"#,
-        )
-        .unwrap();
+        let only_redacted = parse_replay(br#"[{"bssid":"02:00:00:00:00:00","rssi":-35}]"#).unwrap();
         assert_eq!(only_redacted.observed, 0);
         assert_eq!(only_redacted.rejected, 1);
         assert_eq!(only_redacted.status, "inconclusive");
