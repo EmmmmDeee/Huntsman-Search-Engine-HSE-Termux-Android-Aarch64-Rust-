@@ -7,6 +7,13 @@ Credential values MUST NOT be committed. Runtime values belong in
 environment. The generic key loader documented in the repository README reads
 these slots without printing their values.
 
+Configured keys are available automatically to their relevant provider legs; a
+key is not authorization to query unrelated services, bypass a module selection,
+or spend paid API quota for an irrelevant target. Operators can inspect presence
+with `huntsman-recon credential-status` and configure a slot using
+`printf '%s' "$API_KEY" | huntsman-recon keys set HUNTSMAN_PROVIDER_KEY --stdin`.
+No credential values are required in CLI arguments, logs or source control.
+
 ## Recovered/owned provider slots
 
 | Provider | Runtime slot(s) | Integration state |
@@ -18,7 +25,7 @@ these slots without printing their values.
 | HIBP | `HUNTSMAN_HIBP_KEY` | owned subscription/key history; clean current credential required |
 | SeekNow | `HUNTSMAN_SEEKNOW_KEY` | historical credential only; clean current credential required |
 | OathNet | `HUNTSMAN_OATHNET_KEY` | used by `exposure` (CLI, `scan -k exposure`, web UI) when set in the environment; one daily lookup per search; validity unverified until a live search |
-| DeHashed | `HUNTSMAN_DEHASHED_KEY` | used by `exposure` and the `email` lookup (CLI, `scan`, web UI) when set, for an email address |
+| DeHashed | `HUNTSMAN_DEHASHED_KEY` | used by `exposure` and `email` (CLI, `scan`, web UI), and by explicit `dehashed search --purpose ...`. All resolve the private `~/.huntsman.env` slot with process-environment fallback; the explicit command also supports its legacy private `~/.config/dehashed/api_key` file if the shared slot is unset. Keys are sent only to DeHashed's fixed API origin |
 | stolen.tax | `HUNTSMAN_STOLEN_TAX_KEY` | used by `exposure` and the `email` and `username` lookups (CLI, `scan`, web UI) when set |
 | Exa | `HUNTSMAN_EXA_KEY` | account confirmed; current credential not recovered |
 | OpenRouter | `HUNTSMAN_OPENROUTER_KEY` | account confirmed; current credential not recovered |
