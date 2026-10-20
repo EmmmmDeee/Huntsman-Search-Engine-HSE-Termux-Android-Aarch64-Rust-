@@ -188,7 +188,7 @@ pub fn url(indicator: Indicator<'_>) -> Option<String> {
         Indicator::Ip(_) => "ip",
         Indicator::Email(_) => "email",
         Indicator::Phone(_) => "phone",
-        Indicator::Domain(_) => return None,
+        Indicator::Domain(_) | Indicator::Cell(_) | Indicator::MacAddress(_) => return None,
     };
     Some(format!(
         "https://www.ipqualityscore.com/api/json/{kind}?{kind}={}",
@@ -268,7 +268,9 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Finding, LegError
         Indicator::Ip(_) => ip(&api_leg::decode(body)?, score),
         Indicator::Email(_) => email(&api_leg::decode(body)?, score),
         Indicator::Phone(_) => phone(&api_leg::decode(body)?, score),
-        Indicator::Domain(_) => return Err(LegError::Decode("no domain lookup".into())),
+        Indicator::Domain(_) | Indicator::Cell(_) | Indicator::MacAddress(_) => {
+            return Err(LegError::Decode("no domain lookup".into()));
+        }
     };
     Ok(finding
         .attr("fraud_score", score.to_string())

@@ -500,8 +500,11 @@ pub fn account_sha1_hex(email: &str) -> String {
 
 /// A 429's `retry-after` in whole seconds, when the server sent one.
 fn retry_after(resp: &Response) -> Option<Duration> {
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
     resp.header_value("retry-after")
-        .and_then(|s| s.trim().parse::<u64>().ok())
+        .and_then(|value| crate::http::retry_after_secs(value, now_unix))
         .map(Duration::from_secs)
 }
 

@@ -130,11 +130,12 @@ impl HibpCommand {
         }
     }
 
-    /// The binary's command: [`KeyLoader::default_chain`] and
+    /// The binary's command: the key from `keys` (the binary passes
+    /// [`KeyLoader::default_chain`] with its lookup keys' `HUNTSMAN_HIBP_KEY` slot) and
     /// [`HibpClient::production`] with the default config.
     #[must_use]
-    pub fn production() -> Self {
-        Self::new(KeyLoader::default_chain(None), |auth| {
+    pub fn production(keys: KeyLoader) -> Self {
+        Self::new(keys, |auth| {
             HibpClient::production(auth, HibpConfig::default())
         })
     }
@@ -326,7 +327,6 @@ fn origin_label(origin: &KeyOrigin) -> String {
         KeyOrigin::Env(name) => format!("env:{name}"),
         KeyOrigin::HuntsmanSlot => "slot:HUNTSMAN_HIBP_KEY".into(),
         KeyOrigin::File(path) => format!("file:{}", path.display()),
-        KeyOrigin::Embedded => "embedded".into(),
         KeyOrigin::Provided => "provided".into(),
     }
 }

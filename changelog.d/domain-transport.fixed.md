@@ -1,0 +1,1 @@
+- A domain lookup reads with crt.sh's 30-second timeout and 16 MiB body limit instead of the 20-second, 4 MiB default, so a popular domain's crt.sh certificate list is no longer cut off as truncated.
