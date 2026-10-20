@@ -1,8 +1,11 @@
 //! End-to-end front-end for `huntsman-recon domain` and the domain arm of `scan`.
 //!
-//! Runs crt.sh certificate transparency and DNS record lookups in sequence for a
-//! single domain, then the keyed legs whose key is configured: `VirusTotal` reputation
-//! (`HUNTSMAN_VIRUSTOTAL_KEY`) and Hunter.io published addresses (`HUNTSMAN_HUNTER_KEY`), then
+//! Runs crt.sh and Cert Spotter certificate transparency (see [`crate::certspotter`]: every
+//! certificate logged for the domain and its subdomains, each in full), DNS record and RDAP
+//! registration lookups (see [`crate::rdap_legs`]), the domain blocklists Spiderfoot asks over the
+//! system resolver (see [`crate::dnsbl`]) and the filtering resolvers (see [`crate::dns_filter`])
+//! in sequence for a single domain, then the keyed legs whose key is configured: `VirusTotal`
+//! reputation (`HUNTSMAN_VIRUSTOTAL_KEY`) and Hunter.io published addresses (`HUNTSMAN_HUNTER_KEY`), then
 //! every domain source in [`crate::indicator_legs::SOURCES`] (Shodan DNS, Pulsedive, Netlas, OTX, urlscan.io, Robtex,
 //! `HackerTarget`, `LeakIX`, `URLhaus`, `SecurityTrails`,
 //! `ThreatFox`, Whoxy WHOIS). A keyed leg without its key makes no request and reports nothing;
@@ -19,12 +22,15 @@
 use std::path::PathBuf;
 
 use crate::canonical::{canonical_domain, canonical_email, canonical_ip};
+use crate::certspotter;
 use crate::crtsh::{self, CrtShError};
 use crate::dns::{self, DomainDns, RecordType, ResolveErrorKind};
+use crate::dns_filter;
+use crate::dnsbl::{self, Subject};
 use crate::entity::Entity;
 use crate::entity::{EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::http::Transport;
+use crate::http::{Transport, TransportConfig};
 use crate::hunter;
 use crate::indicator_legs;
 use crate::indicator_sources::Indicator;
@@ -35,6 +41,7 @@ use crate::recon::ReconTargetKind;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::spf::Mechanism;
 use crate::tags;
+use crate::threat_feeds::{self, Feeds};
 use crate::virustotal;
 
 mod resolve;
@@ -45,6 +52,7 @@ pub const DOMAIN_USAGE: &str = "usage: huntsman-recon domain DOMAIN [--save FILE
 
 /// The DNS leg's module name, on its outcome row and its evidence.
 const DNS_SOURCE: &str = "dns";
+const CRTSH_SOURCE: &str = "crtsh";
 /// The queried domain, as the keyed legs hold it.
 const DOMAIN_CONFIDENCE: f64 = 0.90;
 /// An address, host or mailbox the domain's own records name: its zone published it.
@@ -82,10 +90,21 @@ pub enum DomainRun {
     Failed(String),
 }
 
+/// Transport settings for a domain lookup: crt.sh's timeout and body limit, the largest any of
+/// its legs needs, so a popular domain's certificate list is read whole.
+#[must_use]
+pub fn transport_config() -> TransportConfig {
+    crtsh::transport_config()
+}
+
+/// Run every domain leg for `domain`, then check it and everything the legs found against the
+/// threat `feeds`. Keyed legs run only when `keys` holds their key, and each leg only when the
+/// transport's lookup asks its module ([`Transport::runs_module`]).
 #[must_use]
 pub fn run<T: Transport + ?Sized + Sync>(
     transport: &T,
     keys: &Keys,
+    feeds: &Feeds,
     domain: &str,
     now_unix: u64,
 ) -> DomainRun {
@@ -97,46 +116,60 @@ pub fn run<T: Transport + ?Sized + Sync>(
     let mut found = Found::default();
     let mut sections = Vec::new();
 
-    sections.push(crtsh_leg(
-        transport, &domain, &scan_id, now_unix, &mut found,
-    ));
-
-    // Whether the resolvers answered the domain's own queries; when none did, its hosts are not
-    // asked either.
-    let mut resolvers_up = false;
-    match dns::lookup_domain(transport, &domain) {
-        Some(records) => {
-            if let Some(failure) = resolver_failure(&records) {
-                found.no_response(format!(
-                    "dns: no resolver answered ({})",
-                    failure.error.detail
-                ));
-            } else {
-                resolvers_up = true;
-            }
-            found.outcomes.push(dns_outcome(&records, now_unix));
-            found.entities.extend(dns_entities(&records, &scan_id));
-            sections.push(records.render());
-        }
-        None => {
-            found.outcomes.push(SourceExecutionOutcome::failed(
-                DNS_SOURCE,
-                now_unix,
-                SourceOutcomeKind::Inconclusive,
-                None,
-                "bad domain",
-            ));
-        }
+    if transport.runs_module(CRTSH_SOURCE) {
+        sections.push(crtsh_leg(
+            transport, &domain, &scan_id, now_unix, &mut found,
+        ));
     }
+    if transport.runs_module(certspotter::SOURCE) {
+        let certificates = certspotter::lookup(transport, keys, &domain, &scan_id, now_unix);
+        found.entities.extend(certificates.entities);
+        found.leg(certificates.outcome);
+    }
+    let Resolved {
+        resolvers_up,
+        unfiltered,
+    } = dns_leg(
+        transport,
+        &domain,
+        &scan_id,
+        now_unix,
+        &mut found,
+        &mut sections,
+    );
 
+    let registration = crate::rdap_legs::domain(transport, &domain, &scan_id, now_unix);
+    found.entities.extend(registration.entities);
+    if let Some(outcome) = registration.outcome {
+        found.leg(outcome);
+    }
+    let seen = crate::mnemonic::domain(transport, &domain, &scan_id, now_unix);
+    found.entities.extend(seen.entities);
+    if let Some(outcome) = seen.outcome {
+        found.leg(outcome);
+    }
+    let (listed, rows) = dnsbl::check(transport, Subject::Domain(&domain), &scan_id, now_unix);
+    found.entities.extend(listed);
+    found.outcomes.extend(rows);
+    let (blocked, rows) = dns_filter::check(transport, &domain, &unfiltered, &scan_id, now_unix);
+    found.entities.extend(blocked);
+    found.outcomes.extend(rows);
     keyed_legs(transport, keys, &domain, &scan_id, now_unix, &mut found);
     let hosts = resolve::hosts(&found.entities, &domain);
-    if resolvers_up && !hosts.is_empty() {
+    if resolvers_up && !hosts.is_empty() && transport.runs_module(RESOLVE_SOURCE) {
         let resolved = resolve::resolve(transport, &domain, &hosts, &scan_id, now_unix);
         found.entities.extend(resolved.entities);
         found.outcomes.push(resolved.outcome);
         sections.push(resolved.section);
     }
+    threat_feeds::check_found(
+        feeds,
+        threat_feeds::Subject::Name(domain.clone()),
+        &mut found.entities,
+        &mut found.outcomes,
+        &scan_id,
+        now_unix,
+    );
     let Found {
         mut entities,
         outcomes,
@@ -174,6 +207,72 @@ pub fn run<T: Transport + ?Sized + Sync>(
     }
 }
 
+/// What the domain's own resolution told the legs after it.
+struct Resolved {
+    /// Whether the resolvers answered the domain's own queries; when none did, its hosts are not
+    /// asked either. A lookup that does not ask `dns` cannot tell, so it asks them.
+    resolvers_up: bool,
+    /// The domain's own addresses, which a filtering resolver's missing answer is read against.
+    unfiltered: dns_filter::Unfiltered,
+}
+
+/// The `dns` leg: the domain's records, its entities and its report section. A lookup that does
+/// not ask `dns` sends none of its queries; when it asks a filtering resolver, the filters' own
+/// unfiltered answer is asked instead, as that is what they are read against.
+fn dns_leg<T: Transport + ?Sized>(
+    transport: &T,
+    domain: &str,
+    scan_id: &str,
+    now_unix: u64,
+    found: &mut Found,
+    sections: &mut Vec<String>,
+) -> Resolved {
+    if !transport.runs_module(DNS_SOURCE) {
+        let filtered = dns_filter::FILTERS
+            .iter()
+            .any(|filter| transport.runs_module(filter.source));
+        return Resolved {
+            resolvers_up: true,
+            unfiltered: if filtered {
+                dns_filter::Unfiltered::ask(transport, domain)
+            } else {
+                dns_filter::Unfiltered::Unanswered("not asked".to_owned())
+            },
+        };
+    }
+    let Some(records) = dns::lookup_domain(transport, domain) else {
+        found.outcomes.push(SourceExecutionOutcome::failed(
+            DNS_SOURCE,
+            now_unix,
+            SourceOutcomeKind::Inconclusive,
+            None,
+            "bad domain",
+        ));
+        return Resolved {
+            resolvers_up: false,
+            unfiltered: dns_filter::Unfiltered::Unanswered("not a name to ask".to_owned()),
+        };
+    };
+    let unfiltered = dns_filter::Unfiltered::from_records(&records);
+    let resolvers_up = match resolver_failure(&records) {
+        Some(failure) => {
+            found.no_response(format!(
+                "dns: no resolver answered ({})",
+                failure.error.detail
+            ));
+            false
+        }
+        None => true,
+    };
+    found.outcomes.push(dns_outcome(&records, now_unix));
+    found.entities.extend(dns_entities(&records, scan_id));
+    sections.push(records.render());
+    Resolved {
+        resolvers_up,
+        unfiltered,
+    }
+}
+
 /// The crt.sh leg: the names in certificates logged for the domain. Returns its report line.
 fn crtsh_leg<T: Transport + ?Sized>(
     transport: &T,
@@ -188,16 +287,16 @@ fn crtsh_leg<T: Transport + ?Sized>(
             found.entities.extend(report.entities);
             // crt.sh answered with its list of logged certificates; an empty list is "none".
             found.outcomes.push(if count == 0 {
-                SourceExecutionOutcome::valid_zero("crtsh", now_unix)
+                SourceExecutionOutcome::valid_zero(CRTSH_SOURCE, now_unix)
             } else {
-                SourceExecutionOutcome::success("crtsh", now_unix, count)
+                SourceExecutionOutcome::success(CRTSH_SOURCE, now_unix, count)
             });
             format!("crtsh: {count} certificate-transparency entities")
         }
         Err(CrtShError::Refused(reason)) => {
             found.refused(format!("crtsh: request refused: {reason}"));
             found.outcomes.push(SourceExecutionOutcome::failed(
-                "crtsh",
+                CRTSH_SOURCE,
                 now_unix,
                 SourceOutcomeKind::EntitlementDenied,
                 None,
@@ -215,7 +314,11 @@ fn crtsh_leg<T: Transport + ?Sized>(
                 _ => SourceOutcomeKind::Inconclusive,
             };
             found.outcomes.push(SourceExecutionOutcome::failed(
-                "crtsh", now_unix, kind, None, &message,
+                CRTSH_SOURCE,
+                now_unix,
+                kind,
+                None,
+                &message,
             ));
             format!("crtsh: unavailable ({message})")
         }
@@ -263,7 +366,7 @@ fn keyed_legs<T: Transport + ?Sized>(
     now_unix: u64,
     found: &mut Found,
 ) {
-    if virustotal::API.wanted(keys) {
+    if virustotal::API.runs(transport, keys) {
         let api = &virustotal::API;
         match virustotal::lookup(
             transport,
@@ -282,7 +385,7 @@ fn keyed_legs<T: Transport + ?Sized>(
             Err(err) => found.leg(err.outcome(api, now_unix)),
         }
     }
-    if hunter::API.wanted(keys) {
+    if hunter::API.runs(transport, keys) {
         let outcome = hunter_leg(
             transport,
             keys,
@@ -701,6 +804,16 @@ mod tests {
     use super::*;
     use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::OneResponse;
+
+    /// The domain lookup, with no threat feed consulted: the feeds' own tests cover them.
+    fn run<T: Transport + ?Sized + Sync>(
+        transport: &T,
+        keys: &Keys,
+        domain: &str,
+        now_unix: u64,
+    ) -> DomainRun {
+        super::run(transport, keys, &Feeds::none(), domain, now_unix)
+    }
 
     const HUNTER_KEY: &str = "hunter-test-key-0123456789abcdef";
     const SEARCH: &str = r#"{"data":{"domain":"example.com","pattern":"{first}.{last}","organization":"Example Corp","emails":[{"value":"ada.lovelace@example.com","type":"personal","confidence":90,"sources":[{"domain":"example.org"}],"first_name":"Ada","last_name":"Lovelace","position":"Engineer"},{"value":"info@example.com","type":"generic","confidence":70,"sources":[]}]},"meta":{"results":2}}"#;

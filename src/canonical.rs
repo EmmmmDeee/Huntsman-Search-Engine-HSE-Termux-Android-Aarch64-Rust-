@@ -111,43 +111,61 @@ pub fn canonical_ip(raw: &str) -> Option<String> {
     is_public_ip(ip).then(|| ip.to_string())
 }
 
-/// Whether `ip` is public unicast: see [`canonical_ip`]. IPv6 is public only inside global
-/// unicast `2000::/3` and outside the documentation and transition prefixes; an IPv4-mapped
-/// address is judged as its IPv4 address. **Pure.**
+/// A public address block in canonical form, `192.0.2.7/24` written `192.0.2.0/24`, or `None`
+/// for a bare address, a malformed block, or a block whose first address is not public (see
+/// [`is_public_ip`]): a private or documentation block is refused before any request. **Pure.**
+#[must_use]
+pub fn canonical_netblock(raw: &str) -> Option<String> {
+    let block = crate::netblock::Netblock::parse(raw)?;
+    is_public_ip(block.network()).then(|| block.to_string())
+}
+
+/// A public AS number written `AS13335`, from `AS13335`, `as13335`, `ASN13335` or the bare
+/// `13335` Spiderfoot takes as a `BGP_AS_OWNER` target; `None` for anything else, or for a
+/// number IANA reserves (RFC 7607 `AS0`, `AS_TRANS` 23456, the documentation, private-use and
+/// reserved ranges of RFC 5398, RFC 6996 and RFC 7300). **Pure.**
+#[must_use]
+pub fn canonical_asn(raw: &str) -> Option<String> {
+    let upper = raw.trim().to_ascii_uppercase();
+    let digits = upper
+        .strip_prefix("ASN")
+        .or_else(|| upper.strip_prefix("AS"))
+        .unwrap_or(&upper)
+        .trim_start();
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number: u32 = digits.parse().ok()?;
+    is_public_asn(number).then(|| format!("AS{number}"))
+}
+
+/// Whether IANA leaves `asn` for assignment to a network. **Pure.**
+#[must_use]
+pub fn is_public_asn(asn: u32) -> bool {
+    !matches!(asn, 0 | 23_456 | 64_496..=131_071 | 4_200_000_000..=u32::MAX)
+}
+
+/// Whether `ip` is public unicast. IPv4 policy is shared with the guarded egress layer,
+/// so target validation and connection policy cannot silently drift. IPv6 remains stricter:
+/// only global unicast is accepted, excluding documentation, special-purpose and 6to4 ranges.
+/// IPv4-mapped IPv6 is judged as IPv4. **Pure.**
 #[must_use]
 pub fn is_public_ip(ip: std::net::IpAddr) -> bool {
     match ip {
-        std::net::IpAddr::V4(v4) => is_public_ipv4(v4),
+        std::net::IpAddr::V4(_) => crate::egress::is_public_ip(ip),
         std::net::IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_public_ipv4(v4);
+                return crate::egress::is_public_ip(std::net::IpAddr::V4(v4));
             }
             let s = v6.segments();
             let global_unicast = s[0] & 0xe000 == 0x2000;
             let documentation = s[0] == 0x2001 && s[1] == 0x0db8;
             // 2001::/23 holds Teredo, benchmarking and other IETF special-purpose blocks;
-            // 2002::/16 is 6to4.
+            // 2002::/16 is 6to4. Keep this selector gate stricter than general egress.
             let special = (s[0] == 0x2001 && s[1] < 0x0200) || s[0] == 0x2002;
-            global_unicast && !documentation && !special
+            global_unicast && !documentation && !special && crate::egress::is_public_ip(ip)
         }
     }
-}
-
-fn is_public_ipv4(ip: std::net::Ipv4Addr) -> bool {
-    let [a, b, c, _] = ip.octets();
-    let reserved = a == 0
-        || a == 10
-        || a == 127
-        || a >= 224
-        || (a == 100 && (64..128).contains(&b))
-        || (a == 169 && b == 254)
-        || (a == 172 && (16..32).contains(&b))
-        || (a == 192 && b == 168)
-        || (a == 192 && b == 0 && (c == 0 || c == 2))
-        || (a == 198 && (b == 18 || b == 19))
-        || (a == 198 && b == 51 && c == 100)
-        || (a == 203 && b == 0 && c == 113);
-    !reserved
 }
 
 #[must_use]
@@ -335,6 +353,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_public_blocks_are_canonical_netblocks() {
+        assert_eq!(
+            canonical_netblock(" 1.1.1.9/24 ").as_deref(),
+            Some("1.1.1.0/24")
+        );
+        assert_eq!(
+            canonical_netblock("2606:4700::/32").as_deref(),
+            Some("2606:4700::/32")
+        );
+        for refused in [
+            "10.0.0.0/8",
+            "192.0.2.0/24",
+            "0.0.0.0/0",
+            "2001:db8::/32",
+            "1.1.1.1",
+        ] {
+            assert_eq!(canonical_netblock(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn only_public_as_numbers_are_canonical() {
+        for (raw, canonical) in [
+            ("AS13335", "AS13335"),
+            (" as13335 ", "AS13335"),
+            ("ASN 4608", "AS4608"),
+            ("13335", "AS13335"),
+            ("AS0013335", "AS13335"),
+            ("AS4199999999", "AS4199999999"),
+        ] {
+            assert_eq!(canonical_asn(raw).as_deref(), Some(canonical), "{raw}");
+        }
+        for refused in [
+            "AS0",
+            "AS23456",
+            "AS64496",
+            "AS64512",
+            "AS65535",
+            "AS65551",
+            "AS131071",
+            "AS4200000000",
+            "AS4294967295",
+            "AS4294967296",
+            "AS",
+            "AS-13335",
+            "ASX1",
+            "13335/24",
+            "",
+        ] {
+            assert_eq!(canonical_asn(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
     fn only_public_unicast_addresses_are_canonical_ips() {
         assert_eq!(canonical_ip(" 1.1.1.1 ").as_deref(), Some("1.1.1.1"));
         assert_eq!(
@@ -370,6 +442,31 @@ mod tests {
             "",
         ] {
             assert_eq!(canonical_ip(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn ipv4_selector_validation_matches_guarded_egress_policy() {
+        for (raw, expected) in [
+            ("1.1.1.1", true),
+            ("100.63.255.255", true),
+            ("100.64.0.0", false),
+            ("100.127.255.255", false),
+            ("100.128.0.0", true),
+            ("192.0.0.8", false),
+            ("192.0.2.1", false),
+            ("198.18.0.1", false),
+            ("223.255.255.255", true),
+            ("224.0.0.1", false),
+            ("240.0.0.1", false),
+        ] {
+            let parsed = raw.parse().expect("fixture IP");
+            assert_eq!(
+                crate::egress::is_public_ip(parsed),
+                expected,
+                "egress {raw}"
+            );
+            assert_eq!(canonical_ip(raw).is_some(), expected, "canonical {raw}");
         }
     }
 

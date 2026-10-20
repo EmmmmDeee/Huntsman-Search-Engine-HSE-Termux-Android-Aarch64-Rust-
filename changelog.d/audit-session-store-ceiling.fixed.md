@@ -1,0 +1,1 @@
+- A `plan` session larger than 1 MiB now saves and reloads. The session store refused any session over 1 MiB after the investigation had run, so a long run lost its saved state. Sessions now share the saved-artifact ceiling of 32 MiB, and an oversized session is still refused with a store error.

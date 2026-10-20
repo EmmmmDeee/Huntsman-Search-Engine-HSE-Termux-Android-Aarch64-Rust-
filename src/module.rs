@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub use crate::dependency::{ModuleCategory, ModuleCost, ModuleMeta};
 use crate::environment;
 pub use crate::environment::PROVIDER_COST_ENV_PREFIX;
+use crate::module_selection::Selection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -505,6 +506,24 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "combined public IP address front-end",
     },
     ReachableModule {
+        name: "netblock_cli",
+        command: "netblock CIDR | scan -k netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Infrastructure,
+        attack_techniques: &["T1590.004", "T1590.005"],
+        description: "combined public address-block front-end: registration, routing and the PTR names of its addresses",
+    },
+    ReachableModule {
+        name: "asn_cli",
+        command: "asn AS-NUMBER | scan -k asn AS-NUMBER",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Infrastructure,
+        attack_techniques: &["T1590.004", "T1590.005"],
+        description: "combined AS front-end: registration, holder, every announced prefix and BGP neighbour",
+    },
+    ReachableModule {
         name: "internetdb",
         command: "ip ADDRESS",
         access: "keyless",
@@ -515,12 +534,12 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
     },
     ReachableModule {
         name: "ripestat",
-        command: "ip ADDRESS",
+        command: "ip ADDRESS | netblock CIDR | asn AS-NUMBER",
         access: "keyless",
         network: true,
         category: ModuleCategory::Infrastructure,
         attack_techniques: &["T1590.004", "T1590.005"],
-        description: "RIPEstat covering prefix and origin AS",
+        description: "RIPEstat covering prefix and origin AS of an address or a block, and an AS's holder, announced prefixes and BGP neighbours",
     },
     ReachableModule {
         name: "greynoise",
@@ -530,6 +549,276 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         category: ModuleCategory::Threat,
         attack_techniques: &["T1596.005"],
         description: "GreyNoise Community internet-scanner status (optional free key)",
+    },
+    ReachableModule {
+        name: "spamhaus",
+        command: "ip ADDRESS | domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "Spamhaus ZEN address and DBL domain blocklists over the system resolver",
+    },
+    ReachableModule {
+        name: "spamcop",
+        command: "ip ADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "SpamCop address blocklist over the system resolver",
+    },
+    ReachableModule {
+        name: "uceprotect",
+        command: "ip ADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "UCEPROTECT levels 1, 2 and 3 address blocklists over the system resolver",
+    },
+    ReachableModule {
+        name: "dronebl",
+        command: "ip ADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "DroneBL address blocklist (drones, proxies, botnets) over the system resolver",
+    },
+    ReachableModule {
+        name: "sorbs",
+        command: "ip ADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "SORBS address blocklist over the system resolver",
+    },
+    ReachableModule {
+        name: "surbl",
+        command: "ip ADDRESS | domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "SURBL multi address and domain blocklist over the system resolver",
+    },
+    ReachableModule {
+        name: "adguard_dns",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "AdGuard DNS default and family filters over DNS-over-HTTPS",
+    },
+    ReachableModule {
+        name: "cleanbrowsing",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "CleanBrowsing security, adult and family filters over DNS-over-HTTPS",
+    },
+    ReachableModule {
+        name: "cloudflaredns",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "Cloudflare 1.1.1.1 for Families malware and family filters over DNS-over-HTTPS",
+    },
+    ReachableModule {
+        name: "comodo",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "Comodo Secure DNS filter over UDP",
+    },
+    ReachableModule {
+        name: "dns_for_family",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "DNS for Family filter over UDP to its own servers",
+    },
+    ReachableModule {
+        name: "opendns",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "OpenDNS FamilyShield botnet, malware, phishing and adult categories over DNS-over-HTTPS",
+    },
+    ReachableModule {
+        name: "quad9",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "Quad9 threat-blocking resolver over UDP to its own servers",
+    },
+    ReachableModule {
+        name: "yandexdns",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "Yandex DNS family filter (infected and adult) over UDP to its own servers",
+    },
+    ReachableModule {
+        name: "abusech",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "abuse.ch Feodo Tracker botnet C2 addresses and URLhaus recent malware URLs, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "alienvaultiprep",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "AlienVault IP reputation list of malicious and scanning hosts, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "blocklistde",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "blocklist.de addresses reported for attacks in the last 48 hours, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "botvrij",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "botvrij.eu malicious domain list, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "cinsscore",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "CINS Army list of addresses with poor reputation, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "cleantalk",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "CleanTalk's list of HTTP spammers from the last seven days, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "coinblocker",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "CoinBlocker cryptomining host list, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "cybercrimetracker",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "CyberCrime-Tracker.net botnet panel URLs, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "emergingthreats",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "Emerging Threats compromised-address list, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "greensnow",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "GreenSnow attacking-address list, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "openphish",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "OpenPhish phishing URL feed, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "phishtank",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "PhishTank verified online phishing URLs, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "stevenblack_hosts",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "Steven Black unified hosts blocklist (adware and malware hosts), downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "torexits",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "Tor exit relays from Onionoo with their relay records, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "voipbl",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "VoIPBL VoIP-abuse address blocks, downloaded and kept on the device",
+    },
+    ReachableModule {
+        name: "vxvault",
+        command: "ip ADDRESS | domain DOMAIN | netblock CIDR",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "VXVault malware download URLs, downloaded and kept on the device",
     },
     ReachableModule {
         name: "abuseipdb",
@@ -640,6 +929,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "Robtex BGP route, origin AS and passive DNS names and records",
     },
     ReachableModule {
+        name: "submd",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1590.001"],
+        description: "sub.md passive subdomain enumeration (CT + pDNS + X.509)",
+    },
+    ReachableModule {
         name: "hackertarget",
         command: "ip ADDRESS | domain DOMAIN",
         access: "keyless",
@@ -649,6 +947,24 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "HackerTarget hosts under a domain and domains on an address (optional key)",
     },
     ReachableModule {
+        name: "opencellid",
+        command: "cell MCC:MNC:LAC:CELLID",
+        access: "keyed",
+        network: true,
+        category: ModuleCategory::Infrastructure,
+        attack_techniques: &["T1590.005"],
+        description: "OpenCelliD cell tower position (keyed)",
+    },
+    ReachableModule {
+        name: "mozilla_location",
+        command: "network BSSID",
+        access: "keyed",
+        network: true,
+        category: ModuleCategory::Infrastructure,
+        attack_techniques: &["T1590.005"],
+        description: "Mozilla Location Service WiFi BSSID geolocation (keyed)",
+    },
+    ReachableModule {
         name: "stopforumspam",
         command: "email ADDR | ip ADDRESS",
         access: "keyless",
@@ -656,6 +972,33 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         category: ModuleCategory::Threat,
         attack_techniques: &["T1589.002"],
         description: "StopForumSpam spam-report count, last report and Tor-exit flag",
+    },
+    ReachableModule {
+        name: "isc",
+        command: "ip ADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "Internet Storm Center (DShield) reports, threat feeds and SSH and web honeypot activity of an address",
+    },
+    ReachableModule {
+        name: "maltiverse",
+        command: "domain DOMAIN | ip ADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "Maltiverse classification, every blacklist entry, threat flags, place and resolutions",
+    },
+    ReachableModule {
+        name: "phishstats",
+        command: "ip ADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "PhishStats phishing URLs reported on an address, each with every field",
     },
     ReachableModule {
         name: "xposed_or_not",
@@ -703,6 +1046,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "certificate-transparency lookup",
     },
     ReachableModule {
+        name: "certspotter",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1596.003"],
+        description: "Cert Spotter: every certificate logged for a domain and its subdomains, in full (optional free key)",
+    },
+    ReachableModule {
         name: "dns",
         command: "recon dns TARGET",
         access: "keyless",
@@ -713,12 +1065,30 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
     },
     ReachableModule {
         name: "dnsresolve",
-        command: "domain DOMAIN | ip ADDRESS",
+        command: "domain DOMAIN | ip ADDRESS | netblock CIDR",
         access: "keyless",
         network: true,
         category: ModuleCategory::DnsRecon,
         attack_techniques: &["T1590.002"],
-        description: "A and AAAA records of every subdomain a domain lookup finds, PTR records of an address",
+        description: "A and AAAA records of every subdomain a domain lookup finds, PTR records of an address and of every address in a block of at most 256",
+    },
+    ReachableModule {
+        name: "rdap",
+        command: "domain DOMAIN | ip ADDRESS | netblock CIDR | asn AS-NUMBER",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1596.002"],
+        description: "RDAP registration of a domain, an address's network, a block or an AS number, from the registry the IANA bootstrap names",
+    },
+    ReachableModule {
+        name: "mnemonic",
+        command: "domain DOMAIN | ip ADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1596.001"],
+        description: "Mnemonic passive DNS: every record seen for a domain or an address, with when, how often and its TTL; names, addresses and co-hosted sites",
     },
     ReachableModule {
         name: "stolen_tax",
@@ -747,11 +1117,115 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         attack_techniques: &["T1589.001", "T1589.002"],
         description: "explicit DeHashed exact-match search with a declared purpose",
     },
+    ReachableModule {
+        name: "oathnet",
+        command: "exposure EMAIL|USERNAME | email ADDR | username HANDLE",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Breach,
+        attack_techniques: &["T1589.001", "T1589.002"],
+        description: "OathNet breach and stealer-log search of an email address or username: incidents, exposed fields and pivots",
+    },
+    ReachableModule {
+        name: "wigle",
+        command: "network BSSID|LAT,LON|SSID",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Geo,
+        attack_techniques: &["T1590"],
+        description: "WiGLE WiFi and Bluetooth sightings of a BSSID, an SSID or around a coordinate",
+    },
+    ReachableModule {
+        name: "oui",
+        command: "network BSSID",
+        access: "offline",
+        network: false,
+        category: ModuleCategory::Sensor,
+        attack_techniques: &[],
+        description: "the IEEE vendor assignment of a BSSID's OUI",
+    },
 ];
 
 #[must_use]
 pub const fn reachable_modules() -> &'static [ReachableModule] {
     REACHABLE_MODULES
+}
+
+/// The Spiderfoot module names a Huntsman module does the work of, beside `sfp_<module>`.
+/// **Pure.**
+#[must_use]
+pub fn spiderfoot_names(module: &str) -> Vec<String> {
+    let extra: &[&str] = match module {
+        "crtsh" => &["sfp_crt"],
+        "dns" => &["sfp_dnsresolve", "sfp_dnsraw"],
+        "internetdb" => &["sfp_shodan"],
+        "otx" => &["sfp_alienvault"],
+        "hibp" | "hibp_account" => &["sfp_haveibeenpwned"],
+        "ipqs" => &["sfp_ipqualityscore"],
+        "ripestat" => &["sfp_ripe"],
+        "urlhaus" | "threatfox" => &["sfp_abusech"],
+        "github_user" => &["sfp_github"],
+        "openpgp_keys" => &["sfp_pgp"],
+        "whoxy" | "rdap" => &["sfp_whois"],
+        "kickbox" => &["sfp_debounce"],
+        "greynoise" => &["sfp_greynoise_community"],
+        "hostdomain" => &["sfp_dnsresolve"],
+        _ => &[],
+    };
+    let mut names = vec![module.to_owned(), format!("sfp_{module}")];
+    names.extend(extra.iter().map(|name| (*name).to_owned()));
+    names
+}
+
+/// The module an outcome or evidence label belongs to, by the name a scan chooses it by: HIBP's
+/// account search is `hibp`, `WiGLE`'s Bluetooth search `wigle`, and a module's part
+/// (`asic_persons.banned`) the module. **Pure.**
+#[must_use]
+pub fn module_of(label: &str) -> &str {
+    match label {
+        "hibp_account" => "hibp",
+        "wigle_bluetooth" => "wigle",
+        _ => label.split_once('.').map_or(label, |(module, _)| module),
+    }
+}
+
+/// The selection a scan's chosen `names` make. Each name is a module [`reachable_modules`] lists,
+/// or a Spiderfoot module (`sfp_spamhaus`, `sfp_dnsresolve`) standing for every module that does
+/// its work, in any case. No name chooses every module.
+///
+/// # Errors
+/// Every name that is neither, in the order given.
+pub fn selection(names: &[String]) -> Result<Selection, String> {
+    let names: Vec<String> = names
+        .iter()
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect();
+    if names.is_empty() {
+        return Ok(Selection::all());
+    }
+    let mut chosen = Vec::new();
+    let mut unknown = Vec::new();
+    for name in &names {
+        let modules: Vec<&str> = REACHABLE_MODULES
+            .iter()
+            .map(|module| module.name)
+            .filter(|module| module == name || spiderfoot_names(module).iter().any(|sf| sf == name))
+            .collect();
+        if modules.is_empty() {
+            unknown.push(name.as_str());
+        }
+        chosen.extend(modules);
+    }
+    if unknown.is_empty() {
+        Ok(Selection::only(chosen))
+    } else {
+        Err(format!(
+            "no module is named {}; /api/modules and the New Scan page list them, and a \
+             Spiderfoot name (sfp_...) stands for the modules that do its work",
+            unknown.join(", ")
+        ))
+    }
 }
 
 #[cfg(test)]

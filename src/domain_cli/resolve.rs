@@ -10,7 +10,6 @@
 //! such record" is tagged [`tags::UNRESOLVED`], Spiderfoot's `INTERNET_NAME_UNRESOLVED`.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::canonical::{canonical_domain, canonical_ip};
 pub use crate::dns::RESOLVE_SOURCE;
@@ -26,11 +25,6 @@ use super::{DOMAIN_CONFIDENCE, RECORD_CONFIDENCE};
 /// The most hosts one lookup resolves, two queries each. A host past it is still an entity of
 /// the lookup; the outcome row counts it as not resolved.
 pub const MAX_RESOLVED_HOSTS: usize = 512;
-/// Hosts resolved at once.
-const WORKERS: usize = 8;
-/// Hosts that may fail before the first answer, before the leg stops asking: the resolvers are
-/// unreachable, so every other host would fail the same way.
-const FAILURES_BEFORE_ABORT: usize = 4;
 /// A name that does not resolve: weaker than one that does, never stronger than its finder's.
 const UNRESOLVED_CONFIDENCE: f64 = 0.50;
 
@@ -202,52 +196,16 @@ fn resolve_host<T: Transport + ?Sized>(transport: &T, host: &str) -> HostAnswer 
     }
 }
 
-/// `answer` for each host, [`WORKERS`] at a time, in `hosts` order. Once
-/// [`FAILURES_BEFORE_ABORT`] hosts have failed before any answered, no further host is asked and
-/// those hosts' answers are `None`.
+/// `answer` for each host, several at a time, in `hosts` order (see [`dns::ask_all`]).
 fn resolve_all<F>(hosts: &[String], answer: F) -> Vec<Option<HostAnswer>>
 where
     F: Fn(&str) -> HostAnswer + Sync,
 {
-    let next = AtomicUsize::new(0);
-    let failed = AtomicUsize::new(0);
-    let answered = AtomicUsize::new(0);
-    let work = || {
-        let mut mine = Vec::new();
-        loop {
-            if answered.load(Ordering::SeqCst) == 0
-                && failed.load(Ordering::SeqCst) >= FAILURES_BEFORE_ABORT
-            {
-                break;
-            }
-            let index = next.fetch_add(1, Ordering::SeqCst);
-            let Some(host) = hosts.get(index) else {
-                break;
-            };
-            let result = answer(host);
-            let counter = if matches!(result, HostAnswer::Failed(..)) {
-                &failed
-            } else {
-                &answered
-            };
-            counter.fetch_add(1, Ordering::SeqCst);
-            mine.push((index, result));
-        }
-        mine
-    };
-    let mut out = vec![None; hosts.len()];
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..WORKERS.min(hosts.len()))
-            .map(|_| scope.spawn(work))
-            .collect();
-        for worker in workers {
-            // A worker that panicked leaves its hosts unanswered, counted as not resolved.
-            for (index, result) in worker.join().unwrap_or_default() {
-                out[index] = Some(result);
-            }
-        }
-    });
-    out
+    dns::ask_all(
+        hosts,
+        |host| answer(host),
+        |result| matches!(result, HostAnswer::Failed(..)),
+    )
 }
 
 /// How the hosts came out.

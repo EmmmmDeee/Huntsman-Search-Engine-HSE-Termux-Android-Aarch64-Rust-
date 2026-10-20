@@ -44,6 +44,54 @@ impl Transport for ScriptedTransport {
     }
 }
 
+/// Answers by URL prefix, the first matching route winning, and records every URL asked; a URL
+/// no route matches gets no response.
+pub struct RoutedTransport {
+    pub routes: Vec<(&'static str, u16, &'static str)>,
+    pub seen: std::sync::Mutex<Vec<String>>,
+}
+
+impl RoutedTransport {
+    #[must_use]
+    pub fn new(routes: &[(&'static str, u16, &'static str)]) -> Self {
+        Self {
+            routes: routes.to_vec(),
+            seen: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Every URL asked, in order.
+    #[must_use]
+    pub fn urls(&self) -> Vec<String> {
+        self.seen
+            .lock()
+            .map(|seen| seen.clone())
+            .unwrap_or_default()
+    }
+}
+
+impl Transport for RoutedTransport {
+    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.push(request.url.clone());
+        }
+        self.routes
+            .iter()
+            .find(|(prefix, _, _)| request.url.starts_with(prefix))
+            .map(|(_, status, body)| Response {
+                status: *status,
+                headers: Vec::new(),
+                body: body.as_bytes().to_vec(),
+                truncated: false,
+            })
+            .ok_or_else(|| TransportFailure {
+                kind: SourceOutcomeKind::ConnectFailure,
+                detail: "no route".into(),
+                blocked: false,
+            })
+    }
+}
+
 /// A 200 response with an HTML body.
 #[must_use]
 pub fn html_ok(body: &str) -> Response {
