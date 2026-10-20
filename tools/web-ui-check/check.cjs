@@ -208,6 +208,24 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check(`${scheme}: browser bar matches the app bar`, first.bar === (scheme === 'light' ? '#ffffff' : '#11151b'), first);
       await audit(page, `${scheme} scans`);
 
+      // The Radar view never reads hardware merely because it opened.
+      // CI has no Termux:API companion; an explicit request must fail with a
+      // useful error, never manufacture a zero-observation success.
+      let radarCalls = 0;
+      const countRadar = request => { if (new URL(request.url()).pathname === '/api/radar/wifi') radarCalls++; };
+      page.on('request', countRadar);
+      await page.goto(base + '/#/radar', { waitUntil: 'networkidle' });
+      check(`${scheme}: Radar is a reachable mobile view`, await page.isVisible('#view-radar'), 'missing');
+      check(`${scheme}: Radar is opt-in, no automatic sensor query`, radarCalls === 0, radarCalls);
+      await audit(page, `${scheme} radar`);
+      await page.click('#rread');
+      await page.waitForSelector('#rerror:not([hidden])', { timeout: 20000 }).catch(() => {});
+      check(`${scheme}: Radar requests sensor data once after explicit action`, radarCalls === 1, radarCalls);
+      check(`${scheme}: missing phone plugin is visible, not a fake clean scan`,
+        await page.isVisible('#rerror') && await page.isHidden('#rresult') && await page.isDisabled('#rdownload'),
+        await page.textContent('#rerror'));
+      page.off('request', countRadar);
+
       // New Scan: Spiderfoot's three ways of choosing what runs, each listing what the server has.
       await page.goto(base + '/#/newscan', { waitUntil: 'networkidle' });
       await audit(page, `${scheme} new scan`);
