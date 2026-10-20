@@ -30,6 +30,7 @@ pub mod bluesky_user;
 pub mod breach_hybrid;
 pub mod canonical;
 pub mod certspotter;
+pub mod cell_radar;
 pub mod circuit;
 pub mod ckan;
 pub mod claim_coverage;
