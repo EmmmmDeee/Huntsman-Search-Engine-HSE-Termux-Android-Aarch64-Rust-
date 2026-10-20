@@ -227,6 +227,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <a class="navlink" data-view="newscan" href="#/newscan"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg><span>New Scan</span></a>
 <a class="navlink" data-view="scans" href="#/scans"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg><span>Scans</span></a>
 <a class="navlink" data-view="analyze" href="#/analyze"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 6h9M6.2 8.2l4.6 7.6M17.8 8.2l-4.6 7.6"/></svg><span>Analyze</span></a>
+<a class="navlink" data-view="radar" href="#/radar"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="18" r="1.5"/><path d="M5 10a10 10 0 0 1 14 0M8 13a6 6 0 0 1 8 0M10 16a3 3 0 0 1 4 0"/></svg><span>Radar</span></a>
 <a class="navlink" data-view="settings" href="#/settings"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg><span>Settings</span></a>
 </nav>
 <main>
@@ -281,6 +282,18 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <p class="alert" id="nerror" role="alert" hidden></p>
 <div><button class="btn btn-primary" id="runscan" type="submit">Run Scan Now</button></div>
 </form>
+</section>
+<section id="view-radar" hidden>
+<h1>Wi-Fi Radar</h1>
+<p class="help">Reads Android's last cached Wi-Fi scan through Termux:API; it does not trigger an active scan. No root or provider key required. Observations may be old, and signal strength does not establish a device's location.</p>
+<div class="toolbar"><button class="btn btn-primary" id="rread" type="button">Read OS scan cache</button><button class="btn" id="rdownload" type="button" disabled>Export JSON</button></div>
+<p class="alert" id="rerror" role="alert" hidden></p>
+<p class="note" id="rstatus" role="status">No observations requested. Termux:API and Android location permission are required on the phone.</p>
+<div class="panel" id="rresult" hidden>
+<div class="panel-heading">OS-cached observations <span class="badge" id="rrows-n"></span></div>
+<p class="note" id="rsummary"></p>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>Age (s)</th><th>Freshness</th></tr></thead><tbody id="rrows"></tbody></table></div>
+</div>
 </section>
 <section id="view-scan" hidden>
 <p class="crumbs"><a class="link" href="#/scans">Scans</a><span aria-hidden="true">›</span><span id="sccrumb"></span></p>
@@ -507,7 +520,7 @@ const riskTone=r=>(RISK.find(x=>x[0]===String(r||'').toLowerCase())||[0,0,''])[2
 function risks(c){const w=el('span','risks');for(const [k,name,t] of RISK){const b=el('span','label '+t,(c&&c[k])||0);b.append(el('span','sr',' '+name));w.append(b)}return w}
 // One view at a time. A view's loads carry the generation they started in, so an answer that
 // arrives after the operator moved on is dropped, and its follow-up poll never starts.
-const VIEWS=['scans','newscan','scan','compare','analyze','settings','about'];
+const VIEWS=['scans','newscan','scan','compare','analyze','radar','settings','about'];
 let view='',gen=0,timer=0,resume=null,detailed=false;
 function later(fn,ms=5000){clearTimeout(timer);const g=gen;resume=fn;timer=setTimeout(()=>{if(g===gen&&!document.hidden)fn()},ms)}
 function route(){
@@ -570,6 +583,34 @@ async function details(){
     }catch(e){$(id).textContent=String(e);detailed=false}
   }));
 }
+// Radio acquisition is explicit; visiting the Radar page never probes the phone.
+let radarLast=null;
+$('rread').onclick=async()=>{
+  const button=$('rread');button.disabled=true;$('rerror').hidden=true;
+  $('rstatus').textContent='Reading Android OS scan cache…';
+  try{
+    const scan=await api('/api/radar/wifi');
+    radarLast=scan;$('rdownload').disabled=false;$('rresult').hidden=false;
+    const observations=Array.isArray(scan.observations)?scan.observations:[];
+    fill('rrows',observations,o=>[
+      o.sighting?.network_id||'',
+      o.sighting?.name||'(hidden)',
+      o.sighting?.signal_dbm??'',
+      o.band||'unknown',
+      o.age_secs==null?'unknown':Math.round(o.age_secs),
+      o.freshness||'unknown'
+    ]);
+    $('rsummary').textContent='Source: '+scan.source+' · status: '+scan.status+
+      ' · records: '+scan.observed+' · rejected: '+scan.rejected;
+    $('rstatus').textContent=scan.status==='inconclusive'
+      ?'Android returned no usable cached observations. Nearby networks may still exist.'
+      :scan.status==='stale_only'
+      ?'All returned observations are stale (older than five minutes); these are not current proximity evidence.'
+      :'OS-cached results only, not an active scan. Freshness is unknown where no age could be calculated.';
+  }catch(e){$('rstatus').textContent='No new radar results available.';fail('rerror',e.message)}
+  finally{button.disabled=false}
+};
+$('rdownload').onclick=()=>{if(radarLast)save(radarLast,'huntsman-wifi-radar')};
 // Scans: Spiderfoot's list, with a selection the toolbar acts on.
 let scans=[];const picked=new Set();
 const FILTERS={running:s=>live(s.status),finished:s=>s.status==='FINISHED',failed:s=>/ABORT|FAIL/.test(s.status)};
