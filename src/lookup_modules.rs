@@ -144,7 +144,7 @@ fn zones(asked: impl Fn(Takes) -> bool) -> impl Iterator<Item = &'static str> {
 fn indicators(kind: IndicatorKind) -> impl Iterator<Item = &'static str> {
     indicator_legs::SOURCES
         .iter()
-        .filter(move |source| source.kinds.contains(&kind))
+        .filter(move |source| source.kinds.iter().any(|k| k.within(kind)))
         .map(|source| source.api.source)
 }
 

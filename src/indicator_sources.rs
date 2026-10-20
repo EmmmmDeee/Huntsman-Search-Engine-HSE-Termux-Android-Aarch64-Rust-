@@ -50,6 +50,14 @@ impl IndicatorKind {
             (kind, indicator) => kind == indicator.kind(),
         }
     }
+
+    /// Whether a source that answers for this kind answers for some indicators of `kind`, as a
+    /// lookup's module list reads it: [`IndicatorKind::Ipv4`] is part of [`IndicatorKind::Ip`].
+    /// **Pure.**
+    #[must_use]
+    pub fn within(self, kind: Self) -> bool {
+        self == kind || (self == Self::Ipv4 && kind == Self::Ip)
+    }
 }
 
 impl Indicator<'_> {
