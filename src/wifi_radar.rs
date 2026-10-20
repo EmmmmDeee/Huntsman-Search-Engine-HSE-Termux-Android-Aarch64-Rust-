@@ -17,7 +17,7 @@ pub const MAX_SCAN_BYTES: u64 = 1_048_576;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WifiObservation {
     pub sighting: RfSighting,
-    /// Android's raw ScanResult timestamp: microseconds since device boot.
+    /// Android's raw `ScanResult` timestamp: microseconds since device boot.
     pub os_timestamp_us: Option<u64>,
     /// Age inferred from /proc/uptime, or None when no reliable clock exists.
     pub age_secs: Option<f64>,
@@ -233,7 +233,7 @@ mod tests {
         for raw in [
             r#"{"API_ERROR":"Location needs to be enabled"}"#,
             r#"{"arbitrary":"object"}"#,
-            r#"null"#,
+            r"null",
             r#""not an array""#,
         ] {
             assert!(parse_scan(raw.as_bytes(), None).is_err(), "{raw}");
