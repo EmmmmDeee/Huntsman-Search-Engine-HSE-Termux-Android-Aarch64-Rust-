@@ -8,6 +8,7 @@ use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::threat_feeds::Feeds;
 
 /// Recorded without a key for `71.6.135.131` on 2026-10-14.
 const ANSWER: &str = r#"{"ip":"71.6.135.131","noise":true,"riot":false,"classification":"benign","name":"Shodan.io","link":"https://viz.greynoise.io/ip/71.6.135.131","last_seen":"2026-10-14","message":"Success"}"#;
@@ -37,6 +38,7 @@ fn the_link_message_and_whole_answer_reach_the_address() {
     let entities = match run(
         &OnlyGreyNoise,
         &Keys::default(),
+        &Feeds::none(),
         "71.6.135.131",
         1_760_000_000,
     ) {
