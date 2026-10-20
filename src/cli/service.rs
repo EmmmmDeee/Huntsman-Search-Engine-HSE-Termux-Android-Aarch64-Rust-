@@ -224,6 +224,12 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         Ok(server) => {
             let server = server
                 .with_lookup(std::sync::Arc::new(web_lookup))
+                .with_radar(std::sync::Arc::new(|| {
+                    super::radar::capture_wifi().map_err(|message| LookupError {
+                        status: 503,
+                        message,
+                    })
+                }))
                 .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
                     web_analyze(seeds, analyze_history.as_deref())
                 }));
