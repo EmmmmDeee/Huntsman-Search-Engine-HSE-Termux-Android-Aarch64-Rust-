@@ -24,7 +24,7 @@ use super::types::{Entry, SearchResponse};
 use crate::fetch::{FetchOptions, fetch};
 use crate::hibp::rate_limit::{DEFAULT_REQUESTS_PER_MINUTE, RateLimiter};
 use crate::http::{Request, Response, Transport};
-use crate::keys::Secret;
+use crate::keys::{Keys, Secret};
 use crate::sha256::{hex32, sha256};
 
 /// The only origin the key is ever sent to.
@@ -44,7 +44,7 @@ pub const MAX_PAGE: u32 = 1_000;
 pub enum DehashedError {
     #[error("dehashed: invalid query: {0}")]
     Query(#[from] super::query::QueryError),
-    #[error("dehashed: no API key (set {API_KEY_ENV} or ~/.config/dehashed/api_key)")]
+    #[error("dehashed: no API key (set {API_KEY_ENV} in ~/.huntsman.env or the environment, or ~/.config/dehashed/api_key)")]
     MissingKey,
     #[error(
         "dehashed: the key file was refused: it must be a regular file (not a symlink) owned by you with mode 0600"
@@ -269,6 +269,19 @@ fn decode(response: &Response) -> Result<SearchResponse, DehashedError> {
         500..=599 => Err(DehashedError::Server(response.status)),
         other => Err(DehashedError::Unexpected(other)),
     }
+}
+
+/// Resolve a provider credential from the shared lookup keys first, then from the
+/// legacy private DeHashed key file. The caller supplies `Keys::for_lookup` so
+/// `~/.huntsman.env` and individual environment slots use the same precedence
+/// as every other provider. No secret is printed or exposed in diagnostics.
+///
+/// # Errors
+/// The same errors as [`key_from_environment`] when the shared keys contain
+/// no DeHashed credential.
+pub fn key_from_sources(keys: &Keys) -> Result<Secret, DehashedError> {
+    keys.get(API_KEY_ENV)
+        .map_or_else(key_from_environment, Ok)
 }
 
 /// Load the API key from [`API_KEY_ENV`], then from `~/.config/dehashed/api_key`.
