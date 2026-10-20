@@ -9,10 +9,7 @@ const SLOT: &str = "HUNTSMAN_TEST_API_KEY";
 const SECRET: &str = "TEST_ONLY_VALUE_SAMPLE_4e2b9c";
 
 fn home(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "hse-key-manage-{tag}-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("hse-key-manage-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -58,10 +55,18 @@ fn piped_key_round_trips_in_private_file_without_leaking_to_output() {
     let saved = huntsman_recon::keys::Keys::load(&path).unwrap();
     assert_eq!(saved.get(SLOT).unwrap().expose(), SECRET);
 
-    let removed = command(&dir).args(["keys", "remove", SLOT]).output().unwrap();
+    let removed = command(&dir)
+        .args(["keys", "remove", SLOT])
+        .output()
+        .unwrap();
     assert!(removed.status.success(), "{:?}", removed.stderr);
     assert!(!std::fs::read_to_string(&path).unwrap().contains(SECRET));
-    assert!(huntsman_recon::keys::Keys::load(&path).unwrap().get(SLOT).is_none());
+    assert!(
+        huntsman_recon::keys::Keys::load(&path)
+            .unwrap()
+            .get(SLOT)
+            .is_none()
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }
 
