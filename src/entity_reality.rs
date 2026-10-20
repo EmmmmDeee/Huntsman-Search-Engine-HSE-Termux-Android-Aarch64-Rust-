@@ -123,6 +123,62 @@ fn dimension(name: &str) -> Dimension {
     }
 }
 
+type AttributeIndex = BTreeMap<(String, String), (BTreeSet<usize>, BTreeSet<String>)>;
+
+fn summarise_assertions(
+    grouped: AttributeIndex,
+    traces: &[EvidenceTrace],
+) -> (Vec<AttributedAssertion>, Vec<CompetingValues>) {
+    let mut by_attribute = BTreeMap::<String, BTreeSet<String>>::new();
+    let assertions = grouped
+        .into_iter()
+        .map(|((attribute, value), (indices, families))| {
+            by_attribute
+                .entry(attribute.clone())
+                .or_default()
+                .insert(value.clone());
+            let status = if indices
+                .iter()
+                .all(|index| traces[*index].role == EvidenceRole::OperatorSeed)
+            {
+                "operator_seed_only"
+            } else if indices
+                .iter()
+                .all(|index| traces[*index].role == EvidenceRole::Inferred)
+            {
+                "inferred_only"
+            } else if indices
+                .iter()
+                .any(|index| traces[*index].role == EvidenceRole::SourceAttributed)
+            {
+                "source_attribution_not_independently_verified"
+            } else {
+                "mixed_seed_and_inference"
+            };
+            AttributedAssertion {
+                dimension: dimension(&attribute),
+                attribute,
+                value,
+                evidence_indices: indices.into_iter().collect(),
+                reported_source_families: families.into_iter().collect(),
+                status,
+            }
+        })
+        .collect();
+    let competing_values = by_attribute
+        .into_iter()
+        .filter_map(|(attribute, values)| {
+            (values.len() > 1).then(|| CompetingValues {
+                attribute,
+                values: values.into_iter().collect(),
+                interpretation: "competing_recorded_values_not_proven_contradiction",
+            })
+        })
+        .collect();
+
+    (assertions, competing_values)
+}
+
 /// Build a bounded, read-only index of source-attributed claims for an entity.
 ///
 /// No source family, discovery score, provider verification flag, or matching
@@ -131,7 +187,7 @@ fn dimension(name: &str) -> Dimension {
 pub fn assess(entity: &Entity) -> EntityReality {
     let sensitive_entity = matches!(entity.kind, EntityKind::Credential | EntityKind::ApiKey);
     let mut traces = Vec::new();
-    let mut grouped = BTreeMap::<(String, String), (BTreeSet<usize>, BTreeSet<String>)>::new();
+    let mut grouped = AttributeIndex::new();
     let mut omitted_assertions = 0usize;
 
     for (index, evidence) in entity.evidence.iter().take(MAX_EVIDENCE).enumerate() {
@@ -186,52 +242,7 @@ pub fn assess(entity: &Entity) -> EntityReality {
         }
     }
 
-    let mut by_attribute = BTreeMap::<String, BTreeSet<String>>::new();
-    let assertions = grouped
-        .into_iter()
-        .map(|((attribute, value), (indices, families))| {
-            by_attribute
-                .entry(attribute.clone())
-                .or_default()
-                .insert(value.clone());
-            let status = if indices
-                .iter()
-                .all(|index| traces[*index].role == EvidenceRole::OperatorSeed)
-            {
-                "operator_seed_only"
-            } else if indices
-                .iter()
-                .all(|index| traces[*index].role == EvidenceRole::Inferred)
-            {
-                "inferred_only"
-            } else if indices
-                .iter()
-                .any(|index| traces[*index].role == EvidenceRole::SourceAttributed)
-            {
-                "source_attribution_not_independently_verified"
-            } else {
-                "mixed_seed_and_inference"
-            };
-            AttributedAssertion {
-                dimension: dimension(&attribute),
-                attribute,
-                value,
-                evidence_indices: indices.into_iter().collect(),
-                reported_source_families: families.into_iter().collect(),
-                status,
-            }
-        })
-        .collect();
-    let competing_values = by_attribute
-        .into_iter()
-        .filter_map(|(attribute, values)| {
-            (values.len() > 1).then(|| CompetingValues {
-                attribute,
-                values: values.into_iter().collect(),
-                interpretation: "competing_recorded_values_not_proven_contradiction",
-            })
-        })
-        .collect();
+    let (assertions, competing_values) = summarise_assertions(grouped, &traces);
 
     EntityReality {
         uid: entity.uid.clone(),
@@ -349,7 +360,7 @@ mod tests {
     #[test]
     fn evidence_and_assertion_budgets_are_observable() {
         let mut entity = Entity::new(EntityKind::Organisation, "Example", 0.7, "scan");
-        for index in 0..(MAX_EVIDENCE + 1) {
+        for index in 0..=MAX_EVIDENCE {
             entity.add_evidence(
                 Evidence::new(EvidenceProvenance::new("source"), "record")
                     .with_attr("alias", format!("alias-{index}")),
