@@ -2,6 +2,8 @@
 //! This is *not* an active scan: Android owns the scan schedule. A remembered
 //! result cannot establish a device's present location or proximity.
 
+use std::fmt::Write as _;
+
 use serde::Serialize;
 
 use crate::error::Error;
@@ -44,11 +46,26 @@ fn optional_string(value: Option<&serde_json::Value>) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Age Android boot-relative scan timestamps without precision-losing integer casts.
+/// A timestamp beyond 136 years of uptime has no meaningful handset age.
+fn age_from_boot(uptime_secs: Option<f64>, timestamp_us: Option<u64>) -> Option<f64> {
+    let uptime = uptime_secs?;
+    let timestamp = timestamp_us?;
+    if !uptime.is_finite() || uptime < 0.0 {
+        return None;
+    }
+    let seconds = u32::try_from(timestamp / 1_000_000).ok()?;
+    let micros = u32::try_from(timestamp % 1_000_000).ok()?;
+    let observed = f64::from(seconds) + f64::from(micros) / 1_000_000.0;
+    let age = uptime - observed;
+    (age >= 0.0 && age.is_finite()).then_some(age)
+}
+
 /// Parse Android's actual Termux:API schema. Absence of results is
-/// inconclusive: getScanResults() can return an empty cached scan.
-/// Refuse API_ERROR and unexpected JSON rather than promoting them to zero.
+/// inconclusive: `getScanResults()` can return an empty cached scan.
+/// Refuse `API_ERROR` and unexpected JSON rather than promoting them to zero.
 pub fn parse_scan(bytes: &[u8], uptime_secs: Option<f64>) -> Result<WifiScan, Error> {
-    if bytes.len() > MAX_SCAN_BYTES as usize {
+    if usize::try_from(MAX_SCAN_BYTES).is_ok_and(|limit| bytes.len() > limit) {
         return Err(Error::Invalid("Wi-Fi scan output exceeds 1 MiB".into()));
     }
     let value: serde_json::Value = serde_json::from_slice(bytes)
@@ -86,13 +103,7 @@ pub fn parse_scan(bytes: &[u8], uptime_secs: Option<f64>) -> Result<WifiScan, Er
             .get("timestamp")
             .and_then(serde_json::Value::as_u64)
             .filter(|ts| *ts > 0);
-        let age_secs = match (uptime_secs, timestamp) {
-            (Some(uptime), Some(ts)) if uptime.is_finite() && uptime >= 0.0 => {
-                let age = uptime - (ts as f64 / 1_000_000.0);
-                (age >= 0.0 && age.is_finite()).then_some(age)
-            }
-            _ => None,
-        };
+        let age_secs = age_from_boot(uptime_secs, timestamp);
         let freshness = match age_secs {
             Some(age) if age > STALE_AFTER_SECS => "stale",
             Some(_) => "os_cached",
@@ -104,7 +115,7 @@ pub fn parse_scan(bytes: &[u8], uptime_secs: Option<f64>) -> Result<WifiScan, Er
             .filter(|freq| (2300..=7200).contains(freq));
         let mut sighting = RfSighting::new(bssid, RadioKind::Wifi, RfSource::WifiRadar);
         sighting.name = optional_string(row.get("ssid"));
-        sighting.signal_dbm = Some(rssi as f64);
+        sighting.signal_dbm = i32::try_from(rssi).ok().map(f64::from);
         sighting.encryption = optional_string(row.get("capabilities"));
         // Android's microseconds-since-boot clock is not a UTC timestamp.
         // Never invent an observed_epoch or device coordinates.
@@ -148,15 +159,16 @@ pub fn render(scan: &WifiScan) -> String {
         let age = row
             .age_secs
             .map_or_else(|| "unknown".to_owned(), |n| format!("{n:.0}"));
-        text.push_str(&format!(
-            "wifi\tbssid={}\tssid={}\trssi_dbm={:.0}\tband={}\tage_secs={}\tfreshness={}\n",
+        let _ = writeln!(
+            text,
+            "wifi\tbssid={}\tssid={}\trssi_dbm={:.0}\tband={}\tage_secs={}\tfreshness={}",
             escape_controls(&row.sighting.network_id),
             escape_controls(row.sighting.name.as_deref().unwrap_or("")),
             row.sighting.signal_dbm.unwrap_or_default(),
             row.band.unwrap_or("unknown"),
             age,
             row.freshness
-        ));
+        );
     }
     text
 }
