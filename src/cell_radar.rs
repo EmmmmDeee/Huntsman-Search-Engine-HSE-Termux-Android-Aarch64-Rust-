@@ -18,8 +18,9 @@ pub const MAX_CELL_SCAN_BYTES: u64 = 1_048_576;
 pub struct CellObservation {
     pub sighting: RfSighting,
     pub technology: &'static str,
-    pub mcc: String,
-    pub mnc: String,
+    /// Mobile country and network codes; unavailable for CDMA identities.
+    pub mcc: Option<String>,
+    pub mnc: Option<String>,
     pub area_code: u64,
     pub cell_id: u64,
     pub registered: Option<bool>,
@@ -58,11 +59,19 @@ fn bounded_id(row: &Value, name: &str, max: u64) -> Option<u64> {
     (id <= max).then_some(id)
 }
 
-/// Parse Termux:API's current GSM/WCDMA/LTE/NR schema into typed RF evidence.
+fn signal_dbm(row: &Value) -> Option<f64> {
+    row.get("dbm")
+        .and_then(Value::as_i64)
+        .filter(|v| (-160..=-1).contains(v))
+        .and_then(|v| i32::try_from(v).ok())
+        .map(f64::from)
+}
+
+/// Parse Termux:API's GSM/WCDMA/LTE/NR/CDMA schema into typed RF evidence.
 ///
-/// CDMA records and malformed/unknown technology records are counted as
-/// rejected, not misrepresented as GSM cells; CDMA needs different identity
-/// fields and will require a separately tested adapter.
+/// CDMA uses system, network, and base-station identifiers, not mobile
+/// country/network codes. Any CDMA tower coordinates supplied by Android
+/// remain unused and are never treated as the handset's position.
 ///
 /// Android may redact the cell identity and return an empty array on modern
 /// handsets. An empty or rejected-only result is inconclusive, not proof of
@@ -89,6 +98,36 @@ pub fn parse_cells(bytes: &[u8]) -> Result<CellScan, Error> {
             rejected += 1;
             continue;
         };
+        if technology == "cdma" {
+            let identity = match (
+                bounded_id(row, "system", 65_535),
+                bounded_id(row, "network", 65_535),
+                bounded_id(row, "basestation", 65_535),
+            ) {
+                (Some(system), Some(network), Some(base)) => {
+                    Some((format!("cdma:{system}-{network}-{base}"), network, base))
+                }
+                _ => None,
+            };
+            let Some((id, area_code, cell_id)) = identity else {
+                rejected += 1;
+                continue;
+            };
+            let mut sighting = RfSighting::new(&id, RadioKind::Cellular, RfSource::CellRadar);
+            sighting.raw_type = Some("cdma".to_owned());
+            sighting.signal_dbm = signal_dbm(row);
+            observations.push(CellObservation {
+                sighting,
+                technology: "cdma",
+                mcc: None,
+                mnc: None,
+                area_code,
+                cell_id,
+                registered: row.get("registered").and_then(Value::as_bool),
+                freshness: "unknown",
+            });
+            continue;
+        }
         let (type_name, area_field, cell_field, area_max, cell_max) = match technology {
             "gsm" => ("gsm", "lac", "cid", 65_535, 65_535),
             "wcdma" => ("wcdma", "lac", "cid", 65_535, 268_435_455),
@@ -120,17 +159,12 @@ pub fn parse_cells(bytes: &[u8]) -> Result<CellScan, Error> {
         let id = format!("{type_name}:{mcc}-{mnc}-{area_code}-{cell_id}");
         let mut sighting = RfSighting::new(&id, RadioKind::Cellular, RfSource::CellRadar);
         sighting.raw_type = Some(type_name.to_owned());
-        sighting.signal_dbm = row
-            .get("dbm")
-            .and_then(Value::as_i64)
-            .filter(|v| (-160..=-1).contains(v))
-            .and_then(|v| i32::try_from(v).ok())
-            .map(f64::from);
+        sighting.signal_dbm = signal_dbm(row);
         observations.push(CellObservation {
             sighting,
             technology: type_name,
-            mcc,
-            mnc,
+            mcc: Some(mcc),
+            mnc: Some(mnc),
             area_code,
             cell_id,
             registered: row.get("registered").and_then(Value::as_bool),
