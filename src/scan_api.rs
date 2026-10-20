@@ -410,6 +410,16 @@ impl ScanApi {
         let limits = PipelineLimits::default();
         let count = results.entities.len().min(limits.max_entities);
         let flagged_elements = results.elements.iter().filter(|element| element.fp).count();
+        // SpiderFoot flags describe individual evidence elements and all their descendants.
+        // The merged entities below no longer expose a lossless element-to-evidence index.
+        // Analyzing them despite any flags would re-introduce the discredited claims into
+        // graph links, pivots and correlations. Refuse instead of inventing a filter.
+        if flagged_elements != 0 {
+            return error(
+                409,
+                "scan contains false-positive elements; saved-entity analysis cannot safely exclude their evidence",
+            );
+        }
         let mut snapshot = snapshot_from_entities(&results.entities[..count], id, &limits);
         snapshot.truncated |= count < results.entities.len();
         let report = analyze_snapshot(&snapshot);
@@ -427,7 +437,7 @@ impl ScanApi {
                     "original_evidence": "retained_in_saved_results",
                     "provider_coverage": "not_reconstructed",
                     "evidence_ancestry": "not_reconstructed",
-                    "false_positive_annotations": "not_applied_to_entity_analysis",
+                    "false_positive_annotations": "none_present",
                     "scan_complete": record.status == ScanStatus::Finished,
                     "truncated": snapshot.truncated,
                 },
@@ -1450,7 +1460,7 @@ mod tests {
         assert_eq!(value["limitations"]["scan_complete"], true);
         assert_eq!(
             value["limitations"]["false_positive_annotations"],
-            "not_applied_to_entity_analysis"
+            "none_present"
         );
         assert_eq!(value["counts"]["flagged_elements"], 0);
         assert_eq!(
@@ -1483,6 +1493,31 @@ mod tests {
                 .status,
             409
         );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn saved_scan_analysis_rejects_flagged_evidence_without_modifying_results() {
+        let (api, dir) = api("saved-analysis-flagged");
+        let id = finished(&api);
+        let store = api.service().store();
+        let mut results = store.results(&id).unwrap().unwrap();
+        let element = results
+            .elements
+            .iter_mut()
+            .find(|element| element.entity.is_some() && element.kind != "ROOT")
+            .unwrap();
+        element.fp = true;
+        store.save_results(&results).unwrap();
+
+        let path = dir.join(&id).join("results.json");
+        let before = std::fs::read(&path).unwrap();
+        let response = api.handle("GET", &format!("/api/scans/{id}/analyze"), "");
+        assert_eq!(response.status, 409, "{}", response.text());
+        assert!(response.text().contains("false-positive"));
+        assert_eq!(store.results(&id).unwrap(), Some(results));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
 
         let _ = std::fs::remove_dir_all(dir);
     }

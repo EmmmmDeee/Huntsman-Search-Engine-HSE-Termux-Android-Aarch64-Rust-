@@ -84,13 +84,15 @@ pub enum IpRun {
     Failed(String),
 }
 
-/// One leg's result, folded into the report.
+/// One leg's result, folded into the report, with the first leg the egress policy refused and
+/// the first that got no response.
 struct Lookup<'a> {
     ip: &'a str,
     scan_id: &'a str,
     now_unix: u64,
     report: Report,
-    network: Option<String>,
+    refused: Option<String>,
+    unanswered: Option<String>,
 }
 
 impl Lookup<'_> {
@@ -149,9 +151,13 @@ impl Lookup<'_> {
     }
 
     fn failed(&mut self, api: &Api, err: &LegError) {
-        if let LegError::Transport(_) = err {
-            self.network
-                .get_or_insert_with(|| format!("{}: {err}", api.source));
+        let first = match err {
+            LegError::Refused(_) => Some(&mut self.refused),
+            LegError::Transport(_) => Some(&mut self.unanswered),
+            _ => None,
+        };
+        if let Some(first) = first {
+            first.get_or_insert_with(|| format!("{}: {err}", api.source));
         }
         self.report.outcomes.push(err.outcome(api, self.now_unix));
     }
@@ -177,7 +183,8 @@ pub fn run<T: Transport + ?Sized>(
         scan_id: &scan_id,
         now_unix,
         report: Report::default(),
-        network: None,
+        refused: None,
+        unanswered: None,
     };
 
     if transport.runs_module(RESOLVE_SOURCE) {
@@ -232,12 +239,12 @@ pub fn run<T: Transport + ?Sized>(
     let legs = indicator_legs::run(transport, keys, Indicator::Ip(&ip), &scan_id, now_unix);
     let Lookup {
         mut report,
-        mut network,
+        refused,
+        unanswered,
         ..
     } = lookup;
     report.entities.extend(legs.entities);
     report.outcomes.extend(legs.outcomes);
-    network = network.or(legs.network);
     if let Ok(address) = ip.parse() {
         threat_feeds::check_found(
             feeds,
@@ -249,11 +256,14 @@ pub fn run<T: Transport + ?Sized>(
         );
     }
     merge_by_uid(&mut report.entities);
+    // The CLI's exit codes (ARCHITECTURE.md): a refusal by the egress policy is 77, no usable
+    // response 69.
     let collected = report.outcomes.iter().any(|o| o.kind.is_accepted());
     if !collected {
-        return match network {
-            Some(message) => IpRun::Network(message),
-            None => IpRun::Failed(format!("no source answered for ip {ip}")),
+        return match (refused, unanswered.or(legs.network)) {
+            (Some(message), _) => IpRun::Network(message),
+            (None, Some(why)) => IpRun::Failed(format!("no source answered for ip {ip}: {why}")),
+            (None, None) => IpRun::Failed(format!("no source answered for ip {ip}")),
         };
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
@@ -441,7 +451,10 @@ fn greynoise_leg(lookup: &mut Lookup<'_>, sighting: &greynoise::Sighting) {
             ("classification", sighting.classification.as_deref()),
             ("name", sighting.name.as_deref()),
             ("last_seen", sighting.last_seen.as_deref()),
-        ]);
+            ("link", sighting.link.as_deref()),
+            ("message", sighting.message.as_deref()),
+        ])
+        .with_attr("raw_answer", sighting.raw_answer.as_str());
     lookup.on_address(evidence, &tags);
     lookup.found(api, 1);
 }
@@ -475,10 +488,30 @@ fn abuseipdb_leg(lookup: &mut Lookup<'_>, check: &abuseipdb::Check) {
             ("usage_type", check.usage_type.as_deref()),
             ("isp", check.isp.as_deref()),
             ("network_domain", check.domain.as_deref()),
+            ("country_name", check.country_name.as_deref()),
         ]);
     if let Some(allow_listed) = check.allow_listed {
         evidence = evidence.with_attr("allow_listed", allow_listed.to_string());
     }
+    if let Some(public) = check.public {
+        evidence = evidence.with_attr("public", public.to_string());
+    }
+    if let Some(version) = check.ip_version {
+        evidence = evidence.with_attr("ip_version", version.to_string());
+    }
+    for category in &check.categories {
+        evidence = evidence.with_attr("report_categories", category.as_str());
+    }
+    for report in &check.reports {
+        evidence = evidence.with_attr("reports", report.as_str());
+    }
+    if check.reports_unread {
+        evidence = evidence.with_attr(
+            "reports_unread",
+            "the answer with every report is past the body limit",
+        );
+    }
+    let evidence = evidence.with_attr("raw_answer", check.raw_answer.as_str());
     lookup.on_address(evidence, &tags);
     if let Some(domain) = check.domain.as_deref() {
         lookup.hostname(
@@ -520,7 +553,27 @@ fn virustotal_leg(lookup: &mut Lookup<'_>, report: &virustotal::Report) {
     if let Some(asn) = report.asn {
         evidence = evidence.with_attr("asn", format!("AS{asn}"));
     }
-    lookup.on_address(evidence, tags);
+    if !report.categories.is_empty() {
+        evidence = evidence.with_attr("categories", report.categories.join(","));
+    }
+    for (name, value) in &report.details {
+        evidence = evidence.with_attr(name.as_str(), value.as_str());
+    }
+    lookup.on_address(
+        evidence.with_attr("raw_answer", report.raw_answer.as_str()),
+        tags,
+    );
+    for (role, name) in &report.hosts {
+        let summary = if role == "certificate" {
+            "Name on the HTTPS certificate VirusTotal last saw at the address".to_owned()
+        } else {
+            format!(
+                "{} record VirusTotal last saw for the address",
+                role.to_ascii_uppercase()
+            )
+        };
+        lookup.hostname(api, name, &summary);
+    }
     lookup.found(api, 1);
 }
 
