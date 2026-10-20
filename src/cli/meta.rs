@@ -1,6 +1,7 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
 use std::env;
+use std::io::{IsTerminal, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -13,7 +14,7 @@ use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_USAGE};
 use huntsman_recon::fsio::{read_bounded, write_atomic};
 use huntsman_recon::http::{TransportConfig, UreqTransport};
-use huntsman_recon::keys::Keys;
+use huntsman_recon::keys::{self, Keys, MAX_KEY_BYTES};
 use huntsman_recon::ledger::{admitted, load_chain};
 use huntsman_recon::module::reachable_modules;
 use huntsman_recon::provider_credentials;
@@ -313,23 +314,104 @@ pub(super) fn modules_cmd(args: &[String]) -> ExitCode {
     }
 }
 
-pub(super) fn keys_cmd(args: &[String]) -> ExitCode {
-    let [path] = args else {
-        return fail(EX_USAGE, "usage: huntsman-recon keys FILE");
+const KEYS_USAGE: &str =
+    "usage: huntsman-recon keys FILE | keys set SLOT --stdin | keys remove SLOT";
+
+/// Store a credential received only through non-terminal standard input. Never accept
+/// credential values in argv (shell history/process listings), and never print them.
+fn keys_set_stdin(slot: &str) -> ExitCode {
+    if !keys::valid_slot(slot) {
+        return fail(
+            EX_USAGE,
+            "invalid key slot name (use uppercase letters, digits and '_')",
+        );
+    }
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return fail(
+            EX_USAGE,
+            "pipe a credential to standard input; terminal entry is refused",
+        );
+    }
+    // One terminal newline is allowed after a max-length credential; an excess byte
+    // makes the operation fail rather than silently truncating the secret.
+    let mut bytes = Vec::new();
+    if let Err(error) = stdin
+        .lock()
+        .take(MAX_KEY_BYTES as u64 + 2)
+        .read_to_end(&mut bytes)
+    {
+        return fail(
+            EX_IOERR,
+            &format!("cannot read credential from stdin: {error}"),
+        );
+    }
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+        if bytes.last() == Some(&b'\r') {
+            bytes.pop();
+        }
+    }
+    if bytes.len() > MAX_KEY_BYTES {
+        return fail(EX_DATAERR, "credential exceeds the configured byte limit");
+    }
+    let Ok(value) = std::str::from_utf8(&bytes) else {
+        return fail(EX_DATAERR, "credential input must be UTF-8");
     };
-    match Keys::load(Path::new(path)) {
-        Ok(keys) => {
-            for slot in keys.slots() {
-                if let Some(secret) = keys.get(slot) {
-                    println!(
-                        "{slot} fingerprint={}",
-                        &secret.fingerprint().as_str()[..12]
-                    );
-                }
-            }
+    keys_change(slot, Some(value))
+}
+
+fn keys_change(slot: &str, value: Option<&str>) -> ExitCode {
+    if !keys::valid_slot(slot) {
+        return fail(
+            EX_USAGE,
+            "invalid key slot name (use uppercase letters, digits and '_')",
+        );
+    }
+    let Some(path) = keys::default_keys_path(env::var_os("HOME").as_deref()) else {
+        return fail(
+            EX_USAGE,
+            "HOME must be an absolute path to manage credentials",
+        );
+    };
+    match keys::store_slot(&path, slot, value) {
+        Ok(()) => {
+            println!(
+                "{slot} {}",
+                if value.is_some() { "stored" } else { "removed" }
+            );
             ExitCode::SUCCESS
         }
-        Err(e) => fail(EX_NOINPUT, &e.to_string()),
+        Err(error) => {
+            let status = if matches!(error, Error::Invalid(_)) {
+                EX_DATAERR
+            } else {
+                EX_IOERR
+            };
+            fail(status, &error.to_string())
+        }
+    }
+}
+
+pub(super) fn keys_cmd(args: &[String]) -> ExitCode {
+    match args {
+        [command, slot, flag] if command == "set" && flag == "--stdin" => keys_set_stdin(slot),
+        [command, slot] if command == "remove" => keys_change(slot, None),
+        [file] if file != "set" && file != "remove" => match Keys::load(Path::new(file)) {
+            Ok(keys) => {
+                for slot in keys.slots() {
+                    if let Some(secret) = keys.get(slot) {
+                        println!(
+                            "{slot} fingerprint={}",
+                            &secret.fingerprint().as_str()[..12]
+                        );
+                    }
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail(EX_NOINPUT, &error.to_string()),
+        },
+        _ => fail(EX_USAGE, KEYS_USAGE),
     }
 }
 

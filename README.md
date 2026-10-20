@@ -206,6 +206,28 @@ cargo run -- recon crtsh https://example.com/
 
 Credentials for `fetch --bearer SLOT` / `--header NAME=SLOT` come from a keys file and the process environment. The file is `NAME=value` lines (`export`, quotes, blank lines and `#` comments allowed; placeholder values count as unset) and is parsed by `keys::Keys::parse`, the parser `--keys FILE` and `keys FILE` use through `Keys::load`.
 
+To manage one provider key without editing the file manually, pipe its value into
+`huntsman-recon keys set SLOT --stdin`; remove it with
+`huntsman-recon keys remove SLOT`. Both operate only on
+`$HOME/.huntsman.env`, require an absolute `HOME`, and use the existing
+atomic private-file writer. A value is accepted only through piped standard
+input, never through command-line arguments or an interactive terminal;
+the command refuses empty, placeholder, malformed or overlong values.
+Input is capped at 4,096 bytes (plus a terminating newline). Success prints
+only the slot name and `stored` or `removed`. A failed operation leaves
+the previous file intact. To avoid storing a literal key in command history,
+use an already-populated environment variable, for example:
+
+```sh
+printf '%s' "$HUNTSMAN_EXAMPLE_KEY" | huntsman-recon keys set HUNTSMAN_EXAMPLE_KEY --stdin
+huntsman-recon credential-status
+huntsman-recon keys remove HUNTSMAN_EXAMPLE_KEY
+```
+
+The existing `huntsman-recon keys FILE` inspection command remains unchanged;
+it prints only slot names and fingerprint prefixes. No provider is contacted
+by a key-management operation.
+
 - `--keys FILE` loads that file, and a slot the file lacks falls back to the process environment (see the `--keys FILE` row in the command table). A file accessible by group/others is an error (exit 66, `run chmod 600`).
 - Without `--keys`, `$HOME/.huntsman.env` is parsed with the same parser when it exists. If the file is missing (not found, or a `HOME` path component is not a directory), or `HOME` is unset, nothing changes: only the environment is used and nothing is printed. An empty or relative `HOME` (`HOME=.`, `HOME=relative/dir`, `HOME=`) behaves the same, except that it prints one warning (`HOME is not an absolute path`, without the value), so the default file never depends on the working directory. The path is checked with `lstat` and is never followed. The file is not read, and the run continues with the environment only after one stderr warning naming the path and the reason, if it is:
   - a symlink, even to a valid mode-600 file (fix: remove the symlink and create a regular file owned by you with mode 600, or pass `--keys`; `chmod` would follow the link);
