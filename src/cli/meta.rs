@@ -321,11 +321,17 @@ const KEYS_USAGE: &str =
 /// credential values in argv (shell history/process listings), and never print them.
 fn keys_set_stdin(slot: &str) -> ExitCode {
     if !keys::valid_slot(slot) {
-        return fail(EX_USAGE, "invalid key slot name (use uppercase letters, digits and '_')");
+        return fail(
+            EX_USAGE,
+            "invalid key slot name (use uppercase letters, digits and '_')",
+        );
     }
     let stdin = std::io::stdin();
     if stdin.is_terminal() {
-        return fail(EX_USAGE, "pipe a credential to standard input; terminal entry is refused");
+        return fail(
+            EX_USAGE,
+            "pipe a credential to standard input; terminal entry is refused",
+        );
     }
     // One terminal newline is allowed after a max-length credential; an excess byte
     // makes the operation fail rather than silently truncating the secret.
@@ -354,14 +360,23 @@ fn keys_set_stdin(slot: &str) -> ExitCode {
 
 fn keys_change(slot: &str, value: Option<&str>) -> ExitCode {
     if !keys::valid_slot(slot) {
-        return fail(EX_USAGE, "invalid key slot name (use uppercase letters, digits and '_')");
+        return fail(
+            EX_USAGE,
+            "invalid key slot name (use uppercase letters, digits and '_')",
+        );
     }
     let Some(path) = keys::default_keys_path(env::var_os("HOME").as_deref()) else {
-        return fail(EX_USAGE, "HOME must be an absolute path to manage credentials");
+        return fail(
+            EX_USAGE,
+            "HOME must be an absolute path to manage credentials",
+        );
     };
     match keys::store_slot(&path, slot, value) {
         Ok(()) => {
-            println!("{slot} {}", if value.is_some() { "stored" } else { "removed" });
+            println!(
+                "{slot} {}",
+                if value.is_some() { "stored" } else { "removed" }
+            );
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -377,15 +392,16 @@ fn keys_change(slot: &str, value: Option<&str>) -> ExitCode {
 
 pub(super) fn keys_cmd(args: &[String]) -> ExitCode {
     match args {
-        [command, slot, flag] if command == "set" && flag == "--stdin" => {
-            keys_set_stdin(slot)
-        }
+        [command, slot, flag] if command == "set" && flag == "--stdin" => keys_set_stdin(slot),
         [command, slot] if command == "remove" => keys_change(slot, None),
         [file] if file != "set" && file != "remove" => match Keys::load(Path::new(file)) {
             Ok(keys) => {
                 for slot in keys.slots() {
                     if let Some(secret) = keys.get(slot) {
-                        println!("{slot} fingerprint={}", &secret.fingerprint().as_str()[..12]);
+                        println!(
+                            "{slot} fingerprint={}",
+                            &secret.fingerprint().as_str()[..12]
+                        );
                     }
                 }
                 ExitCode::SUCCESS
