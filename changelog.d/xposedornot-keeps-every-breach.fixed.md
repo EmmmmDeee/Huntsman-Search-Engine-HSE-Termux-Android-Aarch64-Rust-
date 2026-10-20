@@ -1,0 +1,1 @@
+- An email lookup keeps every breach name XposedOrNot lists for the address. `xposedornot::decode` kept at most 25 names and tagged the address `truncated`, and it counted a name again each time it reappeared after the first 25. Every distinct name is now kept and counted once.

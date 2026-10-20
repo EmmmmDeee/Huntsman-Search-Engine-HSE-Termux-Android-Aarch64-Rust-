@@ -76,6 +76,7 @@ geometry	leaf	geometry helpers
 gexf	exporter	GEXF graph output
 github_user	adapter	public GitHub profile source client
 graph	runtime	shared deterministic graph model
+graph_exec	leaf	public evidence-gated DAG execution and checkpoint API; exported library surface awaiting scan-service integration
 gravatar	adapter	public Gravatar profile source client
 greynoise	adapter	GreyNoise Community leg reached through ip_cli from ip, scan -k ip and /api/lookup
 hackertarget	adapter	HackerTarget leg reached through indicator_legs from ip, domain, scan and /api/lookup
@@ -108,6 +109,7 @@ maltiverse	adapter	Maltiverse leg reached through indicator_legs from ip, domain
 md5	leaf	MD5 primitive for protocols that require public MD5 identifiers
 meta_plan	runtime	meta-plan validation consumed by the runtime
 metrics	runtime	shared scan metrics
+mnemonic	adapter	Mnemonic passive DNS leg reached through ip_cli and domain_cli from ip, domain, scan and /api/lookup
 module	runtime	provider economics metadata
 module_selection	runtime	the chosen modules carried on the transport, reached through every lookup a scan with modules runs
 navigator	exporter	ATT&CK Navigator output from admitted claims
@@ -212,3 +214,6 @@ x509	leaf	dependency-free X.509 DER reader and PEM writer behind certspotter
 xlsx	exporter	dependency-free Excel workbook writer behind scan_export's xlsx exports
 xposedornot	adapter	XposedOrNot breach-name leg reached through indicator_legs from email, scan and /api/lookup
 yaml_lite	leaf	dependency-free YAML subset reader for Spiderfoot correlation rules
+submd	adapter	sub.md passive subdomain leg reached through indicator_legs from domain, scan and /api/lookup
+opencellid	adapter	OpenCelliD cell position leg reached through indicator_legs when its key is set
+mozilla_location	adapter	Mozilla Location Service BSSID leg reached through indicator_legs when its key is set

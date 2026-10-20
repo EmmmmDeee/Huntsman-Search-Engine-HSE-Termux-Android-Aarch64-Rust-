@@ -1,0 +1,1 @@
+- Refuse incompatible saved-scan results versions before replacing an existing readable artifact, preserving the original results and making write/read format compatibility symmetric.

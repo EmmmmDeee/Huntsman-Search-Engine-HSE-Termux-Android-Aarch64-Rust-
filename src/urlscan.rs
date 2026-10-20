@@ -93,7 +93,10 @@ pub fn url(indicator: Indicator<'_>) -> Option<String> {
     let field = match indicator {
         Indicator::Ip(_) => "ip",
         Indicator::Domain(_) => "domain",
-        Indicator::Email(_) | Indicator::Phone(_) => return None,
+        Indicator::Email(_)
+        | Indicator::Phone(_)
+        | Indicator::Cell(_)
+        | Indicator::MacAddress(_) => return None,
     };
     let query = format!("{field}:\"{}\"", indicator.value());
     Some(format!(

@@ -497,7 +497,7 @@ impl Entity {
             if let Some(existing) = self
                 .evidence
                 .iter_mut()
-                .find(|current| same_observation(current, &evidence))
+                .find(|current| same_evidence_identity(current, &evidence))
             {
                 merge_evidence(existing, evidence);
             } else {
@@ -649,25 +649,28 @@ const fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// Whether two records are one observation, so [`Entity::absorb`] merges them into one: one source
-/// said the same thing, and no value either holds would have to be joined to a JSON document. A
-/// document is a whole answer (`raw_answer`), so two records holding different ones under one key
-/// are two observations, and each is kept whole with its own scan and time.
-fn same_observation(left: &Evidence, right: &Evidence) -> bool {
-    left.provenance.source == right.provenance.source
-        && left.summary == right.summary
-        && right.attributes.iter().all(|(key, value)| {
-            left.attributes.get(key).is_none_or(|held| {
-                held == value || !(is_json_document(held) || is_json_document(value))
-            })
-        })
-}
-
-/// Whether `value` is one JSON document, an object or a list, such as a source's whole answer
-/// (`raw_answer`). **Pure.**
+/// A structured provider answer must be kept as one document. JSON strings may contain
+/// the separator used by legacy attribute-list merges, so splitting a document corrupts it.
 fn is_json_document(value: &str) -> bool {
     matches!(value.trim_start().as_bytes().first(), Some(b'{' | b'['))
         && serde_json::from_str::<serde::de::IgnoredAny>(value).is_ok()
+}
+
+fn same_evidence_identity(left: &Evidence, right: &Evidence) -> bool {
+    if left.provenance.source != right.provenance.source || left.summary != right.summary {
+        return false;
+    }
+    // Changed structured documents describe distinct source observations, even when the
+    // summary repeats. Keep both provenance-bearing records instead of splicing raw answers
+    // together or dropping the older document. Equal documents still coalesce as before.
+    !left.attributes.iter().any(|(key, previous)| {
+        right.attributes.get(key).is_some_and(|incoming| {
+            previous != incoming
+                && (key.starts_with("raw_")
+                    || is_json_document(previous)
+                    || is_json_document(incoming))
+        })
+    })
 }
 
 /// Whether the attribute value `held` already holds `value` whole: as all of it, or as a run of
@@ -709,7 +712,7 @@ fn fold_value(held: &mut String, incoming: String) {
     held.push_str(rest);
 }
 
-/// Folds `incoming` into `existing`, one observation ([`same_observation`]). Every value either
+/// Folds `incoming` into `existing`, one observation ([`same_evidence_identity`]). Every value either
 /// record holds is kept whole, in the order it was observed ([`fold_value`]).
 fn merge_evidence(existing: &mut Evidence, incoming: Evidence) {
     for (key, value) in incoming.attributes {
