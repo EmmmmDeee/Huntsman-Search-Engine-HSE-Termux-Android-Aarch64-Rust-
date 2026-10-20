@@ -103,17 +103,24 @@ pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
     if args.iter().any(|arg| arg == "--file") && file.is_none() {
         return fail(EX_USAGE, USAGE);
     }
-    let raw = match file {
+    let (raw, replay) = match file {
         Some(path) => match read_bounded(Path::new(path), MAX_SCAN_BYTES) {
-            Ok(raw) => raw,
+            Ok(raw) => (raw, true),
             Err(e) => return fail(EX_NOINPUT, &e.to_string()),
         },
         None => match collect_termux_wifi() {
-            Ok(raw) => raw,
+            Ok(raw) => (raw, false),
             Err(error) => return fail(EX_UNAVAILABLE, &error),
         },
     };
-    let parsed = match wifi_radar::parse_scan(&raw, uptime_secs()) {
+    // A replay file's boot-relative scan timestamps cannot be aged against
+    // this host's /proc/uptime: file and host may not share the same boot.
+    let result = if replay {
+        wifi_radar::parse_replay(&raw)
+    } else {
+        wifi_radar::parse_scan(&raw, uptime_secs())
+    };
+    let parsed = match result {
         Ok(parsed) => parsed,
         Err(error) => return fail(EX_DATAERR, &error.to_string()),
     };

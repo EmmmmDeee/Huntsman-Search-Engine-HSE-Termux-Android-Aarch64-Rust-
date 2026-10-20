@@ -61,6 +61,17 @@ fn age_from_boot(uptime_secs: Option<f64>, timestamp_us: Option<u64>) -> Option<
     (age >= 0.0 && age.is_finite()).then_some(age)
 }
 
+/// Read a capture file with no trustworthy device boot-clock provenance.
+/// Android `ScanResult` timestamps are relative to the *original device boot*.
+/// Comparing them to this machine's `/proc/uptime` can fabricate a fresh reading.
+/// The file may also be manually created: its reported origin is unverified.
+pub fn parse_replay(bytes: &[u8]) -> Result<WifiScan, Error> {
+    let mut replay = parse_scan(bytes, None)?;
+    replay.source = "unverified_json_file";
+    replay.acquisition = "offline_replay_no_boot_provenance";
+    Ok(replay)
+}
+
 /// Parse Android's actual Termux:API schema. Absence of results is
 /// inconclusive: `getScanResults()` can return an empty cached scan.
 /// Refuse `API_ERROR` and unexpected JSON rather than promoting them to zero.
@@ -211,6 +222,36 @@ mod tests {
             assert_eq!(report.status, "freshness_unknown");
             assert_eq!(report.observations[0].age_secs, None);
         }
+    }
+
+    #[test]
+    fn replay_never_ages_a_foreign_boot_clock_using_the_current_device() {
+        // This timestamp would be only 20 s old on a 1000-s-uptime device,
+        // but no imported file can prove it was captured in that device boot.
+        let raw = br#"[{"bssid":"3C:5A:B4:11:22:33","rssi":-49,"timestamp":980000000}]"#;
+        let directly_captured = parse_scan(raw, Some(1000.0)).unwrap();
+        assert_eq!(directly_captured.observations[0].age_secs, Some(20.0));
+        assert_eq!(directly_captured.status, "os_cached");
+
+        let imported = parse_replay(raw).unwrap();
+        assert_eq!(imported.source, "unverified_json_file");
+        assert_eq!(imported.acquisition, "offline_replay_no_boot_provenance");
+        assert_eq!(imported.status, "freshness_unknown");
+        assert_eq!(imported.observations[0].age_secs, None);
+        assert_eq!(imported.observations[0].freshness, "unknown");
+        assert_eq!(imported.observations[0].os_timestamp_us, Some(980_000_000));
+        assert_eq!(imported.observations[0].sighting.observed_epoch, None);
+        assert!(!imported.observations[0].sighting.has_usable_position());
+    }
+
+    #[test]
+    fn replay_errors_and_empty_capture_do_not_prove_absence() {
+        assert!(parse_replay(br#"{"API_ERROR":"permissions"}"#).is_err());
+        assert!(parse_replay(br#"{"a":"not an array"}"#).is_err());
+        let empty = parse_replay(b"[]").unwrap();
+        assert_eq!(empty.status, "inconclusive");
+        assert_eq!(empty.observed, 0);
+        assert_eq!(empty.source, "unverified_json_file");
     }
 
     #[test]
