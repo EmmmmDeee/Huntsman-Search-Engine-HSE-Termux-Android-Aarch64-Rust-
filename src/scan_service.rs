@@ -2252,6 +2252,76 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_from_another_service_prevents_late_finished_status() {
+        let (service, dir) = with_lookup(
+            "shared-stop-status",
+            Arc::new(|_: ScanKind, _: &str, _: &Selection| Ok(LookupOutput::default())),
+        );
+        let (created, _) = service
+            .create(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let controller = ScanService::new(service.store().clone(), Arc::clone(&service.lookup));
+        controller.stop(&created.id).unwrap();
+        service
+            .set_status(&created.id, ScanStatus::Finished, Some(456))
+            .unwrap();
+        let row = service.store().get(&created.id).unwrap();
+        assert_eq!(row.status, ScanStatus::Aborted);
+        assert_eq!(row.ended, Some(456));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stop_from_another_service_cancels_queued_lookups_and_keeps_results() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let entered_tx = Mutex::new(entered_tx);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_calls = Arc::clone(&calls);
+        let (service, dir) = with_lookup(
+            "shared-stop-lookup",
+            Arc::new(move |kind: ScanKind, selector: &str, _: &Selection| {
+                observed_calls.fetch_add(1, Ordering::SeqCst);
+                if kind == ScanKind::Email {
+                    entered_tx.lock().unwrap().send(()).unwrap();
+                    release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(10))
+                        .unwrap();
+                }
+                Ok(found(kind, selector))
+            }),
+        );
+        let record = service
+            .start(&ScanRequest {
+                target: "jane@example.org".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let controller = ScanService::new(service.store().clone(), Arc::clone(&service.lookup));
+        assert_eq!(
+            controller.stop(&record.id).unwrap().status,
+            ScanStatus::AbortRequested
+        );
+        release_tx.send(()).unwrap();
+        let finished = service
+            .wait(&record.id, Instant::now() + Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(finished.status, ScanStatus::Aborted);
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        assert!(!results.entities.is_empty());
+        assert_eq!(results.termination, Some(TerminationReason::Cancelled));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_stop_while_running_aborts_after_the_lookup_and_keeps_its_results() {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel::<()>();
