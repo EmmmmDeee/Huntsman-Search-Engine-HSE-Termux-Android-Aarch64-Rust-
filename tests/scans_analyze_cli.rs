@@ -108,7 +108,7 @@ fn analyze_saved_scan_round_trips_evidence_and_prints_explicit_limits() {
     assert_eq!(value["limitations"]["scan_complete"], true);
     assert_eq!(
         value["limitations"]["false_positive_annotations"],
-        "not_applied_to_entity_analysis"
+        "none_present"
     );
     assert_eq!(value["counts"]["flagged_elements"], 0);
     assert!(value["report"].is_object());
