@@ -79,6 +79,13 @@ fn collect_termux_wifi() -> Result<Vec<u8>, String> {
     Ok(data)
 }
 
+/// One OS-cached scan shared by the CLI and the mobile Web UI.
+/// No root and no active scan. Missing Termux:API is an explicit error.
+pub(super) fn capture_wifi() -> Result<wifi_radar::WifiScan, String> {
+    let data = collect_termux_wifi()?;
+    wifi_radar::parse_scan(&data, uptime_secs()).map_err(|e| e.to_string())
+}
+
 pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
     if args.first().map(String::as_str) != Some("wifi") {
         return fail(EX_USAGE, USAGE);
