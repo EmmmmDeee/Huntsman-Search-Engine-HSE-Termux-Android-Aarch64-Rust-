@@ -24,6 +24,8 @@ pub enum Indicator<'a> {
     Domain(&'a str),
     Email(&'a str),
     Phone(&'a str),
+    Cell(&'a str),
+    MacAddress(&'a str),
 }
 
 /// The kind of an [`Indicator`].
@@ -33,13 +35,20 @@ pub enum IndicatorKind {
     Domain,
     Email,
     Phone,
+    Cell,
+    MacAddress,
 }
 
 impl Indicator<'_> {
     #[must_use]
     pub const fn value(&self) -> &str {
         match self {
-            Self::Ip(v) | Self::Domain(v) | Self::Email(v) | Self::Phone(v) => v,
+            Self::Ip(v)
+            | Self::Domain(v)
+            | Self::Email(v)
+            | Self::Phone(v)
+            | Self::Cell(v)
+            | Self::MacAddress(v) => v,
         }
     }
 
@@ -50,6 +59,8 @@ impl Indicator<'_> {
             Self::Domain(_) => IndicatorKind::Domain,
             Self::Email(_) => IndicatorKind::Email,
             Self::Phone(_) => IndicatorKind::Phone,
+            Self::Cell(_) => IndicatorKind::Cell,
+            Self::MacAddress(_) => IndicatorKind::MacAddress,
         }
     }
 }

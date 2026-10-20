@@ -13,6 +13,7 @@
 //! output concern, never the scan's.
 
 use std::collections::BTreeSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +51,25 @@ pub struct Step {
 /// Performs one live lookup. The driver owns the recursion; the collector owns the I/O.
 pub trait SelectorCollector {
     fn collect(&mut self, target: &Target) -> Step;
+
+    /// Collect a small wave of independent targets. The default preserves legacy sequential
+    /// semantics; graph-aware collectors may override it to schedule the wave concurrently.
+    /// Results must be returned in the same order as `targets`.
+    fn collect_batch(&mut self, targets: &[Target]) -> Vec<Step> {
+        targets.iter().map(|target| self.collect(target)).collect()
+    }
+
+    /// Whether `next` may join an in-flight batch of `selected` lookups.
+    ///
+    /// Stateful collectors can impose a sequencing boundary, so cancellation is checked again
+    /// after the current batch returns rather than dispatching an otherwise dependent lookup.
+    fn may_batch(&self, _selected: &[Target], _next: &Target) -> bool {
+        true
+    }
+
+    /// Report mismatched collector batch output cardinality to the scan's error accounting.
+    /// The recursion driver also persists a typed non-success outcome for each violation.
+    fn on_batch_contract_error(&mut self, _violations: usize) {}
 
     /// Whether the operator asked the crawl to stop. Checked before every dispatch: the crawl
     /// then stops as `Cancelled`, keeping everything found so far.
@@ -221,6 +241,58 @@ impl Frontier {
     }
 }
 
+/// One missing lookup result is always an unsuccessful outcome, never an empty success.
+fn missing_batch_step(target: &Target, observed_at: u64) -> Step {
+    Step {
+        entities: Vec::new(),
+        outcomes: vec![SourceExecutionOutcome::inconclusive(
+            "recursion",
+            observed_at,
+            format!(
+                "collector omitted a {} lookup result for {}",
+                target.kind.command(),
+                target.selector
+            ),
+        )],
+    }
+}
+
+/// Normalize the collector's response count before deterministic, target-ordered reduction.
+/// A missing lookup step or an unsolicited extra step is a contract failure, never valid-zero.
+fn normalize_batch<C: SelectorCollector>(
+    collector: &mut C,
+    batch: &[Target],
+    mut steps: Vec<Step>,
+) -> Vec<Step> {
+    let missing = batch.len().saturating_sub(steps.len());
+    let excess = steps.len().saturating_sub(batch.len());
+    if missing == 0 && excess == 0 {
+        return steps;
+    }
+
+    collector.on_batch_contract_error(missing.saturating_add(excess));
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    steps.truncate(batch.len());
+    for target in batch.iter().skip(steps.len()) {
+        steps.push(missing_batch_step(target, observed_at));
+    }
+    if excess > 0 {
+        if let Some(last) = steps.last_mut() {
+            last.outcomes.push(SourceExecutionOutcome::inconclusive(
+                "recursion",
+                observed_at,
+                format!(
+                    "collector returned {excess} unsolicited results for a batch of {} lookups",
+                    batch.len()
+                ),
+            ));
+        }
+    }
+    steps
+}
+
 /// Build the initial frontier: each routable seed becomes a de-duplicated target; an empty or
 /// non-routable seed is rejected. Returns (accepted seeds, rejected seeds, frontier).
 fn seed_frontier(seeds: &[String]) -> (Vec<Target>, Vec<String>, Vec<Target>) {
@@ -264,19 +336,24 @@ impl CrawlState {
         policy: &RecursionPolicy,
         collector: &mut C,
     ) -> (Vec<Target>, bool) {
+        // Small waves bound concurrency and let the entity budget be rechecked between waves.
+        const MAX_BATCH: usize = 2;
         let mut next = Frontier::default();
         let mut dispatched = 0usize;
         let mut stopped = false;
+        let mut remaining = frontier.into_iter().peekable();
 
-        let mut remaining = frontier.into_iter();
-        for target in remaining.by_ref() {
+        while let Some(first) = remaining.next() {
             if collector.cancelled() {
                 self.cancelled = true;
                 stopped = true;
-                next.push(target);
+                next.push(first);
+                for target in remaining.by_ref() {
+                    next.push(target);
+                }
                 break;
             }
-            if !self.visited.insert(target.owned_key()) {
+            if !self.visited.insert(first.owned_key()) {
                 continue;
             }
             if self.dispatches >= policy.max_dispatches
@@ -284,29 +361,81 @@ impl CrawlState {
             {
                 self.resource_limited = true;
                 stopped = true;
-                next.push(target);
+                next.push(first);
+                for target in remaining.by_ref() {
+                    next.push(target);
+                }
                 break;
             }
-            let step = collector.collect(&target);
-            self.dispatches += 1;
-            dispatched += 1;
-            self.outcomes.extend(step.outcomes);
-            for mut entity in step.entities {
-                entity.generation = generation;
-                self.edges.push(PivotEdge {
-                    from_kind: target.kind.command().to_owned(),
-                    from_selector: target.selector.clone(),
-                    to_kind: entity.kind.as_str().to_owned(),
-                    to_value: entity.value.clone(),
-                    generation,
-                });
-                self.queue_expansions(&entity, policy, &mut next);
-                self.entities.push(entity);
+
+            let mut batch = vec![first];
+            while batch.len() < MAX_BATCH {
+                // Peek before consuming: dependent targets must remain queued for the next
+                // dispatch, where the cancellation and resource limits are checked afresh.
+                let Some(candidate) = remaining.peek() else {
+                    break;
+                };
+                if !collector.may_batch(&batch, candidate) {
+                    break;
+                }
+                let Some(target) = remaining.next() else {
+                    break;
+                };
+                if collector.cancelled() {
+                    self.cancelled = true;
+                    stopped = true;
+                    next.push(target);
+                    for target in remaining.by_ref() {
+                        next.push(target);
+                    }
+                    break;
+                }
+                if !self.visited.insert(target.owned_key()) {
+                    continue;
+                }
+                if self.dispatches.saturating_add(batch.len()) >= policy.max_dispatches
+                    || self.entities.len() >= policy.max_entities
+                {
+                    self.resource_limited = true;
+                    stopped = true;
+                    next.push(target);
+                    for target in remaining.by_ref() {
+                        next.push(target);
+                    }
+                    break;
+                }
+                batch.push(target);
+            }
+
+            let steps = collector.collect_batch(&batch);
+            let steps = normalize_batch(collector, &batch, steps);
+            let mut steps = steps.into_iter();
+            for target in batch {
+                let step = steps
+                    .next()
+                    .unwrap_or_else(|| missing_batch_step(&target, 0));
+                self.dispatches += 1;
+                dispatched += 1;
+                self.outcomes.extend(step.outcomes);
+                for mut entity in step.entities {
+                    entity.generation = generation;
+                    self.edges.push(PivotEdge {
+                        from_kind: target.kind.command().to_owned(),
+                        from_selector: target.selector.clone(),
+                        to_kind: entity.kind.as_str().to_owned(),
+                        to_value: entity.value.clone(),
+                        generation,
+                    });
+                    self.queue_expansions(&entity, policy, &mut next);
+                    self.entities.push(entity);
+                }
+            }
+            stopped |= self.record_post_batch_stop(collector, remaining.by_ref(), &mut next);
+            if stopped {
+                break;
             }
         }
-        for target in remaining {
-            next.push(target);
-        }
+
         merge_by_uid(&mut self.entities);
         self.generations.push(GenerationStat {
             generation,
@@ -314,6 +443,24 @@ impl CrawlState {
             entities_after: self.entities.len(),
         });
         (next.into_queue(), stopped)
+    }
+
+    /// Record cancellation after a batch even when no further dispatch remains.
+    /// Retain outstanding targets for accurate truncated-frontier accounting.
+    fn record_post_batch_stop<C: SelectorCollector>(
+        &mut self,
+        collector: &C,
+        remaining: impl Iterator<Item = Target>,
+        next: &mut Frontier,
+    ) -> bool {
+        if !collector.cancelled() {
+            return false;
+        }
+        self.cancelled = true;
+        for target in remaining {
+            next.push(target);
+        }
+        true
     }
 
     /// Queue the next-generation targets an entity contributes, honouring the per-generation
@@ -493,6 +640,95 @@ mod tests {
         fn cancelled(&self) -> bool {
             self.inner.calls.len() >= self.limit
         }
+    }
+
+    #[test]
+    fn batch_cardinality_violations_remain_visible_as_failed_outcomes() {
+        struct BadBatch {
+            returned: usize,
+            violations: usize,
+        }
+
+        impl SelectorCollector for BadBatch {
+            fn collect(&mut self, _target: &Target) -> Step {
+                Step {
+                    entities: Vec::new(),
+                    outcomes: Vec::new(),
+                }
+            }
+
+            fn collect_batch(&mut self, _targets: &[Target]) -> Vec<Step> {
+                (0..self.returned)
+                    .map(|_| Step {
+                        entities: Vec::new(),
+                        outcomes: vec![SourceExecutionOutcome::valid_zero("fixture", 1)],
+                    })
+                    .collect()
+            }
+
+            fn on_batch_contract_error(&mut self, violations: usize) {
+                self.violations += violations;
+            }
+        }
+
+        let targets = ["1.1.1.1", "8.8.8.8"]
+            .into_iter()
+            .map(|selector| Target {
+                kind: ScanKind::Ip,
+                selector: selector.into(),
+            })
+            .collect::<Vec<_>>();
+        let policy = RecursionPolicy {
+            max_generations: 0,
+            expose_emails: false,
+            ..RecursionPolicy::default()
+        };
+        for (returned, expected_outcomes) in [(1, 2), (3, 3)] {
+            let mut collector = BadBatch {
+                returned,
+                violations: 0,
+            };
+            let report = run_targets(targets.clone(), &policy, &mut collector);
+            assert_eq!(collector.violations, 1);
+            assert_eq!(report.dispatches, 2);
+            assert_eq!(report.outcomes.len(), expected_outcomes);
+            let violations = report
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.module == "recursion")
+                .collect::<Vec<_>>();
+            assert_eq!(violations.len(), 1);
+            assert!(!violations[0].kind.is_accepted());
+            assert!(violations[0].found.is_none());
+            let detail = violations[0].detail.as_deref().unwrap();
+            if returned == 1 {
+                assert!(detail.contains("omitted"));
+                assert!(detail.contains("8.8.8.8"));
+            } else {
+                assert!(detail.contains("unsolicited"));
+                assert!(detail.contains('1'));
+            }
+        }
+    }
+
+    #[test]
+    fn cancellation_during_final_batch_is_not_reported_as_fixed_point() {
+        let targets = ["1.1.1.1", "8.8.8.8"]
+            .into_iter()
+            .map(|selector| Target {
+                kind: ScanKind::Ip,
+                selector: selector.into(),
+            })
+            .collect();
+        let mut collector = StopAfter {
+            inner: Scripted::new(),
+            limit: 2,
+        };
+        let report = run_targets(targets, &policy(), &mut collector);
+        assert_eq!(report.dispatches, 2);
+        assert_eq!(report.termination, TerminationReason::Cancelled);
+        assert!(report.truncated);
+        assert_eq!(report.visited, 2);
     }
 
     #[test]

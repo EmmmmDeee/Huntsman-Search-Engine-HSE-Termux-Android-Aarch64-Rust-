@@ -124,7 +124,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "run-history" => huntsman_recon::run_history::cli::USAGE,
         "dehashed" => DEHASHED_USAGE,
         "keys" => {
-            "keys FILE\nCheck a keys file and print configured slot names and fingerprint prefixes, never secret values."
+            "keys FILE | keys set SLOT --stdin | keys remove SLOT\nCheck a private keys file without printing secret values, or atomically store/remove one slot in ~/.huntsman.env. New values must arrive through piped standard input, not argv or an interactive terminal."
         }
         "credential-status" => {
             "credential-status [--probe] [FILE]\nShow provider slot completeness without printing credential values. --probe performs canonical live health checks for configured providers that have a registered probe. FILE uses the existing private keys-file loader; otherwise the normal ~/.huntsman.env/environment resolution is used."
