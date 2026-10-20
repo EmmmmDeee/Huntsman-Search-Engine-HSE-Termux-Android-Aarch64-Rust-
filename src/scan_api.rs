@@ -475,7 +475,10 @@ impl ScanApi {
         // An element-level false positive cannot be safely projected to merged entity
         // evidence. Refuse the report rather than silently laundering flagged sources.
         if results.elements.iter().any(|element| element.fp) {
-            return error(409, "scan contains false-positive elements; entity evidence cannot be safely filtered");
+            return error(
+                409,
+                "scan contains false-positive elements; entity evidence cannot be safely filtered",
+            );
         }
         let Some(entity) = results.entities.iter().find(|entity| entity.uid == uid) else {
             return error(404, "entity uid is not present in the saved scan");
@@ -1606,8 +1609,12 @@ mod tests {
         results.elements[0].fp = true;
         store.save_results(&results).unwrap();
         assert_eq!(
-            api.handle("GET", &format!("/api/scans/{id}/reality"), &format!("uid={uid}"))
-                .status,
+            api.handle(
+                "GET",
+                &format!("/api/scans/{id}/reality"),
+                &format!("uid={uid}")
+            )
+            .status,
             409
         );
         let _ = std::fs::remove_dir_all(dir);
