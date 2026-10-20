@@ -1185,17 +1185,16 @@ impl ScanService {
             state.graph_cancellations.remove(id);
         }
         self.freed.notify_all();
-        match outcome {
-            Ok(result) => result,
-            Err(_) => {
-                self.log(
-                    id,
-                    "huntsman",
-                    LogLevel::Error,
-                    "the scan failed unexpectedly; what it saved is kept",
-                );
-                self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()))
-            }
+        if let Ok(result) = outcome {
+            result
+        } else {
+            self.log(
+                id,
+                "huntsman",
+                LogLevel::Error,
+                "the scan failed unexpectedly; what it saved is kept",
+            );
+            self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()))
         }
     }
 
