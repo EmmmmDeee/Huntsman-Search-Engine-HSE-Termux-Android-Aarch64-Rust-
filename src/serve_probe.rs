@@ -6,7 +6,7 @@
 //! 1. `GET /api/health` names `huntsman-recon`. A refused connection means nothing listens; any
 //!    other answer means another program holds the port.
 //! 2. `GET /` returns the page. Its `Content-Security-Policy` lists the SHA-256 of the page's one
-//!    inline script, so a browser runs it, and the page calls `/api/lookup`, `/api/analyze` and
+//!    inline script, so a browser runs it, and the page calls `/api/scans`, `/api/analyze` and
 //!    `/api/health`.
 //! 3. `GET /api/analyze` on two fixture seeds returns `entities`, `relations` and `termination`.
 //!    It is offline on the server, so the probe spends no quota.
@@ -23,8 +23,8 @@ use crate::sha256::sha256;
 /// The analysis the probe asks for: two fixture seeds, percent-encoded, one per line.
 pub const ANALYZE_PROBE_PATH: &str = "/api/analyze?seeds=alice%40example.com%0Aexample.com";
 /// The API routes the page must call.
-pub const PAGE_ROUTES: [&str; 3] = ["/api/lookup", "/api/analyze", "/api/health"];
-/// The most of one response the probe reads. The page is about 25 KiB.
+pub const PAGE_ROUTES: [&str; 3] = ["/api/scans", "/api/analyze", "/api/health"];
+/// The most of one response the probe reads. The page is about 80 KiB.
 const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// What the probe found at the address.
@@ -307,7 +307,7 @@ mod tests {
                 ),
             ],
             &format!(
-                "<html><script>{script}</script><a>/api/lookup /api/analyze /api/health</a></html>"
+                "<html><script>{script}</script><a>/api/scans /api/analyze /api/health</a></html>"
             ),
         )
     }
