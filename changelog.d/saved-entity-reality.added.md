@@ -1,0 +1,1 @@
+- Add read-only `scans reality ID ENTITY_UID` and `GET /api/scans/ID/reality?uid=...` for bounded, source-attributed evidence and competing recorded claims. Never promote names, aliases, repeated sources, alleged ownership or inferred associations to verified identity; block false-positive-flagged scans and redact credential-like fields.
