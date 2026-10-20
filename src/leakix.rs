@@ -5,7 +5,9 @@
 //! two lists of `l9format` events, `Services` and `Leaks`. Only the event plugin, host, address,
 //! port, protocol, software and leak severity, type and row count leave the module: an event's
 //! `service.credentials` (which can hold a found username or password) is never decoded. A `404`
-//! is "nothing indexed", a valid zero.
+//! is "nothing indexed", a valid zero. Every answer carries both lists, `null` when nothing was
+//! found (<https://docs.leakix.net/docs/api/hostdetails/>): a body without them, such as `{}` or
+//! an error object, is not an answer.
 
 use serde::Deserialize;
 
@@ -35,12 +37,19 @@ pub const INTEL: Source = Source {
 /// Most distinct names kept in one attribute.
 const MAX_NAMES: usize = 15;
 
+/// Both lists must be present; either may be `null`.
 #[derive(Deserialize)]
 struct Body {
-    #[serde(rename = "Services", default)]
+    #[serde(rename = "Services", deserialize_with = "present")]
     services: Option<Vec<Event>>,
-    #[serde(rename = "Leaks", default)]
+    #[serde(rename = "Leaks", deserialize_with = "present")]
     leaks: Option<Vec<Event>>,
+}
+
+/// A field that must be in the answer but may be `null`: serde treats a missing `Option` field as
+/// `None` unless it is read through a function like this one.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<Event>>, D::Error> {
+    Option::deserialize(d)
 }
 
 #[derive(Deserialize)]
@@ -252,6 +261,22 @@ mod tests {
                 .iter()
                 .any(|p| p.kind == PivotKind::Ip && p.value == "198.51.100.7")
         );
+    }
+
+    #[test]
+    fn an_answer_without_both_lists_is_drift_not_a_zero() {
+        for body in [
+            "{}",
+            r#"{"Services":null}"#,
+            r#"{"Leaks":[]}"#,
+            r#"{"error":"rate limited"}"#,
+        ] {
+            let decoded = decode(Answer::Body(body.into()), Indicator::Ip("1.1.1.1"));
+            assert!(
+                matches!(decoded, Err(LegError::Decode(_))),
+                "{body}: {decoded:?}"
+            );
+        }
     }
 
     #[test]
