@@ -453,7 +453,9 @@ an aborted or failed scan may be analyzed but is explicitly marked incomplete.
 Provider-coverage events and independent upstream ancestry **cannot** be
 reconstructed from merged entities, so both are labelled `not_reconstructed`;
 derived associations must not be presented as independently corroborated claims.
-The analysis is bounded by `PipelineLimits` and flags truncation rather than
+Saved SpiderFoot element-level false-positive flags are counted but are **not applied**
+to the merged-entity analysis; inspect the flagged elements before relying on a
+report containing them. The analysis is bounded by `PipelineLimits` and flags truncation rather than
 silently claiming exhaustive coverage.
 
 Each scan's correlations come from Huntsman's own rules and from Spiderfoot 4.0's 37 correlation rules (`src/correlations/spiderfoot`, Spiderfoot's YAML unchanged, MIT), run by a Rust port of Spiderfoot's engine (`sf_correlate`): collections by type, module or data, refined through each element's `source.`, `child.` and `entity.`; aggregation; the `threshold`, `outlier`, `first_collection_only` and `match_all_to_first_collection` analyses; and the headline. Its regular expressions run in linear time, elements flagged false positive are left out, a Spiderfoot module name in a rule also matches the Huntsman source that does that module's work (`sfp_crt` matches `crtsh`), and `publish_collections` is honoured. Your own Spiderfoot-format rules go in `$HUNTSMAN_HOME/correlations`, else `~/.huntsman/correlations`, or `--rules DIR`: a `*.yaml` file there with a shipped rule's id replaces it, and one holding only `enabled: false` turns it off. `scans rules [--json]` lists every rule and exits 65 naming any file it could not read (a scan logs the same as a warning); `scans correlate ID` runs every rule again over a saved scan, as Spiderfoot's `sf.py -C` does, after you flag false positives or add a rule. `scans correlations ID -f csv` exports Spiderfoot's correlation columns (Rule Name, Correlation, Risk, Description) plus the rule id, where it came from and the elements each is about.
