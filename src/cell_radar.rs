@@ -114,7 +114,7 @@ fn parse_row(row: &serde_json::Value) -> Option<CellObservation> {
     })
 }
 
-/// Parse Termux:API's actual TelephonyCellInfo array schema. The Android
+/// Parse Termux:API's actual `TelephonyCellInfo` array schema. The Android
 /// operating system may return a cached list or an empty list when permission
 /// is unavailable. Empty is inconclusive, not proof that no towers exist.
 pub fn parse_scan(bytes: &[u8]) -> Result<CellScan, Error> {
