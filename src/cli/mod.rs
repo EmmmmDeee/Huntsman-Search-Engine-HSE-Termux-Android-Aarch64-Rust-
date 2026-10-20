@@ -43,7 +43,7 @@ Commands:
   netblock              Registration, routing and every address's PTR names for one public address block
   asn                   Registration, holder, every announced prefix and BGP neighbour of one public AS
   network               WiFi network by BSSID, SSID or LAT,LON (OUI offline, WiGLE keyed)
-  radar                 Read rootless Termux:API OS-cached WiFi scan results with source and age
+  radar                 Read rootless Termux:API cached WiFi and cellular observations
   scan                  Route one selector or bounded seed-list into rebuilt lookup front-ends
   investigate           Extract actionable entities from local text or one bounded file
   plan                  Plan an offline investigation from seeds; save or reload it as a session
