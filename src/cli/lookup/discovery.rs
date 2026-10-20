@@ -68,7 +68,10 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
     let adaptive = args.first().is_some_and(|arg| arg == "--adaptive");
     let terms = if adaptive { &args[1..] } else { args };
     if terms.is_empty() {
-        return fail(EX_USAGE, "usage: huntsman-recon query [--adaptive] QUERY...");
+        return fail(
+            EX_USAGE,
+            "usage: huntsman-recon query [--adaptive] QUERY...",
+        );
     }
     let query = terms.join(" ");
     let now = SystemTime::now()
