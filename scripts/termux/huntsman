@@ -5,6 +5,8 @@
 # stops and inspects that service, runs scans, and passes every other command
 # to huntsman-recon.
 set -Eeuo pipefail
+# Saved scans and generated reports can contain personal investigative data.
+umask 077
 
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 RECON="${HUNTSMAN_RECON:-huntsman-recon}"
@@ -198,16 +200,31 @@ cmd_clean() {
   ok "removed $cache and Huntsman temporary files (runit rotates the service log itself)"
 }
 
-safe_name() { printf '%s' "$1" | tr -c 'A-Za-z0-9@._+-' '_'; }
+# Keep filenames bounded on Android filesystems, including very long or Unicode selectors.
+safe_name() { printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9@._+-' '_' | cut -b 1-64; }
 
 cmd_scan_pipe() {
-  local target="${1:-}" kind="${2:-}" out
+  local target="${1:-}" kind="${2:-}" out result
+  local -a scan_args
   [[ -n "$target" ]] || die "usage: huntsman scan-pipe TARGET [KIND]"
-  mkdir -p "$REPORTS_DIR"
-  out="$REPORTS_DIR/$(safe_name "$target")_$(date +%Y%m%d_%H%M%S).json"
+  mkdir -p -- "$REPORTS_DIR"
+  # Reserve a unique private filename atomically. A timestamp alone overwrote
+  # a prior scan of the same target when both started within one second.
+  # GNU mktemp (Termux coreutils) keeps the .json suffix used by latest_json.
+  out="$(mktemp --suffix=.json "$REPORTS_DIR/$(safe_name "$target")_$(date -u +%Y%m%d_%H%M%S)_XXXXXX")" ||
+    die "cannot reserve an evidence filename in $REPORTS_DIR"
+  scan_args=("$target")
+  [[ -z "$kind" ]] || scan_args+=(-k "$kind")
   say "scanning $target${kind:+ as $kind}"
-  "$RECON" scan "$target" ${kind:+-k "$kind"} --save "$out"
-  cmd_report "$out"
+  if "$RECON" scan "${scan_args[@]}" --save "$out"; then
+    cmd_report "$out"
+  else
+    result=$?
+    # Preserve a nonempty partial ledger for diagnosis; discard only our
+    # untouched zero-byte reservation when the scan never wrote anything.
+    [[ -s "$out" ]] || rm -f -- "$out"
+    die "scan failed (exit $result); any saved output remains at $out"
+  fi
 }
 
 cmd_report() {
