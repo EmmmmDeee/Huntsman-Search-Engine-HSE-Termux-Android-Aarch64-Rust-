@@ -4,7 +4,7 @@
 
 ## Jobs
 
-- **build** (read-only token, no `GH_TOKEN`, no persisted git credentials): runs `cargo build` with `HSE_RELEASE=1` and `HUNTSMAN_HIBP_NO_EMBED=1`. It then requires every `out/hibp_embedded_key.txt` to be empty, strips and stages `dist/`, proves that the binary is `huntsman-recon`, and runs the key scanner on `dist/`. Publishing requires `result: PASS (0 findings)`.
+- **build** (read-only token, no `GH_TOKEN`, no persisted git credentials): runs `cargo build` with `HSE_RELEASE=1`, strips and stages `dist/`, proves that the binary is `huntsman-recon`, and runs the key scanner on `dist/`. Publishing requires `result: PASS (0 findings)`. No build reads a key, so that scan is the proof that none is in the published files.
 - **publish** is the only job with write or OIDC scopes, and it never runs on `pull_request`. It re-checks the downloaded bytes against the build job's digests and re-runs the key scan from the copy inlined in the workflow, which must be byte-identical to `.github/scripts/scan-for-keys.sh`. Then it reconciles orphan main-channel drafts (a draft `main-<sha7>` with no tag), checks for an existing release, checks that this commit is still the `main` head, attests, publishes, and verifies the result through the API. A build whose commit is no longer the `main` head is still built, scanned and attested, but it is not published: it stays a verified Actions artifact.
 
 ## Key scanner (`.github/scripts/scan-for-keys.sh`)

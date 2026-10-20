@@ -2,7 +2,7 @@
 
 use std::env;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use super::fail;
@@ -11,6 +11,7 @@ use huntsman_recon::environment::SERVE_TOKEN_ENV;
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::runtime::analyze_offline_with_history;
+use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_artifact::{ArtifactError, ArtifactHistory};
 use huntsman_recon::scan_route::{
     ScanKind, canonical_selector, explicit_people_is_name, infer_kind, inferred_people_is_name,
@@ -21,6 +22,7 @@ use huntsman_recon::web_server::{
 };
 
 use super::lookup::{Refused, collect};
+use super::scans::{default_rules_dir, default_scan_dir, open_api};
 
 /// Printed once by `serve` under Termux. Android may stop a process that Termux started while
 /// Termux is in the background or the screen is off, so the page would stop answering.
@@ -68,12 +70,18 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
     };
     let canonical = canonical_selector(kind, &query.selector)
         .ok_or_else(|| bad_selector("selector is not valid for this kind"))?;
-    match collect(kind, &canonical) {
+    match collect(
+        kind,
+        &canonical,
+        &huntsman_recon::module_selection::Selection::all(),
+    ) {
         Ok(found) => Ok(LookupReport {
             route: kind.command(),
             text: found.text,
             entities: found.entities,
             outcomes: found.outcomes,
+            scan: None,
+            status: None,
         }),
         Err(refused) => Err(LookupError {
             status: match refused {
@@ -82,6 +90,36 @@ fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
             },
             message: refused.message().to_owned(),
         }),
+    }
+}
+
+/// The saved scans `serve` shows and starts: the same store, runner, correlation rules and API
+/// router as `scans`, so a scan run from either shows in both. A scan a stopped server left running
+/// reads `ABORTED`, and a rule file in `~/.huntsman/correlations` that cannot be read is named on
+/// stderr as well as in each scan's log. When there is no usable scan directory the server still
+/// starts, says why on stderr, and the scan routes answer `404`; lookups and analysis are
+/// unaffected.
+fn scan_api() -> Option<std::sync::Arc<ScanApi>> {
+    let Some(dir) = default_scan_dir() else {
+        eprintln!(
+            "serve: saved scans are off: set HOME or HUNTSMAN_HOME to an absolute path to keep them"
+        );
+        return None;
+    };
+    match open_api(&dir, default_rules_dir().as_deref()) {
+        Ok(api) => {
+            for failure in api.service().rule_errors() {
+                eprintln!(
+                    "serve: correlation rule {} is not used: {}",
+                    failure.rule, failure.reason
+                );
+            }
+            Some(std::sync::Arc::new(api))
+        }
+        Err(error) => {
+            eprintln!("serve: saved scans are off: {}: {error}", dir.display());
+            None
+        }
     }
 }
 
@@ -100,6 +138,24 @@ fn token_note(addr: std::net::SocketAddr, needs_token: bool, supplied: bool) -> 
         ))
     } else {
         None
+    }
+}
+
+/// `serve --history DIR`, loaded before the listener binds, so a bad directory stops `serve` at
+/// startup instead of failing each analysis. The exit codes match `correlate --history`.
+fn serve_history(dir: &str) -> Result<std::sync::Arc<ArtifactHistory>, ExitCode> {
+    match ArtifactHistory::open(Path::new(dir)) {
+        Ok(history) => {
+            eprintln!(
+                "serve: {} saved scan(s) in {dir} bridge the analysis",
+                history.scan_count()
+            );
+            Ok(std::sync::Arc::new(history))
+        }
+        Err(ArtifactError::Io(error)) => {
+            Err(fail(EX_NOINPUT, &format!("serve --history: {error}")))
+        }
+        Err(error) => Err(fail(EX_DATAERR, &format!("serve --history: {error}"))),
     }
 }
 
@@ -148,23 +204,9 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         }
     }
 
-    // Load the history before the listener binds, so a bad directory stops `serve` at startup
-    // instead of failing each analysis. The exit codes match `correlate --history`.
-    let history = match history_dir {
-        Some(dir) => match ArtifactHistory::open(Path::new(&dir)) {
-            Ok(history) => {
-                eprintln!(
-                    "serve: {} saved scan(s) in {dir} bridge the analysis",
-                    history.scan_count()
-                );
-                Some(std::sync::Arc::new(history))
-            }
-            Err(ArtifactError::Io(error)) => {
-                return fail(EX_NOINPUT, &format!("serve --history: {error}"));
-            }
-            Err(error) => return fail(EX_DATAERR, &format!("serve --history: {error}")),
-        },
-        None => None,
+    let history = match history_dir.map(|dir| serve_history(&dir)).transpose() {
+        Ok(history) => history,
+        Err(code) => return code,
     };
 
     let token = env::var(SERVE_TOKEN_ENV).ok();
@@ -177,12 +219,24 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     };
     let config_needs_token = config.needs_token();
     let analyze_history = history.clone();
+    let scans = scan_api();
     let server = match Server::bind(config) {
-        Ok(server) => server
-            .with_lookup(std::sync::Arc::new(web_lookup))
-            .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
-                web_analyze(seeds, analyze_history.as_deref())
-            })),
+        Ok(server) => {
+            let server = server
+                .with_lookup(std::sync::Arc::new(web_lookup))
+                .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
+                    web_analyze(seeds, analyze_history.as_deref())
+                }));
+            let server = match scans {
+                Some(scans) => server.with_scans(scans),
+                None => server,
+            };
+            // The Settings page saves keys into the file lookups read, so only an absolute HOME.
+            match env::var_os("HOME").map(PathBuf::from) {
+                Some(home) if home.is_absolute() => server.with_keys_home(home),
+                _ => server,
+            }
+        }
         Err(Error::Store(message)) => return fail(EX_UNAVAILABLE, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };

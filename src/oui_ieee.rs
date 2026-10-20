@@ -1,4 +1,9 @@
 //! The full IEEE MA-L registry, searched in place.
+//!
+//! `oui_ieee.bin` is built from the registry's CSV, <https://standards-oui.ieee.org/oui/oui.csv>,
+//! by `cargo run --locked -p xtask -- oui pack oui.csv src/oui_ieee.bin`; `xtask oui dump` lists
+//! a blob, and `xtask/tests/oui_pack.rs` proves the committed blob is what the packer makes of
+//! its own listing. The layout is documented with the packer, in `xtask/src/oui.rs`.
 
 const DATA: &[u8] = include_bytes!("oui_ieee.bin");
 const MAGIC: &[u8] = b"HSEOUI\x01\x00";
