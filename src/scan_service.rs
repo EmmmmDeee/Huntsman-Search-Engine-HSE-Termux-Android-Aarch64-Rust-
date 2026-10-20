@@ -1134,7 +1134,7 @@ impl ScanService {
         let state = self.state();
         let mut record = self.store.get(id)?;
         if !record.status.is_active() {
-        return Ok(());
+            return Ok(());
         }
         if matches!(status, ScanStatus::Starting | ScanStatus::Running)
             && (record.status == ScanStatus::AbortRequested || state.aborts.contains(id))
@@ -1150,7 +1150,7 @@ impl ScanService {
         match status {
             ScanStatus::Running => record.started = at,
             ScanStatus::Aborted | ScanStatus::Finished | ScanStatus::ErrorFailed => {
-            record.ended = at;
+                record.ended = at;
             }
             _ => {}
         }
