@@ -83,7 +83,24 @@ if [ "$1" = "huntsman-recon" ]; then
   shift
 fi
 
+# The server runs as this shell's child, not in its place. In a container this shell is PID 1,
+# and PID 1 ignores every signal it has no handler for: a server exec'd here would never see the
+# SIGTERM that a redeploy or `docker stop` sends, and would be killed when the grace period
+# ends. The trap hands the stop signal on to the server, and the shell exits with its status.
+# A background job in a non-interactive shell ignores SIGINT, so every stop signal goes on as
+# SIGTERM.
 if [ "$(id -u)" = "0" ]; then
-  exec gosu huntsman "$HUNTSMAN_BIN" "$@"
+  gosu huntsman "$HUNTSMAN_BIN" "$@" &
+else
+  "$HUNTSMAN_BIN" "$@" &
 fi
-exec "$HUNTSMAN_BIN" "$@"
+server=$!
+trap 'kill -TERM "$server" 2>/dev/null || true' TERM INT HUP
+status=0
+wait "$server" || status=$?
+# A trapped signal ends the first wait early; the server's own status comes from the next.
+while kill -0 "$server" 2>/dev/null; do
+  status=0
+  wait "$server" || status=$?
+done
+exit "$status"
