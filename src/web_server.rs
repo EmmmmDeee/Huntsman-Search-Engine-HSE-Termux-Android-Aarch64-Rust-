@@ -47,6 +47,7 @@ use crate::scan_store::{LogLevel, ScanStatus};
 use crate::sha256::sha256;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::value_syntax::form_pairs;
+use crate::wifi_radar::WifiScan;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 
@@ -108,6 +109,9 @@ const HANDLER_STACK_BYTES: usize = 256 * 1024;
 /// Lookups running at once. Each one holds sockets to several providers for up to two minutes,
 /// so a phone gets a small, fixed number; one past the cap is answered `503`.
 const MAX_LOOKUPS: usize = 2;
+/// Only one device-radio request at a time; Android's cached scan may take 15 seconds.
+const MAX_RADAR_REQUESTS: usize = 1;
+const RADAR_WAIT: Duration = Duration::from_secs(18);
 /// A lookup does TLS and JSON decoding, which the small connection stack is not sized for, so it
 /// runs on its own thread with this stack.
 const LOOKUP_STACK_BYTES: usize = 4 * 1024 * 1024;
@@ -188,10 +192,21 @@ struct Lookups {
 pub type AnalyzeHandler =
     Arc<dyn Fn(&[String]) -> Result<serde_json::Value, LookupError> + Send + Sync>;
 
+/// One bounded, no-root Android OS-cached Wi-Fi observation read.
+/// Installed by the process boundary; the server library owns no sensor subprocess.
+pub type RadarHandler = Arc<dyn Fn() -> Result<WifiScan, LookupError> + Send + Sync>;
+
+#[derive(Clone)]
+struct Radar {
+    handler: RadarHandler,
+    live: Arc<AtomicUsize>,
+}
+
 /// The routes a binary installs. A route whose handler is absent answers `404`.
 #[derive(Clone, Default)]
 struct Routes {
     lookups: Option<Lookups>,
+    radar: Option<Radar>,
     analyze: Option<AnalyzeHandler>,
     scans: Option<Arc<ScanApi>>,
     /// The home whose keys file every lookup reads, for [`KEYS_PATH`].
@@ -286,6 +301,17 @@ impl Server {
             handler,
             live: Arc::new(AtomicUsize::new(0)),
             wait: LOOKUP_WAIT,
+        });
+        self
+    }
+
+    /// Serve `GET /api/radar/wifi` from the same Android cache adapter as the CLI.
+    /// Nothing is read before an explicitly requested API call.
+    #[must_use]
+    pub fn with_radar(mut self, handler: RadarHandler) -> Self {
+        self.routes.radar = Some(Radar {
+            handler,
+            live: Arc::new(AtomicUsize::new(0)),
         });
         self
     }
@@ -940,7 +966,7 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
     let head = parsed.method == Method::Head;
     let protected = matches!(
         parsed.path,
-        "/api/modules" | "/api/command" | "/api/lookup" | "/api/analyze" | KEYS_PATH
+        "/api/modules" | "/api/command" | "/api/lookup" | "/api/analyze" | "/api/radar/wifi" | KEYS_PATH
     ) || ScanApi::handles(parsed.path);
     if protected
         && bearer_token.is_some_and(|expected| !bearer_matches(parsed.authorization, expected))
@@ -986,6 +1012,7 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
             ),
         },
         "/api/lookup" => lookup_response(&parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
+        "/api/radar/wifi" => radar_response(&parsed, routes.radar.as_ref()),
         "/api/analyze" => analyze_response(&parsed, routes.analyze.as_ref()),
         KEYS_PATH => keys_response(&parsed, routes.keys_home.as_deref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
@@ -1020,6 +1047,54 @@ fn json_ok(body: &str, head: bool) -> String {
         &format!("{body}\n"),
         head,
     )
+}
+
+/// Read Android's OS-cached Wi-Fi scan only after an explicitly initiated,
+/// same-origin, lookup-header-bearing request. A missing sensor is an error,
+/// never a fabricated empty scan. Each worker is time- and concurrency-bounded.
+fn radar_response(parsed: &ParsedRequest<'_>, radar: Option<&Radar>) -> String {
+    let Some(radar) = radar else {
+        return json_error(404, "Wi-Fi radar is not enabled on this server");
+    };
+    if parsed.method != Method::Get {
+        return json_error(405, "Wi-Fi radar needs GET");
+    }
+    if parsed.sec_fetch_site.is_some_and(|site| !matches!(site, "same-origin" | "none")) {
+        return json_error(403, "cross-site Wi-Fi radar request refused");
+    }
+    if !parsed.lookup_header {
+        return json_error(403, "Wi-Fi radar needs the X-Huntsman-Lookup: 1 header");
+    }
+    if !parsed.query.is_empty() {
+        return json_error(400, "Wi-Fi radar takes no query parameters");
+    }
+    let Some(slot) = Slot::take_of(&radar.live, MAX_RADAR_REQUESTS) else {
+        return json_error(503, "Wi-Fi radio request already in progress");
+    };
+    let handler = Arc::clone(&radar.handler);
+    let (sender, receiver) = sync_channel(1);
+    let worker = thread::Builder::new()
+        .name("serve-wifi-radar".into())
+        .stack_size(LOOKUP_STACK_BYTES)
+        .spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| handler()));
+            drop(slot);
+            let _ = sender.send(result);
+        });
+    if worker.is_err() {
+        return json_error(503, "could not start a Wi-Fi radar worker");
+    }
+    match receiver.recv_timeout(RADAR_WAIT) {
+        Ok(Ok(Ok(scan))) => match serde_json::to_string(&scan) {
+            Ok(body) => json_ok(&body, false),
+            Err(_) => json_error(500, "Wi-Fi observations could not be encoded"),
+        },
+        Ok(Ok(Err(error))) => json_error(error.status, &error.message),
+        Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
+            json_error(500, "Wi-Fi radar failed unexpectedly")
+        }
+        Err(RecvTimeoutError::Timeout) => json_error(504, "Wi-Fi radar did not answer in time"),
+    }
 }
 
 /// `GET /api/lookup`: one lookup, answered with its report. With saved scans on, the lookup runs
@@ -1880,6 +1955,7 @@ mod tests {
                 assert!(!config.needs_token(), "{bind} {token:?}");
                 let routes = Routes {
                     lookups: Some(lookups.clone()),
+                    radar: None,
                     analyze: echo_seeds().analyze,
                     scans: None,
                     keys_home: None,
@@ -2536,6 +2612,7 @@ mod tests {
     fn lookup(request: &str, token: Option<&str>, lookups: Option<&Lookups>) -> String {
         let routes = Routes {
             lookups: lookups.cloned(),
+            radar: None,
             analyze: None,
             scans: None,
             keys_home: None,
@@ -2708,6 +2785,7 @@ mod tests {
                 wait,
                 ..echo_lookups()
             }),
+            radar: None,
             analyze: None,
             scans: Some(Arc::new(api)),
             keys_home: None,
@@ -3019,6 +3097,7 @@ mod tests {
     ) -> Routes {
         Routes {
             lookups: None,
+            radar: None,
             analyze: Some(Arc::new(handler)),
             scans: None,
             keys_home: None,
