@@ -222,6 +222,7 @@ pub mod web_query;
 pub mod web_server;
 pub mod whoxy;
 pub mod wigle;
+pub mod wifi_radar;
 pub mod x509;
 pub mod xlsx;
 pub mod xposedornot;
