@@ -250,10 +250,42 @@ mod tests {
 
     #[test]
     fn missing_or_redacted_cell_identifiers_are_rejected() {
-        let raw = br#"[{"type":"lte","mcc":505,"mnc":1,"tac":2147483647,"ci":123},{"type":"nr","mcc":null,"mnc":"01","tac":12,"nci":34},{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":2147483647},{"type":"cdma","system":1,"network":2,"basestation":3},{"type":"gsm","mcc":505,"mnc":1,"lac":1,"cid":3}]"#;
+        let raw = br#"[{"type":"lte","mcc":505,"mnc":1,"tac":2147483647,"ci":123},{"type":"nr","mcc":null,"mnc":"01","tac":12,"nci":34},{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":2147483647},{"type":"cdma","system":1,"network":2},{"type":"gsm","mcc":505,"mnc":1,"lac":1,"cid":3}]"#;
         let scan = parse_cells(raw).unwrap();
         assert_eq!((scan.observed, scan.rejected), (1, 4));
         assert_eq!(scan.observations[0].sighting.network_id, "gsm:505-01-1-3");
+    }
+
+    #[test]
+    fn cdma_base_station_ids_are_kept_without_claiming_handset_coordinates() {
+        // Android returns CDMA latitude/longitude as base-station metadata.
+        // Those are not the device's observed coordinates.
+        let raw = br#"[{"type":"cdma","registered":true,"system":11,"network":22,"basestation":33,"latitude":1234567,"longitude":2345678,"dbm":-85}]"#;
+        let scan = parse_cells(raw).unwrap();
+        assert_eq!((scan.observed, scan.rejected), (1, 0));
+        let cell = &scan.observations[0];
+        assert_eq!(cell.technology, "cdma");
+        assert_eq!(cell.sighting.network_id, "cdma:11-22-33");
+        assert_eq!(cell.mcc, None);
+        assert_eq!(cell.mnc, None);
+        assert_eq!(cell.area_code, 22);
+        assert_eq!(cell.cell_id, 33);
+        assert_eq!(cell.registered, Some(true));
+        assert_eq!(cell.sighting.signal_dbm, Some(-85.0));
+        assert_eq!(cell.sighting.observed_epoch, None);
+        assert!(!cell.sighting.has_usable_position());
+        assert_eq!(cell.freshness, "unknown");
+        let replay = parse_replay(raw).unwrap();
+        assert_eq!(replay.source, "unverified_json_file");
+        assert_eq!(replay.observations[0].sighting.latitude, None);
+    }
+
+    #[test]
+    fn incomplete_or_out_of_range_cdma_does_not_become_a_tower_sighting() {
+        let raw = br#"[{"type":"cdma","system":11,"network":22},{"type":"cdma","system":65536,"network":22,"basestation":33},{"type":"cdma","system":11,"network":22,"basestation":65536}]"#;
+        let scan = parse_cells(raw).unwrap();
+        assert_eq!((scan.observed, scan.rejected), (0, 3));
+        assert_eq!(scan.status, "inconclusive");
     }
 
     #[test]
