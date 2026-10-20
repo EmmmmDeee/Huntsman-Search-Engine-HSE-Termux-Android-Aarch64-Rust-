@@ -8,6 +8,10 @@
 //! [`run_keyed`] then runs every indicator source for an address: the keyless `StopForumSpam`,
 //! Kickbox and `XposedOrNot` checks, and `IPQualityScore`, the Hunter verifier and Whoxy reverse
 //! WHOIS when their keys are configured.
+//!
+//! A source that fails, one the egress policy refuses included, is its own failed row and the rest
+//! still run. A lookup no source answered is not printed: it fails with the first reason (exit 69),
+//! or is a refusal (exit 77) when the egress policy refused a source.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -26,7 +30,7 @@ use crate::indicator_sources::Indicator;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::textnorm::upper_first;
 use crate::{duolingo, openpgp_keys};
 
@@ -77,7 +81,8 @@ pub enum EmailRun {
 type Collected = Result<(Vec<Entity>, SourceExecutionOutcome), Error>;
 type Source<T> = (&'static str, fn(&T, &str, &str, u64) -> Collected);
 
-/// The keyless public lookups `email` runs, in order, each with its module. Each is one request.
+/// The keyless public lookups `email` runs, in order, each with the module it reports under.
+/// Each is one request.
 fn sources<T: Transport + ?Sized>() -> [Source<T>; 3] {
     [
         (gravatar::SRC, |t, email, scan, now| {
@@ -92,41 +97,117 @@ fn sources<T: Transport + ?Sized>() -> [Source<T>; 3] {
     ]
 }
 
-/// Run one deterministic email enrichment plus the keyless public lookups the transport's lookup
-/// asks ([`Transport::runs_module`]).
-#[must_use]
-pub fn run<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> EmailRun {
-    let Some(email) = canonical_email(email) else {
-        return EmailRun::Failed("invalid email address".into());
-    };
-    let scan_id = crate::entity::scan_id("email", &email);
-    let mut report = Report {
-        entities: derive_entities(&email, &scan_id),
-        outcomes: Vec::new(),
-    };
+/// What one lookup gathered, the first source the egress policy refused, and the first that got
+/// no response.
+struct Gathered {
+    email: String,
+    report: Report,
+    refused: Option<String>,
+    unanswered: Option<String>,
+}
 
+impl Gathered {
+    /// Record one source's outcome; one that got no response is remembered as the reason.
+    fn outcome(&mut self, outcome: SourceExecutionOutcome) {
+        if outcome.kind.is_transport_failure() {
+            let detail = outcome.detail.as_deref().unwrap_or("no response");
+            self.unanswered
+                .get_or_insert_with(|| format!("{}: {detail}", outcome.module));
+        }
+        self.report.outcomes.push(outcome);
+    }
+
+    /// Record a source the transport refused to send to: a failed row, like a timeout.
+    fn refused(&mut self, module: &str, now_unix: u64, message: String) {
+        self.refused
+            .get_or_insert_with(|| format!("{module}: {message}"));
+        self.outcome(SourceExecutionOutcome::failed(
+            module,
+            now_unix,
+            SourceOutcomeKind::ConnectFailure,
+            None,
+            message,
+        ));
+    }
+
+    /// The printed lookup once any source answered. When none did, the address's own
+    /// derivations are not a finding: [`EmailRun::Network`] (exit 77) when the egress policy
+    /// refused a source, otherwise [`EmailRun::Failed`] (exit 69) with the first reason.
+    fn finish(self) -> EmailRun {
+        let Self {
+            email,
+            mut report,
+            refused,
+            unanswered,
+        } = self;
+        merge_by_uid(&mut report.entities);
+        if !report.outcomes.iter().any(|o| o.kind.is_accepted()) {
+            if let Some(message) = refused {
+                return EmailRun::Network(message);
+            }
+            let why = unanswered
+                .or_else(|| {
+                    report.outcomes.first().map(|o| {
+                        format!("{}: {}", o.module, o.detail.as_deref().unwrap_or("failed"))
+                    })
+                })
+                .unwrap_or_else(|| "no source ran".into());
+            return EmailRun::Failed(format!("no source answered for {email}: {why}"));
+        }
+        match lookup_report::render(&report.entities, &report.outcomes) {
+            Ok(text) => EmailRun::Printed { text, report },
+            Err(msg) => EmailRun::Failed(msg),
+        }
+    }
+}
+
+/// The address's derivations and the keyless public lookups the transport's lookup asks
+/// ([`Transport::runs_module`]). A source the transport refused (the egress policy, for a host
+/// that resolves to a non-public address) is a failed row, like a source that timed out; the
+/// other sources still run.
+fn gather<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> Option<Gathered> {
+    let email = canonical_email(email)?;
+    let scan_id = crate::entity::scan_id("email", &email);
+    let mut gathered = Gathered {
+        report: Report {
+            entities: derive_entities(&email, &scan_id),
+            outcomes: Vec::new(),
+        },
+        email,
+        refused: None,
+        unanswered: None,
+    };
     for (module, source) in sources::<T>() {
         if !transport.runs_module(module) {
             continue;
         }
-        match source(transport, &email, &scan_id, now_unix) {
+        match source(transport, &gathered.email, &scan_id, now_unix) {
             Ok((entities, outcome)) => {
-                report.entities.extend(entities);
-                report.outcomes.push(outcome);
+                gathered.report.entities.extend(entities);
+                gathered.outcome(outcome);
             }
-            Err(Error::Network(msg)) => return EmailRun::Network(msg),
-            Err(err) => return EmailRun::Failed(err.to_string()),
+            Err(Error::Network(message)) => gathered.refused(module, now_unix, message),
+            Err(err) => gathered.outcome(SourceExecutionOutcome::inconclusive(
+                module,
+                now_unix,
+                err.to_string(),
+            )),
         }
     }
-    merge_by_uid(&mut report.entities);
-
-    match lookup_report::render(&report.entities, &report.outcomes) {
-        Ok(text) => EmailRun::Printed { text, report },
-        Err(msg) => EmailRun::Failed(msg),
-    }
+    Some(gathered)
 }
 
-/// [`run`], then every indicator source for the address that `keys` enables.
+/// Run one deterministic email enrichment plus the keyless public lookups.
+#[must_use]
+pub fn run<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> EmailRun {
+    gather(transport, email, now_unix).map_or_else(
+        || EmailRun::Failed("invalid email address".into()),
+        Gathered::finish,
+    )
+}
+
+/// [`run`], then every indicator source for the address that `keys` enables. The keyed sources
+/// run whatever the keyless ones answered.
 #[must_use]
 pub fn run_keyed<T: Transport + ?Sized>(
     transport: &T,
@@ -134,34 +215,26 @@ pub fn run_keyed<T: Transport + ?Sized>(
     email: &str,
     now_unix: u64,
 ) -> EmailRun {
-    let mut report = match run(transport, email, now_unix) {
-        EmailRun::Printed { report, .. } => report,
-        other => return other,
+    let Some(mut gathered) = gather(transport, email, now_unix) else {
+        return EmailRun::Failed("invalid email address".into());
     };
-    let Some(seed) = report.entities.first() else {
+    let Some(seed) = gathered.report.entities.first() else {
         return EmailRun::Failed("email lookup produced no entity".into());
     };
     let (email, scan_id) = (seed.raw_value.clone(), seed.scan_id.clone());
-    if indicator_legs::planned(Indicator::Email(&email), keys).is_empty() {
-        return match lookup_report::render(&report.entities, &report.outcomes) {
-            Ok(text) => EmailRun::Printed { text, report },
-            Err(msg) => EmailRun::Failed(msg),
-        };
+    if !indicator_legs::planned(Indicator::Email(&email), keys).is_empty() {
+        let legs = indicator_legs::run(
+            transport,
+            keys,
+            Indicator::Email(&email),
+            &scan_id,
+            now_unix,
+        );
+        gathered.report.entities.extend(legs.entities);
+        gathered.report.outcomes.extend(legs.outcomes);
+        gathered.unanswered = gathered.unanswered.or(legs.network);
     }
-    let legs = indicator_legs::run(
-        transport,
-        keys,
-        Indicator::Email(&email),
-        &scan_id,
-        now_unix,
-    );
-    report.entities.extend(legs.entities);
-    report.outcomes.extend(legs.outcomes);
-    merge_by_uid(&mut report.entities);
-    match lookup_report::render(&report.entities, &report.outcomes) {
-        Ok(text) => EmailRun::Printed { text, report },
-        Err(msg) => EmailRun::Failed(msg),
-    }
+    gathered.finish()
 }
 
 fn derive_entities(email: &str, scan_id: &str) -> Vec<Entity> {
@@ -335,7 +408,7 @@ fn derive_person(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::Response;
+    use crate::http::{Response, TransportFailure};
     use crate::test_support::ScriptedTransport;
 
     use crate::source_outcome::SourceOutcomeKind;
@@ -703,5 +776,123 @@ mod tests {
             ],
             "each key goes only where its provider takes it"
         );
+    }
+
+    fn unreachable(blocked: bool, detail: &str) -> Result<Response, TransportFailure> {
+        Err(TransportFailure {
+            kind: SourceOutcomeKind::ConnectFailure,
+            detail: detail.into(),
+            blocked,
+        })
+    }
+
+    /// A host the egress policy refuses (a DNS filter that answers 0.0.0.0 for it) is that
+    /// source's failed row; the other public lookups and the keyed Whoxy reverse WHOIS still run.
+    /// Before, the refusal ended the whole lookup as a network failure (exit 77), so no other
+    /// source ran, paid ones included.
+    #[test]
+    fn a_source_the_transport_refuses_does_not_stop_the_lookup() {
+        let keys = Keys::parse(&format!(
+            "{}=whoxy-test-key-0123456789\n",
+            crate::whoxy::KEY_SLOT
+        ))
+        .unwrap_or_else(|e| panic!("{e}"));
+        let transport = ScriptedTransport::new(vec![
+            unreachable(
+                true,
+                "egress-policy: destination (0.0.0.0) is not publicly routable",
+            ),
+            Ok(reply(200, r#"{"users":[]}"#)),
+            Ok(reply(404, "No key found")),
+            Ok(reply(
+                200,
+                r#"{"success":1,"email":{"value":"x","appears":0,"frequency":0}}"#,
+            )),
+            Ok(reply(200, r#"{"disposable":false}"#)),
+            Ok(reply(200, r#"{"Error":"Not found","email":null}"#)),
+            Ok(reply(
+                200,
+                r#"{"status":1,"total_results":1,"search_result":[{"domain_name":"ada-lovelace.example"}]}"#,
+            )),
+        ]);
+        let report = match run_keyed(&transport, &keys, "ada@example.com", 1) {
+            EmailRun::Printed { report, .. } => report,
+            other => panic!("{other:?}"),
+        };
+        let rows: Vec<(&str, SourceOutcomeKind)> = report
+            .outcomes
+            .iter()
+            .map(|o| (o.module.as_str(), o.kind))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("gravatar", SourceOutcomeKind::ConnectFailure),
+                ("duolingo", SourceOutcomeKind::ValidZero),
+                ("openpgp_keys", SourceOutcomeKind::ValidZero),
+                ("stopforumspam", SourceOutcomeKind::ValidZero),
+                ("kickbox", SourceOutcomeKind::ValidZero),
+                ("xposed_or_not", SourceOutcomeKind::ValidZero),
+                ("whoxy", SourceOutcomeKind::Success),
+            ]
+        );
+        assert!(
+            report.outcomes[0]
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("not publicly routable")),
+            "{:?}",
+            report.outcomes[0]
+        );
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "ada-lovelace.example")
+        );
+    }
+
+    /// When no source answers, the address's own derivations are not a finding: the lookup fails
+    /// with the first reason (exit 69, "no usable response"), or is a refusal (exit 77) when the
+    /// egress policy refused a source, as the README's exit codes say. Before, it printed the
+    /// derivations with every row failed and exited 0.
+    #[test]
+    fn a_lookup_no_source_answered_fails_and_says_why() {
+        let offline = ScriptedTransport::new(Vec::new());
+        match run_keyed(&offline, &Keys::default(), "ada@example.com", 1) {
+            EmailRun::Failed(message) => assert_eq!(
+                message,
+                "no source answered for ada@example.com: gravatar: unexpected request"
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            offline.seen.borrow().len(),
+            6,
+            "every source was still tried"
+        );
+
+        let refused = ScriptedTransport::new(
+            (0..6)
+                .map(|_| unreachable(true, "egress-policy: destination is not publicly routable"))
+                .collect(),
+        );
+        match run_keyed(&refused, &Keys::default(), "ada@example.com", 1) {
+            EmailRun::Network(message) => assert!(
+                message.starts_with("gravatar: egress-policy: "),
+                "{message}"
+            ),
+            other => panic!("{other:?}"),
+        }
+
+        let one_answer = ScriptedTransport::new(vec![
+            Ok(reply(404, "")),
+            unreachable(false, "offline"),
+            Ok(reply(404, "No key found")),
+        ]);
+        assert!(matches!(
+            run(&one_answer, "ada@example.com", 1),
+            EmailRun::Printed { .. }
+        ));
     }
 }

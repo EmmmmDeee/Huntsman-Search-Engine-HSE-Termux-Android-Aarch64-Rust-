@@ -1,0 +1,1 @@
+- Refuse saved-scan graph analysis when any persisted SpiderFoot element is marked false positive; without a lossless evidence-to-element mapping, silently including discredited evidence would invent correlations. Preserve the saved artifact and return a 409 through the API and a nonzero CLI exit.
