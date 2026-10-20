@@ -257,6 +257,18 @@ pub fn lineage_links(report: &RecursionReport) -> Vec<LineageLink> {
                     .or_insert_with(|| entity.uid.as_str());
             }
         }
+        // Mirror the one secondary expansion target: an e-mail entity also dispatches an exposure
+        // lookup (see [`expansions`]), whose edges record `from_kind = exposure` — a route the
+        // primary `expansion_kind` inverse never covers. Register it too, so the e-mail → breach /
+        // exposure pivots resolve into the graph instead of being dropped as unroutable. Harmless
+        // when the policy ran no exposure leg: no such edge then exists to match.
+        if entity.kind == EntityKind::Email {
+            if let Some(selector) = canonical_selector(ScanKind::Exposure, &entity.value) {
+                by_route
+                    .entry((ScanKind::Exposure.command().to_owned(), selector))
+                    .or_insert_with(|| entity.uid.as_str());
+            }
+        }
     }
     let mut links: Vec<LineageLink> = Vec::new();
     for edge in &report.edges {
@@ -699,6 +711,52 @@ mod tests {
         assert_eq!(links[0].to_uid, phone.uid);
         assert!(
             (links[0].confidence - phone.confidence).abs() < f64::EPSILON,
+            "the link weight is the produced entity's confidence"
+        );
+    }
+
+    #[test]
+    fn email_exposure_pivot_resolves_through_the_exposure_route() {
+        // An e-mail entity dispatches a second lookup — the exposure leg — whose edges record
+        // `from_kind = exposure`, not `email`. The lineage projection must invert THAT route too, or
+        // every e-mail → breach pivot (the exposure leg's whole output) is dropped and the breach
+        // findings orphan in the analysis graph. Baseline (exposure route unregistered): zero links.
+        let email = Entity::new(EntityKind::Email, "a@example.com", 0.9, "recurse");
+        let mut leaked = Entity::new(EntityKind::Email, "leaked@example.com", 0.5, "recurse");
+        leaked.generation = 1;
+        let exposure_edge = PivotEdge {
+            from_kind: ScanKind::Exposure.command().to_owned(),
+            from_selector: canonical_selector(ScanKind::Exposure, &email.value)
+                .expect("the e-mail canonicalises as an exposure selector"),
+            to_kind: leaked.kind.as_str().to_owned(),
+            to_value: leaked.value.clone(),
+            generation: 1,
+        };
+        let report = RecursionReport {
+            accepted_seeds: Vec::new(),
+            rejected_seeds: Vec::new(),
+            entities: vec![email.clone(), leaked.clone()],
+            edges: vec![exposure_edge],
+            outcomes: Vec::new(),
+            generations: Vec::new(),
+            dispatches: 0,
+            visited: 0,
+            termination: TerminationReason::FixedPoint,
+            truncated: false,
+        };
+        let links = lineage_links(&report);
+        assert_eq!(
+            links.len(),
+            1,
+            "the exposure-leg pivot resolves to a link: {links:?}"
+        );
+        assert_eq!(links[0].from_uid, email.uid, "the source is the e-mail");
+        assert_eq!(
+            links[0].to_uid, leaked.uid,
+            "the target is the breach-derived entity"
+        );
+        assert!(
+            (links[0].confidence - leaked.confidence).abs() < f64::EPSILON,
             "the link weight is the produced entity's confidence"
         );
     }
