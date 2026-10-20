@@ -44,6 +44,14 @@ fn fixture() -> (PathBuf, String, Vec<u8>) {
     let entity = Entity::builder(EntityKind::Domain, "example.com", 0.9, id.as_str())
         .evidence(evidence)
         .build();
+    let elements = huntsman_recon::sf_elements::elements(
+        huntsman_recon::sf_elements::Target {
+            value: "example.com",
+            kind: "INTERNET_NAME",
+        },
+        std::slice::from_ref(&entity),
+        1919,
+    );
     store
         .save_results(&ScanResults {
             format_version: FORMAT_VERSION,
@@ -51,7 +59,7 @@ fn fixture() -> (PathBuf, String, Vec<u8>) {
             text: "fixture".into(),
             entities: vec![entity],
             outcomes: vec![SourceExecutionOutcome::success("dns", 1, 1)],
-            elements: Vec::new(),
+            elements,
             correlations: Vec::new(),
             lineage: Vec::new(),
             termination: None,
@@ -111,5 +119,33 @@ fn analyze_saved_scan_round_trips_evidence_and_prints_explicit_limits() {
 
     let missing = run(&dir, "aaaaaaaaaaaaaaaa", true);
     assert!(!missing.status.success());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn analyze_cli_rejects_flagged_evidence_without_making_an_artifact_change() {
+    let (dir, id, _) = fixture();
+    let store = ScanStore::open(&dir).unwrap();
+    let mut results = store.results(&id).unwrap().unwrap();
+    let flagged = results
+        .elements
+        .iter_mut()
+        .find(|element| element.entity.is_some() && element.kind != "ROOT")
+        .unwrap();
+    flagged.fp = true;
+    store.save_results(&results).unwrap();
+
+    let path = dir.join(&id).join("results.json");
+    let before = std::fs::read(&path).unwrap();
+    let output = run(&dir, &id, true);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("false-positive"),
+        "{:?}",
+        output.stderr
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(store.results(&id).unwrap(), Some(results));
+
     std::fs::remove_dir_all(dir).unwrap();
 }
