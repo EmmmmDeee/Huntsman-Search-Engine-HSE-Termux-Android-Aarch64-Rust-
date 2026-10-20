@@ -4,6 +4,7 @@
 //! `username`, `phone`, `domain`, `ip`, `netblock`, `asn` and `network` commands, `scan`, and the Web UI's `/api/lookup` all run through it,
 //! so a kind cannot behave differently depending on where it was asked from.
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -247,10 +248,11 @@ fn legs_beside(
         done(text, entities, outcomes, policy),
         exposure_policy,
     );
-    found.text.push_str(&format!(
-        "{kind}=unavailable reason={}\n",
+    let _ = writeln!(
+        found.text,
+        "{kind}=unavailable reason={}",
         escape_controls(refused.message())
-    ));
+    );
     Ok(found)
 }
 
