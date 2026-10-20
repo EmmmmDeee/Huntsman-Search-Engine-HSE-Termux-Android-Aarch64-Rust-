@@ -2269,6 +2269,7 @@ mod tests {
         let controller = ScanService::new(service.store().clone(), Arc::clone(&service.lookup));
         let cancellation = controller.graph_cancellation(&record.id);
         let before = std::fs::read(dir.join(&record.id).join("scan.json")).unwrap();
+        let before_log = service.store().log(&record.id).unwrap();
 
         let error = controller.stop(&record.id).unwrap_err();
         assert!(matches!(error, ServiceError::Conflict(_)));
@@ -2280,7 +2281,7 @@ mod tests {
         );
         assert!(!controller.state().aborts.contains(&record.id));
         assert!(!cancellation.load(Ordering::Acquire));
-        assert!(service.store().log(&record.id).unwrap().is_empty());
+        assert_eq!(service.store().log(&record.id).unwrap(), before_log);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
