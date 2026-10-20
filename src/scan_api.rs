@@ -37,9 +37,9 @@ use serde_json::{Value, json};
 
 use crate::analysis::analyze_snapshot;
 use crate::api_leg::Api;
-use crate::pipeline::{PipelineLimits, snapshot_from_entities};
 use crate::correlator::rule_catalog;
 use crate::module::reachable_modules;
+use crate::pipeline::{PipelineLimits, snapshot_from_entities};
 use crate::scan_compare;
 use crate::scan_export;
 use crate::scan_search;
@@ -409,6 +409,7 @@ impl ScanApi {
 
         let limits = PipelineLimits::default();
         let count = results.entities.len().min(limits.max_entities);
+        let flagged_elements = results.elements.iter().filter(|element| element.fp).count();
         let mut snapshot = snapshot_from_entities(&results.entities[..count], id, &limits);
         snapshot.truncated |= count < results.entities.len();
         let report = analyze_snapshot(&snapshot);
@@ -426,6 +427,7 @@ impl ScanApi {
                     "original_evidence": "retained_in_saved_results",
                     "provider_coverage": "not_reconstructed",
                     "evidence_ancestry": "not_reconstructed",
+                    "false_positive_annotations": "not_applied_to_entity_analysis",
                     "scan_complete": record.status == ScanStatus::Finished,
                     "truncated": snapshot.truncated,
                 },
@@ -434,6 +436,7 @@ impl ScanApi {
                     "analyzed_entities": snapshot.entities.len(),
                     "derived_relations": snapshot.relations.len(),
                     "source_outcomes": results.outcomes.len(),
+                    "flagged_elements": flagged_elements,
                 },
                 "report": report,
             }),
@@ -942,7 +945,13 @@ fn route_exists(segments: &[&str], write: bool) -> bool {
                 | [
                     "scans",
                     _,
-                    "summary" | "analyze" | "elements" | "correlations" | "log" | "graph" | "export"
+                    "summary"
+                        | "analyze"
+                        | "elements"
+                        | "correlations"
+                        | "log"
+                        | "graph"
+                        | "export"
                 ]
         )
     }
@@ -1439,9 +1448,23 @@ mod tests {
         assert_eq!(value["counts"]["saved_entities"], original.entities.len());
         assert_eq!(value["counts"]["source_outcomes"], original.outcomes.len());
         assert_eq!(value["limitations"]["scan_complete"], true);
-        assert_eq!(value["limitations"]["provider_coverage"], "not_reconstructed");
-        assert_eq!(value["limitations"]["evidence_ancestry"], "not_reconstructed");
-        assert_eq!(value["limitations"]["original_evidence"], "retained_in_saved_results");
+        assert_eq!(
+            value["limitations"]["false_positive_annotations"],
+            "not_applied_to_entity_analysis"
+        );
+        assert_eq!(value["counts"]["flagged_elements"], 0);
+        assert_eq!(
+            value["limitations"]["provider_coverage"],
+            "not_reconstructed"
+        );
+        assert_eq!(
+            value["limitations"]["evidence_ancestry"],
+            "not_reconstructed"
+        );
+        assert_eq!(
+            value["limitations"]["original_evidence"],
+            "retained_in_saved_results"
+        );
         assert!(value["report"].is_object());
         assert_eq!(api.service().store().results(&id).unwrap(), Some(original));
         assert_eq!(std::fs::read(&saved_path).unwrap(), original_bytes);
