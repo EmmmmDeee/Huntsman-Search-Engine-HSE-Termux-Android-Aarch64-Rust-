@@ -966,7 +966,12 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
     let head = parsed.method == Method::Head;
     let protected = matches!(
         parsed.path,
-        "/api/modules" | "/api/command" | "/api/lookup" | "/api/analyze" | "/api/radar/wifi" | KEYS_PATH
+        "/api/modules"
+            | "/api/command"
+            | "/api/lookup"
+            | "/api/analyze"
+            | "/api/radar/wifi"
+            | KEYS_PATH
     ) || ScanApi::handles(parsed.path);
     if protected
         && bearer_token.is_some_and(|expected| !bearer_matches(parsed.authorization, expected))
@@ -1059,7 +1064,10 @@ fn radar_response(parsed: &ParsedRequest<'_>, radar: Option<&Radar>) -> String {
     if parsed.method != Method::Get {
         return json_error(405, "Wi-Fi radar needs GET");
     }
-    if parsed.sec_fetch_site.is_some_and(|site| !matches!(site, "same-origin" | "none")) {
+    if parsed
+        .sec_fetch_site
+        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
+    {
         return json_error(403, "cross-site Wi-Fi radar request refused");
     }
     if !parsed.lookup_header {
@@ -2042,13 +2050,19 @@ mod tests {
         let lookup = "X-Huntsman-Lookup: 1\r\n";
         assert!(request("GET", lookup).starts_with("HTTP/1.1 401"));
         assert!(request("GET", auth).starts_with("HTTP/1.1 403"));
-        assert!(request("GET", &format!("{auth}{lookup}Sec-Fetch-Site: cross-site\r\n"))
-            .starts_with("HTTP/1.1 403"));
-        assert!(request("POST", &format!("{auth}{lookup}"))
-            .starts_with("HTTP/1.1 405"));
-        assert!(request("HEAD", &format!("{auth}{lookup}"))
-            .starts_with("HTTP/1.1 405"));
-        let result = request("GET", &format!("{auth}{lookup}Sec-Fetch-Site: same-origin\r\n"));
+        assert!(
+            request(
+                "GET",
+                &format!("{auth}{lookup}Sec-Fetch-Site: cross-site\r\n")
+            )
+            .starts_with("HTTP/1.1 403")
+        );
+        assert!(request("POST", &format!("{auth}{lookup}")).starts_with("HTTP/1.1 405"));
+        assert!(request("HEAD", &format!("{auth}{lookup}")).starts_with("HTTP/1.1 405"));
+        let result = request(
+            "GET",
+            &format!("{auth}{lookup}Sec-Fetch-Site: same-origin\r\n"),
+        );
         assert!(result.starts_with("HTTP/1.1 200"), "{result}");
         let body: serde_json::Value =
             serde_json::from_str(result.split("\r\n\r\n").nth(1).unwrap_or_default()).unwrap();
@@ -2073,10 +2087,12 @@ mod tests {
         let live = Arc::new(AtomicUsize::new(1));
         let routes = Routes {
             radar: Some(Radar {
-                handler: Arc::new(|| Err(LookupError {
-                    status: 503,
-                    message: "Termux:API unavailable".into(),
-                })),
+                handler: Arc::new(|| {
+                    Err(LookupError {
+                        status: 503,
+                        message: "Termux:API unavailable".into(),
+                    })
+                }),
                 live: Arc::clone(&live),
             }),
             ..Routes::default()
