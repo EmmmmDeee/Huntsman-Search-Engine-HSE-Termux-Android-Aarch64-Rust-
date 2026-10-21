@@ -81,15 +81,23 @@ fn collect_termux_radio(command: &str) -> Result<Vec<u8>, String> {
         return Err("Termux sensor output reader limit reached".into());
     }
     let (sender, receiver) = mpsc::sync_channel(1);
-    thread::spawn(move || {
-        let _slot = ReaderSlot;
-        let mut data = Vec::new();
-        let result = stdout
-            .take(MAX_SCAN_BYTES + 1)
-            .read_to_end(&mut data)
-            .map(|_| data);
-        let _ = sender.send(result);
-    });
+    let reader = thread::Builder::new()
+        .name("termux-radio-stdout".into())
+        .spawn(move || {
+            let _slot = ReaderSlot;
+            let mut data = Vec::new();
+            let result = stdout
+                .take(MAX_SCAN_BYTES + 1)
+                .read_to_end(&mut data)
+                .map(|_| data);
+            let _ = sender.send(result);
+        });
+    if let Err(error) = reader {
+        ACTIVE_READERS.fetch_sub(1, Ordering::AcqRel);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("cannot start Termux sensor stdout reader: {error}"));
+    }
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
