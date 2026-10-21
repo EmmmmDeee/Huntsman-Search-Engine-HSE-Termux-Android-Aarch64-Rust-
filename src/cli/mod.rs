@@ -73,6 +73,7 @@ egress policy is public-only.";
 /// The largest plain file a command reads or writes: a seed list, or a self-check scratch file.
 /// A saved artifact has its own ceiling, `scan_artifact::MAX_ARTIFACT_BYTES`.
 const MAX_PLAIN_FILE_BYTES: u64 = 1_048_576;
+mod continuous;
 mod credentials;
 mod doctor;
 mod help;
