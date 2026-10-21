@@ -1,0 +1,1 @@
+- Wait for the full configured interval after each terminal scan before scheduling a recurring collection, with a creation-time fallback for historical records lacking an end timestamp.
