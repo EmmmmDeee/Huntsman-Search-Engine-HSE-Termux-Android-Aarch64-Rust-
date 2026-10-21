@@ -34,6 +34,7 @@ use huntsman_recon::lookup_save::{
 use huntsman_recon::module_selection::{Selected, Selection};
 use huntsman_recon::netblock_cli::{NETBLOCK_USAGE, NetblockArgs, NetblockRun};
 use huntsman_recon::network_cli::{NETWORK_USAGE, NetworkArgs, NetworkRun};
+use huntsman_recon::nominatim_cli::{self, GEOCODE_USAGE, GeocodeArgs, GeocodeRun};
 use huntsman_recon::oathnet;
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
@@ -693,6 +694,28 @@ pub(in crate::cli) fn itunes_cmd(args: &[String]) -> ExitCode {
             fail(refused.exit_status(), refused.message())
         }
         ItunesRun::Failed(m) => {
+            let refused = Refused::Unavailable(m);
+            fail(refused.exit_status(), refused.message())
+        }
+    }
+}
+
+pub(in crate::cli) fn geocode_cmd(args: &[String]) -> ExitCode {
+    let parsed = match GeocodeArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return usage_failure(&e, GEOCODE_USAGE),
+    };
+    let transport = transport(&TransportConfig::default(), &Selection::all());
+    match nominatim_cli::run(&transport, &parsed.query, now_unix()) {
+        GeocodeRun::Printed { text, .. } => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        GeocodeRun::Network(m) => {
+            let refused = Refused::Network(m);
+            fail(refused.exit_status(), refused.message())
+        }
+        GeocodeRun::Failed(m) => {
             let refused = Refused::Unavailable(m);
             fail(refused.exit_status(), refused.message())
         }
