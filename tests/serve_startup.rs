@@ -90,11 +90,10 @@ fn startup_on(bind: &str, envs: &[(&str, &str)]) -> (String, String) {
 #[test]
 fn unrelated_port_environment_does_not_override_local_bind() {
     let mut child = serve(
-        &[],
+        &["--bind", "127.0.0.1:0"],
         &[
             ("PORT", "not-a-valid-port"),
             ("RAILWAY_ENVIRONMENT", "retired-sentinel"),
-            ("HSE_BIND", "127.0.0.1:0"),
         ],
     )
     .stdout(Stdio::piped())
