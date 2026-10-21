@@ -39,17 +39,6 @@ jobs:
           }
           echo "main origin: merged PR association verified (${count})"
 
-  railway-iac:
-    name: Railway IaC type validation
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "22"
-      - name: Type-check Railway Infrastructure as Code
-        run: bash scripts/validate-railway-iac.sh
-
   web-ui:
     name: Web UI in a phone browser
     runs-on: ubuntu-24.04
@@ -114,14 +103,14 @@ jobs:
         run: cargo run --locked --example graph_exec_bench
 
 
-  railway-container:
-    name: Railway container smoke test
+  container:
+    name: Self-hosted container smoke test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build current Huntsman Recon image
-        run: docker build --pull --build-arg HUNTSMAN_BUILD_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:railway .
-      - name: Exercise Railway-style runtime
+        run: docker build --pull --build-arg HUNTSMAN_BUILD_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:container .
+      - name: Exercise self-hosted container runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -135,14 +124,13 @@ jobs:
             --name "$name" \
             -p 127.0.0.1:18080:8080 \
             -e PORT=8080 \
-            -e RAILWAY_ENVIRONMENT=ci \
             -e HSE_AUTH_TOKEN=ci-huntsman-token \
             -e HUNTSMAN_STARTUP_CHECK=1 \
-            huntsman-recon:railway
+            huntsman-recon:container
 
-          HUNTSMAN_RAILWAY_URL=http://127.0.0.1:18080 \
+          HUNTSMAN_CONTAINER_URL=http://127.0.0.1:18080 \
           HSE_AUTH_TOKEN=ci-huntsman-token \
-            bash scripts/railway-live-acceptance.sh
+            bash scripts/container-live-acceptance.sh
 
   android-aarch64:
     name: Android aarch64 cross-build
