@@ -3,6 +3,8 @@
 use std::io::Read as _;
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,6 +15,19 @@ use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::wifi_radar::{self, MAX_SCAN_BYTES};
 
 const USAGE: &str = "usage: huntsman-recon radar wifi|cells [--json] [--file TERMUX_SCAN_JSON]";
+
+/// A misbehaving descendant can keep a sensor stdout pipe open after the
+/// direct child exits. Bound detached drainers to avoid exhausting a server.
+const MAX_ACTIVE_READERS: usize = 4;
+static ACTIVE_READERS: AtomicUsize = AtomicUsize::new(0);
+
+struct ReaderSlot;
+
+impl Drop for ReaderSlot {
+    fn drop(&mut self) {
+        ACTIVE_READERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 fn uptime_secs() -> Option<f64> {
     let data = read_bounded(Path::new("/proc/uptime"), 128).ok()?;
@@ -38,12 +53,27 @@ fn collect_termux_radio(command: &str) -> Result<Vec<u8>, String> {
         let _ = child.wait();
         return Err("Termux Wi-Fi stdout unavailable".into());
     };
-    let reader = thread::spawn(move || {
+    // Reserving before spawning bounds the threads that could be stranded
+    // by inherited stdout descriptors in buggy Termux:API descendants.
+    if ACTIVE_READERS
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < MAX_ACTIVE_READERS).then_some(count + 1)
+        })
+        .is_err()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("Termux sensor output reader limit reached".into());
+    }
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _slot = ReaderSlot;
         let mut data = Vec::new();
-        stdout
+        let result = stdout
             .take(MAX_SCAN_BYTES + 1)
             .read_to_end(&mut data)
-            .map(|_| data)
+            .map(|_| data);
+        let _ = sender.send(result);
     });
     let started = Instant::now();
     let status = loop {
@@ -64,18 +94,25 @@ fn collect_termux_radio(command: &str) -> Result<Vec<u8>, String> {
             }
         }
     };
-    let data = reader
-        .join()
-        .map_err(|_| "Termux Wi-Fi output reader failed".to_owned())?
-        .map_err(|e| format!("cannot read Termux Wi-Fi output: {e}"))?;
     let status = status?;
     if !status.success() {
         return Err(format!(
             "{command} exited with {status}; check the matching Termux:API Android app, permissions and Android location services"
         ));
     }
+    // A child may have exited successfully while a grandchild still holds
+    // the pipe's write end. Never join a blocking reader without a deadline.
+    let data = match receiver.recv_timeout(Duration::from_secs(2)) {
+        Ok(result) => result.map_err(|e| format!("cannot read Termux sensor output: {e}"))?,
+        Err(RecvTimeoutError::Timeout) => {
+            return Err("Termux sensor stdout was not closed after its process exited".into());
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            return Err("Termux sensor output reader failed".into());
+        }
+    };
     if usize::try_from(MAX_SCAN_BYTES).is_ok_and(|limit| data.len() > limit) {
-        return Err("Termux Wi-Fi output exceeds 1 MiB".into());
+        return Err("Termux sensor output exceeds 1 MiB".into());
     }
     Ok(data)
 }
