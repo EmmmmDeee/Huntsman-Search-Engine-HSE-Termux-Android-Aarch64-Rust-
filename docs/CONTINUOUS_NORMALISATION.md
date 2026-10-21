@@ -12,7 +12,7 @@ Saved scans are kept unchanged in the existing private scans store. For each ter
 
 The passive scan use case and zero recursion depth are used. Other configured provider quotas may still apply. No source failure, failed analysis or missing ancestry is promoted to a verified absence or identity. A refused analysis does not overwrite the last good derived report.
 
-After a new or failed scan, collection waits for the configured interval; admission failures back off at least 15 minutes. Existing active scans are joined, not duplicated. The scheduler never silently deletes old scans. Once the store reaches its 4096-record capacity, that limit remains observable; indefinite fresh collection requires a separately approved archival/retention procedure.
+After a completed, aborted or failed scan, collection waits for the full configured interval following its terminal end timestamp (falling back to creation time for legacy rows without an end timestamp); admission failures back off at least 15 minutes. Existing active scans are joined, not duplicated. The scheduler never silently deletes old scans. Once the store reaches its 4096-record capacity, that limit remains observable; indefinite fresh collection requires a separately approved archival/retention procedure.
 
 ## Lifecycle
 
