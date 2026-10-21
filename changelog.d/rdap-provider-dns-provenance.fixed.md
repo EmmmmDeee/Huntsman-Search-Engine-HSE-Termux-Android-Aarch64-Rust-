@@ -1,0 +1,1 @@
+- Restrict typed PROVIDER_DNS elements to RDAP registration-subject evidence. Reject unrelated same-named `ns` attributes without changing the registry-declared data, adding network requests, or treating registration statements as independent live DNS observations.
