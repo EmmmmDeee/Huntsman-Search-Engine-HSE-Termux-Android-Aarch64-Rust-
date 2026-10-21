@@ -336,7 +336,10 @@ fn reverse_preserves_exact_response_and_original_provider_fields() {
 
 #[test]
 fn oversized_provider_payload_is_rejected_not_partially_provenanced() {
-    let body = format!("[{{\"padding\":\"{}\"}}]", "x".repeat(MAX_NOMINATIM_RAW_JSON_BYTES));
+    let body = format!(
+        "[{{\"padding\":\"{}\"}}]",
+        "x".repeat(MAX_NOMINATIM_RAW_JSON_BYTES)
+    );
     let report = interpret_forward(
         &Response {
             status: 200,
