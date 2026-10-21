@@ -1,9 +1,9 @@
 name: Security audit
 
 # Advisory-only supply-chain check: reports RUSTSEC vulnerabilities in the locked dependency graph.
-# It is a separate workflow from ci.yml and is not a required check, so a freshly published advisory
-# in a transitive dependency does not block an unrelated pull request. It runs on the weekly
-# schedule, when a manifest or lockfile changes, when this file changes, and on manual dispatch.
+# It is a separate workflow from ci.yml. It runs for manifest or lockfile pull requests,
+# relevant main pushes, on the weekly schedule and on manual dispatch, so dependency
+# changes are audited before merge without blocking unrelated source-only pull requests.
 # The job reads the repository and fetches the public advisory database; it has no write scopes.
 
 on:
@@ -11,6 +11,11 @@ on:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC
   workflow_dispatch:
   push:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/audit.yml"
+  pull_request:
     paths:
       - "**/Cargo.toml"
       - "**/Cargo.lock"

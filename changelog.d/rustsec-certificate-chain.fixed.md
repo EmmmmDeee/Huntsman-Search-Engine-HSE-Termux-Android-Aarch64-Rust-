@@ -1,0 +1,1 @@
+- Upgrade the locked TLS certificate-validation dependencies to rustls-webpki 0.103.16 (RUSTSEC-2026-0382) and webpki-roots 1.0.10 (RUSTSEC-2026-0381); make the existing RustSec audit run on dependency pull requests so certificate-trust regressions are detected before merging.
