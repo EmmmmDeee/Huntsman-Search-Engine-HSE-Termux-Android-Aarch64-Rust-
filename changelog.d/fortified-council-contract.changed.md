@@ -1,0 +1,1 @@
+- Pin the requested fortified sixteen-role command hierarchy in the canonical source and all six mirrors, enforce ordinal role contracts in tests, and define the five execution phases and measurable quality/economic gates. Update the embedded SHA-256 and release verifier pin.

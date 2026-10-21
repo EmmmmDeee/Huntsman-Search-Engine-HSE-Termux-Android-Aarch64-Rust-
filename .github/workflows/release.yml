@@ -108,7 +108,7 @@ env:
   # from a build-job output; the build job refuses to build if the toolchain or
   # the checkout no longer match them. tests/release_ci.rs pins both.
   HUNTSMAN_RUSTC_COMMIT: "17067e9ac6d7ecb70e50f92c1944e545188d2359" # rustc 1.87.0
-  HUNTSMAN_DIRECTIVE_SHA256: "b4d0227909b026bc56f8a6d521a0a8d8685f9a59f6b7e16814cfaba16ca58257" # directive_lock::EXPECTED_SHA256
+  HUNTSMAN_DIRECTIVE_SHA256: "2ae60f1a2f05471f453e8aa5975a0f9c06a9801822fea770e9e46d63fabfb190" # directive_lock::EXPECTED_SHA256
 
 # Workflow level: a newer PR dry run replaces an older one. Every main run gets
 # its own group (the run id), so main builds are never coalesced. Publication is

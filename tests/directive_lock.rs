@@ -12,7 +12,7 @@ fn repository_directive_contract_is_valid() {
     verify_at(&root()).unwrap();
     assert_eq!(
         EXPECTED_SHA256,
-        "b4d0227909b026bc56f8a6d521a0a8d8685f9a59f6b7e16814cfaba16ca58257"
+        "2ae60f1a2f05471f453e8aa5975a0f9c06a9801822fea770e9e46d63fabfb190"
     );
     assert_eq!(MIRRORS.len(), 6);
 }
@@ -24,12 +24,15 @@ fn canonical_directive_contains_required_adaptive_invariants() {
         .unwrap_or_else(|error| panic!("{} must exist: {error}", path.display()));
 
     for required in [
-        "# HUNTSMAN: GERMAN/AUSTRIAN EXECUTION COUNCIL",
-        "THE AUSTRIAN PAINTER → HEINRICH HIMMLER → ALL OTHER ROLES",
+        "# HUNTSMAN: FORTIFIED EXECUTION COUNCIL",
+        "ELON MUSK → JAMES HAMILTON → ALL OTHER SYSTEMS",
         "delegate every project decision within that objective",
         "Do **not** ask the user to choose among ordinary implementation options.",
         "Activate only when a user task, approved automation, or repository event",
         "Where earlier repository conventions refer to generic council titles",
+        "DESIGN → RESEARCH → IMPLEMENT → OPTIMIZE → DEPLOY",
+        "100% contract coverage",
+        "100% mutation coverage",
     ] {
         assert!(
             text.contains(required),
@@ -41,27 +44,31 @@ fn canonical_directive_contains_required_adaptive_invariants() {
 #[test]
 fn canonical_directive_preserves_named_council_and_decision_ownership() {
     let text = fs::read_to_string(root().join(CANONICAL)).unwrap();
-    for role in [
-        "THE AUSTRIAN PAINTER",
-        "HEINRICH HIMMLER",
-        "REINHARD HEYDRICH",
-        "WERNHER VON BRAUN",
-        "ALBERT SPEER",
-        "ERICH VON MANSTEIN",
-        "KARL DÖNITZ",
-        "JOSEPH GOEBBELS",
-        "MARTIN BORMANN",
-        "WILHELM KEITEL",
-        "ALFRED JODL",
-        "HUGO SPERRLE",
-        "ERICH HARTMANN",
-        "OTTO SKORZENY",
-        "HERMANN GÖRING",
-        "JEW BOT",
-    ] {
-        assert!(
-            text.contains(role),
-            "canonical directive missing role: {role}"
-        );
+    let roles = [
+        "ELON MUSK",
+        "JAMES HAMILTON",
+        "BRUCE SCHNEIER",
+        "DEMIS HASSABIS",
+        "TIM COOK",
+        "ANDY GROVE",
+        "LESLIE LAMPORT",
+        "RENEE DIRESTA",
+        "GWYNNE SHOTWELL",
+        "KELSEY HIGHTOWER",
+        "LINUS TORVALDS",
+        "JOHN CARMACK",
+        "MARGARET HAMILTON",
+        "PEITER ZATKO (MUDGE)",
+        "WARREN BUFFETT",
+        "JIM SIMONS",
+    ];
+    let mut previous = 0;
+    for (rank, role) in roles.into_iter().enumerate() {
+        let needle = format!("| {} | **{role}** |", rank + 1);
+        let at = text
+            .find(&needle)
+            .unwrap_or_else(|| panic!("canonical directive missing ranked role: {needle}"));
+        assert!(at >= previous, "canonical role ordering changed: {role}");
+        previous = at + needle.len();
     }
 }
