@@ -1,0 +1,1 @@
+- Bound continuous reconciliation bookkeeping to the current saved-scan inventory; prune deleted scan IDs and expired retry windows without discarding live scan backoff.
