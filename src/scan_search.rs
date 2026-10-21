@@ -54,6 +54,20 @@ impl Query {
         match self {
             Self::Regex(pattern) => pattern.is_match(value),
             Self::Wildcard(parts) => glob(parts, &value.to_lowercase()),
+            // Common ASCII searches need no heap allocation per candidate. Preserve the old
+            // lowering semantics for Unicode and for directly constructed uppercase needles:
+            // only Query::parse guarantees a pre-lowercased ASCII needle.
+            Self::Contains(needle) if needle.is_empty() => true,
+            Self::Contains(needle)
+                if value.is_ascii()
+                    && needle.is_ascii()
+                    && needle.bytes().all(|byte| !byte.is_ascii_uppercase()) =>
+            {
+                value
+                    .as_bytes()
+                    .windows(needle.len())
+                    .any(|candidate| candidate.eq_ignore_ascii_case(needle.as_bytes()))
+            }
             Self::Contains(needle) => value.to_lowercase().contains(needle.as_str()),
         }
     }
@@ -117,6 +131,45 @@ mod tests {
 
     fn matches(query: &str, value: &str) -> bool {
         Query::parse(query).unwrap().matches(value)
+    }
+
+    #[test]
+    fn ascii_contains_fast_path_matches_the_original_lowercase_semantics() {
+        // Exhaustively compare the former expression against the allocation-free path,
+        // including boundaries, repeated prefixes, mixed case and empty values.
+        let alphabet = ["a", "A", "b", "B", "1", "-", " "];
+        let needles = ["", "a", "A", "b", "1", "ab", "BA", "-1", "zz", "aaa"];
+        let mut samples = vec![String::new()];
+        for _ in 0..4 {
+            let previous = samples.clone();
+            for prefix in previous {
+                for letter in alphabet {
+                    samples.push(format!("{prefix}{letter}"));
+                }
+            }
+        }
+        for value in &samples {
+            for query in needles {
+                let parsed = Query::parse(query).unwrap();
+                let lowered = query.trim().to_lowercase();
+                let expected = value.to_lowercase().contains(lowered.as_str());
+                assert_eq!(
+                    parsed.matches(value),
+                    expected,
+                    "query={query:?}, value={value:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_and_directly_constructed_query_semantics_are_unchanged() {
+        assert!(matches("ZÜRICH", "Zürich station"));
+        assert!(matches("İ", "İstanbul"));
+        assert!(!matches("STRASSE", "Straße"));
+        assert!(Query::Contains(String::new()).matches(""));
+        // Query is a public enum: callers can bypass parse and supply an uppercase needle.
+        assert!(!Query::Contains("ABC".into()).matches("abc"));
     }
 
     #[test]
