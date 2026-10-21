@@ -36,10 +36,6 @@ fn start(extra: &[&str]) -> (Child, String) {
         "HSE_BIND",
         "HSE_AUTH_TOKEN",
         "PORT",
-        "RAILWAY_ENVIRONMENT",
-        "RAILWAY_ENVIRONMENT_ID",
-        "RAILWAY_PROJECT_ID",
-        "RAILWAY_SERVICE_ID",
         "TERMUX_VERSION",
         "PREFIX",
     ] {

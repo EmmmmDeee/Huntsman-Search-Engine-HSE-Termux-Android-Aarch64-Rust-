@@ -267,21 +267,11 @@ options on; turning them off restores the limit. On Android 12 and 13 the limit 
 over `adb`; Termux's
 [issue 2366](https://github.com/termux/termux-app/issues/2366) describes how.
 
-## Railway deployment
+## Optional self-hosted Linux container
 
-The current `huntsman-recon` Railway path uses the root `Dockerfile` and
-`.railway/railway.ts`. New Railway services should use `/api/health` as the
-healthcheck path. Railway's injected `PORT` is consumed automatically by the
-binary, and the container entrypoint also sets the same bind explicitly.
-
-For durable state, attach one volume at `/data`. A volume is optional for a
-stateless deployment. Set `HSE_AUTH_TOKEN` as a Railway variable for a stable
-token; if omitted, the entrypoint generates one from `/dev/urandom`, stores it
-under `/data/.huntsman` when that location is persistent. The deployment log
-names that file and never prints the value; a value an earlier build printed
-must be treated as exposed.
-
-See [`RAILWAY.md`](RAILWAY.md) for the complete deployment contract.
+For a generic, unprivileged Linux container, consult [CONTAINERS.md](CONTAINERS.md).
+No provider-specific environment is required, and local Termux server binding
+remains loopback-only by default.
 
 ## Linux or another Rust host
 

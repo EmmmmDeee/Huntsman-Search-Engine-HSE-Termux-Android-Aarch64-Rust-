@@ -3,21 +3,21 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-usage: HUNTSMAN_RAILWAY_URL=https://service.example HSE_AUTH_TOKEN=... \
-       bash scripts/railway-live-acceptance.sh
+usage: HUNTSMAN_CONTAINER_URL=https://service.example HSE_AUTH_TOKEN=... \
+       bash scripts/container-live-acceptance.sh
 
-Runs the same HTTP acceptance contract used by CI against a live Railway
+Runs the same HTTP acceptance contract used by CI against a live self-hosted container
 deployment. The bearer token is read from HSE_AUTH_TOKEN, copied into a private
 temporary curl header file, then removed from the environment before requests.
 EOF
 }
 
 die() {
-  printf 'railway-live-acceptance: %s\n' "$*" >&2
+  printf 'container-live-acceptance: %s\n' "$*" >&2
   exit 1
 }
 
-base="${HUNTSMAN_RAILWAY_URL:-${1:-}}"
+base="${HUNTSMAN_CONTAINER_URL:-${1:-}}"
 if [[ -z "$base" ]]; then
   usage >&2
   exit 64
@@ -37,7 +37,7 @@ case "$HSE_AUTH_TOKEN" in
   *$'\r'*|*$'\n'*) die "HSE_AUTH_TOKEN must not contain CR/LF" ;;
 esac
 
-tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/huntsman-railway-acceptance.XXXXXX")"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/huntsman-container-acceptance.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
 chmod 0700 "$tmpdir"
 
@@ -100,7 +100,7 @@ command_code="$(request "$command" -H "@$auth_headers" "$base/api/command" || tr
 grep -Eq '"invariant"[[:space:]]*:' "$command" \
   || die "authenticated /api/command response is missing invariant"
 
-printf 'railway-live-acceptance: PASS\n'
+printf 'container-live-acceptance: PASS\n'
 printf 'url=%s\n' "$base"
 printf 'health=200 status=ok\n'
 printf 'unauthenticated_modules=401\n'

@@ -32,7 +32,7 @@ commit or a temporary branch/PR, run the relevant gates there, and merge only
 the coherent state. If tooling cannot create an atomic multi-file change, use a
 branch rather than relying on a later commit to repair an earlier broken one.
 
-Release publication must independently require the shared repair and Railway
+Release publication must independently require the shared repair and container
 quality gate. A successful artifact build alone is not sufficient evidence that
 the source revision is releasable.
 
@@ -52,7 +52,7 @@ cheap iteration while the defect is still being localized. The host gate is nece
 
 A successful `full` gate requires:
 
-- shell syntax checks for the repository repair and Railway runtime harnesses;
+- shell syntax checks for the repository repair and container runtime harnesses;
 - `cargo fmt --check`;
 - no `unwrap()` in production code: `cargo clippy -p huntsman-recon --lib --bins --locked -- -D clippy::unwrap_used` and the same for the `xtask` binary (these targets compile without `cfg(test)`, so tests are not linted; `fast` runs this step too);
 - strict `cargo clippy --all-targets --locked -- -D warnings`;
@@ -68,7 +68,7 @@ The repair gate verifies the host repository contract, not every deployment
 environment. Choose additional evidence from the surface changed:
 
 - **Rust/core logic or ordinary repository files:** original reproducer + `full` gate.
-- **Railway/container:** original reproducer + `full` gate + Railway container CI + live Railway acceptance against the exact deployed commit.
+- **Self-hosted container:** original reproducer + `full` gate + container CI + authenticated live container acceptance against the exact deployed commit.
 - **Android cross-build:** original reproducer + `full` gate + Android aarch64 CI artifact verification.
 - **Termux runtime behavior:** Android build evidence is insufficient; run the real-device Termux acceptance harness before claiming handset-runtime success.
 - **Documentation/config/data files:** run the narrow parser/validator or reproducer that proves that file's semantics, then the relevant repository/platform gates.
@@ -77,28 +77,20 @@ A generic green gate must never replace the original reproducer. It shows that
 the repair did not break the covered contract; it does not by itself prove the
 reported defect was fixed.
 
-## Railway-specific continuation
+## Self-hosted container continuation
 
-If the repaired surface can affect Railway/container behavior, local repair is
-not the terminal acceptance state. After the full gate and GitHub CI pass, run:
+If a change affects container startup, persistence, authentication or HTTP
+behaviour, the host gate alone is not sufficient. Run the generic image smoke
+test on the exact revision and execute:
 
 ```sh
-HUNTSMAN_RAILWAY_URL=https://YOUR-SERVICE.up.railway.app \
+HUNTSMAN_CONTAINER_URL=http://127.0.0.1:18080 \
 HSE_AUTH_TOKEN="$HSE_AUTH_TOKEN" \
-  bash scripts/railway-live-acceptance.sh
+  bash scripts/container-live-acceptance.sh
 ```
 
-Then verify Railway deployment metadata identifies the exact intended commit.
-
-For Railway Infrastructure as Code, CI type-checks `.railway/railway.ts` against
-pinned Railway SDK and TypeScript versions. Before applying infrastructure
-changes, run the authenticated read-only live plan:
-
-```sh
-bash scripts/railway-iac-plan.sh
-```
-
-The plan is evidence of live drift; the type check alone is not.
+Prove the running binary matches the intended commit. Plain HTTP is permitted
+only for local loopback validation; remote instances require HTTPS.
 
 ## Historical prerelease quarantine
 

@@ -39,7 +39,7 @@ fn seeknow_contract_documents_live_verification_boundary() {
         "auto email username phone ip domain name hash",
         "auto email username ip domain url machine_id",
         "does **not** define",
-        "no `HUNTSMAN_SEEKNOW_KEY` is configured",
+        "not** verified without a configured provider key",
         "exits 66 (missing input) before any request",
     ] {
         assert!(

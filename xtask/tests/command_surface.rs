@@ -34,7 +34,6 @@ fn the_help_advertises_no_placeholder() {
 #[test]
 fn a_removed_placeholder_is_a_usage_error_not_a_stub() {
     for args in [
-        &["ops", "railway"][..],
         &["ops", "cleanup-prereleases"],
         &["release", "promote"],
         &["release", "scan-keys"],

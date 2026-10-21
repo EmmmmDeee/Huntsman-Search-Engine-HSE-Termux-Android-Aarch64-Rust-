@@ -63,7 +63,6 @@ on:
       - ".github/scripts/scan-for-keys.sh"
       - ".github/scripts/install-termux.sh"
       - ".github/actions/setup-ndk-aarch64/**"
-      - ".railway/**"
       - "Dockerfile"
       - ".dockerignore"
       - "Cargo.toml"
@@ -71,11 +70,10 @@ on:
       - "capabilities.json"
       - "benchmarks.json"
       - "src/**"
-      - "scripts/railway-entrypoint.sh"
-      - "scripts/railway-live-acceptance.sh"
+      - "scripts/container-entrypoint.sh"
+      - "scripts/container-live-acceptance.sh"
       - "xtask/**"
       - ".cargo/**"
-      - "scripts/validate-railway-iac.sh"
   workflow_dispatch:
   # Dry run on PRs that touch the release path: same build and key scan,
   # nothing published, no write token requested.
@@ -89,15 +87,13 @@ on:
       - "Cargo.lock"
       - "capabilities.json"
       - "benchmarks.json"
-      - ".railway/**"
       - "Dockerfile"
       - ".dockerignore"
       - "src/**"
-      - "scripts/railway-entrypoint.sh"
-      - "scripts/railway-live-acceptance.sh"
+      - "scripts/container-entrypoint.sh"
+      - "scripts/container-live-acceptance.sh"
       - "xtask/**"
       - ".cargo/**"
-      - "scripts/validate-railway-iac.sh"
 
 permissions:
   contents: read
@@ -195,7 +191,7 @@ jobs:
         run: cargo run --locked -p xtask -- gate msrv
 
   quality:
-    name: Shared repair and Railway acceptance
+    name: Shared repair and container acceptance
     needs: resolve
     runs-on: ubuntu-24.04
     permissions:
@@ -210,14 +206,9 @@ jobs:
           components: clippy, rustfmt
       - name: Run shared host repair acceptance
         run: cargo run --locked -p xtask -- gate full
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "22"
-      - name: Type-check Railway Infrastructure as Code
-        run: bash scripts/validate-railway-iac.sh
-      - name: Build current Railway container
-        run: docker build --pull --build-arg HUNTSMAN_BUILD_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:railway .
-      - name: Exercise Railway-style runtime
+      - name: Build portable self-hosted container
+        run: docker build --pull --build-arg HUNTSMAN_BUILD_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:container .
+      - name: Exercise self-hosted container runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -230,13 +221,12 @@ jobs:
             --name "$name" \
             -p 127.0.0.1:18080:8080 \
             -e PORT=8080 \
-            -e RAILWAY_ENVIRONMENT=release-gate \
             -e HSE_AUTH_TOKEN=release-gate-token \
             -e HUNTSMAN_STARTUP_CHECK=1 \
-            huntsman-recon:railway
-          HUNTSMAN_RAILWAY_URL=http://127.0.0.1:18080 \
+            huntsman-recon:container
+          HUNTSMAN_CONTAINER_URL=http://127.0.0.1:18080 \
           HSE_AUTH_TOKEN=release-gate-token \
-            bash scripts/railway-live-acceptance.sh
+            bash scripts/container-live-acceptance.sh
 
   build:
     # Runs cargo and every dependency build script: read-only token, no

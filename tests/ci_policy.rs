@@ -28,17 +28,20 @@ fn main_pushes_must_have_a_merged_pr_association() {
 }
 
 #[test]
-fn railway_iac_has_an_executable_ci_gate() {
+fn self_hosted_container_has_executable_ci_acceptance() {
     let ci = fs::read_to_string(CI).expect("CI workflow");
     for required in [
-        "railway-iac:",
-        "Railway IaC type validation",
-        "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0",
-        "node-version: \"22\"",
-        "bash scripts/validate-railway-iac.sh",
+        "container:",
+        "Self-hosted container smoke test",
+        "scripts/container-live-acceptance.sh",
+        "Dockerfile",
     ] {
         assert!(ci.contains(required), "{CI} must contain {required:?}");
     }
+    assert!(
+        !ci.contains("railway"),
+        "provider-specific jobs must be removed"
+    );
 }
 
 #[test]

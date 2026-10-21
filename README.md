@@ -63,21 +63,12 @@ tagged it and it is stale or the disk is nearly full. It never deletes a ledger
 or scan data and never writes or prints a key. A problem it cannot repair
 safely, such as a binary that needs rebuilding, prints the command to run.
 
-## Deploy on Railway
+## Optional self-hosted Linux container
 
-For a new Railway service, connect this repository's `main` branch. Railway
-automatically detects the root `Dockerfile`; configure the healthcheck path as
-`/api/health`. The image reads Railway's injected `PORT`, runs the same
-offline acceptance before serving, and drops from the container startup user to
-uid 10001 for the application process.
-
-Set `HSE_AUTH_TOKEN` as a Railway variable for a stable bearer token. If it is
-absent, the container generates a 256-bit token, stores it at
-`$HUNTSMAN_DATA_DIR/.huntsman/railway-auth-token`, and never writes its value to
-deployment logs; the log names that file instead.
-Attaching a Railway volume at `/data` makes that state durable; the service can
-also run without a volume. Current Railway Infrastructure as Code lives at
-`.railway/railway.ts`; see [`docs/RAILWAY.md`](docs/RAILWAY.md).
+Huntsman's primary deployment is rootless Android Termux AArch64. A portable
+`Dockerfile` and provider-neutral entrypoint remain available for operators
+who host their own Linux container. No cloud-specific configuration is required.
+See [the self-hosted container guide](docs/CONTAINERS.md).
 
 ## Repair broken code or files
 

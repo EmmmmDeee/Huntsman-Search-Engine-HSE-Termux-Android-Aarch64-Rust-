@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 
 use huntsman_recon::exit::EX_UNAVAILABLE;
 
-/// `serve` with `args`, with no inherited bind, token, Railway or Termux setting, plus `envs`.
+/// `serve` with `args`, with no inherited bind, token, external host or Termux setting, plus `envs`.
 fn serve(args: &[&str], envs: &[(&str, &str)]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"));
     command.arg("serve").args(args);
@@ -18,10 +18,6 @@ fn serve(args: &[&str], envs: &[(&str, &str)]) -> Command {
         "HSE_BIND",
         "HSE_AUTH_TOKEN",
         "PORT",
-        "RAILWAY_ENVIRONMENT",
-        "RAILWAY_ENVIRONMENT_ID",
-        "RAILWAY_PROJECT_ID",
-        "RAILWAY_SERVICE_ID",
         "TERMUX_VERSION",
         "PREFIX",
     ] {
@@ -86,6 +82,36 @@ fn startup_on(bind: &str, envs: &[(&str, &str)]) -> (String, String) {
         .read_to_string(&mut stderr)
         .unwrap();
     (first, stderr)
+}
+
+/// A leftover deployment environment may export `PORT` and a retired provider
+/// marker. Neither may reject a valid local bind or control the listener.
+/// Only `HSE_BIND` or `--bind` may opt the application into public listening.
+#[test]
+fn unrelated_port_environment_does_not_override_local_bind() {
+    let mut child = serve(
+        &["--bind", "127.0.0.1:0"],
+        &[
+            ("PORT", "not-a-valid-port"),
+            ("RAILWAY_ENVIRONMENT", "retired-sentinel"),
+        ],
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .spawn()
+    .expect("start serve with explicit local bind");
+    let mut first = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut first)
+        .expect("read bound address");
+    let addr = first
+        .trim()
+        .strip_prefix("serving=http://")
+        .and_then(|value| value.strip_suffix('/'))
+        .expect("local serve starts despite invalid unrelated port");
+    assert!(addr.starts_with("127.0.0.1:"), "{first}");
+    let _ = child.kill();
+    child.wait().expect("reap local server");
 }
 
 #[test]

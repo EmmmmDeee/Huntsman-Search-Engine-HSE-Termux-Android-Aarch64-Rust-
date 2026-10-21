@@ -56,7 +56,7 @@ fn failed_ci_prereleases_are_machine_quarantined() {
 }
 
 #[test]
-fn release_is_path_scoped_pr_origin_gated_and_validates_railway_iac() {
+fn release_is_path_scoped_and_pr_origin_gated() {
     let wf = fs::read_to_string(RELEASE).expect("release workflow");
     for required in [
         "pull-requests: read",
@@ -68,57 +68,10 @@ fn release_is_path_scoped_pr_origin_gated_and_validates_railway_iac() {
         "after bounded retry",
         "\"src/**\"",
         "\"Dockerfile\"",
-        "\".railway/**\"",
         "\"xtask/**\"",
-        "\"scripts/validate-railway-iac.sh\"",
-        "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0",
-        "node-version: \"22\"",
-        "bash scripts/validate-railway-iac.sh",
     ] {
         assert!(wf.contains(required), "{RELEASE} must contain {required:?}");
     }
-}
-
-#[test]
-fn railway_iac_validation_and_live_plan_contracts_are_shell_valid() {
-    let validate =
-        fs::read_to_string("scripts/validate-railway-iac.sh").expect("Railway IaC validator");
-    for required in [
-        "Node.js 22+ required",
-        "railway\": \"3.12.0",
-        "typescript\": \"5.9.3",
-        "./node_modules/.bin/tsc -p tsconfig.json",
-        ".railway/railway.ts",
-    ] {
-        assert!(
-            validate.contains(required),
-            "Railway IaC validator must contain {required:?}"
-        );
-    }
-    assert!(
-        Command::new("bash")
-            .args(["-n", "scripts/validate-railway-iac.sh"])
-            .status()
-            .expect("bash must execute")
-            .success(),
-        "Railway IaC validator must parse as bash"
-    );
-
-    let plan = fs::read_to_string("scripts/railway-iac-plan.sh").expect("Railway IaC plan wrapper");
-    for required in ["railway config plan", "Railway CLI is required"] {
-        assert!(
-            plan.contains(required),
-            "Railway plan wrapper must contain {required:?}"
-        );
-    }
-    assert!(
-        Command::new("bash")
-            .args(["-n", "scripts/railway-iac-plan.sh"])
-            .status()
-            .expect("bash must execute")
-            .success(),
-        "Railway IaC plan wrapper must parse as bash"
-    );
 }
 
 #[test]

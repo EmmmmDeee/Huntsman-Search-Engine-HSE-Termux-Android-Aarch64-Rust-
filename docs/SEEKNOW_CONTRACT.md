@@ -101,8 +101,7 @@ upstream rejects, exits 77 (no permission). Usage errors exit 64.
 ## Verification boundary
 
 As of 2026-10-07, the live unauthenticated contract and public documentation are
-verified. Authenticated upstream success is **not** verified in Railway because
-no `HUNTSMAN_SEEKNOW_KEY` is configured on the current Railway services.
+verified. Authenticated upstream success is **not** verified without a configured provider key.
 Synthetic transport fixtures exercise request construction, parser behavior,
 routing, provenance, redaction, and failure handling without querying any real
 person or exposed credential.

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-DATA_DIR="${RAILWAY_VOLUME_MOUNT_PATH:-${HUNTSMAN_DATA_DIR:-/data}}"
+DATA_DIR="${HUNTSMAN_DATA_DIR:-/data}"
 PORT_VALUE="${PORT:-8080}"
 # The binary this entrypoint runs. Tests point it at a stub.
 HUNTSMAN_BIN="${HUNTSMAN_BIN:-/usr/local/bin/huntsman-recon}"
@@ -26,7 +26,7 @@ else
   mkdir -p "$DATA_DIR/.huntsman" "$DATA_DIR/var"
 fi
 
-TOKEN_FILE="$DATA_DIR/.huntsman/railway-auth-token"
+TOKEN_FILE="$DATA_DIR/.huntsman/container-auth-token"
 generated_token=0
 if [ -z "${HSE_AUTH_TOKEN:-}" ]; then
   if [ -r "$TOKEN_FILE" ]; then
@@ -51,7 +51,7 @@ fi
 
 if [ "$generated_token" = "1" ]; then
   printf 'huntsman-entrypoint: generated HSE_AUTH_TOKEN and stored it at %s; the value is not printed\n' "$TOKEN_FILE" >&2
-  printf 'huntsman-entrypoint: set HSE_AUTH_TOKEN as a Railway variable to keep the same token without relying on /data persistence\n' >&2
+  printf 'huntsman-entrypoint: set HSE_AUTH_TOKEN in the container environment to retain a stable token without /data persistence\n' >&2
 fi
 
 run_huntsman() {
@@ -85,7 +85,7 @@ fi
 
 # The server runs as this shell's child, not in its place. In a container this shell is PID 1,
 # and PID 1 ignores every signal it has no handler for: a server exec'd here would never see the
-# SIGTERM that a redeploy or `docker stop` sends, and would be killed when the grace period
+# SIGTERM that `docker stop` sends, and would be killed when the grace period
 # ends. The trap hands the stop signal on to the server, and the shell exits with its status.
 # A background job in a non-interactive shell ignores SIGINT, so every stop signal goes on as
 # SIGTERM.

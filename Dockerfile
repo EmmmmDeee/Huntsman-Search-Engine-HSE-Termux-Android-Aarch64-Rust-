@@ -1,4 +1,4 @@
-# Current Huntsman Recon image for Railway and generic Linux container runtimes.
+# Current Huntsman Recon image for self-hosted Linux container runtimes.
 # This is the single canonical container definition for Huntsman Recon.
 # Base images are pinned by digest, so a moved tag cannot change the toolchain or OS under a build.
 FROM rust:1.99-trixie@sha256:6ff07edce8775d0f64be7aba9197229407301bddf2054d62c27b541a6238a181 AS builder
@@ -26,7 +26,7 @@ RUN apt-get update \
     && chown -R huntsman:huntsman /data
 
 COPY --from=builder /build/target/release/huntsman-recon /usr/local/bin/huntsman-recon
-COPY scripts/railway-entrypoint.sh /usr/local/bin/huntsman-entrypoint
+COPY scripts/container-entrypoint.sh /usr/local/bin/huntsman-entrypoint
 RUN chmod 0755 /usr/local/bin/huntsman-recon /usr/local/bin/huntsman-entrypoint
 
 ENV HOME=/data \

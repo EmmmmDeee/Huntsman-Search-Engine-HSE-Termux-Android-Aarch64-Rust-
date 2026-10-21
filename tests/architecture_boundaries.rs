@@ -427,7 +427,6 @@ fn the_scanner_sees_each_forbidden_form_and_ignores_the_rest() {
     for text in [
         "HUNTSMAN_DATA_DIR",
         "HUNTSMAN_SHODAN_KEY is set in the environment",
-        "RAILWAY_PROJECT_ID",
         "HUNTSMAN_SHODAN_KEY_ENV",
     ] {
         assert!(!names_a_credential_slot(text), "{text}");

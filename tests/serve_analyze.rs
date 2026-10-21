@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 
-/// `serve` on a free loopback port, with no inherited bind, token, Railway or Termux setting.
+/// `serve` on a free loopback port, with no inherited bind, token, external host or Termux setting.
 fn start() -> (Child, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"));
     command.args(["serve", "--bind", "127.0.0.1:0"]);
@@ -18,10 +18,6 @@ fn start() -> (Child, String) {
         "HSE_BIND",
         "HSE_AUTH_TOKEN",
         "PORT",
-        "RAILWAY_ENVIRONMENT",
-        "RAILWAY_ENVIRONMENT_ID",
-        "RAILWAY_PROJECT_ID",
-        "RAILWAY_SERVICE_ID",
         "TERMUX_VERSION",
         "PREFIX",
     ] {

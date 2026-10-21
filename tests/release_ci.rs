@@ -186,7 +186,7 @@ fn release_build_embeds_and_verifies_exact_commit_provenance() {
     assert!(build.contains("embedded_build_sha: ${GITHUB_SHA}"));
     assert!(
         wf.contains("--build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\""),
-        "Railway release-gate image must receive the same commit provenance"
+        "Container release-gate image must receive the same commit provenance"
     );
 }
 
@@ -508,8 +508,8 @@ fn release_publish_requires_shared_quality_gate() {
 
     for required in [
         "cargo run --locked -p xtask -- gate full",
-        "docker build --pull --build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\" -f Dockerfile -t huntsman-recon:railway .",
-        "bash scripts/railway-live-acceptance.sh",
+        "docker build --pull --build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\" -f Dockerfile -t huntsman-recon:container .",
+        "bash scripts/container-live-acceptance.sh",
         "persist-credentials: false",
     ] {
         assert!(

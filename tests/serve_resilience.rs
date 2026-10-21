@@ -27,16 +27,12 @@ impl Serve {
                 "ulimit -n {limit} && exec \"$0\" serve --bind 127.0.0.1:0"
             ))
             .arg(env!("CARGO_BIN_EXE_huntsman-recon"));
-        // No inherited bind, token, Railway or Termux setting: any `RAILWAY_*` name makes
+        // No inherited bind, token, external host or Termux setting: any platform-specific name could make
         // `serve` bind `0.0.0.0:$PORT` and exit before `--bind` is read.
         for name in [
             "HSE_BIND",
             "HSE_AUTH_TOKEN",
             "PORT",
-            "RAILWAY_ENVIRONMENT",
-            "RAILWAY_ENVIRONMENT_ID",
-            "RAILWAY_PROJECT_ID",
-            "RAILWAY_SERVICE_ID",
             "TERMUX_VERSION",
             "PREFIX",
         ] {

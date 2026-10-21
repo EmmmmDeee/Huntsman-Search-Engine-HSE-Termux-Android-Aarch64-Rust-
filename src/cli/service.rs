@@ -191,20 +191,7 @@ fn report_started(
 
 pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     let hse_bind = env::var("HSE_BIND").ok();
-    let railway_port = env::var("PORT").ok();
-    let railway = [
-        "RAILWAY_ENVIRONMENT",
-        "RAILWAY_ENVIRONMENT_ID",
-        "RAILWAY_PROJECT_ID",
-        "RAILWAY_SERVICE_ID",
-    ]
-    .iter()
-    .any(|name| env::var_os(name).is_some());
-    let mut bind = match resolve_serve_bind(hse_bind.as_deref(), railway_port.as_deref(), railway) {
-        Ok(bind) => bind,
-        Err(Error::Invalid(message)) => return fail(EX_DATAERR, &message),
-        Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
-    };
+    let mut bind = resolve_serve_bind(hse_bind.as_deref());
     let mut history_dir: Option<String> = None;
     let mut index = 0;
     while index < args.len() {

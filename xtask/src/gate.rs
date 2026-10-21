@@ -26,7 +26,7 @@ msrv  - full Rust test suite + repository self-check (for Rust 1.87)
 full  - host acceptance: format + no-unwrap lint + strict clippy + full tests + self-check
 
 A full host pass is necessary but not sufficient for platform-specific changes.
-Railway/container and Android/Termux changes require their platform gates too.";
+Container and Android/Termux changes require their platform gates too.";
 
 const DEFAULT_TIMEOUT_SECONDS: u64 = 3600;
 
@@ -121,7 +121,7 @@ fn execute(mode: Mode, root: &Path, limit: Duration) -> Result<PathBuf> {
     println!("xtask: changelog fragments: {fragments} valid");
 
     for script in tracked_shell_scripts(root)? {
-        if script == "scripts/railway-entrypoint.sh" {
+        if script == "scripts/container-entrypoint.sh" {
             run_step(root, limit, &mut record, "sh", &["-n", &script])?;
         } else {
             run_step(root, limit, &mut record, "bash", &["-n", &script])?;
