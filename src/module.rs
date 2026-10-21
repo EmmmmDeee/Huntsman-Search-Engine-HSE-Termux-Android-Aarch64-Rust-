@@ -443,6 +443,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public Keybase identity: cryptographically proven linked accounts, websites and PGP key",
     },
     ReachableModule {
+        name: "wikipedia",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.001"],
+        description: "recent public Wikipedia page edits attributed to a handle, keyless (MediaWiki usercontribs)",
+    },
+    ReachableModule {
         name: "blockchain",
         command: "crypto BITCOIN-ADDRESS",
         access: "keyless",

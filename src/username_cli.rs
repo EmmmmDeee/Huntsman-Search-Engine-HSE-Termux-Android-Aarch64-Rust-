@@ -15,11 +15,12 @@ use crate::lookup_report;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
+use crate::wikipedia;
 
 pub const USERNAME_USAGE: &str = "usage: huntsman-recon username HANDLE [--save FILE]";
 pub const USERNAME_HELP: &str = "\
 username HANDLE [--save FILE]
-Derive deterministic handle variants and query keyless public GitHub, Bluesky and Keybase profiles. --save FILE writes an unverified ledger that verify can reload.";
+Derive deterministic handle variants and query keyless public GitHub, Bluesky and Keybase profiles and the handle's recent public Wikipedia edits. --save FILE writes an unverified ledger that verify can reload.";
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -79,6 +80,9 @@ pub fn run<T: Transport + ?Sized>(
     }
     if transport.runs_module(keybase::SRC) {
         collect_keybase(transport, &username, &scan_id, now_unix, &mut report);
+    }
+    if transport.runs_module(wikipedia::SRC) {
+        collect_wikipedia(transport, &username, &scan_id, now_unix, &mut report);
     }
     merge_by_uid(&mut report.entities);
 
@@ -201,6 +205,26 @@ fn collect_keybase<T: Transport + ?Sized>(
     }
 }
 
+fn collect_wikipedia<T: Transport + ?Sized>(
+    transport: &T,
+    username: &str,
+    scan_id: &str,
+    now_unix: u64,
+    report: &mut Report,
+) {
+    match wikipedia::lookup(transport, username, scan_id, now_unix) {
+        Ok(found) => {
+            report.entities.extend(found.entities);
+            report.outcomes.push(found.outcome);
+        }
+        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
+            wikipedia::SRC,
+            now_unix,
+            error.to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,7 +293,11 @@ mod tests {
           "displayName":"Jane Citizen",
           "did":"did:plc:oky5czdrnfjpqslsw2a5iclo"
         }"#;
-        let fake = Fake::new(vec![Ok(response(200, github)), Ok(response(200, bluesky))]);
+        let fake = Fake::new(vec![
+            Ok(response(200, github)),
+            Ok(response(200, bluesky)),
+            Ok(response(200, r#"{"query":{"usercontribs":[]}}"#)),
+        ]);
         match run(&fake, &Keys::default(), "jane-doe", 1) {
             UsernameRun::Printed { text, report } => {
                 assert!(text.contains("github_user\tsuccess"), "{text}");
@@ -299,7 +327,11 @@ mod tests {
           "displayName":"Jane\u001b]0;title\u0007 Citizen",
           "did":"did:plc:oky5czdrnfjpqslsw2a5iclo"
         }"#;
-        let fake = Fake::new(vec![Ok(response(200, github)), Ok(response(200, bluesky))]);
+        let fake = Fake::new(vec![
+            Ok(response(200, github)),
+            Ok(response(200, bluesky)),
+            Ok(response(200, r#"{"query":{"usercontribs":[]}}"#)),
+        ]);
         let UsernameRun::Printed { text, report } = run(&fake, &Keys::default(), "jane-doe", 1)
         else {
             panic!("the lookup should print a report");
@@ -333,6 +365,7 @@ mod tests {
             Ok(response(404, "")),
             Ok(response(200, bluesky)),
             Ok(response(200, keybase)),
+            Ok(response(200, r#"{"query":{"usercontribs":[]}}"#)),
         ]);
         match run(&fake, &Keys::default(), "nobody", 1) {
             UsernameRun::Printed { report, text } => {
@@ -368,6 +401,7 @@ mod tests {
             Ok(response(200, github)),
             Ok(response(200, bluesky)),
             Ok(response(200, keybase)),
+            Ok(response(200, r#"{"query":{"usercontribs":[]}}"#)),
         ]);
         let UsernameRun::Printed { report, text } = run(&fake, &Keys::default(), "max", 1) else {
             panic!("the lookup should print a report");
@@ -380,6 +414,34 @@ mod tests {
                 .any(|entity| entity.has_tag("keybase")
                     && entity.kind == EntityKind::Username
                     && entity.value == "maxtaco")
+        );
+    }
+
+    #[test]
+    fn wikipedia_edits_reach_the_combined_report() {
+        let wiki = r#"{"query":{"usercontribs":[
+          {"user":"Max","revid":900001,"title":"Reconnaissance","timestamp":"2024-05-01T00:00:00Z","comment":"typo"}
+        ]}}"#;
+        let fake = Fake::new(vec![
+            Ok(response(404, "")),
+            Ok(response(200, r#"{"handle":"max.bsky.social"}"#)),
+            Ok(response(
+                200,
+                r#"{"status":{"code":0,"name":"OK"},"them":[null]}"#,
+            )),
+            Ok(response(200, wiki)),
+        ]);
+        let UsernameRun::Printed { report, text } = run(&fake, &Keys::default(), "max", 1) else {
+            panic!("the lookup should print a report");
+        };
+        assert!(text.contains("wikipedia\tsuccess"), "{text}");
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Url
+                    && entity.has_tag("wikipedia-edit")
+                    && entity.value.contains("oldid=900001"))
         );
     }
 }
