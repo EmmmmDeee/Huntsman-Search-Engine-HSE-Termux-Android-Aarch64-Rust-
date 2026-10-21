@@ -50,7 +50,7 @@ const MAX_IFD_ENTRIES: u16 = 4096;
 
 /// Most bytes one tag's value may occupy. ASCII and arrays beyond this are truncated for display
 /// rather than allocated in full.
-const MAX_VALUE_BYTES: usize = 8192;
+const MAX_EXIF_VALUE_BYTES: usize = 8192;
 
 pub type ExifRun = SourceRun<Report>;
 
@@ -297,7 +297,7 @@ impl Tiff<'_> {
 struct Entry {
     tag: u16,
     typ: u16,
-    /// The value bytes (inline or followed to their offset), capped at [`MAX_VALUE_BYTES`].
+    /// The value bytes (inline or followed to their offset), capped at [`MAX_EXIF_VALUE_BYTES`].
     value: Vec<u8>,
 }
 
@@ -373,11 +373,11 @@ fn read_ifd(tiff: &Tiff, offset: usize) -> Vec<Entry> {
 }
 
 /// Copy a tag's value bytes, whether they sit inline in the 4-byte field at `field` or at the
-/// offset those 4 bytes hold. Capped at [`MAX_VALUE_BYTES`]. **Pure.**
+/// offset those 4 bytes hold. Capped at [`MAX_EXIF_VALUE_BYTES`]. **Pure.**
 fn read_value(tiff: &Tiff, typ: u16, count: u32, field: usize) -> Option<Vec<u8>> {
     let unit = type_size(typ)?;
     let total = usize::try_from(count).ok()?.checked_mul(unit)?;
-    let total = total.min(MAX_VALUE_BYTES);
+    let total = total.min(MAX_EXIF_VALUE_BYTES);
     let bytes = if total <= 4 {
         tiff.slice(field, total)?
     } else {
