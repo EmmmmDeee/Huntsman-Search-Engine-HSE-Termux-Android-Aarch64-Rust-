@@ -31,7 +31,7 @@ ureq = "3"
 ring = "0.17"
 
 # Every release build uses this profile: the phone's `cargo install` (install.sh), CI's Android
-# cross-build, the Railway container (Dockerfile) and the trusted xtask builds in the issue-fix
+# cross-build, the portable container (Dockerfile) and the trusted xtask builds in the issue-fix
 # workflow. Thin LTO lets rustc inline across crates (serde_json, rustls) for
 # 10-45% faster analysis and a quarter smaller binary, at about 1.3x the build time; fat LTO
 # with one codegen unit gains a little more but more than doubles the build and the linker's
