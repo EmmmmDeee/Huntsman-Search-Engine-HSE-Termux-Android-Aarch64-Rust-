@@ -152,7 +152,7 @@ fn a_missing_contributions_payload_is_not_a_clean_negative() {
     // Missing query data, including a null array, is an incomplete provider
     // response and must not be interpreted as evidence of no edits.
     for body in [
-        r#"{}"#,
+        "{}",
         r#"{"batchcomplete":true}"#,
         r#"{"query":{}}"#,
         r#"{"query":{"usercontribs":null}}"#,
