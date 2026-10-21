@@ -14,9 +14,8 @@ use crate::error::Error;
 
 static TEMP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
-/// How old a temp file must be before a later write removes it. A live write holds its temp file
-/// for milliseconds, so ten minutes separates a writer that is still running from the residue of
-/// one that was killed.
+/// How old a temp file must be before a later write may remove it, on top of its writer having
+/// exited. A margin against a writer that has only just gone.
 const STALE_TEMP_AGE: Duration = Duration::from_secs(10 * 60);
 
 fn store_err(path: &Path, e: &std::io::Error) -> Error {
@@ -303,59 +302,87 @@ fn check_private_mode(_path: &Path, _file: &File) -> Result<(), Error> {
     Ok(())
 }
 
-/// Remove the temp files a killed write left beside `name`. A temp file holds the whole body being
-/// written, so a crash mid-write leaves a copy of the previous secrets or records on disk, and a
-/// later save that drops an entry does not remove that copy. Only a regular file named
-/// `<name>.<pid>.<seq>.tmp` and untouched for [`STALE_TEMP_AGE`] is removed. A symbolic link, a
-/// newer file, or a modification time ahead of the clock is left alone. Best effort: a removal that
-/// fails does not fail the write that triggered it.
+/// Remove the temp files a killed private write left beside `name`. A private temp file holds the
+/// whole body being written (the keys, a session, a ledger), so a crash mid-write leaves a copy of
+/// those secrets on disk that a later save does not remove. A file is removed only when all of
+/// these hold: it is named `<name>.<pid>.<seq>.tmp`; it is a regular file, not a symbolic link; it
+/// has no group or other bits, so this crate created it private; its writer process `<pid>` has
+/// exited; and it is at least [`STALE_TEMP_AGE`] old. Only Linux and Android show whether a process
+/// has exited, so elsewhere nothing is removed. Best effort: a removal that fails does not fail the
+/// write that triggered it.
 fn sweep_stale_temps(parent: &Path, name: &std::ffi::OsStr) {
     let Ok(entries) = fs::read_dir(parent) else {
         return;
     };
     let now = SystemTime::now();
     for entry in entries.flatten() {
-        if !is_temp_of(name, &entry.file_name()) {
+        let Some(pid) = temp_writer_pid(name, &entry.file_name()) else {
             continue;
-        }
+        };
         let path = entry.path();
         let Ok(meta) = fs::symlink_metadata(&path) else {
             continue;
         };
-        if !meta.file_type().is_file() {
+        if !meta.file_type().is_file() || !is_private(&meta) {
             continue;
         }
         let Ok(modified) = meta.modified() else {
             continue;
         };
-        if now
+        let aged = now
             .duration_since(modified)
-            .is_ok_and(|age| age >= STALE_TEMP_AGE)
-        {
+            .is_ok_and(|age| age >= STALE_TEMP_AGE);
+        if aged && process_has_exited(pid) {
             let _ = fs::remove_file(&path);
         }
     }
 }
 
-/// Is `candidate` a temp file [`create_temp_file`] makes for a write to `name`: exactly
-/// `<name>.<pid>.<seq>.tmp` with both numbers in decimal? A name that merely starts with `name`,
-/// such as another file's temp file, does not match.
-fn is_temp_of(name: &std::ffi::OsStr, candidate: &std::ffi::OsStr) -> bool {
-    let (Some(name), Some(candidate)) = (name.to_str(), candidate.to_str()) else {
-        return false;
-    };
-    let Some(numbers) = candidate
-        .strip_prefix(name)
-        .and_then(|rest| rest.strip_prefix('.'))
-        .and_then(|rest| rest.strip_suffix(".tmp"))
-    else {
-        return false;
-    };
-    let Some((pid, seq)) = numbers.split_once('.') else {
-        return false;
-    };
+/// The writer process of `candidate` when it is a temp file [`create_temp_file`] makes for a write
+/// to `name`: exactly `<name>.<pid>.<seq>.tmp` with both numbers in decimal. A name that merely
+/// starts with `name`, such as another file's temp file, does not match.
+fn temp_writer_pid(name: &std::ffi::OsStr, candidate: &std::ffi::OsStr) -> Option<u32> {
+    let name = name.to_str()?;
+    let numbers = candidate
+        .to_str()?
+        .strip_prefix(name)?
+        .strip_prefix('.')?
+        .strip_suffix(".tmp")?;
+    let (pid, seq) = numbers.split_once('.')?;
     let decimal = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-    decimal(pid) && decimal(seq)
+    if !decimal(pid) || !decimal(seq) {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// Is the file private: no group or other bits? [`write_atomic_private`] creates its temp file
+/// mode 600 and the umask only narrows that, so a file readable by others was not made private.
+#[cfg(unix)]
+fn is_private(meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o077 == 0
+}
+
+#[cfg(not(unix))]
+fn is_private(_meta: &fs::Metadata) -> bool {
+    false
+}
+
+/// Has the process `pid` exited? Linux and Android show a process as `/proc/<pid>` until it is
+/// gone. Any other error reading that entry, such as a permission refusal, means the process may
+/// be alive, so it does not count as exited.
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn process_has_exited(pid: u32) -> bool {
+    matches!(
+        fs::metadata(Path::new("/proc").join(pid.to_string())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
+fn process_has_exited(_pid: u32) -> bool {
+    false
 }
 
 fn create_temp_file(
@@ -627,23 +654,29 @@ mod tests {
             .unwrap();
     }
 
+    /// Plant a temp file as a write would have left it: `body`, `mode`, and `age` old.
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    fn plant_temp(path: &Path, body: &[u8], mode: u32, age: Duration) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(path, body).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        backdate(path, age);
+    }
+
+    /// A process id no process holds: Linux numbers processes below 2^22.
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    const EXITED_PID: u32 = 4_000_000_001;
+
+    #[cfg(any(target_os = "android", target_os = "linux"))]
     #[test]
-    fn a_killed_writes_temp_file_is_removed_by_the_next_write() {
+    fn a_killed_private_writes_temp_file_is_removed_by_the_next_write() {
         let dir = scratch("stale-temp");
         let path = dir.join("keys.env");
         write_atomic_private(&path, b"OLD='one'", 64).unwrap();
-        // A process killed between creating its temp file and renaming it leaves that file behind,
-        // holding the whole body it was writing.
-        let stale = dir.join("keys.env.4242.7.tmp");
-        fs::write(&stale, b"REMOVED='secret'").unwrap();
-        backdate(&stale, STALE_TEMP_AGE * 2);
-        // A temp file still young may belong to a live writer, so it stays.
-        let live = dir.join("keys.env.4243.9.tmp");
-        fs::write(&live, b"LIVE='writing'").unwrap();
-        // Names that merely resemble a temp file for `keys.env` are not one, however old.
-        let lookalike = dir.join("keys.env.bak.1.2.tmp");
-        fs::write(&lookalike, b"not ours").unwrap();
-        backdate(&lookalike, STALE_TEMP_AGE * 2);
+        // A process killed between creating its private temp file and renaming it leaves that file
+        // behind, holding the whole body it was writing, and no process owns it any more.
+        let stale = dir.join(format!("keys.env.{EXITED_PID}.7.tmp"));
+        plant_temp(&stale, b"REMOVED='secret'", 0o600, STALE_TEMP_AGE * 2);
 
         write_atomic_private(&path, b"NEW='two'", 64).unwrap();
 
@@ -651,12 +684,44 @@ mod tests {
             !stale.exists(),
             "a killed write's temp file outlived the next write"
         );
-        assert!(
-            live.exists(),
-            "a temp file younger than the stale age is kept"
-        );
-        assert_eq!(fs::read(&lookalike).unwrap(), b"not ours");
         assert_eq!(read_bounded(&path, 64).unwrap(), b"NEW='two'");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[test]
+    fn a_temp_file_its_live_writer_still_owns_is_kept_however_old() {
+        // A writer stalled past the stale age still owns its temp file. Removing it would fail that
+        // writer's rename, so the next write to the same file must leave it alone.
+        let dir = scratch("live-temp");
+        let path = dir.join("keys.env");
+        write_atomic_private(&path, b"OLD='one'", 64).unwrap();
+        let live = dir.join(format!("keys.env.{}.7.tmp", std::process::id()));
+        plant_temp(&live, b"LIVE='writing'", 0o600, STALE_TEMP_AGE * 2);
+
+        write_atomic_private(&path, b"NEW='two'", 64).unwrap();
+
+        assert!(live.exists(), "a live process's temp file was removed");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[test]
+    fn a_file_that_only_looks_like_a_private_temp_file_is_kept() {
+        // A file readable by others, with the temp shape and an exited pid, was not made private by
+        // this crate, so it is the user's and stays. So does a name whose numbers are not decimal.
+        let dir = scratch("lookalike");
+        let path = dir.join("keys.env");
+        write_atomic_private(&path, b"OLD='one'", 64).unwrap();
+        let user_file = dir.join(format!("keys.env.{EXITED_PID}.3.tmp"));
+        plant_temp(&user_file, b"the user's notes", 0o644, STALE_TEMP_AGE * 2);
+        let lookalike = dir.join("keys.env.bak.1.2.tmp");
+        plant_temp(&lookalike, b"not ours", 0o600, STALE_TEMP_AGE * 2);
+
+        write_atomic_private(&path, b"NEW='two'", 64).unwrap();
+
+        assert_eq!(fs::read(&user_file).unwrap(), b"the user's notes");
+        assert_eq!(fs::read(&lookalike).unwrap(), b"not ours");
         fs::remove_dir_all(dir).unwrap();
     }
 
