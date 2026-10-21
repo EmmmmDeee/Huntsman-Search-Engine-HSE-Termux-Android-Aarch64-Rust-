@@ -469,6 +469,24 @@ controller_note=""
 install_controller
 setup_serve_service
 
+# The install is only adopted if the command names resolve to what we just
+# installed. A different copy earlier on PATH (commonly ~/bin/huntsman-recon
+# from an older layout) silently shadows $INSTALL_ROOT/bin, so every reinstall
+# reports success while the stale binary keeps running -- and an older build
+# does not recognise the current key slots. Refuse to claim success then, and
+# name the shadow, rather than conceal a non-adopted install.
+for shadow_name in huntsman-recon huntsman; do
+  shadow_resolved="$(command -v "$shadow_name" 2>/dev/null || true)"
+  [[ -n "$shadow_resolved" ]] || continue
+  shadow_want="$INSTALL_ROOT/bin/$shadow_name"
+  shadow_resolved_real="$(realpath "$shadow_resolved" 2>/dev/null || printf '%s' "$shadow_resolved")"
+  shadow_want_real="$(realpath "$shadow_want" 2>/dev/null || printf '%s' "$shadow_want")"
+  if [[ "$shadow_resolved_real" != "$shadow_want_real" ]]; then
+    die "a different $shadow_name on your PATH shadows this install: PATH runs $shadow_resolved, not $shadow_want. Remove or rename the stale copy (for example: mv $shadow_resolved $shadow_resolved.stale), or put $INSTALL_ROOT/bin before it on PATH, then re-run install.sh"
+  fi
+done
+unset shadow_name shadow_resolved shadow_want shadow_resolved_real shadow_want_real
+
 printf 'Huntsman installed and accepted: %s\n' "$installed"
 printf 'Revision: %s (%s)\n' "$install_rev" "$install_source"
 printf 'State directory: %s\n' "$STATE_DIR"

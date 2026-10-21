@@ -897,6 +897,80 @@ fn a_published_build_is_installed_without_a_compiler() {
 }
 
 #[test]
+fn an_install_first_on_path_is_accepted() {
+    let t = Prebuilt::new();
+    let bytes = b"#!/bin/sh\n# verified release build\n";
+    publish_release(&t.releases, BUILT_REV, bytes, bytes);
+
+    // $INSTALL_ROOT/bin on PATH with nothing shadowing it, as on a stock Termux
+    // where $PREFIX/bin is on PATH: the install is the one `huntsman-recon`
+    // resolves to, so it is accepted.
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let path = format!(
+        "{}:{}:{}",
+        t.fake_bin.display(),
+        t.root.join("bin").display(),
+        existing
+    );
+    let out = t.run(
+        &[("HUNTSMAN_REV", BUILT_REV), ("PATH", path.as_str())],
+        BUILT_REV,
+    );
+
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("installed and accepted"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn a_stale_copy_shadowing_the_install_is_refused() {
+    let t = Prebuilt::new();
+    let bytes = b"#!/bin/sh\n# verified release build\n";
+    publish_release(&t.releases, BUILT_REV, bytes, bytes);
+
+    // A different huntsman-recon earlier on PATH than $INSTALL_ROOT/bin -- the
+    // stale ~/bin copy that silently wins when a user types `huntsman-recon`,
+    // so every reinstall "succeeds" while the old binary keeps running.
+    let shadow_dir = t.temp.join("home-bin");
+    fs::create_dir_all(&shadow_dir).unwrap();
+    write_executable(
+        &shadow_dir.join("huntsman-recon"),
+        "#!/bin/sh\n# older copy\n",
+    );
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let path = format!(
+        "{}:{}:{}:{}",
+        shadow_dir.display(),
+        t.fake_bin.display(),
+        t.root.join("bin").display(),
+        existing
+    );
+    let out = t.run(
+        &[("HUNTSMAN_REV", BUILT_REV), ("PATH", path.as_str())],
+        BUILT_REV,
+    );
+
+    assert!(
+        !out.status.success(),
+        "a shadowed install must not report success: {}",
+        stderr(&out)
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains("shadows this install") && err.contains("huntsman-recon"),
+        "the error must name the shadow: {err}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("installed and accepted"),
+        "a shadowed install must not be reported as accepted: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn a_build_that_fails_its_checks_never_replaces_the_binary_or_falls_back() {
     let t = Prebuilt::new();
     fs::create_dir_all(t.root.join("bin")).unwrap();
