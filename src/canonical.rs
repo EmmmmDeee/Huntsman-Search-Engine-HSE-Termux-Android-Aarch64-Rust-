@@ -50,6 +50,43 @@ pub fn canonical_name(raw: &str) -> String {
     canonical_whitespace(raw)
 }
 
+/// Canonical form of a Bitcoin mainnet address, or `None`. Recognises the three on-chain forms by
+/// their distinctive prefix and character set, the same way [`crate::classifier`] does: base58
+/// P2PKH (`1…`) and P2SH (`3…`) of 25-34 characters without the ambiguous `0`, `O`, `I`, `l`, and
+/// bech32 (`bc1…`) of 25-90 characters over its restricted alphabet. bech32 is case-insensitive by
+/// BIP173 (an address is written all lower or all upper, never mixed) and is canonicalised to
+/// lower case; a base58 address is case-significant and kept exactly as written. This only accepts
+/// Bitcoin addresses: an Ethereum or Monero address is `None`, because the balance leg queries a
+/// Bitcoin-only endpoint. **Pure.**
+#[must_use]
+pub fn canonical_bitcoin_address(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed
+        .as_bytes()
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"bc1"))
+        && (25..=90).contains(&trimmed.len())
+    {
+        let lower = trimmed.to_ascii_lowercase();
+        let tail = &lower[3..];
+        if !tail.is_empty()
+            && tail
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() && b != b'b' && b != b'i' && b != b'o')
+        {
+            return Some(lower);
+        }
+    }
+    if (trimmed.starts_with('1') || trimmed.starts_with('3'))
+        && (25..=34).contains(&trimmed.len())
+        && trimmed.bytes().all(|b| b.is_ascii_alphanumeric())
+        && !trimmed.contains(['0', 'O', 'I', 'l'])
+    {
+        return Some(trimmed.to_owned());
+    }
+    None
+}
+
 #[must_use]
 pub fn canonical_handle(raw: &str) -> Option<String> {
     let raw = raw.trim().trim_start_matches('@');
@@ -477,6 +514,43 @@ mod tests {
             Some("adalovelace".into())
         );
         assert_eq!(canonical_handle(""), None);
+    }
+
+    #[test]
+    fn bitcoin_address_accepts_mainnet_base58_and_bech32() {
+        // Base58 (P2PKH `1…`, P2SH `3…`) is kept exactly; case is significant there.
+        assert_eq!(
+            canonical_bitcoin_address(" 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa "),
+            Some("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa".into())
+        );
+        assert_eq!(
+            canonical_bitcoin_address("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy"),
+            Some("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy".into())
+        );
+        // bech32 is lower-cased to its canonical form.
+        assert_eq!(
+            canonical_bitcoin_address("BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4"),
+            Some("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".into())
+        );
+    }
+
+    #[test]
+    fn bitcoin_address_rejects_non_bitcoin_and_malformed() {
+        // Base58 never contains 0, O, I or l.
+        assert_eq!(
+            canonical_bitcoin_address("1O0IlInvalidAddress000000000"),
+            None
+        );
+        // An Ethereum address and a Monero address are crypto but not Bitcoin.
+        assert_eq!(
+            canonical_bitcoin_address("0x0000000000000000000000000000000000000000"),
+            None
+        );
+        // Too short, empty and plain text are not addresses.
+        assert_eq!(canonical_bitcoin_address("1abc"), None);
+        assert_eq!(canonical_bitcoin_address("bc1"), None);
+        assert_eq!(canonical_bitcoin_address(""), None);
+        assert_eq!(canonical_bitcoin_address("not-an-address"), None);
     }
 
     #[test]

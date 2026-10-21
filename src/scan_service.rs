@@ -216,6 +216,7 @@ pub fn target_type(kind: ScanKind, canonical: &str) -> &'static str {
             Some(NetworkSelector::Area { .. }) => "PHYSICAL_COORDINATES",
             _ => "HSE_WIFI_SSID",
         },
+        ScanKind::CryptoAddress => "BITCOIN_ADDRESS",
     }
 }
 

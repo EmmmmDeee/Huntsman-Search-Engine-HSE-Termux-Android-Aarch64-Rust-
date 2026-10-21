@@ -8,7 +8,7 @@ use std::env;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR|HANDLE [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | netblock CIDR [--save FILE] | asn AS-NUMBER [--save FILE] | network BSSID|LAT,LON|ssid:NAME [--save FILE] | radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query [--adaptive] QUERY... | sf [-M|-T|-V]|-s TARGET [options] | scans run|list|show|summary|elements|correlations|log|export|fp|delete|rerun|types [ARGS] | serve [--bind ADDR] [--history DIR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE|set SLOT --stdin|remove SLOT | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
+const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION] | coarsen LAT,LON | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR|HANDLE [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | netblock CIDR [--save FILE] | asn AS-NUMBER [--save FILE] | network BSSID|LAT,LON|ssid:NAME [--save FILE] | crypto BITCOIN-ADDRESS [--save FILE] | radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | query [--adaptive] QUERY... | sf [-M|-T|-V]|-s TARGET [options] | scans run|list|show|summary|elements|correlations|log|export|fp|delete|rerun|types [ARGS] | serve [--bind ADDR] [--history DIR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE|set SLOT --stdin|remove SLOT | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -43,6 +43,7 @@ Commands:
   netblock              Registration, routing and every address's PTR names for one public address block
   asn                   Registration, holder, every announced prefix and BGP neighbour of one public AS
   network               WiFi network by BSSID, SSID or LAT,LON (OUI offline, WiGLE keyed)
+  crypto                On-chain balance and lifetime totals for one Bitcoin address (keyless, blockchain.info)
   radar                 Read rootless Termux:API OS-cached WiFi and cellular observations
   scan                  Route one selector or bounded seed-list into rebuilt lookup front-ends
   investigate           Extract actionable entities from local text or one bounded file
@@ -67,7 +68,7 @@ Commands:
 
 Run `huntsman-recon <COMMAND> --help` for command details.
 Search and sources do not collect remote results. `fetch`, `hibp`, `recon`,
-`seeknow`, `people`, `email`, `exposure`, `username`, `domain`, `network`, `query`, `dehashed`, networked `sf -s` lookups and `scans run` make HTTP requests; `serve` accepts inbound HTTP connections; their default
+`seeknow`, `people`, `email`, `exposure`, `username`, `domain`, `network`, `crypto`, `query`, `dehashed`, networked `sf -s` lookups and `scans run` make HTTP requests; `serve` accepts inbound HTTP connections; their default
 egress policy is public-only.";
 /// The largest plain file a command reads or writes: a seed list, or a self-check scratch file.
 /// A saved artifact has its own ceiling, `scan_artifact::MAX_ARTIFACT_BYTES`.
@@ -142,6 +143,7 @@ pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
         Some("netblock") => lookup::netblock_cmd(&remaining.collect::<Vec<_>>()),
         Some("asn") => lookup::asn_cmd(&remaining.collect::<Vec<_>>()),
         Some("network") => lookup::network_cmd(&remaining.collect::<Vec<_>>()),
+        Some("crypto") => lookup::crypto_cmd(&remaining.collect::<Vec<_>>()),
         Some("radar") => radar::radar_cmd(&remaining.collect::<Vec<_>>()),
         Some("scan") => lookup::scan_cmd(&remaining.collect::<Vec<_>>()),
         Some("investigate") => lookup::investigate_cmd(&remaining.collect::<Vec<_>>()),

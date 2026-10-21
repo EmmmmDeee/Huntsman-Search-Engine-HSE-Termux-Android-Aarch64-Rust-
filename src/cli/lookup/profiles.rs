@@ -14,6 +14,7 @@ use crate::cli::fail;
 use huntsman_recon::api_leg;
 use huntsman_recon::asn_cli::{ASN_USAGE, AsnArgs, AsnRun};
 use huntsman_recon::concurrent;
+use huntsman_recon::crypto_cli::{self, CryptoRun};
 use huntsman_recon::dehashed::{self, client::DehashedClient};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::{Entity, EntityKind, merge_by_uid};
@@ -25,9 +26,9 @@ use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
 use huntsman_recon::ip_cli::{IP_USAGE, IpArgs, IpRun};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
-    self, ASN_POLICY, DOMAIN_POLICY, EMAIL_EXPOSURE_POLICY, EMAIL_POLICY, EXPOSURE_POLICY,
-    IP_POLICY, NETBLOCK_POLICY, NETWORK_POLICY, PEOPLE_POLICY, PHONE_POLICY, SavePolicy,
-    USERNAME_EXPOSURE_POLICY, USERNAME_POLICY,
+    self, ASN_POLICY, CRYPTO_POLICY, DOMAIN_POLICY, EMAIL_EXPOSURE_POLICY, EMAIL_POLICY,
+    EXPOSURE_POLICY, IP_POLICY, NETBLOCK_POLICY, NETWORK_POLICY, PEOPLE_POLICY, PHONE_POLICY,
+    SavePolicy, USERNAME_EXPOSURE_POLICY, USERNAME_POLICY,
 };
 use huntsman_recon::module_selection::{Selected, Selection};
 use huntsman_recon::netblock_cli::{NETBLOCK_USAGE, NetblockArgs, NetblockRun};
@@ -108,6 +109,7 @@ pub(in crate::cli) fn collect(
         ScanKind::Asn => asn(selector, now, chosen),
         ScanKind::Domain => domain(selector, now, chosen),
         ScanKind::Network => network(selector, now, chosen),
+        ScanKind::CryptoAddress => crypto(selector, now, chosen),
     }
 }
 
@@ -528,6 +530,19 @@ fn network(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Re
     }
 }
 
+/// The on-chain lookup for one Bitcoin address: its balance and lifetime totals from
+/// blockchain.info, keyless like the other passive legs.
+fn crypto(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Refused> {
+    let transport = transport(&TransportConfig::default(), chosen);
+    match crypto_cli::run(&transport, selector, now) {
+        CryptoRun::Printed { text, report } => {
+            Ok(done(text, report.entities, report.outcomes, CRYPTO_POLICY))
+        }
+        CryptoRun::Network(m) => Err(Refused::Network(m)),
+        CryptoRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
+}
+
 /// The exit status for a rejected lookup argument. A value the operator supplied that cannot be
 /// canonicalised is a data error (65); every other rejection is a usage error (64). The error's
 /// variant decides, so no wording of a message, and no echoed option text, can change the status.
@@ -648,6 +663,14 @@ pub(in crate::cli) fn network_cmd(args: &[String]) -> ExitCode {
     match NetworkArgs::parse(args) {
         Ok(p) => finish(ScanKind::Network, &p.selector, p.save.as_deref()),
         Err(e) => usage_failure(&e, NETWORK_USAGE),
+    }
+}
+
+pub(in crate::cli) fn crypto_cmd(args: &[String]) -> ExitCode {
+    use huntsman_recon::crypto_cli::{CRYPTO_USAGE, CryptoArgs};
+    match CryptoArgs::parse(args) {
+        Ok(p) => finish(ScanKind::CryptoAddress, &p.address, p.save.as_deref()),
+        Err(e) => usage_failure(&e, CRYPTO_USAGE),
     }
 }
 

@@ -15,9 +15,9 @@ use crate::module_selection::Selection;
 use crate::scan_route::ScanKind;
 use crate::threat_feeds;
 use crate::{
-    abuseipdb, bluesky_user, certspotter, dehashed, duolingo, exposure_cli, github_user, gravatar,
-    greynoise, hunter, internetdb, keybase, mnemonic, numverify, oathnet, openpgp_keys, rdap,
-    ripestat, seeknow_collector, virustotal, wigle,
+    abuseipdb, blockchain, bluesky_user, certspotter, dehashed, duolingo, exposure_cli,
+    github_user, gravatar, greynoise, hunter, internetdb, keybase, mnemonic, numverify, oathnet,
+    openpgp_keys, rdap, ripestat, seeknow_collector, virustotal, wigle,
 };
 
 /// The breach legs an email address's lookup folds in.
@@ -98,6 +98,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         ],
         ScanKind::Network => vec![wigle::SOURCE],
         ScanKind::Exposure => BREACH.to_vec(),
+        ScanKind::CryptoAddress => vec![blockchain::SOURCE],
     };
     let mut seen = std::collections::BTreeSet::new();
     modules.retain(|module| seen.insert(*module));
@@ -122,7 +123,7 @@ pub fn lookups_asking(module: &str) -> Vec<&'static str> {
 }
 
 /// Every lookup kind, in the order [`ScanKind`] lists them.
-pub const KINDS: [ScanKind; 10] = [
+pub const KINDS: [ScanKind; 11] = [
     ScanKind::People,
     ScanKind::Email,
     ScanKind::Exposure,
@@ -133,6 +134,7 @@ pub const KINDS: [ScanKind; 10] = [
     ScanKind::Netblock,
     ScanKind::Asn,
     ScanKind::Network,
+    ScanKind::CryptoAddress,
 ];
 
 fn zones(asked: impl Fn(Takes) -> bool) -> impl Iterator<Item = &'static str> {

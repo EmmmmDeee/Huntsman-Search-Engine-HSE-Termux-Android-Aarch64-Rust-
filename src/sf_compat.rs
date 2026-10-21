@@ -376,7 +376,7 @@ pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
 }
 
 /// The lookup a saved scan of a target of this Spiderfoot type runs, or `None` for a type no
-/// lookup takes yet (a bitcoin address).
+/// lookup takes yet (a `WiFi` SSID or coordinate pair).
 #[must_use]
 pub fn scan_kind(target_type: &str) -> Option<ScanKind> {
     match target_type {
@@ -388,6 +388,7 @@ pub fn scan_kind(target_type: &str) -> Option<ScanKind> {
         "PHONE_NUMBER" => Some(ScanKind::Phone),
         "USERNAME" => Some(ScanKind::Username),
         "HUMAN_NAME" => Some(ScanKind::People),
+        "BITCOIN_ADDRESS" => Some(ScanKind::CryptoAddress),
         _ => None,
     }
 }
@@ -848,7 +849,15 @@ mod tests {
         // the API and runs the asn lookup.
         assert_eq!(scan_kind("BGP_AS_OWNER"), Some(ScanKind::Asn));
         assert_eq!(target_type(ScanKind::Asn, "AS13335"), "BGP_AS_OWNER");
-        assert_eq!(scan_kind("BITCOIN_ADDRESS"), None);
+        // A bitcoin address is now a takeable target: the crypto lookup runs it and round-trips.
+        assert_eq!(scan_kind("BITCOIN_ADDRESS"), Some(ScanKind::CryptoAddress));
+        assert_eq!(
+            target_type(
+                ScanKind::CryptoAddress,
+                "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+            ),
+            "BITCOIN_ADDRESS"
+        );
     }
 
     #[test]

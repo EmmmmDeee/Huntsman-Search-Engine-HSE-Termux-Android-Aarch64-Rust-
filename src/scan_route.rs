@@ -31,11 +31,16 @@ pub enum ScanKind {
     /// A `WiFi` network: a BSSID, a coordinate pair or an SSID, classified offline and searched
     /// on `WiGLE` when its credentials are configured.
     Network,
+    /// One Bitcoin address, Spiderfoot's `BITCOIN_ADDRESS` target, confirmed on-chain and enriched
+    /// with its balance and lifetime totals from blockchain.info. Not inferred as a kind of its
+    /// own: a bare base58 or bech32 string is ambiguous against usernames and other selectors, so
+    /// a crypto route is asked for explicitly.
+    CryptoAddress,
 }
 
 impl ScanKind {
     /// Every kind, in the order the CLI usage and the Web UI list them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::People,
         Self::Email,
         Self::Exposure,
@@ -46,6 +51,7 @@ impl ScanKind {
         Self::Netblock,
         Self::Asn,
         Self::Network,
+        Self::CryptoAddress,
     ];
 
     #[must_use]
@@ -61,6 +67,7 @@ impl ScanKind {
             Self::Netblock => "netblock",
             Self::Asn => "asn",
             Self::Network => "network",
+            Self::CryptoAddress => "crypto",
         }
     }
 }
@@ -153,6 +160,7 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
         "netblock" | "cidr" | "prefix" => Ok(ScanKind::Netblock),
         "asn" | "as" | "bgp" => Ok(ScanKind::Asn),
         "network" | "wifi" | "bssid" | "ssid" | "wigle" => Ok(ScanKind::Network),
+        "crypto" | "bitcoin" | "btc" => Ok(ScanKind::CryptoAddress),
         other => Err(other),
     }
 }
@@ -170,6 +178,7 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
         ScanKind::Netblock => canonical_netblock(raw),
         ScanKind::Asn => canonical_asn(raw),
         ScanKind::Network => network_selector(raw),
+        ScanKind::CryptoAddress => crate::canonical::canonical_bitcoin_address(raw),
         // The people command owns the two-token rule and its offline skip path;
         // here only an empty name is non-canonical.
         ScanKind::People => {
@@ -354,6 +363,34 @@ mod tests {
         );
         assert_eq!(canonical_selector(ScanKind::Exposure, "two words"), None);
         assert_eq!(canonical_selector(ScanKind::Email, "@Ada_99"), None);
+    }
+
+    #[test]
+    fn a_crypto_route_takes_a_bitcoin_address_and_is_explicit_only() {
+        for alias in ["crypto", "bitcoin", "btc"] {
+            assert_eq!(parse_kind(alias), Ok(ScanKind::CryptoAddress), "{alias}");
+        }
+        assert_eq!(
+            canonical_selector(
+                ScanKind::CryptoAddress,
+                "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+            )
+            .as_deref(),
+            Some("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
+        );
+        // An Ethereum address is a crypto address but not one this route resolves.
+        assert_eq!(
+            canonical_selector(
+                ScanKind::CryptoAddress,
+                "0x0000000000000000000000000000000000000000"
+            ),
+            None
+        );
+        // A bare address is never inferred: it stays an explicit route.
+        assert_ne!(
+            infer_kind("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"),
+            ScanKind::CryptoAddress
+        );
     }
 
     #[test]
