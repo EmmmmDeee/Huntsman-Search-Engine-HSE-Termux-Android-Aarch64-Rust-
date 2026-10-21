@@ -1,0 +1,1 @@
+- The `scan` command's value flags (`-k/--kind`, `--input-file`, `--save-dir`, `--max-generations`, `--expand-floor`) read their value through one helper. A flag given twice, or with no value after it, is still refused with the same usage error and exit status, and a `--recurse` seed is parsed as before. A test pins each refusal message.
