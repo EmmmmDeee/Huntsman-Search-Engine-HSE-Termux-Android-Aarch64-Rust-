@@ -577,13 +577,13 @@ pub struct Geolocation {
 
 #[derive(Deserialize)]
 struct GeolocationData {
-    #[serde(default)]
+    // Only an explicit empty array establishes a valid zero location result.
     located_resources: Vec<LocatedResource>,
 }
 
 #[derive(Deserialize)]
 struct LocatedResource {
-    #[serde(default)]
+    // An absent collection is an incomplete response, not a confirmed absence.
     locations: Vec<LocationRow>,
 }
 
@@ -883,6 +883,28 @@ pub(crate) mod tests {
         let body = br#"{"status":"ok","data":{"located_resources":[]}}"#;
         let geo = decode_geolocation(body).unwrap_or_else(|e| panic!("{e}"));
         assert!(geo.locations.is_empty());
+    }
+
+    #[test]
+    fn missing_geolocation_collections_are_decode_failures_not_valid_zero() {
+        // Provider drift must not be treated as evidence of no locations.
+        for body in [
+            r#"{"status":"ok","data":{}}"#,
+            r#"{"status":"ok","data":{"located_resources":null}}"#,
+            r#"{"status":"ok","data":{"located_resources":[{}]}}"#,
+            r#"{"status":"ok","data":{"located_resources":[{"locations":null}]}}"#,
+        ] {
+            assert!(
+                matches!(decode_geolocation(body.as_bytes()), Err(LegError::Decode(_))),
+                "malformed geolocation was accepted: {body}"
+            );
+        }
+        let empty_locations =
+            br#"{"status":"ok","data":{"located_resources":[{"locations":[]}]}}"#;
+        assert!(decode_geolocation(empty_locations)
+            .expect("an explicit empty locations array is valid")
+            .locations
+            .is_empty());
     }
 
     #[test]
