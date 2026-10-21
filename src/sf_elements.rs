@@ -485,14 +485,18 @@ fn identity_descriptors(
         };
         out.push((kind, whois.to_owned()));
     }
-    // The name servers the registration record lists, as Spiderfoot's `PROVIDER_DNS` element (its
-    // "Name Server (DNS NS Records)"). `rdap_legs` is the only writer of the `ns` attribute, so it
-    // types the element unambiguously; each listed server becomes one element. Before this, the
-    // name servers survived only inside the raw registration record and never appeared as a typed
-    // element. This is the first producer of the otherwise-dormant PROVIDER_DNS element type. No
-    // extra network request is made.
-    for server in attr("ns").into_iter().flat_map(items) {
-        out.push(("PROVIDER_DNS", server.to_owned()));
+    // A name server declared in the registry record, not an independently
+    // observed DNS response. Only RDAP registration-subject evidence can create
+    // this typed element: saved attributes named "ns" from unrelated sources
+    // or from a non-registration entity must not be attributed to the registry.
+    if matches!(
+        entity.kind,
+        EntityKind::Domain | EntityKind::IpAddress | EntityKind::Netblock | EntityKind::Asn
+    ) && evidence.provenance.source == crate::rdap::SOURCE
+    {
+        for server in attr("ns").into_iter().flat_map(items) {
+            out.push(("PROVIDER_DNS", server.to_owned()));
+        }
     }
     if let Some(carrier) = attr("carrier") {
         out.push(("PROVIDER_TELCO", carrier.to_owned()));
@@ -1568,6 +1572,28 @@ mod tests {
         // A domain with no registration name servers produces no PROVIDER_DNS element.
         let plain = entity(EntityKind::Domain, "bare.example.com", "crtsh", &[]);
         let found = elements(DOMAIN, &[plain], 1_700_000_000);
+        assert!(of_type(&found, "PROVIDER_DNS").is_empty());
+    }
+
+    #[test]
+    fn only_rdap_registration_subjects_create_provider_dns_elements() {
+        // A saved same-named field from another provider does not independently
+        // establish the registry's list of name servers.
+        let unrelated_source = entity(
+            EntityKind::Domain,
+            "example.com",
+            "crtsh",
+            &[("ns", "ns1.example.net")],
+        );
+        // An unrelated kind does not become a registered domain merely because
+        // an evidence record uses the RDAP source identifier.
+        let unrelated_kind = entity(
+            EntityKind::Email,
+            "hello@example.com",
+            "rdap",
+            &[("ns", "ns2.example.net")],
+        );
+        let found = elements(DOMAIN, &[unrelated_source, unrelated_kind], 1_700_000_000);
         assert!(of_type(&found, "PROVIDER_DNS").is_empty());
     }
 
