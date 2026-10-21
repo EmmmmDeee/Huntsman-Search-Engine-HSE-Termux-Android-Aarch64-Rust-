@@ -282,7 +282,7 @@ mod tests {
         let configured =
             config("*", "1440", PathBuf::from("/tmp/example")).expect("offline normalisation");
         assert!(configured.normalise_all);
-        assert!(configured.targets.is_empty());
+        assert_eq!(configured.targets.len(), 0);
     }
 
     #[test]
