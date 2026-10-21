@@ -53,11 +53,11 @@ fn repair_protocol_covers_failure_regression_and_platform_semantics() {
         "Falsify",
         "Retain or roll back",
         "cargo gate full",
-        "Railway/container",
+        "Self-hosted container",
         "Android cross-build",
         "Termux runtime behavior",
         "host gate is necessary, not universally sufficient",
-        "bash scripts/railway-live-acceptance.sh",
+        "bash scripts/container-live-acceptance.sh",
     ] {
         assert!(
             doc.contains(required),
