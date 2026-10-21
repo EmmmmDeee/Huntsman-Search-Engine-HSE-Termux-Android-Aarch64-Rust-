@@ -402,8 +402,6 @@ fn host_descriptors(
     }
 }
 
-/// What a record says about an account, a number or an address: registrar, carrier, profile,
-/// breaches, leaked credentials and malicious verdicts.
 /// The blockchain collector serializes unsigned satoshis to exactly eight
 /// fractional decimal places. Validate this fixed-point form without floating
 /// point rounding or accepting arbitrary imported evidence as a BTC amount.
@@ -423,6 +421,8 @@ fn valid_btc_balance(value: &str) -> bool {
             .is_some()
 }
 
+/// What a record says about an account, a number or an address: registrar, carrier, profile,
+/// breaches, leaked credentials and malicious verdicts.
 fn identity_descriptors(
     entity: &Entity,
     evidence: &Evidence,
