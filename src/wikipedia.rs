@@ -162,12 +162,31 @@ fn interpret(response: &Response, selector: &str, scan_id: &str, now_unix: u64) 
         }
     };
 
-    // An API error (for example `baduser_ucuser` on a name `MediaWiki` rejects) and an empty
-    // contributions list are both clean negatives: the account names no public edits.
-    if parsed.error.is_some() {
-        return miss(
-            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status),
-        );
+    // Only a rejected account selector is a clean negative. Other API errors must not
+    // masquerade as evidence that an account has no public contributions.
+    if let Some(error) = parsed.error {
+        let code = error
+            .get("code")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        if code == "baduser_ucuser" {
+            return miss(
+                SourceExecutionOutcome::valid_zero(SRC, now_unix)
+                    .with_http_status(response.status),
+            );
+        }
+        let kind = if matches!(code, "ratelimited" | "maxlag") {
+            SourceOutcomeKind::RateLimited
+        } else {
+            SourceOutcomeKind::Inconclusive
+        };
+        return miss(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            kind,
+            Some(response.status),
+            format!("Wikipedia API error: {code}"),
+        ));
     }
     let contribs = parsed.query.unwrap_or_default().usercontribs;
 
