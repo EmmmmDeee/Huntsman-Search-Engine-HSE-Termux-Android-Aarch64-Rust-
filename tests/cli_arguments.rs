@@ -46,3 +46,52 @@ fn help_after_a_word_that_is_not_a_command_is_the_unknown_command_error() {
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("scan SELECTOR"));
 }
+
+#[test]
+fn a_scan_value_flag_refuses_a_repeat_or_a_missing_value_by_name() {
+    let refusals: [(&[&str], &str); 8] = [
+        (&["jane", "-k"], "scan -k/--kind needs a value"),
+        (
+            &["jane", "-k", "person", "-k", "domain"],
+            "scan accepts only one -k/--kind",
+        ),
+        (
+            &["--input-file", "--save-dir"],
+            "scan --input-file needs a file path",
+        ),
+        (
+            &["jane", "--save-dir", "a", "--save-dir", "b"],
+            "scan accepts only one --save-dir",
+        ),
+        (
+            &["--recurse", "jane", "--max-generations"],
+            "scan --max-generations needs a value",
+        ),
+        (
+            &["--recurse", "jane", "--max-generations", "x"],
+            "scan --max-generations needs a non-negative integer",
+        ),
+        (
+            &[
+                "--recurse",
+                "jane",
+                "--expand-floor",
+                "0.5",
+                "--expand-floor",
+                "0.6",
+            ],
+            "scan accepts only one --expand-floor",
+        ),
+        (
+            &["--recurse", "jane", "--expand-floor"],
+            "scan --expand-floor needs a value",
+        ),
+    ];
+    for (args, message) in refusals {
+        let out = bin().arg("scan").args(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(i32::from(EX_USAGE)), "{args:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "", "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(stderr.lines().next(), Some(message), "{args:?}");
+    }
+}

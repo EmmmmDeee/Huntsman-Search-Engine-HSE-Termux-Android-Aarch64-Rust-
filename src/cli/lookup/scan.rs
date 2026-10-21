@@ -48,39 +48,32 @@ pub(in crate::cli) fn scan_cmd(args: &[String]) -> ExitCode {
     while index < args.len() {
         match args[index].as_str() {
             "-k" | "--kind" => {
-                if kind.is_some() {
-                    return fail(EX_USAGE, "scan accepts only one -k/--kind");
-                }
-                let Some(value) = args.get(index + 1) else {
-                    return fail(EX_USAGE, "scan -k/--kind needs a value");
-                };
-                kind = Some(value.as_str());
+                kind = Some(match flag_value(args, index, "-k/--kind", kind.is_some()) {
+                    Ok(value) => value,
+                    Err(refusal) => return refusal,
+                });
                 index += 2;
             }
             "--input-file" => {
-                if input_file.is_some() {
-                    return fail(EX_USAGE, "scan accepts only one --input-file");
-                }
-                let Some(value) = args.get(index + 1) else {
-                    return fail(EX_USAGE, "scan --input-file needs a value");
+                let value = match flag_value(args, index, "--input-file", input_file.is_some()) {
+                    Ok(value) => value,
+                    Err(refusal) => return refusal,
                 };
                 if value.starts_with("--") {
                     return fail(EX_USAGE, "scan --input-file needs a file path");
                 }
-                input_file = Some(value.as_str());
+                input_file = Some(value);
                 index += 2;
             }
             "--save-dir" => {
-                if save_dir.is_some() {
-                    return fail(EX_USAGE, "scan accepts only one --save-dir");
-                }
-                let Some(value) = args.get(index + 1) else {
-                    return fail(EX_USAGE, "scan --save-dir needs a value");
+                let value = match flag_value(args, index, "--save-dir", save_dir.is_some()) {
+                    Ok(value) => value,
+                    Err(refusal) => return refusal,
                 };
                 if value.starts_with("--") {
                     return fail(EX_USAGE, "scan --save-dir needs a directory path");
                 }
-                save_dir = Some(value.as_str());
+                save_dir = Some(value);
                 index += 2;
             }
             value => {
@@ -108,6 +101,22 @@ pub(in crate::cli) fn scan_cmd(args: &[String]) -> ExitCode {
     }
 
     scan_one(&forwarded, kind)
+}
+
+/// The argument that follows a value-taking flag at `index`. A flag given twice, or with nothing
+/// after it, is refused here; the refusal is returned for the caller to pass on unchanged.
+fn flag_value<'a>(
+    args: &'a [String],
+    index: usize,
+    flag: &str,
+    seen: bool,
+) -> Result<&'a str, ExitCode> {
+    if seen {
+        return Err(fail(EX_USAGE, &format!("scan accepts only one {flag}")));
+    }
+    args.get(index + 1)
+        .map(String::as_str)
+        .ok_or_else(|| fail(EX_USAGE, &format!("scan {flag} needs a value")))
 }
 
 fn scan_batch_file(path: &str, kind: Option<&str>, save_dir: Option<&str>) -> ExitCode {
@@ -301,12 +310,11 @@ fn recurse_scan(args: &[String]) -> ExitCode {
                 index += 1;
             }
             "--max-generations" => {
-                if max_generations.is_some() {
-                    return fail(EX_USAGE, "scan accepts only one --max-generations");
-                }
-                let Some(value) = args.get(index + 1) else {
-                    return fail(EX_USAGE, "scan --max-generations needs a value");
-                };
+                let value =
+                    match flag_value(args, index, "--max-generations", max_generations.is_some()) {
+                        Ok(value) => value,
+                        Err(refusal) => return refusal,
+                    };
                 let Ok(parsed) = value.parse::<u32>() else {
                     return fail(
                         EX_USAGE,
@@ -317,11 +325,10 @@ fn recurse_scan(args: &[String]) -> ExitCode {
                 index += 2;
             }
             "--expand-floor" => {
-                if expand_floor.is_some() {
-                    return fail(EX_USAGE, "scan accepts only one --expand-floor");
-                }
-                let Some(value) = args.get(index + 1) else {
-                    return fail(EX_USAGE, "scan --expand-floor needs a value");
+                let value = match flag_value(args, index, "--expand-floor", expand_floor.is_some())
+                {
+                    Ok(value) => value,
+                    Err(refusal) => return refusal,
                 };
                 let Ok(parsed) = value.parse::<f64>() else {
                     return fail(
