@@ -24,6 +24,7 @@ use huntsman_recon::exposure_cli::{self, EXPOSURE_USAGE, ExposureArgs, ExposureR
 use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
 use huntsman_recon::ip_cli::{IP_USAGE, IpArgs, IpRun};
+use huntsman_recon::itunes_cli::{self, ITUNES_USAGE, ItunesArgs, ItunesRun};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
     self, ASN_POLICY, CRYPTO_POLICY, DOMAIN_POLICY, EMAIL_EXPOSURE_POLICY, EMAIL_POLICY,
@@ -671,6 +672,30 @@ pub(in crate::cli) fn crypto_cmd(args: &[String]) -> ExitCode {
     match CryptoArgs::parse(args) {
         Ok(p) => finish(ScanKind::CryptoAddress, &p.address, p.save.as_deref()),
         Err(e) => usage_failure(&e, CRYPTO_USAGE),
+    }
+}
+
+/// The App Store keyword search: one keyword, the iTunes leg, keyless. It prints the report
+/// directly, since a keyword has no scan kind to save under.
+pub(in crate::cli) fn itunes_cmd(args: &[String]) -> ExitCode {
+    let parsed = match ItunesArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return usage_failure(&e, ITUNES_USAGE),
+    };
+    let transport = transport(&TransportConfig::default(), &Selection::all());
+    match itunes_cli::run(&transport, &parsed.keyword, now_unix()) {
+        ItunesRun::Printed { text, .. } => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        ItunesRun::Network(m) => {
+            let refused = Refused::Network(m);
+            fail(refused.exit_status(), refused.message())
+        }
+        ItunesRun::Failed(m) => {
+            let refused = Refused::Unavailable(m);
+            fail(refused.exit_status(), refused.message())
+        }
     }
 }
 

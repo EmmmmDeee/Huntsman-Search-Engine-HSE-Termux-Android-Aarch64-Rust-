@@ -96,6 +96,8 @@ internetdb	adapter	Shodan InternetDB leg reached through ip_cli from ip, scan -k
 ip_cli	runtime	ip lookup front-end reached from ip, scan -k ip and /api/lookup
 ipinfo	adapter	IPinfo leg reached through indicator_legs from ip, scan and /api/lookup
 ipqs	adapter	IPQualityScore IP leg reached through indicator_legs from ip, scan -k ip and /api/lookup when its key is set
+itunes	adapter	Apple iTunes Search source client reached through itunes_cli from the itunes command
+itunes_cli	adapter	itunes keyword front-end reached from the itunes command
 isc	adapter	Internet Storm Center leg reached through indicator_legs from ip, scan and /api/lookup
 json	exporter	canonical JSON support
 key_import	adapter	Spiderfoot SpiderFoot.cfg and keys-file key import reached through serve's POST /api/settings/keys (Settings, Import API keys)
