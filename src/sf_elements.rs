@@ -319,6 +319,25 @@ fn attr<'a>(evidence: &'a Evidence, key: &str) -> Option<&'a str> {
         .filter(|value| !value.trim().is_empty())
 }
 
+/// Role/contact email addresses a whois record publishes, as Spiderfoot's `EMAILADDR_GENERIC`.
+/// Each key has a single keyless writer, so the element is gated on that genuine source; the value
+/// is accepted only when it parses as one address, so a malformed field cannot forge an email.
+/// First producer of the otherwise-dormant `EMAILADDR_GENERIC` type.
+fn generic_contact_emails(evidence: &Evidence, out: &mut Vec<(&'static str, String)>) {
+    let keys: &[&str] = if evidence.provenance.source == crate::netlas::SOURCE {
+        &["abuse_email", "registrar_email"]
+    } else if evidence.provenance.source == crate::isc::SOURCE {
+        &["abuse_contact"]
+    } else {
+        &[]
+    };
+    for key in keys {
+        if let Some(email) = attr(evidence, key).and_then(crate::canonical::canonical_email) {
+            out.push(("EMAILADDR_GENERIC", email));
+        }
+    }
+}
+
 /// An HTTP status line code is exactly three ASCII digits naming a 1xx-5xx class. Validate the
 /// saved value so a malformed or non-status field cannot be surfaced as an `HTTP_CODE`.
 fn valid_http_status(value: &str) -> bool {
@@ -477,6 +496,7 @@ fn identity_descriptors(
     if let Some(registrar) = attr("registrar") {
         out.push(("DOMAIN_REGISTRAR", registrar.to_owned()));
     }
+    generic_contact_emails(evidence, out);
     // A registration record as published: an address's is its network's.
     if let Some(whois) = attr("whois") {
         let kind = match entity.kind {
@@ -1866,6 +1886,56 @@ mod tests {
     }
 
     #[test]
+    fn whois_contact_emails_become_generic_email_elements() {
+        // netlas writes abuse + registrar contact emails; isc writes an abuse contact.
+        let netlas = entity(
+            EntityKind::Domain,
+            "example.com",
+            "netlas",
+            &[
+                ("abuse_email", "abuse@example.net"),
+                ("registrar_email", "registrar@example.org"),
+            ],
+        );
+        let found = elements(DOMAIN, &[netlas], 1_700_000_000);
+        let mut generic: Vec<&str> = of_type(&found, "EMAILADDR_GENERIC")
+            .iter()
+            .map(|e| e.data.as_str())
+            .collect();
+        generic.sort_unstable();
+        assert_eq!(generic, ["abuse@example.net", "registrar@example.org"]);
+
+        let isc = entity(
+            EntityKind::IpAddress,
+            "198.51.100.7",
+            "isc",
+            &[("abuse_contact", "soc@example.com")],
+        );
+        let found = elements(DOMAIN, &[isc], 1_700_000_000);
+        assert_eq!(
+            of_type(&found, "EMAILADDR_GENERIC")[0].data,
+            "soc@example.com"
+        );
+
+        // A source that does not publish a contact email, and a malformed value, each produce
+        // nothing — the former proving the source gate, the latter the address validation.
+        let other_source = entity(
+            EntityKind::Domain,
+            "example.com",
+            "rdap",
+            &[("abuse_email", "abuse@example.net")],
+        );
+        let malformed = entity(
+            EntityKind::Domain,
+            "example.com",
+            "netlas",
+            &[("abuse_email", "not-an-email")],
+        );
+        let found = elements(DOMAIN, &[other_source, malformed], 1_700_000_000);
+        assert!(of_type(&found, "EMAILADDR_GENERIC").is_empty());
+    }
+
+    #[test]
     fn every_type_the_mapping_can_emit_is_catalogued() {
         let emitted = [
             "ROOT",
@@ -1874,6 +1944,7 @@ mod tests {
             "CO_HOSTED_SITE",
             "EMAILADDR",
             "AFFILIATE_EMAILADDR",
+            "EMAILADDR_GENERIC",
             "IPV6_ADDRESS",
             "LINKED_URL_INTERNAL",
             "LINKED_URL_EXTERNAL",
