@@ -258,9 +258,10 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     // outcome row for the same RIPEstat provider.
     assert!(ip.evidence.iter().any(|evidence| {
         evidence.provenance.source == "ripestat"
-            && evidence.attributes.get("locations").is_some_and(|locations| {
-                locations == "AU Sydney at -33.87,151.21 covering 100%"
-            })
+            && evidence
+                .attributes
+                .get("locations")
+                .is_some_and(|locations| locations == "AU Sydney at -33.87,151.21 covering 100%")
     }));
     entity(&report, &EntityKind::Domain, "one.one.one.one");
     entity(&report, &EntityKind::Asn, "AS13335");
