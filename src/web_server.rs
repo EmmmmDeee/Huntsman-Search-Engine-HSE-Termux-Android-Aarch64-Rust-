@@ -1897,10 +1897,7 @@ mod tests {
     #[test]
     fn implicit_bind_stays_loopback_without_an_explicit_setting() {
         assert_eq!(resolve_serve_bind(None), DEFAULT_BIND);
-        assert_eq!(
-            resolve_serve_bind(Some("127.0.0.1:9000")),
-            "127.0.0.1:9000"
-        );
+        assert_eq!(resolve_serve_bind(Some("127.0.0.1:9000")), "127.0.0.1:9000");
         assert_eq!(resolve_serve_bind(Some("0.0.0.0:43210")), "0.0.0.0:43210");
     }
 
