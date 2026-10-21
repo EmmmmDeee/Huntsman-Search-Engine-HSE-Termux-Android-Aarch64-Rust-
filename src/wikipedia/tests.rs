@@ -68,6 +68,35 @@ fn an_api_error_is_a_clean_negative() {
 }
 
 #[test]
+fn an_unexpected_api_error_is_not_a_clean_negative() {
+    let got = lookup(
+        &OneResponse::json(200, r#"{"error":{"code":"readonly","info":"Maintenance"}}"#),
+        "jane",
+        "scan",
+        1,
+    )
+    .unwrap();
+    assert_eq!(got.outcome.kind, SourceOutcomeKind::Inconclusive);
+    assert!(got.entities.is_empty());
+}
+
+#[test]
+fn api_rate_limit_is_retryable_and_not_a_clean_negative() {
+    let got = lookup(
+        &OneResponse::json(
+            200,
+            r#"{"error":{"code":"ratelimited","info":"Slow down"}}"#,
+        ),
+        "jane",
+        "scan",
+        1,
+    )
+    .unwrap();
+    assert_eq!(got.outcome.kind, SourceOutcomeKind::RateLimited);
+    assert!(got.entities.is_empty());
+}
+
+#[test]
 fn edits_become_tagged_revision_urls_with_a_contributions_anchor() {
     let got = lookup(
         &OneResponse::json(200, TWO_EDITS),
