@@ -32,7 +32,7 @@ const REVERSE: &str = "https://nominatim.openstreetmap.org/reverse";
 const RESULT_LIMIT: usize = 10;
 /// Hard cap on the verbatim provider response retained on each evidence record.
 /// Reject oversized results rather than silently discarding source fields.
-const MAX_PROVENANCE_BYTES: usize = 64 * 1024;
+const MAX_NOMINATIM_RAW_JSON_BYTES: usize = 64 * 1024;
 
 /// One immutable, bounded observation shared by all entities produced from
 /// the same provider response.
@@ -200,7 +200,7 @@ fn refusal(response: &Response, now_unix: u64) -> Option<Report> {
             "truncated Nominatim response",
         )));
     }
-    if response.body.len() > MAX_PROVENANCE_BYTES {
+    if response.body.len() > MAX_NOMINATIM_RAW_JSON_BYTES {
         return Some(miss(SourceExecutionOutcome::failed(
             SOURCE,
             now_unix,
