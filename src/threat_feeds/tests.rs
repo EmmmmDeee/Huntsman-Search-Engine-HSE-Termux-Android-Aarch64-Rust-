@@ -373,6 +373,20 @@ fn a_copy_is_read_until_it_is_old_then_downloaded_again() {
             sample(feed.id)
         );
     }
+    // A copy's age is its modification time, which the filesystem sets in whole seconds from when
+    // the write happened. Pin it to `start`, so the offsets below measure from the fetch however
+    // long the first check took.
+    for feed in FEEDS {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join(feed.id))
+            .expect("copy")
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(start)),
+            )
+            .expect("pin the copy's time");
+    }
     // Within the hour every feed is read from its copy, with the same result.
     let (again, rows) = check(&feeds, &subjects, "s", start + 60);
     assert!(net.asked().is_empty());
