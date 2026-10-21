@@ -1,1 +1,1 @@
-- Add an opt-in bounded Rust controller that refreshes canonical targets, deduplicates active scans and atomically writes derived saved-scan analysis without rewriting original evidence.
+- Add an opt-in bounded Rust controller that refreshes canonical non-name targets, deduplicates active scans and atomically writes derived saved-scan analysis without rewriting original evidence.
