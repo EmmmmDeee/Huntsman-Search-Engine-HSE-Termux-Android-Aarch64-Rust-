@@ -38,7 +38,10 @@ fn self_hosted_container_has_executable_ci_acceptance() {
     ] {
         assert!(ci.contains(required), "{CI} must contain {required:?}");
     }
-    assert!(!ci.contains("railway"), "provider-specific jobs must be removed");
+    assert!(
+        !ci.contains("railway"),
+        "provider-specific jobs must be removed"
+    );
 }
 
 #[test]
