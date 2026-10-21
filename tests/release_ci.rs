@@ -262,6 +262,33 @@ fn publish_scans_with_a_byte_identical_inlined_scanner() {
     assert_eq!(wf.matches("<<'SCAN_FOR_KEYS'").count(), 1);
 }
 
+/// Every push to main starts a build. A push that touched only installer, docs or test files used
+/// to start none, so the head had no build of its own: on 2026-10-21 main sat at 0a6784b with no
+/// prebuilt and the installer fell back to an older one. The push trigger therefore has no path
+/// filter; pull requests keep theirs, so a PR dry run still runs only for release-path changes.
+#[test]
+fn every_main_push_starts_a_build_so_the_head_has_its_own() {
+    let wf = release();
+    let push = wf
+        .split_once("\non:\n")
+        .and_then(|(_, on)| on.split_once("\n  push:\n"))
+        .map(
+            |(_, rest)| match rest.split_once("\n  workflow_dispatch:") {
+                Some((push, _)) => push,
+                None => rest,
+            },
+        )
+        .expect("the workflow has a push trigger");
+    assert!(
+        push.contains("branches:\n      - main"),
+        "the push trigger must name main"
+    );
+    assert!(
+        !push.contains("paths:"),
+        "a push to main must start a build whatever it changed: a push with no path filter match left its head without a prebuilt"
+    );
+}
+
 #[test]
 fn superseded_main_builds_are_verified_without_historical_release_failures() {
     let wf = release();
