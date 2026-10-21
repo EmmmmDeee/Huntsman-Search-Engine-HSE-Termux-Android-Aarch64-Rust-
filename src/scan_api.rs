@@ -50,6 +50,7 @@ use crate::scan_store::{LogLevel, Risk, ScanOptions, ScanRecord, ScanResults, Sc
 use crate::sf_correlate::Rule;
 use crate::sf_elements::{self, DataElement};
 use crate::sf_types;
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::value_syntax::form_pairs;
 
 /// Whether a key slot (an environment name such as `HUNTSMAN_SHODAN_KEY`) holds a key. Installed
@@ -88,6 +89,37 @@ impl ApiResponse {
 }
 
 const JSON: &str = "application/json; charset=utf-8";
+
+/// Count recorded provider invocations, not distinct providers or possible sources.
+/// A skipped keyed source is not an attempted request or a confirmed empty result.
+/// These totals describe execution coverage, never discovery completeness.
+fn source_execution_summary(outcomes: &[SourceExecutionOutcome]) -> Value {
+    let mut success = 0_usize;
+    let mut valid_zero = 0_usize;
+    let mut not_configured = 0_usize;
+    let mut unresolved = 0_usize;
+    for outcome in outcomes {
+        match outcome.kind {
+            SourceOutcomeKind::Success => success += 1,
+            SourceOutcomeKind::ValidZero => valid_zero += 1,
+            SourceOutcomeKind::NotConfigured => not_configured += 1,
+            _ => unresolved += 1,
+        }
+    }
+    json!({
+        "unit": "source_execution",
+        "total": outcomes.len(),
+        "attempted": success + valid_zero + unresolved,
+        "accepted": success + valid_zero,
+        "success": success,
+        "valid_zero": valid_zero,
+        "not_configured": not_configured,
+        "unresolved": unresolved,
+        "all_recorded_sources_accepted": !outcomes.is_empty()
+            && not_configured == 0
+            && unresolved == 0,
+    })
+}
 
 fn ok(status: u16, value: &Value) -> ApiResponse {
     ApiResponse {
@@ -527,6 +559,9 @@ impl ScanApi {
             .unwrap_or_default();
         let mut value = json!(record);
         value["sources"] = Value::Array(sources);
+        value["source_execution_summary"] = results.as_ref().map_or(Value::Null, |saved| {
+            source_execution_summary(&saved.outcomes)
+        });
         value["termination"] = json!(results.as_ref().and_then(|results| results.termination));
         value["lineage"] = json!(
             results
@@ -1457,6 +1492,46 @@ mod tests {
     }
 
     #[test]
+    fn source_coverage_distinguishes_confirmed_negatives_from_missing_keys_and_failures() {
+        let outcomes = [
+            SourceExecutionOutcome::success("gravatar", 1, 1),
+            SourceExecutionOutcome::valid_zero("bluesky_user", 1).with_http_status(400),
+            SourceExecutionOutcome::failed(
+                "hibp_account",
+                1,
+                SourceOutcomeKind::NotConfigured,
+                None,
+                "no key configured",
+            ),
+            SourceExecutionOutcome::failed(
+                "provider",
+                1,
+                SourceOutcomeKind::Upstream5xx,
+                Some(502),
+                "temporary outage",
+            ),
+        ];
+        assert_eq!(
+            source_execution_summary(&outcomes),
+            json!({
+                "unit": "source_execution",
+                "total": 4,
+                "attempted": 3,
+                "accepted": 2,
+                "success": 1,
+                "valid_zero": 1,
+                "not_configured": 1,
+                "unresolved": 1,
+                "all_recorded_sources_accepted": false,
+            })
+        );
+        assert_eq!(
+            source_execution_summary(&[] )["all_recorded_sources_accepted"],
+            false
+        );
+    }
+
+    #[test]
     fn a_started_scan_is_listed_and_finishes() {
         let (api, dir) = api("start");
         let started = api.handle(
@@ -1485,6 +1560,9 @@ mod tests {
         let row = body(&api.handle("GET", &format!("/api/scans/{id}"), ""));
         assert_eq!(row["sources"][0]["module"], "internetdb");
         assert_eq!(row["report"], "report");
+        assert_eq!(row["source_execution_summary"]["success"], 1);
+        assert_eq!(row["source_execution_summary"]["accepted"], 1);
+        assert_eq!(row["source_execution_summary"]["all_recorded_sources_accepted"], true);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
