@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::cli::{MAX_PLAIN_FILE_BYTES, fail};
+use crate::cli::{MAX_PLAIN_FILE_BYTES, fail, usage_error};
 use huntsman_recon::classifier::{self, classify as classify_indicator};
 use huntsman_recon::clock;
 use huntsman_recon::entity;
@@ -114,7 +114,7 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
 pub(in crate::cli) fn sf_cmd(args: &[String]) -> ExitCode {
     let parsed = match SfArgs::parse(args) {
         Ok(parsed) => parsed,
-        Err(error) => return fail(EX_USAGE, &format!("{error}\n{SF_USAGE}")),
+        Err(error) => return usage_error(error, SF_USAGE),
     };
     let action = match sf_compat::action(&parsed) {
         Ok(action) => action,

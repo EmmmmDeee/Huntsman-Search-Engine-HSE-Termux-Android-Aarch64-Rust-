@@ -4,7 +4,7 @@ use std::env;
 use std::path::Path;
 use std::process::ExitCode;
 
-use super::{RECON_USAGE, fail};
+use super::{RECON_USAGE, fail, usage_error};
 use huntsman_recon::canonical::{canonical_domain, canonical_email, canonical_url};
 use huntsman_recon::clock;
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
@@ -218,7 +218,7 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
 pub(super) fn fetch_cmd(args: &[String]) -> ExitCode {
     let parsed = match FetchArgs::parse(args) {
         Ok(p) => p,
-        Err(e) => return fail(EX_USAGE, &format!("{e}\n{FETCH_USAGE}")),
+        Err(e) => return usage_error(e, FETCH_USAGE),
     };
     let credential = match build_credential(&parsed) {
         Ok(c) => c,

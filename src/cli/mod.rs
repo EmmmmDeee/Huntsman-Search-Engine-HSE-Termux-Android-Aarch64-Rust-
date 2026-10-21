@@ -90,7 +90,7 @@ mod selfcheck;
 mod service;
 mod utility;
 
-use report::{exit_on_output_failure, fail};
+use report::{exit_on_output_failure, fail, usage_error};
 
 /// Runs the command named by the process arguments (without the program name).
 pub(crate) fn run(args: Vec<OsString>) -> ExitCode {

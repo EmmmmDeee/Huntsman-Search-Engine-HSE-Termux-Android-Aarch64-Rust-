@@ -1,9 +1,10 @@
 //! The stderr reporter every command uses for an error, and what a failed print does.
 
+use std::fmt::Display;
 use std::io::Write;
 use std::process::ExitCode;
 
-use huntsman_recon::exit::EX_PIPE;
+use huntsman_recon::exit::{EX_PIPE, EX_USAGE};
 use huntsman_recon::stdio_failure::status_for;
 use huntsman_recon::textnorm::escape_controls_keep_lines;
 
@@ -30,4 +31,10 @@ pub(super) fn exit_on_output_failure() {
 pub(super) fn fail(code: u8, msg: &str) -> ExitCode {
     eprintln!("{}", escape_controls_keep_lines(msg));
     ExitCode::from(code)
+}
+
+/// Reports a refused argument on stderr: the reason, then the usage line it refers to. Exit
+/// status 64, the same for every command.
+pub(super) fn usage_error(reason: impl Display, usage: &str) -> ExitCode {
+    fail(EX_USAGE, &format!("{reason}\n{usage}"))
 }
