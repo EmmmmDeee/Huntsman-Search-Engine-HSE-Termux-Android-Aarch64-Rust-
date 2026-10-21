@@ -5,7 +5,7 @@
 //! so a kind cannot behave differently depending on where it was asked from.
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,8 +14,9 @@ use crate::cli::fail;
 use huntsman_recon::api_leg;
 use huntsman_recon::asn_cli::{ASN_USAGE, AsnArgs};
 use huntsman_recon::concurrent;
-use huntsman_recon::crypto_cli;
+use huntsman_recon::crypto_cli::{self, CRYPTO_USAGE, CryptoArgs};
 use huntsman_recon::dehashed::{self, client::DehashedClient};
+use huntsman_recon::domain_cli::{DOMAIN_USAGE, DomainArgs};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::{Entity, EntityKind, merge_by_uid};
 use huntsman_recon::error::Error;
@@ -595,6 +596,24 @@ fn finish(kind: ScanKind, selector: &str, save: Option<&Path>) -> ExitCode {
     }
 }
 
+/// Parse one lookup command's arguments, then run it for the scan kind they name. A rejected
+/// argument is a usage error carrying the command's usage text, so every lookup command rejects
+/// its arguments the same way.
+fn lookup_cmd<A>(
+    args: &[String],
+    parse: impl FnOnce(&[String]) -> Result<A, Error>,
+    usage: &str,
+    select: impl FnOnce(A) -> (ScanKind, String, Option<PathBuf>),
+) -> ExitCode {
+    match parse(args) {
+        Ok(parsed) => {
+            let (kind, selector, save) = select(parsed);
+            finish(kind, &selector, save.as_deref())
+        }
+        Err(e) => usage_failure(&e, usage),
+    }
+}
+
 pub(in crate::cli) fn people_cmd(args: &[String]) -> ExitCode {
     match PeopleArgs::parse(args) {
         Ok(p) => finish(ScanKind::People, &p.name, p.save.as_deref()),
@@ -603,75 +622,63 @@ pub(in crate::cli) fn people_cmd(args: &[String]) -> ExitCode {
 }
 
 pub(in crate::cli) fn email_cmd(args: &[String]) -> ExitCode {
-    match EmailArgs::parse(args) {
-        Ok(p) => finish(ScanKind::Email, &p.email, p.save.as_deref()),
-        Err(e) => usage_failure(&e, EMAIL_USAGE),
-    }
+    lookup_cmd(args, EmailArgs::parse, EMAIL_USAGE, |p| {
+        (ScanKind::Email, p.email, p.save)
+    })
 }
 
 pub(in crate::cli) fn exposure_cmd(args: &[String]) -> ExitCode {
-    match ExposureArgs::parse(args) {
-        Ok(p) => finish(ScanKind::Exposure, &p.selector, p.save.as_deref()),
-        Err(e) => usage_failure(&e, EXPOSURE_USAGE),
-    }
+    lookup_cmd(args, ExposureArgs::parse, EXPOSURE_USAGE, |p| {
+        (ScanKind::Exposure, p.selector, p.save)
+    })
 }
 
 pub(in crate::cli) fn username_cmd(args: &[String]) -> ExitCode {
-    match UsernameArgs::parse(args) {
-        Ok(p) => finish(ScanKind::Username, &p.username, p.save.as_deref()),
-        Err(e) => usage_failure(&e, USERNAME_USAGE),
-    }
+    lookup_cmd(args, UsernameArgs::parse, USERNAME_USAGE, |p| {
+        (ScanKind::Username, p.username, p.save)
+    })
 }
 
 pub(in crate::cli) fn phone_cmd(args: &[String]) -> ExitCode {
-    match PhoneArgs::parse(args) {
-        Ok(p) => finish(ScanKind::Phone, &p.phone, p.save.as_deref()),
-        Err(e) => usage_failure(&e, PHONE_USAGE),
-    }
+    lookup_cmd(args, PhoneArgs::parse, PHONE_USAGE, |p| {
+        (ScanKind::Phone, p.phone, p.save)
+    })
 }
 
 pub(in crate::cli) fn domain_cmd(args: &[String]) -> ExitCode {
-    use huntsman_recon::domain_cli::{DOMAIN_USAGE, DomainArgs};
-    match DomainArgs::parse(args) {
-        Ok(p) => finish(ScanKind::Domain, &p.domain, p.save.as_deref()),
-        Err(e) => usage_failure(&e, DOMAIN_USAGE),
-    }
+    lookup_cmd(args, DomainArgs::parse, DOMAIN_USAGE, |p| {
+        (ScanKind::Domain, p.domain, p.save)
+    })
 }
 
 pub(in crate::cli) fn ip_cmd(args: &[String]) -> ExitCode {
-    match IpArgs::parse(args) {
-        Ok(p) => finish(ScanKind::Ip, &p.ip, p.save.as_deref()),
-        Err(e) => usage_failure(&e, IP_USAGE),
-    }
+    lookup_cmd(args, IpArgs::parse, IP_USAGE, |p| {
+        (ScanKind::Ip, p.ip, p.save)
+    })
 }
 
 pub(in crate::cli) fn netblock_cmd(args: &[String]) -> ExitCode {
-    match NetblockArgs::parse(args) {
-        Ok(p) => finish(ScanKind::Netblock, &p.netblock, p.save.as_deref()),
-        Err(e) => usage_failure(&e, NETBLOCK_USAGE),
-    }
+    lookup_cmd(args, NetblockArgs::parse, NETBLOCK_USAGE, |p| {
+        (ScanKind::Netblock, p.netblock, p.save)
+    })
 }
 
 pub(in crate::cli) fn asn_cmd(args: &[String]) -> ExitCode {
-    match AsnArgs::parse(args) {
-        Ok(p) => finish(ScanKind::Asn, &p.asn, p.save.as_deref()),
-        Err(e) => usage_failure(&e, ASN_USAGE),
-    }
+    lookup_cmd(args, AsnArgs::parse, ASN_USAGE, |p| {
+        (ScanKind::Asn, p.asn, p.save)
+    })
 }
 
 pub(in crate::cli) fn network_cmd(args: &[String]) -> ExitCode {
-    match NetworkArgs::parse(args) {
-        Ok(p) => finish(ScanKind::Network, &p.selector, p.save.as_deref()),
-        Err(e) => usage_failure(&e, NETWORK_USAGE),
-    }
+    lookup_cmd(args, NetworkArgs::parse, NETWORK_USAGE, |p| {
+        (ScanKind::Network, p.selector, p.save)
+    })
 }
 
 pub(in crate::cli) fn crypto_cmd(args: &[String]) -> ExitCode {
-    use huntsman_recon::crypto_cli::{CRYPTO_USAGE, CryptoArgs};
-    match CryptoArgs::parse(args) {
-        Ok(p) => finish(ScanKind::CryptoAddress, &p.address, p.save.as_deref()),
-        Err(e) => usage_failure(&e, CRYPTO_USAGE),
-    }
+    lookup_cmd(args, CryptoArgs::parse, CRYPTO_USAGE, |p| {
+        (ScanKind::CryptoAddress, p.address, p.save)
+    })
 }
 
 /// The App Store keyword search: one keyword, the iTunes leg, keyless. It prints the report
