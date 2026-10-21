@@ -432,11 +432,17 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        archive_previous, config, due, file_stamp, invalidate_saved, normalised_path,
+        archive_previous, config, cycle, due, file_stamp, invalidate_saved, normalised_path,
         source_revision,
     };
+    use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+    use huntsman_recon::scan_api::ScanApi;
+    use huntsman_recon::scan_service::{LookupOutput, ScanLookup, ScanRequest, ScanService};
     use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus, ScanStore};
+    use huntsman_recon::source_outcome::SourceExecutionOutcome;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     #[test]
     fn targets_are_canonical_and_deduplicated() {
@@ -588,6 +594,118 @@ mod tests {
             original
         );
         std::fs::remove_dir_all(&directory).expect("remove stale test directory");
+    }
+
+    #[test]
+    fn wildcard_cycle_reconciles_false_positive_edits_without_network_collection() {
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-offline-fp-cycle-{}-{}",
+            std::process::id(),
+            super::millis()
+        ));
+        let scans_dir = directory.join("scans");
+        let store = ScanStore::open(&scans_dir).expect("scan store");
+        let lookup: ScanLookup = Arc::new(|_, selector, _| {
+            let evidence = Evidence::new(
+                EvidenceProvenance::for_scan("internetdb", "test"),
+                "ports",
+            )
+            .with_attr("ports", "443");
+            Ok(LookupOutput {
+                text: "offline fixture".to_owned(),
+                entities: vec![
+                    Entity::builder(EntityKind::IpAddress, selector, 0.9, "test")
+                        .evidence(evidence)
+                        .build(),
+                ],
+                outcomes: vec![SourceExecutionOutcome::success("internetdb", 1, 1)],
+            })
+        });
+        let service = ScanService::new(store, lookup);
+        let api = ScanApi::new(Arc::clone(&service), None);
+        let record = service
+            .run(&ScanRequest {
+                target: "1.1.1.1".to_owned(),
+                options: ScanOptions {
+                    usecase: "passive".to_owned(),
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .expect("generate real saved scan fixture");
+        assert_eq!(record.status, ScanStatus::Finished);
+        let configured =
+            config("*", "1440", directory.join("normalised")).expect("offline-only mode");
+        assert!(configured.targets.is_empty());
+
+        let mut observed = BTreeMap::new();
+        let mut retry_after = BTreeMap::new();
+        let source_path = scans_dir.join(&record.id).join("results.json");
+        let saved_evidence = std::fs::read(&source_path).expect("source bytes");
+        cycle(&api, &configured, &mut observed, &mut retry_after).expect("first cycle");
+        let report_path = normalised_path(&record, &configured.normalised_dir);
+        let first: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        assert_eq!(first["normalisation"]["state"], "current");
+        assert_eq!(first["scan"]["id"], record.id);
+        assert_eq!(std::fs::read(&source_path).unwrap(), saved_evidence);
+        assert_eq!(observed.len(), 1);
+
+        let mut results = service
+            .store()
+            .results(&record.id)
+            .unwrap()
+            .expect("saved results");
+        let element = results
+            .elements
+            .iter_mut()
+            .find(|element| element.entity.is_some() && element.kind != "ROOT")
+            .expect("an evidence element to flag");
+        element.fp = true;
+        service.store().save_results(&results).expect("persist false positive");
+        assert_eq!(
+            api.handle("GET", &format!("/api/scans/{}/analyze", record.id), "")
+                .status,
+            409
+        );
+        cycle(&api, &configured, &mut observed, &mut retry_after).expect("flagged cycle");
+        let stale: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        assert_eq!(stale["normalisation"]["state"], "stale");
+        assert_eq!(stale["normalisation"]["reason"], "analysis_refused_http_409");
+        assert!(stale.get("report").is_none());
+        let previous: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(report_path.with_extension("previous.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(previous["normalisation"]["state"], "current");
+        assert_eq!(observed.len(), 1);
+        assert_eq!(retry_after.len(), 1);
+        assert!(service.store().results(&record.id).unwrap().unwrap().elements
+            .iter().any(|element| element.fp));
+
+        let mut results = service.store().results(&record.id).unwrap().unwrap();
+        for element in &mut results.elements {
+            element.fp = false;
+        }
+        service.store().save_results(&results).expect("remove false positive");
+        // Emulate expiry of the documented 15-minute retry back-off without sleeping.
+        retry_after.clear();
+        cycle(&api, &configured, &mut observed, &mut retry_after).expect("recovered cycle");
+        let recovered: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        assert_eq!(recovered["normalisation"]["state"], "current");
+        assert_eq!(recovered["scan"]["id"], record.id);
+
+        // A restarted controller recomputes the latest saved scan without remote requests.
+        let mut restarted_observed = BTreeMap::new();
+        let mut restarted_retries = BTreeMap::new();
+        cycle(&api, &configured, &mut restarted_observed, &mut restarted_retries)
+            .expect("process restart cycle");
+        assert_eq!(restarted_observed.len(), 1);
+        assert!(restarted_retries.is_empty());
+        assert_eq!(service.store().list().unwrap().len(), 1);
+        std::fs::remove_dir_all(&directory).expect("remove offline fixture");
     }
 
     #[test]
