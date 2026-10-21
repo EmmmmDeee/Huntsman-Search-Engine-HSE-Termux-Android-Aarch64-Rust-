@@ -189,10 +189,10 @@ fn named_council_matches_canonical_directive_order() {
         .expect("canonical council directive must exist");
     let mut previous_end = 0;
     for role in COMMAND_CHAIN {
-        let row = format!("| {} | **{}** |", role.rank, role.name);
+        let row = format!("| {} | **{}** | {} |", role.rank, role.name, role.title);
         let position = directive
             .find(row.as_str())
-            .unwrap_or_else(|| panic!("canonical directive missing {}", role.name));
+            .unwrap_or_else(|| panic!("canonical directive missing role or title {}", role.name));
         assert!(
             position >= previous_end,
             "canonical directive role {} is out of order",
