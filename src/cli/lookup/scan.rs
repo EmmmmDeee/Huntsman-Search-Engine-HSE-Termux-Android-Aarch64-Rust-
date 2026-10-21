@@ -22,6 +22,7 @@ use super::profiles::{
     netblock_cmd, network_cmd, people_cmd, phone_cmd, username_cmd,
 };
 use huntsman_recon::analysis::{self, InvestigationReport};
+use huntsman_recon::clock;
 use huntsman_recon::correlator::Correlation;
 use huntsman_recon::graph::{EntityRelation, RelationKind};
 use huntsman_recon::pipeline::{self, PipelineLimits};
@@ -246,12 +247,6 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
     }
 }
 
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
-
 /// Live collector for `scan --recurse`: each target runs the real per-kind lookup through
 /// `profiles::collect`, so the recursion fetches exactly what a single `scan` of that selector
 /// would. A refused lookup becomes a recorded source outcome rather than a dropped dispatch, so
@@ -272,7 +267,7 @@ impl SelectorCollector for LiveCollector {
                 };
                 let outcome = SourceExecutionOutcome::failed(
                     target.kind.command(),
-                    now_unix(),
+                    clock::unix_now(),
                     kind,
                     None,
                     refused.message(),

@@ -22,6 +22,7 @@ use super::client::{
     DehashedClient, DehashedError, MAX_PAGE, MAX_PAGE_SIZE, SearchOutcome, SearchRequest,
 };
 use super::query::{Field, Purpose, Selector};
+use crate::clock;
 use crate::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use crate::http::Transport;
 use crate::keys::Secret;
@@ -282,9 +283,7 @@ fn save_artifact(
         max_records_per_response: request.size as usize,
         ..CollectionLimits::default()
     };
-    let now_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now_unix = clock::unix_now();
 
     // Honour --page: the collector otherwise fetches page 1, which would
     // silently substitute page 1's data for the page the operator asked for.

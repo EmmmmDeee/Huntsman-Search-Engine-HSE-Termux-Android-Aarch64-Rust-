@@ -2,10 +2,10 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::{MAX_PLAIN_FILE_BYTES, fail};
 use huntsman_recon::classifier::{self, classify as classify_indicator};
+use huntsman_recon::clock;
 use huntsman_recon::entity;
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
@@ -74,9 +74,7 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
         );
     }
     let query = terms.join(" ");
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs());
+    let now = clock::unix_now();
     let transport = UreqTransport::new(&TransportConfig::default());
 
     if adaptive {

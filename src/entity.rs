@@ -6,7 +6,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +13,7 @@ use crate::canonical::{
     canonical_coordinates, canonical_domain, canonical_email, canonical_handle, canonical_name,
     canonical_phone, canonical_provenance_family, canonical_url, canonical_whitespace,
 };
+use crate::clock;
 use crate::confidence::{
     Classification, VerificationMethod, depth_decayed, effective, effective_from_ancestry,
 };
@@ -26,9 +26,7 @@ static SCAN_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[must_use]
 pub fn scan_id(kind: &str, value: &str) -> String {
     let counter = SCAN_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0u128, |duration| duration.as_nanos());
+    let now = clock::unix_now_nanos();
     let material = format!("huntsman-scan-id-v1\0{kind}\0{value}\0{now}\0{counter}");
     hex32(&sha256(material.as_bytes()))
 }
@@ -148,7 +146,7 @@ impl EvidenceProvenance {
             source_family: canonical_provenance_family(&source),
             source,
             scan_id: None,
-            recorded_at_unix: unix_now(),
+            recorded_at_unix: clock::unix_now(),
         }
     }
 
@@ -354,7 +352,7 @@ impl Entity {
             raw_value,
             confidence: unit(confidence),
             corroboration: 1,
-            observed_at_unix: unix_now(),
+            observed_at_unix: clock::unix_now(),
             evidence: Vec::new(),
             tags: Vec::new(),
             scan_id: scan_id.into(),
@@ -627,13 +625,6 @@ pub fn is_promotion_source(source: &str) -> bool {
 pub fn is_non_corroborating_source(source: &str) -> bool {
     is_enrichment_source(source)
         || matches!(source, RECALL_SOURCE | CROSS_SCAN_SOURCE | CONSENSUS_SOURCE)
-}
-
-#[must_use]
-pub fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
 }
 
 fn unit(x: f64) -> f64 {
