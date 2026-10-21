@@ -181,7 +181,7 @@ fn decode(search: &Search, term: &str, scan_id: &str, now_unix: u64, status: u16
             KEYWORD_CONFIDENCE,
             scan_id,
             evidence,
-            &["itunes", "app-store", "keyword-match"],
+            &["itunes", crate::tags::APP_STORE_ENTRY, "keyword-match"],
         );
     }
     merge_by_uid(&mut entities);
