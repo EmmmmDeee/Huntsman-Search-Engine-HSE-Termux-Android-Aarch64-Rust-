@@ -35,6 +35,7 @@ use huntsman_recon::lookup_save::{
 use huntsman_recon::module_selection::{Selected, Selection};
 use huntsman_recon::netblock_cli::{NETBLOCK_USAGE, NetblockArgs};
 use huntsman_recon::network_cli::{NETWORK_USAGE, NetworkArgs};
+use huntsman_recon::nominatim_cli::{self, GEOCODE_USAGE, GeocodeArgs};
 use huntsman_recon::oathnet;
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
@@ -688,6 +689,21 @@ pub(in crate::cli) fn itunes_cmd(args: &[String]) -> ExitCode {
         &parsed.keyword,
         clock::unix_now(),
     )) {
+        Ok((text, _)) => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        Err(refused) => fail(refused.exit_status(), refused.message()),
+    }
+}
+
+pub(in crate::cli) fn geocode_cmd(args: &[String]) -> ExitCode {
+    let parsed = match GeocodeArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return usage_failure(&e, GEOCODE_USAGE),
+    };
+    let transport = transport(&TransportConfig::default(), &Selection::all());
+    match source_report(nominatim_cli::run(&transport, &parsed.query, now_unix())) {
         Ok((text, _)) => {
             print!("{text}");
             ExitCode::SUCCESS

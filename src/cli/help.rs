@@ -97,6 +97,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "network" => NETWORK_HELP,
         "crypto" => huntsman_recon::crypto_cli::CRYPTO_HELP,
         "itunes" => huntsman_recon::itunes_cli::ITUNES_HELP,
+        "geocode" => huntsman_recon::nominatim_cli::GEOCODE_HELP,
         "radar" => radar_help(),
         "domain" => domain_help(),
         "ip" => huntsman_recon::ip_cli::IP_HELP,
