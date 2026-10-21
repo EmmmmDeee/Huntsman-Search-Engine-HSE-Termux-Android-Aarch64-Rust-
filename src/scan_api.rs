@@ -731,10 +731,18 @@ impl ScanApi {
                 Err(message) => error(400, &message),
             };
         }
+        let earlier_execution = source_execution_summary(&base_results.outcomes);
+        let later_execution = source_execution_summary(&other_results.outcomes);
+        let source_execution_changed = earlier_execution != later_execution;
         let value = json!({
             "base": base,
             "other": other,
             "unchanged": comparison.unchanged(),
+            "source_execution": {
+                "earlier": earlier_execution,
+                "later": later_execution,
+            },
+            "source_execution_changed": source_execution_changed,
             "types": comparison.types,
             "added": element_rows(other_results, comparison.added.iter().copied()),
             "removed": element_rows(base_results, comparison.removed.iter().copied()),
@@ -1263,6 +1271,9 @@ mod tests {
         assert_eq!(compared["base"]["id"], earlier.as_str());
         assert_eq!(compared["other"]["id"], later.as_str());
         assert_eq!(compared["unchanged"], false);
+        assert_eq!(compared["source_execution"]["earlier"]["success"], 1);
+        assert_eq!(compared["source_execution"]["later"]["success"], 1);
+        assert_eq!(compared["source_execution_changed"], false);
         let data = |list: &Value| -> Vec<String> {
             list.as_array()
                 .unwrap()
@@ -1318,6 +1329,40 @@ mod tests {
             csv.filename.as_deref(),
             Some(format!("{earlier}-vs-{later}-Huntsman.csv").as_str())
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn comparison_keeps_identical_findings_distinct_from_changed_execution_coverage() {
+        let (api, dir) = api("compare-coverage");
+        let earlier = finished(&api);
+        let later = finished(&api);
+        let mut results = api
+            .service()
+            .store()
+            .results(&later)
+            .unwrap()
+            .unwrap();
+        results.outcomes.push(SourceExecutionOutcome::failed(
+            "hibp",
+            1,
+            SourceOutcomeKind::NotConfigured,
+            None,
+            "no key configured",
+        ));
+        api.service().store().save_results(&results).unwrap();
+        let value = body(&api.handle(
+            "GET",
+            "/api/scans/compare",
+            &format!("ids={earlier},{later}"),
+        ));
+        assert_eq!(value["unchanged"], true);
+        assert_eq!(value["source_execution_changed"], true);
+        assert_eq!(value["source_execution"]["earlier"]["accepted"], 1);
+        assert_eq!(value["source_execution"]["earlier"]["not_configured"], 0);
+        assert_eq!(value["source_execution"]["later"]["accepted"], 1);
+        assert_eq!(value["source_execution"]["later"]["not_configured"], 1);
+        assert_eq!(value["source_execution"]["later"]["all_recorded_sources_accepted"], false);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
