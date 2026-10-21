@@ -146,7 +146,12 @@ pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
     while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--json" if !json => json = true,
-            "--file" if file.is_none() => file = rest.next(),
+            "--file" if file.is_none() => {
+                file = rest.next().filter(|path| !path.starts_with("--"));
+                if file.is_none() {
+                    return fail(EX_USAGE, USAGE);
+                }
+            }
             _ => return fail(EX_USAGE, USAGE),
         }
     }
@@ -198,7 +203,12 @@ fn cells_cmd(args: &[String]) -> ExitCode {
     while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--json" if !json => json = true,
-            "--file" if file.is_none() => file = rest.next(),
+            "--file" if file.is_none() => {
+                file = rest.next().filter(|path| !path.starts_with("--"));
+                if file.is_none() {
+                    return fail(EX_USAGE, USAGE);
+                }
+            }
             _ => return fail(EX_USAGE, USAGE),
         }
     }
