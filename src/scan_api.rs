@@ -733,7 +733,8 @@ impl ScanApi {
         }
         let earlier_execution = source_execution_summary(&base_results.outcomes);
         let later_execution = source_execution_summary(&other_results.outcomes);
-        let source_execution_changed = earlier_execution != later_execution;
+        let changed_modules = scan_compare::changed_source_modules(base_results, other_results);
+        let source_execution_changed = !changed_modules.is_empty();
         let value = json!({
             "base": base,
             "other": other,
@@ -741,6 +742,7 @@ impl ScanApi {
             "source_execution": {
                 "earlier": earlier_execution,
                 "later": later_execution,
+                "changed_modules": changed_modules,
             },
             "source_execution_changed": source_execution_changed,
             "types": comparison.types,
@@ -1274,6 +1276,7 @@ mod tests {
         assert_eq!(compared["source_execution"]["earlier"]["success"], 1);
         assert_eq!(compared["source_execution"]["later"]["success"], 1);
         assert_eq!(compared["source_execution_changed"], false);
+        assert_eq!(compared["source_execution"]["changed_modules"], json!([]));
         let data = |list: &Value| -> Vec<String> {
             list.as_array()
                 .unwrap()
@@ -1357,6 +1360,7 @@ mod tests {
         assert_eq!(value["source_execution"]["earlier"]["not_configured"], 0);
         assert_eq!(value["source_execution"]["later"]["accepted"], 1);
         assert_eq!(value["source_execution"]["later"]["not_configured"], 1);
+        assert_eq!(value["source_execution"]["changed_modules"], json!(["hibp"]));
         assert_eq!(
             value["source_execution"]["later"]["all_recorded_sources_accepted"],
             false
