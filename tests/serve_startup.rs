@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 
 use huntsman_recon::exit::EX_UNAVAILABLE;
 
-/// `serve` with `args`, with no inherited bind, token, Railway or Termux setting, plus `envs`.
+/// `serve` with `args`, with no inherited bind, token, external host or Termux setting, plus `envs`.
 fn serve(args: &[&str], envs: &[(&str, &str)]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"));
     command.arg("serve").args(args);
@@ -18,10 +18,6 @@ fn serve(args: &[&str], envs: &[(&str, &str)]) -> Command {
         "HSE_BIND",
         "HSE_AUTH_TOKEN",
         "PORT",
-        "RAILWAY_ENVIRONMENT",
-        "RAILWAY_ENVIRONMENT_ID",
-        "RAILWAY_PROJECT_ID",
-        "RAILWAY_SERVICE_ID",
         "TERMUX_VERSION",
         "PREFIX",
     ] {
