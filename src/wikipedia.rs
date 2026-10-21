@@ -171,8 +171,7 @@ fn interpret(response: &Response, selector: &str, scan_id: &str, now_unix: u64) 
             .unwrap_or("unknown");
         if code == "baduser_ucuser" {
             return miss(
-                SourceExecutionOutcome::valid_zero(SRC, now_unix)
-                    .with_http_status(response.status),
+                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status),
             );
         }
         let kind = if matches!(code, "ratelimited" | "maxlag") {
