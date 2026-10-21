@@ -14,6 +14,7 @@ const VT_KEY: &str = "vt-test-key-0123456789abcdef0123";
 
 const INTERNETDB: &str = r#"{"cpes":["cpe:/a:cloudflare:cloudflare"],"hostnames":["one.one.one.one"],"ip":"1.1.1.1","ports":[53,443],"tags":["cdn"],"vulns":["CVE-2023-0001"]}"#;
 const RIPESTAT: &str = r#"{"status":"ok","data":{"announced":true,"asns":[{"asn":13335,"holder":"CLOUDFLARENET - Cloudflare, Inc."}],"resource":"1.1.1.0/24","block":{"desc":"APNIC (Status: ALLOCATED)"}}}"#;
+const RIPESTAT_GEO: &str = r#"{"status":"ok","data":{"located_resources":[{"resource":"1.1.1.1","locations":[{"country":"AU","city":"Sydney","latitude":-33.87,"longitude":151.21,"covered_percentage":100.0}]}]}}"#;
 const GREYNOISE_UNSEEN: &str = r#"{"ip":"1.1.1.1","noise":false,"riot":false,"message":"IP not observed scanning the internet."}"#;
 const ABUSEIPDB: &str = r#"{"data":{"ipAddress":"1.1.1.1","abuseConfidenceScore":75,"countryCode":"AU","usageType":"Content Delivery Network","isp":"Cloudflare, Inc.","domain":"cloudflare.com","hostnames":[],"isTor":false,"isWhitelisted":false,"totalReports":12,"numDistinctUsers":5,"lastReportedAt":"2026-10-01T00:00:00+00:00"}}"#;
 const VIRUSTOTAL: &str = r#"{"data":{"id":"1.1.1.1","type":"ip_address","attributes":{"last_analysis_stats":{"harmless":60,"malicious":1,"suspicious":0,"undetected":30},"reputation":5,"asn":13335,"as_owner":"CLOUDFLARENET","network":"1.1.1.0/24","country":"AU"}}}"#;
@@ -102,6 +103,7 @@ fn keyless() -> Routes {
             crate::rdap::tests::APNIC,
         ),
         ("https://internetdb.shodan.io/", 200, INTERNETDB),
+        ("https://stat.ripe.net/data/geoloc/", 200, RIPESTAT_GEO),
         ("https://stat.ripe.net/", 200, RIPESTAT),
         ("https://api.greynoise.io/", 404, GREYNOISE_UNSEEN),
         ("https://api.abuseipdb.com/", 200, ABUSEIPDB),
@@ -252,6 +254,14 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     assert!(ip.has_tag(tags::VULNERABLE));
     let sources = ip.evidence_sources();
     assert!(sources.contains("internetdb") && sources.contains("ripestat"));
+    // The extra geoloc request adds target evidence but not an extra success
+    // outcome row for the same RIPEstat provider.
+    assert!(ip.evidence.iter().any(|evidence| {
+        evidence.provenance.source == "ripestat"
+            && evidence.attributes.get("locations").is_some_and(|locations| {
+                locations == "AU Sydney at -33.87,151.21 covering 100%"
+            })
+    }));
     entity(&report, &EntityKind::Domain, "one.one.one.one");
     entity(&report, &EntityKind::Asn, "AS13335");
     entity(
