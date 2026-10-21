@@ -7,7 +7,7 @@ use crate::error::Error;
 use crate::http::Transport;
 use crate::itunes;
 use crate::lookup_report;
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
 pub const ITUNES_USAGE: &str = "usage: huntsman-recon itunes KEYWORD";
 pub const ITUNES_HELP: &str = "\
@@ -42,11 +42,7 @@ pub struct Report {
     pub outcomes: Vec<SourceExecutionOutcome>,
 }
 
-pub enum ItunesRun {
-    Printed { text: String, report: Report },
-    Network(String),
-    Failed(String),
-}
+pub type ItunesRun = SourceRun<Report>;
 
 /// `raw` as the search keys on: trimmed, non-empty, at most [`MAX_KEYWORD_BYTES`] bytes, with no
 /// control character.

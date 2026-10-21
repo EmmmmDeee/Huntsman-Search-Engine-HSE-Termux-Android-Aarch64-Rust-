@@ -10,7 +10,7 @@ use crate::error::Error;
 use crate::http::Transport;
 use crate::lookup_report;
 use crate::nominatim;
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
 pub const GEOCODE_USAGE: &str = "usage: huntsman-recon geocode PLACE-OR-ADDRESS | geocode LAT,LON";
 pub const GEOCODE_HELP: &str = "\
@@ -67,11 +67,7 @@ pub struct Report {
     pub outcomes: Vec<SourceExecutionOutcome>,
 }
 
-pub enum GeocodeRun {
-    Printed { text: String, report: Report },
-    Network(String),
-    Failed(String),
-}
+pub type GeocodeRun = SourceRun<Report>;
 
 /// A `lat,lon` point, when `query` is one. **Pure.**
 fn as_point(query: &str) -> Option<(f64, f64)> {

@@ -163,16 +163,22 @@ fn a_reverse_error_body_is_a_clean_negative_not_a_failure() {
 }
 
 #[test]
-fn a_refusal_is_not_read_as_a_zero() {
-    let report = forward(
-        &OneResponse::json(429, "rate limited"),
-        "anything",
-        "scan-geo",
-        1,
-    )
-    .expect("forward");
+fn a_rate_limit_is_classified_not_read_as_a_zero() {
+    // Exercised through the pure interpreter, not `forward`: a 429 fed through the network
+    // path would trip the process-shared per-host pacing breaker for Nominatim's host and
+    // suppress every sibling test that runs after it. The breaker's own rate-limit behaviour
+    // is covered in `fetch`'s tests; here we only check the source reads the refusal, not a
+    // zero. A `truncated` body or a 4xx/5xx is the same branch of `refusal`.
+    let response = Response {
+        status: 429,
+        headers: vec![("content-type".into(), "text/plain".into())],
+        body: b"rate limited".to_vec(),
+        truncated: false,
+    };
+    let report = interpret_forward(&response, "anything", "scan-geo", 1);
     assert!(report.entities.is_empty());
     assert!(!report.outcome.kind.is_accepted(), "{:?}", report.outcome);
+    assert_eq!(report.outcome.kind, SourceOutcomeKind::RateLimited);
 }
 
 #[test]

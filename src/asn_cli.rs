@@ -24,7 +24,7 @@ use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::rdap_legs;
 use crate::ripestat::{self, AsOverview, Neighbours, Prefixes};
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
 pub const ASN_USAGE: &str = "usage: huntsman-recon asn AS-NUMBER [--save FILE]";
 pub const ASN_HELP: &str = "\
@@ -69,11 +69,7 @@ impl AsnArgs {
     }
 }
 
-pub enum AsnRun {
-    Printed { text: String, report: Report },
-    Network(String),
-    Failed(String),
-}
+pub type AsnRun = SourceRun<Report>;
 
 /// What the three `RIPEstat` calls answered.
 struct Routing {
