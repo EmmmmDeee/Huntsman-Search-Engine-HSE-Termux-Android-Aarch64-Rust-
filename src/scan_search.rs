@@ -153,7 +153,11 @@ mod tests {
                 let parsed = Query::parse(query).unwrap();
                 let lowered = query.trim().to_lowercase();
                 let expected = value.to_lowercase().contains(lowered.as_str());
-                assert_eq!(parsed.matches(value), expected, "query={query:?}, value={value:?}");
+                assert_eq!(
+                    parsed.matches(value),
+                    expected,
+                    "query={query:?}, value={value:?}"
+                );
             }
         }
     }
