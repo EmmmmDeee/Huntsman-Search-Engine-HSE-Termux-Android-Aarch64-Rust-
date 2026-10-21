@@ -654,9 +654,7 @@ pub fn decode_geolocation(body: &[u8]) -> Result<Geolocation, LegError> {
     // Treat it as provider schema drift instead of attaching empty location evidence.
     if locations.iter().any(|place| {
         place.latitude.is_some() != place.longitude.is_some()
-            || (place.country.is_none()
-                && place.city.is_none()
-                && place.latitude.is_none())
+            || (place.country.is_none() && place.city.is_none() && place.latitude.is_none())
     }) {
         return Err(LegError::Decode(
             "geolocation contains an incomplete place".into(),
@@ -906,16 +904,20 @@ pub(crate) mod tests {
             r#"{"status":"ok","data":{"located_resources":[{"locations":null}]}}"#,
         ] {
             assert!(
-                matches!(decode_geolocation(body.as_bytes()), Err(LegError::Decode(_))),
+                matches!(
+                    decode_geolocation(body.as_bytes()),
+                    Err(LegError::Decode(_))
+                ),
                 "malformed geolocation was accepted: {body}"
             );
         }
-        let empty_locations =
-            br#"{"status":"ok","data":{"located_resources":[{"locations":[]}]}}"#;
-        assert!(decode_geolocation(empty_locations)
-            .expect("an explicit empty locations array is valid")
-            .locations
-            .is_empty());
+        let empty_locations = br#"{"status":"ok","data":{"located_resources":[{"locations":[]}]}}"#;
+        assert!(
+            decode_geolocation(empty_locations)
+                .expect("an explicit empty locations array is valid")
+                .locations
+                .is_empty()
+        );
     }
 
     #[test]
@@ -926,7 +928,10 @@ pub(crate) mod tests {
             r#"{"status":"ok","data":{"located_resources":[{"locations":[{"latitude":1.0}]}]}}"#,
         ] {
             assert!(
-                matches!(decode_geolocation(body.as_bytes()), Err(LegError::Decode(_))),
+                matches!(
+                    decode_geolocation(body.as_bytes()),
+                    Err(LegError::Decode(_))
+                ),
                 "unidentified or incomplete location was accepted: {body}"
             );
         }
