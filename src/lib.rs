@@ -94,6 +94,7 @@ pub mod greynoise;
 pub mod hackertarget;
 pub mod hibp;
 pub mod http;
+pub mod hudsonrock;
 pub mod hunter;
 pub mod identity;
 pub mod identity_resolution;
