@@ -184,6 +184,9 @@ fn entity_type(entity: &Entity, target: Target<'_>) -> &'static str {
         // A URL that is one public Wikipedia page edit is Spiderfoot's own edit type, whatever the
         // scan target is.
         EntityKind::Url if entity.has_tag(tags::WIKIPEDIA_EDIT) => "WIKIPEDIA_PAGE_EDIT",
+        // A URL the iTunes lookup tags as an App Store app page is Spiderfoot's app-store entry
+        // type, whatever the scan target is.
+        EntityKind::Url if entity.has_tag(tags::APP_STORE_ENTRY) => "APPSTORE_ENTRY",
         EntityKind::Url => match (target.domain(), url_host(value)) {
             (Some(domain), Some(host)) if is_or_subdomain_of(&host, domain) => {
                 "LINKED_URL_INTERNAL"
@@ -1094,6 +1097,31 @@ mod tests {
         assert_eq!(linked, 1, "an untagged URL is still a linked URL");
     }
 
+    /// A URL the iTunes lookup tags as an App Store entry is Spiderfoot's `APPSTORE_ENTRY`
+    /// (the dormant type's first producer); an untagged URL stays a plain linked URL.
+    #[test]
+    fn an_app_store_url_is_the_appstore_entry_type() {
+        let mut app = entity(
+            EntityKind::Url,
+            "https://apps.apple.com/us/app/example-trail-app/id1",
+            "apple_itunes",
+            &[],
+        );
+        app.tag(tags::APP_STORE_ENTRY);
+        let found = elements(DOMAIN, &[app], 1_700_000_000);
+        assert_eq!(
+            of_type(&found, "APPSTORE_ENTRY")[0].data,
+            "https://apps.apple.com/us/app/example-trail-app/id1"
+        );
+
+        let plain = entity(EntityKind::Url, "https://example.com/x", "web", &[]);
+        let found = elements(DOMAIN, &[plain], 1_700_000_000);
+        assert!(of_type(&found, "APPSTORE_ENTRY").is_empty());
+        let linked = of_type(&found, "LINKED_URL_INTERNAL").len()
+            + of_type(&found, "LINKED_URL_EXTERNAL").len();
+        assert_eq!(linked, 1, "an untagged URL is still a linked URL");
+    }
+
     #[test]
     fn each_hosts_domain_and_each_named_country_is_derived_once_as_spiderfoot_does() {
         let found = elements(
@@ -1429,6 +1457,7 @@ mod tests {
             "LINKED_URL_INTERNAL",
             "LINKED_URL_EXTERNAL",
             "WIKIPEDIA_PAGE_EDIT",
+            "APPSTORE_ENTRY",
             "ETHEREUM_ADDRESS",
             "BITCOIN_ADDRESS",
             "TCP_PORT_OPEN",

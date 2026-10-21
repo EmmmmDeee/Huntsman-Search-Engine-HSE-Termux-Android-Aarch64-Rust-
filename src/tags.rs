@@ -47,3 +47,5 @@ pub const ABUSE_CONTACT: &str = "abuse-contact";
 pub const WHOIS_CONTACT: &str = "whois-contact";
 /// A URL that is one public Wikipedia page edit, typed as `WIKIPEDIA_PAGE_EDIT`.
 pub const WIKIPEDIA_EDIT: &str = "wikipedia-edit";
+/// A URL that is one Apple App Store app page, typed as `APPSTORE_ENTRY`.
+pub const APP_STORE_ENTRY: &str = "app-store";
