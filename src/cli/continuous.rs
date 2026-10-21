@@ -56,6 +56,9 @@ fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, St
         let resolved =
             plan(target, None).map_err(|error| format!("invalid continuous target: {error}"))?;
         let kind = resolved.kind.command().to_owned();
+        if kind == "people" {
+            return Err("continuous people-name scans are disabled".to_owned());
+        }
         unique
             .entry((kind.clone(), resolved.target.clone()))
             .or_insert_with(|| ScanRequest {
