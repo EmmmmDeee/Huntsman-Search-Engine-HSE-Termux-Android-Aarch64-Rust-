@@ -348,9 +348,18 @@ mod tests {
     fn unknown_or_invalid_actor_errors_never_prove_absence() {
         for (status, body) in [
             (400, "{}"),
-            (400, r#"{"error":"InvalidRequest","message":"Invalid actor"}"#),
-            (400, r#"{"error":"AccountTakedown","message":"Account has been suspended"}"#),
-            (400, r#"{"error":"AccountDeactivated","message":"Account is deactivated"}"#),
+            (
+                400,
+                r#"{"error":"InvalidRequest","message":"Invalid actor"}"#,
+            ),
+            (
+                400,
+                r#"{"error":"AccountTakedown","message":"Account has been suspended"}"#,
+            ),
+            (
+                400,
+                r#"{"error":"AccountDeactivated","message":"Account is deactivated"}"#,
+            ),
             (400, "Profile not found"),
             (404, ""),
             (404, r#"{"error":"NotFound","message":"Profile not found"}"#),
