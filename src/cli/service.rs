@@ -167,6 +167,24 @@ fn serve_history(dir: &str) -> Result<std::sync::Arc<ArtifactHistory>, ExitCode>
     }
 }
 
+/// Report the bound address and runtime background constraints without extending
+/// the already substantial serve command controller.
+fn report_started(server: &Server, config_needs_token: bool, token_supplied: bool) -> Result<(), ExitCode> {
+    match server.local_addr() {
+        Ok(addr) => {
+            println!("serving=http://{addr}/");
+            if let Some(note) = token_note(addr, config_needs_token, token_supplied) {
+                eprintln!("{note}");
+            }
+            if TermuxState::current() == TermuxState::Detected {
+                eprintln!("{TERMUX_BACKGROUND_HINT}");
+            }
+        }
+        Err(error) => return Err(fail(EX_UNAVAILABLE, &error.to_string())),
+    }
+    Ok(())
+}
+
 pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     let hse_bind = env::var("HSE_BIND").ok();
     let railway_port = env::var("PORT").ok();
@@ -250,17 +268,8 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
         Err(Error::Store(message)) => return fail(EX_UNAVAILABLE, &message),
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
     };
-    match server.local_addr() {
-        Ok(addr) => {
-            println!("serving=http://{addr}/");
-            if let Some(note) = token_note(addr, config_needs_token, token_supplied) {
-                eprintln!("{note}");
-            }
-            if TermuxState::current() == TermuxState::Detected {
-                eprintln!("{TERMUX_BACKGROUND_HINT}");
-            }
-        }
-        Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
+    if let Err(code) = report_started(&server, config_needs_token, token_supplied) {
+        return code;
     }
     if let Err(error) = super::continuous::launch(continuous_scans.as_ref()) {
         return fail(EX_DATAERR, &format!("continuous: {error}"));
