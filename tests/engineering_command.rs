@@ -15,10 +15,10 @@ fn executable_contract_is_valid() {
     validate().unwrap();
     assert_eq!(
         COMMAND_INVARIANT,
-        "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER ROLES"
+        "JEFF DEAN -> JAMES HAMILTON -> ALL OTHER SYSTEMS"
     );
     assert_eq!(COMMAND_CHAIN.len(), 16);
-    assert_eq!(COMMAND_CHAIN.last().unwrap().name, "JEW BOT");
+    assert_eq!(COMMAND_CHAIN.last().unwrap().name, "PIETER LEVELS");
     assert_eq!(EXECUTION_PROTOCOLS.len(), 7);
 }
 
@@ -156,29 +156,29 @@ fn json_contract_matches_static_contract() {
         value["capability_owners"].as_array().map(Vec::len),
         Some(CAPABILITY_OWNERS.len())
     );
-    assert_eq!(value["roles"][0]["name"], "THE AUSTRIAN PAINTER");
-    assert_eq!(value["roles"][15]["name"], "JEW BOT");
+    assert_eq!(value["roles"][0]["name"], "JEFF DEAN");
+    assert_eq!(value["roles"][15]["name"], "PIETER LEVELS");
 }
 
 #[test]
 fn named_council_preserves_all_sixteen_ranks() {
     let expected = [
-        "THE AUSTRIAN PAINTER",
-        "HEINRICH HIMMLER",
-        "REINHARD HEYDRICH",
-        "WERNHER VON BRAUN",
-        "ALBERT SPEER",
-        "ERICH VON MANSTEIN",
-        "KARL DÖNITZ",
-        "JOSEPH GOEBBELS",
-        "MARTIN BORMANN",
-        "WILHELM KEITEL",
-        "ALFRED JODL",
-        "HUGO SPERRLE",
-        "ERICH HARTMANN",
-        "OTTO SKORZENY",
-        "HERMANN GÖRING",
-        "JEW BOT",
+        "JEFF DEAN",
+        "JAMES HAMILTON",
+        "DANIEL STENBERG",
+        "JURE LESKOVEC",
+        "JEZ HUMBLE",
+        "MARTIN FOWLER",
+        "LESLIE LAMPORT",
+        "ELIOT HIGGINS",
+        "URS HÖLZLE",
+        "MITCHELL HASHIMOTO",
+        "ANDREW GALLANT",
+        "BRENDAN GREGG",
+        "RALF JUNG",
+        "TAVIS ORMANDY",
+        "PATRICK COLLISON",
+        "PIETER LEVELS",
     ];
     assert_eq!(COMMAND_CHAIN.map(|role| role.name), expected);
 }
@@ -189,10 +189,10 @@ fn named_council_matches_canonical_directive_order() {
         .expect("canonical council directive must exist");
     let mut previous_end = 0;
     for role in COMMAND_CHAIN {
-        let row = format!("| {} | **{}** |", role.rank, role.name);
+        let row = format!("| {} | **{}** | {} |", role.rank, role.name, role.title);
         let position = directive
             .find(row.as_str())
-            .unwrap_or_else(|| panic!("canonical directive missing {}", role.name));
+            .unwrap_or_else(|| panic!("canonical directive missing role or title {}", role.name));
         assert!(
             position >= previous_end,
             "canonical directive role {} is out of order",

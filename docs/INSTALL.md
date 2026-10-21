@@ -43,8 +43,13 @@ order:
    not match.
 
 A published build that fails its checksum, `build-sha` or acceptance stops the
-install with the old binary untouched; it never falls back to compiling. Either
-way the installer creates `~/.huntsman` and a private `~/.huntsman.env`, and
+install with the old binary untouched; it never falls back to compiling. The
+`huntsman` command and shell shortcuts are fetched from the **accepted binary's
+commit**, including when the installer selects an older published build because
+`main` has no release yet. This prevents newer launcher commands from being
+paired with an older executable; the installer still reports the actual
+accepted revision. Either way the installer creates `~/.huntsman` and a private
+`~/.huntsman.env`, and
 only after every gate passes does it atomically write
 `~/.huntsman/installed-revision` with the accepted revision and how it was
 installed (`installed_from=prebuilt main-<sha7>` or `installed_from=source

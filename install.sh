@@ -154,9 +154,9 @@ fi
 [[ "$install_rev" =~ ^[0-9a-fA-F]{40}$ ]] ||
   die "HUNTSMAN_REV must be a full 40-character Git commit SHA"
 install_rev="${install_rev,,}"
-# install.sh, the huntsman command and the service layout come from this
-# commit, even when the binary installed below is an older published build.
-scripts_rev="$install_rev"
+# The launcher/profile must use the same revision as the accepted binary.
+# A fallback prebuilt can be older than main; only set scripts_rev after the
+# installer has selected and accepted the final install_rev.
 
 # --- Prebuilt: the checksum-verified release build of a main commit ---------
 #
@@ -340,6 +340,10 @@ fi
 
 # --- The huntsman command, its shell shortcuts, and the web UI service -------
 #
+# A fallback to a published ancestor changes install_rev. Fetch scripts from
+# that accepted revision, never from an incompatible newer main commit.
+scripts_rev="$install_rev"
+
 # scripts/termux/huntsman starts, stops and checks the web UI, which runs as the
 # termux-services (runit) service huntsman-serve; runit restarts it whenever it
 # stops. The service is on unless HUNTSMAN_SERVE_SERVICE=off, or unless a
