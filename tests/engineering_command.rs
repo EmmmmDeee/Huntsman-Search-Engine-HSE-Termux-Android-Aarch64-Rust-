@@ -18,10 +18,7 @@ fn executable_contract_is_valid() {
         "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER ROLES"
     );
     assert_eq!(COMMAND_CHAIN.len(), 16);
-    assert_eq!(
-        COMMAND_CHAIN.last().unwrap().name,
-        "JEW BOT"
-    );
+    assert_eq!(COMMAND_CHAIN.last().unwrap().name, "JEW BOT");
     assert_eq!(EXECUTION_PROTOCOLS.len(), 7);
 }
 

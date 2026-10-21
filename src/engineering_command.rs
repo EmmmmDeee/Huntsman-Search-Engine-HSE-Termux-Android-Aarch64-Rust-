@@ -6,8 +6,7 @@
 
 use std::fmt::Write as _;
 
-pub const COMMAND_INVARIANT: &str =
-    "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER ROLES";
+pub const COMMAND_INVARIANT: &str = "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER ROLES";
 
 pub const EXECUTION_PROTOCOLS: [&str; 7] = [
     "Explicit architecture contracts with automated verification",
@@ -313,10 +312,7 @@ mod tests {
             COMMAND_INVARIANT,
             "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER ROLES"
         );
-        assert_eq!(
-            COMMAND_CHAIN.last().unwrap().name,
-            "JEW BOT"
-        );
+        assert_eq!(COMMAND_CHAIN.last().unwrap().name, "JEW BOT");
         assert_eq!(EXECUTION_PROTOCOLS.len(), 7);
     }
 
