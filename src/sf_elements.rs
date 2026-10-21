@@ -396,6 +396,21 @@ fn host_descriptors(
             out.push(("HTTP_CODE", code.to_owned()));
         }
     }
+    // The passive-DNS record set a host resolves to or from, as Spiderfoot's RAW_DNS_RECORDS
+    // ("Raw DNS Records"). Only the keyless `mnemonic` passive-DNS lookup writes `passive_dns`,
+    // onto the domain or IP it queried, as one pipe-delimited dump of every record line. A saved
+    // attribute is not proof on its own, so the element is gated on that genuine source and host
+    // entity kind: a same-named field from another source, or on another entity kind, does not
+    // establish a passive-DNS record set. The dump is emitted whole — it is one raw record by
+    // design, not a re-splittable list. First producer of the otherwise-dormant RAW_DNS_RECORDS
+    // type. No extra network request is made.
+    if matches!(entity.kind, EntityKind::IpAddress | EntityKind::Domain)
+        && evidence.provenance.source == crate::mnemonic::SOURCE
+    {
+        if let Some(records) = attr("passive_dns") {
+            out.push(("RAW_DNS_RECORDS", records.to_owned()));
+        }
+    }
     if let Some(os) = attr("os") {
         out.push(("OPERATING_SYSTEM", os.to_owned()));
     }
@@ -1840,6 +1855,39 @@ mod tests {
     }
 
     #[test]
+    fn mnemonic_passive_dns_becomes_a_raw_dns_records_element() {
+        // The keyless `mnemonic` passive-DNS lookup writes `passive_dns` on the queried domain or
+        // IP as one pipe-delimited dump; it is surfaced whole as a single RAW_DNS_RECORDS element.
+        let dump = "example.com A 203.0.113.10 | example.com MX 10 mail.example.com";
+        for kind in [EntityKind::Domain, EntityKind::IpAddress] {
+            let label = format!("{kind:?}");
+            let host = entity(kind, "example.com", "mnemonic", &[("passive_dns", dump)]);
+            let found = elements(DOMAIN, &[host], 1_700_000_000);
+            let records = of_type(&found, "RAW_DNS_RECORDS");
+            assert_eq!(records.len(), 1, "{label}");
+            assert_eq!(records[0].data, dump, "{label}");
+        }
+
+        // Neither another source's same-named attribute nor another entity kind establishes a
+        // record set, and a host with no passive-DNS dump produces nothing.
+        let other_source = entity(
+            EntityKind::Domain,
+            "example.com",
+            "otx",
+            &[("passive_dns", dump)],
+        );
+        let other_kind = entity(
+            EntityKind::Email,
+            "root@example.com",
+            "mnemonic",
+            &[("passive_dns", dump)],
+        );
+        let bare = entity(EntityKind::Domain, "bare.example", "mnemonic", &[]);
+        let found = elements(DOMAIN, &[other_source, other_kind, bare], 1_700_000_000);
+        assert!(of_type(&found, "RAW_DNS_RECORDS").is_empty());
+    }
+
+    #[test]
     fn whois_contact_emails_become_generic_email_elements() {
         // netlas writes abuse + registrar contact emails; isc writes an abuse contact.
         let netlas = entity(
@@ -1912,6 +1960,7 @@ mod tests {
             "WEBSERVER_TECHNOLOGY",
             "WEBSERVER_BANNER",
             "HTTP_CODE",
+            "RAW_DNS_RECORDS",
             "OPERATING_SYSTEM",
             "BGP_AS_MEMBER",
             "NETBLOCK_MEMBER",
