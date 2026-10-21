@@ -462,6 +462,13 @@ fn identity_descriptors(
         };
         out.push(("PGP_KEY", data));
     }
+    // A Bitcoin address's on-chain balance, as Spiderfoot's BITCOIN_BALANCE. `blockchain` is the
+    // only writer of `balance_btc` and queries only Bitcoin, so the attribute types the element
+    // unambiguously; the satoshi figure and received/sent totals stay on raw. A zero balance is a
+    // real finding and is kept. First producer of the otherwise-dormant BITCOIN_BALANCE type.
+    if let Some(balance) = attr("balance_btc") {
+        out.push(("BITCOIN_BALANCE", format!("{balance} BTC")));
+    }
     if let Some(kind) = compromised_type(&entity.kind) {
         let mut breaches = BTreeSet::new();
         for key in [
@@ -1490,6 +1497,33 @@ mod tests {
     }
 
     #[test]
+    fn a_bitcoin_address_balance_becomes_a_bitcoin_balance_element() {
+        // `blockchain` writes `balance_btc` only for Bitcoin addresses, so the attribute alone
+        // types the balance.
+        let address = entity(
+            EntityKind::CryptoAddress,
+            "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+            "blockchain",
+            &[("balance_btc", "107.69281547")],
+        );
+        let found = elements(DOMAIN, &[address], 1_700_000_000);
+        assert_eq!(
+            of_type(&found, "BITCOIN_BALANCE")[0].data,
+            "107.69281547 BTC"
+        );
+
+        // A crypto address with no balance summary produces no BITCOIN_BALANCE element.
+        let bare = entity(
+            EntityKind::CryptoAddress,
+            "1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+            "mnemonic",
+            &[],
+        );
+        let found = elements(DOMAIN, &[bare], 1_700_000_000);
+        assert!(of_type(&found, "BITCOIN_BALANCE").is_empty());
+    }
+
+    #[test]
     fn every_type_the_mapping_can_emit_is_catalogued() {
         let emitted = [
             "ROOT",
@@ -1519,6 +1553,7 @@ mod tests {
             "SSL_CERTIFICATE_EXPIRING",
             "DOMAIN_REGISTRAR",
             "PROVIDER_DNS",
+            "BITCOIN_BALANCE",
             "PROVIDER_TELCO",
             "PHONE_NUMBER_TYPE",
             "EMAILADDR_DISPOSABLE",
