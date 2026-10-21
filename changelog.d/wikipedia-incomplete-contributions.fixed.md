@@ -1,0 +1,1 @@
+- A Wikipedia contributions response without `query.usercontribs` now reports parser drift instead of a confirmed empty result. Only an explicitly empty contributions array or MediaWiki's known invalid-account error remains a clean negative; malformed/null payloads have regression coverage.
