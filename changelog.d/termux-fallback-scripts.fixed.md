@@ -1,0 +1,1 @@
+- The Termux installer now fetches the `huntsman` launcher and interactive shell shortcuts from the exact accepted binary revision. When an unpublished `main` commit triggers a fallback to an older verified prebuilt, launcher and binary commits no longer diverge; a regression test checks both script URLs.
