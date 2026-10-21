@@ -111,13 +111,7 @@ pub fn lookup<T: Transport + ?Sized>(
     // InvalidRequest / Profile not found document establishes a zero match.
     // Other 4xx errors (including suspended accounts and malformed actors)
     // must not become false absence evidence.
-    if matches!(response.status, 400 | 404)
-        && serde_json::from_slice::<XrpcError>(&response.body)
-            .ok()
-            .is_some_and(|error| {
-                error.error == "InvalidRequest" && error.message == "Profile not found"
-            })
-    {
+    if is_explicit_profile_missing(response.status, &response.body) {
         return Ok(Report {
             entities: Vec::new(),
             outcome: SourceExecutionOutcome::valid_zero(SRC, now_unix)
@@ -174,6 +168,13 @@ pub fn lookup<T: Transport + ?Sized>(
         outcome: SourceExecutionOutcome::success(SRC, now_unix, 1)
             .with_http_status(response.status),
     })
+}
+
+fn is_explicit_profile_missing(status: u16, body: &[u8]) -> bool {
+    matches!(status, 400 | 404)
+        && serde_json::from_slice::<XrpcError>(body).is_ok_and(|error| {
+            error.error == "InvalidRequest" && error.message == "Profile not found"
+        })
 }
 
 fn evidence(profile: &Profile, scan_id: &str) -> Evidence {
