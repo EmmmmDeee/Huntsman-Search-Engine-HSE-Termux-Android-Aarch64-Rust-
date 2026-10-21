@@ -169,7 +169,11 @@ fn serve_history(dir: &str) -> Result<std::sync::Arc<ArtifactHistory>, ExitCode>
 
 /// Report the bound address and runtime background constraints without extending
 /// the already substantial serve command controller.
-fn report_started(server: &Server, config_needs_token: bool, token_supplied: bool) -> Result<(), ExitCode> {
+fn report_started(
+    server: &Server,
+    config_needs_token: bool,
+    token_supplied: bool,
+) -> Result<(), ExitCode> {
     match server.local_addr() {
         Ok(addr) => {
             println!("serving=http://{addr}/");
