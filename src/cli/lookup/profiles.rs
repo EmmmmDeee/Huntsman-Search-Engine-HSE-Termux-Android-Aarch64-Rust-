@@ -703,7 +703,11 @@ pub(in crate::cli) fn geocode_cmd(args: &[String]) -> ExitCode {
         Err(e) => return usage_failure(&e, GEOCODE_USAGE),
     };
     let transport = transport(&TransportConfig::default(), &Selection::all());
-    match source_report(nominatim_cli::run(&transport, &parsed.query, clock::unix_now())) {
+    match source_report(nominatim_cli::run(
+        &transport,
+        &parsed.query,
+        clock::unix_now(),
+    )) {
         Ok((text, _)) => {
             print!("{text}");
             ExitCode::SUCCESS
