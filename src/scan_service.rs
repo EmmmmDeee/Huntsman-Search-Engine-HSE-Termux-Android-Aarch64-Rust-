@@ -459,16 +459,13 @@ impl ScanCollector<'_> {
     fn finish_graph_lookup(&mut self, target: &CrawlTarget, found: LookupOutput) -> Step {
         self.ran = self.ran.saturating_add(1);
         for outcome in &found.outcomes {
-            let accepted = outcome.kind.is_accepted();
-            self.errors = self.errors.saturating_add(usize::from(!accepted));
+            self.errors = self
+                .errors
+                .saturating_add(usize::from(is_error_outcome(outcome.kind)));
             self.service.log(
                 self.id,
                 &outcome.module,
-                if accepted {
-                    LogLevel::Info
-                } else {
-                    LogLevel::Error
-                },
+                outcome_log_level(outcome.kind),
                 outcome_line(outcome),
             );
         }
@@ -1431,14 +1428,13 @@ impl ScanService {
             Ok(output) => {
                 let mut failed = 0;
                 for outcome in &output.outcomes {
-                    let accepted = outcome.kind.is_accepted();
-                    failed += usize::from(!accepted);
-                    let level = if accepted {
-                        LogLevel::Info
-                    } else {
-                        LogLevel::Error
-                    };
-                    self.log(id, &outcome.module, level, outcome_line(outcome));
+                    failed += usize::from(is_error_outcome(outcome.kind));
+                    self.log(
+                        id,
+                        &outcome.module,
+                        outcome_log_level(outcome.kind),
+                        outcome_line(outcome),
+                    );
                 }
                 if !found.text.is_empty() && !output.text.is_empty() {
                     found.text.push('\n');
@@ -1646,6 +1642,21 @@ fn placeholder(id: &str) -> ScanRecord {
         errors: 0,
         modules_run: Vec::new(),
         owner: None,
+    }
+}
+
+/// Whether a source outcome is an error of the scan. An answer is not, and neither is a keyed
+/// source skipped for want of its key: nothing failed, and the skip is still logged in full.
+fn is_error_outcome(kind: SourceOutcomeKind) -> bool {
+    !kind.is_accepted() && !kind.is_not_configured()
+}
+
+/// The level one source outcome is logged at: an error only when it is an error of the scan.
+fn outcome_log_level(kind: SourceOutcomeKind) -> LogLevel {
+    if is_error_outcome(kind) {
+        LogLevel::Error
+    } else {
+        LogLevel::Info
     }
 }
 
@@ -3077,5 +3088,24 @@ mod tests {
         }
         assert!(plan("x".repeat(MAX_TARGET_BYTES + 1).as_str(), None).is_err());
         let _ = SourceOutcomeKind::Success;
+    }
+
+    #[test]
+    fn a_skipped_keyed_source_is_logged_as_information_and_is_not_a_scan_error() {
+        for kind in [
+            SourceOutcomeKind::ValidZero,
+            SourceOutcomeKind::NotConfigured,
+        ] {
+            assert!(!is_error_outcome(kind), "{kind:?}");
+            assert_eq!(outcome_log_level(kind), LogLevel::Info, "{kind:?}");
+        }
+        for kind in [
+            SourceOutcomeKind::AuthRequired,
+            SourceOutcomeKind::RateLimited,
+            SourceOutcomeKind::Inconclusive,
+        ] {
+            assert!(is_error_outcome(kind), "{kind:?}");
+            assert_eq!(outcome_log_level(kind), LogLevel::Error, "{kind:?}");
+        }
     }
 }

@@ -158,7 +158,7 @@ PLANNED: sources run sequentially, or on bounded `std::thread` workers if measur
 ## FAILURE MODEL
 
 CURRENT:
-- Network failures are typed outcomes (`DnsFailure`, `ConnectFailure`, `TlsFailure`, `TtfbTimeout`, `BodyTimeout`, `RateLimited`, `AuthRequired`, `AuthRejected`, `BotWaf`, `Upstream4xx`, `Upstream5xx`, the drift kinds and others), not panics or empty results.
+- Network failures are typed outcomes (`DnsFailure`, `ConnectFailure`, `TlsFailure`, `TtfbTimeout`, `BodyTimeout`, `RateLimited`, `AuthRequired`, `NotConfigured`, `AuthRejected`, `BotWaf`, `Upstream4xx`, `Upstream5xx`, the drift kinds and others), not panics or empty results.
 - Library errors (`error::Error`) have no fail-open path. Ancestry with a missing node or a cycle fails closed: unknown ancestry is not independence.
 - `hibp` bounds 429 retries, treats truncated or malformed bodies as errors, and fails closed on missing entitlement flags. Public catalogue/account/paste 404 semantics are explicit in the CLI tests; Pwned Passwords 429 is not retried.
 - A failure is never reported as `hits=0`: an unreadable `search` directory exits 66.

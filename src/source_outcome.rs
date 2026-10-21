@@ -17,6 +17,10 @@ pub enum SourceOutcomeKind {
     Success,
     ValidZero,
     AuthRequired,
+    /// A keyed source that made no request because no key is configured for it. This is an
+    /// expected state the operator can fix, not a failure: the outcome is kept whole, and a scan
+    /// logs it as information rather than an error.
+    NotConfigured,
     AuthRejected,
     EntitlementDenied,
     QuotaExhausted,
@@ -49,6 +53,13 @@ impl SourceOutcomeKind {
     #[must_use]
     pub const fn is_auth(self) -> bool {
         matches!(self, Self::AuthRequired | Self::AuthRejected)
+    }
+
+    /// Whether the source made no request because no key is configured: an expected skip, not a
+    /// failure, so a scan does not count it as an error.
+    #[must_use]
+    pub const fn is_not_configured(self) -> bool {
+        matches!(self, Self::NotConfigured)
     }
 
     #[must_use]
@@ -232,9 +243,9 @@ pub enum SourceHealthAction {
 pub const fn recommended_action(kind: SourceOutcomeKind) -> SourceHealthAction {
     match kind {
         SourceOutcomeKind::Success | SourceOutcomeKind::ValidZero => SourceHealthAction::Accept,
-        SourceOutcomeKind::AuthRequired | SourceOutcomeKind::AuthRejected => {
-            SourceHealthAction::RequireCredential
-        }
+        SourceOutcomeKind::AuthRequired
+        | SourceOutcomeKind::NotConfigured
+        | SourceOutcomeKind::AuthRejected => SourceHealthAction::RequireCredential,
         SourceOutcomeKind::QuotaExhausted
         | SourceOutcomeKind::RateLimited
         | SourceOutcomeKind::BotWaf => SourceHealthAction::Backoff,
@@ -395,6 +406,19 @@ mod tests {
             !SourceExecutionOutcome::success("m", 1, 0)
                 .kind
                 .is_accepted()
+        );
+    }
+
+    #[test]
+    fn a_missing_key_is_a_not_configured_skip_that_asks_for_a_credential_but_is_not_auth() {
+        let skipped = SourceOutcomeKind::NotConfigured;
+        assert!(skipped.is_not_configured());
+        assert!(!SourceOutcomeKind::AuthRequired.is_not_configured());
+        assert!(!skipped.is_auth());
+        assert!(!skipped.is_accepted());
+        assert_eq!(
+            recommended_action(skipped),
+            SourceHealthAction::RequireCredential
         );
     }
 

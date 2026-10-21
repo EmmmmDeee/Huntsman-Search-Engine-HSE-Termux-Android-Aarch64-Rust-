@@ -16,7 +16,7 @@
 //! (dataset, record count, whether a password or hash is exposed), with the same
 //! pivots. Everything flows
 //! through `merge_by_uid`, `lookup_report` (lineage) and `lookup_save`. A leg
-//! without its key makes no request and records `AuthRequired`, never a zero.
+//! without its key makes no request and records `NotConfigured`, never a zero.
 //!
 //! Each HIBP breach is also an [`Incident`]: the public context of the breach as
 //! the source describes it. Its HTML description becomes a bounded plain-text
@@ -756,7 +756,7 @@ fn missing_key(source: &str, now_unix: u64) -> SourceExecutionOutcome {
     SourceExecutionOutcome::failed(
         source,
         now_unix,
-        SourceOutcomeKind::AuthRequired,
+        SourceOutcomeKind::NotConfigured,
         None,
         detail,
     )
@@ -837,7 +837,7 @@ fn stolen_tax_leg(
         }
         Err(err) => {
             let kind = match &err {
-                StolenTaxError::MissingKey => SourceOutcomeKind::AuthRequired,
+                StolenTaxError::MissingKey => SourceOutcomeKind::NotConfigured,
                 StolenTaxError::Refused(_) => SourceOutcomeKind::ConnectFailure,
                 StolenTaxError::BudgetExhausted { .. } => SourceOutcomeKind::BodyTimeout,
                 StolenTaxError::Failed(_) => SourceOutcomeKind::Inconclusive,
@@ -1110,7 +1110,7 @@ fn dehashed_http_status(err: &DehashedError) -> Option<u16> {
 
 fn outcome_kind(err: &HibpError) -> SourceOutcomeKind {
     match err {
-        HibpError::MissingKey => SourceOutcomeKind::AuthRequired,
+        HibpError::MissingKey => SourceOutcomeKind::NotConfigured,
         HibpError::Unauthorized(_) | HibpError::Forbidden(_) => SourceOutcomeKind::AuthRejected,
         HibpError::PlanNotEntitled { .. } => SourceOutcomeKind::EntitlementDenied,
         HibpError::RateLimited { .. } => SourceOutcomeKind::RateLimited,
@@ -1490,7 +1490,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_key_makes_no_request_and_reports_auth_required() {
+    fn no_key_makes_no_request_and_reports_not_configured() {
         let ExposureRun::Printed { report, text } = run(Sources::default(), "Ada@Example.com", 7)
         else {
             panic!("expected a printed report");
@@ -1503,10 +1503,10 @@ mod tests {
         assert_eq!(
             legs,
             [
-                (SOURCE, SourceOutcomeKind::AuthRequired),
-                (STOLEN_TAX_SOURCE, SourceOutcomeKind::AuthRequired),
-                (OATHNET_SOURCE, SourceOutcomeKind::AuthRequired),
-                (DEHASHED_SOURCE, SourceOutcomeKind::AuthRequired)
+                (SOURCE, SourceOutcomeKind::NotConfigured),
+                (STOLEN_TAX_SOURCE, SourceOutcomeKind::NotConfigured),
+                (OATHNET_SOURCE, SourceOutcomeKind::NotConfigured),
+                (DEHASHED_SOURCE, SourceOutcomeKind::NotConfigured)
             ],
             "every keyed leg is reported, in breach_hybrid order"
         );

@@ -5,7 +5,7 @@
 //! offline: its OUI vendor and whether it is a randomised (locally administered) address. Then
 //! the keyed `WiGLE` legs ([`crate::wigle`]) search for what the selector names: `WiFi` always,
 //! and Bluetooth too for a MAC address or a place. Without
-//! both `WiGLE` slots it makes no request and records `AuthRequired`, never a zero.
+//! both `WiGLE` slots it makes no request and records `NotConfigured`, never a zero.
 //!
 //! Each network `WiGLE` returns becomes a BSSID entity carrying what `WiGLE` records about it,
 //! and its SSID and trilaterated position become pivots. Everything flows through
@@ -37,7 +37,7 @@ pub const NETWORK_USAGE: &str =
     "usage: huntsman-recon network BSSID|LAT,LON|ssid:NAME [--save FILE]";
 pub const NETWORK_HELP: &str = "\
 network BSSID|LAT,LON|ssid:NAME [--save FILE]
-Look up a WiFi network. A BSSID (aa:bb:cc:dd:ee:ff) is classified offline first: its OUI vendor and whether it is a randomised address. Then WiGLE search runs: a BSSID searches WiGLE's WiFi and Bluetooth databases for that address, ssid:NAME searches WiFi networks with exactly that name, and LAT,LON searches both databases in a box of about 220 m around the point, nearest first. WiGLE needs HUNTSMAN_WIGLE_USER (the API Name) and HUNTSMAN_WIGLE_TOKEN (the API Token) from https://wigle.net/account in the environment; without them it makes no request and reports auth_required. Each search spends one of the account's daily WiGLE queries, so a BSSID or LAT,LON spends two. credential-status --probe checks the credentials without spending one. Results are lineage-rendered entities, then wigle_networks=N (none when WiGLE gave no answer) and one wigle_network row per network: SSID, encryption, channel, position, first and last seen, and the street address WiGLE gives the position; for a BSSID or LAT,LON, then wigle_bluetooth_devices=N and one wigle_bluetooth row per device: name, radio (bt or ble), device class, position, first and last seen, address. --save FILE writes an unverified ledger that verify can reload.";
+Look up a WiFi network. A BSSID (aa:bb:cc:dd:ee:ff) is classified offline first: its OUI vendor and whether it is a randomised address. Then WiGLE search runs: a BSSID searches WiGLE's WiFi and Bluetooth databases for that address, ssid:NAME searches WiFi networks with exactly that name, and LAT,LON searches both databases in a box of about 220 m around the point, nearest first. WiGLE needs HUNTSMAN_WIGLE_USER (the API Name) and HUNTSMAN_WIGLE_TOKEN (the API Token) from https://wigle.net/account in the environment; without them it makes no request and reports not_configured. Each search spends one of the account's daily WiGLE queries, so a BSSID or LAT,LON spends two. credential-status --probe checks the credentials without spending one. Results are lineage-rendered entities, then wigle_networks=N (none when WiGLE gave no answer) and one wigle_network row per network: SSID, encryption, channel, position, first and last seen, and the street address WiGLE gives the position; for a BSSID or LAT,LON, then wigle_bluetooth_devices=N and one wigle_bluetooth row per device: name, radio (bt or ble), device class, position, first and last seen, address. --save FILE writes an unverified ledger that verify can reload.";
 
 /// Source label for the offline OUI classification of a BSSID selector.
 pub const OUI_SOURCE: &str = "oui";
@@ -125,7 +125,7 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
             _ => SourceExecutionOutcome::failed(
                 database.source(),
                 now_unix,
-                SourceOutcomeKind::AuthRequired,
+                SourceOutcomeKind::NotConfigured,
                 None,
                 format!(
                     "no WiGLE credentials configured ({} and {}); no request made",

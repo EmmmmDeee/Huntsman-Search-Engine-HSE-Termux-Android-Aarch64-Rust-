@@ -94,7 +94,7 @@ pub struct RecursionPolicy {
     /// Distinct new targets one generation may queue for the next.
     pub max_frontier_per_generation: usize,
     /// Also run the keyed breach `exposure` lookup on every e-mail the crawl reaches, so a
-    /// configured paid source is never skipped (it reports `auth_required` when no key is set).
+    /// configured paid source is never skipped (it reports `not_configured` when no key is set).
     pub expose_emails: bool,
 }
 

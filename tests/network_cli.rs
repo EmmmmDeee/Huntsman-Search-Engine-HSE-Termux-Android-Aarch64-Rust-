@@ -1,6 +1,6 @@
 //! The `network` lookup end to end through the binary, with no `WiGLE` credentials so no request
 //! is made: `network`, `scan` inference and `scan -k network` reach the same front-end, the
-//! offline OUI classification runs, the `WiGLE` leg reports `auth_required` rather than a zero,
+//! offline OUI classification runs, the `WiGLE` leg reports `not_configured` rather than a zero,
 //! and `--save` writes a ledger that `verify` reloads.
 
 use std::fs;
@@ -32,12 +32,12 @@ fn a_bssid_is_classified_offline_and_wigle_without_credentials_makes_no_request(
     let text = stdout(&out);
     assert!(text.contains("\noui\tsuccess\tfound=1"), "{text}");
     assert!(
-        text.contains("\nwigle\tauth_required\tfound=none"),
+        text.contains("\nwigle\tnot_configured\tfound=none"),
         "{text}"
     );
     assert!(text.contains("HUNTSMAN_WIGLE_USER"), "{text}");
     assert!(
-        text.contains("\nwigle_bluetooth\tauth_required\tfound=none"),
+        text.contains("\nwigle_bluetooth\tnot_configured\tfound=none"),
         "{text}"
     );
     assert!(
@@ -59,7 +59,7 @@ fn scan_infers_a_bssid_or_a_coordinate_pair_and_takes_an_ssid_when_told() {
         assert!(stderr.contains("scan_route=network"), "{args:?}: {stderr}");
         let text = stdout(&out);
         assert!(text.contains(selector), "{args:?}: {text}");
-        assert!(text.contains("\nwigle\tauth_required"), "{args:?}: {text}");
+        assert!(text.contains("\nwigle\tnot_configured"), "{args:?}: {text}");
     }
 }
 
