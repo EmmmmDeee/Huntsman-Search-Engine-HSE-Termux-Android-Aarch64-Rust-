@@ -30,6 +30,16 @@ const REVERSE: &str = "https://nominatim.openstreetmap.org/reverse";
 /// Most matches one forward search keeps. Nominatim's own default is ten; a place that matches
 /// more than this is too broad to be a finding.
 const RESULT_LIMIT: usize = 10;
+/// Hard cap on the verbatim provider response retained on each evidence record.
+/// Reject oversized results rather than silently discarding source fields.
+const MAX_NOMINATIM_RAW_JSON_BYTES: usize = 64 * 1024;
+
+/// One immutable, bounded observation shared by all entities produced from
+/// the same provider response.
+struct RawObservation<'a> {
+    body: &'a str,
+    recorded_at_unix: u64,
+}
 
 /// Confidence that a geocoded match is the place the query meant. The service matched the query,
 /// so the point is a sound candidate, but a name can match more than one place: modest, not
@@ -190,6 +200,15 @@ fn refusal(response: &Response, now_unix: u64) -> Option<Report> {
             "truncated Nominatim response",
         )));
     }
+    if response.body.len() > MAX_NOMINATIM_RAW_JSON_BYTES {
+        return Some(miss(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::ParserDrift,
+            Some(response.status),
+            "Nominatim response exceeds bounded raw-evidence limit",
+        )));
+    }
     let classified = classify_fetch(response.status, &response.text());
     if classified != SourceOutcomeKind::Inconclusive {
         return Some(miss(SourceExecutionOutcome::failed(
@@ -208,6 +227,10 @@ fn interpret_forward(response: &Response, query: &str, scan_id: &str, now_unix: 
     if let Some(report) = refusal(response, now_unix) {
         return report;
     }
+    let raw_json = match std::str::from_utf8(&response.body) {
+        Ok(body) => body,
+        Err(error) => return drift(response.status, now_unix, &error.to_string()),
+    };
     let places: Vec<Place> = match serde_json::from_slice(&response.body) {
         Ok(places) => places,
         Err(error) => return drift(response.status, now_unix, &error.to_string()),
@@ -219,6 +242,7 @@ fn interpret_forward(response: &Response, query: &str, scan_id: &str, now_unix: 
         scan_id,
         now_unix,
         response.status,
+        raw_json,
     )
 }
 
@@ -234,6 +258,10 @@ fn interpret_reverse(
         return report;
     }
     let query = format!("{lat},{lon}");
+    let raw_json = match std::str::from_utf8(&response.body) {
+        Ok(body) => body,
+        Err(error) => return drift(response.status, now_unix, &error.to_string()),
+    };
     match serde_json::from_slice::<Reverse>(&response.body) {
         Ok(Reverse::Found(place)) => decode(
             &[*place],
@@ -242,6 +270,7 @@ fn interpret_reverse(
             scan_id,
             now_unix,
             response.status,
+            raw_json,
         ),
         Ok(Reverse::Error { error }) => miss(
             SourceExecutionOutcome::valid_zero(SOURCE, now_unix)
@@ -271,10 +300,23 @@ fn decode(
     scan_id: &str,
     now_unix: u64,
     status: u16,
+    raw_json: &str,
 ) -> Report {
     let mut entities = Vec::new();
-    for place in places.iter().take(RESULT_LIMIT) {
-        place_entities(&mut entities, place, mode, query, scan_id);
+    let observation = RawObservation {
+        body: raw_json,
+        recorded_at_unix: now_unix,
+    };
+    for (candidate_index, place) in places.iter().take(RESULT_LIMIT).enumerate() {
+        place_entities(
+            &mut entities,
+            place,
+            mode,
+            query,
+            scan_id,
+            &observation,
+            candidate_index,
+        );
     }
     merge_by_uid(&mut entities);
     let outcome = if entities.is_empty() {
@@ -292,6 +334,8 @@ fn place_entities(
     mode: Mode,
     query: &str,
     scan_id: &str,
+    observation: &RawObservation<'_>,
+    candidate_index: usize,
 ) {
     let coordinates = point(place);
     let display = place
@@ -302,10 +346,18 @@ fn place_entities(
 
     // Shared evidence: the query that produced the place and every field Nominatim named.
     let describe = |summary: String| -> Evidence {
-        let mut evidence = Evidence::new(EvidenceProvenance::for_scan(SOURCE, scan_id), summary)
+        let mut provenance = EvidenceProvenance::for_scan(SOURCE, scan_id);
+        provenance.recorded_at_unix = observation.recorded_at_unix;
+        let mut evidence = Evidence::new(provenance, summary)
             .with_attr("dataset", "OpenStreetMap Nominatim")
             .with_attr("mode", mode.tag())
-            .with_attr("query", query);
+            .with_attr("query", query)
+            // Preserve the exact UTF-8 bytes of this bounded JSON response, not a
+            // reconstructed struct (which would drop unknown provider fields).
+            .with_attr("nominatim_raw_response_json", observation.body)
+            // A forward response may have several places: identify which one
+            // yielded this entity without reassigning any provider property.
+            .with_attr("nominatim_candidate_index", candidate_index.to_string());
         for (attr, value) in [
             ("display_name", display),
             ("name", opt(place.name.as_deref())),
