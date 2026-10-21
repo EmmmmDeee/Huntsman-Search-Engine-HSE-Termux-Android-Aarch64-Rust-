@@ -193,3 +193,135 @@ fn a_body_that_is_not_json_is_drift_not_a_zero() {
     assert!(report.entities.is_empty());
     assert_eq!(report.outcome.kind, SourceOutcomeKind::ParserDrift);
 }
+
+#[test]
+fn forward_preserves_every_raw_provider_field_and_observation_time() {
+    let mut place: serde_json::Value = serde_json::from_str(PLACE).expect("valid fixture");
+    place["unexpected_nested"] = serde_json::json!({"flags": [true, null, 3], "label": "retained"});
+    let body = serde_json::to_string(&vec![place]).expect("forward fixture");
+    let observed_at = 1_700_000_123_u64;
+
+    let report = forward(
+        &OneResponse::json(200, &body),
+        "Google Building 41",
+        "scan-raw",
+        observed_at,
+    )
+    .expect("forward");
+    assert!(report.outcome.kind.is_accepted());
+    for entity in &report.entities {
+        let evidence = &entity.evidence[0];
+        assert_eq!(evidence.provenance.source, SOURCE);
+        assert_eq!(evidence.provenance.recorded_at_unix, observed_at);
+        assert_eq!(
+            evidence.attributes.get("nominatim_raw_response_json").map(String::as_str),
+            Some(body.as_str())
+        );
+        assert_eq!(
+            evidence.attributes.get("nominatim_candidate_index").map(String::as_str),
+            Some("0")
+        );
+        let raw: serde_json::Value = serde_json::from_str(
+            evidence.attributes.get("nominatim_raw_response_json").unwrap(),
+        )
+        .expect("raw JSON");
+        assert_eq!(raw[0]["place_id"], 322_358_946);
+        assert_eq!(
+            raw[0]["licence"],
+            "Data © OpenStreetMap contributors, ODbL 1.0."
+        );
+        assert_eq!(raw[0]["unexpected_nested"]["flags"][0], true);
+        assert_eq!(raw[0]["unexpected_nested"]["flags"][1], serde_json::Value::Null);
+    }
+}
+
+#[test]
+fn candidates_keep_their_own_source_index_without_reassigning_fields() {
+    let first: serde_json::Value = serde_json::from_str(PLACE).expect("fixture");
+    let mut second = first.clone();
+    second["lat"] = serde_json::json!("40.0");
+    second["lon"] = serde_json::json!("-120.0");
+    second["place_id"] = serde_json::json!(17);
+    second["display_name"] = serde_json::json!("Alternate Place, California");
+    let body = serde_json::to_string(&vec![first, second]).expect("body");
+    let report = forward(
+        &OneResponse::json(200, &body),
+        "multi-candidate",
+        "scan-multi",
+        91,
+    )
+    .expect("forward");
+    let coordinates: Vec<_> = report.entities.iter()
+        .filter(|entity| entity.kind == EntityKind::Coordinates)
+        .collect();
+    assert_eq!(coordinates.len(), 2);
+    for (index, expected_place_id) in [("0", 322_358_946), ("1", 17)] {
+        let entry = coordinates.iter().find(|entity| {
+            entity.evidence[0]
+                .attributes
+                .get("nominatim_candidate_index")
+                .map(String::as_str)
+                == Some(index)
+        }).expect("candidate coordinates");
+        let attributes = &entry.evidence[0].attributes;
+        assert_eq!(
+            attributes.get("nominatim_raw_response_json").map(String::as_str),
+            Some(body.as_str())
+        );
+        let raw: serde_json::Value =
+            serde_json::from_str(attributes.get("nominatim_raw_response_json").unwrap())
+                .expect("raw body");
+        let candidate = index.parse::<usize>().unwrap();
+        assert_eq!(raw[candidate]["place_id"], expected_place_id);
+        assert_eq!(entry.evidence[0].provenance.recorded_at_unix, 91);
+        if index == "1" {
+            assert_eq!(entry.value, "40,-120");
+            assert_eq!(raw[candidate]["display_name"], "Alternate Place, California");
+        } else {
+            assert_eq!(entry.value, "37.422486,-122.085585");
+        }
+    }
+}
+
+#[test]
+fn reverse_preserves_exact_response_and_original_provider_fields() {
+    let report = reverse(
+        &OneResponse::json(200, PLACE),
+        37.422_485_8,
+        -122.085_584_6,
+        "scan-reverse-raw",
+        456,
+    )
+    .expect("reverse");
+    assert_eq!(report.entities.len(), 2);
+    for entity in &report.entities {
+        let e = &entity.evidence[0];
+        assert_eq!(e.provenance.recorded_at_unix, 456);
+        assert_eq!(
+            e.attributes.get("nominatim_raw_response_json").map(String::as_str),
+            Some(PLACE)
+        );
+        assert_eq!(
+            e.attributes.get("nominatim_candidate_index").map(String::as_str),
+            Some("0")
+        );
+    }
+}
+
+#[test]
+fn oversized_provider_payload_is_rejected_not_partially_provenanced() {
+    let body = format!("[{{\"padding\":\"{}\"}}]", "x".repeat(MAX_PROVENANCE_BYTES));
+    let report = interpret_forward(
+        &Response {
+            status: 200,
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: body.into_bytes(),
+            truncated: false,
+        },
+        "oversized",
+        "scan-too-large",
+        123,
+    );
+    assert!(report.entities.is_empty());
+    assert_eq!(report.outcome.kind, SourceOutcomeKind::ParserDrift);
+}
