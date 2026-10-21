@@ -361,7 +361,8 @@ fn temp_writer_pid(name: &std::ffi::OsStr, candidate: &std::ffi::OsStr) -> Optio
 #[cfg(unix)]
 fn is_private(meta: &fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    meta.permissions().mode() & 0o077 == 0
+    let group_and_other = meta.permissions().mode() & 0o077;
+    group_and_other == 0
 }
 
 #[cfg(not(unix))]
