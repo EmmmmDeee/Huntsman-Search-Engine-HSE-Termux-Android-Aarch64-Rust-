@@ -182,3 +182,22 @@ fn named_council_preserves_all_sixteen_ranks() {
     ];
     assert_eq!(COMMAND_CHAIN.map(|role| role.name), expected);
 }
+
+#[test]
+fn named_council_matches_canonical_directive_order() {
+    let directive = fs::read_to_string(root().join("HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md"))
+        .expect("canonical council directive must exist");
+    let mut previous_end = 0;
+    for role in COMMAND_CHAIN {
+        let row = format!("| {} | **{}** |", role.rank, role.name);
+        let position = directive
+            .find(row.as_str())
+            .unwrap_or_else(|| panic!("canonical directive missing {}", role.name));
+        assert!(
+            position >= previous_end,
+            "canonical directive role {} is out of order",
+            role.name
+        );
+        previous_end = position + row.len();
+    }
+}

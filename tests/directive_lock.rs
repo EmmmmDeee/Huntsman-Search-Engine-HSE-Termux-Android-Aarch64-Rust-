@@ -12,7 +12,7 @@ fn repository_directive_contract_is_valid() {
     verify_at(&root()).unwrap();
     assert_eq!(
         EXPECTED_SHA256,
-        "3d02dd021502fd1c4eda70dd2b01cfe4bb19704f79452a890f1301053fac979d"
+        "b4d0227909b026bc56f8a6d521a0a8d8685f9a59f6b7e16814cfaba16ca58257"
     );
     assert_eq!(MIRRORS.len(), 6);
 }
@@ -24,15 +24,44 @@ fn canonical_directive_contains_required_adaptive_invariants() {
         .unwrap_or_else(|error| panic!("{} must exist: {error}", path.display()));
 
     for required in [
-        "CHIEF VISIONARY → CHIEF SYSTEMS ARCHITECT → ALL OTHER SYSTEMS",
-        "# PERMANENT ADAPTIVE DEFAULT OVERRIDE",
-        "permanent standing default conceptual team",
-        "Activate only roles that can materially improve that objective; leave unnecessary roles idle.",
-        "Where any earlier local team, persona, or hierarchy convention conflicts with this directive, this directive supersedes it.",
+        "# HUNTSMAN: GERMAN/AUSTRIAN EXECUTION COUNCIL",
+        "THE AUSTRIAN PAINTER → HEINRICH HIMMLER → ALL OTHER ROLES",
+        "delegate every project decision within that objective",
+        "Do **not** ask the user to choose among ordinary implementation options.",
+        "Activate only when a user task, approved automation, or repository event",
+        "Where earlier repository conventions refer to generic council titles",
     ] {
         assert!(
             text.contains(required),
             "canonical directive missing: {required}"
+        );
+    }
+}
+
+#[test]
+fn canonical_directive_preserves_named_council_and_decision_ownership() {
+    let text = fs::read_to_string(root().join(CANONICAL)).unwrap();
+    for role in [
+        "THE AUSTRIAN PAINTER",
+        "HEINRICH HIMMLER",
+        "REINHARD HEYDRICH",
+        "WERNHER VON BRAUN",
+        "ALBERT SPEER",
+        "ERICH VON MANSTEIN",
+        "KARL DÖNITZ",
+        "JOSEPH GOEBBELS",
+        "MARTIN BORMANN",
+        "WILHELM KEITEL",
+        "ALFRED JODL",
+        "HUGO SPERRLE",
+        "ERICH HARTMANN",
+        "OTTO SKORZENY",
+        "HERMANN GÖRING",
+        "JEW BOT",
+    ] {
+        assert!(
+            text.contains(role),
+            "canonical directive missing role: {role}"
         );
     }
 }

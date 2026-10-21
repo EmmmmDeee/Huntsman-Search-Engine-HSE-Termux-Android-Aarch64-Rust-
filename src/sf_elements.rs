@@ -181,6 +181,9 @@ fn entity_type(entity: &Entity, target: Target<'_>) -> &'static str {
             _ => "EMAILADDR",
         },
         EntityKind::IpAddress if value.contains(':') => "IPV6_ADDRESS",
+        // A URL that is one public Wikipedia page edit is Spiderfoot's own edit type, whatever the
+        // scan target is.
+        EntityKind::Url if entity.has_tag(tags::WIKIPEDIA_EDIT) => "WIKIPEDIA_PAGE_EDIT",
         EntityKind::Url => match (target.domain(), url_host(value)) {
             (Some(domain), Some(host)) if is_or_subdomain_of(&host, domain) => {
                 "LINKED_URL_INTERNAL"
@@ -1053,6 +1056,31 @@ mod tests {
             1_700_000_000,
         );
         assert_eq!(of_type(&found, "INTERNET_NAME_UNRESOLVED").len(), 1);
+    }
+
+    /// A URL tagged as a Wikipedia edit is Spiderfoot's `WIKIPEDIA_PAGE_EDIT`; an untagged URL is a
+    /// plain linked URL, so the type is driven by the tag, not the host.
+    #[test]
+    fn a_wikipedia_edit_url_is_the_wikipedia_page_edit_type() {
+        let mut edit = entity(
+            EntityKind::Url,
+            "https://en.wikipedia.org/w/index.php?oldid=555001",
+            "wikipedia",
+            &[],
+        );
+        edit.tag(tags::WIKIPEDIA_EDIT);
+        let found = elements(DOMAIN, &[edit], 1_700_000_000);
+        assert_eq!(
+            of_type(&found, "WIKIPEDIA_PAGE_EDIT")[0].data,
+            "https://en.wikipedia.org/w/index.php?oldid=555001"
+        );
+
+        let plain = entity(EntityKind::Url, "https://example.com/x", "web", &[]);
+        let found = elements(DOMAIN, &[plain], 1_700_000_000);
+        assert!(of_type(&found, "WIKIPEDIA_PAGE_EDIT").is_empty());
+        let linked = of_type(&found, "LINKED_URL_INTERNAL").len()
+            + of_type(&found, "LINKED_URL_EXTERNAL").len();
+        assert_eq!(linked, 1, "an untagged URL is still a linked URL");
     }
 
     #[test]
