@@ -3,6 +3,7 @@
 //! Values are resolved by the existing `keys` module at runtime. This module
 //! never stores, serializes, logs, or returns credential values.
 
+use crate::clock;
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
 use crate::http::{Request, Transport};
@@ -86,9 +87,7 @@ pub fn wigle_credential(
 /// A 200 JSON answer that does not say `success: false` is valid; 401 is rejected; 429 is rate
 /// limited. Nothing from the profile is kept: it names the account holder.
 fn wigle_probe<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> ProbeState {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = clock::unix_now();
     let Ok(wigle) = wigle_credential(keys, now) else {
         return ProbeState::NotConfigured;
     };

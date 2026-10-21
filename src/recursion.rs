@@ -13,10 +13,10 @@
 //! output concern, never the scan's.
 
 use std::collections::BTreeSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::clock;
 use crate::entity::{Entity, EntityKind, merge_by_uid};
 use crate::pipeline_limits::PipelineLimits;
 use crate::scan_route::{ScanKind, canonical_selector, infer_kind};
@@ -362,9 +362,7 @@ fn normalize_batch<C: SelectorCollector>(
     }
 
     collector.on_batch_contract_error(missing.saturating_add(excess));
-    let observed_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
+    let observed_at = clock::unix_now();
     steps.truncate(batch.len());
     for target in batch.iter().skip(steps.len()) {
         steps.push(missing_batch_step(target, observed_at));

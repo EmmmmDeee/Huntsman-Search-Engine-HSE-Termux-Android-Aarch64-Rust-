@@ -25,9 +25,7 @@
 //! the resolver, the answer and its records, and any extended error; a threat filter's block is a
 //! malicious verdict, a content filter's only a block. Each filter family is its own source.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::{SystemTime, UNIX_EPOCH};
-
+use crate::clock;
 use crate::dns::{self, DomainDns, RecordType, ResolveErrorKind, ResolveQuery};
 use crate::dns_wire::{self, A, AAAA, Message, NOERROR, NXDOMAIN};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
@@ -35,6 +33,7 @@ use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Transport};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::tags;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 /// How a filter is reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -641,9 +640,7 @@ fn udp<T: Transport + ?Sized>(
 /// A query id for one UDP question: the clock's nanoseconds, folded. **Not secret:** the
 /// connected socket already takes only the server's datagrams.
 fn fresh_id() -> u16 {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.subsec_nanos());
+    let nanos = clock::unix_subsec_nanos();
     u16::try_from((nanos ^ (nanos >> 16)) & 0xffff).unwrap_or_default()
 }
 

@@ -12,8 +12,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
+use crate::clock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -748,25 +749,11 @@ fn derive_termination(records: &BTreeMap<String, TaskRecord>) -> RunTermination 
     }
 }
 
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
-}
-
-fn now_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 /// Approximate an actual monotonic attempt start on the wall clock for durable checkpoints.
 /// The in-process scheduler continues to use monotonic Instants for precise spacing.
 fn attempt_start_unix_ms(started: Instant) -> u64 {
     let age = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    now_unix_ms().saturating_sub(age)
+    clock::unix_now_millis().saturating_sub(age)
 }
 
 /// The scheduler uses monotonic time; checkpoints retain portable wall-clock timestamps.
@@ -798,7 +785,7 @@ fn restored_rate_history(
     {
         return Err(GraphError::CheckpointMismatch);
     }
-    let now = now_unix_ms();
+    let now = clock::unix_now_millis();
     let explicitly_persisted: BTreeSet<String> = persisted.keys().cloned().collect();
     for (id, spec) in &graph.by_id {
         let Some(limit) = &spec.rate_limit else {
@@ -969,7 +956,7 @@ fn run_one(
     max_output_bytes: usize,
 ) -> (TaskRecord, Option<Instant>) {
     let start = Instant::now();
-    let started_at_unix = now_unix();
+    let started_at_unix = clock::unix_now();
     let mut record = TaskRecord {
         state: TaskState::Running,
         started_at_unix: Some(started_at_unix),
@@ -1091,7 +1078,7 @@ fn run_one(
             break;
         }
     }
-    record.finished_at_unix = Some(now_unix());
+    record.finished_at_unix = Some(clock::unix_now());
     record.duration_ms = Some(u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX));
     if !record.state.successful() {
         record.error = Some(last_error);
@@ -1319,7 +1306,7 @@ impl GraphExecutor {
         let started = Instant::now();
         let started_at_unix = checkpoint
             .as_ref()
-            .map_or_else(now_unix, |saved| saved.report.started_at_unix);
+            .map_or_else(clock::unix_now, |saved| saved.report.started_at_unix);
         let mut records = BTreeMap::new();
         let mut consumed = checkpoint
             .as_ref()
@@ -1390,7 +1377,7 @@ impl GraphExecutor {
                 {
                     record.state = TaskState::Cancelled;
                     record.error = Some("run cancelled before dispatch".into());
-                    record.finished_at_unix = Some(now_unix());
+                    record.finished_at_unix = Some(clock::unix_now());
                 }
                 break;
             }
@@ -1402,7 +1389,7 @@ impl GraphExecutor {
                 {
                     record.state = TaskState::TimedOut;
                     record.error = Some("run deadline exceeded before dispatch".into());
-                    record.finished_at_unix = Some(now_unix());
+                    record.finished_at_unix = Some(clock::unix_now());
                 }
                 break;
             }
@@ -1422,7 +1409,7 @@ impl GraphExecutor {
                         .ok_or_else(|| GraphError::Invalid("missing task record".into()))?;
                     record.state = TaskState::Blocked;
                     record.error = Some(format!("dependency {dependency} did not succeed"));
-                    record.finished_at_unix = Some(now_unix());
+                    record.finished_at_unix = Some(clock::unix_now());
                     errors.push(format!("{id}: blocked by {dependency}"));
                     changed = true;
                 }
@@ -1514,7 +1501,7 @@ impl GraphExecutor {
                     .ok_or_else(|| GraphError::Invalid("missing task record".into()))?;
                 record.state = TaskState::Blocked;
                 record.error = Some("dependency output budget exhausted".into());
-                record.finished_at_unix = Some(now_unix());
+                record.finished_at_unix = Some(clock::unix_now());
                 errors.push(format!("{id}: dependency output budget exhausted"));
                 termination = RunTermination::ResourceLimit;
             }
@@ -1524,7 +1511,7 @@ impl GraphExecutor {
                     .ok_or_else(|| GraphError::Invalid("missing task record".into()))?;
                 record.state = TaskState::Blocked;
                 record.error = Some("resource budget exhausted".into());
-                record.finished_at_unix = Some(now_unix());
+                record.finished_at_unix = Some(clock::unix_now());
                 errors.push(format!("{id}: resource budget exhausted"));
                 termination = RunTermination::ResourceLimit;
             }
@@ -1549,7 +1536,7 @@ impl GraphExecutor {
                                 .ok_or_else(|| GraphError::Invalid("missing task record".into()))?;
                             record.state = TaskState::Blocked;
                             record.error = Some("no schedulable dependency frontier".into());
-                            record.finished_at_unix = Some(now_unix());
+                            record.finished_at_unix = Some(clock::unix_now());
                             errors.push(format!("{id}: no schedulable dependency frontier"));
                         }
                     }
@@ -1561,7 +1548,7 @@ impl GraphExecutor {
             }
 
             let dispatch_started = Instant::now();
-            let dispatch_unix_ms = now_unix_ms();
+            let dispatch_unix_ms = clock::unix_now_millis();
             for id in &selected {
                 if let Some(limit) = &graph.by_id[id].rate_limit {
                     last_rate_start.insert(limit.key.clone(), dispatch_started);
@@ -1673,7 +1660,7 @@ impl GraphExecutor {
                     {
                         record.state = TaskState::Blocked;
                         record.error = Some("checkpoint persistence failed".into());
-                        record.finished_at_unix = Some(now_unix());
+                        record.finished_at_unix = Some(clock::unix_now());
                     }
                     termination = RunTermination::Failed;
                     break;
@@ -1690,7 +1677,7 @@ impl GraphExecutor {
             graph_fingerprint: graph.fingerprint,
             policy_fingerprint,
             started_at_unix,
-            finished_at_unix: Some(now_unix()),
+            finished_at_unix: Some(clock::unix_now()),
             duration_ms: Some(duration_ms),
             termination: Some(termination),
             consumed_resource_units: consumed,
@@ -2538,7 +2525,7 @@ mod tests {
         invalid
             .report
             .rate_limit_last_start_unix_ms
-            .insert("unknown-provider".into(), now_unix_ms());
+            .insert("unknown-provider".into(), clock::unix_now_millis());
         assert!(matches!(
             executor.resume(
                 &definition,
@@ -2553,7 +2540,7 @@ mod tests {
         checkpoint
             .report
             .rate_limit_last_start_unix_ms
-            .insert("checkpoint-provider".into(), now_unix_ms());
+            .insert("checkpoint-provider".into(), clock::unix_now_millis());
         let resumed_at = Instant::now();
         let resumed = executor
             .resume(

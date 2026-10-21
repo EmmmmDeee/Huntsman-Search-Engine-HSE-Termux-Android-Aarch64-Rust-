@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::entity::{EntityKind, normalise, unix_now};
+use crate::clock;
+use crate::entity::{EntityKind, normalise};
 use crate::sha256::{hex32, sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -138,7 +139,7 @@ impl Relation {
                 0.0
             },
             scan_id,
-            observed_at: unix_now(),
+            observed_at: clock::unix_now(),
             basis: None,
         }
     }

@@ -26,6 +26,7 @@ claim_coverage	leaf	shadow-mode claim coverage accounting
 claim_policy	leaf	provenance-rooted claim verification policy
 classifier	runtime	seed and indicator classification
 classify	runtime	response classification
+clock	leaf	the wall clock as Unix time, read through one module
 collection	runtime	provider-neutral execution/observation bridge
 collector	adapter	source-agnostic collection boundary
 commercial_readiness	diagnostic	machine-checkable capability proof and benchmark readiness reporting

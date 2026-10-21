@@ -35,6 +35,7 @@
 //! [`HibpError::PlanNotEntitled`] without calling the gated endpoint when the
 //! plan lacks `IncludesStealerLogs` / `IncludesKAnon`.
 
+use crate::clock;
 use crate::http::{Request, Response, Transport, TransportConfig, UreqTransport};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -500,9 +501,7 @@ pub fn account_sha1_hex(email: &str) -> String {
 
 /// A 429's `retry-after` in whole seconds, when the server sent one.
 fn retry_after(resp: &Response) -> Option<Duration> {
-    let now_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
+    let now_unix = clock::unix_now();
     resp.header_value("retry-after")
         .and_then(|value| crate::http::retry_after_secs(value, now_unix))
         .map(Duration::from_secs)

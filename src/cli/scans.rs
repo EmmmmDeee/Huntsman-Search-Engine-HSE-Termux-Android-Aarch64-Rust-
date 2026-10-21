@@ -685,7 +685,7 @@ fn one_scan(api: &ScanApi, parsed: &Parsed, command: &str, id: &str) -> ExitCode
 }
 
 fn now_ms() -> u64 {
-    huntsman_recon::entity::unix_now().saturating_mul(1000)
+    huntsman_recon::clock::unix_now().saturating_mul(1000)
 }
 
 fn finished(record: &ScanRecord, json: bool) -> ExitCode {

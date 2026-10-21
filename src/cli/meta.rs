@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use super::fail;
 use huntsman_recon::attack_cli::{ATTACK_USAGE, render as render_attack};
+use huntsman_recon::clock;
 use huntsman_recon::diagnostics::{self, CredentialResolution, TermuxState};
 use huntsman_recon::directive_lock;
 use huntsman_recon::engineering_command;
@@ -442,14 +443,11 @@ pub(super) fn verify(args: &[String]) -> ExitCode {
 
 pub(super) fn run_history_cmd(args: &[String]) -> ExitCode {
     use std::io::Read;
-    use std::time::{SystemTime, UNIX_EPOCH};
     // Bound the --from-stdin read: every other external input in the crate is
     // capped, and an unbounded read of a huge or endless producer would OOM on
     // the memory-constrained Termux target. 16 MiB holds any real test log.
     const MAX_STDIN_BYTES: u64 = 16 * 1024 * 1024;
-    let now_unix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now_unix = clock::unix_now();
 
     // `--from-stdin` reads libtest output on stdin and injects the real
     // passed/failed counts, so a persistent host can pipe `cargo test` straight

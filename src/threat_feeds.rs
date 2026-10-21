@@ -23,8 +23,9 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
+use crate::clock;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Transport, TransportConfig};
@@ -508,7 +509,7 @@ fn load(
 /// The copy at `path` and when it was written, when there is one.
 fn read_copy(path: &Path) -> Option<(Vec<u8>, u64)> {
     let modified = std::fs::symlink_metadata(path).ok()?.modified().ok()?;
-    let fetched = modified.duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let fetched = clock::unix_secs_of(modified)?;
     let body = crate::fsio::read_bounded(path, MAX_FEED_BYTES as u64).ok()?;
     Some((body, fetched))
 }

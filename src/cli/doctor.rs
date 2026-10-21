@@ -9,9 +9,10 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use super::fail;
+use huntsman_recon::clock;
 use huntsman_recon::diagnostics::{self, TermuxState};
 use huntsman_recon::doctor::{self, Context, Host, KeyState, Status};
 use huntsman_recon::environment::{
@@ -324,9 +325,7 @@ impl Host for ProcessHost {
 
     fn acceptance(&self) -> Result<(), String> {
         let exe = self.exe.as_ref().ok_or("this binary's path is unknown")?;
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.subsec_nanos());
+        let nanos = clock::unix_subsec_nanos();
         let dir = self
             .tmp
             .join(format!("huntsman-doctor-{}-{nanos}", std::process::id()));
@@ -358,8 +357,6 @@ impl Host for ProcessHost {
     }
 
     fn now_unix(&self) -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs())
+        clock::unix_now()
     }
 }

@@ -8,11 +8,11 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::fail;
 use huntsman_recon::api_leg;
 use huntsman_recon::asn_cli::{ASN_USAGE, AsnArgs};
+use huntsman_recon::clock;
 use huntsman_recon::concurrent;
 use huntsman_recon::crypto_cli::{self, CRYPTO_USAGE, CryptoArgs};
 use huntsman_recon::dehashed::{self, client::DehashedClient};
@@ -82,12 +82,6 @@ impl Refused {
     }
 }
 
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
-}
-
 /// Run one lookup of `kind` for an already-parsed `selector`, asking only the modules `chosen`
 /// runs: every transport the lookup sends over carries the choice, so a leg left out sends
 /// nothing (see [`Selected`]).
@@ -99,7 +93,7 @@ pub(in crate::cli) fn collect(
     selector: &str,
     chosen: &Selection,
 ) -> Result<Collected, Refused> {
-    let now = now_unix();
+    let now = clock::unix_now();
     match kind {
         ScanKind::People => people(selector, now, chosen),
         ScanKind::Email => email(selector, now, chosen),
@@ -689,7 +683,11 @@ pub(in crate::cli) fn itunes_cmd(args: &[String]) -> ExitCode {
         Err(e) => return usage_failure(&e, ITUNES_USAGE),
     };
     let transport = transport(&TransportConfig::default(), &Selection::all());
-    match source_report(itunes_cli::run(&transport, &parsed.keyword, now_unix())) {
+    match source_report(itunes_cli::run(
+        &transport,
+        &parsed.keyword,
+        clock::unix_now(),
+    )) {
         Ok((text, _)) => {
             print!("{text}");
             ExitCode::SUCCESS
