@@ -565,10 +565,26 @@ fn env_file(ctx: &Context<'_>) -> Check {
                 format!("huntsman-recon keys {shown}"),
             ),
             Ok(text) => match Keys::parse(&text) {
-                Ok(keys) => Check::ok(
-                    ID,
-                    format!("{shown} (mode 600, {} slots set)", keys.slots().len()),
-                ),
+                Ok(keys) => {
+                    let unrecognised = provider_credentials::unrecognised_slots(&keys);
+                    if unrecognised.is_empty() {
+                        Check::ok(
+                            ID,
+                            format!("{shown} (mode 600, {} slots set)", keys.slots().len()),
+                        )
+                    } else {
+                        Check::warn(
+                            ID,
+                            format!(
+                                "{shown} (mode 600, {} slots set); {} read by no provider: {}",
+                                keys.slots().len(),
+                                unrecognised.len(),
+                                unrecognised.join(", ")
+                            ),
+                            "huntsman-recon credential-status",
+                        )
+                    }
+                }
                 Err(error) => Check::fail(
                     ID,
                     format!("{shown}: {error}, so no key in it is used"),

@@ -87,6 +87,76 @@ pub const WIGLE_USER_ENV: &str = "HUNTSMAN_WIGLE_USER";
 // here with the other credentials, so every credential name is declared in this file.
 pub const SERVE_TOKEN_ENV: &str = "HSE_AUTH_TOKEN";
 
+/// Every variable `huntsman-recon` reads by name: the runtime settings and every credential slot
+/// declared above. `doctor` and `credential-status` check a keys file against it so a slot whose
+/// name matches none of these is reported rather than silently ignored. The per-provider cost
+/// variables share a prefix and are matched separately (see [`is_known_variable`]).
+pub const KNOWN_VARIABLES: &[&str] = &[
+    HOME_ENV,
+    TERMUX_VERSION_ENV,
+    PREFIX_ENV,
+    HIBP_API_KEY_ENV,
+    HUNTSMAN_HIBP_KEY_ENV,
+    HIBP_RATE_LIMIT_ENV,
+    HUNTSMAN_HOME_ENV,
+    HUNTSMAN_ENV_FILE_ENV,
+    SERVE_BIND_ENV,
+    CA_BUNDLE_ENV,
+    ABUSECH_KEY_ENV,
+    ABUSEIPDB_KEY_ENV,
+    BRAVE_KEY_ENV,
+    CENSYS_ID_ENV,
+    CERTSPOTTER_KEY_ENV,
+    CENSYS_SECRET_ENV,
+    CRIMINALIP_KEY_ENV,
+    DEHASHED_KEY_ENV,
+    DOMAINSDB_KEY_ENV,
+    EXA_KEY_ENV,
+    FULLCONTACT_KEY_ENV,
+    GEMINI_KEY_ENV,
+    GITHUB_TOKEN_ENV,
+    GREYNOISE_KEY_ENV,
+    HLR_KEY_ENV,
+    HUNTER_KEY_ENV,
+    INTELX_KEY_ENV,
+    HACKERTARGET_KEY_ENV,
+    IPINFO_KEY_ENV,
+    IPQS_KEY_ENV,
+    OPENCELLID_KEY_ENV,
+    MOZILLA_LOCATION_KEY_ENV,
+    LEAKIX_KEY_ENV,
+    NETLAS_KEY_ENV,
+    NIAMONX_KEY_ENV,
+    NUMVERIFY_KEY_ENV,
+    OATHNET_KEY_ENV,
+    ONYPHE_KEY_ENV,
+    OPENCNAM_KEY_ENV,
+    OPENROUTER_KEY_ENV,
+    OTX_KEY_ENV,
+    OSINTCAT_KEY_ENV,
+    PULSEDIVE_KEY_ENV,
+    SECTRAILS_KEY_ENV,
+    SEEKNOW_KEY_ENV,
+    SHODAN_KEY_ENV,
+    STOLEN_TAX_KEY_ENV,
+    THREATFOX_KEY_ENV,
+    TROVE_KEY_ENV,
+    URLSCAN_KEY_ENV,
+    VIRUSTOTAL_KEY_ENV,
+    WHOXY_KEY_ENV,
+    WIGLE_TOKEN_ENV,
+    WIGLE_USER_ENV,
+    SERVE_TOKEN_ENV,
+];
+
+/// Whether `name` is a variable `huntsman-recon` reads: one of [`KNOWN_VARIABLES`], or a
+/// per-provider cost variable ([`PROVIDER_COST_ENV_PREFIX`] followed by a provider id). A
+/// keys-file slot for which this is false is read by nothing and is almost always a misnamed key.
+#[must_use]
+pub fn is_known_variable(name: &str) -> bool {
+    KNOWN_VARIABLES.contains(&name) || name.starts_with(PROVIDER_COST_ENV_PREFIX)
+}
+
 /// `$HOME`, when it is set. Its value need not be valid Unicode.
 #[must_use]
 pub fn home() -> Option<OsString> {
