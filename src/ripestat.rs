@@ -577,13 +577,13 @@ pub struct Geolocation {
 
 #[derive(Deserialize)]
 struct GeolocationData {
-    #[serde(default)]
+    // Only an explicit empty array establishes a valid zero location result.
     located_resources: Vec<LocatedResource>,
 }
 
 #[derive(Deserialize)]
 struct LocatedResource {
-    #[serde(default)]
+    // An absent collection is an incomplete response, not a confirmed absence.
     locations: Vec<LocationRow>,
 }
 
@@ -638,20 +638,31 @@ pub fn geolocation<T: Transport + ?Sized>(
 /// [`LegError::Decode`] for a body that is not an `ok` envelope with data.
 pub fn decode_geolocation(body: &[u8]) -> Result<Geolocation, LegError> {
     let data: GeolocationData = unwrap(body)?;
-    Ok(Geolocation {
-        locations: data
-            .located_resources
-            .into_iter()
-            .flat_map(|resource| resource.locations)
-            .map(|row| Location {
-                country: api_leg::clean(row.country.as_deref()),
-                city: api_leg::clean(row.city.as_deref()),
-                latitude: row.latitude,
-                longitude: row.longitude,
-                covered_percentage: row.covered_percentage,
-            })
-            .collect(),
-    })
+    let locations: Vec<Location> = data
+        .located_resources
+        .into_iter()
+        .flat_map(|resource| resource.locations)
+        .map(|row| Location {
+            country: api_leg::clean(row.country.as_deref()),
+            city: api_leg::clean(row.city.as_deref()),
+            latitude: row.latitude,
+            longitude: row.longitude,
+            covered_percentage: row.covered_percentage,
+        })
+        .collect();
+    // An empty row (or unpaired coordinate) identifies no geographical place.
+    // Treat it as provider schema drift instead of attaching empty location evidence.
+    if locations.iter().any(|place| {
+        place.latitude.is_some() != place.longitude.is_some()
+            || (place.country.is_none()
+                && place.city.is_none()
+                && place.latitude.is_none())
+    }) {
+        return Err(LegError::Decode(
+            "geolocation contains an incomplete place".into(),
+        ));
+    }
+    Ok(Geolocation { locations })
 }
 
 impl Geolocation {
@@ -883,6 +894,52 @@ pub(crate) mod tests {
         let body = br#"{"status":"ok","data":{"located_resources":[]}}"#;
         let geo = decode_geolocation(body).unwrap_or_else(|e| panic!("{e}"));
         assert!(geo.locations.is_empty());
+    }
+
+    #[test]
+    fn missing_geolocation_collections_are_decode_failures_not_valid_zero() {
+        // Provider drift must not be treated as evidence of no locations.
+        for body in [
+            r#"{"status":"ok","data":{}}"#,
+            r#"{"status":"ok","data":{"located_resources":null}}"#,
+            r#"{"status":"ok","data":{"located_resources":[{}]}}"#,
+            r#"{"status":"ok","data":{"located_resources":[{"locations":null}]}}"#,
+        ] {
+            assert!(
+                matches!(decode_geolocation(body.as_bytes()), Err(LegError::Decode(_))),
+                "malformed geolocation was accepted: {body}"
+            );
+        }
+        let empty_locations =
+            br#"{"status":"ok","data":{"located_resources":[{"locations":[]}]}}"#;
+        assert!(decode_geolocation(empty_locations)
+            .expect("an explicit empty locations array is valid")
+            .locations
+            .is_empty());
+    }
+
+    #[test]
+    fn unidentified_locations_are_not_reported_as_place_evidence() {
+        for body in [
+            r#"{"status":"ok","data":{"located_resources":[{"locations":[{}]}]}}"#,
+            r#"{"status":"ok","data":{"located_resources":[{"locations":[{"covered_percentage":100.0}]}]}}"#,
+            r#"{"status":"ok","data":{"located_resources":[{"locations":[{"latitude":1.0}]}]}}"#,
+        ] {
+            assert!(
+                matches!(decode_geolocation(body.as_bytes()), Err(LegError::Decode(_))),
+                "unidentified or incomplete location was accepted: {body}"
+            );
+        }
+        let named =
+            br#"{"status":"ok","data":{"located_resources":[{"locations":[{"country":"AU"}]}]}}"#;
+        assert_eq!(
+            decode_geolocation(named)
+                .expect("a named country is valid")
+                .locations[0]
+                .country
+                .as_deref(),
+            Some("AU")
+        );
     }
 
     #[test]
