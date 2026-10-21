@@ -224,6 +224,16 @@ impl SourceExecutionOutcome {
     }
 }
 
+/// The result of one single-source CLI run: the rendered report, a network refusal, or a failure
+/// the sources gave. Each source's `…Run` type is this over its own report, so the three outcomes
+/// have one definition.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SourceRun<R> {
+    Printed { text: String, report: R },
+    Network(String),
+    Failed(String),
+}
+
 /// Dispatch action derived from a causal source outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

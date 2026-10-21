@@ -10,7 +10,7 @@ use crate::error::Error;
 use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
 pub const CRYPTO_USAGE: &str = "usage: huntsman-recon crypto BITCOIN-ADDRESS [--save FILE]";
 pub const CRYPTO_HELP: &str = "\
@@ -45,11 +45,7 @@ impl CryptoArgs {
     }
 }
 
-pub enum CryptoRun {
-    Printed { text: String, report: Report },
-    Network(String),
-    Failed(String),
-}
+pub type CryptoRun = SourceRun<Report>;
 
 /// `raw` as the lookup keys on a Bitcoin address.
 ///

@@ -28,7 +28,7 @@ use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::oui;
 use crate::scan_route::{NetworkSelector, network_selector};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
 use crate::tags;
 use crate::textnorm::escape_controls;
 use crate::wigle::{self, Database, WigleError};
@@ -82,12 +82,7 @@ struct Unanswered {
     no_response: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum NetworkRun {
-    Printed { text: String, report: Report },
-    Network(String),
-    Failed(String),
-}
+pub type NetworkRun = SourceRun<Report>;
 
 /// Classify the selector and run each `WiGLE` search it calls for when `wigle` carries a
 /// transport and keys. A transport whose lookup does not ask `wigle`

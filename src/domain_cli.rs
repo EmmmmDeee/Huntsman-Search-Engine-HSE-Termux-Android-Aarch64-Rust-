@@ -38,7 +38,7 @@ use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::recon::ReconTargetKind;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
 use crate::spf::Mechanism;
 use crate::tags;
 use crate::threat_feeds::{self, Feeds};
@@ -87,11 +87,7 @@ impl DomainArgs {
     }
 }
 
-pub enum DomainRun {
-    Printed { text: String, report: Report },
-    Network(String),
-    Failed(String),
-}
+pub type DomainRun = SourceRun<Report>;
 
 /// Transport settings for a domain lookup: crt.sh's timeout and body limit, the largest any of
 /// its legs needs, so a popular domain's certificate list is read whole.

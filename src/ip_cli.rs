@@ -34,7 +34,7 @@ use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::ripestat;
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 use crate::tags;
 use crate::threat_feeds::{self, Feeds};
 use crate::virustotal;
@@ -78,11 +78,7 @@ impl IpArgs {
     }
 }
 
-pub enum IpRun {
-    Printed { text: String, report: Report },
-    Network(String),
-    Failed(String),
-}
+pub type IpRun = SourceRun<Report>;
 
 /// One leg's result, folded into the report, with the first leg the egress policy refused and
 /// the first that got no response.
