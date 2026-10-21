@@ -1,0 +1,391 @@
+//! Keyless geocoding over OpenStreetMap's public Nominatim service.
+//!
+//! One lookup is one GET to Nominatim: a forward search turns a place name or street address into
+//! the coordinates and full address of each match, and a reverse search turns a `lat,lon` point
+//! into the address at that spot. Every match becomes a [`EntityKind::Coordinates`] entity for its
+//! point and an [`EntityKind::Address`] entity for its written address, cross-referenced, and every
+//! field Nominatim returns -- each separate address component included -- is kept as evidence, so no
+//! part of the answer is dropped. This is the free, keyless geocoder; the keyed `WiGLE` leg carries
+//! its own reverse-geocoded address for a network sighting, and this one needs no key.
+//!
+//! Nominatim asks callers to send a descriptive `User-Agent` and not to exceed one request a
+//! second; the crate's default agent names the tool and version, and the shared per-host circuit
+//! breaker paces repeated calls.
+
+use std::collections::BTreeMap;
+
+use serde::Deserialize;
+
+use crate::canonical::canonical_coordinates;
+use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
+use crate::error::Error;
+use crate::fetch::{FetchOptions, fetch};
+use crate::http::{DEFAULT_USER_AGENT, Request, Response, Transport, percent_encode_unreserved};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
+
+pub const SOURCE: &str = "nominatim";
+const SEARCH: &str = "https://nominatim.openstreetmap.org/search";
+const REVERSE: &str = "https://nominatim.openstreetmap.org/reverse";
+
+/// Most matches one forward search keeps. Nominatim's own default is ten; a place that matches
+/// more than this is too broad to be a finding.
+const RESULT_LIMIT: usize = 10;
+
+/// Confidence that a geocoded match is the place the query meant. The service matched the query,
+/// so the point is a sound candidate, but a name can match more than one place: modest, not
+/// certain. Nominatim's own `importance` and `place_rank` ride along as evidence.
+const GEOCODE_CONFIDENCE: f64 = 0.75;
+
+/// Whether `query` is a `lat,lon` point (a reverse lookup) or free text (a forward lookup).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Forward,
+    Reverse,
+}
+
+impl Mode {
+    #[must_use]
+    const fn tag(self) -> &'static str {
+        match self {
+            Self::Forward => "forward",
+            Self::Reverse => "reverse",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Report {
+    pub entities: Vec<Entity>,
+    pub outcome: SourceExecutionOutcome,
+}
+
+/// One Nominatim place. `address` is kept as an open map so every component the service names --
+/// however it is keyed -- is preserved without this struct having to enumerate them.
+#[derive(Debug, Clone, Deserialize)]
+struct Place {
+    #[serde(default)]
+    lat: Option<String>,
+    #[serde(default)]
+    lon: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    addresstype: Option<String>,
+    #[serde(default, rename = "place_rank")]
+    rank: Option<u64>,
+    #[serde(default)]
+    importance: Option<f64>,
+    #[serde(default)]
+    osm_type: Option<String>,
+    #[serde(default)]
+    osm_id: Option<u64>,
+    #[serde(default)]
+    boundingbox: Option<Vec<String>>,
+    #[serde(default)]
+    address: BTreeMap<String, String>,
+}
+
+/// A reverse answer is either one place or Nominatim's `{"error": "..."}` when nothing is near the
+/// point. The untagged enum tries the error shape first; a real place has no `error` key.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum Reverse {
+    Error { error: String },
+    Found(Box<Place>),
+}
+
+/// The forward search URL for `query`. **Pure.**
+#[must_use]
+pub fn search_url(query: &str) -> String {
+    format!(
+        "{SEARCH}?q={}&format=jsonv2&addressdetails=1&limit={RESULT_LIMIT}",
+        percent_encode_unreserved(query)
+    )
+}
+
+/// The reverse search URL for a `lat,lon` point. **Pure.**
+#[must_use]
+pub fn reverse_url(lat: f64, lon: f64) -> String {
+    format!("{REVERSE}?lat={lat}&lon={lon}&format=jsonv2&addressdetails=1")
+}
+
+/// Forward-geocode `query`: a place name or address into coordinates and an address.
+///
+/// # Errors
+/// Returns a network-boundary error when the guarded fetch refuses the URL.
+pub fn forward<T: Transport + ?Sized>(
+    transport: &T,
+    query: &str,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<Report, Error> {
+    let (response, outcome) = get(transport, &search_url(query), now_unix)?;
+    let Some(response) = response else {
+        return Ok(miss(outcome));
+    };
+    Ok(interpret_forward(&response, query, scan_id, now_unix))
+}
+
+/// Reverse-geocode a `lat,lon` point into the address at that spot.
+///
+/// # Errors
+/// Returns a network-boundary error when the guarded fetch refuses the URL.
+pub fn reverse<T: Transport + ?Sized>(
+    transport: &T,
+    lat: f64,
+    lon: f64,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<Report, Error> {
+    let (response, outcome) = get(transport, &reverse_url(lat, lon), now_unix)?;
+    let Some(response) = response else {
+        return Ok(miss(outcome));
+    };
+    Ok(interpret_reverse(&response, lat, lon, scan_id, now_unix))
+}
+
+/// One guarded GET, paced by the per-host breaker, no redirects followed. Returns the response
+/// when one came back, and always the transport-level outcome, so a no-response miss keeps that
+/// outcome without a second request.
+fn get<T: Transport + ?Sized>(
+    transport: &T,
+    url: &str,
+    now_unix: u64,
+) -> Result<(Option<Response>, SourceExecutionOutcome), Error> {
+    let fetched = fetch(
+        transport,
+        Request::get(url.to_owned())
+            .header("accept", "application/json")
+            .header("user-agent", DEFAULT_USER_AGENT),
+        None,
+        &FetchOptions::no_redirects().paced(),
+        SOURCE,
+        now_unix,
+    )?;
+    Ok((fetched.response, fetched.outcome))
+}
+
+fn miss(outcome: SourceExecutionOutcome) -> Report {
+    Report {
+        entities: Vec::new(),
+        outcome,
+    }
+}
+
+/// A response that is a refusal or a wall rather than a result; `None` when it is a clean body to
+/// parse. **Pure.**
+fn refusal(response: &Response, now_unix: u64) -> Option<Report> {
+    if response.truncated {
+        return Some(miss(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            SourceOutcomeKind::ParserDrift,
+            Some(response.status),
+            "truncated Nominatim response",
+        )));
+    }
+    let classified = classify_fetch(response.status, &response.text());
+    if classified != SourceOutcomeKind::Inconclusive {
+        return Some(miss(SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            classified,
+            Some(response.status),
+            "Nominatim answered with a refusal or a wall, not a result",
+        )));
+    }
+    None
+}
+
+/// Turn one forward-search response into a report. **Pure.**
+fn interpret_forward(response: &Response, query: &str, scan_id: &str, now_unix: u64) -> Report {
+    if let Some(report) = refusal(response, now_unix) {
+        return report;
+    }
+    let places: Vec<Place> = match serde_json::from_slice(&response.body) {
+        Ok(places) => places,
+        Err(error) => return drift(response.status, now_unix, &error.to_string()),
+    };
+    decode(
+        &places,
+        Mode::Forward,
+        query,
+        scan_id,
+        now_unix,
+        response.status,
+    )
+}
+
+/// Turn one reverse-search response into a report. **Pure.**
+fn interpret_reverse(
+    response: &Response,
+    lat: f64,
+    lon: f64,
+    scan_id: &str,
+    now_unix: u64,
+) -> Report {
+    if let Some(report) = refusal(response, now_unix) {
+        return report;
+    }
+    let query = format!("{lat},{lon}");
+    match serde_json::from_slice::<Reverse>(&response.body) {
+        Ok(Reverse::Found(place)) => decode(
+            &[*place],
+            Mode::Reverse,
+            &query,
+            scan_id,
+            now_unix,
+            response.status,
+        ),
+        Ok(Reverse::Error { error }) => miss(
+            SourceExecutionOutcome::valid_zero(SOURCE, now_unix)
+                .with_http_status(response.status)
+                .with_detail(format!("Nominatim: {}", error.trim())),
+        ),
+        Err(error) => drift(response.status, now_unix, &error.to_string()),
+    }
+}
+
+fn drift(status: u16, now_unix: u64, detail: &str) -> Report {
+    miss(SourceExecutionOutcome::failed(
+        SOURCE,
+        now_unix,
+        SourceOutcomeKind::ParserDrift,
+        Some(status),
+        format!("Nominatim JSON: {detail}"),
+    ))
+}
+
+/// Build the report from parsed places. Each place yields a `Coordinates` entity for its point and
+/// an `Address` entity for its written address, both carrying every field as evidence. **Pure.**
+fn decode(
+    places: &[Place],
+    mode: Mode,
+    query: &str,
+    scan_id: &str,
+    now_unix: u64,
+    status: u16,
+) -> Report {
+    let mut entities = Vec::new();
+    for place in places.iter().take(RESULT_LIMIT) {
+        place_entities(&mut entities, place, mode, query, scan_id);
+    }
+    merge_by_uid(&mut entities);
+    let outcome = if entities.is_empty() {
+        SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(status)
+    } else {
+        SourceExecutionOutcome::success(SOURCE, now_unix, entities.len()).with_http_status(status)
+    };
+    Report { entities, outcome }
+}
+
+/// The coordinates and address entities for one place. **Pure.**
+fn place_entities(
+    entities: &mut Vec<Entity>,
+    place: &Place,
+    mode: Mode,
+    query: &str,
+    scan_id: &str,
+) {
+    let coordinates = point(place);
+    let display = place
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    // Shared evidence: the query that produced the place and every field Nominatim named.
+    let describe = |summary: String| -> Evidence {
+        let mut evidence = Evidence::new(EvidenceProvenance::for_scan(SOURCE, scan_id), summary)
+            .with_attr("dataset", "OpenStreetMap Nominatim")
+            .with_attr("mode", mode.tag())
+            .with_attr("query", query);
+        for (attr, value) in [
+            ("display_name", display),
+            ("name", opt(place.name.as_deref())),
+            ("category", opt(place.category.as_deref())),
+            ("place_type", opt(place.kind.as_deref())),
+            ("addresstype", opt(place.addresstype.as_deref())),
+            ("osm_type", opt(place.osm_type.as_deref())),
+        ] {
+            if let Some(value) = value {
+                evidence = evidence.with_attr(attr, value);
+            }
+        }
+        if let Some(id) = place.osm_id {
+            evidence = evidence.with_attr("osm_id", id.to_string());
+        }
+        if let Some(rank) = place.rank {
+            evidence = evidence.with_attr("place_rank", rank.to_string());
+        }
+        if let Some(importance) = place.importance {
+            evidence = evidence.with_attr("importance", format!("{importance:.6}"));
+        }
+        if let Some(bbox) = place.boundingbox.as_ref().filter(|b| !b.is_empty()) {
+            evidence = evidence.with_attr("boundingbox", bbox.join(","));
+        }
+        if let Some(coordinates) = coordinates.as_deref() {
+            evidence = evidence.with_attr("coordinates", coordinates);
+        }
+        // Every address component, however keyed, so no part of the answer is dropped.
+        for (key, value) in &place.address {
+            let value = value.trim();
+            if !value.is_empty() {
+                evidence = evidence.with_attr(format!("address_{key}"), value);
+            }
+        }
+        evidence
+    };
+
+    if let Some(coordinates) = coordinates.as_deref() {
+        let summary = display.map_or_else(
+            || format!("geocoded point for {query:?}"),
+            |name| format!("geocoded point for {query:?}: {name}"),
+        );
+        push_entity(
+            entities,
+            EntityKind::Coordinates,
+            coordinates,
+            GEOCODE_CONFIDENCE,
+            scan_id,
+            describe(summary),
+            &[SOURCE, "geocode", mode.tag()],
+        );
+    }
+
+    if let Some(display) = display {
+        let summary = coordinates.as_deref().map_or_else(
+            || format!("geocoded address for {query:?}"),
+            |point| format!("geocoded address at {point} for {query:?}"),
+        );
+        push_entity(
+            entities,
+            EntityKind::Address,
+            display,
+            GEOCODE_CONFIDENCE,
+            scan_id,
+            describe(summary),
+            &[SOURCE, "geocode", mode.tag()],
+        );
+    }
+}
+
+/// The canonical `lat,lon` point of a place, when both are present and valid. **Pure.**
+fn point(place: &Place) -> Option<String> {
+    let lat = place.lat.as_deref()?.trim();
+    let lon = place.lon.as_deref()?.trim();
+    canonical_coordinates(&format!("{lat},{lon}"))
+}
+
+fn opt(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|v| !v.is_empty())
+}
+
+#[cfg(test)]
+mod tests;

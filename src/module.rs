@@ -461,6 +461,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public App Store apps for one keyword, with seller and bundle, from Apple's iTunes Search API",
     },
     ReachableModule {
+        name: "nominatim",
+        command: "geocode PLACE|LAT,LON",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Geo,
+        attack_techniques: &["T1591.001"],
+        description: "forward and reverse geocoding from OpenStreetMap's Nominatim: a place or address to its coordinates and full address, or a point to the address there",
+    },
+    ReachableModule {
         name: "phone_intl",
         command: "phone NUMBER",
         access: "offline",
