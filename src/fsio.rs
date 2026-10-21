@@ -8,10 +8,16 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, SystemTime};
 
 use crate::error::Error;
 
 static TEMP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+/// How old a temp file must be before a later write removes it. A live write holds its temp file
+/// for milliseconds, so ten minutes separates a writer that is still running from the residue of
+/// one that was killed.
+const STALE_TEMP_AGE: Duration = Duration::from_secs(10 * 60);
 
 fn store_err(path: &Path, e: &std::io::Error) -> Error {
     Error::Store(format!("{}: {e}", path.display()))
@@ -208,6 +214,7 @@ fn write_atomic_mode(path: &Path, body: &[u8], max: u64, private: bool) -> Resul
     let name = path
         .file_name()
         .ok_or_else(|| Error::Store(format!("{}: no file name", path.display())))?;
+    sweep_stale_temps(&parent, name);
     let (mut file, tmp) = create_temp_file(&parent, name, private, &TEMP_SEQUENCE)?;
     let result = (|| {
         if private {
@@ -294,6 +301,61 @@ fn check_private_mode(path: &Path, file: &File) -> Result<(), Error> {
 #[cfg(not(unix))]
 fn check_private_mode(_path: &Path, _file: &File) -> Result<(), Error> {
     Ok(())
+}
+
+/// Remove the temp files a killed write left beside `name`. A temp file holds the whole body being
+/// written, so a crash mid-write leaves a copy of the previous secrets or records on disk, and a
+/// later save that drops an entry does not remove that copy. Only a regular file named
+/// `<name>.<pid>.<seq>.tmp` and untouched for [`STALE_TEMP_AGE`] is removed. A symbolic link, a
+/// newer file, or a modification time ahead of the clock is left alone. Best effort: a removal that
+/// fails does not fail the write that triggered it.
+fn sweep_stale_temps(parent: &Path, name: &std::ffi::OsStr) {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        if !is_temp_of(name, &entry.file_name()) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.file_type().is_file() {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if now
+            .duration_since(modified)
+            .is_ok_and(|age| age >= STALE_TEMP_AGE)
+        {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+/// Is `candidate` a temp file [`create_temp_file`] makes for a write to `name`: exactly
+/// `<name>.<pid>.<seq>.tmp` with both numbers in decimal? A name that merely starts with `name`,
+/// such as another file's temp file, does not match.
+fn is_temp_of(name: &std::ffi::OsStr, candidate: &std::ffi::OsStr) -> bool {
+    let (Some(name), Some(candidate)) = (name.to_str(), candidate.to_str()) else {
+        return false;
+    };
+    let Some(numbers) = candidate
+        .strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((pid, seq)) = numbers.split_once('.') else {
+        return false;
+    };
+    let decimal = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    decimal(pid) && decimal(seq)
 }
 
 fn create_temp_file(
@@ -552,6 +614,65 @@ mod tests {
         assert!(!is_shared_storage(Path::new(
             "/data/data/com.termux/files/home/.huntsman"
         )));
+    }
+
+    /// Backdate `path`'s modification time by `by`, as if it was written that long ago.
+    fn backdate(path: &Path, by: Duration) {
+        let past = SystemTime::now() - by;
+        OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(past))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_killed_writes_temp_file_is_removed_by_the_next_write() {
+        let dir = scratch("stale-temp");
+        let path = dir.join("keys.env");
+        write_atomic_private(&path, b"OLD='one'", 64).unwrap();
+        // A process killed between creating its temp file and renaming it leaves that file behind,
+        // holding the whole body it was writing.
+        let stale = dir.join("keys.env.4242.7.tmp");
+        fs::write(&stale, b"REMOVED='secret'").unwrap();
+        backdate(&stale, STALE_TEMP_AGE * 2);
+        // A temp file still young may belong to a live writer, so it stays.
+        let live = dir.join("keys.env.4243.9.tmp");
+        fs::write(&live, b"LIVE='writing'").unwrap();
+        // Names that merely resemble a temp file for `keys.env` are not one, however old.
+        let lookalike = dir.join("keys.env.bak.1.2.tmp");
+        fs::write(&lookalike, b"not ours").unwrap();
+        backdate(&lookalike, STALE_TEMP_AGE * 2);
+
+        write_atomic_private(&path, b"NEW='two'", 64).unwrap();
+
+        assert!(!stale.exists(), "a killed write's temp file outlived the next write");
+        assert!(live.exists(), "a temp file younger than the stale age is kept");
+        assert_eq!(fs::read(&lookalike).unwrap(), b"not ours");
+        assert_eq!(read_bounded(&path, 64).unwrap(), b"NEW='two'");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_sweep_never_removes_or_follows_a_link_named_like_a_temp_file() {
+        let dir = scratch("stale-link");
+        let path = dir.join("keys.env");
+        let target = dir.join("target.env");
+        fs::write(&target, b"unrelated").unwrap();
+        backdate(&target, STALE_TEMP_AGE * 2);
+        let link = dir.join("keys.env.4242.7.tmp");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_atomic_private(&path, b"NEW='two'", 64).unwrap();
+
+        assert!(
+            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            "a link is not a temp file the sweep may remove"
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"unrelated");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]

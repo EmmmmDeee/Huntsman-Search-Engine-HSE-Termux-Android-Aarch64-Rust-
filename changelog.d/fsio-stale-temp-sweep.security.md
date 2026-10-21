@@ -1,0 +1,1 @@
+- A write removes the temp files a killed earlier write left beside the same file, once they are older than ten minutes. Those files hold a full copy of the body being written, so a `keys remove` no longer leaves the removed key's value on disk in a temp file from an interrupted save.
