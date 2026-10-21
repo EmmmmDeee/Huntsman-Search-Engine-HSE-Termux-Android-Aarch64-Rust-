@@ -1,6 +1,6 @@
 //! What a lookup or an investigation finds is written mode 600. A ledger names the addresses,
 //! phones and handles a lookup found and a session holds an investigation's seeds and
-//! findings, so on a shared host (the Railway container, any multi-user Linux) another
+//! findings, so on a shared host (a self-hosted Linux container, any multi-user Linux) another
 //! account must not read them. Replacing an older, world-readable file leaves it private.
 #![cfg(unix)]
 
@@ -26,7 +26,7 @@ fn mode(path: &Path) -> u32 {
 }
 
 /// Run the binary under `umask 022`. The test runner's own umask is not known: under `umask
-/// 077` (Android app processes, the Railway entrypoint) a plain write also comes out 0600, and
+/// 077` (Android app processes, the container entrypoint) a plain write also comes out 0600, and
 /// the assertions below would hold without the private writer.
 fn recon(dir: &Path, args: &[&str]) {
     let out = Command::new("sh")
