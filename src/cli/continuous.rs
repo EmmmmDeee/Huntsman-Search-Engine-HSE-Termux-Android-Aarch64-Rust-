@@ -298,9 +298,8 @@ mod tests {
 
     #[test]
     fn refuses_continuous_people_name_expansion() {
-        let error = match config("Jane Example", "1440", PathBuf::from("/tmp/x")) {
-            Err(error) => error,
-            Ok(_) => panic!("a continuous people-name scan must be rejected"),
+        let Err(error) = config("Jane Example", "1440", PathBuf::from("/tmp/x")) else {
+            panic!("a continuous people-name scan must be rejected");
         };
         assert_eq!(error, "continuous people-name scans are disabled");
     }
