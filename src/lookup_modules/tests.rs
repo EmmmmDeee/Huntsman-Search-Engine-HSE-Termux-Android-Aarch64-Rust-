@@ -9,8 +9,8 @@ use crate::module_selection::Selected;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::threat_feeds::Feeds;
 use crate::{
-    asn_cli, domain_cli, email_cli, environment, exposure_cli, ip_cli, netblock_cli, network_cli,
-    people_cli, phone_cli, stolen_tax, username_cli,
+    asn_cli, crypto_cli, domain_cli, email_cli, environment, exposure_cli, ip_cli, netblock_cli,
+    network_cli, people_cli, phone_cli, stolen_tax, username_cli,
 };
 
 const NOW: u64 = 1_760_000_000;
@@ -170,6 +170,14 @@ fn rows(
                 }
             }
         }
+        ScanKind::CryptoAddress => {
+            match crypto_cli::run(&transport, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", NOW) {
+                crypto_cli::CryptoRun::Printed { report, .. } => Ok(report.outcomes),
+                crypto_cli::CryptoRun::Network(why) | crypto_cli::CryptoRun::Failed(why) => {
+                    Err(why)
+                }
+            }
+        }
         ScanKind::Exposure => {
             let sources = exposure_cli::Sources {
                 stolen_tax: Some((&transport, &keys)),
@@ -253,7 +261,11 @@ fn anchor(kind: ScanKind) -> Option<&'static str> {
         ScanKind::Asn => Some(ripestat::SOURCE),
         ScanKind::Email => Some(gravatar::SRC),
         ScanKind::People => Some("asic_persons"),
-        ScanKind::Username | ScanKind::Phone | ScanKind::Network | ScanKind::Exposure => None,
+        ScanKind::Username
+        | ScanKind::Phone
+        | ScanKind::Network
+        | ScanKind::Exposure
+        | ScanKind::CryptoAddress => None,
     }
 }
 

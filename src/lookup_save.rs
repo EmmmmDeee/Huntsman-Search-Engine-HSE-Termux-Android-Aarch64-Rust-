@@ -263,6 +263,20 @@ pub const NETWORK_POLICY: SavePolicy = SavePolicy {
     entity_provenance: network_provenance,
 };
 
+fn crypto_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        "blockchain" => ("blockchain", "src/blockchain.rs"),
+        _ => (source, "src/crypto_cli.rs"),
+    }
+}
+
+pub const CRYPTO_POLICY: SavePolicy = SavePolicy {
+    default_source: "blockchain",
+    does_not_show: "an on-chain balance is not an identity-resolution verdict or proof of ownership",
+    outcome_provenance: crypto_provenance,
+    entity_provenance: crypto_provenance,
+};
+
 /// Persist one lookup report as a fresh unverified hash chain.
 ///
 /// # Errors

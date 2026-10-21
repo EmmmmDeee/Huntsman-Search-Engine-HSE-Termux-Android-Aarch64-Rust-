@@ -16,6 +16,7 @@ attack_reporting	leaf	hierarchy-aware ATT&CK coverage projection
 au_id	leaf	Australian identifier normalization
 base64	leaf	RFC 4648 base64 codec for CSP hashes, PKCE values and certificate DER
 benchmark	diagnostic	benchmarking support
+blockchain	adapter	blockchain.info Bitcoin address source client reached through crypto_cli
 bluesky_user	adapter	public Bluesky profile source client
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
 canonical	runtime	canonicalization for entities and provenance
@@ -38,6 +39,7 @@ credential_origin	leaf	authentication authority boundary
 cross_scan	runtime	bounded historical scan bridge analysis
 certspotter	adapter	Cert Spotter certificate leg reached through domain_cli from domain, scan -k domain and /api/lookup, keyless or with its key
 crtsh	adapter	Certificate Transparency source client
+crypto_cli	adapter	crypto lookup front-end reached from crypto, scan -k crypto and /api/lookup
 deadline	leaf	shared per-lookup request budget
 dehashed	adapter	DeHashed exact-match source client and lineage-safe collector
 dependency	runtime	module dependency and dispatch graph
