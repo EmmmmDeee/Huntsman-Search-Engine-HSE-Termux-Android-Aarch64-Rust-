@@ -279,8 +279,8 @@ mod tests {
 
     #[test]
     fn wildcard_enables_reconciliation_without_network_scan_targets() {
-        let configured = config("*", "1440", PathBuf::from("/tmp/example"))
-            .expect("offline normalisation");
+        let configured =
+            config("*", "1440", PathBuf::from("/tmp/example")).expect("offline normalisation");
         assert!(configured.normalise_all);
         assert!(configured.targets.is_empty());
     }
