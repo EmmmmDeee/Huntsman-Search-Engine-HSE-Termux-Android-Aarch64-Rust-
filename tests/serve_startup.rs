@@ -86,7 +86,7 @@ fn startup_on(bind: &str, envs: &[(&str, &str)]) -> (String, String) {
 
 /// A generic deployment environment may export PORT, but that must not
 /// determine the listener address or reject an otherwise valid local bind.
-/// Only HSE_BIND or --bind may opt the application into public listening.
+/// Only `HSE_BIND` or `--bind` may opt the application into public listening.
 #[test]
 fn unrelated_port_environment_does_not_override_local_bind() {
     let mut child = serve(
