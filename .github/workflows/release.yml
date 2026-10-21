@@ -215,6 +215,38 @@ jobs:
           HSE_AUTH_TOKEN=release-gate-token \
             bash scripts/container-live-acceptance.sh
 
+  web-ui:
+    # The web UI is half of the target, so publish waits for this check. It runs the same
+    # phone-browser check CI runs, against this commit, with a read-only token and no persisted
+    # git credentials. It uploads nothing.
+    name: Web UI in a phone browser before publish
+    needs: resolve
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: "1.99"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Build the server
+        run: cargo build --locked --bin huntsman-recon
+      # Two pinned packages with no dependencies of their own; no install script runs. The
+      # runner's preinstalled Chrome is the browser.
+      - name: Install the browser driver and accessibility engine
+        working-directory: tools/web-ui-check
+        run: npm install --no-package-lock --ignore-scripts
+      - name: Drive the page at 360 px in both themes
+        run: |
+          set -euo pipefail
+          CHROME_PATH="${CHROME_BIN:-$(command -v google-chrome || command -v chromium)}" \
+            node tools/web-ui-check/check.cjs target/debug/huntsman-recon
+
   build:
     # Runs cargo and every dependency build script: read-only token, no
     # GH_TOKEN, no persisted git credentials, no OIDC.
@@ -389,7 +421,7 @@ jobs:
     # and runs no repository code: it verifies the handed-over bytes, re-runs
     # the inlined key scan on them, then calls the attestation action and `gh`.
     name: Publish main-channel pre-releases
-    needs: [resolve, quality-msrv, quality, build]
+    needs: [resolve, quality-msrv, quality, build, web-ui]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.resolve.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     permissions:

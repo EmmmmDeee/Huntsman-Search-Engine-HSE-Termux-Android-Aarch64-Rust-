@@ -549,8 +549,40 @@ fn release_publish_requires_shared_quality_gate() {
         "release build must not run before stable and MSRV quality acceptance pass"
     );
     assert!(
-        publish.contains("needs: [resolve, quality-msrv, quality, build]"),
-        "release publish must depend on stable/MSRV quality and the verified build"
+        publish.contains("needs: [resolve, quality-msrv, quality, build, web-ui]"),
+        "release publish must depend on stable/MSRV quality, the verified build and the web UI check"
+    );
+}
+
+#[test]
+fn publish_waits_for_the_web_ui_browser_check_on_the_same_commit() {
+    // The web UI is half of the target, so a build whose page fails the phone-browser check must
+    // not reach the pre-release channel. Publish waits for a web-ui job in this workflow. That job
+    // runs the same check CI runs, against the same commit, so the page it passes is the page this
+    // build ships.
+    let wf = release();
+    let ci = fs::read_to_string(".github/workflows/ci.yml").expect("the CI workflow must exist");
+    let web_ui = job(&wf, "web-ui");
+    let publish = job(&wf, "publish");
+    let drive = "node tools/web-ui-check/check.cjs target/debug/huntsman-recon";
+
+    assert!(
+        publish.contains("needs: [resolve, quality-msrv, quality, build, web-ui]"),
+        "release publish must wait for the web UI browser check"
+    );
+    assert!(
+        web_ui.contains("cargo build --locked --bin huntsman-recon")
+            && web_ui.contains("npm install --no-package-lock --ignore-scripts")
+            && web_ui.contains(drive),
+        "release web-ui job must build the server and drive the page as CI does"
+    );
+    assert!(
+        ci.contains(drive),
+        "CI must drive the same page check the release web-ui job runs"
+    );
+    assert!(
+        web_ui.contains("persist-credentials: false"),
+        "the browser job must check out without a write credential"
     );
 }
 
