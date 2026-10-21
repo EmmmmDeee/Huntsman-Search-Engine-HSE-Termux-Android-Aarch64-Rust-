@@ -18,6 +18,7 @@ use crate::scan_export::{self, Export};
 use crate::scan_store::{ScanCorrelation, ScanRecord, ScanResults};
 use crate::sf_elements::DataElement;
 use crate::sf_types;
+use crate::source_outcome::SourceExecutionOutcome;
 
 /// The formats [`render`] writes besides JSON, which the scan API builds itself.
 pub const FORMATS: [&str; 4] = ["json", "csv", "tsv", "xlsx"];
@@ -145,6 +146,35 @@ pub fn compare<'a>(base: &'a ScanResults, other: &'a ScanResults) -> Comparison<
         correlations_added: unmatched(other, &had),
         correlations_removed: unmatched(base, &has),
     }
+}
+
+/// Provider modules whose recorded outcome multisets differ across saved scans.
+/// Counts are preserved per module and outcome kind, including repeated recursive lookups.
+/// This detects a credential/provider swap even when aggregate coverage counts are equal.
+#[must_use]
+pub fn changed_source_modules(base: &ScanResults, other: &ScanResults) -> Vec<String> {
+    fn by_module(outcomes: &[SourceExecutionOutcome]) -> BTreeMap<String, BTreeMap<String, usize>> {
+        let mut entries: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        for outcome in outcomes {
+            *entries
+                .entry(outcome.module.clone())
+                .or_default()
+                .entry(format!("{:?}", outcome.kind))
+                .or_default() += 1;
+        }
+        entries
+    }
+
+    let earlier = by_module(&base.outcomes);
+    let later = by_module(&other.outcomes);
+    earlier
+        .keys()
+        .chain(later.keys())
+        .filter(|module| earlier.get(*module) != later.get(*module))
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// The data of each element's source element in `results`, by element id.
@@ -352,6 +382,40 @@ mod tests {
                 .iter()
                 .all(|t| t.added == 0 && t.removed == 0 && t.kept == t.base)
         );
+    }
+
+    #[test]
+    fn provider_swaps_are_detected_when_aggregate_counts_are_identical() {
+        use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+
+        let (mut earlier, mut later) = pair();
+        earlier.outcomes = vec![
+            SourceExecutionOutcome::success("alpha", 1, 1),
+            SourceExecutionOutcome::failed(
+                "beta",
+                1,
+                SourceOutcomeKind::NotConfigured,
+                None,
+                "not configured",
+            ),
+        ];
+        later.outcomes = vec![
+            SourceExecutionOutcome::failed(
+                "alpha",
+                2,
+                SourceOutcomeKind::NotConfigured,
+                None,
+                "not configured",
+            ),
+            SourceExecutionOutcome::success("beta", 2, 1),
+        ];
+        assert_eq!(
+            changed_source_modules(&earlier, &later),
+            vec!["alpha".to_owned(), "beta".to_owned()]
+        );
+        assert!(changed_source_modules(&earlier, &earlier).is_empty());
+        later.outcomes = earlier.outcomes.iter().rev().cloned().collect();
+        assert!(changed_source_modules(&earlier, &later).is_empty());
     }
 
     #[test]

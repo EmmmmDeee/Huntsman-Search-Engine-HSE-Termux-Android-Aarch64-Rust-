@@ -304,6 +304,13 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       const shown = await page.evaluate(() => ({ total: +document.getElementById('ctotal').textContent, unique: +document.getElementById('cunique').textContent, bars: document.querySelectorAll('#bars .bar').length, status: document.getElementById('cstatus').textContent }));
       check(`${scheme}: Summary counts every element`, shown.total === summary.reduce((n, t) => n + t.total, 0) && shown.unique === summary.reduce((n, t) => n + t.unique, 0) && shown.status === row.status, { shown, summary });
       check(`${scheme}: Summary has a bar per data type`, shown.bars === summary.length, shown);
+      const sourceCoverage = await page.textContent('#srcs-coverage');
+      const expectedCoverage = row.source_execution_summary;
+      check(`${scheme}: Summary shows recorded coverage without implying exhaustive discovery`,
+        expectedCoverage && sourceCoverage.includes(expectedCoverage.accepted + ' of ' + expectedCoverage.total) &&
+        sourceCoverage.includes(expectedCoverage.not_configured + ' not configured') &&
+        sourceCoverage.includes('does not establish exhaustive source coverage'),
+        { sourceCoverage, expectedCoverage });
       await audit(page, `${scheme} summary`);
 
       // Browse: the data types, then one type's elements with the full raw record behind each.
@@ -562,9 +569,13 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         await page.waitForFunction(() => !document.getElementById('view-compare').hidden && !/^Comparing/.test(document.getElementById('cmpmeta').textContent), null, { timeout: 10000 }).catch(() => {});
         const pair = encodeURIComponent(id) + '/' + encodeURIComponent(again);
         const compared = await api(page, '/api/scans/compare?ids=' + encodeURIComponent(id + ',' + again));
-        const shownCompare = await page.evaluate(() => ({ hash: location.hash, meta: document.getElementById('cmpmeta').textContent, types: document.querySelectorAll('#cmptypes tr').length, added: document.getElementById('cmpadd-n').textContent, removed: document.getElementById('cmprem-n').textContent }));
+        const shownCompare = await page.evaluate(() => ({ hash: location.hash, meta: document.getElementById('cmpmeta').textContent, coverage: document.getElementById('cmpcoverage').textContent, types: document.querySelectorAll('#cmptypes tr').length, added: document.getElementById('cmpadd-n').textContent, removed: document.getElementById('cmprem-n').textContent }));
         check('Compare opens on the earlier scan of the same target', shownCompare.hash === '#/compare/' + pair, shownCompare.hash);
         check('Compare shows what the API compares', shownCompare.types === Math.max(1, compared.types.length) && shownCompare.added === String(compared.added.length) && shownCompare.removed === String(compared.removed.length) && shownCompare.meta.includes('No change') === compared.unchanged, { shownCompare, types: compared.types.length, added: compared.added.length, removed: compared.removed.length, unchanged: compared.unchanged });
+        check('Compare displays both source-execution summaries',
+          compared.source_execution && shownCompare.coverage.includes('Earlier: ' + compared.source_execution.earlier.accepted + ' of ' + compared.source_execution.earlier.total) &&
+          shownCompare.coverage.includes('Later: ' + compared.source_execution.later.accepted + ' of ' + compared.source_execution.later.total) &&
+          compared.source_execution_changed === false, shownCompare.coverage);
         await audit(page, 'dark compare');
         await page.click('#cmpexport summary');
         const [xdownload] = await Promise.all([page.waitForEvent('download', { timeout: 10000 }), page.click('#cmpexport button[data-xformat=csv]')]);

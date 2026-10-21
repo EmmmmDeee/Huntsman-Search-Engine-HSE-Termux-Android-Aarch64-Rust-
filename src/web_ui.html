@@ -317,7 +317,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel"><div class="panel-heading">Correlations</div><div class="counters"><div class="counter bad"><div class="lab">High</div><div class="val" id="chigh">?</div></div><div class="counter warn"><div class="lab">Medium</div><div class="val" id="cmedium">?</div></div><div class="counter info"><div class="lab">Low</div><div class="val" id="clow">?</div></div><div class="counter ok"><div class="lab">Info</div><div class="val" id="cinfo">?</div></div></div></div>
 </div>
 <div class="panel"><div class="panel-heading">Data Types <span class="badge" id="bars-n"></span></div><div class="bars" id="bars"></div></div>
-<div class="panel"><div class="panel-heading">Sources <span class="badge" id="srcs-n"></span></div><div class="table-wrap"><table class="sortable"><thead><tr><th>Source</th><th>Outcome</th><th>Detail</th></tr></thead><tbody id="srcs"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Sources <span class="badge" id="srcs-n"></span></div><p class="help pad" id="srcs-coverage" role="status"></p><div class="table-wrap"><table class="sortable"><thead><tr><th>Source</th><th>Outcome</th><th>Detail</th></tr></thead><tbody id="srcs"></tbody></table></div></div>
 </div>
 <div id="pane-correlations" hidden>
 <div class="toolbar"><button class="btn" id="recorrelate" type="button">Re-run Correlations</button><details class="menu" id="cexport"><summary class="btn">Export Correlations</summary><div class="menu-list"><button type="button" data-cformat="csv">CSV</button><button type="button" data-cformat="xlsx">Excel</button><button type="button" data-cformat="json">JSON</button><button type="button" data-cformat="tsv">TSV</button></div></details></div>
@@ -359,6 +359,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <p class="when" id="cmpmeta"></p>
 <div class="toolbar"><button class="btn" id="cmpswap" type="button">Swap</button><details class="menu" id="cmpexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-xformat="csv">CSV</button><button type="button" data-xformat="xlsx">Excel</button><button type="button" data-xformat="json">JSON</button><button type="button" data-xformat="tsv">TSV</button></div></details></div>
 <p class="alert" id="cmperror" role="alert" hidden></p>
+<p class="help pad" id="cmpcoverage" role="status"></p>
 <div class="panel"><div class="panel-heading">Data Types</div><div class="table-wrap"><table class="sortable"><thead><tr><th>Type</th><th>Earlier</th><th>Later</th><th>Added</th><th>Removed</th><th>Kept</th></tr></thead><tbody id="cmptypes"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Correlations <span class="badge" id="cmpcorr-n"></span></div><div class="table-wrap"><table><thead><tr><th>Change</th><th>Risk</th><th>Correlation</th></tr></thead><tbody id="cmpcorr"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Added <span class="badge" id="cmpadd-n"></span></div><p class="help pad">Found by the later scan and not by the earlier one.</p><div id="cmpadd"></div></div>
@@ -806,6 +807,11 @@ $('scdelete').onclick=()=>act1('delete',[sid]);
 const errors=s=>Array.isArray(s.errors)?s.errors.length:(s.errors||0);
 // A source's outcome as the scan saved it: what it found, its HTTP status, when to retry, and why.
 const why=o=>[o.found!=null&&'found '+o.found,o.http_status&&'HTTP '+o.http_status,o.retry_after_secs&&'retry after '+o.retry_after_secs+' s',o.detail].filter(Boolean).join(' · ');
+// These are saved source execution outcomes, not a claim that all available sources ran.
+const coverage=s=>!s||s.unit!=='source_execution'?'Execution coverage unavailable; inspect the source outcomes.':
+  !s.total?'No recorded source executions; coverage is unknown.':
+  s.accepted+' of '+s.total+' recorded executions accepted ('+s.success+' with results, '+s.valid_zero+' confirmed zero); '+
+  s.not_configured+' not configured; '+s.unresolved+' unresolved. Scan completion does not establish exhaustive source coverage.';
 async function summary(){
   const types=await get('summary',base()+'/summary');
   let total=0,unique=0;for(const t of types){total+=t.total;unique+=t.unique}
@@ -822,6 +828,7 @@ async function summary(){
   if(!types.length)box.append(el('p','help',live(scan.status)?'No data yet. This section updates while the scan runs.':'No data.'));
   $('bars-n').textContent=types.length;
   const src=scan.sources||[];$('srcs-n').textContent=src.length;
+  $('srcs-coverage').textContent=coverage(scan.source_execution_summary);
   fill('srcs',src,o=>[o.module,'',why(o)]);
   [...$('srcs').rows].forEach((tr,i)=>{const o=src[i];if(o)tr.cells[1].replaceChildren(el('span','label '+(tone[o.outcome]||'bad'),o.outcome))});
 }
@@ -1150,11 +1157,17 @@ $('gsave').onclick=()=>{
 let cmp=[];
 const compareScans=(a,b)=>{location.hash='#/compare/'+enc(a)+'/'+enc(b)};
 async function openCompare(ids){
-  const g=gen;cmp=ids;$('cmperror').hidden=true;$('cmpexport').open=false;$('cmpmeta').textContent='Comparing…';
+  const g=gen;cmp=ids;$('cmperror').hidden=true;$('cmpexport').open=false;$('cmpmeta').textContent='Comparing…';$('cmpcoverage').textContent='';
   try{
     const c=await api('/api/scans/compare?'+new URLSearchParams({ids:cmp.join(',')}));if(g!==gen)return;
     const side=(label,s)=>label+': '+(s.name||s.target)+' ('+s.target+', '+when(s.started||s.created)+')';
-    $('cmpmeta').textContent=[side('Earlier',c.base),side('Later',c.other),c.unchanged&&'No change'].filter(Boolean).join(' · ');
+    $('cmpmeta').textContent=[side('Earlier',c.base),side('Later',c.other),c.unchanged&&(c.source_execution_changed?'No change in findings; source execution changed':'No change in findings')].filter(Boolean).join(' · ');
+    const ex=c.source_execution;
+    $('cmpcoverage').textContent=ex?
+      'Earlier: '+coverage(ex.earlier)+' Later: '+coverage(ex.later)+
+      ((ex.changed_modules||[]).length?' Changed provider outcomes: '+ex.changed_modules.join(', ')+'.':'')+
+      ((ex.later.not_configured||ex.later.unresolved)?' Missing later findings may reflect unqueried or unresolved sources, not disappearance.':''):
+      'Execution coverage comparison unavailable; compare recorded source outcomes manually.';
     fill('cmptypes',c.types,t=>[t.description||t.type,t.base,t.other,t.added,t.removed,t.kept]);
     const cs=c.correlations.added.map(x=>['Added',x]).concat(c.correlations.removed.map(x=>['Removed',x]));
     fill('cmpcorr',cs,([k,x])=>[k,'',x.title||x.name||x.rule]);$('cmpcorr-n').textContent=cs.length;
