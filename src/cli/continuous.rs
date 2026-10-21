@@ -27,6 +27,7 @@ struct Config {
     targets: Vec<ScanRequest>,
     cadence_ms: u64,
     normalised_dir: PathBuf,
+    normalise_all: bool,
 }
 
 fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, String> {
@@ -42,9 +43,14 @@ fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, St
         return Err("HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES must be 60..=10080".to_owned());
     }
     let mut unique = BTreeMap::new();
+    let mut normalise_all = false;
     for raw in targets.split(['\n', ';']) {
         let target = raw.trim();
         if target.is_empty() {
+            continue;
+        }
+        if target == "*" {
+            normalise_all = true;
             continue;
         }
         let resolved =
@@ -67,13 +73,14 @@ fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, St
             ));
         }
     }
-    if unique.is_empty() {
+    if unique.is_empty() && !normalise_all {
         return Err("HUNTSMAN_CONTINUOUS_TARGETS contains no valid targets".to_owned());
     }
     Ok(Config {
         targets: unique.into_values().collect(),
         cadence_ms: minutes * 60 * 1000,
         normalised_dir: directory,
+        normalise_all,
     })
 }
 
@@ -145,6 +152,18 @@ fn cycle(
         .store()
         .list()
         .map_err(|error| error.to_string())?;
+    // ScanStore::list returns newest first. Keep one latest scan per canonical kind/target;
+    // normalise-all does not schedule collection of arbitrary observed identities.
+    let mut normalise = Vec::new();
+    if config.normalise_all {
+        let mut seen = BTreeSet::new();
+        for record in &records {
+            if seen.insert((record.kind.as_str(), record.target.as_str())) {
+                normalise.push(record);
+            }
+        }
+    }
+
     for request in &config.targets {
         let key = format!(
             "{}:{}",
@@ -152,25 +171,9 @@ fn cycle(
             request.target
         );
         let last = latest(&records, request);
-        if let Some(record) = last {
-            let analysis_key = format!("analysis:{}", record.id);
-            if !record.status.is_active()
-                && !observed.contains(&record.id)
-                && retry_after
-                    .get(&analysis_key)
-                    .is_none_or(|until| now >= *until)
-            {
-                match normalise_saved(api, record, &config.normalised_dir) {
-                    Ok(true) => {
-                        observed.insert(record.id.clone());
-                        eprintln!("continuous: normalised saved scan {}", record.id);
-                    }
-                    Ok(false) => {}
-                    Err(error) => {
-                        eprintln!("continuous: {error}");
-                        retry_after.insert(analysis_key, now.saturating_add(RETRY));
-                    }
-                }
+        if !config.normalise_all {
+            if let Some(record) = last {
+                normalise.push(record);
             }
         }
         if due(last, now, config.cadence_ms)
@@ -181,6 +184,27 @@ fn cycle(
                 Err(error) => {
                     eprintln!("continuous: scan schedule failed: {error}");
                     retry_after.insert(key, now.saturating_add(RETRY));
+                }
+            }
+        }
+    }
+    for record in normalise {
+        let analysis_key = format!("analysis:{}", record.id);
+        if !record.status.is_active()
+            && !observed.contains(&record.id)
+            && retry_after
+                .get(&analysis_key)
+                .is_none_or(|until| now >= *until)
+        {
+            match normalise_saved(api, record, &config.normalised_dir) {
+                Ok(true) => {
+                    observed.insert(record.id.clone());
+                    eprintln!("continuous: normalised saved scan {}", record.id);
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("continuous: {error}");
+                    retry_after.insert(analysis_key, now.saturating_add(RETRY));
                 }
             }
         }
@@ -208,9 +232,10 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
     let config = config(&raw, &minutes, state.join("normalised"))?;
     let api = Arc::clone(scans);
     eprintln!(
-        "continuous: enabled with {} canonical targets, interval={} minutes",
+        "continuous: enabled with {} canonical targets, interval={} minutes, normalise_all={}",
         config.targets.len(),
-        config.cadence_ms / 60_000
+        config.cadence_ms / 60_000,
+        config.normalise_all
     );
     thread::Builder::new()
         .name("continuous-normalisation".to_owned())
@@ -250,6 +275,14 @@ mod tests {
                 .iter()
                 .all(|r| r.options.usecase == "passive")
         );
+    }
+
+    #[test]
+    fn wildcard_enables_reconciliation_without_network_scan_targets() {
+        let configured = config("*", "1440", PathBuf::from("/tmp/example"))
+            .expect("offline normalisation");
+        assert!(configured.normalise_all);
+        assert!(configured.targets.is_empty());
     }
 
     #[test]
