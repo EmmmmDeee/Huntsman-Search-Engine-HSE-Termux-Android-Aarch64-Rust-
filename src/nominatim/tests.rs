@@ -294,7 +294,7 @@ fn candidates_keep_their_own_source_index_without_reassigning_fields() {
         assert_eq!(raw[candidate]["place_id"], expected_place_id);
         assert_eq!(entry.evidence[0].provenance.recorded_at_unix, 91);
         if index == "1" {
-            assert_eq!(entry.value, "40,-120");
+            assert_eq!(entry.value, "40.000000,-120.000000");
             assert_eq!(
                 raw[candidate]["display_name"],
                 "Alternate Place, California"
