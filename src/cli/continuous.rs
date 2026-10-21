@@ -1,6 +1,6 @@
 //! Opt-in, bounded, always-on reconciliation of saved-scan evidence.
 //!
-//! Uses the existing ScanService and /analyze endpoint rather than creating another
+//! Uses the existing `ScanService` and /analyze endpoint rather than creating another
 //! canonicalisation or attribution model. Nothing runs until targets are configured.
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use huntsman_recon::fsio::write_atomic_private;
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_service::{ScanRequest, plan};
-use huntsman_recon::scan_store::{ScanOptions, ScanRecord, ScanStatus};
+use huntsman_recon::scan_store::{ScanOptions, ScanRecord};
 use huntsman_recon::sha256::{hex32, sha256};
 
 use super::scans::default_scan_dir;
@@ -231,6 +231,7 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use huntsman_recon::scan_store::ScanStatus;
 
     #[test]
     fn targets_are_canonical_and_deduplicated() {
