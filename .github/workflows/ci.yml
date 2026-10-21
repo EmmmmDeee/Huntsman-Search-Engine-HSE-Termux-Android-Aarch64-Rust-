@@ -9,6 +9,12 @@ permissions:
   contents: read
   pull-requests: read
 
+# Cancel stale pull-request jobs; retain every main push's independent CI verdict.
+# The run ID makes each main push unique, while a PR keeps its ref across commits.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   HUNTSMAN_BUILD_SHA: ${{ github.sha }}
 
