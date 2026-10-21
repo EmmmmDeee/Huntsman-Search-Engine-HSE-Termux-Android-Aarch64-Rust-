@@ -206,10 +206,8 @@ fn a_descendant_holding_sensor_stdout_cannot_hang_the_radar_command() {
     // Recreate the dangerous case: the direct sensor process returns, but a
     // grandchild inherited its stdout pipe. Previously reader.join() waited
     // for that grandchild indefinitely, bypassing the 15-second watchdog.
-    let directory = std::env::temp_dir().join(format!(
-        "huntsman-sensor-stdout-{}",
-        std::process::id()
-    ));
+    let directory =
+        std::env::temp_dir().join(format!("huntsman-sensor-stdout-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let mut search_path = OsString::from(directory.as_os_str());
     search_path.push(":");
@@ -237,8 +235,7 @@ fn a_descendant_holding_sensor_stdout_cannot_hang_the_radar_command() {
         );
         assert_eq!(result.status.code(), Some(i32::from(EX_UNAVAILABLE)));
         assert!(
-            String::from_utf8_lossy(&result.stderr)
-                .contains("sensor stdout was not closed"),
+            String::from_utf8_lossy(&result.stderr).contains("sensor stdout was not closed"),
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
