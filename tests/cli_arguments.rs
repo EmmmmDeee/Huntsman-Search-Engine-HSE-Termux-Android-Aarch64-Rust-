@@ -48,6 +48,25 @@ fn help_after_a_word_that_is_not_a_command_is_the_unknown_command_error() {
 }
 
 #[test]
+fn a_usage_error_names_the_refusal_then_the_usage_line_it_refers_to() {
+    // No command at all: the help, then the usage line.
+    let out = bin().output().unwrap();
+    assert_eq!(out.status.code(), Some(i32::from(EX_USAGE)), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("\nusage: huntsman-recon ["), "{stderr}");
+    // A refused plan option: the reason, then the plan usage line.
+    let out = bin().args(["plan", "--session-dir"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(i32::from(EX_USAGE)), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr
+            .starts_with("plan --session-dir needs a directory path\nusage: huntsman-recon plan "),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn a_scan_value_flag_refuses_a_repeat_or_a_missing_value_by_name() {
     let refusals: [(&[&str], &str); 8] = [
         (&["jane", "-k"], "scan -k/--kind needs a value"),

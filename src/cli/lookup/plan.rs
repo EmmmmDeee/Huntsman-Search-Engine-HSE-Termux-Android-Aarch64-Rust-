@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::cli::fail;
+use crate::cli::{fail, usage_error};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_USAGE};
 use huntsman_recon::pipeline::{InvestigationInput, InvestigationMode, PipelineLimits};
@@ -22,7 +22,7 @@ pub(in crate::cli) fn plan_cmd(args: &[String]) -> ExitCode {
     }
     let (session_dir, seeds) = match split_session_dir(args) {
         Ok(split) => split,
-        Err(message) => return fail(EX_USAGE, &format!("{message}\n{PLAN_USAGE}")),
+        Err(message) => return usage_error(message, PLAN_USAGE),
     };
     if seeds.is_empty() {
         return fail(EX_USAGE, PLAN_USAGE);

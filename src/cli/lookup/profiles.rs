@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use crate::cli::fail;
+use crate::cli::{fail, usage_error};
 use huntsman_recon::api_leg;
 use huntsman_recon::asn_cli::{ASN_USAGE, AsnArgs};
 use huntsman_recon::clock;
@@ -612,7 +612,7 @@ fn lookup_cmd<A>(
 pub(in crate::cli) fn people_cmd(args: &[String]) -> ExitCode {
     match PeopleArgs::parse(args) {
         Ok(p) => finish(ScanKind::People, &p.name, p.save.as_deref()),
-        Err(e) => fail(EX_USAGE, &format!("{e}\n{PEOPLE_USAGE}")),
+        Err(e) => usage_error(e, PEOPLE_USAGE),
     }
 }
 

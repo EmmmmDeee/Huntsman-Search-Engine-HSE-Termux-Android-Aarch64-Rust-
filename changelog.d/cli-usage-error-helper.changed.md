@@ -1,0 +1,1 @@
+- Usage errors share one formatter. Six commands built the same stderr by hand, a reason and then the usage line it refers to, and a seventh did it for a non-UTF-8 argument. They now call `usage_error`, which writes the same two lines with the same exit status. Tests pin the no-command and plan refusals, alongside the existing unknown-command and non-UTF-8 ones.

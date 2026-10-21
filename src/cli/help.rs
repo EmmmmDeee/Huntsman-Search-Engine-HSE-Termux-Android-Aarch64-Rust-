@@ -4,10 +4,9 @@ use std::process::ExitCode;
 
 use super::doctor::DOCTOR_HELP;
 use super::scans::SCANS_HELP;
-use super::{HELP, RECON_USAGE, USAGE, fail};
+use super::{HELP, RECON_USAGE, USAGE, usage_error};
 use huntsman_recon::dehashed::cli::DEHASHED_USAGE;
 use huntsman_recon::email_cli::EMAIL_HELP;
-use huntsman_recon::exit::EX_USAGE;
 use huntsman_recon::exposure_cli::EXPOSURE_HELP;
 use huntsman_recon::hibp::cli::HIBP_USAGE;
 use huntsman_recon::network_cli::NETWORK_HELP;
@@ -19,22 +18,22 @@ use huntsman_recon::username_cli::USERNAME_HELP;
 
 /// Usage error for a command word that the dispatcher does not know.
 pub(super) fn unknown_command(other: &str) -> ExitCode {
-    fail(EX_USAGE, &format!("unknown command: {other}\n{USAGE}"))
+    usage_error(format!("unknown command: {other}"), USAGE)
 }
 
 /// Usage error for no command at all: the help on stderr, and nothing written.
 pub(super) fn no_command() -> ExitCode {
-    fail(EX_USAGE, &format!("{HELP}\n{USAGE}"))
+    usage_error(HELP, USAGE)
 }
 
 /// Usage error for an argument that is not UTF-8. The bytes are not echoed: an argument can
 /// be a selector, and the CLI never prints one back.
 pub(super) fn argument_not_utf8(position: usize, bytes: usize) -> ExitCode {
-    fail(
-        EX_USAGE,
-        &format!(
-            "argument {position} is not valid UTF-8 ({bytes} bytes); arguments must be UTF-8 text\n{USAGE}"
+    usage_error(
+        format!(
+            "argument {position} is not valid UTF-8 ({bytes} bytes); arguments must be UTF-8 text"
         ),
+        USAGE,
     )
 }
 
