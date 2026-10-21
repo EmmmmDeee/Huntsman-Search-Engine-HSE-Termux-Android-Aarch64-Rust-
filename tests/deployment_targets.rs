@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 #[test]
@@ -163,4 +164,33 @@ fn container_docs_match_the_image_and_the_token_contract() {
     assert!(container.contains("the secret itself is not printed"));
     assert!(container.contains("no managed hosting service") || container.contains("No managed hosting service"));
 
+}
+
+#[test]
+fn retired_managed_hosting_files_are_absent_from_current_project() {
+    for path in [
+        ".railway/railway.ts",
+        "docs/RAILWAY.md",
+        "scripts/railway-entrypoint.sh",
+        "scripts/railway-iac-plan.sh",
+        "scripts/railway-live-acceptance.sh",
+        "scripts/validate-railway-iac.sh",
+        "tests/railway_entrypoint.rs",
+    ] {
+        assert!(!Path::new(path).exists(), "{path} must not remain deployed");
+    }
+    for path in [
+        "src/cli/service.rs",
+        "src/web_server.rs",
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        "Dockerfile",
+        "scripts/container-entrypoint.sh",
+    ] {
+        let text = fs::read_to_string(path).expect("current source");
+        assert!(
+            !text.to_ascii_lowercase().contains("railway"),
+            "{path} must not depend on a removed hosting provider"
+        );
+    }
 }
