@@ -34,6 +34,13 @@ const RESULT_LIMIT: usize = 10;
 /// Reject oversized results rather than silently discarding source fields.
 const MAX_PROVENANCE_BYTES: usize = 64 * 1024;
 
+/// One immutable, bounded observation shared by all entities produced from
+/// the same provider response.
+struct RawObservation<'a> {
+    body: &'a str,
+    recorded_at_unix: u64,
+}
+
 /// Confidence that a geocoded match is the place the query meant. The service matched the query,
 /// so the point is a sound candidate, but a name can match more than one place: modest, not
 /// certain. Nominatim's own `importance` and `place_rank` ride along as evidence.
@@ -296,6 +303,10 @@ fn decode(
     raw_json: &str,
 ) -> Report {
     let mut entities = Vec::new();
+    let observation = RawObservation {
+        body: raw_json,
+        recorded_at_unix: now_unix,
+    };
     for (candidate_index, place) in places.iter().take(RESULT_LIMIT).enumerate() {
         place_entities(
             &mut entities,
@@ -303,8 +314,7 @@ fn decode(
             mode,
             query,
             scan_id,
-            now_unix,
-            raw_json,
+            &observation,
             candidate_index,
         );
     }
@@ -324,8 +334,7 @@ fn place_entities(
     mode: Mode,
     query: &str,
     scan_id: &str,
-    now_unix: u64,
-    raw_json: &str,
+    observation: &RawObservation<'_>,
     candidate_index: usize,
 ) {
     let coordinates = point(place);
@@ -338,14 +347,14 @@ fn place_entities(
     // Shared evidence: the query that produced the place and every field Nominatim named.
     let describe = |summary: String| -> Evidence {
         let mut provenance = EvidenceProvenance::for_scan(SOURCE, scan_id);
-        provenance.recorded_at_unix = now_unix;
+        provenance.recorded_at_unix = observation.recorded_at_unix;
         let mut evidence = Evidence::new(provenance, summary)
             .with_attr("dataset", "OpenStreetMap Nominatim")
             .with_attr("mode", mode.tag())
             .with_attr("query", query)
             // Preserve the exact UTF-8 bytes of this bounded JSON response, not a
             // reconstructed struct (which would drop unknown provider fields).
-            .with_attr("nominatim_raw_response_json", raw_json)
+            .with_attr("nominatim_raw_response_json", observation.body)
             // A forward response may have several places: identify which one
             // yielded this entity without reassigning any provider property.
             .with_attr("nominatim_candidate_index", candidate_index.to_string());
