@@ -811,7 +811,7 @@ const why=o=>[o.found!=null&&'found '+o.found,o.http_status&&'HTTP '+o.http_stat
 const coverage=s=>!s||s.unit!=='source_execution'?'Execution coverage unavailable; inspect the source outcomes.':
   !s.total?'No recorded source executions; coverage is unknown.':
   s.accepted+' of '+s.total+' recorded executions accepted ('+s.success+' with results, '+s.valid_zero+' confirmed zero); '+
-  s.not_configured+' not configured; '+s.unresolved+' unresolved. Scan completion does not establish exhaustive source coverage.
+  s.not_configured+' not configured; '+s.unresolved+' unresolved. Scan completion does not establish exhaustive source coverage.';
 async function summary(){
   const types=await get('summary',base()+'/summary');
   let total=0,unique=0;for(const t of types){total+=t.total;unique+=t.unique}
