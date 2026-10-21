@@ -240,7 +240,13 @@ fn normalise_saved(
             record.id
         ));
     }
-    let after = source_revision(api.service().store(), record)?;
+    let after = match source_revision(api.service().store(), record) {
+        Ok(revision) => revision,
+        Err(error) => {
+            invalidate_saved(record, directory, "unavailable", "evidence_unreadable_after_analysis")?;
+            return Err(error);
+        }
+    };
     if revision != after {
         invalidate_saved(
             record,
@@ -253,11 +259,17 @@ fn normalise_saved(
             record.id
         ));
     }
-    let mut report: Value = serde_json::from_slice(&response.body)
-        .map_err(|error| format!("scan {} malformed analysis: {error}", record.id))?;
-    let root = report
-        .as_object_mut()
-        .ok_or_else(|| format!("scan {} analysis is not an object", record.id))?;
+    let mut report: Value = match serde_json::from_slice(&response.body) {
+        Ok(report) => report,
+        Err(error) => {
+            invalidate_saved(record, directory, revision, "malformed_analysis")?;
+            return Err(format!("scan {} malformed analysis: {error}", record.id));
+        }
+    };
+    let Some(root) = report.as_object_mut() else {
+        invalidate_saved(record, directory, revision, "unexpected_analysis_shape")?;
+        return Err(format!("scan {} analysis is not an object", record.id));
+    };
     root.insert(
         "normalisation".to_owned(),
         json!({
@@ -337,6 +349,14 @@ fn cycle(
             Ok(revision) => revision,
             Err(error) => {
                 eprintln!("continuous: cannot inspect scan {}: {error}", record.id);
+                if let Err(invalidation) = invalidate_saved(
+                    record,
+                    &config.normalised_dir,
+                    "unavailable",
+                    "evidence_revision_unreadable",
+                ) {
+                    eprintln!("continuous: {invalidation}");
+                }
                 continue;
             }
         };
@@ -406,7 +426,10 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{archive_previous, config, due, file_stamp, source_revision};
+    use super::{
+        archive_previous, config, due, file_stamp, invalidate_saved, normalised_path,
+        source_revision,
+    };
     use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus, ScanStore};
     use std::path::PathBuf;
 
@@ -516,6 +539,50 @@ mod tests {
             original
         );
         std::fs::remove_dir_all(&directory).expect("remove archive directory");
+    }
+
+    #[test]
+    fn refused_evidence_is_marked_stale_and_previous_report_survives() {
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-continuous-stale-{}-{}",
+            std::process::id(),
+            super::millis()
+        ));
+        std::fs::create_dir(&directory).expect("create stale marker directory");
+        let record = ScanRecord {
+            format_version: 1,
+            id: "0123456789abcdef".into(),
+            name: "test".into(),
+            target: "example.com".into(),
+            target_type: "INTERNET_NAME".into(),
+            kind: "domain".into(),
+            options: ScanOptions::default(),
+            status: ScanStatus::Finished,
+            created: 100,
+            started: None,
+            ended: Some(200),
+            elements: 0,
+            unique: 0,
+            correlations: RiskCounts::default(),
+            errors: 0,
+            modules_run: Vec::new(),
+            owner: None,
+        };
+        let path = normalised_path(&record, &directory);
+        let original = br#"{"report":{"confirmed":true}}"#;
+        std::fs::write(&path, original).expect("write current report");
+        invalidate_saved(&record, &directory, "new-revision", "false_positive")
+            .expect("invalidate");
+        let stale: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stale["normalisation"]["state"], "stale");
+        assert_eq!(stale["normalisation"]["reason"], "false_positive");
+        assert!(stale.get("report").is_none());
+        assert_eq!(
+            std::fs::read(path.with_extension("previous.json")).unwrap(),
+            original
+        );
+        std::fs::remove_dir_all(&directory).expect("remove stale test directory");
     }
 
     #[test]
