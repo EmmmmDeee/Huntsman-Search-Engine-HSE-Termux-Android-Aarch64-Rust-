@@ -203,7 +203,7 @@ fn offline(module: &str) -> bool {
 
 #[test]
 fn every_module_a_lookup_asks_is_on_its_list() {
-    for kind in KINDS {
+    for kind in ScanKind::ALL {
         let net = Everywhere::default();
         let rows = rows(kind, &Selection::all(), &net)
             .unwrap_or_else(|why| panic!("{kind:?} printed no report: {why}"));
@@ -220,7 +220,7 @@ fn every_module_a_lookup_asks_is_on_its_list() {
 
 #[test]
 fn every_listed_module_is_one_a_scan_can_choose() {
-    for kind in KINDS {
+    for kind in ScanKind::ALL {
         for module in modules(kind) {
             let chosen = selection(&[module.to_owned()])
                 .unwrap_or_else(|error| panic!("{kind:?} lists {module}: {error}"));
@@ -233,7 +233,7 @@ fn every_listed_module_is_one_a_scan_can_choose() {
 #[test]
 fn a_lookup_that_asks_no_chosen_module_sends_nothing() {
     let none = Selection::only(Vec::<String>::new());
-    for kind in KINDS {
+    for kind in ScanKind::ALL {
         let net = Everywhere::default();
         let rows = rows(kind, &none, &net).unwrap_or_default();
         assert_eq!(
@@ -271,7 +271,7 @@ fn anchor(kind: ScanKind) -> Option<&'static str> {
 
 #[test]
 fn a_lookup_asks_only_the_chosen_modules() {
-    for kind in KINDS {
+    for kind in ScanKind::ALL {
         for module in modules(kind) {
             let net = Everywhere::default();
             let chosen: Vec<&str> = std::iter::once(module).chain(anchor(kind)).collect();

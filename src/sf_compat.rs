@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::error::Error;
 use crate::module::reachable_modules;
-use crate::scan_route::ScanKind;
+use crate::scan_route::{NetworkSelector, ScanKind};
 use crate::sf_elements::DataElement;
 use crate::sf_types;
 use crate::textnorm::{escape_controls, is_escaped};
@@ -393,6 +393,30 @@ pub fn scan_kind(target_type: &str) -> Option<ScanKind> {
     }
 }
 
+/// The Spiderfoot type of a canonical target of `kind`: the inverse of [`scan_kind`] for every
+/// kind a saved scan can carry.
+#[must_use]
+pub fn target_type(kind: ScanKind, canonical: &str) -> &'static str {
+    match kind {
+        ScanKind::People => "HUMAN_NAME",
+        ScanKind::Email | ScanKind::Exposure => "EMAILADDR",
+        ScanKind::Username => "USERNAME",
+        ScanKind::Phone => "PHONE_NUMBER",
+        ScanKind::Domain => "INTERNET_NAME",
+        ScanKind::Ip if canonical.contains(':') => "IPV6_ADDRESS",
+        ScanKind::Ip => "IP_ADDRESS",
+        ScanKind::Netblock if canonical.contains(':') => "NETBLOCKV6_OWNER",
+        ScanKind::Netblock => "NETBLOCK_OWNER",
+        ScanKind::Asn => "BGP_AS_OWNER",
+        ScanKind::Network => match NetworkSelector::parse(canonical) {
+            Some(NetworkSelector::Bssid(_)) => "HSE_MAC_ADDRESS",
+            Some(NetworkSelector::Area { .. }) => "PHYSICAL_COORDINATES",
+            _ => "HSE_WIFI_SSID",
+        },
+        ScanKind::CryptoAddress => "BITCOIN_ADDRESS",
+    }
+}
+
 #[must_use]
 pub fn module_listing(quiet: bool) -> String {
     let mut out = String::new();
@@ -744,7 +768,6 @@ mod tests {
     use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
     use crate::phone_cli::{self, PhoneRun};
     use crate::scan_route::canonical_selector;
-    use crate::scan_service::target_type;
     use crate::sf_elements::{Target, elements};
     use crate::test_support::unexpected_controls;
 
