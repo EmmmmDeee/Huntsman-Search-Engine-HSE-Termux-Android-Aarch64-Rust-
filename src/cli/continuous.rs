@@ -31,6 +31,27 @@ struct Config {
     normalise_all: bool,
 }
 
+/// Retry identities remain distinct even when target text contains separators.
+/// An analysis retry is tied to a persisted scan ID; collection retries only
+/// apply to explicitly configured targets.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum RetryKey {
+    Analysis(String),
+    Collection {
+        kind: Option<String>,
+        target: String,
+    },
+}
+
+impl RetryKey {
+    fn collection(request: &ScanRequest) -> Self {
+        Self::Collection {
+            kind: request.kind.clone(),
+            target: request.target.clone(),
+        }
+    }
+}
+
 fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, String> {
     if targets.len() > MAX_TARGET_CONFIG_BYTES {
         return Err(format!(
@@ -139,9 +160,10 @@ fn normalise_saved(
 
 fn prune_tracking_state(
     records: &[ScanRecord],
+    configured: &[ScanRequest],
     now: u64,
     observed: &mut BTreeSet<String>,
-    retry_after: &mut BTreeMap<String, u64>,
+    retry_after: &mut BTreeMap<RetryKey, u64>,
 ) {
     let live_ids: BTreeSet<&str> = records.iter().map(|record| record.id.as_str()).collect();
     observed.retain(|id| live_ids.contains(id.as_str()));
@@ -149,9 +171,12 @@ fn prune_tracking_state(
         if *until <= now {
             return false;
         }
-        match key.strip_prefix("analysis:") {
-            Some(scan_id) => live_ids.contains(scan_id),
-            None => true,
+        match key {
+            RetryKey::Analysis(scan_id) => live_ids.contains(scan_id.as_str()),
+            RetryKey::Collection { kind, target } => configured.iter().any(|request| {
+                request.kind.as_deref() == kind.as_deref()
+                    && request.target.as_str() == target.as_str()
+            }),
         }
     });
 }
@@ -160,7 +185,7 @@ fn cycle(
     api: &ScanApi,
     config: &Config,
     observed: &mut BTreeSet<String>,
-    retry_after: &mut BTreeMap<String, u64>,
+    retry_after: &mut BTreeMap<RetryKey, u64>,
 ) -> Result<(), String> {
     let now = clock::unix_now_millis();
     let records = api
@@ -168,7 +193,7 @@ fn cycle(
         .store()
         .list()
         .map_err(|error| error.to_string())?;
-    prune_tracking_state(&records, now, observed, retry_after);
+    prune_tracking_state(&records, &config.targets, now, observed, retry_after);
     // ScanStore::list returns newest first. Keep one latest scan per canonical kind/target;
     // normalise-all does not schedule collection of arbitrary observed identities.
     let mut normalise = Vec::new();
@@ -182,11 +207,7 @@ fn cycle(
     }
 
     for request in &config.targets {
-        let key = format!(
-            "{}:{}",
-            request.kind.as_deref().unwrap_or("auto"),
-            request.target
-        );
+        let key = RetryKey::collection(request);
         let last = latest(&records, request);
         if !config.normalise_all {
             if let Some(record) = last {
@@ -206,7 +227,7 @@ fn cycle(
         }
     }
     for record in normalise {
-        let analysis_key = format!("analysis:{}", record.id);
+        let analysis_key = RetryKey::Analysis(record.id.clone());
         if !record.status.is_active()
             && !observed.contains(&record.id)
             && retry_after
@@ -272,7 +293,7 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{config, due, prune_tracking_state};
+    use super::{RetryKey, config, due, prune_tracking_state};
     use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus};
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
@@ -384,17 +405,51 @@ mod tests {
         };
         let mut observed =
             BTreeSet::from(["0123456789abcdef".to_owned(), "deadbeefdeadbeef".to_owned()]);
+        let configured =
+            config("example.com", "1440", PathBuf::from("/tmp/example")).expect("valid target");
+        let collection_key = RetryKey::collection(&configured.targets[0]);
+        let analysis_key = RetryKey::Analysis("0123456789abcdef".to_owned());
         let mut retry_after = BTreeMap::from([
-            ("analysis:0123456789abcdef".to_owned(), 200),
-            ("analysis:deadbeefdeadbeef".to_owned(), 200),
-            ("analysis:expired".to_owned(), 99),
-            ("domain:example.com".to_owned(), 200),
-            ("domain:expired".to_owned(), 99),
+            (analysis_key.clone(), 200),
+            (RetryKey::Analysis("deadbeefdeadbeef".to_owned()), 200),
+            (RetryKey::Analysis("expired".to_owned()), 99),
+            (collection_key.clone(), 200),
+            (
+                RetryKey::Collection {
+                    kind: Some("domain".to_owned()),
+                    target: "removed.example.net".to_owned(),
+                },
+                200,
+            ),
+            (
+                RetryKey::Collection {
+                    kind: Some("domain".to_owned()),
+                    target: "expired.example.net".to_owned(),
+                },
+                99,
+            ),
         ]);
-        prune_tracking_state(&[record], 100, &mut observed, &mut retry_after);
+        let records = [record];
+        prune_tracking_state(
+            &records,
+            &configured.targets,
+            100,
+            &mut observed,
+            &mut retry_after,
+        );
         assert_eq!(observed, BTreeSet::from(["0123456789abcdef".to_owned()]));
         assert_eq!(retry_after.len(), 2);
-        assert_eq!(retry_after.get("analysis:0123456789abcdef"), Some(&200));
-        assert_eq!(retry_after.get("domain:example.com"), Some(&200));
+        assert_eq!(retry_after.get(&analysis_key), Some(&200));
+        assert_eq!(retry_after.get(&collection_key), Some(&200));
+        // Repeated successful inventory reads must not change the stable state.
+        let previous = (observed.clone(), retry_after.clone());
+        prune_tracking_state(
+            &records,
+            &configured.targets,
+            100,
+            &mut observed,
+            &mut retry_after,
+        );
+        assert_eq!(previous, (observed, retry_after));
     }
 }
