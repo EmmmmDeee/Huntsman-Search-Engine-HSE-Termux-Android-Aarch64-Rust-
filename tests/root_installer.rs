@@ -961,6 +961,27 @@ fn when_main_has_no_build_yet_the_newest_published_commit_is_installed() {
     );
     assert!(!t.calls().contains("cargo"), "{}", t.calls());
     assert_private_state(&t.temp, older);
+
+    // The source-controlled launcher must match the binary's accepted
+    // revision, not the newer main revision whose build is unavailable.
+    let calls = t.calls();
+    for path in [
+        "scripts/termux/huntsman",
+        "scripts/termux/huntsman-profile.sh",
+    ] {
+        assert!(
+            calls.contains(&format!(
+                "curl https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/{older}/{path}"
+            )),
+            "fallback must fetch {path} from its accepted binary commit: {calls}"
+        );
+        assert!(
+            !calls.contains(&format!(
+                "curl https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/{DEFAULT_MAIN_REV}/{path}"
+            )),
+            "fallback must not mix newer launcher code with older binary: {calls}"
+        );
+    }
 }
 
 #[test]
