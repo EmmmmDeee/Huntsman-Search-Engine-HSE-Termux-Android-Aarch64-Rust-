@@ -647,8 +647,14 @@ mod tests {
 
         write_atomic_private(&path, b"NEW='two'", 64).unwrap();
 
-        assert!(!stale.exists(), "a killed write's temp file outlived the next write");
-        assert!(live.exists(), "a temp file younger than the stale age is kept");
+        assert!(
+            !stale.exists(),
+            "a killed write's temp file outlived the next write"
+        );
+        assert!(
+            live.exists(),
+            "a temp file younger than the stale age is kept"
+        );
         assert_eq!(fs::read(&lookalike).unwrap(), b"not ours");
         assert_eq!(read_bounded(&path, 64).unwrap(), b"NEW='two'");
         fs::remove_dir_all(dir).unwrap();
@@ -668,7 +674,10 @@ mod tests {
         write_atomic_private(&path, b"NEW='two'", 64).unwrap();
 
         assert!(
-            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
             "a link is not a temp file the sweep may remove"
         );
         assert_eq!(fs::read(&target).unwrap(), b"unrelated");
