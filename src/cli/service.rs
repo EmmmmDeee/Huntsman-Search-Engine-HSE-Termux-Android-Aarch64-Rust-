@@ -228,6 +228,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     let config_needs_token = config.needs_token();
     let analyze_history = history.clone();
     let scans = scan_api();
+    let continuous_scans = scans.clone();
     let server = match Server::bind(config) {
         Ok(server) => {
             let server = server
@@ -260,6 +261,9 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
             }
         }
         Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
+    }
+    if let Err(error) = super::continuous::launch(continuous_scans.as_ref()) {
+        return fail(EX_DATAERR, &format!("continuous: {error}"));
     }
     // A plain write, not `eprintln!`: once stderr is closed or its reader has gone,
     // `eprintln!` panics, and the notice would end the server it reports on.
