@@ -189,6 +189,7 @@ cargo run -- asn AS13335                    # RDAP + RIPEstat holder, every anno
 cargo run -- network 3c:5a:b4:01:02:03      # BSSID: offline OUI vendor, then WiGLE WiFi + Bluetooth search (keyed; no key = no request)
 cargo run -- crypto 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa  # keyless blockchain.info: on-chain balance, lifetime totals, tx count; network
 cargo run -- itunes "Example Co"  # keyless App Store search by keyword: matching apps, sellers, bundle identifiers; network
+cargo run -- geocode "1600 Amphitheatre Parkway, Mountain View"  # keyless OpenStreetMap Nominatim: a place or address to coordinates + full address (a LAT,LON argument is reverse-geocoded instead); network
 cargo run -- radar --help                 # no root, explain Termux:API Wi-Fi cache acquisition; offline
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
