@@ -195,3 +195,65 @@ fn the_cli_refuses_bad_arguments_and_missing_capture_files() {
         .unwrap();
     assert_eq!(out.status.code(), Some(i32::from(EX_NOINPUT)));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_descendant_holding_sensor_stdout_cannot_hang_the_radar_command() {
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    // Recreate the dangerous case: the direct sensor process returns, but a
+    // grandchild inherited its stdout pipe. Previously reader.join() waited
+    // for that grandchild indefinitely, bypassing the 15-second watchdog.
+    let directory = std::env::temp_dir().join(format!(
+        "huntsman-sensor-stdout-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&directory).unwrap();
+    let mut search_path = OsString::from(directory.as_os_str());
+    search_path.push(":");
+    search_path.push(std::env::var_os("PATH").unwrap_or_default());
+
+    for (sensor, selector) in [
+        ("termux-wifi-scaninfo", "wifi"),
+        ("termux-telephony-cellinfo", "cells"),
+    ] {
+        let shim = directory.join(sensor);
+        fs::write(&shim, b"#!/bin/sh\n(sleep 8) &\nprintf '[]\\n'\n").unwrap();
+        let mut permissions = fs::metadata(&shim).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&shim, permissions).unwrap();
+
+        let started = Instant::now();
+        let result = bin()
+            .args(["radar", selector])
+            .env("PATH", &search_path)
+            .output()
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{sensor} hung after its direct process exited"
+        );
+        assert_eq!(result.status.code(), Some(i32::from(EX_UNAVAILABLE)));
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains("sensor stdout was not closed"),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        fs::remove_file(shim).unwrap();
+    }
+    fs::remove_dir(directory).unwrap();
+}
+
+#[test]
+fn replay_file_option_requires_a_real_filename_for_both_radio_types() {
+    for kind in ["wifi", "cells"] {
+        let out = bin()
+            .args(["radar", kind, "--file", "--json"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(i32::from(EX_USAGE)), "{kind}");
+    }
+}
