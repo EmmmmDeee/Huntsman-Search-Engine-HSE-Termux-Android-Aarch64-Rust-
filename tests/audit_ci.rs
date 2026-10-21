@@ -1,5 +1,5 @@
 //! The advisory audit workflow reports vulnerabilities in the locked dependency graph. It must stay
-//! read-only, pin each action by full commit SHA, run on a schedule and on dependency changes, and
+//! read-only, pin each action by full commit SHA, run on a schedule and on dependency-changing pushes and PRs, and
 //! fail only on vulnerabilities. These checks keep an edit from weakening any of those properties.
 
 use std::fs;
@@ -68,14 +68,26 @@ fn audit_runs_on_schedule_dispatch_and_dependency_changes_only() {
         "cron: \"0 6 * * 1\"",
         "workflow_dispatch:",
         "push:",
+        "pull_request:",
         "\"**/Cargo.toml\"",
         "\"**/Cargo.lock\"",
         "\".github/workflows/audit.yml\"",
     ] {
         assert!(audit.contains(trigger), "{AUDIT} must contain {trigger}");
     }
-    assert!(
-        !audit.contains("pull_request"),
-        "{AUDIT} must not run on pull requests, so it cannot gate one"
-    );
+    // Only dependency changes and changes to the audit gate itself schedule a PR audit.
+    for event in ["push:", "pull_request:"] {
+        let marker = format!("  {event}\n");
+        let section = audit
+            .split_once(&marker)
+            .and_then(|(_, tail)| tail.split("\n  ").next())
+            .expect("event trigger must have a scoped paths section");
+        for required in [
+            "\"**/Cargo.toml\"",
+            "\"**/Cargo.lock\"",
+            "\".github/workflows/audit.yml\"",
+        ] {
+            assert!(section.contains(required), "{event} must be path-scoped to {required}");
+        }
+    }
 }
