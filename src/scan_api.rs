@@ -1562,7 +1562,10 @@ mod tests {
         assert_eq!(row["report"], "report");
         assert_eq!(row["source_execution_summary"]["success"], 1);
         assert_eq!(row["source_execution_summary"]["accepted"], 1);
-        assert_eq!(row["source_execution_summary"]["all_recorded_sources_accepted"], true);
+        assert_eq!(
+            row["source_execution_summary"]["all_recorded_sources_accepted"],
+            true
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
