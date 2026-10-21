@@ -1,6 +1,6 @@
 //! The Container entrypoint must not print a token it generates. The value is stored in the data
 //! directory, and the log names that file instead. It must also stay the server's parent, so the
-//! stop signal a redeploy sends reaches the server. Unix only: the entrypoint is POSIX sh.
+//! stop signal a container runtime sends reaches the server. Unix only: the entrypoint is POSIX sh.
 #![cfg(unix)]
 
 use std::fs;
@@ -63,7 +63,7 @@ fn wait_for(mut ready: impl FnMut() -> bool) -> bool {
 }
 
 /// In a container the entrypoint is PID 1, and PID 1 ignores every signal it has no handler for.
-/// A server exec'd in the entrypoint's place would never see the SIGTERM a redeploy or
+/// A server exec'd in the entrypoint's place would never see the SIGTERM a stop request or
 /// `docker stop` sends, and would be killed when the grace period ends. So the server must run
 /// as the entrypoint's child, and the entrypoint must hand it the stop signal and exit with the
 /// server's status.
@@ -103,7 +103,7 @@ fn the_server_runs_under_the_entrypoint_which_hands_it_the_stop_signal() {
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/container-entrypoint.sh"))
         .env("PATH", path)
         .env("HSE_AUTH_TOKEN", "test-token")
-        .env("RAILWAY_VOLUME_MOUNT_PATH", &data)
+        .env("HUNTSMAN_DATA_DIR", &data)
         .env("HUNTSMAN_BIN", &stub)
         .env("HUNTSMAN_STARTUP_CHECK", "0")
         .env("PORT", "8080")
