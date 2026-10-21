@@ -67,7 +67,6 @@ fn an_api_error_is_a_clean_negative() {
     assert!(got.entities.is_empty());
 }
 
-
 #[test]
 fn an_unexpected_api_error_is_not_a_clean_negative() {
     let got = lookup(
@@ -84,7 +83,10 @@ fn an_unexpected_api_error_is_not_a_clean_negative() {
 #[test]
 fn api_rate_limit_is_retryable_and_not_a_clean_negative() {
     let got = lookup(
-        &OneResponse::json(200, r#"{"error":{"code":"ratelimited","info":"Slow down"}}"#),
+        &OneResponse::json(
+            200,
+            r#"{"error":{"code":"ratelimited","info":"Slow down"}}"#,
+        ),
         "jane",
         "scan",
         1,
