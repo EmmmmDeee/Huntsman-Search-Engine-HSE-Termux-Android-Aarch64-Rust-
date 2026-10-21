@@ -610,7 +610,7 @@ mod tests {
     }
 
     fn offline_scan_fixture(scans_dir: &std::path::Path) -> (ScanApi, ScanRecord) {
-        let store = ScanStore::open(&scans_dir).expect("scan store");
+        let store = ScanStore::open(scans_dir).expect("scan store");
         let lookup: ScanLookup = Arc::new(|_, selector, _| {
             let evidence =
                 Evidence::new(EvidenceProvenance::for_scan("internetdb", "test"), "ports")
