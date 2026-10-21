@@ -347,6 +347,19 @@ fn host_descriptors(
     for item in attr("technologies").into_iter().flat_map(items) {
         out.push(("WEBSERVER_TECHNOLOGY", item.to_owned()));
     }
+    // The web server a host advertises in its HTTP `Server` banner, as Spiderfoot's
+    // WEBSERVER_BANNER. Only the keyless `pulsedive` lookup writes `http_server`, onto the IP or
+    // domain it observed. A saved attribute is not proof on its own, so the element is gated on
+    // that genuine source and host entity kind: a same-named field from another source, or on
+    // another entity kind, does not establish a server banner. First producer of the otherwise-
+    // dormant WEBSERVER_BANNER type.
+    if matches!(entity.kind, EntityKind::IpAddress | EntityKind::Domain)
+        && evidence.provenance.source == "pulsedive"
+    {
+        if let Some(server) = attr("http_server") {
+            out.push(("WEBSERVER_BANNER", server.to_owned()));
+        }
+    }
     if let Some(os) = attr("os") {
         out.push(("OPERATING_SYSTEM", os.to_owned()));
     }
@@ -1630,6 +1643,41 @@ mod tests {
     }
 
     #[test]
+    fn a_pulsedive_http_server_becomes_a_webserver_banner_element() {
+        // `pulsedive` (keyless) writes `http_server` on the IP or domain it observed.
+        let host = entity(
+            EntityKind::IpAddress,
+            "203.0.113.10",
+            "pulsedive",
+            &[("http_server", "cloudflare")],
+        );
+        let found = elements(DOMAIN, &[host], 1_700_000_000);
+        assert_eq!(of_type(&found, "WEBSERVER_BANNER")[0].data, "cloudflare");
+
+        // A host with no server banner produces no WEBSERVER_BANNER element.
+        let bare = entity(EntityKind::IpAddress, "203.0.113.11", "pulsedive", &[]);
+        let found = elements(DOMAIN, &[bare], 1_700_000_000);
+        assert!(of_type(&found, "WEBSERVER_BANNER").is_empty());
+
+        // Neither another provider's attribute nor another entity kind establishes a banner,
+        // even when the field name matches.
+        let other_source = entity(
+            EntityKind::IpAddress,
+            "203.0.113.10",
+            "shodan",
+            &[("http_server", "cloudflare")],
+        );
+        let other_kind = entity(
+            EntityKind::Email,
+            "root@example.com",
+            "pulsedive",
+            &[("http_server", "cloudflare")],
+        );
+        let found = elements(DOMAIN, &[other_source, other_kind], 1_700_000_000);
+        assert!(of_type(&found, "WEBSERVER_BANNER").is_empty());
+    }
+
+    #[test]
     fn every_type_the_mapping_can_emit_is_catalogued() {
         let emitted = [
             "ROOT",
@@ -1649,6 +1697,7 @@ mod tests {
             "VULNERABILITY_GENERAL",
             "SOFTWARE_USED",
             "WEBSERVER_TECHNOLOGY",
+            "WEBSERVER_BANNER",
             "OPERATING_SYSTEM",
             "BGP_AS_MEMBER",
             "NETBLOCK_MEMBER",
