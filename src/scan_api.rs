@@ -1337,12 +1337,7 @@ mod tests {
         let (api, dir) = api("compare-coverage");
         let earlier = finished(&api);
         let later = finished(&api);
-        let mut results = api
-            .service()
-            .store()
-            .results(&later)
-            .unwrap()
-            .unwrap();
+        let mut results = api.service().store().results(&later).unwrap().unwrap();
         results.outcomes.push(SourceExecutionOutcome::failed(
             "hibp",
             1,
@@ -1362,7 +1357,10 @@ mod tests {
         assert_eq!(value["source_execution"]["earlier"]["not_configured"], 0);
         assert_eq!(value["source_execution"]["later"]["accepted"], 1);
         assert_eq!(value["source_execution"]["later"]["not_configured"], 1);
-        assert_eq!(value["source_execution"]["later"]["all_recorded_sources_accepted"], false);
+        assert_eq!(
+            value["source_execution"]["later"]["all_recorded_sources_accepted"],
+            false
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
