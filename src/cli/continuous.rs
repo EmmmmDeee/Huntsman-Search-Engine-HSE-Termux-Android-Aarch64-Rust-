@@ -31,7 +31,9 @@ struct Config {
 
 fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, String> {
     if targets.len() > MAX_TARGET_CONFIG_BYTES {
-        return Err(format!("HUNTSMAN_CONTINUOUS_TARGETS exceeds {MAX_TARGET_CONFIG_BYTES} bytes"));
+        return Err(format!(
+            "HUNTSMAN_CONTINUOUS_TARGETS exceeds {MAX_TARGET_CONFIG_BYTES} bytes"
+        ));
     }
     let minutes: u64 = minutes.parse().map_err(|_| {
         "HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES must be an integer (60..=10080)".to_owned()
@@ -45,19 +47,24 @@ fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, St
         if target.is_empty() {
             continue;
         }
-        let resolved = plan(target, None).map_err(|error| format!("invalid continuous target: {error}"))?;
+        let resolved =
+            plan(target, None).map_err(|error| format!("invalid continuous target: {error}"))?;
         let kind = resolved.kind.command().to_owned();
-        unique.entry((kind.clone(), resolved.target.clone())).or_insert_with(|| ScanRequest {
-            target: resolved.target,
-            name: None,
-            kind: Some(kind),
-            options: ScanOptions {
-                usecase: "passive".to_owned(),
-                ..ScanOptions::default()
-            },
-        });
+        unique
+            .entry((kind.clone(), resolved.target.clone()))
+            .or_insert_with(|| ScanRequest {
+                target: resolved.target,
+                name: None,
+                kind: Some(kind),
+                options: ScanOptions {
+                    usecase: "passive".to_owned(),
+                    ..ScanOptions::default()
+                },
+            });
         if unique.len() > MAX_TARGETS {
-            return Err(format!("at most {MAX_TARGETS} distinct continuous targets are supported"));
+            return Err(format!(
+                "at most {MAX_TARGETS} distinct continuous targets are supported"
+            ));
         }
     }
     if unique.is_empty() {
@@ -94,17 +101,27 @@ fn millis() -> u64 {
         .map_or(0, |time| u64::try_from(time.as_millis()).unwrap_or(u64::MAX))
 }
 
-fn normalise_saved(api: &ScanApi, record: &ScanRecord, directory: &std::path::Path) -> Result<bool, String> {
+fn normalise_saved(
+    api: &ScanApi,
+    record: &ScanRecord,
+    directory: &std::path::Path,
+) -> Result<bool, String> {
     if record.status.is_active() {
         return Ok(false);
     }
     let response = api.handle("GET", &format!("/api/scans/{}/analyze", record.id), "");
     if response.status != 200 {
         // A refused or incomplete analysis must not overwrite an earlier good one.
-        return Err(format!("scan {} analysis refused (HTTP {})", record.id, response.status));
+        return Err(format!(
+            "scan {} analysis refused (HTTP {})",
+            record.id, response.status
+        ));
     }
     if response.body.len() as u64 > MAX_ANALYSIS_BYTES {
-        return Err(format!("scan {} analysis exceeds bounded output", record.id));
+        return Err(format!(
+            "scan {} analysis exceeds bounded output",
+            record.id
+        ));
     }
     // Per-target latest, not per-run accumulation: canonical identity is the already-validated
     // scan target + kind. The scan ID remains in the report for provenance and audit.
@@ -122,12 +139,24 @@ fn cycle(
     retry_after: &mut BTreeMap<String, u64>,
 ) -> Result<(), String> {
     let now = millis();
-    let records = api.service().store().list().map_err(|error| error.to_string())?;
+    let records = api
+        .service()
+        .store()
+        .list()
+        .map_err(|error| error.to_string())?;
     for request in &config.targets {
-        let key = format!("{}:{}", request.kind.as_deref().unwrap_or("auto"), request.target);
+        let key = format!(
+            "{}:{}",
+            request.kind.as_deref().unwrap_or("auto"),
+            request.target
+        );
         let last = latest(&records, request);
         if let Some(record) = last {
-            if !record.status.is_active() && !observed.contains(&record.id) {
+            let analysis_key = format!("analysis:{}", record.id);
+            if !record.status.is_active()
+                && !observed.contains(&record.id)
+                && retry_after.get(&analysis_key).is_none_or(|until| now >= *until)
+            {
                 match normalise_saved(api, record, &config.normalised_dir) {
                     Ok(true) => {
                         observed.insert(record.id.clone());
@@ -135,11 +164,11 @@ fn cycle(
                     }
                     Ok(false) => {}
                     Err(error) => {
-                        // Do not repeat an identical failed analysis every tick.
-                        if retry_after.get(&format!("analysis:{}", record.id)).is_none_or(|until| now >= *until) {
-                            eprintln!("continuous: {error}");
-                            retry_after.insert(format!("analysis:{}", record.id), now.saturating_add(RETRY));
-                        }
+                        eprintln!("continuous: {error}");
+                        retry_after.insert(
+                            analysis_key,
+                            now.saturating_add(RETRY),
+                        );
                     }
                 }
             }
@@ -165,15 +194,17 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
     let Some(raw) = env::var_os("HUNTSMAN_CONTINUOUS_TARGETS") else {
         return Ok(());
     };
-    let raw = raw.into_string().map_err(|_| "continuous target list is not UTF-8")?;
+    let raw = raw
+        .into_string()
+        .map_err(|_| "continuous target list is not UTF-8")?;
     let Some(scans) = scans else {
         return Err("continuous normalisation requires an available scan store".to_owned());
     };
     let state = default_scan_dir()
         .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
         .ok_or("continuous normalisation requires an absolute state directory")?;
-    let minutes = env::var("HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES")
-        .unwrap_or_else(|_| "1440".to_owned());
+    let minutes =
+        env::var("HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES").unwrap_or_else(|_| "1440".to_owned());
     let config = config(&raw, &minutes, state.join("normalised"))?;
     let api = Arc::clone(scans);
     eprintln!(
@@ -211,7 +242,12 @@ mod tests {
         .expect("canonical targets");
         assert_eq!(configured.targets.len(), 2);
         assert!(configured.targets.iter().any(|r| r.target == "example.com"));
-        assert!(configured.targets.iter().all(|r| r.options.usecase == "passive"));
+        assert!(
+            configured
+                .targets
+                .iter()
+                .all(|r| r.options.usecase == "passive")
+        );
     }
 
     #[test]
