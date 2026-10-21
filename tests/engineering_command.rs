@@ -15,12 +15,12 @@ fn executable_contract_is_valid() {
     validate().unwrap();
     assert_eq!(
         COMMAND_INVARIANT,
-        "CHIEF VISIONARY -> CHIEF SYSTEMS ARCHITECT -> ALL OTHER SYSTEMS"
+        "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER ROLES"
     );
     assert_eq!(COMMAND_CHAIN.len(), 16);
     assert_eq!(
         COMMAND_CHAIN.last().unwrap().name,
-        "ECONOMIC OPTIMIZATION LEAD"
+        "JEW BOT"
     );
     assert_eq!(EXECUTION_PROTOCOLS.len(), 7);
 }
@@ -159,6 +159,29 @@ fn json_contract_matches_static_contract() {
         value["capability_owners"].as_array().map(Vec::len),
         Some(CAPABILITY_OWNERS.len())
     );
-    assert_eq!(value["roles"][0]["name"], "CHIEF VISIONARY");
-    assert_eq!(value["roles"][15]["name"], "ECONOMIC OPTIMIZATION LEAD");
+    assert_eq!(value["roles"][0]["name"], "THE AUSTRIAN PAINTER");
+    assert_eq!(value["roles"][15]["name"], "JEW BOT");
+}
+
+#[test]
+fn named_council_preserves_all_sixteen_ranks() {
+    let expected = [
+        "THE AUSTRIAN PAINTER",
+        "HEINRICH HIMMLER",
+        "REINHARD HEYDRICH",
+        "WERNHER VON BRAUN",
+        "ALBERT SPEER",
+        "ERICH VON MANSTEIN",
+        "KARL DÖNITZ",
+        "JOSEPH GOEBBELS",
+        "MARTIN BORMANN",
+        "WILHELM KEITEL",
+        "ALFRED JODL",
+        "HUGO SPERRLE",
+        "ERICH HARTMANN",
+        "OTTO SKORZENY",
+        "HERMANN GÖRING",
+        "JEW BOT",
+    ];
+    assert_eq!(COMMAND_CHAIN.map(|role| role.name), expected);
 }
