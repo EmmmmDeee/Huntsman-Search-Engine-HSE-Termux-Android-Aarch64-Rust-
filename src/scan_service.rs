@@ -36,13 +36,14 @@ use crate::recursion::{
     Target as CrawlTarget,
 };
 use crate::scan_route::{
-    NetworkSelector, ScanKind, canonical_selector, explicit_people_is_name, infer_kind,
-    inferred_people_is_name, parse_kind,
+    ScanKind, canonical_selector, explicit_people_is_name, infer_kind, inferred_people_is_name,
+    parse_kind,
 };
 use crate::scan_store::{
     FORMAT_VERSION, LogEntry, LogLevel, Risk, RiskCounts, ScanCorrelation, ScanOptions, ScanRecord,
     ScanResults, ScanStatus, ScanStore, StoreError, new_id,
 };
+use crate::sf_compat::target_type;
 use crate::sf_correlate::{self, Rule, RuleError};
 use crate::sf_elements::{self, DataElement, Target};
 use crate::sf_types;
@@ -196,29 +197,6 @@ pub fn plan(target: &str, kind: Option<&str>) -> Result<ScanPlan, ServiceError> 
         target: canonical,
         target_type,
     })
-}
-
-/// The Spiderfoot type of a canonical target of `kind`.
-#[must_use]
-pub fn target_type(kind: ScanKind, canonical: &str) -> &'static str {
-    match kind {
-        ScanKind::People => "HUMAN_NAME",
-        ScanKind::Email | ScanKind::Exposure => "EMAILADDR",
-        ScanKind::Username => "USERNAME",
-        ScanKind::Phone => "PHONE_NUMBER",
-        ScanKind::Domain => "INTERNET_NAME",
-        ScanKind::Ip if canonical.contains(':') => "IPV6_ADDRESS",
-        ScanKind::Ip => "IP_ADDRESS",
-        ScanKind::Netblock if canonical.contains(':') => "NETBLOCKV6_OWNER",
-        ScanKind::Netblock => "NETBLOCK_OWNER",
-        ScanKind::Asn => "BGP_AS_OWNER",
-        ScanKind::Network => match NetworkSelector::parse(canonical) {
-            Some(NetworkSelector::Bssid(_)) => "HSE_MAC_ADDRESS",
-            Some(NetworkSelector::Area { .. }) => "PHYSICAL_COORDINATES",
-            _ => "HSE_WIFI_SSID",
-        },
-        ScanKind::CryptoAddress => "BITCOIN_ADDRESS",
-    }
 }
 
 /// The breach sources the `exposure` lookup runs. An email scan runs `exposure` after `email`

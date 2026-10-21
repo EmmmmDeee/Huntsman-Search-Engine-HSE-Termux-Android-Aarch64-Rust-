@@ -1,0 +1,1 @@
+- The scan kinds have one list and one Spiderfoot type table. `lookup_modules` took its own copy of every kind, which now comes from `ScanKind::ALL`. The Spiderfoot type a scan records, `target_type`, moved from `scan_service` into `sf_compat`, beside `scan_kind`, its inverse. The types and the lookups are unchanged.

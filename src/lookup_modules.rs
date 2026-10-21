@@ -115,27 +115,12 @@ pub fn asks_any(kind: ScanKind, selection: &Selection) -> bool {
 /// order: what a New Scan page shows each module looks up. **Pure.**
 #[must_use]
 pub fn lookups_asking(module: &str) -> Vec<&'static str> {
-    KINDS
+    ScanKind::ALL
         .iter()
         .filter(|kind| modules(**kind).contains(&module))
         .map(|kind| kind.command())
         .collect()
 }
-
-/// Every lookup kind, in the order [`ScanKind`] lists them.
-pub const KINDS: [ScanKind; 11] = [
-    ScanKind::People,
-    ScanKind::Email,
-    ScanKind::Exposure,
-    ScanKind::Username,
-    ScanKind::Phone,
-    ScanKind::Domain,
-    ScanKind::Ip,
-    ScanKind::Netblock,
-    ScanKind::Asn,
-    ScanKind::Network,
-    ScanKind::CryptoAddress,
-];
 
 fn zones(asked: impl Fn(Takes) -> bool) -> impl Iterator<Item = &'static str> {
     dnsbl::ZONES
