@@ -195,6 +195,7 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "api.mnemonic.no",
             "internetdb.shodan.io",
             "stat.ripe.net",
+            "stat.ripe.net",
             "api.greynoise.io",
             "pulsedive.com",
             "app.netlas.io",
