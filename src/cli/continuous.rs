@@ -609,14 +609,7 @@ mod tests {
         std::fs::remove_dir_all(&directory).expect("remove stale test directory");
     }
 
-    #[test]
-    fn wildcard_cycle_reconciles_false_positive_edits_without_network_collection() {
-        let directory = std::env::temp_dir().join(format!(
-            "huntsman-offline-fp-cycle-{}-{}",
-            std::process::id(),
-            super::millis()
-        ));
-        let scans_dir = directory.join("scans");
+    fn offline_scan_fixture(scans_dir: &std::path::Path) -> (ScanApi, ScanRecord) {
         let store = ScanStore::open(&scans_dir).expect("scan store");
         let lookup: ScanLookup = Arc::new(|_, selector, _| {
             let evidence =
@@ -633,7 +626,6 @@ mod tests {
             })
         });
         let service = ScanService::new(store, lookup);
-        let api = ScanApi::new(Arc::clone(&service), None);
         let record = service
             .run(&ScanRequest {
                 target: "1.1.1.1".to_owned(),
@@ -645,9 +637,22 @@ mod tests {
             })
             .expect("generate real saved scan fixture");
         assert_eq!(record.status, ScanStatus::Finished);
+        (ScanApi::new(service, None), record)
+    }
+
+    #[test]
+    fn wildcard_cycle_reconciles_false_positive_edits_without_network_collection() {
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-offline-fp-cycle-{}-{}",
+            std::process::id(),
+            super::millis()
+        ));
+        let scans_dir = directory.join("scans");
+        let (api, record) = offline_scan_fixture(&scans_dir);
+        let service = api.service();
         let configured =
             config("*", "1440", directory.join("normalised")).expect("offline-only mode");
-        assert!(configured.targets.is_empty());
+        assert_eq!(configured.targets.len(), 0);
 
         let mut observed = BTreeMap::new();
         let mut retry_after = BTreeMap::new();
