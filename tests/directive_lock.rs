@@ -59,6 +59,9 @@ fn canonical_directive_preserves_named_council_and_decision_ownership() {
         "HERMANN GÖRING",
         "JEW BOT",
     ] {
-        assert!(text.contains(role), "canonical directive missing role: {role}");
+        assert!(
+            text.contains(role),
+            "canonical directive missing role: {role}"
+        );
     }
 }
