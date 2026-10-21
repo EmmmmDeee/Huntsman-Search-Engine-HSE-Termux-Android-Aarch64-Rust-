@@ -137,6 +137,25 @@ fn normalise_saved(
     Ok(true)
 }
 
+fn prune_tracking_state(
+    records: &[ScanRecord],
+    now: u64,
+    observed: &mut BTreeSet<String>,
+    retry_after: &mut BTreeMap<String, u64>,
+) {
+    let live_ids: BTreeSet<&str> = records.iter().map(|record| record.id.as_str()).collect();
+    observed.retain(|id| live_ids.contains(id.as_str()));
+    retry_after.retain(|key, until| {
+        if *until <= now {
+            return false;
+        }
+        match key.strip_prefix("analysis:") {
+            Some(scan_id) => live_ids.contains(scan_id),
+            None => true,
+        }
+    });
+}
+
 fn cycle(
     api: &ScanApi,
     config: &Config,
@@ -149,6 +168,7 @@ fn cycle(
         .store()
         .list()
         .map_err(|error| error.to_string())?;
+    prune_tracking_state(&records, now, observed, retry_after);
     // ScanStore::list returns newest first. Keep one latest scan per canonical kind/target;
     // normalise-all does not schedule collection of arbitrary observed identities.
     let mut normalise = Vec::new();
@@ -252,8 +272,9 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{config, due};
+    use super::{config, due, prune_tracking_state};
     use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus};
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
 
     #[test]
@@ -338,5 +359,41 @@ mod tests {
         record.ended = Some(50);
         assert!(!due(Some(&record), 60_099, 60_000));
         assert!(due(Some(&record), 60_100, 60_000));
+    }
+    #[test]
+    fn deleted_scans_and_expired_backoffs_do_not_accumulate() {
+        let record = ScanRecord {
+            format_version: 1,
+            id: "0123456789abcdef".into(),
+            name: "example".into(),
+            target: "example.com".into(),
+            target_type: "INTERNET_NAME".into(),
+            kind: "domain".into(),
+            options: ScanOptions::default(),
+            status: ScanStatus::ErrorFailed,
+            created: 100,
+            started: None,
+            ended: None,
+            elements: 0,
+            unique: 0,
+            correlations: RiskCounts::default(),
+            errors: 0,
+            modules_run: Vec::new(),
+            owner: None,
+        };
+        let mut observed =
+            BTreeSet::from(["0123456789abcdef".to_owned(), "deadbeefdeadbeef".to_owned()]);
+        let mut retry_after = BTreeMap::from([
+            ("analysis:0123456789abcdef".to_owned(), 200),
+            ("analysis:deadbeefdeadbeef".to_owned(), 200),
+            ("analysis:expired".to_owned(), 99),
+            ("domain:example.com".to_owned(), 200),
+            ("domain:expired".to_owned(), 99),
+        ]);
+        prune_tracking_state(&[record], 100, &mut observed, &mut retry_after);
+        assert_eq!(observed, BTreeSet::from(["0123456789abcdef".to_owned()]));
+        assert_eq!(retry_after.len(), 2);
+        assert_eq!(retry_after.get("analysis:0123456789abcdef"), Some(&200));
+        assert_eq!(retry_after.get("domain:example.com"), Some(&200));
     }
 }
