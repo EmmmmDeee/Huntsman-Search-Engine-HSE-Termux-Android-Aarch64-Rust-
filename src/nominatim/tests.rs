@@ -31,7 +31,7 @@ fn the_search_url_carries_the_query_once_with_address_details() {
 #[test]
 fn the_reverse_url_carries_the_point() {
     assert_eq!(
-        reverse_url(37.4224858, -122.0855846),
+        reverse_url(37.422_485_8, -122.085_584_6),
         "https://nominatim.openstreetmap.org/reverse?lat=37.4224858&lon=-122.0855846&format=jsonv2&addressdetails=1"
     );
 }
@@ -115,8 +115,8 @@ fn every_address_component_is_kept_as_evidence() {
 fn a_reverse_match_yields_the_address_at_the_point() {
     let report = reverse(
         &OneResponse::json(200, PLACE),
-        37.4224858,
-        -122.0855846,
+        37.422_485_8,
+        -122.085_584_6,
         "scan-geo",
         1,
     )
