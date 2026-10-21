@@ -103,7 +103,7 @@ impl OathnetError {
     #[must_use]
     pub const fn outcome_kind(&self) -> SourceOutcomeKind {
         match self {
-            Self::MissingKey => SourceOutcomeKind::AuthRequired,
+            Self::MissingKey => SourceOutcomeKind::NotConfigured,
             Self::Unauthorized => SourceOutcomeKind::AuthRejected,
             Self::Forbidden => SourceOutcomeKind::EntitlementDenied,
             Self::RateLimited { .. } => SourceOutcomeKind::RateLimited,

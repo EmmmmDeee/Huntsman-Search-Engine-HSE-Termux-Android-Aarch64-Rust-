@@ -116,7 +116,7 @@ fn selectors_parse_and_their_canonical_form_reads_back() {
 }
 
 #[test]
-fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_auth_required() {
+fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_not_configured() {
     let (text, report) = printed(run(None, "3C:5A:B4:01:02:03", 7));
     let legs: Vec<_> = report
         .outcomes
@@ -127,8 +127,8 @@ fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_auth_requir
         legs,
         [
             (OUI_SOURCE, SourceOutcomeKind::Success),
-            (wigle::SOURCE, SourceOutcomeKind::AuthRequired),
-            (wigle::BLUETOOTH_SOURCE, SourceOutcomeKind::AuthRequired)
+            (wigle::SOURCE, SourceOutcomeKind::NotConfigured),
+            (wigle::BLUETOOTH_SOURCE, SourceOutcomeKind::NotConfigured)
         ]
     );
     assert_eq!(report.wigle, None, "no answer is not a zero");
@@ -157,7 +157,7 @@ fn a_half_configured_account_makes_no_request() {
     assert!(transport.urls().is_empty());
     assert_eq!(
         report.outcomes.last().map(|o| o.kind),
-        Some(SourceOutcomeKind::AuthRequired)
+        Some(SourceOutcomeKind::NotConfigured)
     );
 }
 

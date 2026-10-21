@@ -510,7 +510,7 @@ function save(body,name){download(new Blob([JSON.stringify(body,null,2)],{type:'
 const show=v=>v==null?'':typeof v==='object'?JSON.stringify(v):String(v);
 const pad=n=>String(n).padStart(2,'0');
 function when(ms){if(!ms)return '';const d=new Date(Number(ms));return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds())}
-const tone={success:'ok',valid_zero:'info',auth_required:'warn',auth_rejected:'warn',entitlement_denied:'warn',quota_exhausted:'warn',rate_limited:'warn'};
+const tone={success:'ok',valid_zero:'info',not_configured:'info',auth_required:'warn',auth_rejected:'warn',entitlement_denied:'warn',quota_exhausted:'warn',rate_limited:'warn'};
 // Spiderfoot's scan states and correlation risks, and the colours its pages give them.
 const ACTIVE=['CREATED','STARTING','STARTED','RUNNING','INITIALIZING','ABORT-REQUESTED'];
 const live=s=>ACTIVE.includes(s);
