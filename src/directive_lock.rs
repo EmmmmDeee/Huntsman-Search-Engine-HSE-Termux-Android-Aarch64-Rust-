@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 
 pub const EXPECTED_SHA256: &str =
-    "b4d0227909b026bc56f8a6d521a0a8d8685f9a59f6b7e16814cfaba16ca58257";
+    "da616286c0a12312129fdeb1ebe8de049e9123a437f59d637c859b761f96ae7d";
 pub const CANONICAL: &str = "HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md";
 const EMBEDDED_CANONICAL: &[u8] = include_bytes!("../HUNTSMAN_CANONICAL_TEAM_DIRECTIVE.md");
 pub const MIRRORS: [&str; 6] = [

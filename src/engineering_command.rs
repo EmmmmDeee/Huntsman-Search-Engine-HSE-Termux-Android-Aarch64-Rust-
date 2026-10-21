@@ -1,12 +1,12 @@
 //! Executable engineering-command contract.
 //!
-//! The names are repository-internal codenames. This module makes the hierarchy
+//! The names are role identifiers, not claims of consultation or participation by named people. This module makes the hierarchy
 //! machine-readable so documentation, capability ownership, CLI output, and tests
 //! share one canonical source of truth.
 
 use std::fmt::Write as _;
 
-pub const COMMAND_INVARIANT: &str = "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER ROLES";
+pub const COMMAND_INVARIANT: &str = "JEFF DEAN -> JAMES HAMILTON -> ALL OTHER SYSTEMS";
 
 pub const EXECUTION_PROTOCOLS: [&str; 7] = [
     "Explicit architecture contracts with automated verification",
@@ -14,7 +14,7 @@ pub const EXECUTION_PROTOCOLS: [&str; 7] = [
     "Deterministic unit, integration and Android cross-build gates",
     "Defensive dependency and vulnerability scanning",
     "Fail-closed promotion on critical validation failures",
-    "Versioned artifacts, provenance and rollback readiness",
+    "Commit-addressed artifacts, provenance and rollback readiness",
     "Measured net-value and sustainability reporting",
 ];
 
@@ -59,126 +59,126 @@ pub struct Role {
 pub const COMMAND_CHAIN: [Role; 16] = [
     Role {
         rank: 1,
-        name: "THE AUSTRIAN PAINTER",
+        name: "JEFF DEAN",
         title: "Chief Visionary & Strategic Architect",
         phase: Phase::Command,
     },
     Role {
         rank: 2,
-        name: "HEINRICH HIMMLER",
-        title: "Chief Systems Architect",
+        name: "JAMES HAMILTON",
+        title: "Chief Systems Architect & Infrastructure Lead",
         phase: Phase::Command,
     },
     Role {
         rank: 3,
-        name: "REINHARD HEYDRICH",
-        title: "Integration Engineer",
+        name: "DANIEL STENBERG",
+        title: "Integration Engineer & Core Security",
         phase: Phase::Command,
     },
     Role {
         rank: 4,
-        name: "WERNHER VON BRAUN",
-        title: "Advanced Technology & R&D Division",
+        name: "JURE LESKOVEC",
+        title: "Advanced Technology & R&D",
         phase: Phase::Technology,
     },
     Role {
         rank: 5,
-        name: "ALBERT SPEER",
+        name: "JEZ HUMBLE",
         title: "Industrial Scale & Production Optimization",
         phase: Phase::Technology,
     },
     Role {
         rank: 6,
-        name: "ERICH VON MANSTEIN",
+        name: "MARTIN FOWLER",
         title: "Strategic Refactoring & Tactical Innovation",
         phase: Phase::Technology,
     },
     Role {
         rank: 7,
-        name: "KARL DÖNITZ",
+        name: "LESLIE LAMPORT",
         title: "Distributed Systems Engineering",
         phase: Phase::Technology,
     },
     Role {
         rank: 8,
-        name: "JOSEPH GOEBBELS",
-        title: "Information & Communications",
+        name: "ELIOT HIGGINS",
+        title: "Information Operations & Data Control",
         phase: Phase::Information,
     },
     Role {
         rank: 9,
-        name: "MARTIN BORMANN",
+        name: "URS HÖLZLE",
         title: "Chief Operating Officer & Infrastructure",
         phase: Phase::Information,
     },
     Role {
         rank: 10,
-        name: "WILHELM KEITEL",
-        title: "Platform Engineering",
+        name: "MITCHELL HASHIMOTO",
+        title: "Platform Engineering & Core Operations",
         phase: Phase::Information,
     },
     Role {
         rank: 11,
-        name: "ALFRED JODL",
+        name: "ANDREW GALLANT",
         title: "Implementation Engineer & Core Systems",
         phase: Phase::Information,
     },
     Role {
         rank: 12,
-        name: "HUGO SPERRLE",
+        name: "BRENDAN GREGG",
         title: "Performance Engineering & Optimization",
         phase: Phase::Performance,
     },
     Role {
         rank: 13,
-        name: "ERICH HARTMANN",
+        name: "RALF JUNG",
         title: "Verification Engineering & Performance Testing",
         phase: Phase::Performance,
     },
     Role {
         rank: 14,
-        name: "OTTO SKORZENY",
-        title: "Security Engineering",
+        name: "TAVIS ORMANDY",
+        title: "Security Engineering & Unconventional Operations",
         phase: Phase::Performance,
     },
     Role {
         rank: 15,
-        name: "HERMANN GÖRING",
+        name: "PATRICK COLLISON",
         title: "Resource Acquisition & Economic Engine",
         phase: Phase::Performance,
     },
     Role {
         rank: 16,
-        name: "JEW BOT",
+        name: "PIETER LEVELS",
         title: "Economic Optimization & Self-Funding Operations",
         phase: Phase::Performance,
     },
 ];
 
 pub const CAPABILITY_OWNERS: [&str; 23] = [
-    "ALFRED JODL",
-    "ALFRED JODL",
-    "ALFRED JODL",
-    "REINHARD HEYDRICH",
-    "ALFRED JODL",
-    "ALFRED JODL",
-    "KARL DÖNITZ",
-    "KARL DÖNITZ",
-    "REINHARD HEYDRICH",
-    "HUGO SPERRLE",
-    "MARTIN BORMANN",
-    "ALFRED JODL",
-    "OTTO SKORZENY",
-    "OTTO SKORZENY",
-    "JOSEPH GOEBBELS",
-    "JOSEPH GOEBBELS",
-    "MARTIN BORMANN",
-    "WERNHER VON BRAUN",
-    "ERICH HARTMANN",
-    "ERICH HARTMANN",
-    "MARTIN BORMANN",
-    "ALBERT SPEER",
-    "ALFRED JODL",
+    "ANDREW GALLANT",
+    "ANDREW GALLANT",
+    "ANDREW GALLANT",
+    "DANIEL STENBERG",
+    "ANDREW GALLANT",
+    "ANDREW GALLANT",
+    "LESLIE LAMPORT",
+    "LESLIE LAMPORT",
+    "DANIEL STENBERG",
+    "BRENDAN GREGG",
+    "URS HÖLZLE",
+    "ANDREW GALLANT",
+    "TAVIS ORMANDY",
+    "TAVIS ORMANDY",
+    "ELIOT HIGGINS",
+    "ELIOT HIGGINS",
+    "URS HÖLZLE",
+    "JURE LESKOVEC",
+    "RALF JUNG",
+    "RALF JUNG",
+    "URS HÖLZLE",
+    "JEZ HUMBLE",
+    "ANDREW GALLANT",
 ];
 
 #[must_use]
@@ -198,14 +198,14 @@ pub fn capability_owner(capability_number: usize) -> Option<&'static Role> {
 /// Returns a static diagnostic if rank continuity, uniqueness, phase order,
 /// terminal placement, or capability ownership diverges from the contract.
 pub fn validate() -> Result<(), &'static str> {
-    if COMMAND_CHAIN.first().map(|role| role.name) != Some("THE AUSTRIAN PAINTER") {
+    if COMMAND_CHAIN.first().map(|role| role.name) != Some("JEFF DEAN") {
         return Err("rank 1 changed");
     }
-    if COMMAND_CHAIN.get(1).map(|role| role.name) != Some("HEINRICH HIMMLER") {
+    if COMMAND_CHAIN.get(1).map(|role| role.name) != Some("JAMES HAMILTON") {
         return Err("rank 2 changed");
     }
-    if COMMAND_CHAIN.last().map(|role| role.name) != Some("JEW BOT") {
-        return Err("JEW BOT is not terminal");
+    if COMMAND_CHAIN.last().map(|role| role.name) != Some("PIETER LEVELS") {
+        return Err("PIETER LEVELS is not terminal");
     }
 
     for (index, current) in COMMAND_CHAIN.iter().enumerate() {
@@ -310,9 +310,9 @@ mod tests {
         validate().unwrap();
         assert_eq!(
             COMMAND_INVARIANT,
-            "THE AUSTRIAN PAINTER -> HEINRICH HIMMLER -> ALL OTHER ROLES"
+            "JEFF DEAN -> JAMES HAMILTON -> ALL OTHER SYSTEMS"
         );
-        assert_eq!(COMMAND_CHAIN.last().unwrap().name, "JEW BOT");
+        assert_eq!(COMMAND_CHAIN.last().unwrap().name, "PIETER LEVELS");
         assert_eq!(EXECUTION_PROTOCOLS.len(), 7);
     }
 
@@ -334,7 +334,7 @@ mod tests {
         );
         assert_eq!(
             value["roles"][15]["name"],
-            serde_json::Value::String("JEW BOT".into())
+            serde_json::Value::String("PIETER LEVELS".into())
         );
     }
 
