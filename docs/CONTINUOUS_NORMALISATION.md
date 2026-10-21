@@ -6,7 +6,7 @@ Huntsman can reconcile configured targets for as long as its serve process remai
 
 Set HUNTSMAN_CONTINUOUS_TARGETS to a semicolon- or newline-separated list of selectors; for example: example.com;1.1.1.1. Configure HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES=1440 for daily collection. Start the usual huntsman-recon serve command.
 
-If targets are not configured, the controller stays off and does not collect remotely. At most 32 canonical targets (8192 config bytes) are accepted. Collection interval may be 60 to 10080 minutes, default 1440. Reconciliation wakes every 60 seconds.
+If targets are not configured, the controller stays off and does not collect remotely. Set HUNTSMAN_CONTINUOUS_TARGETS='*' to continuously re-normalise the most recent saved scan of every canonical target already present in the scan store, without initiating any new network scans. The wildcard may also accompany specific targets, which alone are eligible for recurring collection. At most 32 explicit canonical targets (8192 config bytes) are accepted. Collection interval may be 60 to 10080 minutes, default 1440. Reconciliation wakes every 60 seconds.
 
 Saved scans are kept unchanged in the existing private scans store. For each terminal scan, the shared /api/scans/ID/analyze path recalculates derived findings and writes a bounded, atomic private JSON report to HUNTSMAN_HOME/normalised, or ~/.huntsman/normalised. The deterministic file name hashes the canonical target plus kind; the report carries the source scan ID and limitations.
 
@@ -16,7 +16,7 @@ After a new or failed scan, collection waits for the configured interval; admiss
 
 ## Lifecycle
 
-READ CONFIG -> CANONICALISE -> READ SCAN STORE -> ANALYSE COMPLETED SCANS -> ATOMICALLY SAVE DERIVED REPORT -> CHECK RECENCY AND RETRY WINDOWS -> START OR JOIN DUE SCANS -> SLEEP 60 SECONDS -> REPEAT.
+READ CONFIG -> CANONICALISE -> READ SCAN STORE -> SELECT LATEST SCAN PER CANONICAL TARGET -> ANALYSE COMPLETED SCANS -> ATOMICALLY SAVE DERIVED REPORT -> CHECK RECENCY AND RETRY WINDOWS -> START OR JOIN DUE SCANS -> SLEEP 60 SECONDS -> REPEAT.
 
 This is an evidence normalisation and refreshing controller, not an unattended software-editing agent. It cannot ensure that providers respond or that hosts keep running. Railway requires a live service with durable volume for persistence. Android may suspend a background Termux server; see docs/INSTALL.md. Service restarts derive cadence from saved scan timestamps.
 
