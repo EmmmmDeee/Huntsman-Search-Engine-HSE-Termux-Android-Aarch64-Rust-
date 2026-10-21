@@ -470,6 +470,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "forward and reverse geocoding from OpenStreetMap's Nominatim: a place or address to its coordinates and full address, or a point to the address there",
     },
     ReachableModule {
+        name: "exif",
+        command: "exif IMAGE-FILE",
+        access: "keyless",
+        network: false,
+        category: ModuleCategory::Geo,
+        attack_techniques: &["T1591.001"],
+        description: "GPS coordinates and camera/device metadata read from a local image's EXIF, keyless and offline",
+    },
+    ReachableModule {
         name: "phone_intl",
         command: "phone NUMBER",
         access: "offline",
