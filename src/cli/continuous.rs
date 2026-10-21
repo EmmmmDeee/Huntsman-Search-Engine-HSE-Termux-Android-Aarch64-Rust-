@@ -294,6 +294,15 @@ mod tests {
     }
 
     #[test]
+    fn refuses_continuous_people_name_expansion() {
+        let error = match config("Jane Example", "1440", PathBuf::from("/tmp/x")) {
+            Err(error) => error,
+            Ok(_) => panic!("a continuous people-name scan must be rejected"),
+        };
+        assert_eq!(error, "continuous people-name scans are disabled");
+    }
+
+    #[test]
     fn due_respects_active_and_recent_scans() {
         assert!(due(None, 1_000, 60_000));
         let mut record = ScanRecord {
