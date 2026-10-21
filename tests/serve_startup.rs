@@ -84,6 +84,33 @@ fn startup_on(bind: &str, envs: &[(&str, &str)]) -> (String, String) {
     (first, stderr)
 }
 
+/// A generic deployment environment may export PORT, but that must not
+/// determine the listener address or reject an otherwise valid local bind.
+/// Only HSE_BIND or --bind may opt the application into public listening.
+#[test]
+fn unrelated_port_environment_does_not_override_local_bind() {
+    let mut child = serve(
+        &[],
+        &[("PORT", "not-a-valid-port"), ("HSE_BIND", "127.0.0.1:0")],
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .spawn()
+    .expect("start serve with explicit local bind");
+    let mut first = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut first)
+        .expect("read bound address");
+    let addr = first
+        .trim()
+        .strip_prefix("serving=http://")
+        .and_then(|value| value.strip_suffix('/'))
+        .expect("local serve starts despite invalid unrelated port");
+    assert!(addr.starts_with("127.0.0.1:"), "{first}");
+    let _ = child.kill();
+    child.wait().expect("reap local server");
+}
+
 #[test]
 fn in_termux_serve_says_how_to_keep_it_running() {
     for envs in [
