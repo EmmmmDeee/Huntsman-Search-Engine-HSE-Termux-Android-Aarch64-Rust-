@@ -1,0 +1,1 @@
+- A release build whose web UI fails the phone-browser check is no longer published. The release workflow runs that check on the same commit, and publish waits for it, so a broken page cannot reach the pre-release channel the installer downloads. The CI check is unchanged.
