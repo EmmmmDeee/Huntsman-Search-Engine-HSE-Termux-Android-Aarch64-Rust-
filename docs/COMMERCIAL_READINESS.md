@@ -67,10 +67,48 @@ These gates intentionally prevent premature product claims.
 | Stable public API contract | **not declared** | explicitly choose supported library/HTTP surfaces and compatibility policy |
 | Stable v1 release | **not declared** | owner approval after API/CLI compatibility gates and release candidate |
 | Licensing/commercial distribution policy | **undecided** | owner selects proprietary, dual, or open-source terms; do not infer a license |
+| Third-party RIPEstat commercial-use permission | **not demonstrated** | obtain RIPE NCC's prior written permission before selling a product/service derived from RIPEstat data; keep permission evidence and an approved distribution scope |
 | Real-device acceptance for a release | external receipt required | run handset harness against the release candidate |
 | Performance/SLO claims | **not demonstrated globally** | reproducible benchmark suite with hardware/dataset context |
 | Customer/revenue traction | **not claimed** | external commercial evidence |
 | Full legacy parity | **not claimed** | close the explicit CURRENT/PLANNED gaps that define required parity |
+
+## Third-party RIPEstat service and data terms
+
+The existing Huntsman `ripestat` provider reads RIPEstat network data. A keyless
+public endpoint is **not** a grant to commercialise the resulting data.
+[RIPE NCC RIPEstat Service Terms and Conditions, Article 3.3](https://www.ripe.net/about-us/legal/ripestat-service-terms-and-conditions/)
+prohibit repackaging or redistributing the RIPEstat Service/data and prohibit
+commercial products or services based on or combining those data unless the
+RIPE NCC grants **prior written permission**. This affects the existing routing
+integration as well as any future IP/netblock geolocation functionality.
+
+**Release and monetisation gate:** do not sell, license, bundle, redistribute,
+or offer commercial reports/services incorporating RIPEstat-derived output
+without obtaining and recording written permission, its permitted use and
+attribution terms. Licence selection for Huntsman's Rust code does not replace
+the separate rights needed for third-party data. No permission or commercial
+licence is currently evidenced in this repository; do not infer one from API
+access, CI, or public source-code availability.
+
+The same terms (Article 3.2) also require researchers using RIPEstat to notify
+RIPE NCC of research results and attribute RIPE NCC and the originating data
+source when publishing research results. Confirm the applicable terms before
+publishing or redistributing such results.
+
+Operational requirements from the [RIPEstat Data API usage rules](https://stat.ripe.net/docs/data-api/ripestat-data-api):
+
+- Maximum **eight simultaneous requests from one public IP address**.
+- Regular users planning more than **1,000 queries per day** should register
+  and identify their application through `sourceapp` and contact RIPE NCC.
+- Account for aggregate routing, geolocation and other RIPEstat endpoints,
+  including concurrent HSE processes or devices sharing a network exit.
+  The existence of a request client does **not** demonstrate that an
+  application-wide concurrency quota is enforced.
+
+These are **documented external obligations**, not claims of implemented
+application-wide throttling or granted commercial rights. Recheck provider
+terms and record permission before commercial release.
 
 ## Highest-value engineering sequence
 
