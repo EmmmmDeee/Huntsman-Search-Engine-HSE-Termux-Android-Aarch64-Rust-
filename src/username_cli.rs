@@ -8,6 +8,7 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_u
 use crate::error::Error;
 use crate::github_user;
 use crate::http::Transport;
+use crate::keybase;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
@@ -18,7 +19,7 @@ use crate::validation::{ValueKind, is_placeholder_entity};
 pub const USERNAME_USAGE: &str = "usage: huntsman-recon username HANDLE [--save FILE]";
 pub const USERNAME_HELP: &str = "\
 username HANDLE [--save FILE]
-Derive deterministic handle variants and query keyless public GitHub and Bluesky profiles. --save FILE writes an unverified ledger that verify can reload.";
+Derive deterministic handle variants and query keyless public GitHub, Bluesky and Keybase profiles. --save FILE writes an unverified ledger that verify can reload.";
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -51,7 +52,7 @@ pub enum UsernameRun {
     Failed(String),
 }
 
-/// Run deterministic variants and the two keyless public-profile collectors, each when the
+/// Run deterministic variants and the keyless public-profile collectors, each when the
 /// transport's lookup asks its module ([`Transport::runs_module`]).
 #[must_use]
 pub fn run<T: Transport + ?Sized>(
@@ -75,6 +76,9 @@ pub fn run<T: Transport + ?Sized>(
     }
     if transport.runs_module(bluesky_user::SRC) {
         collect_bluesky(transport, &username, &scan_id, now_unix, &mut report);
+    }
+    if transport.runs_module(keybase::SRC) {
+        collect_keybase(transport, &username, &scan_id, now_unix, &mut report);
     }
     merge_by_uid(&mut report.entities);
 
@@ -171,6 +175,26 @@ fn collect_bluesky<T: Transport + ?Sized>(
         }
         Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
             bluesky_user::SRC,
+            now_unix,
+            error.to_string(),
+        )),
+    }
+}
+
+fn collect_keybase<T: Transport + ?Sized>(
+    transport: &T,
+    username: &str,
+    scan_id: &str,
+    now_unix: u64,
+    report: &mut Report,
+) {
+    match keybase::lookup(transport, username, scan_id, now_unix) {
+        Ok(found) => {
+            report.entities.extend(found.entities);
+            report.outcomes.push(found.outcome);
+        }
+        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
+            keybase::SRC,
             now_unix,
             error.to_string(),
         )),
@@ -304,11 +328,18 @@ mod tests {
     #[test]
     fn one_clean_miss_does_not_erase_the_other_source() {
         let bluesky = r#"{"handle":"nobody.bsky.social"}"#;
-        let fake = Fake::new(vec![Ok(response(404, "")), Ok(response(200, bluesky))]);
+        let keybase = r#"{"status":{"code":0,"name":"OK"},"them":[null]}"#;
+        let fake = Fake::new(vec![
+            Ok(response(404, "")),
+            Ok(response(200, bluesky)),
+            Ok(response(200, keybase)),
+        ]);
         match run(&fake, &Keys::default(), "nobody", 1) {
-            UsernameRun::Printed { report, .. } => {
+            UsernameRun::Printed { report, text } => {
                 assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
                 assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::Success);
+                assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::ValidZero);
+                assert!(text.contains("keybase\t"), "{text}");
                 assert!(
                     report
                         .entities
@@ -318,5 +349,37 @@ mod tests {
             }
             other @ UsernameRun::Failed(_) => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn keybase_proofs_reach_the_combined_report() {
+        let github = r#"{"login":"max","id":1,"html_url":"https://github.com/max"}"#;
+        let bluesky = r#"{"handle":"max.bsky.social"}"#;
+        let keybase = r#"{
+          "status":{"code":0,"name":"OK"},
+          "them":[{
+            "basics":{"username":"max","username_cased":"max"},
+            "proofs_summary":{"by_presentation_group":{
+              "twitter":[{"proof_type":"twitter","nametag":"maxtaco","service_url":"https://twitter.com/maxtaco"}]
+            }}
+          }]
+        }"#;
+        let fake = Fake::new(vec![
+            Ok(response(200, github)),
+            Ok(response(200, bluesky)),
+            Ok(response(200, keybase)),
+        ]);
+        let UsernameRun::Printed { report, text } = run(&fake, &Keys::default(), "max", 1) else {
+            panic!("the lookup should print a report");
+        };
+        assert!(text.contains("keybase\tsuccess"), "{text}");
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|entity| entity.has_tag("keybase")
+                    && entity.kind == EntityKind::Username
+                    && entity.value == "maxtaco")
+        );
     }
 }

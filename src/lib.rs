@@ -108,6 +108,7 @@ pub mod ipqs;
 pub mod isc;
 pub mod json;
 pub mod key_import;
+pub mod keybase;
 pub mod keys;
 pub mod kickbox;
 pub mod leads;

@@ -434,6 +434,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public Bluesky profile lookup",
     },
     ReachableModule {
+        name: "keybase",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.001"],
+        description: "public Keybase identity: cryptographically proven linked accounts, websites and PGP key",
+    },
+    ReachableModule {
         name: "phone_intl",
         command: "phone NUMBER",
         access: "offline",
@@ -1374,6 +1383,7 @@ mod tests {
             crate::openpgp_keys::SRC,
             crate::github_user::SRC,
             crate::bluesky_user::SRC,
+            crate::keybase::SRC,
             crate::exposure_cli::SOURCE,
             crate::exposure_cli::STOLEN_TAX_SOURCE,
             crate::exposure_cli::OATHNET_SOURCE,
