@@ -8,6 +8,8 @@
 //! its holder and registry block, `announced-prefixes` lists every prefix it announces with the
 //! windows it was seen, and `asn-neighbours` every AS adjacent to it in BGP paths. `status` must
 //! be `ok`; an address no AS announces and no registry block covers is a valid zero, not an error.
+//! `geoloc` for an address or block names every place `RIPEstat` locates it in, with its
+//! coordinates and the share of its addresses each place covers.
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -556,6 +558,150 @@ pub fn decode_neighbours(body: &[u8]) -> Result<Neighbours, LegError> {
     })
 }
 
+/// One place `RIPEstat`'s geolocation names for a resource.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Location {
+    pub country: Option<String>,
+    pub city: Option<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    /// The share of the resource's addresses this place covers, as `RIPEstat` reports it.
+    pub covered_percentage: Option<f64>,
+}
+
+/// Every place `RIPEstat` names for an address or block, in published order.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Geolocation {
+    pub locations: Vec<Location>,
+}
+
+#[derive(Deserialize)]
+struct GeolocationData {
+    // Only an explicit empty array establishes a valid zero location result.
+    located_resources: Vec<LocatedResource>,
+}
+
+#[derive(Deserialize)]
+struct LocatedResource {
+    // An absent collection is an incomplete response, not a confirmed absence.
+    locations: Vec<LocationRow>,
+}
+
+#[derive(Deserialize)]
+struct LocationRow {
+    #[serde(default)]
+    country: Option<String>,
+    #[serde(default)]
+    city: Option<String>,
+    #[serde(default)]
+    latitude: Option<f64>,
+    #[serde(default)]
+    longitude: Option<f64>,
+    #[serde(default)]
+    covered_percentage: Option<f64>,
+}
+
+/// The request URL for the geolocation of `resource`, an address or a prefix. **Pure.**
+#[must_use]
+pub fn geolocation_url(resource: &str) -> String {
+    format!(
+        "https://stat.ripe.net/data/geoloc/data.json?resource={}",
+        percent_encode_component(resource)
+    )
+}
+
+/// Where `RIPEstat` places `resource`.
+///
+/// # Errors
+/// The [`LegError`] that stopped the lookup.
+pub fn geolocation<T: Transport + ?Sized>(
+    transport: &T,
+    resource: &str,
+    now_unix: u64,
+) -> Result<Geolocation, LegError> {
+    match api_leg::get(
+        transport,
+        &API,
+        &Keys::default(),
+        &geolocation_url(resource),
+        now_unix,
+    )? {
+        Answer::Body(body) => decode_geolocation(&body),
+        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
+    }
+}
+
+/// One `geoloc` body, every location kept in published order. A resource with no location is a
+/// valid empty answer. **Pure.**
+///
+/// # Errors
+/// [`LegError::Decode`] for a body that is not an `ok` envelope with data.
+pub fn decode_geolocation(body: &[u8]) -> Result<Geolocation, LegError> {
+    let data: GeolocationData = unwrap(body)?;
+    let locations: Vec<Location> = data
+        .located_resources
+        .into_iter()
+        .flat_map(|resource| resource.locations)
+        .map(|row| Location {
+            country: api_leg::clean(row.country.as_deref()),
+            city: api_leg::clean(row.city.as_deref()),
+            latitude: row.latitude,
+            longitude: row.longitude,
+            covered_percentage: row.covered_percentage,
+        })
+        .collect();
+    // An empty row (or unpaired coordinate) identifies no geographical place.
+    // Treat it as provider schema drift instead of attaching empty location evidence.
+    if locations.iter().any(|place| {
+        place.latitude.is_some() != place.longitude.is_some()
+            || (place.country.is_none() && place.city.is_none() && place.latitude.is_none())
+    }) {
+        return Err(LegError::Decode(
+            "geolocation contains an incomplete place".into(),
+        ));
+    }
+    Ok(Geolocation { locations })
+}
+
+impl Geolocation {
+    /// Whether `RIPEstat` names any place for the resource.
+    #[must_use]
+    pub fn says_anything(&self) -> bool {
+        !self.locations.is_empty()
+    }
+
+    /// Every place on its own, in published order, joined by `; `: its country and city, the
+    /// coordinates it is at, and the share of the resource it covers. **Pure.**
+    #[must_use]
+    pub fn summary(&self) -> String {
+        self.locations
+            .iter()
+            .map(place_line)
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
+fn place_line(place: &Location) -> String {
+    let named = [place.country.as_deref(), place.city.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let at = match (place.latitude, place.longitude) {
+        (Some(latitude), Some(longitude)) => format!("at {latitude},{longitude}"),
+        _ => String::new(),
+    };
+    let covered = place
+        .covered_percentage
+        .map_or_else(String::new, |share| format!("covering {share}%"));
+    [named, at, covered]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -713,6 +859,105 @@ pub(crate) mod tests {
         assert_eq!(
             url("2001:db8::1"),
             "https://stat.ripe.net/data/prefix-overview/data.json?resource=2001%3Adb8%3A%3A1"
+        );
+    }
+
+    #[test]
+    fn every_location_geolocation_names_is_kept_with_its_coordinates() {
+        let body = br#"{"status":"ok","data":{"located_resources":[{"resource":"1.1.1.0/24","locations":[{"country":"AU","city":"Sydney","latitude":-33.87,"longitude":151.21,"covered_percentage":90.0},{"country":"US","city":null,"latitude":37.4,"longitude":-122.1,"covered_percentage":10.0}]}]}}"#;
+        let geo = decode_geolocation(body).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(geo.locations.len(), 2);
+        assert_eq!(geo.locations[0].country.as_deref(), Some("AU"));
+        assert_eq!(geo.locations[0].city.as_deref(), Some("Sydney"));
+        assert_eq!(
+            geo.locations[0]
+                .latitude
+                .map(|value| (value * 100.0).round()),
+            Some(-3387.0)
+        );
+        assert_eq!(geo.locations[1].city, None);
+        assert_eq!(geo.locations[1].covered_percentage, Some(10.0));
+    }
+
+    #[test]
+    fn a_place_reads_as_its_country_city_coordinates_and_share() {
+        let body = br#"{"status":"ok","data":{"located_resources":[{"locations":[{"country":"AU","city":"Sydney","latitude":-33.5,"longitude":151.0,"covered_percentage":90.0}]}]}}"#;
+        let geo = decode_geolocation(body).unwrap_or_else(|e| panic!("{e}"));
+        assert!(geo.says_anything());
+        assert_eq!(geo.summary(), "AU Sydney at -33.5,151 covering 90%");
+    }
+
+    #[test]
+    fn a_resource_with_no_location_is_a_valid_empty_answer() {
+        let body = br#"{"status":"ok","data":{"located_resources":[]}}"#;
+        let geo = decode_geolocation(body).unwrap_or_else(|e| panic!("{e}"));
+        assert!(geo.locations.is_empty());
+    }
+
+    #[test]
+    fn missing_geolocation_collections_are_decode_failures_not_valid_zero() {
+        // Provider drift must not be treated as evidence of no locations.
+        for body in [
+            r#"{"status":"ok","data":{}}"#,
+            r#"{"status":"ok","data":{"located_resources":null}}"#,
+            r#"{"status":"ok","data":{"located_resources":[{}]}}"#,
+            r#"{"status":"ok","data":{"located_resources":[{"locations":null}]}}"#,
+        ] {
+            assert!(
+                matches!(
+                    decode_geolocation(body.as_bytes()),
+                    Err(LegError::Decode(_))
+                ),
+                "malformed geolocation was accepted: {body}"
+            );
+        }
+        let empty_locations = br#"{"status":"ok","data":{"located_resources":[{"locations":[]}]}}"#;
+        assert!(
+            decode_geolocation(empty_locations)
+                .expect("an explicit empty locations array is valid")
+                .locations
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unidentified_locations_are_not_reported_as_place_evidence() {
+        for body in [
+            r#"{"status":"ok","data":{"located_resources":[{"locations":[{}]}]}}"#,
+            r#"{"status":"ok","data":{"located_resources":[{"locations":[{"covered_percentage":100.0}]}]}}"#,
+            r#"{"status":"ok","data":{"located_resources":[{"locations":[{"latitude":1.0}]}]}}"#,
+        ] {
+            assert!(
+                matches!(
+                    decode_geolocation(body.as_bytes()),
+                    Err(LegError::Decode(_))
+                ),
+                "unidentified or incomplete location was accepted: {body}"
+            );
+        }
+        let named =
+            br#"{"status":"ok","data":{"located_resources":[{"locations":[{"country":"AU"}]}]}}"#;
+        assert_eq!(
+            decode_geolocation(named)
+                .expect("a named country is valid")
+                .locations[0]
+                .country
+                .as_deref(),
+            Some("AU")
+        );
+    }
+
+    #[test]
+    fn a_geolocation_status_other_than_ok_is_an_error() {
+        let body = br#"{"status":"error","data":null}"#;
+        assert!(matches!(decode_geolocation(body), Err(LegError::Decode(_))));
+    }
+
+    #[test]
+    fn the_geolocation_resource_is_percent_encoded() {
+        assert_eq!(
+            geolocation_url("2001:db8::/32"),
+            "https://stat.ripe.net/data/geoloc/data.json?resource=2001%3Adb8%3A%3A%2F32"
         );
     }
 }

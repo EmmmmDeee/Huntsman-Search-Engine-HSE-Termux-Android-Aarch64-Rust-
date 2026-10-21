@@ -99,6 +99,8 @@ pub fn run<T: Transport + ?Sized + Sync>(
     report.entities.extend(registration.entities);
     report.outcomes.extend(registration.outcome);
     if transport.runs_module(ripestat::SOURCE) {
+        // Both calls run whatever the other returns, so a failed call costs the other nothing.
+        let place = ripestat::geolocation(transport, &value, now_unix);
         match ripestat::lookup(transport, &value, now_unix) {
             Ok(routing) if !routing.says_anything() => report.outcomes.push(
                 SourceExecutionOutcome::valid_zero(ripestat::SOURCE, now_unix),
@@ -107,6 +109,15 @@ pub fn run<T: Transport + ?Sized + Sync>(
             Err(err) => {
                 if let LegError::Transport(_) = err {
                     network = Some(format!("{}: {err}", ripestat::SOURCE));
+                }
+                report.outcomes.push(err.outcome(&ripestat::API, now_unix));
+            }
+        }
+        match place {
+            Ok(place) => place_leg(&mut report, &value, &scan_id, &place),
+            Err(err) => {
+                if let LegError::Transport(_) = err {
+                    network.get_or_insert_with(|| format!("{}: {err}", ripestat::SOURCE));
                 }
                 report.outcomes.push(err.outcome(&ripestat::API, now_unix));
             }
@@ -137,6 +148,28 @@ pub fn run<T: Transport + ?Sized + Sync>(
         Ok(text) => NetblockRun::Printed { text, report },
         Err(message) => NetblockRun::Failed(message),
     }
+}
+
+/// Where `RIPEstat` places the block, as one record on it. Its outcome is the routing leg's, so a
+/// place adds no outcome row of its own.
+fn place_leg(report: &mut Report, block: &str, scan_id: &str, place: &ripestat::Geolocation) {
+    if !place.says_anything() {
+        return;
+    }
+    let evidence = Evidence::new(
+        EvidenceProvenance::for_scan(ripestat::SOURCE, scan_id),
+        "Where RIPEstat places the block",
+    )
+    .with_attr("locations", place.summary());
+    push_entity(
+        &mut report.entities,
+        EntityKind::Netblock,
+        block,
+        SEED_CONFIDENCE,
+        scan_id,
+        evidence,
+        &[],
+    );
 }
 
 /// Everything `RIPEstat` says about the block on it ([`ripestat::Routing::attributes`]), and each

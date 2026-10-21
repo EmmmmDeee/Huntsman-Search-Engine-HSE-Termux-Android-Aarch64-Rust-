@@ -200,9 +200,18 @@ pub fn run<T: Transport + ?Sized>(
         }
     }
     if ripestat::API.runs(transport, keys) {
-        match ripestat::lookup(transport, &ip, now_unix) {
+        // Both calls run whatever the other returns, so a failed call costs the other nothing.
+        let routing = ripestat::lookup(transport, &ip, now_unix);
+        let place = ripestat::geolocation(transport, &ip, now_unix);
+        if let Ok(place) = &place {
+            ripestat_place_leg(&mut lookup, place);
+        }
+        match routing {
             Ok(routing) => ripestat_leg(&mut lookup, &routing),
             Err(err) => lookup.failed(&ripestat::API, &err),
+        }
+        if let Err(err) = &place {
+            lookup.failed(&ripestat::API, err);
         }
     }
     if greynoise::answers_for(&ip) && greynoise::API.runs(transport, keys) {
@@ -415,6 +424,18 @@ fn ripestat_leg(lookup: &mut Lookup<'_>, routing: &ripestat::Routing) {
         }
     }
     lookup.found(api, routing.origins.len().max(1));
+}
+
+/// Where `RIPEstat` places the address, as one record on it. Its outcome is the routing leg's, so
+/// a place adds no outcome row of its own.
+fn ripestat_place_leg(lookup: &mut Lookup<'_>, place: &ripestat::Geolocation) {
+    if !place.says_anything() {
+        return;
+    }
+    let evidence = lookup
+        .evidence(&ripestat::API, "Where RIPEstat places the address")
+        .with_attr("locations", place.summary());
+    lookup.on_address(evidence, &[]);
 }
 
 fn greynoise_leg(lookup: &mut Lookup<'_>, sighting: &greynoise::Sighting) {
