@@ -243,7 +243,12 @@ fn normalise_saved(
     let after = match source_revision(api.service().store(), record) {
         Ok(revision) => revision,
         Err(error) => {
-            invalidate_saved(record, directory, "unavailable", "evidence_unreadable_after_analysis")?;
+            invalidate_saved(
+                record,
+                directory,
+                "unavailable",
+                "evidence_unreadable_after_analysis",
+            )?;
             return Err(error);
         }
     };
