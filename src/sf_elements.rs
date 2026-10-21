@@ -422,6 +422,15 @@ fn identity_descriptors(
         };
         out.push((kind, whois.to_owned()));
     }
+    // The name servers the registration record lists, as Spiderfoot's `PROVIDER_DNS` element (its
+    // "Name Server (DNS NS Records)"). `rdap_legs` is the only writer of the `ns` attribute, so it
+    // types the element unambiguously; each listed server becomes one element. Before this, the
+    // name servers survived only inside the raw registration record and never appeared as a typed
+    // element. This is the first producer of the otherwise-dormant PROVIDER_DNS element type. No
+    // extra network request is made.
+    for server in attr("ns").into_iter().flat_map(items) {
+        out.push(("PROVIDER_DNS", server.to_owned()));
+    }
     if let Some(carrier) = attr("carrier") {
         out.push(("PROVIDER_TELCO", carrier.to_owned()));
     }
@@ -481,6 +490,19 @@ fn identity_descriptors(
         let kind = attr("hash_type").map_or(String::new(), |kind| format!(" ({kind})"));
         out.push(("HASH_COMPROMISED", format!("{host}{kind} [{source}]")));
     }
+    reputation_descriptors(entity, evidence, out);
+}
+
+/// What a reputation source says about an entity: a blocklist, a filtering resolver or a threat
+/// feed names the list and its reason and writes the blacklisted element, plus the malicious one
+/// when it flags a threat; a bare malicious verdict writes only the malicious element.
+fn reputation_descriptors(
+    entity: &Entity,
+    evidence: &Evidence,
+    out: &mut Vec<(&'static str, String)>,
+) {
+    let host = entity.raw_value.as_str();
+    let attr = |key: &str| attr(evidence, key);
     // A blocklist's listing names the list and its reason, as Spiderfoot's DNSBL modules write
     // both the blacklisted and the malicious element.
     if let Some(listing) = attr("dnsbl") {
@@ -1445,6 +1467,29 @@ mod tests {
     }
 
     #[test]
+    fn registration_name_servers_become_provider_dns_elements() {
+        // `rdap_legs` writes one `ns` attribute per name server; `with_attr` joins repeats with
+        // "; ", which the mapping splits back into one element each.
+        let domain = entity(
+            EntityKind::Domain,
+            "example.com",
+            "rdap",
+            &[("ns", "ns1.example.net"), ("ns", "ns2.example.net")],
+        );
+        let found = elements(DOMAIN, &[domain], 1_700_000_000);
+        let servers: Vec<&str> = of_type(&found, "PROVIDER_DNS")
+            .iter()
+            .map(|element| element.data.as_str())
+            .collect();
+        assert_eq!(servers, ["ns1.example.net", "ns2.example.net"]);
+
+        // A domain with no registration name servers produces no PROVIDER_DNS element.
+        let plain = entity(EntityKind::Domain, "bare.example.com", "crtsh", &[]);
+        let found = elements(DOMAIN, &[plain], 1_700_000_000);
+        assert!(of_type(&found, "PROVIDER_DNS").is_empty());
+    }
+
+    #[test]
     fn every_type_the_mapping_can_emit_is_catalogued() {
         let emitted = [
             "ROOT",
@@ -1473,6 +1518,7 @@ mod tests {
             "SSL_CERTIFICATE_EXPIRED",
             "SSL_CERTIFICATE_EXPIRING",
             "DOMAIN_REGISTRAR",
+            "PROVIDER_DNS",
             "PROVIDER_TELCO",
             "PHONE_NUMBER_TYPE",
             "EMAILADDR_DISPOSABLE",
