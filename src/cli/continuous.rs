@@ -360,6 +360,7 @@ mod tests {
         assert!(!due(Some(&record), 60_099, 60_000));
         assert!(due(Some(&record), 60_100, 60_000));
     }
+
     #[test]
     fn deleted_scans_and_expired_backoffs_do_not_accumulate() {
         let record = ScanRecord {
