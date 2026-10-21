@@ -108,6 +108,8 @@ pub mod ip_cli;
 pub mod ipinfo;
 pub mod ipqs;
 pub mod isc;
+pub mod itunes;
+pub mod itunes_cli;
 pub mod json;
 pub mod key_import;
 pub mod keybase;

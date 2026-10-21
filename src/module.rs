@@ -452,6 +452,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public Bitcoin address balance and lifetime totals from blockchain.info",
     },
     ReachableModule {
+        name: "apple_itunes",
+        command: "itunes KEYWORD",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Other,
+        attack_techniques: &["T1593"],
+        description: "public App Store apps for one keyword, with seller and bundle, from Apple's iTunes Search API",
+    },
+    ReachableModule {
         name: "phone_intl",
         command: "phone NUMBER",
         access: "offline",
@@ -1394,6 +1403,7 @@ mod tests {
             crate::bluesky_user::SRC,
             crate::keybase::SRC,
             crate::blockchain::SOURCE,
+            crate::itunes::SOURCE,
             crate::exposure_cli::SOURCE,
             crate::exposure_cli::STOLEN_TAX_SOURCE,
             crate::exposure_cli::OATHNET_SOURCE,
