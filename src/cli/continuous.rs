@@ -174,15 +174,27 @@ fn archive_previous(output: &Path) -> Result<(), String> {
     }
     let prior = read_bounded(output, MAX_ANALYSIS_BYTES)
         .map_err(|error| format!("cannot archive previous report: {error}"))?;
-    let stale = serde_json::from_slice::<Value>(&prior)
-        .ok()
-        .and_then(|value| value["normalisation"]["state"].as_str().map(str::to_owned))
-        .is_some_and(|state| state == "stale");
-    if !stale {
-        let previous = output.with_extension("previous.json");
-        write_atomic_private(&previous, &prior, MAX_ANALYSIS_BYTES)
-            .map_err(|error| format!("cannot preserve historical report: {error}"))?;
+    let mut history: Value = serde_json::from_slice(&prior)
+        .map_err(|error| format!("cannot read previous report JSON: {error}"))?;
+    if history["normalisation"]["state"] == "stale" {
+        return Ok(());
     }
+    let Some(root) = history.as_object_mut() else {
+        return Err("previous report must be a JSON object".to_owned());
+    };
+    let metadata = root
+        .entry("normalisation")
+        .or_insert_with(|| json!({}));
+    let Some(metadata) = metadata.as_object_mut() else {
+        return Err("previous report normalisation metadata is invalid".to_owned());
+    };
+    metadata.insert("state".to_owned(), json!("historical"));
+    metadata.insert("archived_at_ms".to_owned(), json!(millis()));
+    let body = serde_json::to_vec(&history)
+        .map_err(|error| format!("cannot serialize historical report: {error}"))?;
+    let previous = output.with_extension("previous.json");
+    write_atomic_private(&previous, &body, MAX_ANALYSIS_BYTES)
+        .map_err(|error| format!("cannot preserve historical report: {error}"))?;
     Ok(())
 }
 
@@ -538,17 +550,21 @@ mod tests {
         let original = br#"{"report":{"count":2}}"#;
         std::fs::write(&output, original).expect("write good report");
         archive_previous(&output).expect("save history");
-        assert_eq!(
-            std::fs::read(output.with_extension("previous.json")).unwrap(),
-            original
-        );
+        let archived: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(output.with_extension("previous.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(archived["normalisation"]["state"], "historical");
+        assert_eq!(archived["report"]["count"], 2);
         std::fs::write(&output, br#"{"normalisation":{"state":"stale"}}"#)
             .expect("replace report with stale marker");
         archive_previous(&output).expect("keep historical version");
-        assert_eq!(
-            std::fs::read(output.with_extension("previous.json")).unwrap(),
-            original
-        );
+        let archived: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(output.with_extension("previous.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(archived["normalisation"]["state"], "historical");
+        assert_eq!(archived["report"]["count"], 2);
         std::fs::remove_dir_all(&directory).expect("remove archive directory");
     }
 
@@ -589,10 +605,12 @@ mod tests {
         assert_eq!(stale["normalisation"]["state"], "stale");
         assert_eq!(stale["normalisation"]["reason"], "false_positive");
         assert!(stale.get("report").is_none());
-        assert_eq!(
-            std::fs::read(path.with_extension("previous.json")).unwrap(),
-            original
-        );
+        let historical: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(path.with_extension("previous.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(historical["normalisation"]["state"], "historical");
+        assert_eq!(historical["report"]["confirmed"], true);
         std::fs::remove_dir_all(&directory).expect("remove stale test directory");
     }
 
@@ -682,7 +700,7 @@ mod tests {
             &std::fs::read(report_path.with_extension("previous.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(previous["normalisation"]["state"], "current");
+        assert_eq!(previous["normalisation"]["state"], "historical");
         assert_eq!(observed.len(), 1);
         assert_eq!(retry_after.len(), 1);
         assert!(
