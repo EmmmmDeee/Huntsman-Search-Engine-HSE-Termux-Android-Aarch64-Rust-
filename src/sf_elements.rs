@@ -319,6 +319,16 @@ fn attr<'a>(evidence: &'a Evidence, key: &str) -> Option<&'a str> {
         .filter(|value| !value.trim().is_empty())
 }
 
+/// An HTTP status line code is exactly three ASCII digits naming a 1xx-5xx class. Validate the
+/// saved value so a malformed or non-status field cannot be surfaced as an `HTTP_CODE`.
+fn valid_http_status(value: &str) -> bool {
+    value.len() == 3
+        && value.bytes().all(|digit| digit.is_ascii_digit())
+        && value
+            .parse::<u16>()
+            .is_ok_and(|code| (100..=599).contains(&code))
+}
+
 /// What a record says about a host: ports, vulnerabilities, software, routing, place and its
 /// certificate.
 fn host_descriptors(
@@ -358,6 +368,13 @@ fn host_descriptors(
     {
         if let Some(server) = attr("http_server") {
             out.push(("WEBSERVER_BANNER", server.to_owned()));
+        }
+        // The HTTP status a host's web server returned, as Spiderfoot's HTTP_CODE. The same
+        // keyless `pulsedive` probe writes `http_status`; it is emitted only when the value is a
+        // real 1xx-5xx status, so a malformed field cannot forge the element. First producer of
+        // the otherwise-dormant HTTP_CODE type.
+        if let Some(code) = attr("http_status").filter(|value| valid_http_status(value)) {
+            out.push(("HTTP_CODE", code.to_owned()));
         }
     }
     if let Some(os) = attr("os") {
@@ -1678,6 +1695,58 @@ mod tests {
     }
 
     #[test]
+    fn a_pulsedive_http_status_becomes_an_http_code_element() {
+        // `pulsedive` (keyless) writes `http_status` on the IP or domain it probed.
+        let host = entity(
+            EntityKind::Domain,
+            "example.com",
+            "pulsedive",
+            &[("http_status", "200")],
+        );
+        let found = elements(DOMAIN, &[host], 1_700_000_000);
+        assert_eq!(of_type(&found, "HTTP_CODE")[0].data, "200");
+
+        // A host with no status produces no HTTP_CODE element.
+        let bare = entity(EntityKind::Domain, "bare.example", "pulsedive", &[]);
+        let found = elements(DOMAIN, &[bare], 1_700_000_000);
+        assert!(of_type(&found, "HTTP_CODE").is_empty());
+
+        // A malformed value, another provider's attribute, and another entity kind each produce
+        // nothing, even when the field name matches.
+        let malformed = entity(
+            EntityKind::Domain,
+            "example.com",
+            "pulsedive",
+            &[("http_status", "99999")],
+        );
+        let other_source = entity(
+            EntityKind::Domain,
+            "example.com",
+            "wayback",
+            &[("http_status", "200")],
+        );
+        let other_kind = entity(
+            EntityKind::Email,
+            "root@example.com",
+            "pulsedive",
+            &[("http_status", "200")],
+        );
+        let found = elements(
+            DOMAIN,
+            &[malformed, other_source, other_kind],
+            1_700_000_000,
+        );
+        assert!(of_type(&found, "HTTP_CODE").is_empty());
+
+        assert!(valid_http_status("200"));
+        assert!(valid_http_status("404"));
+        assert!(valid_http_status("599"));
+        for invalid in ["", "20", "2000", "099", "600", "abc", "2x0"] {
+            assert!(!valid_http_status(invalid), "{invalid}");
+        }
+    }
+
+    #[test]
     fn every_type_the_mapping_can_emit_is_catalogued() {
         let emitted = [
             "ROOT",
@@ -1698,6 +1767,7 @@ mod tests {
             "SOFTWARE_USED",
             "WEBSERVER_TECHNOLOGY",
             "WEBSERVER_BANNER",
+            "HTTP_CODE",
             "OPERATING_SYSTEM",
             "BGP_AS_MEMBER",
             "NETBLOCK_MEMBER",
