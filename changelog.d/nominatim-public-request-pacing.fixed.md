@@ -1,0 +1,1 @@
+- Serialize public Nominatim calls across concurrent Huntsman threads with a full one-second post-attempt gap; cache bounded valid responses for up to 24 hours while preserving original observation time and source attribution.
