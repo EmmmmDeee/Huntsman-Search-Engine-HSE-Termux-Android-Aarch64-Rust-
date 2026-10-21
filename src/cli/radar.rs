@@ -156,6 +156,71 @@ pub(super) fn capture_wifi() -> Result<wifi_radar::WifiScan, String> {
     wifi_radar::parse_scan(&data, uptime_secs()).map_err(|e| e.to_string())
 }
 
+/// The options both radar sources take: `--json` for the report, and `--file PATH` to replay a
+/// saved scan instead of reading this device.
+struct RadarOptions<'a> {
+    json: bool,
+    file: Option<&'a str>,
+}
+
+/// Parse `[--json] [--file PATH]`, where the path is not another flag. `None` is a usage error.
+fn radar_options(args: &[String]) -> Option<RadarOptions<'_>> {
+    let mut options = RadarOptions {
+        json: false,
+        file: None,
+    };
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--json" if !options.json => options.json = true,
+            "--file" if options.file.is_none() => {
+                options.file = Some(rest.next().filter(|path| !path.starts_with("--"))?.as_str());
+            }
+            _ => return None,
+        }
+    }
+    Some(options)
+}
+
+/// The scan to parse: the `--file` replay, read within `cap` bytes, or else this device's own
+/// collection. The flag is `true` for a replay. An error is the exit status to stop with.
+fn scan_input(
+    file: Option<&str>,
+    cap: u64,
+    collect: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> Result<(Vec<u8>, bool), ExitCode> {
+    match file {
+        Some(path) => match read_bounded(Path::new(path), cap) {
+            Ok(raw) => Ok((raw, true)),
+            Err(error) => Err(fail(EX_NOINPUT, &error.to_string())),
+        },
+        None => match collect() {
+            Ok(raw) => Ok((raw, false)),
+            Err(error) => Err(fail(EX_UNAVAILABLE, &error)),
+        },
+    }
+}
+
+/// Print `parsed` as pretty JSON when `json` is set, otherwise as its text render. A report that
+/// does not serialise is a data error, returned as the exit status to stop with.
+fn print_report<T: serde::Serialize>(
+    parsed: &T,
+    json: bool,
+    render: fn(&T) -> String,
+) -> Result<(), ExitCode> {
+    if !json {
+        print!("{}", render(parsed));
+        return Ok(());
+    }
+    match serde_json::to_string_pretty(parsed) {
+        Ok(output) => {
+            println!("{output}");
+            Ok(())
+        }
+        Err(error) => Err(fail(EX_DATAERR, &error.to_string())),
+    }
+}
+
 pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
     if args.first().map(String::as_str) == Some("cells") {
         return cells_cmd(&args[1..]);
@@ -163,33 +228,12 @@ pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
     if args.first().map(String::as_str) != Some("wifi") {
         return fail(EX_USAGE, USAGE);
     }
-    let mut json = false;
-    let mut file = None;
-    let mut rest = args[1..].iter();
-    while let Some(arg) = rest.next() {
-        match arg.as_str() {
-            "--json" if !json => json = true,
-            "--file" if file.is_none() => {
-                file = rest.next().filter(|path| !path.starts_with("--"));
-                if file.is_none() {
-                    return fail(EX_USAGE, USAGE);
-                }
-            }
-            _ => return fail(EX_USAGE, USAGE),
-        }
-    }
-    if args.iter().any(|arg| arg == "--file") && file.is_none() {
+    let Some(options) = radar_options(&args[1..]) else {
         return fail(EX_USAGE, USAGE);
-    }
-    let (raw, replay) = match file {
-        Some(path) => match read_bounded(Path::new(path), MAX_SCAN_BYTES) {
-            Ok(raw) => (raw, true),
-            Err(e) => return fail(EX_NOINPUT, &e.to_string()),
-        },
-        None => match collect_termux_wifi() {
-            Ok(raw) => (raw, false),
-            Err(error) => return fail(EX_UNAVAILABLE, &error),
-        },
+    };
+    let (raw, replay) = match scan_input(options.file, MAX_SCAN_BYTES, collect_termux_wifi) {
+        Ok(input) => input,
+        Err(code) => return code,
     };
     // A replay file's boot-relative scan timestamps cannot be aged against
     // this host's /proc/uptime: file and host may not share the same boot.
@@ -202,13 +246,8 @@ pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
         Ok(parsed) => parsed,
         Err(error) => return fail(EX_DATAERR, &error.to_string()),
     };
-    if json {
-        match serde_json::to_string_pretty(&parsed) {
-            Ok(output) => println!("{output}"),
-            Err(e) => return fail(EX_DATAERR, &e.to_string()),
-        }
-    } else {
-        print!("{}", wifi_radar::render(&parsed));
+    if let Err(code) = print_report(&parsed, options.json, wifi_radar::render) {
+        return code;
     }
     // An empty OS cache or all-stale observations are not a clean zero and
     // cannot certify that nothing is present right now.
@@ -220,49 +259,28 @@ pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
 }
 
 fn cells_cmd(args: &[String]) -> ExitCode {
-    let mut json = false;
-    let mut file = None;
-    let mut rest = args.iter();
-    while let Some(arg) = rest.next() {
-        match arg.as_str() {
-            "--json" if !json => json = true,
-            "--file" if file.is_none() => {
-                file = rest.next().filter(|path| !path.starts_with("--"));
-                if file.is_none() {
-                    return fail(EX_USAGE, USAGE);
-                }
-            }
-            _ => return fail(EX_USAGE, USAGE),
-        }
-    }
-    if args.iter().any(|arg| arg == "--file") && file.is_none() {
+    let Some(options) = radar_options(args) else {
         return fail(EX_USAGE, USAGE);
-    }
-    let (raw, replay) = match file {
-        Some(path) => match read_bounded(Path::new(path), cell_radar::MAX_CELL_SCAN_BYTES) {
-            Ok(raw) => (raw, true),
-            Err(error) => return fail(EX_NOINPUT, &error.to_string()),
-        },
-        None => match collect_termux_cells() {
-            Ok(raw) => (raw, false),
-            Err(error) => return fail(EX_UNAVAILABLE, &error),
-        },
     };
-    let parsed = match if replay {
+    let (raw, replay) = match scan_input(
+        options.file,
+        cell_radar::MAX_CELL_SCAN_BYTES,
+        collect_termux_cells,
+    ) {
+        Ok(input) => input,
+        Err(code) => return code,
+    };
+    let result = if replay {
         cell_radar::parse_replay(&raw)
     } else {
         cell_radar::parse_cells(&raw)
-    } {
+    };
+    let parsed = match result {
         Ok(parsed) => parsed,
         Err(error) => return fail(EX_DATAERR, &error.to_string()),
     };
-    if json {
-        match serde_json::to_string_pretty(&parsed) {
-            Ok(output) => println!("{output}"),
-            Err(error) => return fail(EX_DATAERR, &error.to_string()),
-        }
-    } else {
-        print!("{}", cell_radar::render(&parsed));
+    if let Err(code) = print_report(&parsed, options.json, cell_radar::render) {
+        return code;
     }
     if parsed.status == "inconclusive" {
         ExitCode::from(EX_UNAVAILABLE)
