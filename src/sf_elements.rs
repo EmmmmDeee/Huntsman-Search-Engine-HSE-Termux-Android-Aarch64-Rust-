@@ -489,6 +489,17 @@ fn identity_descriptors(
             out.push(("BITCOIN_BALANCE", format!("{balance} BTC")));
         }
     }
+    // The job title a public profile lists for the subject, as Spiderfoot's JOB_TITLE. Only the
+    // `gravatar` lookup writes `job_title`, and only onto the employer organisation entity (from a
+    // supplied email's public profile). A saved attribute is not proof on its own, so the element
+    // is gated on that genuine source and entity kind: a same-named field from another source, or
+    // on another entity kind, does not establish a job title. First producer of the otherwise-
+    // dormant JOB_TITLE type.
+    if entity.kind == EntityKind::Organisation && evidence.provenance.source == "gravatar" {
+        if let Some(title) = attr("job_title") {
+            out.push(("JOB_TITLE", title.to_owned()));
+        }
+    }
     if let Some(kind) = compromised_type(&entity.kind) {
         let mut breaches = BTreeSet::new();
         for key in [
@@ -1584,6 +1595,41 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_job_title_becomes_a_job_title_element() {
+        // `gravatar` writes `job_title` on the employer organisation entity.
+        let employer = entity(
+            EntityKind::Organisation,
+            "Example Corp",
+            "gravatar",
+            &[("job_title", "Principal Engineer")],
+        );
+        let found = elements(DOMAIN, &[employer], 1_700_000_000);
+        assert_eq!(of_type(&found, "JOB_TITLE")[0].data, "Principal Engineer");
+
+        // An organisation with no job title produces no JOB_TITLE element.
+        let bare = entity(EntityKind::Organisation, "Other Corp", "rdap", &[]);
+        let found = elements(DOMAIN, &[bare], 1_700_000_000);
+        assert!(of_type(&found, "JOB_TITLE").is_empty());
+
+        // Neither another provider's attribute nor another entity kind establishes a job title,
+        // even when the field name matches.
+        let other_source = entity(
+            EntityKind::Organisation,
+            "Example Corp",
+            "rdap",
+            &[("job_title", "Principal Engineer")],
+        );
+        let other_kind = entity(
+            EntityKind::Person,
+            "Jane Example",
+            "gravatar",
+            &[("job_title", "Principal Engineer")],
+        );
+        let found = elements(DOMAIN, &[other_source, other_kind], 1_700_000_000);
+        assert!(of_type(&found, "JOB_TITLE").is_empty());
+    }
+
+    #[test]
     fn every_type_the_mapping_can_emit_is_catalogued() {
         let emitted = [
             "ROOT",
@@ -1614,6 +1660,7 @@ mod tests {
             "DOMAIN_REGISTRAR",
             "PROVIDER_DNS",
             "BITCOIN_BALANCE",
+            "JOB_TITLE",
             "PROVIDER_TELCO",
             "PHONE_NUMBER_TYPE",
             "EMAILADDR_DISPOSABLE",
