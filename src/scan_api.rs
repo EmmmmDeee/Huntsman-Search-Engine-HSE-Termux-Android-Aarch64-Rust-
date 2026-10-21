@@ -1360,7 +1360,10 @@ mod tests {
         assert_eq!(value["source_execution"]["earlier"]["not_configured"], 0);
         assert_eq!(value["source_execution"]["later"]["accepted"], 1);
         assert_eq!(value["source_execution"]["later"]["not_configured"], 1);
-        assert_eq!(value["source_execution"]["changed_modules"], json!(["hibp"]));
+        assert_eq!(
+            value["source_execution"]["changed_modules"],
+            json!(["hibp"])
+        );
         assert_eq!(
             value["source_execution"]["later"]["all_recorded_sources_accepted"],
             false
