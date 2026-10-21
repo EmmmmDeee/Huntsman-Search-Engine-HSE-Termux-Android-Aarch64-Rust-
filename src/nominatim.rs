@@ -258,9 +258,7 @@ fn get_with_state<T: Transport + ?Sized>(
     cache_enabled: bool,
 ) -> Result<(Option<Response>, SourceExecutionOutcome, bool), Error> {
     let cache_key = url.to_owned();
-    let mut state = state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(entry) = state
         .cache
         .get(&cache_key)
