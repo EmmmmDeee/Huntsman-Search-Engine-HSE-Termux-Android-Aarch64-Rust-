@@ -197,7 +197,8 @@ fn a_body_that_is_not_json_is_drift_not_a_zero() {
 #[test]
 fn forward_preserves_every_raw_provider_field_and_observation_time() {
     let mut place: serde_json::Value = serde_json::from_str(PLACE).expect("valid fixture");
-    place["unexpected_nested"] = serde_json::json!({"flags": [true, null, 3], "label": "retained"});
+    place["unexpected_nested"] =
+        serde_json::json!({"flags": [true, null, 3], "label": "retained"});
     let body = serde_json::to_string(&vec![place]).expect("forward fixture");
     let observed_at = 1_700_000_123_u64;
 
@@ -214,24 +215,32 @@ fn forward_preserves_every_raw_provider_field_and_observation_time() {
         assert_eq!(evidence.provenance.source, SOURCE);
         assert_eq!(evidence.provenance.recorded_at_unix, observed_at);
         assert_eq!(
-            evidence.attributes.get("nominatim_raw_response_json").map(String::as_str),
+            evidence
+                .attributes
+                .get("nominatim_raw_response_json")
+                .map(String::as_str),
             Some(body.as_str())
         );
         assert_eq!(
-            evidence.attributes.get("nominatim_candidate_index").map(String::as_str),
+            evidence
+                .attributes
+                .get("nominatim_candidate_index")
+                .map(String::as_str),
             Some("0")
         );
-        let raw: serde_json::Value = serde_json::from_str(
-            evidence.attributes.get("nominatim_raw_response_json").unwrap(),
-        )
-        .expect("raw JSON");
+        let raw: serde_json::Value =
+            serde_json::from_str(evidence.attributes.get("nominatim_raw_response_json").unwrap())
+                .expect("raw JSON");
         assert_eq!(raw[0]["place_id"], 322_358_946);
         assert_eq!(
             raw[0]["licence"],
             "Data © OpenStreetMap contributors, ODbL 1.0."
         );
         assert_eq!(raw[0]["unexpected_nested"]["flags"][0], true);
-        assert_eq!(raw[0]["unexpected_nested"]["flags"][1], serde_json::Value::Null);
+        assert_eq!(
+            raw[0]["unexpected_nested"]["flags"][1],
+            serde_json::Value::Null
+        );
     }
 }
 
@@ -251,21 +260,28 @@ fn candidates_keep_their_own_source_index_without_reassigning_fields() {
         91,
     )
     .expect("forward");
-    let coordinates: Vec<_> = report.entities.iter()
+    let coordinates: Vec<_> = report
+        .entities
+        .iter()
         .filter(|entity| entity.kind == EntityKind::Coordinates)
         .collect();
     assert_eq!(coordinates.len(), 2);
     for (index, expected_place_id) in [("0", 322_358_946), ("1", 17)] {
-        let entry = coordinates.iter().find(|entity| {
-            entity.evidence[0]
-                .attributes
-                .get("nominatim_candidate_index")
-                .map(String::as_str)
-                == Some(index)
-        }).expect("candidate coordinates");
+        let entry = coordinates
+            .iter()
+            .find(|entity| {
+                entity.evidence[0]
+                    .attributes
+                    .get("nominatim_candidate_index")
+                    .map(String::as_str)
+                    == Some(index)
+            })
+            .expect("candidate coordinates");
         let attributes = &entry.evidence[0].attributes;
         assert_eq!(
-            attributes.get("nominatim_raw_response_json").map(String::as_str),
+            attributes
+                .get("nominatim_raw_response_json")
+                .map(String::as_str),
             Some(body.as_str())
         );
         let raw: serde_json::Value =
@@ -276,7 +292,10 @@ fn candidates_keep_their_own_source_index_without_reassigning_fields() {
         assert_eq!(entry.evidence[0].provenance.recorded_at_unix, 91);
         if index == "1" {
             assert_eq!(entry.value, "40,-120");
-            assert_eq!(raw[candidate]["display_name"], "Alternate Place, California");
+            assert_eq!(
+                raw[candidate]["display_name"],
+                "Alternate Place, California"
+            );
         } else {
             assert_eq!(entry.value, "37.422486,-122.085585");
         }
@@ -298,11 +317,15 @@ fn reverse_preserves_exact_response_and_original_provider_fields() {
         let e = &entity.evidence[0];
         assert_eq!(e.provenance.recorded_at_unix, 456);
         assert_eq!(
-            e.attributes.get("nominatim_raw_response_json").map(String::as_str),
+            e.attributes
+                .get("nominatim_raw_response_json")
+                .map(String::as_str),
             Some(PLACE)
         );
         assert_eq!(
-            e.attributes.get("nominatim_candidate_index").map(String::as_str),
+            e.attributes
+                .get("nominatim_candidate_index")
+                .map(String::as_str),
             Some("0")
         );
     }
