@@ -80,17 +80,28 @@ fn audit_runs_on_schedule_dispatch_and_dependency_changes_only() {
         let marker = format!("  {event}\n");
         let section = audit
             .split_once(&marker)
-            .and_then(|(_, tail)| tail.split("\n  ").next())
+            .map(|(_, tail)| {
+                tail.lines()
+                    .take_while(|line| line.starts_with("    ") || line.trim().is_empty())
+                    .collect::<Vec<_>>()
+            })
             .expect("event trigger must have a scoped paths section");
-        for required in [
-            "\"**/Cargo.toml\"",
-            "\"**/Cargo.lock\"",
-            "\".github/workflows/audit.yml\"",
-        ] {
-            assert!(
-                section.contains(required),
-                "{event} must be path-scoped to {required}"
-            );
-        }
+        assert!(
+            section.iter().any(|line| line.trim() == "paths:"),
+            "{event} must declare paths"
+        );
+        let actual = section
+            .iter()
+            .filter_map(|line| line.trim().strip_prefix("- "))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            [
+                "\"**/Cargo.toml\"",
+                "\"**/Cargo.lock\"",
+                "\".github/workflows/audit.yml\"",
+            ],
+            "{event} must include exactly the audited paths"
+        );
     }
 }
