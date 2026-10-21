@@ -404,6 +404,25 @@ fn host_descriptors(
 
 /// What a record says about an account, a number or an address: registrar, carrier, profile,
 /// breaches, leaked credentials and malicious verdicts.
+/// The blockchain collector serializes unsigned satoshis to exactly eight
+/// fractional decimal places. Validate this fixed-point form without floating
+/// point rounding or accepting arbitrary imported evidence as a BTC amount.
+fn valid_btc_balance(value: &str) -> bool {
+    let Some((whole, fractional)) = value.split_once('.') else {
+        return false;
+    };
+    !whole.is_empty()
+        && whole.bytes().all(|digit| digit.is_ascii_digit())
+        && fractional.len() == 8
+        && fractional.bytes().all(|digit| digit.is_ascii_digit())
+        && whole
+            .parse::<u64>()
+            .ok()
+            .and_then(|coins| coins.checked_mul(100_000_000))
+            .and_then(|satoshis| fractional.parse::<u64>().ok()?.checked_add(satoshis))
+            .is_some()
+}
+
 fn identity_descriptors(
     entity: &Entity,
     evidence: &Evidence,
@@ -462,12 +481,13 @@ fn identity_descriptors(
         };
         out.push(("PGP_KEY", data));
     }
-    // A Bitcoin address's on-chain balance, as Spiderfoot's BITCOIN_BALANCE. `blockchain` is the
-    // only writer of `balance_btc` and queries only Bitcoin, so the attribute types the element
-    // unambiguously; the satoshi figure and received/sent totals stay on raw. A zero balance is a
-    // real finding and is kept. First producer of the otherwise-dormant BITCOIN_BALANCE type.
-    if let Some(balance) = attr("balance_btc") {
-        out.push(("BITCOIN_BALANCE", format!("{balance} BTC")));
+    // Only a crypto address observed by the Bitcoin collector can produce a
+    // balance element. Saved evidence attributes are not inherently trustworthy:
+    // malformed amounts and same-named fields from other sources are not proof.
+    if entity.kind == EntityKind::CryptoAddress && evidence.provenance.source == "blockchain" {
+        if let Some(balance) = attr("balance_btc").filter(|value| valid_btc_balance(value)) {
+            out.push(("BITCOIN_BALANCE", format!("{balance} BTC")));
+        }
     }
     if let Some(kind) = compromised_type(&entity.kind) {
         let mut breaches = BTreeSet::new();
@@ -1511,6 +1531,46 @@ mod tests {
             of_type(&found, "BITCOIN_BALANCE")[0].data,
             "107.69281547 BTC"
         );
+
+        // Zero is an observed amount, not a missing record.
+        let zero = entity(
+            EntityKind::CryptoAddress,
+            "1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+            "blockchain",
+            &[("balance_btc", "0.00000000")],
+        );
+        let found = elements(DOMAIN, &[zero], 1_700_000_000);
+        assert_eq!(of_type(&found, "BITCOIN_BALANCE")[0].data, "0.00000000 BTC");
+
+        // Neither another provider's attribute nor another entity type establishes
+        // a Bitcoin balance, even if the field name matches.
+        let other_source = entity(
+            EntityKind::CryptoAddress,
+            "1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+            "mnemonic",
+            &[("balance_btc", "25.00000000")],
+        );
+        let other_type = entity(
+            EntityKind::Domain,
+            "example.com",
+            "blockchain",
+            &[("balance_btc", "25.00000000")],
+        );
+        let found = elements(DOMAIN, &[other_source, other_type], 1_700_000_000);
+        assert!(of_type(&found, "BITCOIN_BALANCE").is_empty());
+
+        for invalid in [
+            "",
+            "-1.00000000",
+            "NaN",
+            "1.0000000",
+            "1.000000000",
+            "184467440738.00000000",
+        ] {
+            assert!(!valid_btc_balance(invalid), "{invalid}");
+        }
+        assert!(valid_btc_balance("107.69281547"));
+        assert!(valid_btc_balance("0.00000000"));
 
         // A crypto address with no balance summary produces no BITCOIN_BALANCE element.
         let bare = entity(
