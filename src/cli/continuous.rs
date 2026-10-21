@@ -97,11 +97,12 @@ fn latest<'a>(records: &'a [ScanRecord], request: &ScanRequest) -> Option<&'a Sc
         .max_by_key(|record| (record.created, record.id.as_str()))
 }
 
-/// A new scan must not be scheduled over an active or recently attempted scan.
-/// Failed attempts are evidence of failure, not permission to hammer the provider.
+/// Do not reschedule a scan until a full cadence has elapsed after completion.
+/// For historical records without an end time, retain the creation-time fallback.
 fn due(record: Option<&ScanRecord>, now: u64, cadence_ms: u64) -> bool {
     record.is_none_or(|record| {
-        !record.status.is_active() && now.saturating_sub(record.created) >= cadence_ms
+        let last_activity = record.ended.unwrap_or(record.created).max(record.created);
+        !record.status.is_active() && now.saturating_sub(last_activity) >= cadence_ms
     })
 }
 
@@ -321,6 +322,20 @@ mod tests {
         };
         assert!(!due(Some(&record), 500_000, 60_000));
         record.status = ScanStatus::ErrorFailed;
+        assert!(!due(Some(&record), 60_099, 60_000));
+        assert!(due(Some(&record), 60_100, 60_000));
+        // A scan longer than the interval must still get a full rest after finishing.
+        record.ended = Some(120_000);
+        assert!(!due(Some(&record), 120_000, 60_000));
+        assert!(!due(Some(&record), 179_999, 60_000));
+        assert!(due(Some(&record), 180_000, 60_000));
+        // Finished and aborted scans obey the same completion-time boundary.
+        record.status = ScanStatus::Finished;
+        assert!(!due(Some(&record), 179_999, 60_000));
+        record.status = ScanStatus::Aborted;
+        assert!(due(Some(&record), 180_000, 60_000));
+        // Clock regressions and malformed earlier end times never accelerate refresh.
+        record.ended = Some(50);
         assert!(!due(Some(&record), 60_099, 60_000));
         assert!(due(Some(&record), 60_100, 60_000));
     }
