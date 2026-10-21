@@ -497,6 +497,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "Hunter.io addresses published for a domain and address verification (free key)",
     },
     ReachableModule {
+        name: "hudsonrock",
+        command: "domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1589.002"],
+        description: "Hudson Rock Cavalier domain-level infostealer aggregates (keyless)",
+    },
+    ReachableModule {
         name: "ip_cli",
         command: "ip ADDRESS | scan -k ip ADDRESS",
         access: "keyless",
