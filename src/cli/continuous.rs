@@ -606,11 +606,9 @@ mod tests {
         let scans_dir = directory.join("scans");
         let store = ScanStore::open(&scans_dir).expect("scan store");
         let lookup: ScanLookup = Arc::new(|_, selector, _| {
-            let evidence = Evidence::new(
-                EvidenceProvenance::for_scan("internetdb", "test"),
-                "ports",
-            )
-            .with_attr("ports", "443");
+            let evidence =
+                Evidence::new(EvidenceProvenance::for_scan("internetdb", "test"), "ports")
+                    .with_attr("ports", "443");
             Ok(LookupOutput {
                 text: "offline fixture".to_owned(),
                 entities: vec![
@@ -662,7 +660,10 @@ mod tests {
             .find(|element| element.entity.is_some() && element.kind != "ROOT")
             .expect("an evidence element to flag");
         element.fp = true;
-        service.store().save_results(&results).expect("persist false positive");
+        service
+            .store()
+            .save_results(&results)
+            .expect("persist false positive");
         assert_eq!(
             api.handle("GET", &format!("/api/scans/{}/analyze", record.id), "")
                 .status,
@@ -672,7 +673,10 @@ mod tests {
         let stale: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
         assert_eq!(stale["normalisation"]["state"], "stale");
-        assert_eq!(stale["normalisation"]["reason"], "analysis_refused_http_409");
+        assert_eq!(
+            stale["normalisation"]["reason"],
+            "analysis_refused_http_409"
+        );
         assert!(stale.get("report").is_none());
         let previous: serde_json::Value = serde_json::from_slice(
             &std::fs::read(report_path.with_extension("previous.json")).unwrap(),
@@ -681,14 +685,25 @@ mod tests {
         assert_eq!(previous["normalisation"]["state"], "current");
         assert_eq!(observed.len(), 1);
         assert_eq!(retry_after.len(), 1);
-        assert!(service.store().results(&record.id).unwrap().unwrap().elements
-            .iter().any(|element| element.fp));
+        assert!(
+            service
+                .store()
+                .results(&record.id)
+                .unwrap()
+                .unwrap()
+                .elements
+                .iter()
+                .any(|element| element.fp)
+        );
 
         let mut results = service.store().results(&record.id).unwrap().unwrap();
         for element in &mut results.elements {
             element.fp = false;
         }
-        service.store().save_results(&results).expect("remove false positive");
+        service
+            .store()
+            .save_results(&results)
+            .expect("remove false positive");
         // Emulate expiry of the documented 15-minute retry back-off without sleeping.
         retry_after.clear();
         cycle(&api, &configured, &mut observed, &mut retry_after).expect("recovered cycle");
@@ -700,8 +715,13 @@ mod tests {
         // A restarted controller recomputes the latest saved scan without remote requests.
         let mut restarted_observed = BTreeMap::new();
         let mut restarted_retries = BTreeMap::new();
-        cycle(&api, &configured, &mut restarted_observed, &mut restarted_retries)
-            .expect("process restart cycle");
+        cycle(
+            &api,
+            &configured,
+            &mut restarted_observed,
+            &mut restarted_retries,
+        )
+        .expect("process restart cycle");
         assert_eq!(restarted_observed.len(), 1);
         assert!(restarted_retries.is_empty());
         assert_eq!(service.store().list().unwrap().len(), 1);
