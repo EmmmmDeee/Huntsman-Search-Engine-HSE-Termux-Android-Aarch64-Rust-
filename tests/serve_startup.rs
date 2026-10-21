@@ -84,14 +84,18 @@ fn startup_on(bind: &str, envs: &[(&str, &str)]) -> (String, String) {
     (first, stderr)
 }
 
-/// A generic deployment environment may export PORT, but that must not
-/// determine the listener address or reject an otherwise valid local bind.
+/// A leftover deployment environment may export `PORT` and a retired provider
+/// marker. Neither may reject a valid local bind or control the listener.
 /// Only `HSE_BIND` or `--bind` may opt the application into public listening.
 #[test]
 fn unrelated_port_environment_does_not_override_local_bind() {
     let mut child = serve(
         &[],
-        &[("PORT", "not-a-valid-port"), ("HSE_BIND", "127.0.0.1:0")],
+        &[
+            ("PORT", "not-a-valid-port"),
+            ("RAILWAY_ENVIRONMENT", "retired-sentinel"),
+            ("HSE_BIND", "127.0.0.1:0"),
+        ],
     )
     .stdout(Stdio::piped())
     .stderr(Stdio::null())
