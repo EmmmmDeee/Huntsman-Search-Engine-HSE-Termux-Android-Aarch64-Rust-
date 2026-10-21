@@ -197,8 +197,7 @@ fn a_body_that_is_not_json_is_drift_not_a_zero() {
 #[test]
 fn forward_preserves_every_raw_provider_field_and_observation_time() {
     let mut place: serde_json::Value = serde_json::from_str(PLACE).expect("valid fixture");
-    place["unexpected_nested"] =
-        serde_json::json!({"flags": [true, null, 3], "label": "retained"});
+    place["unexpected_nested"] = serde_json::json!({"flags": [true, null, 3], "label": "retained"});
     let body = serde_json::to_string(&vec![place]).expect("forward fixture");
     let observed_at = 1_700_000_123_u64;
 
@@ -228,9 +227,13 @@ fn forward_preserves_every_raw_provider_field_and_observation_time() {
                 .map(String::as_str),
             Some("0")
         );
-        let raw: serde_json::Value =
-            serde_json::from_str(evidence.attributes.get("nominatim_raw_response_json").unwrap())
-                .expect("raw JSON");
+        let raw: serde_json::Value = serde_json::from_str(
+            evidence
+                .attributes
+                .get("nominatim_raw_response_json")
+                .unwrap(),
+        )
+        .expect("raw JSON");
         assert_eq!(raw[0]["place_id"], 322_358_946);
         assert_eq!(
             raw[0]["licence"],
