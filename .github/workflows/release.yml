@@ -55,25 +55,12 @@ name: Release (prebuilt Termux aarch64 binary)
 # and in-app updater (which fetch `hse-aarch64-linux-android`) never pick up a
 # different program by name.
 on:
+  # No path filter on main pushes: every push starts a build, so the head always has
+  # its own. A push that touched only installer, docs or test files used to start none,
+  # and main then had no prebuilt (0a6784b, 2026-10-21).
   push:
     branches:
       - main
-    paths:
-      - ".github/workflows/release.yml"
-      - ".github/scripts/scan-for-keys.sh"
-      - ".github/scripts/install-termux.sh"
-      - ".github/actions/setup-ndk-aarch64/**"
-      - "Dockerfile"
-      - ".dockerignore"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "capabilities.json"
-      - "benchmarks.json"
-      - "src/**"
-      - "scripts/container-entrypoint.sh"
-      - "scripts/container-live-acceptance.sh"
-      - "xtask/**"
-      - ".cargo/**"
   workflow_dispatch:
   # Dry run on PRs that touch the release path: same build and key scan,
   # nothing published, no write token requested.
@@ -892,11 +879,11 @@ jobs:
           # own build supersedes this publication and returns 0; returns 1 when
           # this build is the one to publish; returns 2 when GitHub could not be
           # read, so the caller fails rather than guess. main moving on is not by
-          # itself a reason to publish nothing: a push that touches no release
-          # path starts no build, and a failed or cancelled build publishes
-          # nothing, so when every newer commit is such a commit the prebuilt
-          # would lag behind main until the next release push. Only a queued,
-          # running or successful build of a newer commit supersedes this one;
+          # itself a reason to publish nothing: a failed or cancelled build of a
+          # newer commit publishes nothing, so when every newer commit's build
+          # failed the prebuilt would lag behind main until the next push. Only a
+          # queued, running or successful build of a newer commit supersedes this
+          # one;
           # a main that no longer descends from this commit always does.
           newer_build() {
             local current cmp live sha
@@ -984,11 +971,11 @@ jobs:
           # own build supersedes this publication and returns 0; returns 1 when
           # this build is the one to publish; returns 2 when GitHub could not be
           # read, so the caller fails rather than guess. main moving on is not by
-          # itself a reason to publish nothing: a push that touches no release
-          # path starts no build, and a failed or cancelled build publishes
-          # nothing, so when every newer commit is such a commit the prebuilt
-          # would lag behind main until the next release push. Only a queued,
-          # running or successful build of a newer commit supersedes this one;
+          # itself a reason to publish nothing: a failed or cancelled build of a
+          # newer commit publishes nothing, so when every newer commit's build
+          # failed the prebuilt would lag behind main until the next push. Only a
+          # queued, running or successful build of a newer commit supersedes this
+          # one;
           # a main that no longer descends from this commit always does.
           newer_build() {
             local current cmp live sha
