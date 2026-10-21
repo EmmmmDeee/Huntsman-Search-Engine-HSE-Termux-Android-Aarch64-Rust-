@@ -20,8 +20,10 @@ use huntsman_recon::domain_cli::{DOMAIN_USAGE, DomainArgs};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::{Entity, EntityKind, merge_by_uid};
 use huntsman_recon::error::Error;
-use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
+use huntsman_recon::exif::{self, EXIF_USAGE, ExifArgs};
+use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::exposure_cli::{self, EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
+use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
 use huntsman_recon::ip_cli::{IP_USAGE, IpArgs};
@@ -708,6 +710,26 @@ pub(in crate::cli) fn geocode_cmd(args: &[String]) -> ExitCode {
         &parsed.query,
         clock::unix_now(),
     )) {
+        Ok((text, _)) => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        Err(refused) => fail(refused.exit_status(), refused.message()),
+    }
+}
+
+/// EXIF metadata and GPS of one local image: keyless and offline, no transport. The file is read
+/// here and the parsed bytes are handed to the library; a readable image with no EXIF still prints.
+pub(in crate::cli) fn exif_cmd(args: &[String]) -> ExitCode {
+    let parsed = match ExifArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return usage_failure(&e, EXIF_USAGE),
+    };
+    let bytes = match read_bounded(&parsed.path, exif::MAX_IMAGE_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) => return fail(EX_NOINPUT, &error.to_string()),
+    };
+    match source_report(exif::run(&bytes, &parsed.label, clock::unix_now())) {
         Ok((text, _)) => {
             print!("{text}");
             ExitCode::SUCCESS

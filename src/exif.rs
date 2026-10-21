@@ -1,0 +1,691 @@
+//! Keyless, offline EXIF metadata and GPS extraction from an image file.
+//!
+//! One `exif IMAGE-FILE` reads the bytes already on the device -- no network, no key -- and parses
+//! the EXIF block a camera embeds. JPEG (the `APP1` `Exif\0\0` segment) and TIFF (the whole file)
+//! are understood; both carry the same TIFF-structured image-file directories (IFDs). Every tag the
+//! directories name is kept as evidence on a [`EntityKind::Document`] entity for the file, so no part
+//! of the metadata is dropped, and when the GPS IFD holds a position it also becomes a
+//! [`EntityKind::Coordinates`] entity -- the same `lat,lon` the `geocode` command reverse-geocodes
+//! into an address. Nothing is inferred beyond what the tags state; EXIF can be edited, so the
+//! position is the file's embedded claim, not an independently verified location.
+//!
+//! The parser is bounds-checked and allocation-bounded: every read is range-checked against the
+//! buffer, directory entry counts and value lengths are capped, and only the Exif and GPS sub-IFDs
+//! are followed, so a malformed or hostile file yields a clean error, never a panic or a runaway.
+
+use std::path::PathBuf;
+
+use crate::canonical::canonical_coordinates;
+use crate::entity::{
+    Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity, scan_id,
+};
+use crate::error::Error;
+use crate::lookup_report;
+use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
+
+/// The source/module name this command reports its findings under.
+pub const SOURCE: &str = "exif";
+
+pub const EXIF_USAGE: &str = "usage: huntsman-recon exif IMAGE-FILE";
+
+pub const EXIF_HELP: &str = "\
+exif IMAGE-FILE
+Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG and TIFF images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG or TIFF image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
+
+/// The largest image read, in bytes. EXIF sits at the head of the file, but the whole file is read
+/// so a TIFF whose directories point deep into it still parses; a larger file is refused by name.
+pub const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The image is the file itself, read directly, so its metadata is reported with high but not
+/// absolute confidence: EXIF is editable.
+const DOCUMENT_CONFIDENCE: f64 = 0.9;
+
+/// A GPS position is the camera's embedded claim and can be spoofed, so it is reported a notch below
+/// the document it came from.
+const GPS_CONFIDENCE: f64 = 0.85;
+
+/// Most entries one IFD may declare. A real directory holds a few dozen; a larger count is corrupt
+/// or hostile and is not walked past this bound.
+const MAX_IFD_ENTRIES: u16 = 4096;
+
+/// Most bytes one tag's value may occupy. ASCII and arrays beyond this are truncated for display
+/// rather than allocated in full.
+const MAX_EXIF_VALUE_BYTES: usize = 8192;
+
+pub type ExifRun = SourceRun<Report>;
+
+/// A finished `exif` run: the rendered report, the entities it is made of, and the source outcome.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Report {
+    pub entities: Vec<Entity>,
+    pub outcomes: Vec<SourceExecutionOutcome>,
+}
+
+/// One parsed `exif IMAGE-FILE` argument: the path to read and a label for the report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExifArgs {
+    pub path: PathBuf,
+    pub label: String,
+}
+
+impl ExifArgs {
+    /// # Errors
+    /// [`Error::Invalid`] for a missing or extra argument, [`Error::InvalidValue`] for an empty path.
+    pub fn parse(args: &[String]) -> Result<Self, Error> {
+        let [raw] = args else {
+            return Err(Error::Invalid("exif needs exactly one image file".into()));
+        };
+        if raw.trim().is_empty() {
+            return Err(Error::invalid_value("the image path is empty"));
+        }
+        Ok(Self {
+            path: PathBuf::from(raw),
+            label: raw.clone(),
+        })
+    }
+}
+
+/// A GPS position read from the GPS IFD. `lat`/`lon` are signed decimal degrees.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GpsFix {
+    pub lat: f64,
+    pub lon: f64,
+    pub altitude_m: Option<f64>,
+    pub timestamp_utc: Option<String>,
+}
+
+/// Everything one image's EXIF yields: its container format, every decoded tag in directory order,
+/// and the GPS position when one is present and in range.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Parsed {
+    pub format: &'static str,
+    pub fields: Vec<(String, String)>,
+    pub gps: Option<GpsFix>,
+}
+
+/// Parse the EXIF of one image.
+///
+/// # Errors
+/// A static message when `image` is not a JPEG or TIFF, or its TIFF header is malformed. A JPEG with
+/// no `Exif` segment, or a readable image with an empty directory, is not an error: it returns a
+/// [`Parsed`] with its format and no fields.
+pub fn parse(image: &[u8]) -> Result<Parsed, &'static str> {
+    if image.starts_with(&[0xFF, 0xD8]) {
+        let format = "JPEG";
+        match find_jpeg_exif(image) {
+            Some(tiff) => decode_tiff(tiff, format),
+            None => Ok(Parsed {
+                format,
+                ..Parsed::default()
+            }),
+        }
+    } else if image.starts_with(b"II\x2a\x00") || image.starts_with(b"MM\x00\x2a") {
+        decode_tiff(image, "TIFF")
+    } else {
+        Err("not a JPEG or TIFF image")
+    }
+}
+
+/// Run the whole command: parse `image`, build the entities, and render the report. `label` names
+/// the file in the report and entity values.
+#[must_use]
+pub fn run(image: &[u8], label: &str, now_unix: u64) -> ExifRun {
+    let parsed = match parse(image) {
+        Ok(parsed) => parsed,
+        Err(why) => return ExifRun::Failed(format!("{label}: {why}")),
+    };
+    let sid = scan_id(SOURCE, label);
+    let mut entities = Vec::new();
+    document_entity(&mut entities, &parsed, label, &sid);
+    gps_entity(&mut entities, parsed.gps.as_ref(), label, &sid);
+    merge_by_uid(&mut entities);
+
+    let outcome = SourceExecutionOutcome::success(SOURCE, now_unix, entities.len());
+    let outcomes = vec![outcome];
+    match lookup_report::render(&entities, &outcomes) {
+        Ok(text) => ExifRun::Printed {
+            text,
+            report: Report { entities, outcomes },
+        },
+        Err(message) => ExifRun::Failed(message),
+    }
+}
+
+/// The document entity for the file, carrying its format and every decoded tag as evidence.
+fn document_entity(entities: &mut Vec<Entity>, parsed: &Parsed, label: &str, sid: &str) {
+    let mut evidence = Evidence::new(
+        EvidenceProvenance::for_scan(SOURCE, sid),
+        exif_summary(parsed, label),
+    )
+    .with_attr("format", parsed.format)
+    .with_attr("exif_field_count", parsed.fields.len().to_string());
+    for (name, value) in &parsed.fields {
+        evidence = evidence.with_attr(format!("exif_{name}"), value.as_str());
+    }
+    push_entity(
+        entities,
+        EntityKind::Document,
+        label,
+        DOCUMENT_CONFIDENCE,
+        sid,
+        evidence,
+        &[SOURCE, "image"],
+    );
+}
+
+/// The coordinates entity for an embedded GPS position, when one is present and in range.
+fn gps_entity(entities: &mut Vec<Entity>, gps: Option<&GpsFix>, label: &str, sid: &str) {
+    let Some(gps) = gps else { return };
+    let Some(coordinates) = canonical_coordinates(&format!("{},{}", gps.lat, gps.lon)) else {
+        return;
+    };
+    let mut evidence = Evidence::new(
+        EvidenceProvenance::for_scan(SOURCE, sid),
+        format!("GPS position embedded in {label}"),
+    )
+    .with_attr("source_file", label)
+    .with_attr("coordinates", coordinates.as_str())
+    .with_attr("derivation", "EXIF GPS IFD");
+    if let Some(altitude) = gps.altitude_m {
+        evidence = evidence.with_attr("altitude_m", format!("{altitude:.2}"));
+    }
+    if let Some(timestamp) = &gps.timestamp_utc {
+        evidence = evidence.with_attr("gps_timestamp_utc", timestamp.as_str());
+    }
+    push_entity(
+        entities,
+        EntityKind::Coordinates,
+        &coordinates,
+        GPS_CONFIDENCE,
+        sid,
+        evidence,
+        &[SOURCE, "gps", "geoint"],
+    );
+}
+
+/// The one-line summary for the document entity.
+fn exif_summary(parsed: &Parsed, label: &str) -> String {
+    if parsed.fields.is_empty() {
+        format!("{} image {label} with no EXIF metadata", parsed.format)
+    } else {
+        format!(
+            "{} image {label} with {} EXIF field(s)",
+            parsed.format,
+            parsed.fields.len()
+        )
+    }
+}
+
+// ── JPEG container ───────────────────────────────────────────────────────────────────────
+
+/// The TIFF block inside a JPEG's `APP1 Exif\0\0` segment, or `None` when there is none. **Pure.**
+fn find_jpeg_exif(image: &[u8]) -> Option<&[u8]> {
+    let mut i = 2; // past the SOI marker
+    loop {
+        // Skip any 0xFF fill bytes before a marker.
+        while image.get(i) == Some(&0xFF) && image.get(i + 1) == Some(&0xFF) {
+            i += 1;
+        }
+        if *image.get(i)? != 0xFF {
+            return None;
+        }
+        let marker = *image.get(i + 1)?;
+        i += 2;
+        // Start of scan or end of image: no metadata segment follows.
+        if marker == 0xDA || marker == 0xD9 {
+            return None;
+        }
+        // Standalone markers carry no length.
+        if marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+            continue;
+        }
+        let length = be_u16(image, i)? as usize;
+        if length < 2 {
+            return None;
+        }
+        let payload = image.get(i + 2..i + length)?;
+        if marker == 0xE1 && payload.starts_with(b"Exif\x00\x00") {
+            return payload.get(6..);
+        }
+        i += length;
+    }
+}
+
+/// A big-endian u16 at `offset`. **Pure.**
+fn be_u16(buf: &[u8], offset: usize) -> Option<u16> {
+    let bytes: [u8; 2] = buf.get(offset..offset + 2)?.try_into().ok()?;
+    Some(u16::from_be_bytes(bytes))
+}
+
+// ── TIFF directories ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Endian {
+    Little,
+    Big,
+}
+
+/// A bounds-checked reader over the TIFF block, honouring its byte order.
+struct Tiff<'a> {
+    buf: &'a [u8],
+    endian: Endian,
+}
+
+impl Tiff<'_> {
+    fn u16(&self, offset: usize) -> Option<u16> {
+        let bytes: [u8; 2] = self.buf.get(offset..offset + 2)?.try_into().ok()?;
+        Some(match self.endian {
+            Endian::Little => u16::from_le_bytes(bytes),
+            Endian::Big => u16::from_be_bytes(bytes),
+        })
+    }
+
+    fn u32(&self, offset: usize) -> Option<u32> {
+        let bytes: [u8; 4] = self.buf.get(offset..offset + 4)?.try_into().ok()?;
+        Some(match self.endian {
+            Endian::Little => u32::from_le_bytes(bytes),
+            Endian::Big => u32::from_be_bytes(bytes),
+        })
+    }
+
+    fn slice(&self, offset: usize, len: usize) -> Option<&[u8]> {
+        self.buf.get(offset..offset.checked_add(len)?)
+    }
+}
+
+/// One raw directory entry, with its value bytes already located and copied out.
+struct Entry {
+    tag: u16,
+    typ: u16,
+    /// The value bytes (inline or followed to their offset), capped at [`MAX_EXIF_VALUE_BYTES`].
+    value: Vec<u8>,
+}
+
+/// Decode a TIFF block (the whole TIFF file, or a JPEG's embedded Exif block) into a [`Parsed`].
+fn decode_tiff(buf: &[u8], format: &'static str) -> Result<Parsed, &'static str> {
+    let endian = match buf.get(0..2) {
+        Some(b"II") => Endian::Little,
+        Some(b"MM") => Endian::Big,
+        _ => return Err("EXIF: bad TIFF byte order"),
+    };
+    let tiff = Tiff { buf, endian };
+    if tiff.u16(2) != Some(42) {
+        return Err("EXIF: bad TIFF magic number");
+    }
+    let ifd0 = tiff.u32(4).ok_or("EXIF: truncated TIFF header")? as usize;
+
+    let mut fields = Vec::new();
+    let mut gps_offset = None;
+    let mut exif_offset = None;
+
+    for entry in read_ifd(&tiff, ifd0) {
+        match entry.tag {
+            0x8769 => exif_offset = pointer(&tiff, &entry),
+            0x8825 => gps_offset = pointer(&tiff, &entry),
+            _ => push_field(
+                &mut fields,
+                ifd0_tag_name(entry.tag),
+                &named_value(&tiff, &entry),
+            ),
+        }
+    }
+    if let Some(offset) = exif_offset {
+        for entry in read_ifd(&tiff, offset) {
+            if entry.tag == 0x8825 {
+                gps_offset = gps_offset.or_else(|| pointer(&tiff, &entry));
+            } else {
+                push_field(
+                    &mut fields,
+                    exif_tag_name(entry.tag),
+                    &named_value(&tiff, &entry),
+                );
+            }
+        }
+    }
+    let gps = gps_offset.and_then(|offset| decode_gps(&tiff, offset, &mut fields));
+
+    Ok(Parsed {
+        format,
+        fields,
+        gps,
+    })
+}
+
+/// The entries of the IFD at `offset`, bounded by [`MAX_IFD_ENTRIES`]. **Pure.**
+fn read_ifd(tiff: &Tiff, offset: usize) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    let Some(count) = tiff.u16(offset) else {
+        return entries;
+    };
+    let count = count.min(MAX_IFD_ENTRIES);
+    for index in 0..count {
+        let at = offset + 2 + usize::from(index) * 12;
+        let (Some(tag), Some(typ), Some(cnt)) = (tiff.u16(at), tiff.u16(at + 2), tiff.u32(at + 4))
+        else {
+            break;
+        };
+        let Some(value) = read_value(tiff, typ, cnt, at + 8) else {
+            continue;
+        };
+        entries.push(Entry { tag, typ, value });
+    }
+    entries
+}
+
+/// Copy a tag's value bytes, whether they sit inline in the 4-byte field at `field` or at the
+/// offset those 4 bytes hold. Capped at [`MAX_EXIF_VALUE_BYTES`]. **Pure.**
+fn read_value(tiff: &Tiff, typ: u16, count: u32, field: usize) -> Option<Vec<u8>> {
+    let unit = type_size(typ)?;
+    let total = usize::try_from(count).ok()?.checked_mul(unit)?;
+    let total = total.min(MAX_EXIF_VALUE_BYTES);
+    let bytes = if total <= 4 {
+        tiff.slice(field, total)?
+    } else {
+        let offset = usize::try_from(tiff.u32(field)?).ok()?;
+        tiff.slice(offset, total)?
+    };
+    Some(bytes.to_vec())
+}
+
+/// The byte width of one value of TIFF type `typ`, or `None` for an unknown type. **Pure.**
+fn type_size(typ: u16) -> Option<usize> {
+    Some(match typ {
+        1 | 2 | 6 | 7 => 1, // BYTE, ASCII, SBYTE, UNDEFINED
+        3 | 8 => 2,         // SHORT, SSHORT
+        4 | 9 | 11 => 4,    // LONG, SLONG, FLOAT
+        5 | 10 | 12 => 8,   // RATIONAL, SRATIONAL, DOUBLE
+        _ => return None,
+    })
+}
+
+/// The IFD offset a pointer tag (Exif or GPS sub-IFD) holds. **Pure.**
+fn pointer(tiff: &Tiff, entry: &Entry) -> Option<usize> {
+    let bytes: [u8; 4] = entry.value.get(0..4)?.try_into().ok()?;
+    let offset = match tiff.endian {
+        Endian::Little => u32::from_le_bytes(bytes),
+        Endian::Big => u32::from_be_bytes(bytes),
+    };
+    usize::try_from(offset).ok()
+}
+
+/// Append a named field, skipping an empty display value. **Pure.**
+fn push_field(fields: &mut Vec<(String, String)>, name: String, value: &str) {
+    if !value.is_empty() {
+        fields.push((name, value.to_owned()));
+    }
+}
+
+// ── value formatting ─────────────────────────────────────────────────────────────────────
+
+/// A human-readable rendering of one entry's value. **Pure.**
+fn named_value(tiff: &Tiff, entry: &Entry) -> String {
+    match entry.typ {
+        2 => ascii(&entry.value),
+        3 => numbers(&entry.value, 2, |b| u64::from(read_u16(tiff.endian, b))),
+        4 => numbers(&entry.value, 4, |b| u64::from(read_u32(tiff.endian, b))),
+        5 => rationals(tiff.endian, &entry.value, false),
+        10 => rationals(tiff.endian, &entry.value, true),
+        // TIFF type 1 (BYTE), 7 (UNDEFINED) and any unknown type fall back to a hex rendering.
+        _ => bytes_hint(&entry.value),
+    }
+}
+
+/// An ASCII value: the bytes up to the first NUL, trimmed, as lossless UTF-8. **Pure.**
+fn ascii(bytes: &[u8]) -> String {
+    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).trim().to_owned()
+}
+
+/// A fallback for byte and undefined values: a short hex rendering. **Pure.**
+fn bytes_hint(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .take(16)
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A comma-joined list of fixed-width integers read by `read`. **Pure.**
+fn numbers(bytes: &[u8], width: usize, read: impl Fn(&[u8]) -> u64) -> String {
+    bytes
+        .chunks_exact(width)
+        .map(|chunk| read(chunk).to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A comma-joined list of rationals, each `num/den` or its decimal when it divides evenly. **Pure.**
+fn rationals(endian: Endian, bytes: &[u8], signed: bool) -> String {
+    bytes
+        .chunks_exact(8)
+        .map(|chunk| {
+            let (num, den) = read_rational(endian, chunk, signed);
+            if den == 0 {
+                format!("{num}/0")
+            } else if num % den == 0 {
+                (num / den).to_string()
+            } else {
+                format!("{num}/{den}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A single rational's numerator and denominator (as `i64` so signed and unsigned share a path).
+/// **Pure.**
+fn read_rational(endian: Endian, chunk: &[u8], signed: bool) -> (i64, i64) {
+    let num = read_u32(endian, chunk);
+    let den = read_u32(endian, &chunk[4..]);
+    if signed {
+        (i64::from(num.cast_signed()), i64::from(den.cast_signed()))
+    } else {
+        (i64::from(num), i64::from(den))
+    }
+}
+
+fn read_u16(endian: Endian, bytes: &[u8]) -> u16 {
+    let array: [u8; 2] = bytes
+        .get(..2)
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or([0; 2]);
+    match endian {
+        Endian::Little => u16::from_le_bytes(array),
+        Endian::Big => u16::from_be_bytes(array),
+    }
+}
+
+fn read_u32(endian: Endian, bytes: &[u8]) -> u32 {
+    let array: [u8; 4] = bytes
+        .get(..4)
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or([0; 4]);
+    match endian {
+        Endian::Little => u32::from_le_bytes(array),
+        Endian::Big => u32::from_be_bytes(array),
+    }
+}
+
+// ── GPS ──────────────────────────────────────────────────────────────────────────────────
+
+/// Decode the GPS IFD at `offset`: add every GPS tag to `fields` and return the position when the
+/// coordinate tags resolve to an in-range `lat,lon`. **Pure.**
+fn decode_gps(tiff: &Tiff, offset: usize, fields: &mut Vec<(String, String)>) -> Option<GpsFix> {
+    let entries = read_ifd(tiff, offset);
+    let mut lat_ref = None;
+    let mut lon_ref = None;
+    let mut lat = None;
+    let mut lon = None;
+    let mut altitude = None;
+    let mut altitude_ref = 0u8;
+    let mut time = None;
+    let mut date = None;
+
+    for entry in &entries {
+        push_field(fields, gps_tag_name(entry.tag), &named_value(tiff, entry));
+        match entry.tag {
+            0x0001 => lat_ref = Some(ascii(&entry.value)),
+            0x0002 => lat = degrees(tiff.endian, &entry.value),
+            0x0003 => lon_ref = Some(ascii(&entry.value)),
+            0x0004 => lon = degrees(tiff.endian, &entry.value),
+            0x0005 => altitude_ref = entry.value.first().copied().unwrap_or(0),
+            0x0006 => altitude = first_ratio(tiff.endian, &entry.value),
+            0x0007 => time = gps_time(tiff.endian, &entry.value),
+            0x001D => date = Some(ascii(&entry.value)),
+            _ => {}
+        }
+    }
+
+    let lat = apply_sign(lat?, lat_ref.as_deref(), "S");
+    let lon = apply_sign(lon?, lon_ref.as_deref(), "W");
+    Some(GpsFix {
+        lat,
+        lon,
+        altitude_m: altitude.map(|a| if altitude_ref == 1 { -a } else { a }),
+        timestamp_utc: gps_timestamp(date.as_deref(), time.as_deref()),
+    })
+}
+
+/// Negate `value` when its reference hemisphere is the negative one (`S` for latitude, `W` for
+/// longitude). **Pure.**
+fn apply_sign(value: f64, reference: Option<&str>, negative: &str) -> f64 {
+    if reference.map(str::trim) == Some(negative) {
+        -value
+    } else {
+        value
+    }
+}
+
+/// Decimal degrees from the three `deg, min, sec` rationals of a GPS coordinate. **Pure.**
+fn degrees(endian: Endian, bytes: &[u8]) -> Option<f64> {
+    let parts: Vec<f64> = bytes
+        .chunks_exact(8)
+        .map(|chunk| {
+            let (num, den) = read_rational(endian, chunk, false);
+            ratio(num, den)
+        })
+        .collect::<Option<Vec<f64>>>()?;
+    let degrees = *parts.first()?;
+    let minutes = parts.get(1).copied().unwrap_or(0.0);
+    let seconds = parts.get(2).copied().unwrap_or(0.0);
+    Some(degrees + minutes / 60.0 + seconds / 3600.0)
+}
+
+/// The first rational of a value as a float, when it is defined. **Pure.**
+fn first_ratio(endian: Endian, bytes: &[u8]) -> Option<f64> {
+    let chunk = bytes.get(0..8)?;
+    let (num, den) = read_rational(endian, chunk, false);
+    ratio(num, den)
+}
+
+/// `num/den` as a float, `0` for `0/0`, and `None` for a non-zero value over a zero denominator.
+/// **Pure.**
+#[allow(clippy::cast_precision_loss)]
+fn ratio(num: i64, den: i64) -> Option<f64> {
+    if den == 0 {
+        return (num == 0).then_some(0.0);
+    }
+    Some(num as f64 / den as f64)
+}
+
+/// `HH:MM:SS` from the three GPS-timestamp rationals. **Pure.**
+fn gps_time(endian: Endian, bytes: &[u8]) -> Option<String> {
+    let parts: Vec<i64> = bytes
+        .chunks_exact(8)
+        .map(|chunk| {
+            let (num, den) = read_rational(endian, chunk, false);
+            if den == 0 { num } else { num / den }
+        })
+        .collect();
+    let [hour, minute, second] = parts.get(0..3)?.try_into().ok()?;
+    Some(format!("{hour:02}:{minute:02}:{second:02}"))
+}
+
+/// A UTC timestamp from the GPS date stamp (`YYYY:MM:DD`) and time, when both are present. **Pure.**
+fn gps_timestamp(date: Option<&str>, time: Option<&str>) -> Option<String> {
+    let date = date?.trim();
+    if date.is_empty() {
+        return None;
+    }
+    match time {
+        Some(time) => Some(format!("{date} {time}Z")),
+        None => Some(date.to_owned()),
+    }
+}
+
+// ── tag names ────────────────────────────────────────────────────────────────────────────
+
+/// The IFD0 tag name, or a hex fallback for an unnamed tag. **Pure.**
+fn ifd0_tag_name(tag: u16) -> String {
+    match tag {
+        0x0100 => "ImageWidth",
+        0x0101 => "ImageLength",
+        0x0102 => "BitsPerSample",
+        0x010E => "ImageDescription",
+        0x010F => "Make",
+        0x0110 => "Model",
+        0x0112 => "Orientation",
+        0x011A => "XResolution",
+        0x011B => "YResolution",
+        0x0128 => "ResolutionUnit",
+        0x0131 => "Software",
+        0x0132 => "DateTime",
+        0x013B => "Artist",
+        0x8298 => "Copyright",
+        _ => return unknown_tag(tag),
+    }
+    .to_owned()
+}
+
+/// The Exif sub-IFD tag name, or a hex fallback. **Pure.**
+fn exif_tag_name(tag: u16) -> String {
+    match tag {
+        0x829A => "ExposureTime",
+        0x829D => "FNumber",
+        0x8822 => "ExposureProgram",
+        0x8827 => "ISOSpeedRatings",
+        0x9003 => "DateTimeOriginal",
+        0x9004 => "DateTimeDigitized",
+        0x920A => "FocalLength",
+        0xA002 => "PixelXDimension",
+        0xA003 => "PixelYDimension",
+        0xA402 => "ExposureMode",
+        0xA403 => "WhiteBalance",
+        0xA430 => "CameraOwnerName",
+        0xA431 => "BodySerialNumber",
+        0xA433 => "LensMake",
+        0xA434 => "LensModel",
+        0xA435 => "LensSerialNumber",
+        _ => return unknown_tag(tag),
+    }
+    .to_owned()
+}
+
+/// The GPS IFD tag name, or a hex fallback. **Pure.**
+fn gps_tag_name(tag: u16) -> String {
+    match tag {
+        0x0000 => "GPSVersionID",
+        0x0001 => "GPSLatitudeRef",
+        0x0002 => "GPSLatitude",
+        0x0003 => "GPSLongitudeRef",
+        0x0004 => "GPSLongitude",
+        0x0005 => "GPSAltitudeRef",
+        0x0006 => "GPSAltitude",
+        0x0007 => "GPSTimeStamp",
+        0x0008 => "GPSSatellites",
+        0x0012 => "GPSMapDatum",
+        0x001B => "GPSProcessingMethod",
+        0x001D => "GPSDateStamp",
+        _ => return unknown_tag(tag),
+    }
+    .to_owned()
+}
+
+/// `tag_0xXXXX` for a tag with no name in the tables above. **Pure.**
+fn unknown_tag(tag: u16) -> String {
+    format!("tag_0x{tag:04x}")
+}
+
+#[cfg(test)]
+mod tests;

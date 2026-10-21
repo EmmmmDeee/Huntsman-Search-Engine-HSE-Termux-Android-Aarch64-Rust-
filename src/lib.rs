@@ -77,6 +77,7 @@ pub mod environment;
 pub mod error;
 pub mod event;
 pub mod evidence_ancestry;
+pub mod exif;
 pub mod exit;
 pub mod exposure;
 pub mod exposure_cli;
