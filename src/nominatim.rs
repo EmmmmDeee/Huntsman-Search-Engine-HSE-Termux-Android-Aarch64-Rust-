@@ -8,11 +8,14 @@
 //! part of the answer is dropped. This is the free, keyless geocoder; the keyed `WiGLE` leg carries
 //! its own reverse-geocoded address for a network sighting, and this one needs no key.
 //!
-//! Nominatim asks callers to send a descriptive `User-Agent` and not to exceed one request a
-//! second; the crate's default agent names the tool and version, and the shared per-host circuit
-//! breaker paces repeated calls.
+//! Public Nominatim allows at most one HTTP request per second across an application.
+//! A bounded in-process cache avoids repeat queries, a shared lock serialises live
+//! requests with a full second after each attempt, and the circuit breaker handles failures.
+//! Multi-process and multi-device application traffic needs upstream coordination.
 
 use std::collections::BTreeMap;
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -40,6 +43,29 @@ struct RawObservation<'a> {
     body: &'a str,
     recorded_at_unix: u64,
 }
+
+const CACHE_LIMIT: usize = 64;
+const MAX_CACHE_BODY: usize = MAX_NOMINATIM_RAW_JSON_BYTES;
+const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const MIN_REQUEST_GAP: Duration = Duration::from_secs(1);
+
+struct CachedResponse {
+    response: Response,
+    received: Instant,
+    observed_at_unix: u64,
+}
+
+struct NominatimState {
+    last_attempt_finished: Option<Instant>,
+    cache: BTreeMap<String, CachedResponse>,
+}
+
+// One shared admission point for forward and reverse queries in this process.
+// In particular, different callers must not create parallel public-service requests.
+static NOMINATIM_STATE: Mutex<NominatimState> = Mutex::new(NominatimState {
+    last_attempt_finished: None,
+    cache: BTreeMap::new(),
+});
 
 /// Confidence that a geocoded match is the place the query meant. The service matched the query,
 /// so the point is a sound candidate, but a name can match more than one place: modest, not
@@ -135,11 +161,17 @@ pub fn forward<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
-    let (response, outcome) = get(transport, &search_url(query), now_unix)?;
+    let (response, outcome, cached) = get(transport, &search_url(query), now_unix)?;
     let Some(response) = response else {
         return Ok(miss(outcome));
     };
-    Ok(interpret_forward(&response, query, scan_id, now_unix))
+    let mut report = interpret_forward(&response, query, scan_id, outcome.observed_at_unix);
+    if cached {
+        report.outcome = report
+            .outcome
+            .with_detail("in-process cached Nominatim response");
+    }
+    Ok(report)
 }
 
 /// Reverse-geocode a `lat,lon` point into the address at that spot.
@@ -153,22 +185,105 @@ pub fn reverse<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
-    let (response, outcome) = get(transport, &reverse_url(lat, lon), now_unix)?;
+    let (response, outcome, cached) = get(transport, &reverse_url(lat, lon), now_unix)?;
     let Some(response) = response else {
         return Ok(miss(outcome));
     };
-    Ok(interpret_reverse(&response, lat, lon, scan_id, now_unix))
+    let mut report = interpret_reverse(&response, lat, lon, scan_id, outcome.observed_at_unix);
+    if cached {
+        report.outcome = report
+            .outcome
+            .with_detail("in-process cached Nominatim response");
+    }
+    Ok(report)
 }
 
-/// One guarded GET, paced by the per-host breaker, no redirects followed. Returns the response
-/// when one came back, and always the transport-level outcome, so a no-response miss keeps that
-/// outcome without a second request.
+/// Cache only a complete, successful document of the shape this endpoint expects.
+fn cacheable(url: &str, response: &Response) -> bool {
+    if response.status != 200 || response.truncated || response.body.len() > MAX_CACHE_BODY {
+        return false;
+    }
+    if url.starts_with(SEARCH) {
+        serde_json::from_slice::<Vec<Place>>(&response.body).is_ok()
+    } else if url.starts_with(REVERSE) {
+        serde_json::from_slice::<Reverse>(&response.body).is_ok()
+    } else {
+        false
+    }
+}
+
+fn insert_cache(state: &mut NominatimState, url: &str, response: Response, observed: u64) {
+    // Keep phone memory bounded, including when every query is distinct.
+    if state.cache.len() >= CACHE_LIMIT {
+        if let Some(oldest) = state
+            .cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.received)
+            .map(|(key, _)| key.clone())
+        {
+            state.cache.remove(&oldest);
+        }
+    }
+    state.cache.insert(
+        url.to_owned(),
+        CachedResponse {
+            response,
+            received: Instant::now(),
+            observed_at_unix: observed,
+        },
+    );
+}
+
+/// One guarded GET through the process-wide Nominatim cache and rate gate.
+/// Waiting occurs under the lock, so concurrent forward and reverse calls cannot
+/// overlap or burst. A circuit breaker remains a separate failure-control mechanism.
 fn get<T: Transport + ?Sized>(
     transport: &T,
     url: &str,
     now_unix: u64,
-) -> Result<(Option<Response>, SourceExecutionOutcome), Error> {
-    let fetched = fetch(
+) -> Result<(Option<Response>, SourceExecutionOutcome, bool), Error> {
+    get_with_state(&NOMINATIM_STATE, transport, url, now_unix, !cfg!(test))
+}
+
+/// Execute a guarded lookup with an explicitly provided cache and rate state.
+///
+/// Normal application calls use one process-global state. Unit tests isolate
+/// fixture responses by disabling caching on the global path, and exercise
+/// caching through a dedicated state rather than transport identity heuristics.
+fn get_with_state<T: Transport + ?Sized>(
+    state: &Mutex<NominatimState>,
+    transport: &T,
+    url: &str,
+    now_unix: u64,
+    cache_enabled: bool,
+) -> Result<(Option<Response>, SourceExecutionOutcome, bool), Error> {
+    let cache_key = url.to_owned();
+    let mut state = state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(entry) = state
+        .cache
+        .get(&cache_key)
+        .filter(|_| cache_enabled)
+        .filter(|entry| entry.received.elapsed() < CACHE_TTL)
+    {
+        return Ok((
+            Some(entry.response.clone()),
+            SourceExecutionOutcome::inconclusive(
+                SOURCE,
+                entry.observed_at_unix,
+                "response came from the in-process Nominatim cache",
+            ),
+            true,
+        ));
+    }
+    if let Some(finished) = state.last_attempt_finished {
+        let delay = MIN_REQUEST_GAP.saturating_sub(finished.elapsed());
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+    }
+    let result = fetch(
         transport,
         Request::get(url.to_owned())
             .header("accept", "application/json")
@@ -177,8 +292,23 @@ fn get<T: Transport + ?Sized>(
         &FetchOptions::no_redirects().paced(),
         SOURCE,
         now_unix,
-    )?;
-    Ok((fetched.response, fetched.outcome))
+    );
+    // Even refused or failed attempts consume the pacing slot; never create a burst.
+    state.last_attempt_finished = Some(Instant::now());
+    let fetched = result?;
+    if let Some(response) = fetched
+        .response
+        .as_ref()
+        .filter(|response| cache_enabled && cacheable(url, response))
+    {
+        insert_cache(
+            &mut state,
+            &cache_key,
+            response.clone(),
+            fetched.outcome.observed_at_unix,
+        );
+    }
+    Ok((fetched.response, fetched.outcome, false))
 }
 
 fn miss(outcome: SourceExecutionOutcome) -> Report {

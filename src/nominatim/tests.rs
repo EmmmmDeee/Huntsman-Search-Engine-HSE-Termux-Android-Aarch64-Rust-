@@ -354,3 +354,151 @@ fn oversized_provider_payload_is_rejected_not_partially_provenanced() {
     assert!(report.entities.is_empty());
     assert_eq!(report.outcome.kind, SourceOutcomeKind::ParserDrift);
 }
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Count actual transport sends rather than inferred library calls; the mutex ensures
+/// the timing test measures concurrent callers at the single network boundary.
+#[derive(Default)]
+struct RecordingTransport {
+    sends: AtomicUsize,
+    sent_at: Mutex<Vec<Instant>>,
+    body: Option<Vec<u8>>,
+}
+
+impl Transport for RecordingTransport {
+    fn send(&self, _request: &Request) -> Result<Response, crate::http::TransportFailure> {
+        self.sends.fetch_add(1, Ordering::SeqCst);
+        self.sent_at
+            .lock()
+            .expect("send times")
+            .push(Instant::now());
+        Ok(Response {
+            status: 200,
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: self.body.clone().unwrap_or_else(|| b"[]".to_vec()),
+            truncated: false,
+        })
+    }
+}
+
+#[test]
+fn identical_queries_reuse_the_cached_original_observation() {
+    // The production cache is process-global. An isolated state makes the cache
+    // contract deterministic without allowing one test's mocked response to
+    // contaminate another test's evidence.
+    let state = Mutex::new(NominatimState {
+        last_attempt_finished: None,
+        cache: BTreeMap::new(),
+    });
+    let transport = RecordingTransport {
+        body: Some(forward_body().into_bytes()),
+        ..RecordingTransport::default()
+    };
+    let query = "hse-nominatim-cache-fixture-unique-20261021";
+    let url = search_url(query);
+    let (first_body, first_outcome, first_cached) =
+        get_with_state(&state, &transport, &url, 123, true).expect("first lookup");
+    let (second_body, second_outcome, second_cached) =
+        get_with_state(&state, &transport, &url, 999, true).expect("cached lookup");
+    assert!(!first_cached);
+    assert!(second_cached);
+    assert_eq!(transport.sends.load(Ordering::SeqCst), 1);
+    assert_eq!(first_outcome.observed_at_unix, 123);
+    assert_eq!(second_outcome.observed_at_unix, 123);
+    assert_eq!(first_body.as_ref().unwrap().body, second_body.as_ref().unwrap().body);
+    let report = interpret_forward(
+        &second_body.expect("cached response"),
+        query,
+        "cache-test",
+        second_outcome.observed_at_unix,
+    );
+    assert_eq!(report.outcome.observed_at_unix, 123);
+    assert!(report.outcome.kind.is_accepted());
+    assert!(!report.entities.is_empty());
+    for entity in &report.entities {
+        assert_eq!(entity.evidence[0].provenance.recorded_at_unix, 123);
+        assert_eq!(
+            entity.evidence[0]
+                .attributes
+                .get("nominatim_raw_response_json")
+                .map(String::as_str),
+            Some(forward_body().as_str()),
+        );
+    }
+}
+
+#[test]
+fn concurrent_distinct_queries_have_a_real_inter_request_gap() {
+    let transport = Arc::new(RecordingTransport::default());
+    std::thread::scope(|scope| {
+        for query in [
+            "hse-nominatim-concurrent-one-20261021",
+            "hse-nominatim-concurrent-two-20261021",
+        ] {
+            let shared = Arc::clone(&transport);
+            scope.spawn(move || {
+                let report = forward(&*shared, query, "parallel", 100).expect("lookup");
+                assert_eq!(report.outcome.kind, SourceOutcomeKind::ValidZero);
+            });
+        }
+    });
+    let mut times = transport.sent_at.lock().expect("send times").clone();
+    times.sort_unstable();
+    assert_eq!(
+        times.len(),
+        2,
+        "each distinct query must reach the transport"
+    );
+    assert!(
+        times[1].duration_since(times[0]) >= MIN_REQUEST_GAP,
+        "public Nominatim requests must not burst"
+    );
+}
+
+#[test]
+fn cache_rejects_refusals_drift_and_oversized_payloads() {
+    let url = search_url("unique-cache-rejection");
+    let mut response = Response {
+        status: 200,
+        headers: Vec::new(),
+        body: b"[]".to_vec(),
+        truncated: false,
+    };
+    assert!(cacheable(&url, &response));
+    response.body = b"<html>not a search result</html>".to_vec();
+    assert!(!cacheable(&url, &response));
+    response.body = b"[]".to_vec();
+    response.status = 429;
+    assert!(!cacheable(&url, &response));
+    response.status = 200;
+    response.truncated = true;
+    assert!(!cacheable(&url, &response));
+    response.truncated = false;
+    assert_eq!(MAX_CACHE_BODY, 64 * 1024, "cache must respect raw-evidence cap");
+    response.body = vec![b' '; MAX_CACHE_BODY + 1];
+    assert!(!cacheable(&url, &response));
+}
+
+#[test]
+fn bounded_cache_eviction_keeps_at_most_the_capacity() {
+    let mut state = NominatimState {
+        last_attempt_finished: None,
+        cache: BTreeMap::new(),
+    };
+    for index in 0..=CACHE_LIMIT {
+        insert_cache(
+            &mut state,
+            &format!("https://nominatim.openstreetmap.org/search?q={index}"),
+            Response {
+                status: 200,
+                headers: Vec::new(),
+                body: b"[]".to_vec(),
+                truncated: false,
+            },
+            123,
+        );
+    }
+    assert_eq!(state.cache.len(), CACHE_LIMIT);
+}
