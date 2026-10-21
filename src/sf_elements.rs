@@ -1590,7 +1590,7 @@ mod tests {
         let found = elements(
             Target {
                 value: "Neal H. Walfield",
-                kind: "PERSON_NAME",
+                kind: "HUMAN_NAME",
             },
             &[holder],
             1_700_000_000,
