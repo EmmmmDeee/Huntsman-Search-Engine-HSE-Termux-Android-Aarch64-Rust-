@@ -411,7 +411,10 @@ mod tests {
             ),
             SourceExecutionOutcome::success("beta", 2, 1),
         ];
-        assert_eq!(changed_source_modules(&earlier, &later), ["alpha", "beta"]);
+        assert_eq!(
+            changed_source_modules(&earlier, &later),
+            vec!["alpha".to_owned(), "beta".to_owned()]
+        );
         assert!(changed_source_modules(&earlier, &earlier).is_empty());
         later.outcomes = earlier.outcomes.iter().rev().cloned().collect();
         assert!(changed_source_modules(&earlier, &later).is_empty());
