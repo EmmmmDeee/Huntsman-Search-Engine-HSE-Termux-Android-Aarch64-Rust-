@@ -29,6 +29,26 @@ impl Drop for ReaderSlot {
     }
 }
 
+/// Reserve a drainer without temporarily exceeding the process-wide cap.
+/// The CAS loop works on the supported minimum Rust toolchain.
+fn reserve_reader_slot() -> bool {
+    let mut active = ACTIVE_READERS.load(Ordering::Acquire);
+    loop {
+        if active >= MAX_ACTIVE_READERS {
+            return false;
+        }
+        match ACTIVE_READERS.compare_exchange_weak(
+            active,
+            active + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(current) => active = current,
+        }
+    }
+}
+
 fn uptime_secs() -> Option<f64> {
     let data = read_bounded(Path::new("/proc/uptime"), 128).ok()?;
     let first = std::str::from_utf8(&data).ok()?.split_whitespace().next()?;
@@ -55,12 +75,7 @@ fn collect_termux_radio(command: &str) -> Result<Vec<u8>, String> {
     };
     // Reserving before spawning bounds the threads that could be stranded
     // by inherited stdout descriptors in buggy Termux:API descendants.
-    if ACTIVE_READERS
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-            (count < MAX_ACTIVE_READERS).then_some(count + 1)
-        })
-        .is_err()
-    {
+    if !reserve_reader_slot() {
         let _ = child.kill();
         let _ = child.wait();
         return Err("Termux sensor output reader limit reached".into());
