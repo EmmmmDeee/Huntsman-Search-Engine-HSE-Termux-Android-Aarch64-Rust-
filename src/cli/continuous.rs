@@ -81,8 +81,7 @@ fn latest<'a>(records: &'a [ScanRecord], request: &ScanRequest) -> Option<&'a Sc
     records
         .iter()
         .filter(|record| {
-            record.target == request.target
-                && request.kind.as_deref() == Some(record.kind.as_str())
+            record.target == request.target && request.kind.as_deref() == Some(record.kind.as_str())
         })
         .max_by_key(|record| (record.created, record.id.as_str()))
 }
@@ -98,7 +97,9 @@ fn due(record: Option<&ScanRecord>, now: u64, cadence_ms: u64) -> bool {
 fn millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |time| u64::try_from(time.as_millis()).unwrap_or(u64::MAX))
+        .map_or(0, |time| {
+            u64::try_from(time.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn normalise_saved(
@@ -155,7 +156,9 @@ fn cycle(
             let analysis_key = format!("analysis:{}", record.id);
             if !record.status.is_active()
                 && !observed.contains(&record.id)
-                && retry_after.get(&analysis_key).is_none_or(|until| now >= *until)
+                && retry_after
+                    .get(&analysis_key)
+                    .is_none_or(|until| now >= *until)
             {
                 match normalise_saved(api, record, &config.normalised_dir) {
                     Ok(true) => {
@@ -165,10 +168,7 @@ fn cycle(
                     Ok(false) => {}
                     Err(error) => {
                         eprintln!("continuous: {error}");
-                        retry_after.insert(
-                            analysis_key,
-                            now.saturating_add(RETRY),
-                        );
+                        retry_after.insert(analysis_key, now.saturating_add(RETRY));
                     }
                 }
             }
