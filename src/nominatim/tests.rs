@@ -407,7 +407,10 @@ fn identical_queries_reuse_the_cached_original_observation() {
     assert_eq!(transport.sends.load(Ordering::SeqCst), 1);
     assert_eq!(first_outcome.observed_at_unix, 123);
     assert_eq!(second_outcome.observed_at_unix, 123);
-    assert_eq!(first_body.as_ref().unwrap().body, second_body.as_ref().unwrap().body);
+    assert_eq!(
+        first_body.as_ref().unwrap().body,
+        second_body.as_ref().unwrap().body
+    );
     let report = interpret_forward(
         &second_body.expect("cached response"),
         query,
@@ -476,7 +479,11 @@ fn cache_rejects_refusals_drift_and_oversized_payloads() {
     response.truncated = true;
     assert!(!cacheable(&url, &response));
     response.truncated = false;
-    assert_eq!(MAX_CACHE_BODY, 64 * 1024, "cache must respect raw-evidence cap");
+    assert_eq!(
+        MAX_CACHE_BODY,
+        64 * 1024,
+        "cache must respect raw-evidence cap"
+    );
     response.body = vec![b' '; MAX_CACHE_BODY + 1];
     assert!(!cacheable(&url, &response));
 }
