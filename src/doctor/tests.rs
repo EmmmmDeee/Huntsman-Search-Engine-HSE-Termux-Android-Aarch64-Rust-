@@ -442,6 +442,27 @@ fn a_malformed_keys_file_names_the_line_but_never_a_value() {
 }
 
 #[test]
+fn a_keys_file_slot_that_matches_no_provider_warns_and_names_it_but_never_the_value() {
+    let scratch = Scratch::new("unknownslot");
+    fs::write(
+        scratch.path(".huntsman.env"),
+        "HUNTSMAN_SHODAN_KEY=doctor-test-secret-value-known\nHUNTSMAN_SHODAN=doctor-test-secret-value-misnamed\n",
+    )
+    .expect("write");
+    let report = scratch.examine(&FakeHost::default());
+    let check = report.get("env_file").expect("check");
+    assert_eq!(check.status, Status::Warn, "{check:?}");
+    assert!(check.message.contains("read by no provider"), "{check:?}");
+    assert!(check.message.contains("HUNTSMAN_SHODAN"), "{check:?}");
+    assert_eq!(
+        check.repair, None,
+        "a misnamed slot is the operator's to rename, not an automatic repair"
+    );
+    let text = serde_json::to_string(&report).expect("json");
+    assert!(!text.contains("doctor-test-secret-value"), "{text}");
+}
+
+#[test]
 fn a_symlinked_keys_file_fails() {
     let scratch = Scratch::new("linkkeys");
     let keys = scratch.path(".huntsman.env");

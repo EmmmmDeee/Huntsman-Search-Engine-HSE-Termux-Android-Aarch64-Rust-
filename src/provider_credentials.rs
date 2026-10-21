@@ -408,6 +408,31 @@ pub fn status(keys: &Keys) -> Vec<ProviderStatus> {
         .collect()
 }
 
+/// Keys-file slot names that match no provider slot and no other variable `huntsman-recon`
+/// reads (see [`crate::environment::is_known_variable`]). Such a slot is stored in the keys file
+/// and counted by `doctor`, yet no provider reads it, so the keyed source it was meant to
+/// configure silently never runs. Surfacing it turns a misnamed key into an observable warning.
+/// Names only, never values. Deterministic order (the keys file is a sorted map).
+#[must_use]
+pub fn unrecognised_slots(keys: &Keys) -> Vec<&str> {
+    keys.slots()
+        .into_iter()
+        .filter(|slot| !crate::environment::is_known_variable(slot))
+        .collect()
+}
+
+/// Append one line per [`unrecognised_slots`] entry, after the provider rows, so a misnamed key
+/// is visible in `credential-status`. Never prints a value.
+fn write_unrecognised(out: &mut String, keys: &Keys) {
+    for slot in unrecognised_slots(keys) {
+        out.push_str("unrecognised_slot=");
+        out.push_str(slot);
+        out.push_str(
+            "\tstate=unread\tnote=matches no provider; rename it to the exact slot or remove it\n",
+        );
+    }
+}
+
 /// Probe every configured single-slot provider that has a canonical
 /// `service_defs` probe, and `WiGLE` through its own-profile endpoint. Unsupported providers remain explicit rather than
 /// being guessed healthy. Probe errors are reduced to `Unavailable`; raw
@@ -482,6 +507,7 @@ pub fn render(keys: &Keys) -> String {
     for provider in status(keys) {
         write_status(&mut out, &provider, None, &[]);
     }
+    write_unrecognised(&mut out, keys);
     out
 }
 
@@ -496,6 +522,7 @@ pub fn render_probed<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> Strin
             &probed.evidence,
         );
     }
+    write_unrecognised(&mut out, keys);
     out
 }
 
@@ -787,5 +814,74 @@ mod tests {
         assert_eq!(brave.probe, ProbeState::Unsupported);
         assert_eq!(hibp.probe, ProbeState::NotConfigured);
         assert!(transport.seen.borrow().is_empty());
+    }
+
+    #[test]
+    fn every_provider_slot_is_a_known_variable() {
+        // No configured provider key may ever be flagged as unrecognised, now or as providers are
+        // added: every slot a provider reads must be in environment::KNOWN_VARIABLES.
+        for provider in PROVIDERS {
+            for slot in provider.slots {
+                assert!(
+                    crate::environment::is_known_variable(slot),
+                    "provider {} slot {slot} is not a known variable",
+                    provider.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn known_settings_and_cost_variables_are_not_flagged() {
+        for name in [
+            crate::environment::SERVE_TOKEN_ENV,
+            crate::environment::SERVE_BIND_ENV,
+            crate::environment::HIBP_API_KEY_ENV,
+            crate::environment::HIBP_RATE_LIMIT_ENV,
+            crate::environment::HUNTSMAN_HOME_ENV,
+            crate::environment::HUNTSMAN_ENV_FILE_ENV,
+            crate::environment::CA_BUNDLE_ENV,
+            "HSE_PROVIDER_COST_SHODAN",
+        ] {
+            assert!(
+                crate::environment::is_known_variable(name),
+                "{name} should be recognised"
+            );
+        }
+        for name in [
+            "HUNTSMAN_SHODAN",
+            "SHODAN_KEY",
+            "HUNTSMAN_BOGUS_KEY",
+            "NOTAKEY",
+        ] {
+            assert!(
+                !crate::environment::is_known_variable(name),
+                "{name} should be unrecognised"
+            );
+        }
+    }
+
+    #[test]
+    fn unrecognised_slots_names_only_the_misnamed_key() {
+        // A real provider key, a legitimate non-provider setting, and a misnamed key together.
+        let keys = Keys::parse(
+            "HUNTSMAN_SHODAN_KEY=shodan-secret-value-012345\nHSE_AUTH_TOKEN=serve-token-value-012345\nHUNTSMAN_SHODAN=misnamed-secret-value-012345\n",
+        )
+        .expect("keys");
+        assert_eq!(unrecognised_slots(&keys), vec!["HUNTSMAN_SHODAN"]);
+
+        let rendered = render(&keys);
+        assert!(
+            rendered.contains("unrecognised_slot=HUNTSMAN_SHODAN"),
+            "credential-status must surface the misnamed slot: {rendered}"
+        );
+        assert!(
+            !rendered.contains("misnamed-secret-value"),
+            "it must never print the value"
+        );
+
+        // A keys file of only recognised names yields nothing.
+        let clean = Keys::parse("HUNTSMAN_SHODAN_KEY=shodan-secret-value-012345\n").expect("keys");
+        assert!(unrecognised_slots(&clean).is_empty());
     }
 }
