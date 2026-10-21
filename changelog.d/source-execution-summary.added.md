@@ -1,0 +1,1 @@
+- Scan status now includes a `source_execution_summary` computed from saved provider outcomes, separating accepted findings and confirmed empty results from credential skips and unresolved executions. It counts individual provider invocations, not all possible data sources, and never treats skipped providers as confirmed negatives.
