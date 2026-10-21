@@ -1,0 +1,1 @@
+- Remove Railway-specific source bindings, infrastructure-as-code, scripts, documentation, acceptance tests and CI jobs while retaining verified Termux AArch64 support and a self-hosted provider-neutral Linux container option.
