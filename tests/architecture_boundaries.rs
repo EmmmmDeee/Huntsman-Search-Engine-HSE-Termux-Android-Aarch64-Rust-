@@ -42,6 +42,9 @@ const SLOT_OWNER: [&str; 1] = ["src/environment.rs"];
 /// The module that builds an outcome from its fields, and `fetch.rs`, which refines an outcome it
 /// already holds with struct-update syntax.
 const OUTCOME_OWNERS: [&str; 2] = ["src/source_outcome.rs", "src/fetch.rs"];
+/// The one module that measures time from the Unix epoch. Every other production module asks it for
+/// the time, so each timestamp is taken the same way.
+const CLOCK_READER: [&str; 1] = ["src/clock.rs"];
 
 /// One production source file: its path relative to the crate root, and its text.
 struct Source {
@@ -220,6 +223,20 @@ fn only_the_transport_and_the_listener_own_a_socket() {
     );
 }
 
+/// Whether the tokens name the Unix epoch, which a wall-clock reading is measured from.
+fn measures_from_the_unix_epoch(toks: &[String]) -> bool {
+    toks.iter().any(|t| t == "UNIX_EPOCH")
+}
+
+#[test]
+fn only_the_clock_module_measures_time_from_the_unix_epoch() {
+    let found = offenders(&CLOCK_READER, measures_from_the_unix_epoch);
+    assert!(
+        found.is_empty(),
+        "production code measures Unix time outside `src/clock.rs`; ask `clock` for the time: {found:?}"
+    );
+}
+
 #[test]
 fn library_code_never_writes_to_the_terminal() {
     let found = offenders(&PROCESS_BOUNDARY, prints);
@@ -372,6 +389,12 @@ fn the_scanner_sees_each_forbidden_form_and_ignores_the_rest() {
         "use std::env; fn f() { env::var_os(\"X\"); }"
     )));
     assert!(reads_environment(&code("use std::env::var;")));
+    assert!(measures_from_the_unix_epoch(&code(
+        "fn f() { SystemTime::now().duration_since(std::time::UNIX_EPOCH); }"
+    )));
+    assert!(!measures_from_the_unix_epoch(&code(
+        "// SystemTime::now().duration_since(UNIX_EPOCH) in a comment"
+    )));
     assert!(reads_environment(&code("use std::env::{var};")));
     assert!(reads_environment(&code("fn f() { std::env::args(); }")));
     assert!(!reads_environment(&code(

@@ -17,11 +17,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::clock;
 use crate::correlator::evaluate_rules;
 use crate::entity::Entity;
 use crate::graph_exec::{
@@ -225,20 +226,6 @@ pub fn target_type(kind: ScanKind, canonical: &str) -> &'static str {
 /// and never asked twice.
 const EXPOSURE_SOURCES: [&str; 4] = ["hibp", "stolen_tax", "oathnet", "dehashed"];
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
-fn now_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos())
-}
-
 fn validate_options(options: &ScanOptions) -> Result<ScanOptions, ServiceError> {
     let usecase = if options.usecase.trim().is_empty() {
         "all".to_owned()
@@ -403,7 +390,7 @@ fn failed_lookup_step(
         entities: Vec::new(),
         outcomes: vec![SourceExecutionOutcome::failed(
             module,
-            now_ms() / 1_000,
+            clock::unix_now_millis() / 1_000,
             kind,
             None,
             format!(
@@ -942,7 +929,7 @@ impl ScanService {
         let _ = self.store.append_log(
             id,
             &LogEntry {
-                time: now_ms(),
+                time: clock::unix_now_millis(),
                 component: component.to_owned(),
                 level,
                 message: message.into(),
@@ -978,7 +965,7 @@ impl ScanService {
             format_version: FORMAT_VERSION,
             id: new_id(
                 &plan.target,
-                now_nanos(),
+                clock::unix_now_nanos(),
                 self.sequence.fetch_add(1, Ordering::Relaxed),
             ),
             name,
@@ -987,7 +974,7 @@ impl ScanService {
             kind: plan.kind.command().to_owned(),
             options,
             status: ScanStatus::Created,
-            created: now_ms(),
+            created: clock::unix_now_millis(),
             started: None,
             ended: None,
             elements: 0,
@@ -1058,7 +1045,7 @@ impl ScanService {
             self.owned().remove(&record.id);
             let mut failed = record;
             failed.status = ScanStatus::ErrorFailed;
-            failed.ended = Some(now_ms());
+            failed.ended = Some(clock::unix_now_millis());
             self.store.update(&failed)?;
             self.log(
                 &failed.id,
@@ -1251,18 +1238,18 @@ impl ScanService {
                 LogLevel::Error,
                 "the scan failed unexpectedly; what it saved is kept",
             );
-            let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+            let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(clock::unix_now_millis()));
         }
     }
 
     fn collect(&self, id: &str, plan: &ScanPlan) {
         if self.aborted(id) {
             self.log(id, "huntsman", LogLevel::Info, "stopped before it started");
-            let _ = self.set_status(id, ScanStatus::Aborted, Some(now_ms()));
+            let _ = self.set_status(id, ScanStatus::Aborted, Some(clock::unix_now_millis()));
             return;
         }
         if self
-            .set_status(id, ScanStatus::Running, Some(now_ms()))
+            .set_status(id, ScanStatus::Running, Some(clock::unix_now_millis()))
             .is_err()
         {
             return;
@@ -1280,7 +1267,8 @@ impl ScanService {
                     LogLevel::Error,
                     format!("cannot load persisted scan options: {error}"),
                 );
-                let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+                let _ =
+                    self.set_status(id, ScanStatus::ErrorFailed, Some(clock::unix_now_millis()));
                 return;
             }
         };
@@ -1288,7 +1276,8 @@ impl ScanService {
             Ok(chosen) => chosen,
             Err(error) => {
                 self.log(id, "huntsman", LogLevel::Error, error.to_string());
-                let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+                let _ =
+                    self.set_status(id, ScanStatus::ErrorFailed, Some(clock::unix_now_millis()));
                 return;
             }
         };
@@ -1346,7 +1335,7 @@ impl ScanService {
                 LogLevel::Error,
                 format!("could not save the results: {error}"),
             );
-            let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(now_ms()));
+            let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(clock::unix_now_millis()));
             return;
         }
         self.log(
@@ -1355,7 +1344,7 @@ impl ScanService {
             LogLevel::Info,
             format!("scan {}", status.as_str()),
         );
-        let _ = self.set_status(id, status, Some(now_ms()));
+        let _ = self.set_status(id, status, Some(clock::unix_now_millis()));
     }
 
     /// How far the scan followed what it found, and why it stopped there.
@@ -1453,7 +1442,7 @@ impl ScanService {
                 );
                 found.outcomes.push(SourceExecutionOutcome::inconclusive(
                     "scan_lookup",
-                    now_ms() / 1_000,
+                    clock::unix_now_millis() / 1_000,
                     format!("{} lookup on {target}: {message}", kind.command()),
                 ));
                 LookupDispatch::Missing
@@ -1470,7 +1459,7 @@ impl ScanService {
         errors: usize,
         crawl: Crawl,
     ) -> Result<(), ServiceError> {
-        let now = now_ms();
+        let now = clock::unix_now_millis();
         let target = Target {
             value: &plan.target,
             kind: plan.target_type,

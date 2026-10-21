@@ -3,10 +3,10 @@
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{RECON_USAGE, fail};
 use huntsman_recon::canonical::{canonical_domain, canonical_email, canonical_url};
+use huntsman_recon::clock;
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::crtsh::{self, CrtShError};
 use huntsman_recon::dns;
@@ -60,9 +60,7 @@ pub(super) fn dehashed_cmd(args: &[String]) -> ExitCode {
 
 pub(super) fn seeknow_cmd(args: &[String]) -> ExitCode {
     let transport = UreqTransport::new(&TransportConfig::default());
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = clock::unix_now();
     match huntsman_recon::seeknow_cli::run(&transport, args, env::var_os("HOME").as_deref(), now) {
         SeekNowCliRun::Usage => fail(EX_USAGE, SEEKNOW_USAGE),
         SeekNowCliRun::Printed(text) => {
@@ -178,9 +176,7 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
             ),
         );
     }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = clock::unix_now();
     let transport = UreqTransport::new(&stolen_tax::transport_config());
     match stolen_tax::lookup(&transport, &keys, query, "cli", now) {
         Ok(report) => {
@@ -237,9 +233,7 @@ pub(super) fn fetch_cmd(args: &[String]) -> ExitCode {
         },
         ..TransportConfig::default()
     });
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = clock::unix_now();
     let fetched = match fetch(
         &transport,
         Request::get(parsed.url.clone()),
@@ -308,9 +302,7 @@ fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
     let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
         provider_id: host,
         credential_slot: slot.clone(),
-        approved_at_unix: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs()),
+        approved_at_unix: clock::unix_now(),
         approval_provenance: "operator supplied --bearer/--header on the command line".into(),
     })?;
     Ok(Some(Credential::new(authority, secret, style.clone())?))

@@ -7,8 +7,9 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use huntsman_recon::clock;
 use huntsman_recon::fsio::write_atomic_private;
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_service::{ScanRequest, plan};
@@ -104,14 +105,6 @@ fn due(record: Option<&ScanRecord>, now: u64, cadence_ms: u64) -> bool {
     })
 }
 
-fn millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |time| {
-            u64::try_from(time.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 fn normalise_saved(
     api: &ScanApi,
     record: &ScanRecord,
@@ -149,7 +142,7 @@ fn cycle(
     observed: &mut BTreeSet<String>,
     retry_after: &mut BTreeMap<String, u64>,
 ) -> Result<(), String> {
-    let now = millis();
+    let now = clock::unix_now_millis();
     let records = api
         .service()
         .store()

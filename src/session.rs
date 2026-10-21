@@ -2,10 +2,10 @@
 //! falsification, or verification. Partial terminate still requires residual text.
 
 use std::fmt::Write as _;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::clock;
 use crate::error::Error;
 use crate::stage::{EvidenceLevel, Status};
 use crate::timefmt;
@@ -231,18 +231,14 @@ fn tip_is_hash(tip: &str) -> bool {
 }
 
 fn generate_id() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
+    let nanos = clock::unix_now_nanos();
     let mut id = String::new();
     let _ = write!(id, "{nanos:x}-{:x}", std::process::id());
     id
 }
 
 fn utc_now() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+    let secs = i64::try_from(clock::unix_now()).unwrap_or(0);
     timefmt::format_unix(secs)
 }
 
