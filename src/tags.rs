@@ -45,3 +45,5 @@ pub const REGISTRAR: &str = "registrar";
 pub const ABUSE_CONTACT: &str = "abuse-contact";
 /// A mailbox or telephone a registration record names for another contact role.
 pub const WHOIS_CONTACT: &str = "whois-contact";
+/// A URL that is one public Wikipedia page edit, typed as `WIKIPEDIA_PAGE_EDIT`.
+pub const WIKIPEDIA_EDIT: &str = "wikipedia-edit";
