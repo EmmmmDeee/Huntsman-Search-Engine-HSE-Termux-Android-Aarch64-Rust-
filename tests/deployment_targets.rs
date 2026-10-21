@@ -162,8 +162,10 @@ fn container_docs_match_the_image_and_the_token_contract() {
     assert!(install.contains("CONTAINERS.md"));
     assert!(container.contains("provider-neutral"));
     assert!(container.contains("the secret itself is not printed"));
-    assert!(container.contains("no managed hosting service") || container.contains("No managed hosting service"));
-
+    assert!(
+        container.contains("no managed hosting service")
+            || container.contains("No managed hosting service")
+    );
 }
 
 #[test]
