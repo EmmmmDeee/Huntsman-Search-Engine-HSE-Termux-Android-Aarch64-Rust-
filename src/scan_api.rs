@@ -1526,7 +1526,7 @@ mod tests {
             })
         );
         assert_eq!(
-            source_execution_summary(&[] )["all_recorded_sources_accepted"],
+            source_execution_summary(&[])["all_recorded_sources_accepted"],
             false
         );
     }
