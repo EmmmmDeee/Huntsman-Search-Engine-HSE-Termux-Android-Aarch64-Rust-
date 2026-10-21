@@ -1,0 +1,1 @@
+- Every push to main now starts the prebuilt aarch64 build. A push that touched only installer, docs or test files started none, so main had no prebuilt of its own and the installer fell back to an older build.
