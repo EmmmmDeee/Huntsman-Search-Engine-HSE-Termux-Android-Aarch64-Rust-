@@ -28,7 +28,7 @@ use crate::lookup_report;
 use crate::netblock::Netblock;
 use crate::rdap_legs;
 use crate::ripestat;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
 use crate::tags;
 use crate::threat_feeds::{self, Feeds};
 
@@ -75,11 +75,7 @@ impl NetblockArgs {
     }
 }
 
-pub enum NetblockRun {
-    Printed { text: String, report: Report },
-    Network(String),
-    Failed(String),
-}
+pub type NetblockRun = SourceRun<Report>;
 
 /// Look up `netblock`, then check it and every address and name found in it against the threat
 /// `feeds`. Each leg runs only when the transport's lookup asks its module

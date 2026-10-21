@@ -12,9 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::fail;
 use huntsman_recon::api_leg;
-use huntsman_recon::asn_cli::{ASN_USAGE, AsnArgs, AsnRun};
+use huntsman_recon::asn_cli::{ASN_USAGE, AsnArgs};
 use huntsman_recon::concurrent;
-use huntsman_recon::crypto_cli::{self, CryptoRun};
+use huntsman_recon::crypto_cli;
 use huntsman_recon::dehashed::{self, client::DehashedClient};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::{Entity, EntityKind, merge_by_uid};
@@ -23,8 +23,8 @@ use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOPERM, EX_UNAVAILABLE, EX_U
 use huntsman_recon::exposure_cli::{self, EXPOSURE_USAGE, ExposureArgs, ExposureRun, Sources};
 use huntsman_recon::hibp::client::{Auth, HibpClient, HibpConfig};
 use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
-use huntsman_recon::ip_cli::{IP_USAGE, IpArgs, IpRun};
-use huntsman_recon::itunes_cli::{self, ITUNES_USAGE, ItunesArgs, ItunesRun};
+use huntsman_recon::ip_cli::{IP_USAGE, IpArgs};
+use huntsman_recon::itunes_cli::{self, ITUNES_USAGE, ItunesArgs};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
     self, ASN_POLICY, CRYPTO_POLICY, DOMAIN_POLICY, EMAIL_EXPOSURE_POLICY, EMAIL_POLICY,
@@ -32,14 +32,14 @@ use huntsman_recon::lookup_save::{
     SavePolicy, USERNAME_EXPOSURE_POLICY, USERNAME_POLICY,
 };
 use huntsman_recon::module_selection::{Selected, Selection};
-use huntsman_recon::netblock_cli::{NETBLOCK_USAGE, NetblockArgs, NetblockRun};
-use huntsman_recon::network_cli::{NETWORK_USAGE, NetworkArgs, NetworkRun};
+use huntsman_recon::netblock_cli::{NETBLOCK_USAGE, NetblockArgs};
+use huntsman_recon::network_cli::{NETWORK_USAGE, NetworkArgs};
 use huntsman_recon::oathnet;
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
 use huntsman_recon::scan_route::ScanKind;
 use huntsman_recon::seeknow_collector::LookupLeg;
-use huntsman_recon::source_outcome::SourceExecutionOutcome;
+use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceRun};
 use huntsman_recon::stolen_tax;
 use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::threat_feeds::{self, Feeds};
@@ -117,6 +117,16 @@ pub(in crate::cli) fn collect(
 /// A transport built from `config` that asks only what `chosen` runs.
 fn transport(config: &TransportConfig, chosen: &Selection) -> Selected<UreqTransport> {
     Selected::new(UreqTransport::new(config), chosen.clone())
+}
+
+/// The text and report of one single-source run, or the refusal its outcome maps to. Every
+/// single-source lookup maps its run through here, so each outcome has one exit status.
+fn source_report<R>(run: SourceRun<R>) -> Result<(String, R), Refused> {
+    match run {
+        SourceRun::Printed { text, report } => Ok((text, report)),
+        SourceRun::Network(m) => Err(Refused::Network(m)),
+        SourceRun::Failed(m) => Err(Refused::Unavailable(m)),
+    }
 }
 
 /// A finished report of one kind, saved under `policy`.
@@ -457,28 +467,31 @@ fn feeds(chosen: &Selection) -> Feeds {
 fn ip(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Refused> {
     let keys = crate::cli::credentials::lookup_keys();
     let transport = transport(&api_leg::transport_config(), chosen);
-    match huntsman_recon::ip_cli::run(&transport, &keys, &feeds(chosen), selector, now) {
-        IpRun::Printed { text, report } => {
-            Ok(done(text, report.entities, report.outcomes, IP_POLICY))
-        }
-        IpRun::Network(m) => Err(Refused::Network(m)),
-        IpRun::Failed(m) => Err(Refused::Unavailable(m)),
-    }
+    let (text, report) = source_report(huntsman_recon::ip_cli::run(
+        &transport,
+        &keys,
+        &feeds(chosen),
+        selector,
+        now,
+    ))?;
+    Ok(done(text, report.entities, report.outcomes, IP_POLICY))
 }
 
 /// The address-block sources for a CIDR block.
 fn netblock(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Refused> {
     let transport = transport(&api_leg::transport_config(), chosen);
-    match huntsman_recon::netblock_cli::run(&transport, &feeds(chosen), selector, now) {
-        NetblockRun::Printed { text, report } => Ok(done(
-            text,
-            report.entities,
-            report.outcomes,
-            NETBLOCK_POLICY,
-        )),
-        NetblockRun::Network(m) => Err(Refused::Network(m)),
-        NetblockRun::Failed(m) => Err(Refused::Unavailable(m)),
-    }
+    let (text, report) = source_report(huntsman_recon::netblock_cli::run(
+        &transport,
+        &feeds(chosen),
+        selector,
+        now,
+    ))?;
+    Ok(done(
+        text,
+        report.entities,
+        report.outcomes,
+        NETBLOCK_POLICY,
+    ))
 }
 
 /// The AS sources for an AS number. Its transport reads up to [`huntsman_recon::asn_cli::MAX_BODY`]
@@ -491,26 +504,22 @@ fn asn(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Refuse
         },
         chosen,
     );
-    match huntsman_recon::asn_cli::run(&transport, selector, now) {
-        AsnRun::Printed { text, report } => {
-            Ok(done(text, report.entities, report.outcomes, ASN_POLICY))
-        }
-        AsnRun::Network(m) => Err(Refused::Network(m)),
-        AsnRun::Failed(m) => Err(Refused::Unavailable(m)),
-    }
+    let (text, report) = source_report(huntsman_recon::asn_cli::run(&transport, selector, now))?;
+    Ok(done(text, report.entities, report.outcomes, ASN_POLICY))
 }
 
 /// The domain sources for a hostname.
 fn domain(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Refused> {
     let keys = crate::cli::credentials::lookup_keys();
     let transport = transport(&huntsman_recon::domain_cli::transport_config(), chosen);
-    match huntsman_recon::domain_cli::run(&transport, &keys, &feeds(chosen), selector, now) {
-        huntsman_recon::domain_cli::DomainRun::Printed { text, report } => {
-            Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
-        }
-        huntsman_recon::domain_cli::DomainRun::Network(m) => Err(Refused::Network(m)),
-        huntsman_recon::domain_cli::DomainRun::Failed(m) => Err(Refused::Unavailable(m)),
-    }
+    let (text, report) = source_report(huntsman_recon::domain_cli::run(
+        &transport,
+        &keys,
+        &feeds(chosen),
+        selector,
+        now,
+    ))?;
+    Ok(done(text, report.entities, report.outcomes, DOMAIN_POLICY))
 }
 
 /// The `WiGLE` network lookup for a BSSID, coordinate or SSID.
@@ -522,26 +531,16 @@ fn network(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Re
     let transport = transport(&wigle::transport_config(), chosen);
     let leg = (wigle::configured(&keys) || !chosen.is_all())
         .then_some((&transport as &dyn Transport, &keys));
-    match huntsman_recon::network_cli::run(leg, selector, now) {
-        NetworkRun::Printed { text, report } => {
-            Ok(done(text, report.entities, report.outcomes, NETWORK_POLICY))
-        }
-        NetworkRun::Network(m) => Err(Refused::Network(m)),
-        NetworkRun::Failed(m) => Err(Refused::Unavailable(m)),
-    }
+    let (text, report) = source_report(huntsman_recon::network_cli::run(leg, selector, now))?;
+    Ok(done(text, report.entities, report.outcomes, NETWORK_POLICY))
 }
 
 /// The on-chain lookup for one Bitcoin address: its balance and lifetime totals from
 /// blockchain.info, keyless like the other passive legs.
 fn crypto(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Refused> {
     let transport = transport(&TransportConfig::default(), chosen);
-    match crypto_cli::run(&transport, selector, now) {
-        CryptoRun::Printed { text, report } => {
-            Ok(done(text, report.entities, report.outcomes, CRYPTO_POLICY))
-        }
-        CryptoRun::Network(m) => Err(Refused::Network(m)),
-        CryptoRun::Failed(m) => Err(Refused::Unavailable(m)),
-    }
+    let (text, report) = source_report(crypto_cli::run(&transport, selector, now))?;
+    Ok(done(text, report.entities, report.outcomes, CRYPTO_POLICY))
 }
 
 /// The exit status for a rejected lookup argument. A value the operator supplied that cannot be
@@ -683,19 +682,12 @@ pub(in crate::cli) fn itunes_cmd(args: &[String]) -> ExitCode {
         Err(e) => return usage_failure(&e, ITUNES_USAGE),
     };
     let transport = transport(&TransportConfig::default(), &Selection::all());
-    match itunes_cli::run(&transport, &parsed.keyword, now_unix()) {
-        ItunesRun::Printed { text, .. } => {
+    match source_report(itunes_cli::run(&transport, &parsed.keyword, now_unix())) {
+        Ok((text, _)) => {
             print!("{text}");
             ExitCode::SUCCESS
         }
-        ItunesRun::Network(m) => {
-            let refused = Refused::Network(m);
-            fail(refused.exit_status(), refused.message())
-        }
-        ItunesRun::Failed(m) => {
-            let refused = Refused::Unavailable(m);
-            fail(refused.exit_status(), refused.message())
-        }
+        Err(refused) => fail(refused.exit_status(), refused.message()),
     }
 }
 
