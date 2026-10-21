@@ -1,0 +1,1 @@
+- Document RIPE NCC written-permission requirements for commercial RIPEstat-derived offerings, research attribution obligations, aggregate API concurrency and frequent-use registration. The gate applies to existing routing data and potential geolocation; it neither claims a licence nor adds network collection or expenditure.
