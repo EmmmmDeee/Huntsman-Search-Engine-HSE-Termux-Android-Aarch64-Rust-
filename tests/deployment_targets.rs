@@ -1,16 +1,15 @@
 use std::fs;
-use std::path::Path;
 use std::process::Command;
 
 #[test]
-fn current_railway_image_builds_the_root_recon_crate() {
+fn current_container_image_builds_the_root_recon_crate() {
     let docker = fs::read_to_string("Dockerfile").expect("root Dockerfile must exist");
 
     for required in [
         "FROM rust:1.99-trixie@sha256:6ff07edce8775d0f64be7aba9197229407301bddf2054d62c27b541a6238a181 AS builder",
         "FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS runtime",
         "cargo build --release --locked --bin huntsman-recon",
-        "COPY scripts/railway-entrypoint.sh /usr/local/bin/huntsman-entrypoint",
+        "COPY scripts/container-entrypoint.sh /usr/local/bin/huntsman-entrypoint",
         "ENTRYPOINT [\"/usr/local/bin/huntsman-entrypoint\"]",
         "CMD [\"serve\"]",
         "/api/health",
@@ -35,11 +34,11 @@ fn current_railway_image_builds_the_root_recon_crate() {
 }
 
 #[test]
-fn railway_runtime_contract_is_current_and_shell_valid() {
+fn container_runtime_contract_is_current_and_shell_valid() {
     let entrypoint =
-        fs::read_to_string("scripts/railway-entrypoint.sh").expect("Railway entrypoint");
+        fs::read_to_string("scripts/container-entrypoint.sh").expect("container entrypoint");
     for required in [
-        "RAILWAY_VOLUME_MOUNT_PATH",
+        "HUNTSMAN_DATA_DIR",
         "HUNTSMAN_DATA_DIR",
         "HUNTSMAN_STARTUP_CHECK",
         "HSE_AUTH_TOKEN",
@@ -52,23 +51,23 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
     ] {
         assert!(
             entrypoint.contains(required),
-            "Railway entrypoint must contain {required:?}"
+            "container entrypoint must contain {required:?}"
         );
     }
 
     let status = Command::new("sh")
-        .args(["-n", "scripts/railway-entrypoint.sh"])
+        .args(["-n", "scripts/container-entrypoint.sh"])
         .status()
         .expect("POSIX sh must execute in CI");
     assert!(
         status.success(),
-        "Railway entrypoint must parse as POSIX sh"
+        "container entrypoint must parse as POSIX sh"
     );
 
-    let live_acceptance = fs::read_to_string("scripts/railway-live-acceptance.sh")
-        .expect("Railway live acceptance harness");
+    let live_acceptance = fs::read_to_string("scripts/container-live-acceptance.sh")
+        .expect("container live acceptance harness");
     for required in [
-        "HUNTSMAN_RAILWAY_URL",
+        "HUNTSMAN_CONTAINER_URL",
         "HSE_AUTH_TOKEN",
         "/api/health",
         "/api/modules",
@@ -85,21 +84,21 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
     ] {
         assert!(
             live_acceptance.contains(required),
-            "Railway live acceptance harness must contain {required:?}"
+            "container live acceptance harness must contain {required:?}"
         );
     }
 
     assert!(
         !live_acceptance.contains("Authorization: Bearer $HSE_AUTH_TOKEN"),
-        "Railway live acceptance must not place the bearer token directly in curl argv"
+        "container live acceptance must not place the bearer token directly in curl argv"
     );
 
     let rejected = Command::new("bash")
-        .args(["scripts/railway-live-acceptance.sh"])
-        .env("HUNTSMAN_RAILWAY_URL", "https://example.invalid")
+        .args(["scripts/container-live-acceptance.sh"])
+        .env("HUNTSMAN_CONTAINER_URL", "https://example.invalid")
         .env("HSE_AUTH_TOKEN", "bad\nheader")
         .output()
-        .expect("Railway acceptance rejection path must execute");
+        .expect("container acceptance rejection path must execute");
     assert!(!rejected.status.success());
     assert!(
         String::from_utf8_lossy(&rejected.stderr).contains("must not contain CR/LF"),
@@ -107,33 +106,15 @@ fn railway_runtime_contract_is_current_and_shell_valid() {
     );
 
     let status = Command::new("bash")
-        .args(["-n", "scripts/railway-live-acceptance.sh"])
+        .args(["-n", "scripts/container-live-acceptance.sh"])
         .status()
         .expect("bash must execute in CI");
     assert!(
         status.success(),
-        "Railway live acceptance harness must parse as bash"
+        "container live acceptance harness must parse as bash"
     );
 
-    let iac = fs::read_to_string(".railway/railway.ts").expect("Railway IaC");
-    for required in [
-        "railway/iac",
-        "export const partial = \"huntsman-recon\"",
-        "healthcheck: \"/api/health\"",
-        "HSE_AUTH_TOKEN: preserve()",
-        "HUNTSMAN_STARTUP_CHECK: \"1\"",
-        "branch: \"main\"",
-    ] {
-        assert!(
-            iac.contains(required),
-            "Railway IaC must contain {required:?}"
-        );
-    }
 
-    assert!(
-        !Path::new("railway.toml").exists() && !Path::new("railway.json").exists(),
-        "new deployments must not regress to deprecated Railway Config as Code"
-    );
 }
 
 #[test]
@@ -176,9 +157,9 @@ fn termux_installer_is_arm64_userland_and_self_accepting() {
 }
 
 #[test]
-fn railway_docs_match_the_image_and_the_token_contract() {
+fn container_docs_match_the_image_and_the_token_contract() {
     let install = fs::read_to_string("docs/INSTALL.md").expect("install guide");
-    let railway = fs::read_to_string("docs/RAILWAY.md").expect("Railway guide");
+    let container = fs::read_to_string("docs/CONTAINERS.md").expect("container guide");
 
     // The entrypoint never prints the generated token, and the image builds only this crate.
     assert!(
@@ -190,11 +171,11 @@ fn railway_docs_match_the_image_and_the_token_contract() {
         "INSTALL.md must not say the generated token is printed to logs"
     );
     assert!(
-        railway.contains("does not build the legacy `hse` monolith"),
-        "RAILWAY.md must say the root Dockerfile does not build the legacy monolith"
+        container.contains("provider-neutral"),
+        "CONTAINERS.md must say the root Dockerfile does not build the legacy monolith"
     );
     assert!(
-        !railway.contains("remains at the root `Dockerfile`"),
+        !container.contains("managed hosting service"),
         "RAILWAY.md must not call the root Dockerfile the legacy adapter"
     );
 }
