@@ -87,7 +87,10 @@ fn audit_runs_on_schedule_dispatch_and_dependency_changes_only() {
             "\"**/Cargo.lock\"",
             "\".github/workflows/audit.yml\"",
         ] {
-            assert!(section.contains(required), "{event} must be path-scoped to {required}");
+            assert!(
+                section.contains(required),
+                "{event} must be path-scoped to {required}"
+            );
         }
     }
 }
