@@ -413,6 +413,20 @@ fn host_descriptors(
     if !place.is_empty() {
         out.push(("GEOINFO", place.join(", ")));
     }
+    // The ISP / hosting organisation a host sits behind, as Spiderfoot's PROVIDER_HOSTING. The
+    // IP-reputation and geolocation sources write it as `isp` (pulsedive keyless; ipqs, shodan,
+    // abuseipdb when their keys are set), from the IP's registry, onto the IP or the domain that
+    // resolved to it. A saved attribute is not proof on its own, so the element is gated on that
+    // set of genuine sources; no other source writes `isp`, so nothing else can forge it. First
+    // producer of the otherwise-dormant PROVIDER_HOSTING type.
+    if matches!(
+        evidence.provenance.source.as_str(),
+        "pulsedive" | "ipqs" | "shodan" | "abuseipdb"
+    ) {
+        if let Some(isp) = attr("isp") {
+            out.push(("PROVIDER_HOSTING", isp.to_owned()));
+        }
+    }
     if let Some(certificate) = attr("certificate") {
         out.push(("SSL_CERTIFICATE_RAW", certificate.to_owned()));
     }
@@ -1747,6 +1761,39 @@ mod tests {
     }
 
     #[test]
+    fn an_isp_from_a_reputation_source_becomes_a_provider_hosting_element() {
+        // Every IP-reputation/geo source writes the hosting org as `isp`; each produces one
+        // PROVIDER_HOSTING element, whether the seed was an IP or the domain that resolved to it.
+        for (kind, source) in [
+            (EntityKind::IpAddress, "pulsedive"),
+            (EntityKind::Domain, "pulsedive"),
+            (EntityKind::IpAddress, "ipqs"),
+            (EntityKind::IpAddress, "shodan"),
+            (EntityKind::IpAddress, "abuseipdb"),
+        ] {
+            let host = entity(kind, "198.51.100.7", source, &[("isp", "Cloudflare, Inc.")]);
+            let found = elements(DOMAIN, &[host], 1_700_000_000);
+            assert_eq!(
+                of_type(&found, "PROVIDER_HOSTING")[0].data,
+                "Cloudflare, Inc.",
+                "{source}"
+            );
+        }
+
+        // No isp attribute, and an isp from a source that does not report hosting, each produce
+        // nothing — the latter proving the source gate.
+        let bare = entity(EntityKind::IpAddress, "198.51.100.8", "pulsedive", &[]);
+        let other_source = entity(
+            EntityKind::IpAddress,
+            "198.51.100.7",
+            "rdap",
+            &[("isp", "Cloudflare, Inc.")],
+        );
+        let found = elements(DOMAIN, &[bare, other_source], 1_700_000_000);
+        assert!(of_type(&found, "PROVIDER_HOSTING").is_empty());
+    }
+
+    #[test]
     fn every_type_the_mapping_can_emit_is_catalogued() {
         let emitted = [
             "ROOT",
@@ -1773,6 +1820,7 @@ mod tests {
             "NETBLOCK_MEMBER",
             "NETBLOCKV6_MEMBER",
             "GEOINFO",
+            "PROVIDER_HOSTING",
             "SSL_CERTIFICATE_ISSUER",
             "SSL_CERTIFICATE_EXPIRED",
             "SSL_CERTIFICATE_EXPIRING",
