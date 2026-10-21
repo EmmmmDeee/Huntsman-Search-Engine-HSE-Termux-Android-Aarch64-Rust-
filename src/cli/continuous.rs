@@ -230,8 +230,9 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use huntsman_recon::scan_store::ScanStatus;
+    use super::{config, due};
+    use std::path::PathBuf;
+    use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus};
 
     #[test]
     fn targets_are_canonical_and_deduplicated() {
@@ -276,7 +277,7 @@ mod tests {
             ended: None,
             elements: 0,
             unique: 0,
-            correlations: Default::default(),
+            correlations: RiskCounts::default(),
             errors: 0,
             modules_run: Vec::new(),
             owner: None,
