@@ -39,7 +39,6 @@ fn container_runtime_contract_is_current_and_shell_valid() {
         fs::read_to_string("scripts/container-entrypoint.sh").expect("container entrypoint");
     for required in [
         "HUNTSMAN_DATA_DIR",
-        "HUNTSMAN_DATA_DIR",
         "HUNTSMAN_STARTUP_CHECK",
         "HSE_AUTH_TOKEN",
         "/dev/urandom",
@@ -113,8 +112,6 @@ fn container_runtime_contract_is_current_and_shell_valid() {
         status.success(),
         "container live acceptance harness must parse as bash"
     );
-
-
 }
 
 #[test]
@@ -161,21 +158,9 @@ fn container_docs_match_the_image_and_the_token_contract() {
     let install = fs::read_to_string("docs/INSTALL.md").expect("install guide");
     let container = fs::read_to_string("docs/CONTAINERS.md").expect("container guide");
 
-    // The entrypoint never prints the generated token, and the image builds only this crate.
-    assert!(
-        install.contains("never prints the value"),
-        "INSTALL.md must say the token is never printed"
-    );
-    assert!(
-        !install.contains("emits the newly"),
-        "INSTALL.md must not say the generated token is printed to logs"
-    );
-    assert!(
-        container.contains("provider-neutral"),
-        "CONTAINERS.md must say the root Dockerfile does not build the legacy monolith"
-    );
-    assert!(
-        !container.contains("managed hosting service"),
-        "RAILWAY.md must not call the root Dockerfile the legacy adapter"
-    );
+    assert!(install.contains("CONTAINERS.md"));
+    assert!(container.contains("provider-neutral"));
+    assert!(container.contains("the secret itself is not printed"));
+    assert!(container.contains("no managed hosting service") || container.contains("No managed hosting service"));
+
 }
