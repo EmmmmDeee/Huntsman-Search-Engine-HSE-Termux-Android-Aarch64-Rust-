@@ -67,6 +67,7 @@ These gates intentionally prevent premature product claims.
 | Stable public API contract | **not declared** | explicitly choose supported library/HTTP surfaces and compatibility policy |
 | Stable v1 release | **not declared** | owner approval after API/CLI compatibility gates and release candidate |
 | Licensing/commercial distribution policy | **undecided** | owner selects proprietary, dual, or open-source terms; do not infer a license |
+| RIPEstat commercial use (keyless routing and geolocation legs) | **not licensed** | RIPEstat Service Terms 3.3 bar commercial use, including paid products and combining RIPEstat data into a commercial product, unless the RIPE NCC grants permission in writing (stat@ripe.net); do not assume it. The Data API also caps each IP at 8 concurrent requests and asks regular users above 1,000 requests/day to register a `sourceapp` |
 | Real-device acceptance for a release | external receipt required | run handset harness against the release candidate |
 | Performance/SLO claims | **not demonstrated globally** | reproducible benchmark suite with hardware/dataset context |
 | Customer/revenue traction | **not claimed** | external commercial evidence |
