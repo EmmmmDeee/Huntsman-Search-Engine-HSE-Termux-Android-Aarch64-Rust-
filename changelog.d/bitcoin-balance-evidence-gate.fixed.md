@@ -1,0 +1,1 @@
+- Restrict typed Bitcoin balance findings to crypto-address observations sourced from the Bitcoin collector with valid, non-negative eight-decimal fixed-point amounts. Preserve zero balances and reject mismatched or malformed imported evidence without any extra network call.
