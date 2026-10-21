@@ -231,8 +231,8 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{config, due};
-    use std::path::PathBuf;
     use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus};
+    use std::path::PathBuf;
 
     #[test]
     fn targets_are_canonical_and_deduplicated() {
