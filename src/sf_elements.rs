@@ -439,6 +439,17 @@ fn identity_descriptors(
             ));
         }
     }
+    // A published OpenPGP key. `openpgp_keys` is the only writer of the `fingerprint` attribute,
+    // so it types the element unambiguously; `key_url` links to the key itself, and the whole
+    // record (fingerprint, key URL, creation time) rides along in `raw`, so nothing is lost. This
+    // is the first producer of the otherwise-dormant PGP_KEY element type.
+    if let Some(fingerprint) = attr("fingerprint") {
+        let data = match attr("key_url") {
+            Some(url) => format!("{fingerprint}\n{url}"),
+            None => fingerprint.to_owned(),
+        };
+        out.push(("PGP_KEY", data));
+    }
     if let Some(kind) = compromised_type(&entity.kind) {
         let mut breaches = BTreeSet::new();
         for key in [
@@ -1367,6 +1378,44 @@ mod tests {
         );
     }
 
+    /// `openpgp_keys` keeps a found key's fingerprint and fetch URL as evidence; that record
+    /// becomes a `PGP_KEY` element (the dormant type's first producer). An identity with no key
+    /// evidence produces none.
+    #[test]
+    fn an_openpgp_key_fingerprint_becomes_a_pgp_key_element() {
+        let fingerprint = "8F17777118A33DDA9BA48E62AACB3243630052D9";
+        let key_url = "https://keys.openpgp.org/vks/v1/by-fingerprint/8F17777118A33DDA9BA48E62AACB3243630052D9";
+        let email = entity(
+            EntityKind::Email,
+            "neal@gnupg.org",
+            "openpgp_keys",
+            &[("fingerprint", fingerprint), ("key_url", key_url)],
+        );
+        let found = elements(
+            Target {
+                value: "neal@gnupg.org",
+                kind: "EMAILADDR",
+            },
+            &[email],
+            1_700_000_000,
+        );
+        assert_eq!(
+            of_type(&found, "PGP_KEY")[0].data,
+            format!("{fingerprint}\n{key_url}")
+        );
+
+        let plain = entity(EntityKind::Email, "x@example.com", "gravatar", &[]);
+        let found = elements(
+            Target {
+                value: "x@example.com",
+                kind: "EMAILADDR",
+            },
+            &[plain],
+            1_700_000_000,
+        );
+        assert!(of_type(&found, "PGP_KEY").is_empty());
+    }
+
     #[test]
     fn every_type_the_mapping_can_emit_is_catalogued() {
         let emitted = [
@@ -1379,6 +1428,7 @@ mod tests {
             "IPV6_ADDRESS",
             "LINKED_URL_INTERNAL",
             "LINKED_URL_EXTERNAL",
+            "WIKIPEDIA_PAGE_EDIT",
             "ETHEREUM_ADDRESS",
             "BITCOIN_ADDRESS",
             "TCP_PORT_OPEN",
@@ -1399,6 +1449,7 @@ mod tests {
             "EMAILADDR_DISPOSABLE",
             "TOR_EXIT_NODE",
             "ACCOUNT_EXTERNAL_OWNED",
+            "PGP_KEY",
             "EMAILADDR_COMPROMISED",
             "PHONE_NUMBER_COMPROMISED",
             "ACCOUNT_EXTERNAL_USER_SHARED_COMPROMISED",
