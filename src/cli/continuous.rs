@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use huntsman_recon::fsio::{read_bounded_replacing, write_atomic_private};
+use huntsman_recon::fsio::{read_bounded, write_atomic_private};
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_service::{ScanRequest, plan};
 use huntsman_recon::scan_store::{ScanOptions, ScanRecord, ScanStore};
@@ -118,7 +118,8 @@ fn millis() -> u64 {
 // replacement is visible even when size and timestamp coincide. This is a change detector,
 // not a content checksum: adversarial in-place changes that restore metadata may escape it.
 fn file_stamp(path: &Path) -> Result<String, String> {
-    let meta = fs::symlink_metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let meta =
+        fs::symlink_metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
     if !meta.is_file() || meta.file_type().is_symlink() {
         return Err(format!("{}: not a regular evidence file", path.display()));
     }
@@ -171,7 +172,7 @@ fn archive_previous(output: &Path) -> Result<(), String> {
         }
         Ok(_) => {}
     }
-    let prior = read_bounded_replacing(output, MAX_ANALYSIS_BYTES)
+    let prior = read_bounded(output, MAX_ANALYSIS_BYTES)
         .map_err(|error| format!("cannot archive previous report: {error}"))?;
     let stale = serde_json::from_slice::<Value>(&prior)
         .ok()
@@ -202,7 +203,7 @@ fn invalidate_saved(
             "canonical_kind": record.kind,
             "canonical_target": record.target,
             "checked_at_ms": millis(),
-            "historical_report": "previous.json"
+            "historical_report_suffix": ".previous.json"
         }
     });
     let body = serde_json::to_vec(&marker).map_err(|error| error.to_string())?;
@@ -234,12 +235,23 @@ fn normalise_saved(
     }
     if response.body.len() as u64 > MAX_ANALYSIS_BYTES {
         invalidate_saved(record, directory, revision, "analysis_exceeds_output_limit")?;
-        return Err(format!("scan {} analysis exceeds bounded output", record.id));
+        return Err(format!(
+            "scan {} analysis exceeds bounded output",
+            record.id
+        ));
     }
     let after = source_revision(api.service().store(), record)?;
     if revision != after {
-        invalidate_saved(record, directory, &after, "evidence_changed_during_analysis")?;
-        return Err(format!("scan {} evidence changed during analysis", record.id));
+        invalidate_saved(
+            record,
+            directory,
+            &after,
+            "evidence_changed_during_analysis",
+        )?;
+        return Err(format!(
+            "scan {} evidence changed during analysis",
+            record.id
+        ));
     }
     let mut report: Value = serde_json::from_slice(&response.body)
         .map_err(|error| format!("scan {} malformed analysis: {error}", record.id))?;
@@ -257,7 +269,10 @@ fn normalise_saved(
     let body = serde_json::to_vec(&report).map_err(|error| error.to_string())?;
     if body.len() as u64 > MAX_ANALYSIS_BYTES {
         invalidate_saved(record, directory, revision, "normalised_output_too_large")?;
-        return Err(format!("scan {} normalised output exceeds limit", record.id));
+        return Err(format!(
+            "scan {} normalised output exceeds limit",
+            record.id
+        ));
     }
     let output = normalised_path(record, directory);
     archive_previous(&output)?;
@@ -489,11 +504,17 @@ mod tests {
         let original = br#"{"report":{"count":2}}"#;
         std::fs::write(&output, original).expect("write good report");
         archive_previous(&output).expect("save history");
-        assert_eq!(std::fs::read(output.with_extension("previous.json")).unwrap(), original);
+        assert_eq!(
+            std::fs::read(output.with_extension("previous.json")).unwrap(),
+            original
+        );
         std::fs::write(&output, br#"{"normalisation":{"state":"stale"}}"#)
             .expect("replace report with stale marker");
         archive_previous(&output).expect("keep historical version");
-        assert_eq!(std::fs::read(output.with_extension("previous.json")).unwrap(), original);
+        assert_eq!(
+            std::fs::read(output.with_extension("previous.json")).unwrap(),
+            original
+        );
         std::fs::remove_dir_all(&directory).expect("remove archive directory");
     }
 
