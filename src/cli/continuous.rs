@@ -4,16 +4,18 @@
 //! canonicalisation or attribution model. Nothing runs until targets are configured.
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use huntsman_recon::fsio::write_atomic_private;
+use huntsman_recon::fsio::{read_bounded_replacing, write_atomic_private};
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_service::{ScanRequest, plan};
-use huntsman_recon::scan_store::{ScanOptions, ScanRecord};
+use huntsman_recon::scan_store::{ScanOptions, ScanRecord, ScanStore};
 use huntsman_recon::sha256::{hex32, sha256};
+use serde_json::{Value, json};
 
 use super::scans::default_scan_dir;
 
@@ -112,33 +114,154 @@ fn millis() -> u64 {
         })
 }
 
+// Revision detection uses cheap file metadata, including the inode on Unix so atomic
+// replacement is visible even when size and timestamp coincide. This is a change detector,
+// not a content checksum: adversarial in-place changes that restore metadata may escape it.
+fn file_stamp(path: &Path) -> Result<String, String> {
+    let meta = fs::symlink_metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    if !meta.is_file() || meta.file_type().is_symlink() {
+        return Err(format!("{}: not a regular evidence file", path.display()));
+    }
+    let modified = meta
+        .modified()
+        .map_err(|error| format!("{}: {error}", path.display()))?
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    #[cfg(unix)]
+    let inode = {
+        use std::os::unix::fs::MetadataExt;
+        meta.ino()
+    };
+    #[cfg(not(unix))]
+    let inode = 0_u64;
+    Ok(format!(
+        "{}:{}:{}:{inode}",
+        meta.len(),
+        modified.as_secs(),
+        modified.subsec_nanos()
+    ))
+}
+
+fn source_revision(store: &ScanStore, record: &ScanRecord) -> Result<String, String> {
+    let directory = store.dir().join(&record.id);
+    let row = file_stamp(&directory.join("scan.json"))?;
+    let result_path = directory.join("results.json");
+    let results = match fs::symlink_metadata(&result_path) {
+        Ok(_) => file_stamp(&result_path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "absent".to_owned(),
+        Err(error) => return Err(format!("{}: {error}", result_path.display())),
+    };
+    let stamp = format!("v1:{row}:{results}");
+    Ok(hex32(&sha256(stamp.as_bytes())))
+}
+
+fn normalised_path(record: &ScanRecord, directory: &Path) -> PathBuf {
+    let key = format!("{}\0{}", record.kind, record.target);
+    directory.join(format!("{}.json", &hex32(&sha256(key.as_bytes()))[..32]))
+}
+
+// Retain the most recent valid derived output outside the current-report slot.
+// Never archive a stale marker over that historical evidence.
+fn archive_previous(output: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(output) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("{}: {error}", output.display())),
+        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
+            return Err(format!("{}: not a regular report", output.display()));
+        }
+        Ok(_) => {}
+    }
+    let prior = read_bounded_replacing(output, MAX_ANALYSIS_BYTES)
+        .map_err(|error| format!("cannot archive previous report: {error}"))?;
+    let stale = serde_json::from_slice::<Value>(&prior)
+        .ok()
+        .and_then(|value| value["normalisation"]["state"].as_str().map(str::to_owned))
+        .is_some_and(|state| state == "stale");
+    if !stale {
+        let previous = output.with_extension("previous.json");
+        write_atomic_private(&previous, &prior, MAX_ANALYSIS_BYTES)
+            .map_err(|error| format!("cannot preserve historical report: {error}"))?;
+    }
+    Ok(())
+}
+
+fn invalidate_saved(
+    record: &ScanRecord,
+    directory: &Path,
+    revision: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let output = normalised_path(record, directory);
+    archive_previous(&output)?;
+    let marker = json!({
+        "normalisation": {
+            "state": "stale",
+            "source_revision_hint": revision,
+            "reason": reason,
+            "scan_id": record.id,
+            "canonical_kind": record.kind,
+            "canonical_target": record.target,
+            "checked_at_ms": millis(),
+            "historical_report": "previous.json"
+        }
+    });
+    let body = serde_json::to_vec(&marker).map_err(|error| error.to_string())?;
+    write_atomic_private(&output, &body, MAX_ANALYSIS_BYTES)
+        .map_err(|error| format!("cannot invalidate stale report: {error}"))
+}
+
 fn normalise_saved(
     api: &ScanApi,
     record: &ScanRecord,
-    directory: &std::path::Path,
+    directory: &Path,
+    revision: &str,
 ) -> Result<bool, String> {
     if record.status.is_active() {
         return Ok(false);
     }
     let response = api.handle("GET", &format!("/api/scans/{}/analyze", record.id), "");
     if response.status != 200 {
-        // A refused or incomplete analysis must not overwrite an earlier good one.
+        invalidate_saved(
+            record,
+            directory,
+            revision,
+            &format!("analysis_refused_http_{}", response.status),
+        )?;
         return Err(format!(
             "scan {} analysis refused (HTTP {})",
             record.id, response.status
         ));
     }
     if response.body.len() as u64 > MAX_ANALYSIS_BYTES {
-        return Err(format!(
-            "scan {} analysis exceeds bounded output",
-            record.id
-        ));
+        invalidate_saved(record, directory, revision, "analysis_exceeds_output_limit")?;
+        return Err(format!("scan {} analysis exceeds bounded output", record.id));
     }
-    // Per-target latest, not per-run accumulation: canonical identity is the already-validated
-    // scan target + kind. The scan ID remains in the report for provenance and audit.
-    let key = format!("{}\0{}", record.kind, record.target);
-    let output = directory.join(format!("{}.json", &hex32(&sha256(key.as_bytes()))[..32]));
-    write_atomic_private(&output, &response.body, MAX_ANALYSIS_BYTES)
+    let after = source_revision(api.service().store(), record)?;
+    if revision != after {
+        invalidate_saved(record, directory, &after, "evidence_changed_during_analysis")?;
+        return Err(format!("scan {} evidence changed during analysis", record.id));
+    }
+    let mut report: Value = serde_json::from_slice(&response.body)
+        .map_err(|error| format!("scan {} malformed analysis: {error}", record.id))?;
+    let root = report
+        .as_object_mut()
+        .ok_or_else(|| format!("scan {} analysis is not an object", record.id))?;
+    root.insert(
+        "normalisation".to_owned(),
+        json!({
+            "state": "current",
+            "source_revision_hint": revision,
+            "checked_at_ms": millis(),
+        }),
+    );
+    let body = serde_json::to_vec(&report).map_err(|error| error.to_string())?;
+    if body.len() as u64 > MAX_ANALYSIS_BYTES {
+        invalidate_saved(record, directory, revision, "normalised_output_too_large")?;
+        return Err(format!("scan {} normalised output exceeds limit", record.id));
+    }
+    let output = normalised_path(record, directory);
+    archive_previous(&output)?;
+    write_atomic_private(&output, &body, MAX_ANALYSIS_BYTES)
         .map_err(|error| format!("normalisation write failed: {error}"))?;
     Ok(true)
 }
@@ -146,7 +269,7 @@ fn normalise_saved(
 fn cycle(
     api: &ScanApi,
     config: &Config,
-    observed: &mut BTreeSet<String>,
+    observed: &mut BTreeMap<String, String>,
     retry_after: &mut BTreeMap<String, u64>,
 ) -> Result<(), String> {
     let now = millis();
@@ -192,16 +315,26 @@ fn cycle(
         }
     }
     for record in normalise {
+        if record.status.is_active() {
+            continue;
+        }
+        let revision = match source_revision(api.service().store(), record) {
+            Ok(revision) => revision,
+            Err(error) => {
+                eprintln!("continuous: cannot inspect scan {}: {error}", record.id);
+                continue;
+            }
+        };
         let analysis_key = format!("analysis:{}", record.id);
-        if !record.status.is_active()
-            && !observed.contains(&record.id)
+        if observed.get(&record.id) != Some(&revision)
             && retry_after
                 .get(&analysis_key)
                 .is_none_or(|until| now >= *until)
         {
-            match normalise_saved(api, record, &config.normalised_dir) {
+            match normalise_saved(api, record, &config.normalised_dir, &revision) {
                 Ok(true) => {
-                    observed.insert(record.id.clone());
+                    observed.insert(record.id.clone(), revision);
+                    retry_after.remove(&analysis_key);
                     eprintln!("continuous: normalised saved scan {}", record.id);
                 }
                 Ok(false) => {}
@@ -243,7 +376,7 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
     thread::Builder::new()
         .name("continuous-normalisation".to_owned())
         .spawn(move || {
-            let mut observed = BTreeSet::new();
+            let mut observed = BTreeMap::new();
             let mut retry_after = BTreeMap::new();
             loop {
                 if let Err(error) = cycle(&api, &config, &mut observed, &mut retry_after) {
@@ -258,8 +391,8 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{config, due};
-    use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus};
+    use super::{archive_previous, config, due, file_stamp, source_revision};
+    use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus, ScanStore};
     use std::path::PathBuf;
 
     #[test]
@@ -302,6 +435,66 @@ mod tests {
             panic!("a continuous people-name scan must be rejected");
         };
         assert_eq!(error, "continuous people-name scans are disabled");
+    }
+
+    #[test]
+    fn atomic_evidence_changes_invalidate_revision_hint() {
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-continuous-revision-{}-{}",
+            std::process::id(),
+            super::millis()
+        ));
+        let store = ScanStore::open(&directory).expect("create temporary store");
+        let record = ScanRecord {
+            format_version: 1,
+            id: "0123456789abcdef".into(),
+            name: "test".into(),
+            target: "example.com".into(),
+            target_type: "INTERNET_NAME".into(),
+            kind: "domain".into(),
+            options: ScanOptions::default(),
+            status: ScanStatus::Finished,
+            created: 100,
+            started: None,
+            ended: Some(200),
+            elements: 0,
+            unique: 0,
+            correlations: RiskCounts::default(),
+            errors: 0,
+            modules_run: Vec::new(),
+            owner: None,
+        };
+        store.create(&record).expect("create scan");
+        let first = source_revision(&store, &record).expect("initial revision");
+        let results = directory.join(&record.id).join("results.json");
+        std::fs::write(&results, b"{}").expect("write results");
+        let second = source_revision(&store, &record).expect("new results revision");
+        assert_ne!(first, second);
+        std::fs::write(&results, b"{\"revision\":2}").expect("revise results");
+        let third = source_revision(&store, &record).expect("replaced revision");
+        assert_ne!(second, third);
+        assert!(file_stamp(&results).is_ok());
+        std::fs::remove_dir_all(&directory).expect("remove test store");
+    }
+
+    #[test]
+    fn stale_marker_does_not_overwrite_historical_evidence() {
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-continuous-archive-{}-{}",
+            std::process::id(),
+            super::millis()
+        ));
+        std::fs::create_dir(&directory).expect("create archive directory");
+        let output = directory.join("canonical.json");
+        let original = br#"{"report":{"count":2}}"#;
+        std::fs::write(&output, original).expect("write good report");
+        archive_previous(&output).expect("save history");
+        assert_eq!(std::fs::read(output.with_extension("previous.json")).unwrap(), original);
+        std::fs::write(&output, br#"{"normalisation":{"state":"stale"}}"#)
+            .expect("replace report with stale marker");
+        archive_previous(&output).expect("keep historical version");
+        assert_eq!(std::fs::read(output.with_extension("previous.json")).unwrap(), original);
+        std::fs::remove_dir_all(&directory).expect("remove archive directory");
     }
 
     #[test]
