@@ -51,33 +51,11 @@ use crate::wifi_radar::WifiScan;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 
-/// Resolve the implicit server bind without weakening the explicit bind contract.
-///
-/// Local/Termux runs stay loopback-only. Railway runs use the platform-provided
-/// PORT on all interfaces so Railway routing and health checks reach the server.
-/// `HSE_BIND` always wins and an explicit CLI `--bind` still wins later.
-///
-/// # Errors
-/// Railway mode fails closed when PORT is absent, malformed, or zero.
-pub fn resolve_serve_bind(
-    hse_bind: Option<&str>,
-    railway_port: Option<&str>,
-    railway: bool,
-) -> Result<String, Error> {
-    if let Some(bind) = hse_bind {
-        return Ok(bind.to_owned());
-    }
-    if !railway {
-        return Ok(DEFAULT_BIND.to_owned());
-    }
-
-    let raw = railway_port.ok_or_else(|| Error::Invalid("Railway PORT is missing".into()))?;
-    let port = raw
-        .parse::<u16>()
-        .ok()
-        .filter(|port| *port != 0)
-        .ok_or_else(|| Error::Invalid(format!("invalid Railway PORT {raw:?}")))?;
-    Ok(format!("0.0.0.0:{port}"))
+/// Use an explicit bind or the loopback-only default. External hosting platforms
+/// do not change the bind implicitly; an operator must opt in to public listening.
+#[must_use]
+pub fn resolve_serve_bind(hse_bind: Option<&str>) -> String {
+    hse_bind.unwrap_or(DEFAULT_BIND).to_owned()
 }
 /// The seeds of the largest analysis the server admits, as they arrive: percent-encoded, three bytes
 /// for each byte that is not ASCII, with `%0A` between them (24 KiB).
@@ -1917,19 +1895,13 @@ mod tests {
     }
 
     #[test]
-    fn implicit_bind_is_loopback_locally_and_railway_port_on_railway() {
-        assert_eq!(resolve_serve_bind(None, None, false).unwrap(), DEFAULT_BIND);
+    fn implicit_bind_stays_loopback_without_an_explicit_setting() {
+        assert_eq!(resolve_serve_bind(None), DEFAULT_BIND);
         assert_eq!(
-            resolve_serve_bind(Some("127.0.0.1:9000"), Some("1234"), true).unwrap(),
+            resolve_serve_bind(Some("127.0.0.1:9000")),
             "127.0.0.1:9000"
         );
-        assert_eq!(
-            resolve_serve_bind(None, Some("43210"), true).unwrap(),
-            "0.0.0.0:43210"
-        );
-        assert!(resolve_serve_bind(None, None, true).is_err());
-        assert!(resolve_serve_bind(None, Some("0"), true).is_err());
-        assert!(resolve_serve_bind(None, Some("not-a-port"), true).is_err());
+        assert_eq!(resolve_serve_bind(Some("0.0.0.0:43210")), "0.0.0.0:43210");
     }
 
     #[test]
@@ -2671,11 +2643,11 @@ mod tests {
     #[test]
     fn a_public_bind_is_not_subject_to_the_host_guard() {
         // A non-loopback bind is intentionally public and gated by the bearer token; its
-        // real Host (a Railway hostname, say) is unknown here, so the guard must not
+        // real Host (a public hostname, say) is unknown here, so the guard must not
         // apply or it would refuse every real request.
         let public = "0.0.0.0:8080".parse::<SocketAddr>().unwrap();
         let served = response_for_request(
-            "GET /api/health HTTP/1.1\r\nHost: huntsman.up.railway.app\r\n\r\n",
+            "GET /api/health HTTP/1.1\r\nHost: huntsman.example.test\r\n\r\n",
             Some("secret"),
             public,
         );
