@@ -553,11 +553,14 @@ fn identity_descriptors(
             ));
         }
     }
-    // A published OpenPGP key. `openpgp_keys` is the only writer of the `fingerprint` attribute,
-    // so it types the element unambiguously; `key_url` links to the key itself, and the whole
-    // record (fingerprint, key URL, creation time) rides along in `raw`, so nothing is lost. This
-    // is the first producer of the otherwise-dormant PGP_KEY element type.
-    if let Some(fingerprint) = attr("fingerprint") {
+    // Only the OpenPGP collector's person/email subjects establish a PGP public key.
+    // Saved evidence attributes alone are not authoritative: an unrelated provider's
+    // "fingerprint" may describe a TLS, SSH, device or other non-PGP identity.
+    // Preserve the bounded raw source record and its key URL on legitimate findings.
+    if let Some(fingerprint) = attr("fingerprint").filter(|_| {
+        matches!(entity.kind, EntityKind::Email | EntityKind::Person)
+            && evidence.provenance.source == crate::openpgp_keys::SRC
+    }) {
         let data = match attr("key_url") {
             Some(url) => format!("{fingerprint}\n{url}"),
             None => fingerprint.to_owned(),
@@ -1585,6 +1588,49 @@ mod tests {
             1_700_000_000,
         );
         assert!(of_type(&found, "PGP_KEY").is_empty());
+    }
+
+    #[test]
+    fn pgp_key_rejects_unrelated_fingerprints_but_preserves_key_holder() {
+        let fingerprint = "8F17777118A33DDA9BA48E62AACB3243630052D9";
+        let forged = entity(
+            EntityKind::Email,
+            "unrelated@example.org",
+            "gravatar",
+            &[("fingerprint", fingerprint)],
+        );
+        let wrong_kind = entity(
+            EntityKind::Domain,
+            "example.org",
+            crate::openpgp_keys::SRC,
+            &[("fingerprint", fingerprint)],
+        );
+        let found = elements(
+            Target {
+                value: "example.org",
+                kind: "DOMAIN_NAME",
+            },
+            &[forged, wrong_kind],
+            1_700_000_000,
+        );
+        assert!(of_type(&found, "PGP_KEY").is_empty());
+
+        // The collector also emits the verified holder as a Person with the same evidence.
+        let holder = entity(
+            EntityKind::Person,
+            "Neal H. Walfield",
+            crate::openpgp_keys::SRC,
+            &[("fingerprint", fingerprint)],
+        );
+        let found = elements(
+            Target {
+                value: "Neal H. Walfield",
+                kind: "HUMAN_NAME",
+            },
+            &[holder],
+            1_700_000_000,
+        );
+        assert_eq!(of_type(&found, "PGP_KEY")[0].data, fingerprint);
     }
 
     #[test]
