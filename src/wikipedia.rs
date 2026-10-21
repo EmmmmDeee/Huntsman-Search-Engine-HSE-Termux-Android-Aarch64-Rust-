@@ -53,9 +53,10 @@ struct ApiResponse {
     query: Option<QueryBlock>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct QueryBlock {
-    #[serde(default)]
+    // Missing data is not evidence that a user has no contributions: MediaWiki
+    // returns an explicit empty array when the query succeeds with zero edits.
     usercontribs: Vec<Contrib>,
 }
 
@@ -187,7 +188,16 @@ fn interpret(response: &Response, selector: &str, scan_id: &str, now_unix: u64) 
             format!("Wikipedia API error: {code}"),
         ));
     }
-    let contribs = parsed.query.unwrap_or_default().usercontribs;
+    let Some(query) = parsed.query else {
+        return miss(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            SourceOutcomeKind::ParserDrift,
+            Some(response.status),
+            "Wikipedia response omitted query.usercontribs",
+        ));
+    };
+    let contribs = query.usercontribs;
 
     let mut entities = build_entities(selector, &contribs, scan_id);
     if entities.is_empty() {

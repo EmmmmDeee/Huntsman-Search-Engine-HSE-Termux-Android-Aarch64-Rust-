@@ -147,6 +147,28 @@ fn a_log_entry_without_a_revision_is_skipped() {
 }
 
 #[test]
+fn a_missing_contributions_payload_is_not_a_clean_negative() {
+    // Only query.usercontribs: [] establishes an empty successful lookup.
+    // Missing query data, including a null array, is an incomplete provider
+    // response and must not be interpreted as evidence of no edits.
+    for body in [
+        "{}",
+        r#"{"batchcomplete":true}"#,
+        r#"{"query":{}}"#,
+        r#"{"query":{"usercontribs":null}}"#,
+        r#"{"query":{"usercontribs":{}}}"#,
+    ] {
+        let got = lookup(&OneResponse::json(200, body), "jane", "scan", 1).unwrap();
+        assert_eq!(
+            got.outcome.kind,
+            SourceOutcomeKind::ParserDrift,
+            "incomplete Wikipedia body: {body}"
+        );
+        assert!(got.entities.is_empty(), "{body}");
+    }
+}
+
+#[test]
 fn a_body_that_is_not_json_is_parser_drift() {
     let got = lookup(
         &OneResponse::json(200, "not json at all"),
