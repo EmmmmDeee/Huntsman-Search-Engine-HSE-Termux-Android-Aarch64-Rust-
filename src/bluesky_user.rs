@@ -29,6 +29,12 @@ pub struct Report {
 }
 
 #[derive(Debug, Deserialize)]
+struct XrpcError {
+    error: String,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Profile {
     handle: String,
@@ -87,14 +93,6 @@ pub fn lookup<T: Transport + ?Sized>(
         });
     };
 
-    if matches!(response.status, 400 | 404) {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::valid_zero(SRC, now_unix)
-                .with_http_status(response.status),
-        });
-    }
-
     if response.truncated {
         return Ok(Report {
             entities: Vec::new(),
@@ -109,6 +107,18 @@ pub fn lookup<T: Transport + ?Sized>(
     }
 
     let body = response.text();
+    // XRPC uses HTTP 400 for several *different* failures. Only the specific
+    // InvalidRequest / Profile not found document establishes a zero match.
+    // Other 4xx errors (including suspended accounts and malformed actors)
+    // must not become false absence evidence.
+    if is_explicit_profile_missing(response.status, &response.body) {
+        return Ok(Report {
+            entities: Vec::new(),
+            outcome: SourceExecutionOutcome::valid_zero(SRC, now_unix)
+                .with_http_status(response.status),
+        });
+    }
+
     let classified = classify_fetch(response.status, &body);
     if classified != SourceOutcomeKind::Inconclusive {
         return Ok(Report {
@@ -158,6 +168,13 @@ pub fn lookup<T: Transport + ?Sized>(
         outcome: SourceExecutionOutcome::success(SRC, now_unix, 1)
             .with_http_status(response.status),
     })
+}
+
+fn is_explicit_profile_missing(status: u16, body: &[u8]) -> bool {
+    matches!(status, 400 | 404)
+        && serde_json::from_slice::<XrpcError>(body).is_ok_and(|error| {
+            error.error == "InvalidRequest" && error.message == "Profile not found"
+        })
 }
 
 fn evidence(profile: &Profile, scan_id: &str) -> Evidence {
@@ -310,9 +327,68 @@ mod tests {
     }
 
     #[test]
-    fn missing_profile_is_valid_zero() {
-        let got = lookup(&OneResponse::json(400, "{}"), "nobody", "scan", 1).unwrap();
-        assert_eq!(got.outcome.kind, SourceOutcomeKind::ValidZero);
+    fn missing_profile_is_valid_zero_only_with_explicit_xrpc_evidence() {
+        for status in [400, 404] {
+            let got = lookup(
+                &OneResponse::json(
+                    status,
+                    r#"{"error":"InvalidRequest","message":"Profile not found"}"#,
+                ),
+                "nobody",
+                "scan",
+                1,
+            )
+            .unwrap();
+            assert_eq!(got.outcome.kind, SourceOutcomeKind::ValidZero);
+            assert_eq!(got.outcome.http_status, Some(status));
+            assert_eq!(got.outcome.found, Some(0));
+        }
+    }
+
+    #[test]
+    fn unknown_or_invalid_actor_errors_never_prove_absence() {
+        for (status, body) in [
+            (400, "{}"),
+            (
+                400,
+                r#"{"error":"InvalidRequest","message":"Invalid actor"}"#,
+            ),
+            (
+                400,
+                r#"{"error":"AccountTakedown","message":"Account has been suspended"}"#,
+            ),
+            (
+                400,
+                r#"{"error":"AccountDeactivated","message":"Account is deactivated"}"#,
+            ),
+            (400, "Profile not found"),
+            (404, ""),
+            (404, r#"{"error":"NotFound","message":"Profile not found"}"#),
+        ] {
+            let got = lookup(&OneResponse::json(status, body), "nobody", "scan", 1)
+                .expect("provider result");
+            assert_eq!(
+                got.outcome.kind,
+                SourceOutcomeKind::Upstream4xx,
+                "HTTP {status} with {body}"
+            );
+            assert_eq!(got.outcome.http_status, Some(status));
+            assert_eq!(got.outcome.found, None);
+            assert!(got.entities.is_empty());
+        }
+    }
+
+    #[test]
+    fn refused_profile_challenge_is_a_waf_not_zero() {
+        let got = lookup(
+            &OneResponse::json(400, "<html>just a moment cloudflare</html>"),
+            "nobody",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::BotWaf);
+        assert_eq!(got.outcome.http_status, Some(400));
     }
 
     #[test]
