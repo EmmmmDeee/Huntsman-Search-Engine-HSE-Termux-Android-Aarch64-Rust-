@@ -153,9 +153,7 @@ pub fn compare<'a>(base: &'a ScanResults, other: &'a ScanResults) -> Comparison<
 /// This detects a credential/provider swap even when aggregate coverage counts are equal.
 #[must_use]
 pub fn changed_source_modules(base: &ScanResults, other: &ScanResults) -> Vec<String> {
-    fn by_module(
-        outcomes: &[SourceExecutionOutcome],
-    ) -> BTreeMap<String, BTreeMap<String, usize>> {
+    fn by_module(outcomes: &[SourceExecutionOutcome]) -> BTreeMap<String, BTreeMap<String, usize>> {
         let mut entries: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
         for outcome in outcomes {
             *entries
