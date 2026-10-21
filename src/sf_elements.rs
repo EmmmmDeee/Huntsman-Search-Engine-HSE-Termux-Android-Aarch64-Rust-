@@ -1562,11 +1562,7 @@ mod tests {
             "rdap",
             &[("ns", "ns2.example.net")],
         );
-        let found = elements(
-            DOMAIN,
-            &[unrelated_source, unrelated_kind],
-            1_700_000_000,
-        );
+        let found = elements(DOMAIN, &[unrelated_source, unrelated_kind], 1_700_000_000);
         assert!(of_type(&found, "PROVIDER_DNS").is_empty());
     }
 
