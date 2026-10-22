@@ -4312,32 +4312,68 @@ mod tests {
     /// the handler never runs.
     #[test]
     fn an_inspection_is_refused_before_its_body_is_read() {
+        // Each refused head announces the largest upload and is sent alone, its write side left
+        // open. The gate answers it at once; a gate that admitted it would reserve the body and
+        // wait on it until the read timed out, whatever the route answered afterwards.
+        let refused_unread = |addr: SocketAddr, head: &str| {
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(20)))
+                .unwrap();
+            client.write_all(head.as_bytes()).unwrap();
+            let started = Instant::now();
+            let mut answer = Vec::new();
+            let _ = client.read_to_end(&mut answer);
+            let waited = started.elapsed();
+            assert!(
+                waited < IO_TIMEOUT / 2,
+                "{head:?} waited {waited:?} on a body"
+            );
+            String::from_utf8_lossy(&answer).into_owned()
+        };
         let (addr, calls) = inspect_server(None, "127.0.0.1:0");
-        let file = vec![7_u8; 4096];
+        let most = MAX_INSPECT_BYTES;
         let cases = [
-            (inspect_head("a", file.len(), ""), "403"),
+            (inspect_head("a", most, ""), "403"),
             (
                 inspect_head(
                     "a",
-                    file.len(),
+                    most,
                     &format!("{HEADER}Sec-Fetch-Site: cross-site\r\n"),
                 ),
                 "403",
             ),
             (
                 format!(
-                    "POST /api/inspect HTTP/1.1\r\nHost: evil.example\r\n{HEADER}Content-Length: 4096\r\n\r\n"
+                    "POST /api/inspect HTTP/1.1\r\nHost: evil.example\r\n{HEADER}Content-Length: {most}\r\n\r\n"
                 ),
                 "403",
             ),
+            (
+                inspect_head(
+                    "a",
+                    most,
+                    &format!("{HEADER}Transfer-Encoding: chunked\r\n"),
+                ),
+                "400",
+            ),
+            (inspect_head("a", most + 1, HEADER), "413"),
+        ];
+        for (head, want) in cases {
+            let answer = refused_unread(addr, &head);
+            assert!(
+                answer.starts_with(&format!("HTTP/1.1 {want}")),
+                "{head:?} -> {answer}"
+            );
+        }
+        let file = vec![7_u8; 4096];
+        for (head, want) in [
             (inspect_head("a", 0, HEADER), "400"),
-            (inspect_head("a", MAX_INSPECT_BYTES + 1, HEADER), "413"),
             (
                 format!("GET /api/inspect?name=a HTTP/1.1\r\nHost: localhost\r\n{HEADER}\r\n"),
                 "405",
             ),
-        ];
-        for (head, want) in cases {
+        ] {
             let answer = upload(addr, &head, &file);
             assert!(
                 answer.starts_with(&format!("HTTP/1.1 {want}")),
@@ -4348,7 +4384,7 @@ mod tests {
 
         let (public, public_calls) = inspect_server(Some("inspect-token"), "0.0.0.0:0");
         let public = SocketAddr::from(([127, 0, 0, 1], public.port()));
-        let tokenless = upload(public, &inspect_head("a", file.len(), HEADER), &file);
+        let tokenless = refused_unread(public, &inspect_head("a", most, HEADER));
         assert!(tokenless.starts_with("HTTP/1.1 401"), "{tokenless}");
         let authorized = upload(
             public,

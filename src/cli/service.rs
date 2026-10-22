@@ -55,8 +55,8 @@ fn web_analyze(
 
 /// `/api/inspect`: the `exif` and `docmeta` commands over one uploaded file, as one report. Both read
 /// the same bytes the commands read from disk; their entities for the file merge into one. A file
-/// `exif` cannot decode (not a JPEG or TIFF, or a damaged EXIF block) keeps `docmeta`'s findings and
-/// says why in an inconclusive `exif` outcome.
+/// `exif` cannot decode (a PDF or another non-image, or a damaged EXIF block) keeps `docmeta`'s
+/// findings and says why in an inconclusive `exif` outcome.
 fn web_inspect(label: &str, bytes: &[u8]) -> Result<LookupReport, LookupError> {
     let now = clock::unix_now();
     let mut entities = Vec::new();
@@ -330,5 +330,91 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     match server.run(notice) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::web_inspect;
+    use huntsman_recon::entity::{Entity, EntityKind};
+    use huntsman_recon::source_outcome::SourceOutcomeKind;
+
+    /// The value of `key` on any evidence of `entity`.
+    fn attribute<'a>(entity: &'a Entity, key: &str) -> Option<&'a str> {
+        entity
+            .evidence
+            .iter()
+            .find_map(|evidence| evidence.attributes.get(key).map(String::as_str))
+    }
+
+    /// One PNG chunk, with a CRC the parsers do not check.
+    fn png_chunk(png: &mut Vec<u8>, kind: [u8; 4], body: &[u8]) {
+        png.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+        png.extend_from_slice(&kind);
+        png.extend_from_slice(body);
+        png.extend_from_slice(&[0; 4]);
+    }
+
+    /// A file `exif` cannot decode keeps `docmeta`'s findings, and the `exif` outcome says why.
+    #[test]
+    fn an_inspected_pdf_keeps_its_document_metadata_when_exif_cannot_read_it() {
+        let pdf =
+            b"%PDF-1.4\n1 0 obj\n<< /Title (T) >>\nendobj\ntrailer\n<< /Info 1 0 R >>\n%%EOF\n";
+        let report = web_inspect("a.pdf", pdf).expect("a PDF is inspected");
+        let document = report
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Document)
+            .expect("a document entity for the file");
+        assert_eq!(attribute(document, "info:Title"), Some("T"));
+        let kinds: Vec<_> = report
+            .outcomes
+            .iter()
+            .map(|outcome| (outcome.module.as_str(), outcome.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("exif", SourceOutcomeKind::Inconclusive),
+                ("docmeta", SourceOutcomeKind::Success)
+            ]
+        );
+        assert!(
+            report.outcomes[0]
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.starts_with("a.pdf: not a JPEG"))
+        );
+    }
+
+    /// A PNG's `eXIf` block and its text chunks reach one document entity: `exif` reads the
+    /// first, `docmeta` the second, and their entities for the file merge.
+    #[test]
+    fn an_inspected_png_merges_its_exif_and_text_into_one_document() {
+        // A little-endian TIFF block whose IFD0 holds one ASCII Make tag, "Abc".
+        let mut tiff = b"II*\0\x08\0\0\0\x01\0".to_vec();
+        tiff.extend_from_slice(&[0x0F, 0x01, 2, 0, 4, 0, 0, 0]);
+        tiff.extend_from_slice(b"Abc\0");
+        tiff.extend_from_slice(&[0; 4]);
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png_chunk(&mut png, *b"IHDR", &[0; 13]);
+        png_chunk(&mut png, *b"tEXt", b"Comment\0hello");
+        png_chunk(&mut png, *b"eXIf", &tiff);
+        png_chunk(&mut png, *b"IEND", &[]);
+        let report = web_inspect("shot.png", &png).expect("a PNG is inspected");
+        let documents: Vec<_> = report
+            .entities
+            .iter()
+            .filter(|entity| entity.kind == EntityKind::Document)
+            .collect();
+        assert_eq!(documents.len(), 1, "{:?}", report.entities);
+        assert_eq!(attribute(documents[0], "exif_Make"), Some("Abc"));
+        assert_eq!(attribute(documents[0], "png:Comment"), Some("hello"));
+        assert!(
+            report
+                .outcomes
+                .iter()
+                .all(|outcome| outcome.kind == SourceOutcomeKind::Success)
+        );
     }
 }

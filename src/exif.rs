@@ -1,8 +1,9 @@
 //! Keyless, offline EXIF metadata and GPS extraction from an image file.
 //!
 //! One `exif IMAGE-FILE` reads the bytes already on the device -- no network, no key -- and parses
-//! the EXIF block a camera embeds. JPEG (the `APP1` `Exif\0\0` segment) and TIFF (the whole file)
-//! are understood; both carry the same TIFF-structured image-file directories (IFDs). Every tag the
+//! the EXIF block a camera embeds. JPEG (the `APP1` `Exif\0\0` segment), TIFF (the whole file),
+//! WebP (the `EXIF` RIFF chunk) and PNG (the `eXIf` chunk) are understood; all carry the same
+//! TIFF-structured image-file directories (IFDs). Every tag the
 //! directories name is kept as evidence on a [`EntityKind::Document`] entity for the file, so no part
 //! of the metadata is dropped, and when the GPS IFD holds a position it also becomes a
 //! [`EntityKind::Coordinates`] entity -- the same `lat,lon` the `geocode` command reverse-geocodes
@@ -30,7 +31,7 @@ pub const EXIF_USAGE: &str = "usage: huntsman-recon exif IMAGE-FILE";
 
 pub const EXIF_HELP: &str = "\
 exif IMAGE-FILE
-Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG, TIFF and WebP images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG, TIFF or WebP image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
+Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG, TIFF, WebP and PNG images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG, TIFF, WebP or PNG image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
 
 /// The largest image read, in bytes. EXIF sits at the head of the file, but the whole file is read
 /// so a TIFF whose directories point deep into it still parses; a larger file is refused by name.
@@ -106,9 +107,9 @@ pub struct Parsed {
 /// Parse the EXIF of one image.
 ///
 /// # Errors
-/// A static message when `image` is not a JPEG or TIFF, or its TIFF header is malformed. A JPEG with
-/// no `Exif` segment, or a readable image with an empty directory, is not an error: it returns a
-/// [`Parsed`] with its format and no fields.
+/// A static message when `image` is not a JPEG, TIFF, WebP or PNG image, its container is
+/// truncated, or its TIFF header is malformed. An image with no EXIF block, or a readable one with an
+/// empty directory, is not an error: it returns a [`Parsed`] with its format and no fields.
 pub fn parse(image: &[u8]) -> Result<Parsed, &'static str> {
     if image.starts_with(&[0xFF, 0xD8]) {
         let format = "JPEG";
@@ -122,16 +123,29 @@ pub fn parse(image: &[u8]) -> Result<Parsed, &'static str> {
     } else if image.starts_with(b"II\x2a\x00") || image.starts_with(b"MM\x00\x2a") {
         decode_tiff(image, "TIFF")
     } else if image.starts_with(b"RIFF") && image.get(8..12) == Some(b"WEBP") {
-        match find_webp_exif(image)? {
-            Some(tiff) => decode_tiff(tiff, "WebP"),
-            None => Ok(Parsed {
-                format: "WebP",
-                ..Parsed::default()
-            }),
-        }
+        decode_found(find_webp_exif(image)?, "WebP")
+    } else if image.starts_with(PNG_SIGNATURE) {
+        decode_found(find_png_exif(image)?, "PNG")
     } else {
-        Err("not a JPEG, TIFF or WebP image")
+        Err("not a JPEG, TIFF, WebP or PNG image")
     }
+}
+
+/// The decoded EXIF block a container held, or a clean result naming the format when it held none.
+fn decode_found(tiff: Option<&[u8]>, format: &'static str) -> Result<Parsed, &'static str> {
+    match tiff {
+        Some(tiff) => decode_tiff(tiff, format),
+        None => Ok(Parsed {
+            format,
+            ..Parsed::default()
+        }),
+    }
+}
+
+/// A container's EXIF payload with the `Exif\0\0` signature some writers put before it removed,
+/// leaving the TIFF block.
+fn without_exif_signature(payload: &[u8]) -> &[u8] {
+    payload.strip_prefix(b"Exif\x00\x00").unwrap_or(payload)
 }
 
 /// Run the whole command: parse `image`, build the entities, and render the report. `label` names
@@ -308,12 +322,62 @@ fn find_webp_exif(image: &[u8]) -> Result<Option<&[u8]>, &'static str> {
             return Err("WebP: truncated chunk payload");
         }
         if &header[..4] == b"EXIF" {
-            let payload = &image[start..tail];
-            return Ok(Some(
-                payload.strip_prefix(b"Exif\x00\x00").unwrap_or(payload),
-            ));
+            return Ok(Some(without_exif_signature(&image[start..tail])));
         }
         offset = next;
+    }
+    Ok(None)
+}
+
+// ── PNG chunk stream ─────────────────────────────────────────────────────────────────────
+
+/// The PNG file signature: the eight bytes every PNG begins with.
+pub(crate) const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// Most PNG chunks walked before giving up, so a file claiming countless chunks is bounded.
+const MAX_PNG_CHUNKS: usize = 4096;
+
+/// Each chunk of a PNG after its signature, as its four-byte type and its body, through `IEND` and
+/// at most [`MAX_PNG_CHUNKS`]: the one chunk walker, shared with [`crate::docmeta`]. A chunk that
+/// runs past the end of the file is an `Err` item and ends the walk; a file that ends cleanly on a
+/// chunk boundary without `IEND` ends it too. **Pure.**
+pub(crate) fn png_chunks(
+    data: &[u8],
+) -> impl Iterator<Item = Result<(&[u8], &[u8]), &'static str>> {
+    let mut at = PNG_SIGNATURE.len();
+    let mut left = MAX_PNG_CHUNKS;
+    std::iter::from_fn(move || {
+        if left == 0 || at == data.len() {
+            return None;
+        }
+        left -= 1;
+        let chunk = data.get(at..at + 8).and_then(|header| {
+            let length = usize::try_from(u32::from_be_bytes(header[..4].try_into().ok()?)).ok()?;
+            let body_end = (at + 8).checked_add(length)?;
+            let body = data.get(at + 8..body_end)?;
+            // length(4) + type(4) + body + crc(4).
+            Some((&header[4..], body, body_end.checked_add(4)?))
+        });
+        let Some((kind, body, next)) = chunk else {
+            left = 0;
+            return Some(Err("PNG: truncated chunk"));
+        };
+        at = next.min(data.len());
+        if kind == b"IEND" {
+            left = 0;
+        }
+        Some(Ok((kind, body)))
+    })
+}
+
+/// The payload of a PNG's `eXIf` chunk, a TIFF block. Truncated chunks before it are an error,
+/// never a clean absence of metadata.
+fn find_png_exif(image: &[u8]) -> Result<Option<&[u8]>, &'static str> {
+    for chunk in png_chunks(image) {
+        let (kind, body) = chunk?;
+        if kind == b"eXIf" {
+            return Ok(Some(without_exif_signature(body)));
+        }
     }
     Ok(None)
 }
