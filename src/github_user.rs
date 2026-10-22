@@ -9,10 +9,12 @@ use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::domains::host_only;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
-use crate::http::{Request, Response, Transport};
+use crate::fetch::{
+    AuthStyle, Credential, FetchOptions, Fetched, answer, decode_json, fetch, whole_response,
+};
+use crate::http::{Request, Transport};
 use crate::keys::Keys;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SRC: &str = "github_user";
 /// The credential slot holding an optional GitHub token.
@@ -118,20 +120,15 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
+    Ok(interpret(&fetched, credential.is_some(), scan_id, now_unix).unwrap_or_else(miss))
+}
 
-    let Some(response) = fetched.response else {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: fetched.outcome,
-        });
-    };
-    Ok(parse_response(
-        &response,
-        fetched.outcome,
-        credential.is_some(),
-        scan_id,
-        now_unix,
-    ))
+/// A report that found nothing, carrying only its outcome. **Pure.**
+fn miss(outcome: SourceExecutionOutcome) -> Report {
+    Report {
+        entities: Vec::new(),
+        outcome,
+    }
 }
 
 fn token_credential(secret: crate::keys::Secret, now_unix: u64) -> Result<Credential, Error> {
@@ -145,101 +142,59 @@ fn token_credential(secret: crate::keys::Secret, now_unix: u64) -> Result<Creden
     Ok(Credential::new(authority, secret, AuthStyle::Bearer)?.only_for_origin(API_ORIGIN))
 }
 
-fn parse_response(
-    response: &Response,
-    fallback: SourceExecutionOutcome,
+/// Turn one fetched profile response into a report; `Err` is the outcome of a response that named
+/// no profile. A plain 404 and an exhausted rate limit are read from the status before the body is.
+/// **Pure.**
+fn interpret(
+    fetched: &Fetched,
     authenticated: bool,
     scan_id: &str,
     now_unix: u64,
-) -> Report {
-    if response.status == 404 {
-        return Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::valid_zero(SRC, now_unix)
-                .with_http_status(response.status),
-        };
-    }
-    if response.status == 403
-        && response
-            .header_value("x-ratelimit-remaining")
-            .is_some_and(|value| value.trim() == "0")
-    {
-        let mut outcome = fallback;
-        outcome.kind = SourceOutcomeKind::RateLimited;
-        outcome.found = None;
-        outcome.detail = Some(if authenticated {
-            "GitHub token rate limit exhausted".into()
-        } else {
-            format!("GitHub unauthenticated rate limit exhausted; set {TOKEN_SLOT} to raise it")
-        });
-        return Report {
-            entities: Vec::new(),
-            outcome,
-        };
-    }
-    if response.truncated {
-        return Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::failed(
-                SRC,
-                now_unix,
-                SourceOutcomeKind::ParserDrift,
-                Some(response.status),
-                "truncated GitHub response",
-            ),
-        };
-    }
-
-    let body = response.text();
-    let classified = classify_fetch(response.status, &body);
-    if classified != SourceOutcomeKind::Inconclusive {
-        return Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::failed(
-                SRC,
-                now_unix,
-                classified,
-                Some(response.status),
-                "GitHub response was not a profile document",
-            ),
-        };
-    }
-
-    let user: GhUser = match serde_json::from_slice(&response.body) {
-        Ok(user) => user,
-        Err(error) => {
-            return Report {
-                entities: Vec::new(),
-                outcome: SourceExecutionOutcome::failed(
-                    SRC,
-                    now_unix,
-                    SourceOutcomeKind::ParserDrift,
-                    Some(response.status),
-                    format!("GitHub JSON: {error}"),
-                ),
-            };
+) -> Result<Report, SourceExecutionOutcome> {
+    if let Some(response) = &fetched.response {
+        // A 404 is GitHub's "no such user" answer only when fetch read it as a plain upstream 4xx;
+        // a challenge page at that status is a wall, not a clean negative.
+        if response.status == 404 && fetched.outcome.kind == SourceOutcomeKind::Upstream4xx {
+            return Err(
+                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
+            );
         }
-    };
+        if response.status == 403
+            && response
+                .header_value("x-ratelimit-remaining")
+                .is_some_and(|value| value.trim() == "0")
+        {
+            let mut outcome = fetched.outcome.clone();
+            outcome.kind = SourceOutcomeKind::RateLimited;
+            outcome.found = None;
+            outcome.detail = Some(if authenticated {
+                "GitHub token rate limit exhausted".into()
+            } else {
+                format!("GitHub unauthenticated rate limit exhausted; set {TOKEN_SLOT} to raise it")
+            });
+            return Err(outcome);
+        }
+    }
+    let response = whole_response(fetched, "GitHub")?;
+    answer(fetched, "GitHub")?;
+    let user: GhUser = decode_json(response, SRC, now_unix, "GitHub")?;
     if user.login.trim().is_empty() {
-        return Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::failed(
-                SRC,
-                now_unix,
-                SourceOutcomeKind::SchemaDrift,
-                Some(response.status),
-                "GitHub profile has no login",
-            ),
-        };
+        return Err(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "GitHub profile has no login",
+        ));
     }
 
     let mut entities = build_entities(&user, scan_id);
     merge_by_uid(&mut entities);
-    Report {
+    Ok(Report {
         outcome: SourceExecutionOutcome::success(SRC, now_unix, 1)
             .with_http_status(response.status),
         entities,
-    }
+    })
 }
 
 fn evidence(user: &GhUser, profile_url: &str, scan_id: &str) -> Evidence {
@@ -479,6 +434,7 @@ fn add_blog(user: &GhUser, scan_id: &str, profile_evidence: &Evidence, entities:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::Response;
     use crate::relation::{self, RelationKind};
     use crate::test_support::OneResponse;
 
@@ -502,6 +458,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(got.outcome.kind, SourceOutcomeKind::ValidZero);
+        assert!(got.entities.is_empty());
+    }
+
+    #[test]
+    fn a_challenge_page_at_404_is_a_wall_not_a_missing_profile() {
+        let got = lookup(
+            &OneResponse::json(
+                404,
+                "<html><title>Just a moment...</title>Cloudflare</html>",
+            ),
+            &Keys::default(),
+            "nobody",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::BotWaf);
+        assert_eq!(got.outcome.http_status, Some(404));
         assert!(got.entities.is_empty());
     }
 
@@ -673,5 +647,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(got.outcome.kind, SourceOutcomeKind::ParserDrift);
+    }
+
+    #[test]
+    fn a_401_to_a_sent_token_is_a_rejected_token_not_a_missing_one() {
+        let keys = Keys::parse(&format!("{TOKEN_SLOT}={TOKEN}")).unwrap();
+        let bad_credentials = r#"{"message":"Bad credentials"}"#;
+        let rejected = lookup(
+            &OneResponse::json(401, bad_credentials),
+            &keys,
+            "octocat",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(rejected.outcome.kind, SourceOutcomeKind::AuthRejected);
+        assert_eq!(rejected.outcome.http_status, Some(401));
+        let anonymous = lookup(
+            &OneResponse::json(401, bad_credentials),
+            &Keys::default(),
+            "octocat",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(anonymous.outcome.kind, SourceOutcomeKind::AuthRequired);
+    }
+
+    #[test]
+    fn a_wrong_typed_profile_is_parser_drift_that_quotes_none_of_it() {
+        let got = lookup(
+            &OneResponse::json(200, r#"{"login":"octocat","id":"secret@example.com"}"#),
+            &Keys::default(),
+            "octocat",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::ParserDrift);
+        let detail = got.outcome.detail.unwrap_or_default();
+        assert!(!detail.contains("secret@example.com"), "{detail}");
     }
 }
