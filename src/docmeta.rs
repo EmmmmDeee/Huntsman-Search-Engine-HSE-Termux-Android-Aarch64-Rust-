@@ -581,14 +581,14 @@ fn xmp_gps(fields: &[(String, String)]) -> Option<(f64, f64)> {
 /// as signed decimal degrees. `negative` is the hemisphere letter that negates it (`S` or `W`).
 /// **Pure.**
 fn parse_xmp_coord(value: &str, negative: char) -> Option<f64> {
-    let (positive, maximum) = match negative {
-        'S' => (b'N', 90.0),
-        'W' => (b'E', 180.0),
+    let (positive, negative_mark, maximum) = match negative {
+        'S' => (b'N', b'S', 90.0),
+        'W' => (b'E', b'W', 180.0),
         _ => return None,
     };
     let value = value.trim();
     let hemisphere = value.as_bytes().last()?.to_ascii_uppercase();
-    if hemisphere != positive && hemisphere != negative as u8 {
+    if hemisphere != positive && hemisphere != negative_mark {
         return None;
     }
     // Hemisphere is an ASCII byte. Do not infer north/east from any other trailing letter.
@@ -621,7 +621,7 @@ fn parse_xmp_coord(value: &str, negative: char) -> Option<f64> {
     if !magnitude.is_finite() || magnitude > maximum {
         return None;
     }
-    Some(if hemisphere == negative as u8 {
+    Some(if hemisphere == negative_mark {
         -magnitude
     } else {
         magnitude
