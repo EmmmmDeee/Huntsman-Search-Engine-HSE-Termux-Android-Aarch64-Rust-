@@ -500,7 +500,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await page.waitForSelector('#aresult:not([hidden])', { timeout: 20000 });
       const geoTable = await page.textContent('#ageo');
       check(`${scheme}: GEOINT shows the short antimeridian distance from two seeds`,
-        (await page.$('#ageo tr')).length === 1 && geoTable.includes('2223') &&
+        (await page.$$('#ageo tr')).length === 1 && geoTable.includes('2223') &&
         !await page.textContent('#ageonote'), geoTable);
 
 
