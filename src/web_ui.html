@@ -720,7 +720,7 @@ async function loadMods(){
     // ATT&CK lookup table. Only source legs callable by a scan are candidates.
     const techniqueCounts=new Map();
     for(const m of list)if(m.lookups&&m.lookups.length)for(const id of m.attack_techniques||[]){
-      if(/^T\\d{4}(?:\\.\\d{3})?$/.test(id))techniqueCounts.set(id,(techniqueCounts.get(id)||0)+1);
+      if(/^T\d{4}(?:\.\d{3})?$/.test(id))techniqueCounts.set(id,(techniqueCounts.get(id)||0)+1);
     }
     const tech=$('nattackfocus');tech.replaceChildren();
     const initial=el('option','','Choose a mapped technique');initial.value='';tech.append(initial);
