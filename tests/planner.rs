@@ -183,8 +183,10 @@ fn attack_reconnaissance_diversity_changes_real_admission_only_with_equal_roi() 
     // The alphabetically earlier search used to win the tie. Bounded dispatch now
     // chooses the DNS source with distinct reconnaissance opportunities instead.
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(AlternateSearch), Arc::new(PassiveDns)];
-    let mut limits = PipelineLimits::default();
-    limits.max_dispatches = 1;
+    let limits = PipelineLimits {
+        max_dispatches: 1,
+        ..PipelineLimits::default()
+    };
     let plan = build_dispatch_plan(&modules, &[seed()], &limits, &PlannerPolicy::default());
     assert_eq!(plan.selected.len(), 1);
     assert!(matches!(
@@ -199,8 +201,10 @@ fn attack_reconnaissance_diversity_changes_real_admission_only_with_equal_roi() 
 #[test]
 fn attack_reconnaissance_selection_still_obeys_credential_quota_and_prior_dispatch_gates() {
     let modules: Vec<Arc<dyn Module>> = vec![Arc::new(AlternateSearch), Arc::new(PassiveDns)];
-    let mut limits = PipelineLimits::default();
-    limits.max_dispatches = 1;
+    let limits = PipelineLimits {
+        max_dispatches: 1,
+        ..PipelineLimits::default()
+    };
     let mut policy = PlannerPolicy::default();
     policy.quota_remaining.insert("z_dns".to_owned(), false);
     let plan = build_dispatch_plan(&modules, &[seed()], &limits, &policy);
