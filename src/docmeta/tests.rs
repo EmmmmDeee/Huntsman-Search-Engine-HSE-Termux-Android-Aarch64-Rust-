@@ -704,11 +704,17 @@ fn document_fingerprint_tracks_exact_bytes_not_the_filename_or_editable_metadata
             .expect("every file has a document entity");
         let evidence = &document.evidence[0];
         assert_eq!(
-            evidence.attributes.get("file_size_bytes").map(String::as_str),
+            evidence
+                .attributes
+                .get("file_size_bytes")
+                .map(String::as_str),
             Some("3")
         );
         assert_eq!(
-            evidence.attributes.get("file_hash_scope").map(String::as_str),
+            evidence
+                .attributes
+                .get("file_hash_scope")
+                .map(String::as_str),
             Some("exact_input_bytes")
         );
         evidence.attributes["file_sha256"].clone()
