@@ -63,6 +63,7 @@ pub mod dns;
 pub mod dns_filter;
 pub mod dns_wire;
 pub mod dnsbl;
+pub mod docmeta;
 pub mod doctor;
 pub mod domain_cli;
 pub mod domain_lifecycle;

@@ -103,6 +103,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "itunes" => huntsman_recon::itunes_cli::ITUNES_HELP,
         "geocode" => huntsman_recon::nominatim_cli::GEOCODE_HELP,
         "exif" => huntsman_recon::exif::EXIF_HELP,
+        "docmeta" => huntsman_recon::docmeta::DOCMETA_HELP,
         "radar" => radar_help(),
         "domain" => domain_help(),
         "ip" => huntsman_recon::ip_cli::IP_HELP,
