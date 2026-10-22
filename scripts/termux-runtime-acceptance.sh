@@ -55,7 +55,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-for cmd in timeout curl date grep mktemp rm tee tail sleep uname; do
+for cmd in timeout curl date grep cmp mktemp rm tee tail sleep uname; do
   command -v "$cmd" >/dev/null 2>&1 || fail "required Termux command not found: $cmd"
 done
 
@@ -186,6 +186,9 @@ verify_api() {
       "$base/api/scans/$PERSISTED_SCAN" -o "$persisted" || return 1
     grep -Fq "\"id\":\"$PERSISTED_SCAN\"" "$persisted" || return 1
     grep -Fq '"status":"FINISHED"' "$persisted" || return 1
+    # Compare the entire stored scan response, not only its identity and status.
+    # Both requests use the same endpoint and the synthetic scan is immutable.
+    cmp -s "$WORK_DIR/lookup-scan.json" "$persisted" || return 1
     pass 'saved scan survives server restart'
   fi
   curl --fail --silent --show-error --max-time 5 "$base/api/modules" -o "$modules" || return 1
