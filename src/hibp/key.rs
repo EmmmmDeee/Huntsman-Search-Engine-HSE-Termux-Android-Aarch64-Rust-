@@ -8,9 +8,9 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::environment;
+use crate::redact::REDACTED;
 
 pub use crate::environment::HIBP_API_KEY_ENV;
-pub const REDACTED: &str = "<redacted>";
 
 #[derive(Clone)]
 pub struct ApiKey(crate::keys::Secret);
@@ -21,10 +21,6 @@ impl ApiKey {
     #[must_use]
     pub fn expose(&self) -> &str {
         self.0.expose()
-    }
-    #[must_use]
-    pub fn redact_in(&self, text: &str) -> String {
-        text.replace(self.expose(), REDACTED)
     }
 }
 impl fmt::Debug for ApiKey {

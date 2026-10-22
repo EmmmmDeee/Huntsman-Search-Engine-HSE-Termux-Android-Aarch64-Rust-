@@ -30,11 +30,11 @@ use std::path::PathBuf;
 
 use crate::environment;
 use crate::http::{Request, Transport};
+use crate::redact::REDACTED;
 use serde::{Deserialize, Serialize};
 
 use super::client::USER_AGENT;
 use super::error::HibpError;
-use super::key::REDACTED;
 
 /// HIBP's authorization-server metadata URL.
 pub const METADATA_URL: &str = "https://haveibeenpwned.com/.well-known/oauth-authorization-server";

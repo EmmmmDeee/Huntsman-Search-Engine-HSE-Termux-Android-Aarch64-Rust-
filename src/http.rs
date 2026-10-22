@@ -23,6 +23,7 @@ use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 use crate::egress::EgressPolicy;
 use crate::error::Error;
+use crate::redact::REDACTED;
 use crate::source_outcome::SourceOutcomeKind;
 
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -123,7 +124,7 @@ impl fmt::Debug for Request {
                 (
                     k.as_str(),
                     if is_sensitive_header(k) {
-                        "[redacted]"
+                        REDACTED
                     } else {
                         v.as_str()
                     },
