@@ -1619,13 +1619,16 @@ struct Imported {
 /// catalogue, and `value`, the key, or empty to remove the slot; or a key import, `import`, the
 /// text of a file holding keys. The refusal is the answer to send.
 fn save_key(parsed: &ParsedRequest<'_>, file: &Path) -> Result<Option<Imported>, String> {
-    if parsed.content_length != parsed.body.map(str::len) {
+    let Some(body) = parsed.body else {
+        return Err(json_error(400, "the request ended before its head did"));
+    };
+    if parsed.content_length != Some(body.len()) {
         return Err(json_error(
             400,
             &format!("send the form as a body of at most {MAX_FORM_BYTES} bytes"),
         ));
     }
-    let Some(form) = parsed.body.and_then(form_pairs) else {
+    let Some(form) = form_pairs(body) else {
         return Err(json_error(
             400,
             "the form is not valid percent-encoded UTF-8",
@@ -4751,5 +4754,18 @@ mod tests {
         assert!(after.starts_with("HTTP/1.1 200"), "{after}");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         drop(stalled);
+    }
+
+    /// A key save whose head never ended is refused for that, not as a badly encoded form.
+    #[test]
+    fn a_key_save_cut_short_is_refused_for_what_it_is() {
+        let home = key_home("cut-short");
+        let answer = text(respond(
+            &format!("POST {KEYS_PATH} HTTP/1.1\r\nHost: localhost\r\n{HEADER}"),
+            &test_config(loopback_bind(), None),
+            &key_routes(&home),
+        ));
+        assert!(answer.starts_with("HTTP/1.1 400"), "{answer}");
+        assert!(answer.contains("ended before its head did"), "{answer}");
     }
 }

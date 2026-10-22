@@ -835,21 +835,29 @@ fn pdf_xref_stream_dictionary(data: &[u8], offset: usize) -> Option<&[u8]> {
 /// update's newer copy wins); empty when no trailer names one or its object is not stored
 /// uncompressed. **Pure.**
 fn pdf_info_revisions<'a>(data: &'a [u8], trailers: &[&[u8]]) -> Vec<&'a [u8]> {
-    let mut references: Vec<(u32, u16)> = Vec::new();
-    for trailer in trailers {
-        for reference in pdf_name_values(trailer, b"/Info")
+    // Walking the trailers newest first, the first sight of a reference is its newest naming, so
+    // the first MAX_INFO_REVISIONS distinct ones are the revisions kept, and each is checked
+    // against at most that many: a trailer packed with references costs linear time.
+    let mut references: Vec<(u32, u16)> = Vec::with_capacity(MAX_INFO_REVISIONS);
+    'trailers: for trailer in trailers.iter().rev() {
+        let named: Vec<(u32, u16)> = pdf_name_values(trailer, b"/Info")
             .filter_map(|at| pdf_reference(trailer, skip_pdf_whitespace(trailer, at)))
-        {
-            references.retain(|known| *known != reference);
-            references.push(reference);
+            .collect();
+        for reference in named.into_iter().rev() {
+            if !references.contains(&reference) {
+                references.push(reference);
+                if references.len() == MAX_INFO_REVISIONS {
+                    break 'trailers;
+                }
+            }
         }
     }
+    references.reverse();
     let Some(&current) = references.last() else {
         return Vec::new();
     };
-    let skip = references.len().saturating_sub(MAX_INFO_REVISIONS);
     let mut definitions: Vec<(usize, bool)> = Vec::new();
-    for &reference in &references[skip..] {
+    for &reference in &references {
         definitions
             .extend(pdf_object_bodies(data, reference).map(|body| (body, reference == current)));
     }

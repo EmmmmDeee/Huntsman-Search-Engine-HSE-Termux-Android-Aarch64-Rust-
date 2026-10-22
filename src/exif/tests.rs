@@ -349,3 +349,120 @@ fn a_small_hostile_tiff_cannot_render_into_a_huge_report() {
             .all(|(_, v)| v.len() <= crate::exif::MAX_METADATA_VALUE_BYTES)
     );
 }
+
+/// A little-endian TIFF whose IFD0 holds `junk` private SHORT tags, then a pointer to an Exif IFD
+/// (a capture time) and to the GPS IFD of [`exif_tiff`] at 48.85N, 2.3333E.
+fn crowded_tiff(junk: u16) -> Vec<u8> {
+    let ifd0 = 8u32;
+    let ifd0_len = 2 + (u32::from(junk) + 2) * 12 + 4;
+    let exif_ifd = ifd0 + ifd0_len;
+    let gps_ifd = exif_ifd + 2 + 12 + 4;
+    let heap = gps_ifd + 2 + 4 * 12 + 4;
+    let (when_at, lat_at) = (heap, heap + 20);
+    let lon_at = lat_at + 24;
+    let mut t = b"II".to_vec();
+    t.extend_from_slice(&le16(42));
+    t.extend_from_slice(&le32(ifd0));
+    t.extend_from_slice(&le16(junk + 2));
+    for tag in 0..junk {
+        push_entry(&mut t, 0xC000 + tag, 3, 1, inline(&le16(7)));
+    }
+    push_entry(&mut t, 0x8769, 4, 1, le32(exif_ifd));
+    push_entry(&mut t, 0x8825, 4, 1, le32(gps_ifd));
+    t.extend_from_slice(&le32(0));
+    t.extend_from_slice(&le16(1));
+    push_entry(&mut t, 0x9003, 2, 20, le32(when_at)); // DateTimeOriginal
+    t.extend_from_slice(&le32(0));
+    t.extend_from_slice(&le16(4));
+    push_entry(&mut t, 0x0001, 2, 2, inline(b"N\0"));
+    push_entry(&mut t, 0x0002, 5, 3, le32(lat_at));
+    push_entry(&mut t, 0x0003, 2, 2, inline(b"E\0"));
+    push_entry(&mut t, 0x0004, 5, 3, le32(lon_at));
+    t.extend_from_slice(&le32(0));
+    t.extend_from_slice(b"2026:10:01 12:34:56\0");
+    push_rationals(&mut t, &[(48, 1), (51, 1), (0, 1)]);
+    push_rationals(&mut t, &[(2, 1), (20, 1), (0, 1)]);
+    t
+}
+
+#[test]
+fn a_crowded_first_directory_never_hides_the_camera_and_gps_fields() {
+    let parsed = parse(&crowded_tiff(1000)).expect("a readable TIFF");
+    assert!(parsed.fields.len() <= crate::exif::MAX_METADATA_FIELDS);
+    let names: Vec<&str> = parsed
+        .fields
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(
+        names.iter().any(|name| name.contains("DateTimeOriginal")),
+        "{names:?}"
+    );
+    assert!(
+        names.iter().any(|name| name.starts_with("GPSLatitude")),
+        "{names:?}"
+    );
+    // What was not kept is counted, and said.
+    assert_eq!(parsed.fields.len() + parsed.omitted, 1000 + 1 + 4);
+    match run(&crowded_tiff(1000), "crowded.tif", 1) {
+        ExifRun::Printed { report, .. } => {
+            let document = &report.entities[0].evidence[0];
+            assert!(
+                document.summary.contains("not kept"),
+                "{}",
+                document.summary
+            );
+            assert!(document.attributes.contains_key("exif_fields_omitted"));
+        }
+        ExifRun::Network(error) | ExifRun::Failed(error) => panic!("{error}"),
+    }
+    // A file within the bound keeps everything and says nothing about omissions.
+    let small = parse(&crowded_tiff(10)).expect("a readable TIFF");
+    assert_eq!((small.fields.len(), small.omitted), (15, 0));
+}
+
+#[test]
+fn a_value_of_control_bytes_renders_within_the_bound() {
+    // 512 ASCII tags all pointing at the same 8 KiB of 0x01: each byte renders as `\u{1}`, so a
+    // bound on raw bytes let a 14 KB file render some 21 MB.
+    let n: u16 = 512;
+    let data = 8 + 2 + u32::from(n) * 12 + 4;
+    let mut tiff = b"II*\0".to_vec();
+    tiff.extend_from_slice(&8_u32.to_le_bytes());
+    tiff.extend_from_slice(&n.to_le_bytes());
+    for tag in 0..n {
+        push_entry(&mut tiff, 0x1000 + tag, 2, 8192, le32(data));
+    }
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    tiff.extend(std::iter::repeat_n(0x01_u8, 8192));
+    match run(&tiff, "controls.tif", 1) {
+        ExifRun::Printed { text, .. } => {
+            assert!(
+                text.len() <= 6 * 1024 * 1024,
+                "{} bytes rendered",
+                text.len()
+            );
+        }
+        ExifRun::Network(error) | ExifRun::Failed(error) => panic!("{error}"),
+    }
+}
+
+#[test]
+fn a_long_number_array_shows_whole_numbers_and_how_many_there_are() {
+    // A 4096-value SHORT array renders past the value bound: only whole numbers are shown, then
+    // the count, never a number cut part way through.
+    let mut tiff = b"II*\0".to_vec();
+    tiff.extend_from_slice(&8_u32.to_le_bytes());
+    tiff.extend_from_slice(&1_u16.to_le_bytes());
+    push_entry(&mut tiff, 0x0111, 3, 4096, le32(8 + 2 + 12 + 4)); // StripOffsets
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    for _ in 0..4096 {
+        tiff.extend_from_slice(&le16(12345));
+    }
+    let parsed = parse(&tiff).expect("a readable TIFF");
+    let (_, value) = &parsed.fields[0];
+    assert!(value.len() <= crate::exif::MAX_METADATA_VALUE_BYTES);
+    let (shown, count) = value.rsplit_once(" \u{2026} ").expect("a cut list says so");
+    assert_eq!(count, "(4096 values)");
+    assert!(shown.split(", ").all(|number| number == "12345"), "{shown}");
+}

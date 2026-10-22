@@ -977,3 +977,30 @@ fn an_extended_xmp_list_split_across_segments_is_read_whole() {
         Some("0123456789ABCDEF0123456789ABCDEF")
     );
 }
+
+#[test]
+fn trailers_packed_with_info_references_are_read_in_linear_time() {
+    // Sixteen closed trailer dictionaries, each 256 KiB of distinct `/Info N G R` entries: some
+    // 290 000 references. Deduplicating each against all the others took minutes; only the newest
+    // MAX_INFO_REVISIONS distinct ones are kept, so each is checked against at most that many.
+    let mut pdf = b"%PDF-1.4\n1 0 obj\n<< /Title (Kept) >>\nendobj\n".to_vec();
+    let mut n = 1000u32;
+    for _ in 0..16 {
+        pdf.extend_from_slice(b"trailer\n<< ");
+        let start = pdf.len();
+        while pdf.len() - start < 256 * 1024 - 300 {
+            pdf.extend_from_slice(format!("/Info {} {} R", n / 1000, n % 1000).as_bytes());
+            n += 1;
+        }
+        pdf.extend_from_slice(b" >>\n");
+    }
+    pdf.extend_from_slice(b"trailer\n<< /Info 1 0 R >>\nstartxref\n9\n%%EOF\n");
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sent.send(field(&parse(&pdf), "info:Title").map(str::to_owned));
+    });
+    let title = received
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the parse finishes in bounded time");
+    assert_eq!(title.as_deref(), Some("Kept"));
+}
