@@ -1,7 +1,7 @@
 //! Gravatar public-profile lookup.
 //!
 //! One explicit email lookup becomes one guarded request to Gravatar's public
-//! profile endpoint. A 404 is a validated absence; malformed or truncated
+//! profile endpoint. A plain 404 is a validated absence; malformed or truncated
 //! responses are never treated as "not found".
 
 use serde::Deserialize;
@@ -9,10 +9,10 @@ use serde::Deserialize;
 use crate::canonical::canonical_email;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, fetch};
+use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport};
 use crate::md5::normalized_email_hex;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SRC: &str = "gravatar";
 
@@ -119,88 +119,59 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
+    Ok(interpret(&fetched, &email, &hash, scan_id, now_unix).unwrap_or_else(miss))
+}
 
-    let Some(response) = fetched.response else {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: fetched.outcome,
-        });
-    };
-
-    if response.status == 404 {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::valid_zero(SRC, now_unix)
-                .with_http_status(response.status),
-        });
+/// A report that found nothing, carrying only its outcome. **Pure.**
+fn miss(outcome: SourceExecutionOutcome) -> Report {
+    Report {
+        entities: Vec::new(),
+        outcome,
     }
+}
 
-    if response.truncated {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::failed(
-                SRC,
-                now_unix,
-                SourceOutcomeKind::ParserDrift,
-                Some(response.status),
-                "truncated Gravatar response",
-            ),
-        });
+/// Turn one fetched profile response for `email` into a report; `Err` is the outcome of a
+/// response that named no profile. A plain 404 is Gravatar's "no profile" answer, read from the
+/// status before the gate; a challenge page at that status is a wall. **Pure.**
+fn interpret(
+    fetched: &Fetched,
+    email: &str,
+    hash: &str,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<Report, SourceExecutionOutcome> {
+    // A 404 is a clean negative only when fetch read it as a plain upstream 4xx; a challenge page
+    // at that status is `BotWaf`.
+    if let Some(response) = fetched
+        .response
+        .as_ref()
+        .filter(|r| r.status == 404 && fetched.outcome.kind == SourceOutcomeKind::Upstream4xx)
+    {
+        return Err(
+            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
+        );
     }
-
-    let body = response.text();
-    let classified = classify_fetch(response.status, &body);
-    if classified != SourceOutcomeKind::Inconclusive {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::failed(
-                SRC,
-                now_unix,
-                classified,
-                Some(response.status),
-                "Gravatar response was not a profile document",
-            ),
-        });
-    }
-
-    let envelope: Envelope = match serde_json::from_slice(&response.body) {
-        Ok(value) => value,
-        Err(err) => {
-            return Ok(Report {
-                entities: Vec::new(),
-                outcome: SourceExecutionOutcome::failed(
-                    SRC,
-                    now_unix,
-                    SourceOutcomeKind::ParserDrift,
-                    Some(response.status),
-                    format!("Gravatar JSON: {err}"),
-                ),
-            });
-        }
-    };
+    let response = whole_response(fetched, "Gravatar")?;
+    answer(fetched, "Gravatar")?;
+    let envelope: Envelope = decode_json(response, SRC, now_unix, "Gravatar")?;
     let Some(profiles) = envelope.entry else {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::failed(
-                SRC,
-                now_unix,
-                SourceOutcomeKind::SchemaDrift,
-                Some(response.status),
-                "Gravatar JSON has no entry field",
-            ),
-        });
+        return Err(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "Gravatar JSON has no entry field",
+        ));
     };
     if profiles.is_empty() {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::valid_zero(SRC, now_unix)
-                .with_http_status(response.status),
-        });
+        return Err(
+            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
+        );
     }
 
     let mut entities = Vec::new();
     for profile in &profiles {
-        build_entities(profile, &email, &hash, scan_id, &mut entities);
+        build_entities(profile, email, hash, scan_id, &mut entities);
     }
     merge_by_uid(&mut entities);
 
@@ -497,6 +468,34 @@ mod tests {
         assert_eq!(report.outcome.kind, SourceOutcomeKind::ValidZero);
     }
 
+    /// `interpret` over `status` and `body`, fetched unpaced, so a refusal here never opens the
+    /// shared gravatar.com circuit the paced lookups in these tests go through.
+    fn interpreted(status: u16, body: &str) -> Report {
+        let fetched = fetch(
+            &OneResponse::json(status, body),
+            Request::get("https://gravatar.com/unused.json"),
+            None,
+            &FetchOptions::no_redirects(),
+            SRC,
+            1,
+        )
+        .unwrap();
+        interpret(&fetched, "a@example.com", "hash", "scan", 1).unwrap_or_else(miss)
+    }
+
+    #[test]
+    fn only_a_plain_404_is_a_missing_profile() {
+        let plain = interpreted(404, "");
+        assert_eq!(plain.outcome.kind, SourceOutcomeKind::ValidZero);
+        let walled = interpreted(
+            404,
+            "<html><title>Just a moment...</title>Cloudflare</html>",
+        );
+        assert_eq!(walled.outcome.kind, SourceOutcomeKind::BotWaf);
+        assert_eq!(walled.outcome.http_status, Some(404));
+        assert!(walled.entities.is_empty());
+    }
+
     #[test]
     fn profile_emits_identity_and_links() {
         let body = r#"{
@@ -621,5 +620,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.outcome.kind, SourceOutcomeKind::ParserDrift);
+    }
+
+    #[test]
+    fn a_wrong_typed_profile_is_parser_drift_that_quotes_none_of_it() {
+        let report = lookup(
+            &OneResponse::json(200, r#"{"entry":"secret@example.com"}"#),
+            "a@example.com",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::ParserDrift);
+        let detail = report.outcome.detail.unwrap_or_default();
+        assert!(!detail.contains("secret@example.com"), "{detail}");
     }
 }

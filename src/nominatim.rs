@@ -22,7 +22,7 @@ use serde::Deserialize;
 use crate::canonical::canonical_coordinates;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, fetch};
+use crate::fetch::{FetchOptions, fetch, json_error_detail};
 use crate::http::{DEFAULT_USER_AGENT, Request, Response, Transport, percent_encode_unreserved};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
 
@@ -361,7 +361,7 @@ fn interpret_forward(response: &Response, query: &str, scan_id: &str, now_unix: 
     };
     let places: Vec<Place> = match serde_json::from_slice(&response.body) {
         Ok(places) => places,
-        Err(error) => return drift(response.status, now_unix, &error.to_string()),
+        Err(error) => return drift(response.status, now_unix, &json_error_detail(&error)),
     };
     decode(
         &places,
@@ -405,7 +405,7 @@ fn interpret_reverse(
                 .with_http_status(response.status)
                 .with_detail(format!("Nominatim: {}", error.trim())),
         ),
-        Err(error) => drift(response.status, now_unix, &error.to_string()),
+        Err(error) => drift(response.status, now_unix, &json_error_detail(&error)),
     }
 }
 

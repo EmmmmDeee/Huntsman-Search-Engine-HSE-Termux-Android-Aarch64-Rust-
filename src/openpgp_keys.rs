@@ -3,7 +3,7 @@
 //! keys.openpgp.org publishes a user ID only after the address owner confirmed it by
 //! mail, so a key found for an address ties that address to every other address and
 //! name on the same key. One explicit email lookup becomes one guarded HKP
-//! machine-readable index request. A 404 is a validated absence; a 200 that is not an
+//! machine-readable index request. A plain 404 is a validated absence; a 200 that is not an
 //! index document is drift, never "not found".
 //!
 //! Proton Mail's key server is deliberately not used: it answers every `@proton.me`
@@ -13,9 +13,9 @@
 use crate::canonical::canonical_email;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, fetch};
+use crate::fetch::{FetchOptions, Fetched, answer, fetch, whole_response};
 use crate::http::{Request, Transport, append_query_param};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SRC: &str = "openpgp_keys";
 
@@ -60,49 +60,49 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    let Some(response) = fetched.response else {
-        return Ok(empty(fetched.outcome));
-    };
-    if response.status == 404 {
-        return Ok(empty(
-            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status),
-        ));
+    Ok(interpret(&fetched, &email, scan_id, now_unix).unwrap_or_else(empty))
+}
+
+/// Turn one fetched key index for `email` into a report; `Err` is the outcome of a response that
+/// named no key. A plain 404 is the key server's "no key" answer, read from the status before the
+/// gate; a challenge page at that status is a wall. **Pure.**
+fn interpret(
+    fetched: &Fetched,
+    email: &str,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<Report, SourceExecutionOutcome> {
+    // A 404 is a clean negative only when fetch read it as a plain upstream 4xx; a challenge page
+    // at that status is `BotWaf`.
+    if let Some(response) = fetched
+        .response
+        .as_ref()
+        .filter(|r| r.status == 404 && fetched.outcome.kind == SourceOutcomeKind::Upstream4xx)
+    {
+        return Err(
+            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
+        );
     }
-    let failed = |kind, detail: &str| {
-        empty(SourceExecutionOutcome::failed(
+    let response = whole_response(fetched, "key index")?;
+    answer(fetched, "key server")?;
+    let Some(keys) = parse_index(&response.text()) else {
+        return Err(SourceExecutionOutcome::failed(
             SRC,
             now_unix,
-            kind,
-            Some(response.status),
-            detail,
-        ))
-    };
-    if response.truncated {
-        return Ok(failed(
-            SourceOutcomeKind::ParserDrift,
-            "truncated key index",
-        ));
-    }
-    let body = response.text();
-    let classified = classify_fetch(response.status, &body);
-    if classified != SourceOutcomeKind::Inconclusive {
-        return Ok(failed(classified, "key server answer was not a key index"));
-    }
-    let Some(keys) = parse_index(&body) else {
-        return Ok(failed(
             SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
             "key server answer was not an HKP machine-readable index",
         ));
     };
     if keys.is_empty() {
-        return Ok(empty(
-            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status),
-        ));
+        return Err(
+            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
+        );
     }
 
     let mut entities = Vec::new();
     for key in &keys {
-        build_entities(key, &email, scan_id, &mut entities);
+        build_entities(key, email, scan_id, &mut entities);
     }
     merge_by_uid(&mut entities);
     Ok(Report {
@@ -303,6 +303,34 @@ uid:Neal%20H.%20Walfield%20%3Cneal@walfield.org%3E:1780676673::\n";
         assert!(report.entities.is_empty());
     }
 
+    /// `interpret` over `status` and `body`, fetched unpaced, so a refusal here never opens the
+    /// shared keys.openpgp.org circuit the paced lookups in these tests go through.
+    fn interpreted(status: u16, body: &str) -> Report {
+        let fetched = fetch(
+            &text(status, body),
+            Request::get(API),
+            None,
+            &FetchOptions::no_redirects(),
+            SRC,
+            1,
+        )
+        .unwrap();
+        interpret(&fetched, "a@example.com", "s", 1).unwrap_or_else(empty)
+    }
+
+    #[test]
+    fn only_a_plain_404_is_a_missing_key() {
+        let plain = interpreted(404, "No key found");
+        assert_eq!(plain.outcome.kind, SourceOutcomeKind::ValidZero);
+        let walled = interpreted(
+            404,
+            "<html><title>Just a moment...</title>Cloudflare</html>",
+        );
+        assert_eq!(walled.outcome.kind, SourceOutcomeKind::BotWaf);
+        assert_eq!(walled.outcome.http_status, Some(404));
+        assert!(walled.entities.is_empty());
+    }
+
     #[test]
     fn recorded_key_links_the_other_verified_addresses_and_the_name() {
         let report = lookup(&text(200, RECORDED), "neal@walfield.org", "s", 1).unwrap();
@@ -440,5 +468,21 @@ uid:Jane%20%3Cjane.doe@example.net%3E::\n";
             );
             assert!(report.entities.is_empty());
         }
+    }
+
+    /// The index is not JSON, so there is no decoder message to leak, but the diagnostic of an
+    /// answer that is not an index names none of it either.
+    #[test]
+    fn an_answer_that_is_not_an_index_is_drift_that_quotes_none_of_it() {
+        let report = lookup(
+            &text(200, "uid:secret@example.com::\n"),
+            "a@example.com",
+            "s",
+            1,
+        )
+        .unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
+        let detail = report.outcome.detail.unwrap_or_default();
+        assert!(!detail.contains("secret@example.com"), "{detail}");
     }
 }

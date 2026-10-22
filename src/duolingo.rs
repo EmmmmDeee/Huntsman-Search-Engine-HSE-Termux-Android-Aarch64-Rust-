@@ -10,9 +10,9 @@ use serde::Deserialize;
 use crate::canonical::canonical_email;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, fetch};
+use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, append_query_param};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SRC: &str = "duolingo";
 
@@ -83,44 +83,26 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    let Some(response) = fetched.response else {
-        return Ok(empty(fetched.outcome));
-    };
-    let failed = |kind, detail: String| {
-        empty(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            kind,
-            Some(response.status),
-            detail,
-        ))
-    };
-    if response.truncated {
-        return Ok(failed(
-            SourceOutcomeKind::ParserDrift,
-            "truncated Duolingo response".into(),
-        ));
-    }
-    let classified = classify_fetch(response.status, &response.text());
-    if classified != SourceOutcomeKind::Inconclusive {
-        return Ok(failed(
-            classified,
-            "Duolingo response was not a user list".into(),
-        ));
-    }
-    let envelope: Envelope = match serde_json::from_slice(&response.body) {
-        Ok(value) => value,
-        Err(err) => {
-            return Ok(failed(
-                SourceOutcomeKind::ParserDrift,
-                format!("Duolingo JSON: {err}"),
-            ));
-        }
+    Ok(interpret(&fetched, scan_id, now_unix).unwrap_or_else(empty))
+}
+
+/// Turn one fetched user-list response into a report; `Err` is the outcome of a response that
+/// named no account. **Pure.**
+fn interpret(
+    fetched: &Fetched,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<Report, SourceExecutionOutcome> {
+    let response = whole_response(fetched, "Duolingo")?;
+    answer(fetched, "Duolingo")?;
+    let envelope: Envelope = decode_json(response, SRC, now_unix, "Duolingo")?;
+    let failed = |kind, detail: &str| {
+        SourceExecutionOutcome::failed(SRC, now_unix, kind, Some(response.status), detail)
     };
     let Some(users) = envelope.users else {
-        return Ok(failed(
+        return Err(failed(
             SourceOutcomeKind::SchemaDrift,
-            "Duolingo JSON has no users field".into(),
+            "Duolingo JSON has no users field",
         ));
     };
     let accounts: Vec<&User> = users
@@ -133,13 +115,13 @@ pub fn lookup<T: Transport + ?Sized>(
         .collect();
     if accounts.is_empty() {
         if users.is_empty() {
-            return Ok(empty(
-                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status),
-            ));
+            return Err(
+                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
+            );
         }
-        return Ok(failed(
+        return Err(failed(
             SourceOutcomeKind::SchemaDrift,
-            "Duolingo users carry no username".into(),
+            "Duolingo users carry no username",
         ));
     }
 
@@ -339,5 +321,19 @@ mod tests {
             );
             assert!(report.entities.is_empty());
         }
+    }
+
+    #[test]
+    fn a_wrong_typed_user_list_is_parser_drift_that_quotes_none_of_it() {
+        let report = lookup(
+            &OneResponse::json(200, r#"{"users":"secret@example.com"}"#),
+            "a@example.com",
+            "s",
+            1,
+        )
+        .unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::ParserDrift);
+        let detail = report.outcome.detail.unwrap_or_default();
+        assert!(!detail.contains("secret@example.com"), "{detail}");
     }
 }

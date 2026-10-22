@@ -19,7 +19,7 @@
 use std::time::Duration;
 
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
-use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
+use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch, json_error_detail};
 use crate::http::{Request, Response, Transport, TransportConfig};
 use crate::keys::{Keys, Secret};
 use crate::redact::scrub_secrets;
@@ -341,16 +341,9 @@ fn status_error(response: &Response, retry_after: Option<u64>) -> Result<(), Leg
 /// [`LegError::Decode`] when the body is not `D`.
 pub fn decode<D: serde::de::DeserializeOwned>(body: &[u8]) -> Result<D, LegError> {
     serde_json::from_slice(body).map_err(|e| {
-        let category = match e.classify() {
-            serde_json::error::Category::Io => "io",
-            serde_json::error::Category::Syntax => "syntax",
-            serde_json::error::Category::Data => "data",
-            serde_json::error::Category::Eof => "eof",
-        };
         LegError::Decode(format!(
-            "unexpected response shape: {category} error at line {} column {}",
-            e.line(),
-            e.column()
+            "unexpected response shape: {}",
+            json_error_detail(&e)
         ))
     })
 }
