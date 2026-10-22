@@ -383,7 +383,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <h1>Multi-hop analysis</h1>
 <div class="panel"><div class="panel-body">
 <form class="row" id="analyze">
-<textarea id="seeds" required rows="4" maxlength="2048" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="a seed per line: name, email, @handle, phone, domain or IP" aria-label="seeds"></textarea>
+<textarea id="seeds" required rows="4" maxlength="2048" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="a seed per line: coordinates (lat,lon), name, email, @handle, phone, domain or IP" aria-label="seeds"></textarea>
 <button class="btn btn-primary" id="arun" type="submit">Analyze</button>
 </form>
 <p class="help">Offline: links the seeds, ranks the next pivots, names the gaps and plans the sources, with no network request and no key.</p>
@@ -401,6 +401,10 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="table-wrap"><table class="sortable"><thead><tr><th>kind</th><th>value</th><th>confidence</th></tr></thead><tbody id="aentities"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Links <span class="badge" id="arelations-n"></span></div>
 <div class="table-wrap"><table><thead><tr><th>from</th><th>relation</th><th>to</th></tr></thead><tbody id="arelations"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">GEOINT distances <span class="badge" id="ageo-n"></span></div>
+<p class="help pad">Great-circle distances between entered coordinates. Not evidence of identity, simultaneous presence or independent corroboration.</p>
+<div class="table-wrap"><table><thead><tr><th>point A</th><th>point B</th><th>metres</th></tr></thead><tbody id="ageo"></tbody></table></div>
+<p class="note" id="ageonote"></p></div>
 <div class="panel"><div class="panel-heading">Next pivots <span class="badge" id="apivots-n"></span></div>
 <div class="table-wrap"><table><thead><tr><th>entity</th><th>links</th><th>reach</th><th>cut point</th></tr></thead><tbody id="apivots"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Correlations <span class="badge" id="acorrelations-n"></span></div>
@@ -1443,6 +1447,8 @@ function showAnalysis(saved){
   $('astatus').textContent=body.accepted.length+' seeds · '+body.entities.length+' entities · '+body.relations.length+' links · '+show(body.termination)+' · '+new Date(saved.at).toLocaleTimeString();
   fill('aentities',body.entities,e=>[show(e.kind),e.value,Number(e.confidence).toFixed(2)]);
   fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind),who(x.to_uid)]);
+  fill('ageo',body.geo_distances||[],p=>[p.left,p.right,Number(p.meters).toFixed(1)]);
+  $('ageonote').textContent=body.geo_truncated?'Distances limited to the first 16 distinct coordinate seeds.':'';
   fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,p.articulation?'yes':'']);
   fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,c.entity_uids.map(who).join(', ')]);
   $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';

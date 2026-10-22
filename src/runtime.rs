@@ -11,7 +11,7 @@ use crate::collection::{CollectionEvent, ObservationBatch, RawObservation, Upstr
 use crate::correlator::Correlation;
 use crate::cross_scan::CrossScanCategory;
 use crate::dependency::{Module, Target, TargetKind};
-use crate::entity::{Entity, SEED_EVIDENCE_ROLE};
+use crate::entity::{Entity, EntityKind, SEED_EVIDENCE_ROLE};
 use crate::error::Error;
 use crate::gap::GapReport;
 use crate::graph::EntityRelation;
@@ -239,8 +239,59 @@ pub fn persist_session(root: &Path, session: &Session) -> Result<PathBuf, Error>
 /// entities, the links between them, the next pivots, the correlations, the gaps and the planned
 /// sources. `plan` prints these only as counts.
 #[derive(Debug, Serialize)]
+/// A geometric measurement between two explicitly supplied coordinate seeds.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GeoDistance {
+    pub left: String,
+    pub right: String,
+    pub meters: f64,
+    pub basis: &'static str,
+}
+
+/// Bound worst-case work and JSON output independently of pipeline target limits.
+const MAX_GEO_POINTS: usize = 16;
+
+fn geo_distances(seeds: &[NormalizedSeed]) -> (Vec<GeoDistance>, bool) {
+    let coordinates: Vec<_> = seeds
+        .iter()
+        .filter(|seed| seed.kind == EntityKind::Coordinates)
+        .filter_map(|seed| {
+            crate::geohash::parse_coords(&seed.value)
+                .map(|(lat, lon)| (seed.value.as_str(), lat, lon))
+        })
+        .collect();
+    let truncated = coordinates.len() > MAX_GEO_POINTS;
+    let coordinates = &coordinates[..coordinates.len().min(MAX_GEO_POINTS)];
+    let mut distances = Vec::with_capacity(coordinates.len() * (coordinates.len() - 1) / 2);
+    for (index, &(left, lat_a, lon_a)) in coordinates.iter().enumerate() {
+        for &(right, lat_b, lon_b) in &coordinates[index + 1..] {
+            let meters = crate::geoint::haversine_m(lat_a, lon_a, lat_b, lon_b);
+            if meters.is_finite() {
+                distances.push(GeoDistance {
+                    left: left.to_owned(),
+                    right: right.to_owned(),
+                    meters,
+                    basis: "operator_supplied_coordinates",
+                });
+            }
+        }
+    }
+    distances.sort_by(|a, b| {
+        a.meters
+            .total_cmp(&b.meters)
+            .then_with(|| a.left.cmp(&b.left))
+            .then_with(|| a.right.cmp(&b.right))
+    });
+    (distances, truncated)
+}
+
+/// The multi-hop result's bounded geographic distances are measurements,
+/// not inferred identities, co-presence, or independent corroboration.
+#[derive(Debug, Serialize)]
 pub struct AnalysisView<'a> {
     pub accepted: &'a [NormalizedSeed],
+    pub geo_distances: Vec<GeoDistance>,
+    pub geo_truncated: bool,
     pub rejected: Vec<RejectedSeed<'a>>,
     pub entities: &'a [Entity],
     pub relations: &'a [EntityRelation],
@@ -275,8 +326,11 @@ impl PipelineOutcome {
     /// The multi-hop view of this outcome.
     #[must_use]
     pub fn analysis_view(&self) -> AnalysisView<'_> {
+        let (geo_distances, geo_truncated) = geo_distances(&self.normalization.accepted);
         AnalysisView {
             accepted: &self.normalization.accepted,
+            geo_distances,
+            geo_truncated,
             rejected: self
                 .normalization
                 .rejected
@@ -367,6 +421,47 @@ pub fn analyze_offline_with_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_geo_distances_cross_the_antimeridian_without_identity_inference() {
+        let seeds = ["0,179.99", "0,-179.99", "0,0", "example.org"].map(str::to_owned);
+        let view = analyze_offline(&seeds).expect("offline analysis");
+        let distances = view["geo_distances"].as_array().expect("geo distances");
+        assert_eq!(distances.len(), 3, "{view}");
+        let nearest = &distances[0];
+        assert_eq!(nearest["basis"], "operator_supplied_coordinates");
+        assert!(nearest["meters"].as_f64().is_some_and(|m| m > 2000.0 && m < 3000.0), "{nearest}");
+        assert!(
+            [nearest["left"].as_str(), nearest["right"].as_str()]
+                .contains(&Some("0.000000,179.990000")),
+            "{nearest}"
+        );
+        assert_eq!(view["geo_truncated"], false);
+        assert!(
+            view["relations"].as_array().unwrap().iter().all(|relation| {
+                relation["kind"] != "co_location" && relation["kind"] != "same_person"
+            }),
+            "{view}"
+        );
+        assert!(distances.iter().all(|distance| {
+            distance["meters"].as_f64().is_some_and(f64::is_finite)
+        }));
+    }
+
+    #[test]
+    fn geo_distances_cap_pairwise_work_at_sixteen_points() {
+        let seeds: Vec<NormalizedSeed> = (0..40)
+            .map(|index| NormalizedSeed {
+                raw: format!("0,{index}"),
+                kind: EntityKind::Coordinates,
+                value: format!("0,{index}"),
+            })
+            .collect();
+        let (distances, truncated) = geo_distances(&seeds);
+        assert!(truncated);
+        assert_eq!(distances.len(), 120);
+        assert!(distances.iter().all(|pair| pair.meters.is_finite()));
+    }
 
     #[test]
     fn the_offline_analysis_links_the_seeds_ranks_the_pivot_and_names_the_orphan() {
