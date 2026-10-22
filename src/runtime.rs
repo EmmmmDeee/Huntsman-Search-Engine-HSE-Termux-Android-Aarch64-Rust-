@@ -430,7 +430,12 @@ mod tests {
         assert_eq!(distances.len(), 3, "{view}");
         let nearest = &distances[0];
         assert_eq!(nearest["basis"], "operator_supplied_coordinates");
-        assert!(nearest["meters"].as_f64().is_some_and(|m| m > 2000.0 && m < 3000.0), "{nearest}");
+        assert!(
+            nearest["meters"]
+                .as_f64()
+                .is_some_and(|m| m > 2000.0 && m < 3000.0),
+            "{nearest}"
+        );
         assert!(
             [nearest["left"].as_str(), nearest["right"].as_str()]
                 .contains(&Some("0.000000,179.990000")),
@@ -438,14 +443,20 @@ mod tests {
         );
         assert_eq!(view["geo_truncated"], false);
         assert!(
-            view["relations"].as_array().unwrap().iter().all(|relation| {
-                relation["kind"] != "co_location" && relation["kind"] != "same_person"
-            }),
+            view["relations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|relation| {
+                    relation["kind"] != "co_location" && relation["kind"] != "same_person"
+                }),
             "{view}"
         );
-        assert!(distances.iter().all(|distance| {
-            distance["meters"].as_f64().is_some_and(f64::is_finite)
-        }));
+        assert!(
+            distances
+                .iter()
+                .all(|distance| { distance["meters"].as_f64().is_some_and(f64::is_finite) })
+        );
     }
 
     #[test]
