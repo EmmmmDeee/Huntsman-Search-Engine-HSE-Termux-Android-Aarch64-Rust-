@@ -376,22 +376,38 @@ fn conflicting_gps_positions_yield_no_coordinates() {
 
 #[test]
 fn a_hostile_packet_is_scanned_in_linear_time() {
-    // Unclosed properties, unclosed lists and unterminated tags at the full packet bound. A scanner
-    // that re-searches the rest of the packet per tag takes minutes here; a linear one, milliseconds.
-    let limit = super::MAX_XMP_BYTES - 64;
-    for unit in ["<a:b>", "<a:b><rdf:Seq>", "<a:b x:y", "<a:b><c:d>t</c:e>"] {
+    // Unclosed properties, unclosed lists and unterminated tags at the full packet bound, each once
+    // with no close and once with a single distant close of every kind, so the list path is reached
+    // too (lists never itemised, items never closed). A scanner that re-searches the rest of the
+    // packet per tag takes minutes here; a linear one, milliseconds.
+    let limit = super::MAX_XMP_BYTES - 128;
+    let units = [
+        "<a:b>",
+        "<a:b><rdf:Seq>",
+        "<a:b x:y",
+        "<a:b><c:d>t</c:e>",
+        "<a:b><rdf:Seq><rdf:li>t",
+        "<a:b><rdf:Bag> <rdf:li/>",
+    ];
+    for (unit, tail) in units.iter().flat_map(|unit| {
+        [
+            (unit, ""),
+            (unit, "</rdf:li></rdf:Seq></rdf:Bag></rdf:Alt></a:b>"),
+        ]
+    }) {
         let mut packet = String::from("<x:xmpmeta>");
         while packet.len() < limit {
             packet.push_str(unit);
         }
         packet.push('>');
+        packet.push_str(tail);
         packet.push_str("</x:xmpmeta>");
         let started = std::time::Instant::now();
         let parsed = parse(packet.as_bytes());
         let elapsed = started.elapsed();
         assert!(
             elapsed < std::time::Duration::from_secs(10),
-            "{unit:?}: {elapsed:?}"
+            "{unit:?} {tail:?}: {elapsed:?}"
         );
         assert!(parsed.fields.len() <= super::MAX_FIELDS);
     }
@@ -729,4 +745,73 @@ fn the_word_at_a_time_search_finds_what_a_plain_scan_finds() {
         super::find_bytes(b"0123456789trailer", b"trailer"),
         Some(10)
     );
+}
+
+/// A PDF whose `/Info` is object 1 (`info`) with the trailer dictionary `trailer`.
+fn pdf_with_trailer(info: &str, trailer: &str) -> Vec<u8> {
+    format!("%PDF-1.4\n1 0 obj\n{info}\nendobj\n2 0 obj\n<< /Title (Forged) >>\nendobj\ntrailer\n{trailer}\nstartxref\n9\n%%EOF\n")
+        .into_bytes()
+}
+
+#[test]
+fn a_trailer_key_written_inside_a_string_or_comment_is_not_a_key() {
+    let info = "<< /Title (Real) /Author (Alice) >>";
+    // An /Encrypt in a string or a comment neither flags the file nor hides its /Info.
+    for trailer in [
+        "<< /Root 3 0 R /Note (contact /Encrypt 9 0 R office) /Info 1 0 R >>",
+        "<< /Root 3 0 R % /Encrypt 9 0 R\n/Info 1 0 R >>",
+    ] {
+        let parsed = parse(&pdf_with_trailer(info, trailer));
+        assert!(field(&parsed, "pdf:Encrypted").is_none(), "{trailer}");
+        assert_eq!(field(&parsed, "info:Title"), Some("Real"), "{trailer}");
+    }
+    // A forged /Info in a string or comment, before or after the real one, is no revision.
+    for trailer in [
+        "<< /Note (see /Info 2 0 R) /Info 1 0 R >>",
+        "<< %cross ref /Info 2 0 R\n/Info 1 0 R >>",
+        "<< /Info 1 0 R /Note (see /Info 2 0 R) >>",
+        "<< /Info 1 0 R /Sub << /Info 2 0 R >> /Kids [/Info 2 0 R] >>",
+    ] {
+        let parsed = parse(&pdf_with_trailer(info, trailer));
+        assert_eq!(field(&parsed, "info:Title"), Some("Real"), "{trailer}");
+        assert!(field(&parsed, "info-prior:Title").is_none(), "{trailer}");
+        assert!(field(&parsed, "pdf:InfoRevisions").is_none(), "{trailer}");
+    }
+}
+
+#[test]
+fn a_comment_inside_a_dictionary_is_whitespace() {
+    // A `>>` or a lone `(` in a comment neither closes nor swallows the dictionary around it.
+    for info in [
+        "<< /Title (Hi) % note >> end\n /Author (Alice) >>",
+        "<< /Title (Hi) % don't (worry\n /Author (Alice) >>",
+        "<< /Title % the title follows\n (Hi) /Author (Alice) >>",
+    ] {
+        let parsed = parse(&pdf_with_trailer(info, "<< /Info 1 0 R >>"));
+        assert_eq!(field(&parsed, "info:Title"), Some("Hi"), "{info}");
+        assert_eq!(field(&parsed, "info:Author"), Some("Alice"), "{info}");
+    }
+    let parsed = parse(&pdf_with_trailer(
+        "<< /Title (Hi) >>",
+        "<< /Root 3 0 R % xref >>\n /Info 1 0 R >>",
+    ));
+    assert_eq!(field(&parsed, "info:Title"), Some("Hi"));
+}
+
+#[test]
+fn countless_unclosed_trailers_are_scanned_in_linear_time() {
+    // Each unclosed `trailer <<` used to cost a 256 KiB dictionary scan, so ~860 KB of them took
+    // ~13 s in a release build. The trailer pass now reads the newest keywords within one budget.
+    let mut pdf = b"%PDF-1.4\n1 0 obj\n<< /Title (Kept) >>\nendobj\n".to_vec();
+    while pdf.len() < 4 * 1024 * 1024 {
+        pdf.extend_from_slice(b"trailer <<\n");
+    }
+    let started = std::time::Instant::now();
+    let parsed = parse(&pdf);
+    let elapsed = started.elapsed();
+    assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+    assert!(field(&parsed, "info:Title").is_none());
+    // The real trailer after the junk still decides.
+    pdf.extend_from_slice(b"trailer\n<< /Info 1 0 R >>\nstartxref\n9\n%%EOF\n");
+    assert_eq!(field(&parse(&pdf), "info:Title"), Some("Kept"));
 }

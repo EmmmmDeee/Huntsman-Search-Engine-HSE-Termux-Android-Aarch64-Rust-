@@ -82,12 +82,24 @@ const MAX_INFO_REVISIONS: usize = 8;
 /// Most bytes of a PDF `/Info` dictionary scanned for its closing `>>`.
 const MAX_INFO_DICT_BYTES: usize = 256 * 1024;
 
+/// Most bytes all the dictionary scans of one pass may examine together (the trailer pass, then the
+/// `/Info` revisions), so a file of countless unclosed `<<` costs a bounded scan, not one of up to
+/// [`MAX_INFO_DICT_BYTES`] per keyword. A real PDF's trailers close within a few hundred bytes.
+const MAX_PDF_DICT_SCAN_BYTES: usize = MAX_INFO_REVISIONS * MAX_INFO_DICT_BYTES;
+
+/// Most `trailer` and `startxref` keywords read, the newest of each: an incremental update adds one
+/// of each, so more than this is not a real revision history.
+const MAX_PDF_TRAILERS: usize = 64;
+
 /// The XMP list containers whose `rdf:li` items make up one property's value, with their close tags.
 const XMP_CONTAINERS: [(&str, &str); 3] = [
     ("rdf:Seq", "</rdf:Seq>"),
     ("rdf:Bag", "</rdf:Bag>"),
     ("rdf:Alt", "</rdf:Alt>"),
 ];
+
+/// A list item's open-tag prefix and close tag.
+const XMP_ITEM: (&str, &str) = ("<rdf:li", "</rdf:li>");
 
 /// The PNG file signature: the eight bytes every PNG begins with.
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
@@ -411,7 +423,6 @@ impl Forward {
 /// is descended into, so a struct's members surface as their own fields. **Pure.**
 fn collect_packet(text: &str, fields: &mut Fields) {
     let mut gt = Forward::new(">");
-    let mut containers = XMP_CONTAINERS.map(|(_, close)| Forward::new(close));
     let mut from = 0usize;
     while let Some(rel) = text[from..].find('<') {
         let lt = from + rel;
@@ -435,7 +446,7 @@ fn collect_packet(text: &str, fields: &mut Fields) {
         if !property || tag.ends_with('/') {
             continue;
         }
-        if let Some((value, after)) = property_value(text, open_end, &name, &mut containers) {
+        if let Some((value, after)) = property_value(text, open_end, &name) {
             fields.push(name, value);
             from = after;
         }
@@ -450,12 +461,7 @@ fn is_property(name: &str) -> bool {
 /// The value of the property `name` whose start tag ends at `open_end`, and the index just past it:
 /// its text when the next tag is its own close, or its joined items when its content is a list of text
 /// `rdf:li`. `None` for structured content, which the caller descends into. **Pure.**
-fn property_value(
-    text: &str,
-    open_end: usize,
-    name: &str,
-    containers: &mut [Forward; 3],
-) -> Option<(String, usize)> {
+fn property_value(text: &str, open_end: usize, name: &str) -> Option<(String, usize)> {
     let next = open_end + text[open_end..].find('<')?;
     let after_lt = &text[next + 1..];
     if after_lt
@@ -466,15 +472,13 @@ fn property_value(
         let value = unescape_xml(text[open_end..next].trim());
         return Some((value, next + name.len() + 3));
     }
-    let slot = XMP_CONTAINERS.iter().position(|(container, _)| {
+    let &(_, close) = XMP_CONTAINERS.iter().find(|(container, _)| {
         after_lt
             .strip_prefix(container)
             .is_some_and(|rest| rest.starts_with(['>', ' ', '\t', '\r', '\n']))
     })?;
-    let close = &mut containers[slot];
-    let end = close.find(text, next)?;
-    let value = element_value(&text[next..end])?;
-    Some((value, end + close.needle.len()))
+    let (items, end) = list_items(text, next, close)?;
+    (!items.is_empty()).then(|| (items.join("; "), end))
 }
 
 /// Parse `name="value"` / `name='value'` pairs from one start tag's body, keeping the namespaced ones
@@ -524,31 +528,50 @@ fn tag_name(tag: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-/// The joined items of a list container's content (from its `<rdf:Seq>` start tag to just before its
-/// close), or `None` when it has no text item or any item is structured (a self-closing `rdf:li` or
-/// one with child elements), which the caller descends into instead. **Pure.**
-fn element_value(list: &str) -> Option<String> {
-    let mut items = Vec::new();
-    let mut rest = list;
-    while let Some(open) = rest.find("<rdf:li") {
-        let after = &rest[open..];
-        let gt = after.find('>')?;
-        if after[..gt].ends_with('/') {
-            return None;
-        }
-        let content = &after[gt + 1..];
-        let close = content.find("</rdf:li>")?;
-        let text = &content[..close];
-        if text.contains('<') {
-            return None;
-        }
-        let text = unescape_xml(text.trim());
-        if !text.is_empty() {
-            items.push(text);
-        }
-        rest = &content[close + "</rdf:li>".len()..];
+/// The text items of the list container whose start tag begins at `at`, and the index just past
+/// its `close` tag, read child by child in order: whitespace, then text `rdf:li` items, then the
+/// close. `None` at the first child that is anything else (a self-closing or structured item, a
+/// property, stray text), which the caller descends into instead. Each byte is read at most once,
+/// and a refusal stops where the unexpected child starts, so a packet of lists that are never closed
+/// or never itemised is still read in linear time. **Pure.**
+fn list_items(text: &str, at: usize, close: &str) -> Option<(Vec<String>, usize)> {
+    let (item_open, item_close) = XMP_ITEM;
+    let start_end = at + text[at..].find('>')?;
+    if text[at..start_end].ends_with('/') {
+        return None;
     }
-    (!items.is_empty()).then(|| items.join("; "))
+    let mut items = Vec::new();
+    let mut i = start_end + 1;
+    loop {
+        let lt = i + text[i..].find('<')?;
+        if !text[i..lt].trim().is_empty() {
+            return None;
+        }
+        let rest = &text[lt..];
+        if rest.starts_with(close) {
+            return Some((items, lt + close.len()));
+        }
+        let is_item = rest
+            .strip_prefix(item_open)
+            .is_some_and(|after| after.starts_with(['>', ' ', '\t', '\r', '\n']));
+        if !is_item {
+            return None;
+        }
+        let gt = lt + rest.find('>')?;
+        if text[lt..gt].ends_with('/') {
+            return None;
+        }
+        let content = gt + 1;
+        let content_end = content + text[content..].find('<')?;
+        if !text[content_end..].starts_with(item_close) {
+            return None;
+        }
+        let item = unescape_xml(text[content..content_end].trim());
+        if !item.is_empty() {
+            items.push(item);
+        }
+        i = content_end + item_close.len();
+    }
 }
 
 /// Replace the five predefined XML entities. **Pure.**
@@ -688,17 +711,40 @@ fn pdf_is_encrypted(trailers: &[&[u8]]) -> bool {
 /// document's `/Info` and `/Encrypt`; the same keywords inside an object, a string or a comment
 /// select nothing. **Pure.**
 fn pdf_trailer_dictionaries(data: &[u8]) -> impl Iterator<Item = &[u8]> {
-    let mut found: Vec<(usize, &[u8])> = pdf_keyword_lines(data, b"trailer")
-        .filter_map(|at| Some((at, pdf_dictionary(data, skip_pdf_whitespace(data, at))?)))
-        .collect();
-    found.extend(pdf_keyword_lines(data, b"startxref").filter_map(|at| {
-        let (offset, _) = pdf_integer(data, skip_pdf_whitespace(data, at))?;
-        let offset = usize::try_from(offset).ok()?;
-        Some((offset, pdf_xref_stream_dictionary(data, offset)?))
-    }));
+    // The newest keywords are read first, so the scan budget goes to the revisions that decide.
+    let mut budget = MAX_PDF_DICT_SCAN_BYTES;
+    let mut found: Vec<(usize, &[u8])> = Vec::new();
+    for at in newest_keyword_lines(data, b"trailer").into_iter().rev() {
+        if let Some(dict) = pdf_dictionary(data, skip_pdf_whitespace(data, at), &mut budget) {
+            found.push((at, dict));
+        }
+    }
+    for at in newest_keyword_lines(data, b"startxref").into_iter().rev() {
+        let Some((offset, _)) = pdf_integer(data, skip_pdf_whitespace(data, at)) else {
+            continue;
+        };
+        let Ok(offset) = usize::try_from(offset) else {
+            continue;
+        };
+        if let Some(dict) = pdf_xref_stream_dictionary(data, offset, &mut budget) {
+            found.push((offset, dict));
+        }
+    }
     found.sort_unstable_by_key(|&(at, _)| at);
     found.dedup_by_key(|&mut (at, _)| at);
     found.into_iter().map(|(_, dict)| dict)
+}
+
+/// The newest [`MAX_PDF_TRAILERS`] of [`pdf_keyword_lines`], in file order. **Pure.**
+fn newest_keyword_lines(data: &[u8], keyword: &[u8]) -> Vec<usize> {
+    let mut kept = std::collections::VecDeque::with_capacity(MAX_PDF_TRAILERS);
+    for at in pdf_keyword_lines(data, keyword) {
+        if kept.len() == MAX_PDF_TRAILERS {
+            kept.pop_front();
+        }
+        kept.push_back(at);
+    }
+    kept.into()
 }
 
 /// The index just past each `keyword` that starts a line (after optional spaces) and ends at a
@@ -726,14 +772,18 @@ fn pdf_keyword_lines<'a>(data: &'a [u8], keyword: &'a [u8]) -> impl Iterator<Ite
 /// The dictionary of the cross-reference stream object `N G obj << /Type /XRef … >>` starting at
 /// `offset`, or `None` when no such object starts there (a classic `xref` table, whose trailer
 /// [`pdf_trailer_dictionaries`] reads by its keyword, or a wrong offset). **Pure.**
-fn pdf_xref_stream_dictionary(data: &[u8], offset: usize) -> Option<&[u8]> {
+fn pdf_xref_stream_dictionary<'a>(
+    data: &'a [u8],
+    offset: usize,
+    budget: &mut usize,
+) -> Option<&'a [u8]> {
     let (_, at) = pdf_integer(data, offset)?;
     let (_, at) = pdf_integer(data, skip_pdf_whitespace(data, at))?;
     let at = skip_pdf_whitespace(data, at);
     if data.get(at..at + 3)? != b"obj" {
         return None;
     }
-    let dict = pdf_dictionary(data, skip_pdf_whitespace(data, at + 3))?;
+    let dict = pdf_dictionary(data, skip_pdf_whitespace(data, at + 3), budget)?;
     pdf_name_values(dict, b"/Type")
         .any(|at| {
             let at = skip_pdf_whitespace(dict, at);
@@ -772,16 +822,18 @@ fn pdf_info_revisions<'a>(data: &'a [u8], trailers: &[&[u8]]) -> Vec<&'a [u8]> {
         return Vec::new();
     };
     let newest = definitions.remove(newest);
+    let mut budget = MAX_PDF_DICT_SCAN_BYTES;
+    let Some(current) = pdf_dictionary(data, skip_pdf_whitespace(data, newest.0), &mut budget)
+    else {
+        return Vec::new();
+    };
     let mut revisions: Vec<&[u8]> = definitions
         .iter()
         .rev()
         .take(MAX_INFO_REVISIONS - 1)
         .rev()
-        .filter_map(|&(body, _)| pdf_dictionary(data, skip_pdf_whitespace(data, body)))
+        .filter_map(|&(body, _)| pdf_dictionary(data, skip_pdf_whitespace(data, body), &mut budget))
         .collect();
-    let Some(current) = pdf_dictionary(data, skip_pdf_whitespace(data, newest.0)) else {
-        return Vec::new();
-    };
     revisions.push(current);
     revisions
 }
@@ -804,18 +856,28 @@ fn pdf_object_bodies(data: &[u8], (number, generation): (u32, u16)) -> impl Iter
     })
 }
 
-/// The index just past every occurrence of the PDF name `name` that ends at a delimiter, so `/Info`
-/// does not match `/InfoX` and `/Encrypt` does not match `/EncryptMetadata`. **Pure.**
-fn pdf_name_values<'a>(data: &'a [u8], name: &'a [u8]) -> impl Iterator<Item = usize> + 'a {
-    let mut from = 0usize;
+/// The index just past each key `name` of the dictionary `dict` (`<< … >>`): a whole name token at
+/// the dictionary's top level, so `/Info` never matches `/InfoX`, a key of a nested dictionary, a
+/// name in an array, or the bytes of a string or comment. **Pure.**
+fn pdf_name_values<'a>(dict: &'a [u8], name: &'a [u8]) -> impl Iterator<Item = usize> + 'a {
+    let mut at = 0usize;
+    let (mut depth, mut arrays) = (0usize, 0usize);
     std::iter::from_fn(move || {
-        loop {
-            let at = from + find_bytes(data.get(from..)?, name)? + name.len();
-            from = at;
-            if data.get(at).is_none_or(|byte| is_pdf_delimiter(*byte)) {
-                return Some(at);
+        while at < dict.len() {
+            let (token, next) = pdf_token(dict, at, dict.len())?;
+            let start = std::mem::replace(&mut at, next);
+            match token {
+                PdfToken::DictOpen => depth += 1,
+                PdfToken::DictClose => depth = depth.saturating_sub(1),
+                PdfToken::ArrayOpen => arrays += 1,
+                PdfToken::ArrayClose => arrays = arrays.saturating_sub(1),
+                PdfToken::Name if depth == 1 && arrays == 0 && dict[start..next] == *name => {
+                    return Some(next);
+                }
+                PdfToken::Name | PdfToken::Other => {}
             }
         }
+        None
     })
 }
 
@@ -853,34 +915,89 @@ fn pdf_integer(data: &[u8], at: usize) -> Option<(u64, usize)> {
     Some((value, at + digits))
 }
 
-/// The dictionary `<< … >>` starting at `at`, matched through nested dictionaries and literal and hex
-/// strings, within [`MAX_INFO_DICT_BYTES`]. `None` when it is absent or unclosed. **Pure.**
-fn pdf_dictionary(data: &[u8], at: usize) -> Option<&[u8]> {
+/// The dictionary `<< … >>` starting at `at`, its brackets matched through [`pdf_token`] (so a
+/// `>>` or `(` inside a string or comment is not syntax), within [`MAX_INFO_DICT_BYTES`] and what is
+/// left of `budget`, which the bytes examined are taken from. `None` when it is absent, unclosed or
+/// the budget runs out. **Pure.**
+fn pdf_dictionary<'a>(data: &'a [u8], at: usize, budget: &mut usize) -> Option<&'a [u8]> {
     if data.get(at..at + 2)? != b"<<" {
         return None;
     }
-    let limit = data.len().min(at.saturating_add(MAX_INFO_DICT_BYTES));
+    let limit = data
+        .len()
+        .min(at.saturating_add(MAX_INFO_DICT_BYTES))
+        .min(at.saturating_add(*budget));
     let mut depth = 0usize;
     let mut i = at;
+    let mut closed = None;
     while i < limit {
-        match data[i] {
-            b'<' if data.get(i + 1) == Some(&b'<') => {
-                depth += 1;
-                i += 2;
-            }
-            b'>' if data.get(i + 1) == Some(&b'>') => {
+        let Some((token, next)) = pdf_token(data, i, limit) else {
+            i = limit;
+            break;
+        };
+        i = next;
+        match token {
+            PdfToken::DictOpen => depth += 1,
+            PdfToken::DictClose => {
                 depth -= 1;
-                i += 2;
                 if depth == 0 {
-                    return Some(&data[at..i]);
+                    closed = Some(&data[at..i]);
+                    break;
                 }
             }
-            b'<' => i += data[i..limit].iter().position(|&byte| byte == b'>')? + 1,
-            b'(' => i = skip_pdf_literal(data, i + 1, limit)?,
-            _ => i += 1,
+            _ => {}
         }
     }
-    None
+    *budget = budget.saturating_sub(i - at);
+    closed
+}
+
+/// What one PDF token is, as far as finding a dictionary's extent and its keys needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PdfToken {
+    DictOpen,
+    DictClose,
+    ArrayOpen,
+    ArrayClose,
+    Name,
+    /// A number, keyword, string, hex string or comment, read whole.
+    Other,
+}
+
+/// The token starting at `i` and the index just past it, within `data[..limit]`. Literal strings,
+/// hex strings and `%` comments are read whole, so nothing inside one is mistaken for syntax: the
+/// one place the PDF path tells structure from text. `None` when a string or hex string runs past
+/// `limit`; a comment runs to its line end or to `limit`. **Pure.**
+fn pdf_token(data: &[u8], i: usize, limit: usize) -> Option<(PdfToken, usize)> {
+    let pair = |byte| data.get(i + 1) == Some(&byte) && i + 1 < limit;
+    Some(match data[i] {
+        b'<' if pair(b'<') => (PdfToken::DictOpen, i + 2),
+        b'>' if pair(b'>') => (PdfToken::DictClose, i + 2),
+        b'[' => (PdfToken::ArrayOpen, i + 1),
+        b']' => (PdfToken::ArrayClose, i + 1),
+        b'<' => (
+            PdfToken::Other,
+            i + data[i..limit].iter().position(|&byte| byte == b'>')? + 1,
+        ),
+        b'(' => (PdfToken::Other, skip_pdf_literal(data, i + 1, limit)?),
+        b'%' => (PdfToken::Other, pdf_comment_end(data, i, limit)),
+        b'/' => {
+            let end = data[i + 1..limit]
+                .iter()
+                .position(|&byte| is_pdf_delimiter(byte))
+                .map_or(limit, |at| i + 1 + at);
+            (PdfToken::Name, end)
+        }
+        _ => (PdfToken::Other, i + 1),
+    })
+}
+
+/// The index of the line end closing the comment that starts at `i`, or `limit`. **Pure.**
+fn pdf_comment_end(data: &[u8], i: usize, limit: usize) -> usize {
+    data[i..limit]
+        .iter()
+        .position(|&byte| matches!(byte, b'\n' | b'\r'))
+        .map_or(limit, |at| i + at)
 }
 
 /// The index just past the `)` closing a literal string whose body starts at `i`. **Pure.**
@@ -903,15 +1020,16 @@ fn skip_pdf_literal(data: &[u8], mut i: usize, limit: usize) -> Option<usize> {
     None
 }
 
-/// The index of the first non-whitespace byte at or after `at`. **Pure.**
+/// The index of the first byte at or after `at` that is neither whitespace nor in a `%` comment,
+/// which PDF reads as whitespace. **Pure.**
 fn skip_pdf_whitespace(data: &[u8], mut at: usize) -> usize {
-    while data
-        .get(at)
-        .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == 0)
-    {
-        at += 1;
+    loop {
+        match data.get(at) {
+            Some(byte) if byte.is_ascii_whitespace() || *byte == 0 => at += 1,
+            Some(b'%') => at = pdf_comment_end(data, at, data.len()),
+            _ => return at,
+        }
     }
-    at
 }
 
 /// A PDF whitespace or delimiter byte, which ends a name or number token. **Pure.**
