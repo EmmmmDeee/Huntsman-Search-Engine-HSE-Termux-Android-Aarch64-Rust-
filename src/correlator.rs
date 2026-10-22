@@ -277,7 +277,7 @@ static AU_063: FnRule = FnRule {
     id: "AU-063",
     name: "corroboration_gap",
     severity: Severity::Low,
-    description: "Entities that only one identity pathway connects; corroborating it would firm up the link.",
+    description: "Entities joined by one identity pathway that the count found; corroborating it would firm up the link.",
     runner: rule_au_063_corroboration_gap,
 };
 static AU_070: FnRule = FnRule {
@@ -853,9 +853,10 @@ mod tests {
     }
 
     /// Six addresses with one handle are aliases of each other, every link resting on that
-    /// handle. They form one cluster (AU-060) with one gap (AU-063): only the handle connects
-    /// them. Before, each other address counted as an independent pathway, so all fifteen pairs
-    /// raised a High AU-062 alert claiming five independent pathways, and none had a gap.
+    /// handle. They form one cluster (AU-060) with one gap (AU-063): the handle is the one
+    /// pathway found between each pair. Before, each other address counted as an independent
+    /// pathway, so all fifteen pairs raised a High AU-062 alert claiming five independent
+    /// pathways, and none had a gap.
     #[test]
     fn a_handle_shared_by_many_addresses_is_one_pathway_and_one_gap() {
         let entities = (0..6)
@@ -890,7 +891,7 @@ mod tests {
         assert_eq!(gaps[0].entity_uids, uids);
         assert_eq!(
             gaps[0].description,
-            "only a shared handle connects 15 pairs among these 6 entities"
+            "15 pairs among these 6 entities each have one identity pathway found, which rests on a shared handle"
         );
     }
 
@@ -972,11 +973,11 @@ mod tests {
             .map(|entity| entity.uid.clone())
             .collect::<Vec<_>>();
         addresses.sort();
-        let single = "only one identity pathway currently connects the pair";
+        let single = "one identity pathway found connects the pair; a second may exist that the search did not take";
         let mut expected = vec![
             (
                 addresses,
-                "only a shared handle connects 5 pairs among these 4 entities",
+                "5 pairs among these 4 entities each have one identity pathway found, which rests on a shared handle",
             ),
             (pair(&owner, &entities[2]), single),
             (pair(&owner, &entities[3]), single),
@@ -1023,7 +1024,7 @@ mod tests {
             fired(&entities, "AU-063"),
             [(
                 5,
-                "only a shared handle connects 10 pairs among these 5 entities".to_owned()
+                "10 pairs among these 5 entities each have one identity pathway found, which rests on a shared handle".to_owned()
             )]
         );
 

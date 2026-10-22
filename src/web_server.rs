@@ -3595,7 +3595,7 @@ mod tests {
     }
 
     /// Each correlation row says what the rule found, such as how many independent pathways
-    /// corroborate a link or how many pairs only a shared handle connects, beside the rule and
+    /// corroborate a link or how many pairs rest on one shared handle, beside the rule and
     /// the entities it names. The page showed only the rule, its severity and the entities.
     #[test]
     fn the_page_shows_what_each_correlation_found() {
