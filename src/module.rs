@@ -493,8 +493,10 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         access: "keyless",
         network: false,
         category: ModuleCategory::Geo,
-        attack_techniques: &["T1591.001"],
-        description: "author, creator tool, timestamps, document IDs and embedded GPS read from a local file's XMP packet and PDF /Info dictionary, keyless and offline",
+        // Authors are employee names, creator tools and history agents are the software in use,
+        // and an embedded GPS position is a physical location.
+        attack_techniques: &["T1589.003", "T1591.001", "T1592.002"],
+        description: "author, creator tool, edit history, timestamps, document IDs, values a PDF edit superseded and embedded GPS read from a local file's XMP packets and PDF /Info dictionary, keyless and offline",
     },
     ReachableModule {
         name: "phone_intl",
