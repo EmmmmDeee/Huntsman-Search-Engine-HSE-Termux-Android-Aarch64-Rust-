@@ -55,7 +55,7 @@ pub fn format_unix(ts: i64) -> String {
 }
 
 /// Days in `month` of `year`, with leap years under the Gregorian rule. `month` must be 1..=12.
-fn days_in_month(year: i32, month: u32) -> u32 {
+pub(crate) fn days_in_month(year: i32, month: u32) -> u32 {
     match month {
         2 if is_leap_year(year) => 29,
         2 => 28,
@@ -97,7 +97,7 @@ fn split_offset(time: &str) -> (&str, Option<(char, &str)>) {
 
 /// Seconds in a numeric UTC offset written `HH:MM` or `HHMM`. Any other shape, any non-digit,
 /// hours above 23 and minutes above 59 are `None`. The match is on bytes, so no UTF-8 is sliced.
-fn offset_seconds(tail: &str) -> Option<i64> {
+pub(crate) fn offset_seconds(tail: &str) -> Option<i64> {
     let (hours, minutes) = match tail.as_bytes() {
         [h1, h2, b':', m1, m2] | [h1, h2, m1, m2] => (two_digits(*h1, *h2)?, two_digits(*m1, *m2)?),
         _ => return None,
