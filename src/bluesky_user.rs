@@ -9,9 +9,9 @@ use crate::canonical::canonical_domain;
 use crate::classifier;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, fetch};
+use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
 use crate::http::{Request, Transport, append_query_param};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SRC: &str = "bluesky_user";
 const API: &str = "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile";
@@ -85,80 +85,44 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
+    Ok(interpret(&fetched, scan_id, now_unix).unwrap_or_else(miss))
+}
 
-    let Some(response) = fetched.response else {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: fetched.outcome,
-        });
-    };
-
-    if response.truncated {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::failed(
-                SRC,
-                now_unix,
-                SourceOutcomeKind::ParserDrift,
-                Some(response.status),
-                "truncated Bluesky response",
-            ),
-        });
+/// A report that found nothing, carrying only its outcome. **Pure.**
+fn miss(outcome: SourceExecutionOutcome) -> Report {
+    Report {
+        entities: Vec::new(),
+        outcome,
     }
+}
 
-    let body = response.text();
+/// Turn one fetched profile response into a report; `Err` is the outcome of a response that named
+/// no profile. **Pure.**
+fn interpret(
+    fetched: &Fetched,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<Report, SourceExecutionOutcome> {
+    let response = whole_response(fetched, "Bluesky")?;
     // XRPC uses HTTP 400 for several *different* failures. Only the specific
     // InvalidRequest / Profile not found document establishes a zero match.
     // Other 4xx errors (including suspended accounts and malformed actors)
     // must not become false absence evidence.
     if is_explicit_profile_missing(response.status, &response.body) {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::valid_zero(SRC, now_unix)
-                .with_http_status(response.status),
-        });
+        return Err(
+            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
+        );
     }
-
-    let classified = classify_fetch(response.status, &body);
-    if classified != SourceOutcomeKind::Inconclusive {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::failed(
-                SRC,
-                now_unix,
-                classified,
-                Some(response.status),
-                "Bluesky response was not a profile document",
-            ),
-        });
-    }
-
-    let profile: Profile = match serde_json::from_slice(&response.body) {
-        Ok(profile) => profile,
-        Err(error) => {
-            return Ok(Report {
-                entities: Vec::new(),
-                outcome: SourceExecutionOutcome::failed(
-                    SRC,
-                    now_unix,
-                    SourceOutcomeKind::ParserDrift,
-                    Some(response.status),
-                    format!("Bluesky JSON: {error}"),
-                ),
-            });
-        }
-    };
+    answer(fetched, "Bluesky")?;
+    let profile: Profile = decode_json(response, SRC, now_unix, "Bluesky")?;
     if profile.handle.trim().is_empty() {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: SourceExecutionOutcome::failed(
-                SRC,
-                now_unix,
-                SourceOutcomeKind::SchemaDrift,
-                Some(response.status),
-                "Bluesky profile has no handle",
-            ),
-        });
+        return Err(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "Bluesky profile has no handle",
+        ));
     }
 
     let mut entities = build_entities(&profile, scan_id);
@@ -435,5 +399,19 @@ mod tests {
                 .any(|entity| entity.kind == EntityKind::Domain
                     && entity.value == "alice.example.org")
         );
+    }
+
+    #[test]
+    fn a_wrong_typed_profile_is_parser_drift_that_quotes_none_of_it() {
+        let got = lookup(
+            &OneResponse::json(200, r#""secret@example.com""#),
+            "alice",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::ParserDrift);
+        let detail = got.outcome.detail.unwrap_or_default();
+        assert!(!detail.contains("secret@example.com"), "{detail}");
     }
 }
