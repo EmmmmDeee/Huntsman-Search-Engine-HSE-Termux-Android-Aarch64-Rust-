@@ -480,10 +480,16 @@ fn obsolete_install_dir_setting_has_a_precise_manual_fix() {
         check.fix.as_deref(),
         Some("huntsman-recon keys remove HUNTSMAN_INSTALL_DIR")
     );
-    assert!(!check.auto_fix, "removing a slot is always operator-controlled");
+    assert!(
+        !check.auto_fix,
+        "removing a slot is always operator-controlled"
+    );
     assert!(check.repair.is_none());
     let text = render(&report);
-    assert!(!text.contains("/private/install/path-not-to-print"), "{text}");
+    assert!(
+        !text.contains("/private/install/path-not-to-print"),
+        "{text}"
+    );
 }
 
 #[test]
