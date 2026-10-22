@@ -284,45 +284,46 @@ pub fn parse_iso8601_epoch(value: &str) -> Option<i64> {
     {
         return None;
     }
-    let num = |from: usize, to: usize| value.get(from..to)?.parse::<i64>().ok();
+    let num = |from: usize, to: usize| -> Option<i64> {
+        let field = value.get(from..to)?;
+        if !field.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        field.parse().ok()
+    };
     let (year, month, day) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
     let (hour, minute, second) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
     if !(1900..=2100).contains(&year)
         || !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
         || hour > 23
         || minute > 59
+        // A leap second, 60, is accepted as it always was; keeping it is a leap-second decision.
         || second > 60
     {
         return None;
     }
+    let (year, month) = (i32::try_from(year).ok()?, u32::try_from(month).ok()?);
+    let day = u32::try_from(day).ok()?;
+    if !(1..=crate::timefmt::days_in_month(year, month)).contains(&day) {
+        return None;
+    }
 
-    let mut epoch = days_from_civil(
-        i32::try_from(year).ok()?,
-        u32::try_from(month).ok()?,
-        u32::try_from(day).ok()?,
-    ) * 86_400
-        + hour * 3600
-        + minute * 60
-        + second;
-    let rest = &value[19..];
-    let tz = rest.trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
-    if !tz.is_empty() && tz != "Z" && tz != "z" {
-        let sign = match tz.as_bytes()[0] {
+    let mut epoch = days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
+    let mut rest = value.get(19..)?;
+    if let Some(fraction) = rest.strip_prefix('.') {
+        let digits = fraction.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        rest = &fraction[digits..];
+    }
+    if !matches!(rest, "" | "Z" | "z") {
+        let sign = match rest.as_bytes().first()? {
             b'+' => -1,
             b'-' => 1,
             _ => return None,
         };
-        let digits: String = tz[1..].chars().filter(char::is_ascii_digit).collect();
-        if digits.len() != 4 {
-            return None;
-        }
-        let offset_hour = digits.get(..2)?.parse::<i64>().ok()?;
-        let offset_minute = digits.get(2..4)?.parse::<i64>().ok()?;
-        if offset_hour > 23 || offset_minute > 59 {
-            return None;
-        }
-        epoch += sign * (offset_hour * 3600 + offset_minute * 60);
+        epoch += sign * crate::timefmt::offset_seconds(&rest[1..])?;
     }
     Some(epoch)
 }
@@ -484,9 +485,27 @@ mod tests {
             parse_iso8601_epoch("2000-01-01T00:00:00-0700"),
             Some(946_684_800 + 7 * 3600)
         );
+        assert_eq!(
+            parse_iso8601_epoch("2024-02-29T00:00:00Z"),
+            Some(1_709_164_800)
+        );
+        assert_eq!(
+            parse_iso8601_epoch("2000-02-29T00:00:00Z"),
+            Some(951_782_400)
+        );
         for bad in [
             "",
             "not a date",
+            "2026-02-31T00:00:00Z",
+            "2026-02-29T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "2026-08-21T-1:00:00Z",
+            "2026-08-21T00:-1:00Z",
+            "2000-01-01T00:00:00..Z",
+            "2000-01-01T00:00:00.5.5Z",
+            "2000-01-01T00:00:00+07:00xyz",
+            "2000-01-01T00:00:00+0700Z",
+            "2000-01-01T00:00:00+07:0",
             "2026-08-21",
             "2026/08/21T00:00:00Z",
             "2026-13-01T00:00:00Z",

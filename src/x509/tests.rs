@@ -227,6 +227,20 @@ fn identifiers_times_and_addresses_decode_by_their_rules() {
     );
     assert_eq!(time((0x18, b"20500101000000.5Z")), None);
     assert_eq!(time((0x17, b"5001010000Z")), None);
+    assert_eq!(
+        time((0x18, b"20240229000000Z")).as_deref(),
+        Some("2024-02-29T00:00:00Z")
+    );
+    for impossible in [
+        &b"251301000000Z"[..],
+        b"250229000000Z",
+        b"251232256100Z",
+        b"250101240000Z",
+        b"250101006000Z",
+    ] {
+        assert_eq!(time((0x17, impossible)), None, "{impossible:?}");
+    }
+    assert_eq!(time((0x18, b"20250229000000Z")), None);
     assert_eq!(serial_hex(&[0x00, 0x80, 0x01]), "8001");
     assert_eq!(serial_hex(&[0x00]), "00");
 

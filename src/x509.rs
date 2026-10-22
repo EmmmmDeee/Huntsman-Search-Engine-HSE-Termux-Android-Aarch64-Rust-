@@ -454,6 +454,18 @@ fn time((tag, content): (u8, &[u8])) -> Option<String> {
         (0x18, 14) => (text[..4].parse().ok()?, &text[4..]),
         _ => return None,
     };
+    let field = |from: usize| -> Option<u32> { rest.get(from..from + 2)?.parse().ok() };
+    let (month, day, hour, minute, second) =
+        (field(0)?, field(2)?, field(4)?, field(6)?, field(8)?);
+    // A leap second, 60, is accepted as rf::parse_iso8601_epoch accepts it, pending that decision.
+    if !(1..=12).contains(&month)
+        || !(1..=crate::timefmt::days_in_month(i32::try_from(year).ok()?, month)).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
     Some(format!(
         "{year:04}-{}-{}T{}:{}:{}Z",
         &rest[..2],
