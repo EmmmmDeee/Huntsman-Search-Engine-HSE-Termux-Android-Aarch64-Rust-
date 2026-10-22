@@ -286,8 +286,7 @@ pub fn canonical_query(raw: &str) -> String {
 /// One http(s) authority, one canonical `(host, port)`. The single gate for every URL key in the
 /// crate: userinfo and bracketed hosts are refused, the port must be a `u16`, and the scheme's
 /// default port (or an empty port) collapses to `None`.
-#[must_use]
-pub fn canonical_authority(scheme: &str, authority: &str) -> Option<(String, Option<u16>)> {
+fn canonical_authority(scheme: &str, authority: &str) -> Option<(String, Option<u16>)> {
     if authority.is_empty() || authority.contains('@') || authority.starts_with('[') {
         return None;
     }
@@ -607,6 +606,30 @@ mod tests {
     }
 
     #[test]
+    fn url_authority_has_one_canonical_host_and_port() {
+        // Default port written with a leading zero is still the default port.
+        assert_eq!(
+            canonical_url("https://Example.com:0443/a").as_deref(),
+            Some("https://example.com/a")
+        );
+        // A port that is not a u16 is not a URL.
+        assert_eq!(canonical_url("https://example.com:abc/a"), None);
+        assert_eq!(canonical_url("https://example.com:99999/a"), None);
+        // Userinfo never survives into a canonical form.
+        assert_eq!(canonical_url("https://user:pw@example.com/a"), None);
+        // Non-default ports are kept, normalised.
+        assert_eq!(
+            canonical_url("http://example.com:08080/").as_deref(),
+            Some("http://example.com:8080")
+        );
+        // A fully qualified host loses its trailing dot.
+        assert_eq!(
+            canonical_url("https://example.com./a?b=1").as_deref(),
+            Some("https://example.com/a?b=1")
+        );
+    }
+
+    #[test]
     fn coordinates_and_phone_normalise() {
         assert_eq!(
             canonical_coordinates(" -27.4698 , 153.0251 "),
@@ -632,43 +655,5 @@ mod tests {
         assert_eq!(canonicalise_selector("   "), None);
         assert_eq!(canonicalise_token(" CrtSh "), Some("crtsh".into()));
         assert_eq!(canonicalise_token("has space"), None);
-    }
-}
-
-#[cfg(test)]
-mod authority_contract_tests {
-    use super::canonical_url;
-    use crate::archive::parse_archive_url;
-
-    #[test]
-    fn canonical_url_and_archive_key_agree_on_authority() {
-        // Default port written with a leading zero is still the default port.
-        assert_eq!(
-            canonical_url("https://Example.com:0443/a").as_deref(),
-            Some("https://example.com/a")
-        );
-        // A port that is not a u16 is not a URL.
-        assert_eq!(canonical_url("https://example.com:abc/a"), None);
-        assert_eq!(canonical_url("https://example.com:99999/a"), None);
-        // Userinfo never survives into a canonical form.
-        assert_eq!(canonical_url("https://user:pw@example.com/a"), None);
-        // Non-default ports are kept, normalised.
-        assert_eq!(
-            canonical_url("http://example.com:08080/").as_deref(),
-            Some("http://example.com:8080")
-        );
-        for raw in [
-            "https://example.com:0443/a",
-            "https://example.com:abc/a",
-            "https://user:pw@example.com/a",
-            "http://example.com:08080/",
-            "https://example.com./a?b=1",
-        ] {
-            assert_eq!(
-                canonical_url(raw).is_some(),
-                parse_archive_url(raw).is_some(),
-                "{raw}: canonical_url and parse_archive_url disagree on validity"
-            );
-        }
     }
 }

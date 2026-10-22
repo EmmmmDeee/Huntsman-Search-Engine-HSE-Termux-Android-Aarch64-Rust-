@@ -31,8 +31,6 @@ raw seeds
   -> bounded JSON / GEXF / snake graph / STIX / Navigator artifacts
 ```
 
-Historical Wayback/Common Crawl `ArchiveRecord`s enter through `archive_bridge` and the same collection/evidence path. Archive interest classes are prioritization metadata, not proof that a historical resource was sensitive or exploitable.
-
 ## Provenance invariants
 
 - Collector identity is not upstream-origin identity.
@@ -45,7 +43,7 @@ Historical Wayback/Common Crawl `ArchiveRecord`s enter through `archive_bridge` 
 
 ## Resource bounds
 
-`PipelineLimits` centrally bounds targets, entities, relations, provider dispatches, response bytes, archive captures, cross-scan frontier/visited state, generation depth, export bytes, and intended concurrency. Reaching a bound is surfaced as truncation/resource termination rather than being mislabeled as completeness or a fixed point.
+`PipelineLimits` centrally bounds targets, entities, relations, provider dispatches, response bytes, cross-scan frontier/visited state, generation depth, and export bytes. Reaching a bound is surfaced as truncation/resource termination rather than being mislabeled as completeness or a fixed point.
 
 Oversize structured artifacts are omitted atomically with their required size recorded. JSON/XML is never byte-truncated into invalid output.
 
@@ -59,7 +57,7 @@ Oversize structured artifacts are omitted atomically with their required size re
 - `leaf`
 - `diagnostic`
 
-`tests/runtime_reachability.rs` verifies complete classification and pins the core integration modules to `runtime`. `tests/architecture_doc.rs` independently enforces the repository layer map and direct dependency rules.
+`tests/runtime_reachability.rs` verifies complete classification, pins the core integration modules to `runtime`, and requires every other module to be named, through a `crate::` or `huntsman_recon::` path, by the binary, `src/lib.rs`, xtask, a runtime module or a module one of those reaches. `#[cfg(test)]` code and a `pub use` that re-exports a whole module do not count as callers. A module that only integration tests or examples reach must be `diagnostic`, or be listed with its owner and reason in the test's `PENDING_OWNER_DECISION`. `tests/architecture_doc.rs` independently enforces the repository layer map and direct dependency rules.
 
 ## Verification scope
 
