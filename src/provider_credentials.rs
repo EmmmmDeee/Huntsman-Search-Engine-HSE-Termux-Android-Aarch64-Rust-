@@ -429,7 +429,9 @@ fn write_unrecognised(out: &mut String, keys: &Keys) {
         out.push_str(slot);
         out.push_str("\tstate=unread\tnote=");
         if slot == crate::environment::LEGACY_INSTALL_DIR_ENV {
-            out.push_str("obsolete installer setting, not a provider key; remove with huntsman-recon keys remove ");
+            out.push_str(
+                "obsolete installer setting, not a provider key; remove with huntsman-recon keys remove ",
+            );
             out.push_str(crate::environment::LEGACY_INSTALL_DIR_ENV);
             out.push_str(" (installer uses ");
             out.push_str(crate::environment::INSTALL_ROOT_ENV);
