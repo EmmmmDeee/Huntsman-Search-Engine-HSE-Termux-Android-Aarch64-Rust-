@@ -144,7 +144,7 @@ proof	leaf	bounded proof-environment bookkeeping
 provider_credentials	leaf	provider credential completeness manifest
 pulsedive	adapter	Pulsedive leg reached through indicator_legs from ip, domain, scan and /api/lookup
 radar	leaf	radar model utility
-recon	leaf	host reconnaissance helpers
+recon	leaf	seed kinds the crtsh lookup and the domain recon front-ends share
 recursion	runtime	bounded fetch-expand-fetch crawl orchestration and termination
 rdap	adapter	keyless RDAP registration client reached through rdap_legs from domain, ip, scan and /api/lookup
 rdap_legs	runtime	RDAP registration leg of domain_cli and ip_cli, as sfp_whois

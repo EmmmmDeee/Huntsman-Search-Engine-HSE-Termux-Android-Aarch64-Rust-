@@ -1,9 +1,6 @@
 //! Pure validation helpers rebuilt from `core/validation` and related utility code.
 
-use std::{
-    borrow::Cow,
-    net::{IpAddr, Ipv6Addr},
-};
+use std::borrow::Cow;
 
 use crate::textnorm::ascii_digits_and_plus;
 
@@ -153,129 +150,6 @@ pub fn scan_phones(text: &str, cap: usize, mut collect: impl FnMut(String)) -> b
         }
     }
     false
-}
-
-fn is_documentation_or_reserved(addr: &IpAddr) -> bool {
-    match addr {
-        IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            octets[0] == 0
-                || octets[0] >= 240
-                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
-                || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
-                || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
-                || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
-                || (octets[0] == 198 && (octets[1] & 0xFE) == 18)
-        }
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_documentation_or_reserved(&IpAddr::V4(v4));
-            }
-            let octets = v6.octets();
-            (octets[0] == 0x20 && octets[1] == 0x01 && octets[2] == 0x0d && octets[3] == 0xb8)
-                || (octets[0] == 0x3f && octets[1] == 0xff && (octets[2] & 0xF0) == 0)
-                || (octets[0] == 0x20
-                    && octets[1] == 0x01
-                    && octets[2] == 0x00
-                    && octets[3] == 0x02
-                    && octets[4] == 0x00
-                    && octets[5] == 0x00)
-        }
-    }
-}
-
-#[must_use]
-pub fn is_non_routable_ip(s: &str) -> bool {
-    let Ok(addr) = s.parse::<IpAddr>() else {
-        return false;
-    };
-    let addr = match addr {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
-        v4 @ IpAddr::V4(_) => v4,
-    };
-    if is_documentation_or_reserved(&addr) {
-        return true;
-    }
-    match addr {
-        IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                || (octets[0] == 100 && (octets[1] & 0xC0) == 64)
-        }
-        IpAddr::V6(v6) => {
-            let octets = v6.octets();
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || matches!(octets[0], 0xfc | 0xfd)
-                || (octets[0] == 0xfe && (octets[1] & 0xC0) == 0x80)
-        }
-    }
-}
-
-fn is_cdn_edge_ipv6(v6: &Ipv6Addr) -> bool {
-    let segments = v6.segments();
-    let prefix32 = (u32::from(segments[0]) << 16) | u32::from(segments[1]);
-    matches!(
-        prefix32,
-        0x2400_cb00
-            | 0x2606_4700
-            | 0x2803_f800
-            | 0x2405_b500
-            | 0x2405_8100
-            | 0x2c0f_f248
-            | 0x2a04_4e42
-    ) || (prefix32 & 0xFFFF_FFF8) == 0x2a06_98c0
-}
-
-#[must_use]
-pub fn is_cdn_edge_ip(s: &str) -> bool {
-    let v4 = match s.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => v4,
-        Ok(IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
-            Some(v4) => v4,
-            None => return is_cdn_edge_ipv6(&v6),
-        },
-        Err(_) => return false,
-    };
-    let octets = v4.octets();
-    match octets[0] {
-        103 => {
-            (octets[1] == 21 && (octets[2] & 0xFC) == 244)
-                || (octets[1] == 22 && (octets[2] & 0xFC) == 200)
-                || (octets[1] == 31 && (octets[2] & 0xFC) == 4)
-        }
-        104 => (octets[1] & 0xF8) == 16 || (octets[1] & 0xFC) == 24,
-        108 => octets[1] == 162 && (octets[2] & 0xC0) == 192,
-        131 => octets[1] == 0 && (octets[2] & 0xFC) == 72,
-        141 => octets[1] == 101 && (octets[2] & 0xC0) == 64,
-        151 => octets[1] == 101,
-        162 => (octets[1] & 0xFE) == 158,
-        172 => (octets[1] & 0xF8) == 64,
-        173 => octets[1] == 245 && (octets[2] & 0xF0) == 48,
-        188 => octets[1] == 114 && (octets[2] & 0xF0) == 96,
-        190 => octets[1] == 93 && (octets[2] & 0xF0) == 240,
-        197 => octets[1] == 234 && (octets[2] & 0xFC) == 240,
-        198 => octets[1] == 41 && (octets[2] & 0x80) == 128,
-        _ => false,
-    }
-}
-
-#[must_use]
-pub fn untrusted_ip_geo_reason(s: &str) -> Option<&'static str> {
-    is_cdn_edge_ip(s).then_some("cdn/anycast edge")
-}
-
-#[must_use]
-pub fn is_bogus_ip(s: &str) -> bool {
-    s.parse::<IpAddr>()
-        .is_ok_and(|addr| is_documentation_or_reserved(&addr))
 }
 
 #[inline]
@@ -679,20 +553,6 @@ mod tests {
         );
         assert!(!truncated);
         assert_eq!(found, ["+14155552671", "+61412345678"]);
-    }
-
-    #[test]
-    fn ip_classifiers_gate_reserved_and_cdn_ranges() {
-        assert!(is_non_routable_ip("192.168.1.1"));
-        assert!(is_non_routable_ip("::ffff:192.0.2.1"));
-        assert!(is_bogus_ip("203.0.113.9"));
-        assert!(is_cdn_edge_ip("104.16.0.1"));
-        assert!(is_cdn_edge_ip("2606:4700::1"));
-        assert_eq!(
-            untrusted_ip_geo_reason("151.101.1.1"),
-            Some("cdn/anycast edge")
-        );
-        assert_eq!(untrusted_ip_geo_reason("8.8.8.8"), None);
     }
 
     #[test]

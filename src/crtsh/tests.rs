@@ -529,6 +529,20 @@ fn domain_query_uses_canonical_host_seed() {
     }
 }
 
+/// A root-dotted domain asks for its apex; a URL whose host is an address literal has no name
+/// for crt.sh to match, so it asks nothing.
+#[test]
+fn build_query_on_a_root_dotted_domain_and_an_address_literal_url() {
+    assert_eq!(
+        build_query(ReconTargetKind::Domain, "Example.COM.").as_deref(),
+        Some("%.example.com")
+    );
+    assert_eq!(
+        build_query(ReconTargetKind::Url, "https://[2001:db8::1]/"),
+        None
+    );
+}
+
 fn cert(id: u64, names: &str, issuer: &str, not_before: &str, not_after: &str) -> CrtEntry {
     CrtEntry {
         id: Some(id),
