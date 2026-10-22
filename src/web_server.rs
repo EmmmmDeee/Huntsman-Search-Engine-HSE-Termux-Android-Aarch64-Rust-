@@ -118,6 +118,22 @@ const SCANS_STACK_BYTES: usize = 4 * 1024 * 1024;
 const MAX_FORM_BYTES: usize = MAX_REQUEST_BYTES - HEADER_ALLOWANCE;
 /// The Settings page's provider keys: which may be saved, and one save.
 const KEYS_PATH: &str = "/api/settings/keys";
+/// A local file's raw bytes in, its EXIF and embedded document metadata out: the `exif` and
+/// `docmeta` commands for a file picked in the browser.
+const INSPECT_PATH: &str = "/api/inspect";
+/// The largest file `/api/inspect` reads: the bound the `exif` and `docmeta` commands read from
+/// disk, so the page reads what the commands read (64 MiB).
+const MAX_INSPECT_BYTES: usize = 64 * 1024 * 1024;
+/// Inspections running at once. Each holds its whole file in memory, so a phone holds one; the
+/// body is read only once its request has this place, so waiting uploads never pile up in memory.
+const MAX_INSPECTIONS: usize = 1;
+/// Time to receive one inspection upload: 64 MiB over a slow phone Wi-Fi link (about 1 MB/s).
+const INSPECT_DEADLINE: Duration = Duration::from_secs(90);
+/// The file parsers build field tables and the report encodes them, so, like an analysis, an
+/// inspection runs on its own thread with this stack.
+const INSPECT_STACK_BYTES: usize = 4 * 1024 * 1024;
+/// Longest file name `/api/inspect` keeps as the report's label.
+const MAX_INSPECT_NAME_BYTES: usize = 255;
 /// The header a lookup request must carry. Its presence forces a CORS preflight from any other
 /// origin, and this server answers no preflight.
 pub const LOOKUP_HEADER: &str = "x-huntsman-lookup";
@@ -170,6 +186,23 @@ struct Lookups {
 pub type AnalyzeHandler =
     Arc<dyn Fn(&[String]) -> Result<serde_json::Value, LookupError> + Send + Sync>;
 
+/// Inspects one uploaded file: its label (the browser's file name) and its bytes, answered as a
+/// report like a lookup's. Installed by the binary, which owns the file parsers' composition.
+pub type InspectHandler =
+    Arc<dyn Fn(&str, &[u8]) -> Result<LookupReport, LookupError> + Send + Sync>;
+
+#[derive(Clone)]
+struct Inspect {
+    handler: InspectHandler,
+    live: Arc<AtomicUsize>,
+}
+
+/// One `/api/inspect` body, read whole, and the inspection place it holds until it is answered.
+struct Upload {
+    body: Vec<u8>,
+    _place: Slot,
+}
+
 /// One bounded, no-root Android OS-cached Wi-Fi observation read.
 /// Installed by the process boundary; the server library owns no sensor subprocess.
 pub type RadarHandler = Arc<dyn Fn() -> Result<WifiScan, LookupError> + Send + Sync>;
@@ -186,6 +219,7 @@ struct Routes {
     lookups: Option<Lookups>,
     radar: Option<Radar>,
     analyze: Option<AnalyzeHandler>,
+    inspect: Option<Inspect>,
     scans: Option<Arc<ScanApi>>,
     /// The home whose keys file every lookup reads, for [`KEYS_PATH`].
     keys_home: Option<PathBuf>,
@@ -298,6 +332,16 @@ impl Server {
     #[must_use]
     pub fn with_analyze(mut self, handler: AnalyzeHandler) -> Self {
         self.routes.analyze = Some(handler);
+        self
+    }
+
+    /// Serve `POST /api/inspect` through `handler`. Without this the route answers `404`.
+    #[must_use]
+    pub fn with_inspect(mut self, handler: InspectHandler) -> Self {
+        self.routes.inspect = Some(Inspect {
+            handler,
+            live: Arc::new(AtomicUsize::new(0)),
+        });
         self
     }
 
@@ -643,10 +687,12 @@ fn handle_stream_with(
         .map_err(|error| Error::Store(format!("serve write timeout: {error}")))?;
 
     let deadline = Instant::now() + REQUEST_DEADLINE;
-    let request = read_request(&mut stream, deadline)?;
+    let (request, upload) = read_request_with(&mut stream, deadline, |head| {
+        inspect_admits(head, config, routes)
+    })?;
     // A whole request: the connection is busy now, not idle, and is no longer closed early.
     drop(waiting);
-    let response = respond(&request, config, routes);
+    let response = respond_with(&request, upload.as_ref(), config, routes);
     stream
         .write_all(&response)
         .map_err(|error| Error::Store(format!("serve write: {error}")))?;
@@ -655,40 +701,85 @@ fn handle_stream_with(
         .map_err(|error| Error::Store(format!("serve flush: {error}")))
 }
 
+#[cfg(test)]
 fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Error> {
+    read_request_with(stream, deadline, |_| None).map(|(request, _)| request)
+}
+
+/// One read from `stream` within the time left before `deadline`.
+enum Step {
+    Read(usize),
+    Closed,
+    TimedOut,
+}
+
+fn read_step(stream: &mut TcpStream, deadline: Instant, buffer: &mut [u8]) -> Result<Step, Error> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok(Step::TimedOut);
+    }
+    // Bound each read by the time left in the whole-request budget (never longer than the
+    // per-read timeout), so a client that dribbles bytes cannot hold the connection open
+    // past the deadline.
+    stream
+        .set_read_timeout(Some(remaining.min(IO_TIMEOUT)))
+        .map_err(|error| Error::Store(format!("serve read timeout: {error}")))?;
+    match stream.read(buffer) {
+        Ok(0) => Ok(Step::Closed),
+        Ok(read) => Ok(Step::Read(read)),
+        // A client that sends nothing, or stalls past its budget, has run out of time: it gets
+        // the 408 that the timeout sentinel renders, not a dropped connection.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            Ok(Step::TimedOut)
+        }
+        Err(error) => Err(Error::Store(format!("serve read: {error}"))),
+    }
+}
+
+/// Read one request. Its head and form body come back as text; when `admit` takes the head as an
+/// inspection upload (its announced length and the place it holds), the body is read whole, as
+/// raw bytes, within [`INSPECT_DEADLINE`], and the text is the head alone.
+fn read_request_with(
+    stream: &mut TcpStream,
+    mut deadline: Instant,
+    admit: impl Fn(&str) -> Option<(usize, Slot)>,
+) -> Result<(String, Option<Upload>), Error> {
     let mut bytes = Vec::with_capacity(1024);
     let mut chunk = [0_u8; 1024];
     // Once the head is in: the whole request's length, the head and the form body it announces.
     let mut whole = None;
+    // Once an upload is admitted: where its body starts, and the place it holds.
+    let mut upload: Option<(usize, Slot)> = None;
 
-    while bytes.len() < MAX_REQUEST_BYTES {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Ok("REQUEST_TIMEOUT".into());
-        }
-        // Bound each read by the time left in the whole-request budget (never longer than the
-        // per-read timeout), so a client that dribbles bytes cannot hold the connection open
-        // past the deadline.
-        stream
-            .set_read_timeout(Some(remaining.min(IO_TIMEOUT)))
-            .map_err(|error| Error::Store(format!("serve read timeout: {error}")))?;
-        let read = match stream.read(&mut chunk) {
-            Ok(read) => read,
-            // A client that sends nothing, or stalls past its budget, has run out of time: it gets
-            // the 408 that the timeout sentinel renders, not a dropped connection.
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                return Ok("REQUEST_TIMEOUT".into());
+    while bytes.len() < MAX_REQUEST_BYTES || upload.is_some() {
+        if let (Some((_, _)), Some(whole)) = (&upload, whole) {
+            // An admitted upload is read straight into its buffer, as much as one read gives.
+            let start = bytes.len();
+            if start >= whole {
+                break;
             }
-            Err(error) => return Err(Error::Store(format!("serve read: {error}"))),
-        };
-        if read == 0 {
-            break;
+            bytes.resize(whole.min(start + 64 * 1024), 0);
+            let step = read_step(stream, deadline, &mut bytes[start..])?;
+            match step {
+                Step::Read(read) => bytes.truncate(start + read),
+                Step::Closed => {
+                    bytes.truncate(start);
+                    break;
+                }
+                Step::TimedOut => return Ok(("REQUEST_TIMEOUT".into(), None)),
+            }
+            continue;
         }
+        let read = match read_step(stream, deadline, &mut chunk)? {
+            Step::Read(read) => read,
+            Step::Closed => break,
+            Step::TimedOut => return Ok(("REQUEST_TIMEOUT".into(), None)),
+        };
         // Only the new bytes, and the three before them, can complete the blank line that ends
         // the head: scanning the whole buffer after every read was quadratic in its length.
         let scan_from = bytes.len().saturating_sub(3);
@@ -699,6 +790,13 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
                 .position(|window| window == b"\r\n\r\n")
             {
                 let head = scan_from + at + 4;
+                if let Some((length, place)) = admit(&String::from_utf8_lossy(&bytes[..head])) {
+                    bytes.reserve_exact((head + length).saturating_sub(bytes.len()));
+                    deadline = deadline.max(Instant::now() + INSPECT_DEADLINE);
+                    upload = Some((head, place));
+                    whole = Some(head + length);
+                    continue;
+                }
                 whole = Some(head + form_body_len(&bytes[..head]));
             }
         }
@@ -707,13 +805,64 @@ fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Err
         }
     }
 
+    if let Some((head, place)) = upload {
+        // The head is moved out and the body kept in place, so the file is held once, not twice.
+        let text = String::from_utf8_lossy(&bytes[..head]).into_owned();
+        bytes.drain(..head);
+        return Ok((
+            text,
+            Some(Upload {
+                body: bytes,
+                _place: place,
+            }),
+        ));
+    }
+
     if bytes.len() >= MAX_REQUEST_BYTES && !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-        return Ok("REQUEST_TOO_LARGE".into());
+        return Ok(("REQUEST_TOO_LARGE".into(), None));
     }
 
     // Header values may carry bytes outside ASCII (RFC 9110 obs-text). Decoding them lossily keeps
     // such a request answerable instead of refusing it with no reply.
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), None))
+}
+
+/// Whether a request head may upload a file to inspect: `POST /api/inspect` on a server that
+/// serves it, passing every check its answer will make (the page's header, a same-site fetch, the
+/// token, a loopback `Host`), announcing a body within [`MAX_INSPECT_BYTES`], with the one
+/// inspection place free. Only then is its body read, so no other request makes the server hold a
+/// file in memory. The announced length and the place come back.
+fn inspect_admits(head: &str, config: &ServeConfig, routes: &Routes) -> Option<(usize, Slot)> {
+    let inspect = routes.inspect.as_ref()?;
+    let parsed = parse_request(head)?;
+    let admitted = parsed.method == Method::Post
+        && parsed.path == INSPECT_PATH
+        && parsed.lookup_header
+        && same_site(parsed.sec_fetch_site)
+        && config
+            .bearer_token
+            .as_deref()
+            .is_none_or(|expected| bearer_matches(parsed.authorization, expected))
+        && (!config.bind.ip().is_loopback() || host_is_allowed_for_loopback(parsed.host));
+    if !admitted {
+        return None;
+    }
+    let length = parsed
+        .content_length
+        .filter(|length| (1..=MAX_INSPECT_BYTES).contains(length))?;
+    Some((length, Slot::take_of(&inspect.live, MAX_INSPECTIONS)?))
+}
+
+/// Only the scan API and the key save change state, so only they take POST, with the file
+/// inspection, whose upload is too large for a query string.
+fn takes_post(path: &str) -> bool {
+    ScanApi::handles(path) || path == KEYS_PATH || path == INSPECT_PATH
+}
+
+/// `none` is a typed URL or bookmark; `same-origin` is this page. Anything else came from another
+/// site.
+fn same_site(sec_fetch_site: Option<&str>) -> bool {
+    sec_fetch_site.is_none_or(|site| matches!(site, "same-origin" | "none"))
 }
 
 /// The body to read after a request's `head`: the `Content-Length` it announces, when that is at
@@ -890,9 +1039,20 @@ fn test_config(bind: SocketAddr, bearer_token: Option<&str>) -> ServeConfig {
         .unwrap_or_else(|error| panic!("{bind} with {bearer_token:?}: {error}"))
 }
 
-/// The bytes to write for one request: text for every answer but a scan export that is a
-/// workbook.
+/// The bytes to write for one request that uploaded no file.
+#[cfg(test)]
 fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
+    respond_with(request, None, config, routes)
+}
+
+/// The bytes to write for one request and the file it uploaded, if any: text for every answer but
+/// a scan export that is a workbook.
+fn respond_with(
+    request: &str,
+    upload: Option<&Upload>,
+    config: &ServeConfig,
+    routes: &Routes,
+) -> Vec<u8> {
     let (bind, bearer_token) = (config.bind, config.bearer_token.as_deref());
     if request == "REQUEST_TOO_LARGE" {
         return response(
@@ -927,11 +1087,7 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
         .into_bytes();
     }
 
-    // Only the scan API and the key save change state, so only they take POST.
-    if parsed.method == Method::Other
-        || parsed.method == Method::Post
-            && !(ScanApi::handles(parsed.path) || parsed.path == KEYS_PATH)
-    {
+    if parsed.method == Method::Other || parsed.method == Method::Post && !takes_post(parsed.path) {
         return response(
             405,
             "text/plain; charset=utf-8",
@@ -950,6 +1106,7 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
             | "/api/analyze"
             | "/api/radar/wifi"
             | KEYS_PATH
+            | INSPECT_PATH
     ) || ScanApi::handles(parsed.path);
     if protected
         && bearer_token.is_some_and(|expected| !bearer_matches(parsed.authorization, expected))
@@ -998,6 +1155,7 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
         "/api/radar/wifi" => radar_response(&parsed, routes.radar.as_ref()),
         "/api/analyze" => analyze_response(&parsed, routes.analyze.as_ref()),
         KEYS_PATH => keys_response(&parsed, routes.keys_home.as_deref()),
+        INSPECT_PATH => inspect_response(&parsed, upload, routes.inspect.as_ref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
@@ -1544,6 +1702,93 @@ fn analyze_response(parsed: &ParsedRequest<'_>, analyze: Option<&AnalyzeHandler>
     }
 }
 
+/// `POST /api/inspect?name=FILE`: the uploaded file's EXIF and embedded document metadata, as a
+/// report. The body is the file's raw bytes (`fetch` with a `File` as its body), read only once
+/// [`inspect_admits`] took the request; a request it did not take is answered why here.
+fn inspect_response(
+    parsed: &ParsedRequest<'_>,
+    upload: Option<&Upload>,
+    inspect: Option<&Inspect>,
+) -> String {
+    let Some(inspect) = inspect else {
+        return json_error(404, "file inspection is not enabled on this server");
+    };
+    if parsed.method != Method::Post {
+        return json_error(405, "inspection needs POST with the file as the body");
+    }
+    if !same_site(parsed.sec_fetch_site) {
+        return json_error(403, "cross-site inspection refused");
+    }
+    if !parsed.lookup_header {
+        return json_error(403, "inspection needs the X-Huntsman-Lookup: 1 header");
+    }
+    let length = match parsed.content_length {
+        None | Some(0) => return json_error(400, "inspection needs the file as the body"),
+        Some(length) if length > MAX_INSPECT_BYTES => {
+            return json_error(413, "the file is larger than 64 MiB");
+        }
+        Some(length) => length,
+    };
+    let Some(upload) = upload else {
+        // Every other check passed, so the one place was taken.
+        return json_error(503, "an inspection is already running; retry shortly");
+    };
+    if upload.body.len() != length {
+        return json_error(400, "the upload ended before the length it announced");
+    }
+    let label = match inspect_label(parsed.query) {
+        Ok(label) => label,
+        Err(message) => return json_error(400, message),
+    };
+    let handler = &inspect.handler;
+    let body = upload.body.as_slice();
+    let outcome = thread::scope(|scope| {
+        thread::Builder::new()
+            .name("serve-inspect".into())
+            .stack_size(INSPECT_STACK_BYTES)
+            .spawn_scoped(scope, || {
+                catch_unwind(AssertUnwindSafe(|| handler(&label, body)))
+            })
+            .map(thread::ScopedJoinHandle::join)
+    });
+    match outcome {
+        Ok(Ok(Ok(Ok(report)))) => match serde_json::to_string(&report) {
+            Ok(body) => json_ok(&body, false),
+            Err(_) => json_error(500, "the inspection could not be encoded"),
+        },
+        Ok(Ok(Ok(Err(error)))) => json_error(error.status, &error.message),
+        Ok(Ok(Err(_)) | Err(_)) => json_error(500, "inspection failed unexpectedly"),
+        Err(_) => json_error(503, "could not start an inspection worker"),
+    }
+}
+
+/// The report label for an upload: the `name` query value, reduced to a file name (no directory),
+/// with control characters dropped, within [`MAX_INSPECT_NAME_BYTES`]; `upload` when it is absent
+/// or empty. Unknown keys are ignored.
+fn inspect_label(raw: &str) -> Result<String, &'static str> {
+    let mut name = String::new();
+    for pair in raw.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == "name" {
+            name = percent_decode(value).ok_or("name is not valid percent-encoded UTF-8")?;
+        }
+    }
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let mut label = String::new();
+    for c in base.chars().filter(|c| !c.is_control()) {
+        if label.len() + c.len_utf8() > MAX_INSPECT_NAME_BYTES {
+            break;
+        }
+        label.push(c);
+    }
+    let label = label.trim();
+    Ok(if label.is_empty() {
+        "upload".to_owned()
+    } else {
+        label.to_owned()
+    })
+}
+
 /// The seeds in a query's `seeds` value, one per line: each is trimmed and blank lines are
 /// dropped. Unknown keys are ignored.
 fn parse_analyze_seeds(raw: &str) -> Result<Vec<String>, String> {
@@ -1934,6 +2179,7 @@ mod tests {
                     lookups: Some(lookups.clone()),
                     radar: None,
                     analyze: echo_seeds().analyze,
+                    inspect: None,
                     scans: None,
                     keys_home: None,
                 };
@@ -2217,9 +2463,11 @@ mod tests {
         assert!(INDEX_HTML.contains(r#"<nav class="navbar" aria-label="Primary">"#));
         let script = inline_block(INDEX_HTML, "script");
         assert!(script.contains(
-            "const VIEWS=['scans','newscan','scan','compare','analyze','radar','settings','about'];"
+            "const VIEWS=['scans','newscan','scan','compare','analyze','radar','inspect','settings','about'];"
         ));
-        for view in ["newscan", "scans", "analyze", "radar", "settings"] {
+        for view in [
+            "newscan", "scans", "analyze", "radar", "inspect", "settings",
+        ] {
             assert!(
                 INDEX_HTML.contains(&format!(
                     r##"<a class="navlink" data-view="{view}" href="#/{view}">"##
@@ -2683,6 +2931,7 @@ mod tests {
             lookups: lookups.cloned(),
             radar: None,
             analyze: None,
+            inspect: None,
             scans: None,
             keys_home: None,
         };
@@ -2856,6 +3105,7 @@ mod tests {
             }),
             radar: None,
             analyze: None,
+            inspect: None,
             scans: Some(Arc::new(api)),
             keys_home: None,
         };
@@ -3168,6 +3418,7 @@ mod tests {
             lookups: None,
             radar: None,
             analyze: Some(Arc::new(handler)),
+            inspect: None,
             scans: None,
             keys_home: None,
         }
@@ -3944,5 +4195,179 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A server whose `/api/inspect` echoes the label and every byte it was handed, so a test sees
+    /// exactly what reached the handler.
+    fn inspect_server(token: Option<&str>, bind: &str) -> (SocketAddr, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let server = Server::bind(ServeConfig::parse(bind, token.map(str::to_owned)).unwrap())
+            .unwrap()
+            .with_inspect(Arc::new(move |label: &str, bytes: &[u8]| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Ok(LookupReport {
+                    route: "inspect",
+                    text: format!("{label}:{}:{:?}", bytes.len(), &bytes[..bytes.len().min(8)]),
+                    entities: Vec::new(),
+                    outcomes: Vec::new(),
+                    scan: None,
+                    status: None,
+                })
+            }));
+        let addr = server.local_addr().unwrap();
+        thread::spawn(move || {
+            let _ = server.run(|_| {});
+        });
+        (addr, calls)
+    }
+
+    /// Send `head` then `body` on one connection and read the whole answer.
+    fn upload(addr: SocketAddr, head: &str, body: &[u8]) -> String {
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        client.write_all(head.as_bytes()).unwrap();
+        let _ = client.write_all(body);
+        let _ = client.shutdown(Shutdown::Write);
+        let mut answer = Vec::new();
+        let _ = client.read_to_end(&mut answer);
+        String::from_utf8_lossy(&answer).into_owned()
+    }
+
+    fn inspect_head(name: &str, length: usize, extra: &str) -> String {
+        format!(
+            "POST /api/inspect?name={name} HTTP/1.1\r\nHost: localhost\r\n{extra}Content-Length: {length}\r\n\r\n"
+        )
+    }
+
+    /// A file picked in the page reaches the handler byte for byte, binary and well past the form
+    /// bound, labelled with its file name alone: the `exif` and `docmeta` commands, reachable from
+    /// the phone's browser.
+    #[test]
+    fn an_uploaded_file_reaches_the_handler_whole_and_byte_exact() {
+        let (addr, calls) = inspect_server(None, "127.0.0.1:0");
+        let mut file = vec![0xFF, 0xD8, 0x00, 0x0D, 0x0A, 0x0D, 0x0A, 0x80];
+        file.extend((0..3 * MAX_REQUEST_BYTES).map(|i| u8::try_from(i % 251).unwrap()));
+        let answer = upload(
+            addr,
+            &inspect_head("%2Fsdcard%2FDCIM%2Fphoto.jpg", file.len(), HEADER),
+            &file,
+        );
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        let body: serde_json::Value =
+            serde_json::from_str(answer.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(
+            body["text"],
+            format!("photo.jpg:{}:{:?}", file.len(), &file[..8])
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A request the inspection would refuse is refused before its body is read, so no other
+    /// page, no tokenless caller and no oversized file makes the server hold a file in memory, and
+    /// the handler never runs.
+    #[test]
+    fn an_inspection_is_refused_before_its_body_is_read() {
+        let (addr, calls) = inspect_server(None, "127.0.0.1:0");
+        let file = vec![7_u8; 4096];
+        let cases = [
+            (inspect_head("a", file.len(), ""), "403"),
+            (
+                inspect_head(
+                    "a",
+                    file.len(),
+                    &format!("{HEADER}Sec-Fetch-Site: cross-site\r\n"),
+                ),
+                "403",
+            ),
+            (
+                format!(
+                    "POST /api/inspect HTTP/1.1\r\nHost: evil.example\r\n{HEADER}Content-Length: 4096\r\n\r\n"
+                ),
+                "403",
+            ),
+            (inspect_head("a", 0, HEADER), "400"),
+            (inspect_head("a", MAX_INSPECT_BYTES + 1, HEADER), "413"),
+            (
+                format!("GET /api/inspect?name=a HTTP/1.1\r\nHost: localhost\r\n{HEADER}\r\n"),
+                "405",
+            ),
+        ];
+        for (head, want) in cases {
+            let answer = upload(addr, &head, &file);
+            assert!(
+                answer.starts_with(&format!("HTTP/1.1 {want}")),
+                "{head:?} -> {answer}"
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let (public, public_calls) = inspect_server(Some("inspect-token"), "0.0.0.0:0");
+        let public = SocketAddr::from(([127, 0, 0, 1], public.port()));
+        let tokenless = upload(public, &inspect_head("a", file.len(), HEADER), &file);
+        assert!(tokenless.starts_with("HTTP/1.1 401"), "{tokenless}");
+        let authorized = upload(
+            public,
+            &inspect_head(
+                "a",
+                file.len(),
+                &format!("{HEADER}Authorization: Bearer inspect-token\r\n"),
+            ),
+            &file,
+        );
+        assert!(authorized.starts_with("HTTP/1.1 200"), "{authorized}");
+        assert_eq!(public_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// One inspection holds the place: a second upload meanwhile is answered `503` unread, and the
+    /// place is free again once the first is answered.
+    #[test]
+    fn one_inspection_at_a_time_and_its_place_comes_back() {
+        let config = test_config("127.0.0.1:8080".parse().unwrap(), None);
+        let routes = Routes {
+            inspect: Some(Inspect {
+                handler: Arc::new(|_: &str, _: &[u8]| {
+                    Err(LookupError {
+                        status: 422,
+                        message: "unused".into(),
+                    })
+                }),
+                live: Arc::new(AtomicUsize::new(0)),
+            }),
+            ..Routes::default()
+        };
+        let head = inspect_head("a", 10, HEADER);
+        let (length, place) =
+            inspect_admits(&head, &config, &routes).expect("the first is admitted");
+        assert_eq!(length, 10);
+        assert!(inspect_admits(&head, &config, &routes).is_none());
+        let busy = text(respond_with(&head, None, &config, &routes));
+        assert!(busy.starts_with("HTTP/1.1 503"), "{busy}");
+        drop(place);
+        assert!(inspect_admits(&head, &config, &routes).is_some());
+        // An upload that ended early is named, not passed on short.
+        let short = Upload {
+            body: vec![1, 2, 3],
+            _place: inspect_admits(&head, &config, &routes).unwrap().1,
+        };
+        let ended = text(respond_with(&head, Some(&short), &config, &routes));
+        assert!(ended.starts_with("HTTP/1.1 400"), "{ended}");
+    }
+
+    #[test]
+    fn an_inspection_label_is_a_bare_file_name() {
+        assert_eq!(
+            inspect_label("name=%2Fsdcard%2FDCIM%2Fa.jpg").unwrap(),
+            "a.jpg"
+        );
+        assert_eq!(inspect_label("name=C%3A%5Cdocs%5Cb.pdf").unwrap(), "b.pdf");
+        assert_eq!(inspect_label("name=x%0Ay%07.png").unwrap(), "xy.png");
+        assert_eq!(inspect_label("").unwrap(), "upload");
+        assert_eq!(inspect_label("name=%2F").unwrap(), "upload");
+        assert!(inspect_label("name=%FF").is_err());
+        let long = inspect_label(&format!("name={}", "é".repeat(400))).unwrap();
+        assert!(long.len() <= MAX_INSPECT_NAME_BYTES && long.starts_with('é'));
     }
 }

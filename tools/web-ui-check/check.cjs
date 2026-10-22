@@ -10,7 +10,7 @@
 // only for health when a tab with nothing running comes back, asks to be reloaded when the
 // server was upgraded under it, keeps a big scan's Graph answering on a throttled CPU, says what
 // to do when the server stops, notices when it is back, and finds the saved scans still there
-// after the restart.
+// after the restart. It reads a picked file's embedded metadata in Inspect, only when asked.
 //
 // It never spends a key: the server runs with a scratch HOME and none of the caller's
 // HUNTSMAN_*, HSE_* or *_KEY variables, and its scans target a phone number, which is offline.
@@ -36,7 +36,7 @@ const AXE = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
 const bin = process.argv[2];
 if (!bin || !fs.existsSync(bin)) { process.stderr.write('usage: node check.cjs path/to/huntsman-recon\n'); process.exit(64); }
 const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true };
-const PAGE_BUDGET = 112 * 1024;
+const PAGE_BUDGET = 116 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -272,6 +272,47 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       page.off('request', countScanPost);
       await page.unroute('**/api/radar/wifi');
       page.off('request', countRadar);
+
+      // Inspect: a picked file goes to this server's own exif and docmeta readers, only on request.
+      // The file is a JPEG carrying an XMP packet with an edit history and a GPS position.
+      const xmp = '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF><rdf:Description rdf:about="" ' +
+        'xmp:CreatorTool="Fixture Camera 2" exif:GPSLatitude="48,51.00N" exif:GPSLongitude="2,20.00E">' +
+        '<xmpMM:History><rdf:Seq><rdf:li stEvt:action="created" stEvt:softwareAgent="Fixture Editor"/>' +
+        '</rdf:Seq></xmpMM:History></rdf:Description></rdf:RDF></x:xmpmeta>';
+      const photo = Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.from(xmp), Buffer.from([0xff, 0xd9])]);
+      let inspectCalls = 0;
+      const countInspect = request => { if (new URL(request.url()).pathname === '/api/inspect') inspectCalls++; };
+      page.on('request', countInspect);
+      await page.goto(base + '/#/inspect', { waitUntil: 'networkidle' });
+      check(`${scheme}: Inspect is a reachable mobile view`, await page.isVisible('#view-inspect'), 'missing');
+      check(`${scheme}: Inspect sends nothing merely because it opened`, inspectCalls === 0, inspectCalls);
+      await audit(page, `${scheme} inspect`);
+      await page.setInputFiles('#ifile', { name: 'holiday.jpg', mimeType: 'image/jpeg', buffer: photo });
+      await page.click('#irun');
+      await page.waitForSelector('#iresult:not([hidden])', { timeout: 10000 }).catch(() => {});
+      const fieldsText = await page.textContent('#ifields');
+      const entitiesText = await page.textContent('#ientities');
+      check(`${scheme}: Inspect reads the picked file's embedded metadata once`,
+        inspectCalls === 1 && await page.isHidden('#ierror') &&
+        fieldsText.includes('Fixture Camera 2') && fieldsText.includes('Fixture Editor') &&
+        entitiesText.includes('holiday.jpg') && entitiesText.includes('48.850000,2.333333'),
+        { inspectCalls, fieldsText, entitiesText, error: await page.textContent('#ierror') });
+      await audit(page, `${scheme} inspect result`);
+      let inspectScanPosts = 0;
+      const countInspectScan = request => {
+        if (new URL(request.url()).pathname === '/api/scans' && request.method() === 'POST') inspectScanPosts++;
+      };
+      page.on('request', countInspectScan);
+      await page.click('#ientities button');
+      await page.waitForSelector('#view-newscan:not([hidden])', { timeout: 5000 });
+      const located = await page.evaluate(() => ({
+        target: document.getElementById('starget').value, kind: document.getElementById('skind').value
+      }));
+      check(`${scheme}: an embedded GPS position pivots into a prefilled network scan, unstarted`,
+        located.target === '48.850000,2.333333' && located.kind === 'network' && inspectScanPosts === 0,
+        { located, inspectScanPosts });
+      page.off('request', countInspectScan);
+      page.off('request', countInspect);
 
       // New Scan: Spiderfoot's three ways of choosing what runs, each listing what the server has.
       await page.goto(base + '/#/newscan', { waitUntil: 'networkidle' });

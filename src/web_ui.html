@@ -228,6 +228,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <a class="navlink" data-view="scans" href="#/scans"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg><span>Scans</span></a>
 <a class="navlink" data-view="analyze" href="#/analyze"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 6h9M6.2 8.2l4.6 7.6M17.8 8.2l-4.6 7.6"/></svg><span>Analyze</span></a>
 <a class="navlink" data-view="radar" href="#/radar"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="18" r="1.5"/><path d="M5 10a10 10 0 0 1 14 0M8 13a6 6 0 0 1 8 0M10 16a3 3 0 0 1 4 0"/></svg><span>Radar</span></a>
+<a class="navlink" data-view="inspect" href="#/inspect"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><circle cx="12" cy="14" r="3"/></svg><span>Inspect</span></a>
 <a class="navlink" data-view="settings" href="#/settings"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/></svg><span>Settings</span></a>
 </nav>
 <main>
@@ -293,6 +294,19 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel-heading">OS-cached observations <span class="badge" id="rrows-n"></span></div>
 <p class="note" id="rsummary"></p>
 <div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>Age (s)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rrows"></tbody></table></div>
+</div>
+</section>
+<section id="view-inspect" hidden>
+<h1>File metadata</h1>
+<p class="help">EXIF, GPS, XMP edit history, PDF /Info with values an edit replaced, PNG text: what a file embeds, read by this server alone, no key. Each field is the file's claim.</p>
+<form class="toolbar" id="inspect"><input type="file" id="ifile" class="grow" aria-label="File to inspect"><button class="btn btn-primary" id="irun" type="submit">Inspect</button></form>
+<p class="alert" id="ierror" role="alert" hidden></p>
+<p class="note" id="istatus" role="status">No file inspected.</p>
+<div id="iresult" hidden>
+<div class="panel"><div class="panel-heading">Entities <span class="badge" id="ientities-n"></span></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>kind</th><th>value</th><th>Next step</th></tr></thead><tbody id="ientities"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Embedded fields <span class="badge" id="ifields-n"></span></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>source</th><th>field</th><th>value</th></tr></thead><tbody id="ifields"></tbody></table></div></div>
 </div>
 </section>
 <section id="view-scan" hidden>
@@ -521,7 +535,7 @@ const riskTone=r=>(RISK.find(x=>x[0]===String(r||'').toLowerCase())||[0,0,''])[2
 function risks(c){const w=el('span','risks');for(const [k,name,t] of RISK){const b=el('span','label '+t,(c&&c[k])||0);b.append(el('span','sr',' '+name));w.append(b)}return w}
 // One view at a time. A view's loads carry the generation they started in, so an answer that
 // arrives after the operator moved on is dropped, and its follow-up poll never starts.
-const VIEWS=['scans','newscan','scan','compare','analyze','radar','settings','about'];
+const VIEWS=['scans','newscan','scan','compare','analyze','radar','inspect','settings','about'];
 let view='',gen=0,timer=0,resume=null,detailed=false;
 function later(fn,ms=5000){clearTimeout(timer);const g=gen;resume=fn;timer=setTimeout(()=>{if(g===gen&&!document.hidden)fn()},ms)}
 function route(){
@@ -631,6 +645,23 @@ $('rread').onclick=async()=>{
   finally{button.disabled=false}
 };
 $('rdownload').onclick=()=>{if(radarLast)save(radarLast,'huntsman-wifi-radar')};
+// Inspect reads a picked file only when asked; a GPS lead is prefilled, never started.
+let inspectLast=null;
+$('inspect').onsubmit=async ev=>{
+  ev.preventDefault();$('ierror').hidden=true;
+  const file=$('ifile').files[0];
+  if(!file||file.size>64<<20){fail('ierror',file?'Over 64 MiB.':'Choose a file.');return}
+  const run=$('irun');run.disabled=true;$('istatus').textContent='Reading…';
+  try{
+    const r=await api('/api/inspect?name='+enc(file.name),{method:'POST',body:file}),fields=[],es=r.entities||[];
+    inspectLast=r;$('iresult').hidden=false;
+    fill('ientities',es,e=>[e.kind,e.value,e.kind==='coordinates'?button('Investigate',()=>prefill({target:e.value,name:'Location '+e.value,kind:'network',depth:0}),'btn-ghost'):'']);
+    for(const e of es)for(const x of e.evidence||[])for(const kv of Object.entries(x.attributes||{}))fields.push([x.provenance?.source,...kv]);
+    fill('ifields',fields,f=>f);
+    $('istatus').textContent=(r.outcomes||[]).map(o=>o.module+' '+o.kind+(o.detail?': '+o.detail:'')).join(' · ');
+  }catch(e){$('istatus').textContent=inspectLast?'Failed; the tables show the PREVIOUS file.':'No file inspected.';fail('ierror',e.message)}
+  finally{run.disabled=false}
+};
 // Scans: Spiderfoot's list, with a selection the toolbar acts on.
 let scans=[];const picked=new Set();
 const FILTERS={running:s=>live(s.status),finished:s=>s.status==='FINISHED',failed:s=>/ABORT|FAIL/.test(s.status)};
