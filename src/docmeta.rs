@@ -458,9 +458,10 @@ fn property_value(
 ) -> Option<(String, usize)> {
     let next = open_end + text[open_end..].find('<')?;
     let after_lt = &text[next + 1..];
-    if let Some(rest) = after_lt.strip_prefix('/')
-        && let Some(rest) = rest.strip_prefix(name)
-        && rest.starts_with('>')
+    if after_lt
+        .strip_prefix('/')
+        .and_then(|rest| rest.strip_prefix(name))
+        .is_some_and(|rest| rest.starts_with('>'))
     {
         let value = unescape_xml(text[open_end..next].trim());
         return Some((value, next + name.len() + 3));
@@ -637,10 +638,10 @@ fn extract_pdf_info(data: &[u8], fields: &mut Fields) {
     for key in PDF_INFO_KEYS {
         let now = pdf_find_string(current, key);
         for dict in prior {
-            if let Some(value) = pdf_find_string(dict, key)
-                && now.as_deref() != Some(value.as_str())
-            {
-                fields.push(format!("info-prior:{key}"), value);
+            if let Some(value) = pdf_find_string(dict, key) {
+                if now.as_deref() != Some(value.as_str()) {
+                    fields.push(format!("info-prior:{key}"), value);
+                }
             }
         }
     }
