@@ -298,6 +298,13 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         entitiesText.includes('holiday.jpg') && entitiesText.includes('48.850000,2.333333'),
         { inspectCalls, fieldsText, entitiesText, error: await page.textContent('#ierror') });
       await audit(page, `${scheme} inspect result`);
+      await page.setInputFiles('#ifile', []);
+      await page.click('#irun');
+      const refusedStatus = await page.textContent('#istatus');
+      check(`${scheme}: a file the page refuses itself marks the tables as the previous file's`,
+        inspectCalls === 1 && refusedStatus.includes('PREVIOUS') &&
+        (await page.textContent('#ierror')).includes('Choose a file'),
+        { inspectCalls, refusedStatus });
       let inspectScanPosts = 0;
       const countInspectScan = request => {
         if (new URL(request.url()).pathname === '/api/scans' && request.method() === 'POST') inspectScanPosts++;

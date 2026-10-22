@@ -243,3 +243,80 @@ fn webp_gps_becomes_a_coordinates_entity_not_just_metadata_text() {
         ExifRun::Network(error) | ExifRun::Failed(error) => panic!("{error}"),
     }
 }
+
+/// One PNG chunk: big-endian length, type, body and a CRC this parser does not check.
+fn png_chunk(png: &mut Vec<u8>, kind: [u8; 4], body: &[u8]) {
+    png.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+    png.extend_from_slice(&kind);
+    png.extend_from_slice(body);
+    png.extend_from_slice(&[0; 4]);
+}
+
+/// A PNG whose `eXIf` chunk carries [`exif_tiff`], optionally after the `Exif\0\0` signature some
+/// writers add.
+fn exif_png(prefixed: bool) -> Vec<u8> {
+    let mut payload = if prefixed {
+        b"Exif\x00\x00".to_vec()
+    } else {
+        Vec::new()
+    };
+    payload.extend_from_slice(&exif_tiff());
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png_chunk(&mut png, *b"IHDR", &[0; 13]);
+    png_chunk(&mut png, *b"tEXt", b"Comment\0hello");
+    png_chunk(&mut png, *b"eXIf", &payload);
+    png_chunk(&mut png, *b"IEND", &[]);
+    png
+}
+
+#[test]
+fn reads_exif_and_gps_from_a_png_exif_chunk() {
+    for prefixed in [false, true] {
+        let parsed = parse(&exif_png(prefixed)).expect("valid PNG eXIf");
+        assert_eq!(parsed.format, "PNG");
+        let gps = parsed.gps.expect("PNG GPS fix");
+        assert!((gps.lat - 48.85).abs() < 1e-6);
+        assert!((gps.lon - 2.333_333).abs() < 1e-5);
+    }
+    match run(&exif_png(false), "shot.png", 1) {
+        ExifRun::Printed { report, .. } => assert!(
+            report
+                .entities
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Coordinates)
+        ),
+        ExifRun::Network(error) | ExifRun::Failed(error) => panic!("{error}"),
+    }
+}
+
+#[test]
+fn a_png_without_exif_is_clean_and_truncation_is_rejected() {
+    let mut clean = b"\x89PNG\r\n\x1a\n".to_vec();
+    png_chunk(&mut clean, *b"IHDR", &[0; 13]);
+    png_chunk(&mut clean, *b"IEND", &[]);
+    let parsed = parse(&clean).expect("PNG with no eXIf chunk");
+    assert_eq!(parsed.format, "PNG");
+    assert!(parsed.fields.is_empty() && parsed.gps.is_none());
+    // A chunk that claims more bytes than the file holds is malformed, not a clean absence.
+    let mut broken = exif_png(false);
+    broken.truncate(broken.len() - 30);
+    assert!(parse(&broken).is_err());
+}
+
+#[test]
+fn a_png_exif_chunk_is_found_however_many_chunks_come_first() {
+    // libpng writes 8 KiB IDAT chunks, so a large PNG has thousands of chunks, and an eXIf may
+    // follow them; private chunks may come before it too. The walk is bounded by the file.
+    let mut after_idat = b"\x89PNG\r\n\x1a\n".to_vec();
+    png_chunk(&mut after_idat, *b"IHDR", &[0; 13]);
+    for _ in 0..5000 {
+        png_chunk(&mut after_idat, *b"IDAT", &[0; 8]);
+    }
+    png_chunk(&mut after_idat, *b"eXIf", &exif_tiff());
+    png_chunk(&mut after_idat, *b"IEND", &[]);
+    let gps = parse(&after_idat)
+        .expect("valid PNG")
+        .gps
+        .expect("GPS after 5000 IDATs");
+    assert!((gps.lat - 48.85).abs() < 1e-6);
+}

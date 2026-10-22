@@ -651,10 +651,12 @@ $('rread').onclick=async()=>{
 $('rdownload').onclick=()=>{if(radarLast)save(radarLast,'huntsman-wifi-radar')};
 // Inspect reads a picked file only when asked; a GPS lead is prefilled, never started.
 let inspectLast=null;
+// Every failed attempt, refused here or by the server, says the tables are the previous file's.
+const inspectFailed=why=>{$('istatus').textContent=inspectLast?'Failed; the tables show the PREVIOUS file.':'No file inspected.';fail('ierror',why)};
 $('inspect').onsubmit=async ev=>{
   ev.preventDefault();$('ierror').hidden=true;
   const file=$('ifile').files[0];
-  if(!file||file.size>64<<20){fail('ierror',file?'Over 64 MiB.':'Choose a file.');return}
+  if(!file||file.size>64<<20){inspectFailed(file?'Over 64 MiB.':'Choose a file.');return}
   const run=$('irun');run.disabled=true;$('istatus').textContent='Reading…';
   try{
     const r=await api('/api/inspect?name='+enc(file.name),{method:'POST',body:file}),fields=[],es=r.entities||[];
@@ -663,7 +665,7 @@ $('inspect').onsubmit=async ev=>{
     for(const e of es)for(const x of e.evidence||[])for(const kv of Object.entries(x.attributes||{}))fields.push([x.provenance?.source,...kv]);
     fill('ifields',fields,f=>f);
     $('istatus').textContent=(r.outcomes||[]).map(o=>o.module+' '+o.kind+(o.detail?': '+o.detail:'')).join(' · ');
-  }catch(e){$('istatus').textContent=inspectLast?'Failed; the tables show the PREVIOUS file.':'No file inspected.';fail('ierror',e.message)}
+  }catch(e){inspectFailed(e.message)}
   finally{run.disabled=false}
 };
 // Scans: Spiderfoot's list, with a selection the toolbar acts on.

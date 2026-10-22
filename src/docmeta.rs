@@ -34,6 +34,7 @@ use crate::entity::{
     Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity, scan_id,
 };
 use crate::error::Error;
+use crate::exif::{PNG_SIGNATURE, png_chunks};
 use crate::lookup_report;
 use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
@@ -100,12 +101,6 @@ const XMP_CONTAINERS: [(&str, &str); 3] = [
 
 /// A list item's open-tag prefix and close tag.
 const XMP_ITEM: (&str, &str) = ("<rdf:li", "</rdf:li>");
-
-/// The PNG file signature: the eight bytes every PNG begins with.
-const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
-
-/// Most PNG chunks walked before giving up, so a file claiming countless chunks is bounded.
-const MAX_PNG_CHUNKS: usize = 4096;
 
 /// The PDF `/Info` string keys read, in report order.
 const PDF_INFO_KEYS: &[&str] = &[
@@ -1170,38 +1165,16 @@ fn decode_pdf_text(bytes: &[u8]) -> String {
 /// `iTXt` that merely carries the XMP packet (`XML:com.adobe.xmp`) is skipped, since [`extract_xmp`]
 /// already reads it. A chunk that runs past the end of the file stops the walk. **Pure.**
 fn extract_png_text(data: &[u8], fields: &mut Fields) {
-    let mut at = PNG_SIGNATURE.len();
-    let mut chunks = 0usize;
-    while chunks < MAX_PNG_CHUNKS && fields.list.len() < MAX_FIELDS {
-        chunks += 1;
-        let Some(length) = data.get(at..at + 4).map(read_u32_be) else {
+    for (kind, body) in png_chunks(data).map_while(Result::ok) {
+        if fields.list.len() >= MAX_FIELDS {
             break;
-        };
-        let Some(kind) = data.get(at + 4..at + 8) else {
-            break;
-        };
-        let body_start = at + 8;
-        let Some(body) = body_start
-            .checked_add(length)
-            .and_then(|end| data.get(body_start..end))
-        else {
-            break;
-        };
+        }
         match kind {
-            b"IEND" => break,
             b"tEXt" => png_text_chunk(body, fields),
             b"iTXt" => png_itxt_chunk(body, fields),
             b"tIME" => png_time_chunk(body, fields),
             _ => {}
         }
-        // length(4) + type(4) + body(length) + crc(4).
-        let Some(next) = body_start
-            .checked_add(length)
-            .and_then(|e| e.checked_add(4))
-        else {
-            break;
-        };
-        at = next;
     }
 }
 
@@ -1322,11 +1295,6 @@ fn find_byte(haystack: &[u8], byte: u8) -> Option<usize> {
         .iter()
         .position(|&b| b == byte)
         .map(|at| offset + at)
-}
-
-/// A big-endian `u32` read from a four-byte slice, as a `usize`. **Pure.**
-fn read_u32_be(bytes: &[u8]) -> usize {
-    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize
 }
 
 #[cfg(test)]
