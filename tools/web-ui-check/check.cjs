@@ -295,6 +295,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check(`${scheme}: Inspect reads the picked file's embedded metadata once`,
         inspectCalls === 1 && await page.isHidden('#ierror') &&
         fieldsText.includes('Fixture Camera 2') && fieldsText.includes('Fixture Editor') &&
+        fieldsText.includes('file_sha256') && fieldsText.includes('file_size_bytes') &&
         entitiesText.includes('holiday.jpg') && entitiesText.includes('48.850000,2.333333'),
         { inspectCalls, fieldsText, entitiesText, error: await page.textContent('#ierror') });
       await audit(page, `${scheme} inspect result`);
