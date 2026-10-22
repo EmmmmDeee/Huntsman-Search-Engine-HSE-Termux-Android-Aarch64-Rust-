@@ -2061,12 +2061,25 @@ mod tests {
         // Each module names the lookups that ask it, as New Scan's By Module list shows.
         let modules = settings["modules"].as_array().unwrap();
         assert!(modules.iter().all(|module| module["lookups"].is_array()));
-        assert!(modules.iter().all(|module| module["attack_techniques"].is_array()));
-        let dns = modules.iter().find(|module| module["name"] == "ripestat").unwrap();
-        assert!(dns["attack_techniques"].as_array().unwrap().iter().any(|id| {
-            id.as_str()
-                .is_some_and(|name| crate::attack::technique(name).is_some())
-        }));
+        assert!(
+            modules
+                .iter()
+                .all(|module| module["attack_techniques"].is_array())
+        );
+        let dns = modules
+            .iter()
+            .find(|module| module["name"] == "ripestat")
+            .unwrap();
+        assert!(
+            dns["attack_techniques"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|id| {
+                    id.as_str()
+                        .is_some_and(|name| crate::attack::technique(name).is_some())
+                })
+        );
         let ripestat = modules.iter().find(|module| module["name"] == "ripestat");
         assert_eq!(
             ripestat.unwrap()["lookups"],
