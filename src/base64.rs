@@ -1,10 +1,13 @@
-//! Base64 (RFC 4648), the crate's one codec: the standard alphabet with padding, as the web
-//! server's Content-Security-Policy hashes use it and as certificate transparency APIs carry a
-//! certificate's DER, and the URL-safe alphabet without padding, as the HIBP OAuth PKCE values
-//! (RFC 7636) use it.
+//! Base64 and Base16 (RFC 4648), the crate's one codec: the standard alphabet with padding, as the
+//! web server's Content-Security-Policy hashes use it and as certificate transparency APIs carry a
+//! certificate's DER, the URL-safe alphabet without padding, as the HIBP OAuth PKCE values
+//! (RFC 7636) use it, and Base16 in either case, as digests, certificate serial numbers, unknown
+//! DNS record data and the HIBP Pwned Passwords range hashes are written.
 
 const STANDARD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const URL_SAFE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+const BASE16_LOWER: &[u8; 16] = b"0123456789abcdef";
+const BASE16_UPPER: &[u8; 16] = b"0123456789ABCDEF";
 
 /// The standard alphabet, padded with `=` to a multiple of four characters (RFC 4648 section 4).
 #[must_use]
@@ -72,6 +75,28 @@ pub fn decode_standard(text: &str) -> Option<Vec<u8>> {
     Some(output)
 }
 
+/// Base16 (RFC 4648 section 8) in lower case, two digits a byte. **Pure.**
+#[must_use]
+pub fn base16_lower(bytes: &[u8]) -> String {
+    base16(bytes, BASE16_LOWER)
+}
+
+/// Base16 in upper case, RFC 4648's own alphabet. **Pure.**
+#[must_use]
+pub fn base16_upper(bytes: &[u8]) -> String {
+    base16(bytes, BASE16_UPPER)
+}
+
+/// The text is sized exactly up front, so filling it never reallocates.
+fn base16(bytes: &[u8], table: &[u8; 16]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(table[usize::from(byte >> 4)]));
+        out.push(char::from(table[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
 fn decode_digit(byte: u8) -> Option<u8> {
     match byte {
         b'A'..=b'Z' => Some(byte - b'A'),
@@ -107,6 +132,8 @@ fn encode(bytes: &[u8], table: &[u8; 64], pad: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
 
     #[test]
@@ -159,6 +186,23 @@ mod tests {
         assert_eq!(decode_standard("Zm8="), Some(b"fo".to_vec()));
         assert_eq!(decode_standard("Zm8"), Some(b"fo".to_vec()));
         assert_eq!(decode_standard(" Zm9v\r\nYmFy\t"), Some(b"foobar".to_vec()));
+    }
+
+    #[test]
+    fn base16_agrees_with_the_formatter_in_both_cases() {
+        let every: Vec<u8> = (0_u8..=u8::MAX).collect();
+        let cases: [&[u8]; 4] = [&[], &[0], &[0x0f, 0xf0], &every];
+        for bytes in cases {
+            let (mut lower, mut upper) = (String::new(), String::new());
+            for byte in bytes {
+                let _ = write!(lower, "{byte:02x}");
+                let _ = write!(upper, "{byte:02X}");
+            }
+            assert_eq!(base16_lower(bytes), lower);
+            assert_eq!(base16_upper(bytes), upper);
+            assert_eq!(base16_lower(bytes).capacity(), bytes.len() * 2);
+        }
+        assert_eq!(base16_upper(b"\x01\xab"), "01AB");
     }
 
     #[test]

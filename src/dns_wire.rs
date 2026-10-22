@@ -4,8 +4,9 @@
 //! and so does plain DNS over UDP. Names in an answer may be compressed; a pointer loop, a label
 //! past the end of the message or a record cut short is an error, never a panic.
 
-use std::fmt::Write as _;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+use crate::base64::base16_lower;
 
 /// The largest UDP answer a query offers to take (EDNS0), so a long record set is not truncated.
 pub const UDP_PAYLOAD: u16 = 4096;
@@ -205,10 +206,7 @@ impl Data {
                 target,
             } => format!("{priority} {weight} {port} {target}"),
             Self::Caa { flags, tag, value } => format!("{flags} {tag} \"{value}\""),
-            Self::Other(bytes) => bytes.iter().fold(String::from("\\# "), |mut out, byte| {
-                let _ = write!(out, "{byte:02x}");
-                out
-            }),
+            Self::Other(bytes) => format!("\\# {}", base16_lower(bytes)),
         }
     }
 }

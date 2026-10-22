@@ -11,6 +11,8 @@
 use std::fmt::Write as _;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+use crate::base64::base16_lower;
+
 const BOOLEAN: u8 = 0x01;
 const INTEGER: u8 = 0x02;
 const BIT_STRING: u8 = 0x03;
@@ -226,10 +228,7 @@ fn serial_hex(octets: &[u8]) -> String {
         [0, rest @ ..] if !rest.is_empty() => rest,
         all => all,
     };
-    octets.iter().fold(String::new(), |mut hex, octet| {
-        let _ = write!(hex, "{octet:02x}");
-        hex
-    })
+    base16_lower(octets)
 }
 
 /// A name's attributes: each relative distinguished name's type and value, in order.
@@ -268,15 +267,8 @@ fn string_value(tag: u8, value: &[u8]) -> String {
                     .unwrap_or(char::REPLACEMENT_CHARACTER)
             })
             .collect(),
-        _ => format!("#{}", serial_hex_all(value)),
+        _ => format!("#{}", base16_lower(value)),
     }
-}
-
-fn serial_hex_all(octets: &[u8]) -> String {
-    octets.iter().fold(String::new(), |mut hex, octet| {
-        let _ = write!(hex, "{octet:02x}");
-        hex
-    })
 }
 
 /// An OBJECT IDENTIFIER in dotted form. **Pure.**

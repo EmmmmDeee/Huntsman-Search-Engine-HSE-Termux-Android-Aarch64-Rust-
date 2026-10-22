@@ -3,7 +3,7 @@
 //! This is not a password primitive. It exists only for protocols such as
 //! Gravatar whose public lookup key is defined as MD5(lowercase(trim(email))).
 
-use std::fmt::Write as _;
+use crate::base64::base16_lower;
 
 const S: [u32; 64] = [
     7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
@@ -139,11 +139,7 @@ pub fn digest(input: &[u8]) -> [u8; 16] {
 /// Lowercase hexadecimal MD5.
 #[must_use]
 pub fn hex(input: &[u8]) -> String {
-    let mut out = String::with_capacity(32);
-    for byte in digest(input) {
-        write!(&mut out, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    out
+    base16_lower(&digest(input))
 }
 
 /// Gravatar-compatible identifier: MD5 of trimmed, ASCII-lowercased email.
