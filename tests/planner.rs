@@ -145,7 +145,6 @@ fn planner_output_is_stable_across_repeated_runs() {
     assert_eq!(left, right);
 }
 
-
 struct AlternateSearch;
 impl Module for AlternateSearch {
     fn name(&self) -> &'static str {
@@ -183,8 +182,7 @@ fn attack_reconnaissance_diversity_changes_real_admission_only_with_equal_roi() 
     // Both free modules have the same cost, output kind, reliability and utility.
     // The alphabetically earlier search used to win the tie. Bounded dispatch now
     // chooses the DNS source with distinct reconnaissance opportunities instead.
-    let modules: Vec<Arc<dyn Module>> =
-        vec![Arc::new(AlternateSearch), Arc::new(PassiveDns)];
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(AlternateSearch), Arc::new(PassiveDns)];
     let mut limits = PipelineLimits::default();
     limits.max_dispatches = 1;
     let plan = build_dispatch_plan(&modules, &[seed()], &limits, &PlannerPolicy::default());
@@ -200,8 +198,7 @@ fn attack_reconnaissance_diversity_changes_real_admission_only_with_equal_roi() 
 
 #[test]
 fn attack_reconnaissance_selection_still_obeys_credential_quota_and_prior_dispatch_gates() {
-    let modules: Vec<Arc<dyn Module>> =
-        vec![Arc::new(AlternateSearch), Arc::new(PassiveDns)];
+    let modules: Vec<Arc<dyn Module>> = vec![Arc::new(AlternateSearch), Arc::new(PassiveDns)];
     let mut limits = PipelineLimits::default();
     limits.max_dispatches = 1;
     let mut policy = PlannerPolicy::default();
@@ -215,11 +212,9 @@ fn attack_reconnaissance_selection_still_obeys_credential_quota_and_prior_dispat
         item.provider_id == "z_dns" && item.reason == DispatchExclusion::QuotaExhausted
     }));
     policy.quota_remaining.remove("z_dns");
-    policy.prior_dispatches.insert(DispatchKey::new(
-        "z_dns",
-        TargetKind::Domain,
-        "example.com",
-    ));
+    policy
+        .prior_dispatches
+        .insert(DispatchKey::new("z_dns", TargetKind::Domain, "example.com"));
     let plan = build_dispatch_plan(&modules, &[seed()], &limits, &policy);
     assert!(matches!(
         plan.selected[0].action,
