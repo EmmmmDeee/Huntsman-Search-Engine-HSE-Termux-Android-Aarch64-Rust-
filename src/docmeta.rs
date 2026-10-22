@@ -636,14 +636,16 @@ fn parse_xmp_coord(value: &str, negative: char) -> Option<f64> {
 /// compressed object stream (not reachable without inflate). An encrypted PDF's `/Info` strings are
 /// ciphertext, so they are not decoded: `pdf:Encrypted` says why they are absent. **Pure.**
 fn extract_pdf_info(data: &[u8], fields: &mut Fields) {
-    if pdf_is_encrypted(data) {
+    // Every lookup below reads the same trailers, so the file is scanned for them once.
+    let trailers: Vec<&[u8]> = pdf_trailer_dictionaries(data).collect();
+    if pdf_is_encrypted(&trailers) {
         fields.push(
             "pdf:Encrypted",
             "true; /Info strings are encrypted and not decoded",
         );
         return;
     }
-    let revisions = pdf_info_revisions(data);
+    let revisions = pdf_info_revisions(data, &trailers);
     let Some((current, prior)) = revisions.split_last() else {
         return;
     };
@@ -671,8 +673,8 @@ fn extract_pdf_info(data: &[u8], fields: &mut Fields) {
 }
 
 /// Whether a trailer names an `/Encrypt` dictionary (`/Encrypt N G R` or an inline `<<`). **Pure.**
-fn pdf_is_encrypted(data: &[u8]) -> bool {
-    pdf_trailer_dictionaries(data).any(|trailer| {
+fn pdf_is_encrypted(trailers: &[&[u8]]) -> bool {
+    trailers.iter().any(|trailer| {
         pdf_name_values(trailer, b"/Encrypt").any(|at| {
             let at = skip_pdf_whitespace(trailer, at);
             trailer.get(at) == Some(&b'<') || pdf_reference(trailer, at).is_some()
@@ -746,9 +748,9 @@ fn pdf_xref_stream_dictionary(data: &[u8], offset: usize) -> Option<&[u8]> {
 /// current one is the newest definition of the object the last trailer names (an incremental
 /// update's newer copy wins); empty when no trailer names one or its object is not stored
 /// uncompressed. **Pure.**
-fn pdf_info_revisions(data: &[u8]) -> Vec<&[u8]> {
+fn pdf_info_revisions<'a>(data: &'a [u8], trailers: &[&[u8]]) -> Vec<&'a [u8]> {
     let mut references: Vec<(u32, u16)> = Vec::new();
-    for trailer in pdf_trailer_dictionaries(data) {
+    for trailer in trailers {
         for reference in pdf_name_values(trailer, b"/Info")
             .filter_map(|at| pdf_reference(trailer, skip_pdf_whitespace(trailer, at)))
         {
@@ -1162,12 +1164,46 @@ fn latin1(bytes: &[u8]) -> String {
 
 // ── bytes ──────────────────────────────────────────────────────────────────────────────────
 
-/// The first index of `needle` in `haystack`, or `None`. **Pure.**
+/// The first index of `needle` in `haystack`, or `None`. A file is scanned many times over (up to
+/// [`MAX_FILE_BYTES`] for each keyword), so candidates are found with [`find_byte`], eight bytes at
+/// a time, and only they are compared whole. **Pure.**
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
+    let (&first, rest) = needle.split_first()?;
+    let last_start = haystack.len().checked_sub(needle.len())?;
+    let mut from = 0usize;
+    while from <= last_start {
+        let at = from + find_byte(&haystack[from..=last_start], first)?;
+        if haystack[at + 1..at + needle.len()] == *rest {
+            return Some(at);
+        }
+        from = at + 1;
     }
-    haystack.windows(needle.len()).position(|w| w == needle)
+    None
+}
+
+/// The first index of `byte` in `haystack`, testing a 64-bit word at a time for a byte equal to it
+/// (the word XOR `byte` repeated has a zero byte exactly where one matches). **Pure.**
+fn find_byte(haystack: &[u8], byte: u8) -> Option<usize> {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGHS: u64 = 0x8080_8080_8080_8080;
+    let repeated = ONES * u64::from(byte);
+    let mut words = haystack.chunks_exact(8);
+    let mut offset = 0usize;
+    for word in &mut words {
+        let bytes = [
+            word[0], word[1], word[2], word[3], word[4], word[5], word[6], word[7],
+        ];
+        let diff = u64::from_le_bytes(bytes) ^ repeated;
+        if diff.wrapping_sub(ONES) & !diff & HIGHS != 0 {
+            return word.iter().position(|&b| b == byte).map(|at| offset + at);
+        }
+        offset += 8;
+    }
+    words
+        .remainder()
+        .iter()
+        .position(|&b| b == byte)
+        .map(|at| offset + at)
 }
 
 /// A big-endian `u32` read from a four-byte slice, as a `usize`. **Pure.**

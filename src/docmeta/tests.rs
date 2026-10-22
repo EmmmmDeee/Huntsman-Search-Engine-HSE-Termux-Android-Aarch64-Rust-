@@ -690,3 +690,43 @@ fn invalid_xmp_gps_never_becomes_a_coordinates_entity() {
         DocmetaRun::Network(reason) | DocmetaRun::Failed(reason) => panic!("{reason}"),
     }
 }
+
+#[test]
+fn the_word_at_a_time_search_finds_what_a_plain_scan_finds() {
+    let naive = |haystack: &[u8], needle: &[u8]| {
+        if needle.is_empty() || haystack.len() < needle.len() {
+            return None;
+        }
+        haystack.windows(needle.len()).position(|w| w == needle)
+    };
+    // A small alphabet makes partial matches, word-boundary straddles and repeats common.
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for _ in 0..2000 {
+        let len = usize::try_from(next() % 70).unwrap();
+        let haystack: Vec<u8> = (0..len)
+            .map(|_| b"ab<\xff"[usize::try_from(next() % 4).unwrap()])
+            .collect();
+        let needle_len = usize::try_from(next() % 5).unwrap();
+        let needle: Vec<u8> = (0..needle_len)
+            .map(|_| b"ab<\xff"[usize::try_from(next() % 4).unwrap()])
+            .collect();
+        assert_eq!(
+            super::find_bytes(&haystack, &needle),
+            naive(&haystack, &needle),
+            "{haystack:?} {needle:?}"
+        );
+    }
+    assert_eq!(super::find_bytes(b"", b""), None);
+    assert_eq!(super::find_bytes(b"abc", b""), None);
+    assert_eq!(super::find_bytes(b"ab", b"abc"), None);
+    assert_eq!(
+        super::find_bytes(b"0123456789trailer", b"trailer"),
+        Some(10)
+    );
+}
