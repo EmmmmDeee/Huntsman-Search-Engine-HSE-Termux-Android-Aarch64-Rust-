@@ -17,22 +17,36 @@ pub use error::HibpError;
 pub use key::{ApiKey, KeyLoader};
 
 use crate::http::{Request, Response, Transport};
+use crate::source_outcome::SourceOutcomeKind;
 
+/// One request through [`crate::fetch::fetch`], redirects off. No response is
+/// [`HibpError::Transport`] carrying the fetch's cause, and a 2xx challenge page is
+/// [`HibpError::NotAnAnswer`]; any other status is the caller's to map, so a 404 "not found"
+/// still reaches it. Nothing the transport said is kept, since it can name the request.
 fn send(http: &dyn Transport, request: Request) -> Result<Response, HibpError> {
-    let result = crate::fetch::fetch(
+    let transport = |kind| HibpError::Transport {
+        message: "request failed".into(),
+        kind,
+    };
+    let fetched = crate::fetch::fetch(
         http,
         request,
         None,
         &crate::fetch::FetchOptions::no_redirects(),
         "hibp",
-        0,
+        crate::clock::unix_now(),
     )
-    .map_err(|_| HibpError::Transport("request failed".into()))?;
-    let response = result
-        .response
-        .ok_or_else(|| HibpError::Transport("request failed".into()))?;
+    .map_err(|_| transport(SourceOutcomeKind::ConnectFailure))?;
+    let Some(response) = fetched.response else {
+        return Err(transport(fetched.outcome.kind));
+    };
     if response.truncated {
         return Err(HibpError::Decode("response exceeds body limit".into()));
+    }
+    if (200..300).contains(&response.status)
+        && fetched.outcome.kind != SourceOutcomeKind::Inconclusive
+    {
+        return Err(HibpError::NotAnAnswer(fetched.outcome.kind));
     }
     Ok(response)
 }

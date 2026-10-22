@@ -103,7 +103,8 @@ impl From<HibpError> for Failure {
             HibpError::RateLimited { .. }
             | HibpError::Server { .. }
             | HibpError::UnexpectedStatus { .. }
-            | HibpError::Transport(_)
+            | HibpError::Transport { .. }
+            | HibpError::NotAnAnswer(_)
             | HibpError::Decode(_)
             | HibpError::OAuth(_) => EX_UNAVAILABLE,
         };

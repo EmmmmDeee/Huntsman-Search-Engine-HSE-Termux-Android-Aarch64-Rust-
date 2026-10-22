@@ -10,7 +10,9 @@
 //! | [`DehashedClient::search`] | `POST /v2/search` | `Dehashed-Api-Key` header |
 //!
 //! Errors never carry the queried identifier or any response body text, so a
-//! failure cannot write personal data into a log line.
+//! failure cannot write personal data into a log line. Each error names the
+//! outcome it records ([`DehashedError::outcome`]), one mapping for the
+//! `exposure` leg and the collector's receipt.
 
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -21,11 +23,13 @@ use thiserror::Error;
 
 use super::query::{Purpose, Selector};
 use super::types::{Entry, SearchResponse};
+use crate::clock;
 use crate::fetch::{FetchOptions, fetch};
 use crate::hibp::rate_limit::{DEFAULT_REQUESTS_PER_MINUTE, RateLimiter};
 use crate::http::{Request, Response, Transport};
 use crate::keys::{Keys, Secret};
 use crate::sha256::{hex32, sha256};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_http_status};
 
 /// The only origin the key is ever sent to.
 pub const DEHASHED_API_BASE: &str = "https://api.dehashed.com/v2";
@@ -68,14 +72,73 @@ pub enum DehashedError {
     Server(u16),
     #[error("dehashed: unexpected HTTP {0}")]
     Unexpected(u16),
+    /// No response. The kind is the cause the fetch observed (DNS, connect, TLS, a timeout), or
+    /// `Inconclusive` for a request refused before it was sent.
     #[error("dehashed: transport error: request failed")]
-    Transport,
+    Transport(SourceOutcomeKind),
+    /// A 200 that is not an API answer: a challenge page served in its place.
+    #[error("dehashed: response is not an API answer ({0:?})")]
+    NotAnAnswer(SourceOutcomeKind),
     #[error("dehashed: could not decode response: {0}")]
     Decode(String),
 }
 
 fn describe_retry(retry_after: Option<Duration>) -> String {
     retry_after.map_or_else(|| "unknown".into(), |d| format!("{}s", d.as_secs()))
+}
+
+impl DehashedError {
+    /// The outcome a failed search records.
+    #[must_use]
+    pub const fn outcome_kind(&self) -> SourceOutcomeKind {
+        match self {
+            Self::MissingKey => SourceOutcomeKind::NotConfigured,
+            Self::Unauthorized => SourceOutcomeKind::AuthRejected,
+            Self::Forbidden => SourceOutcomeKind::EntitlementDenied,
+            Self::RateLimited { .. } => SourceOutcomeKind::RateLimited,
+            Self::BadRequest => SourceOutcomeKind::Upstream4xx,
+            Self::Server(_) => SourceOutcomeKind::Upstream5xx,
+            Self::Unexpected(status) => classify_http_status(*status),
+            Self::Transport(kind) | Self::NotAnAnswer(kind) => *kind,
+            Self::Decode(_) => SourceOutcomeKind::SchemaDrift,
+            Self::Query(_)
+            | Self::KeyFilePermissions
+            | Self::InvalidSize(_)
+            | Self::InvalidPage(_) => SourceOutcomeKind::Inconclusive,
+        }
+    }
+
+    /// The HTTP status behind the failure, when there was one.
+    #[must_use]
+    pub const fn http_status(&self) -> Option<u16> {
+        match self {
+            Self::Unauthorized => Some(401),
+            Self::Forbidden => Some(403),
+            Self::BadRequest => Some(400),
+            Self::RateLimited { .. } => Some(429),
+            Self::Server(status) | Self::Unexpected(status) => Some(*status),
+            _ => None,
+        }
+    }
+
+    /// The failed outcome `source` records, with the provider's pause when it asked for one. The
+    /// detail is the error's message, which never names the identifier or quotes a body.
+    #[must_use]
+    pub fn outcome(&self, source: &str, now_unix: u64) -> SourceExecutionOutcome {
+        let outcome = SourceExecutionOutcome::failed(
+            source,
+            now_unix,
+            self.outcome_kind(),
+            self.http_status(),
+            self.to_string(),
+        );
+        match self {
+            Self::RateLimited {
+                retry_after: Some(retry_after),
+            } => outcome.with_retry_after(retry_after.as_secs()),
+            _ => outcome,
+        }
+    }
 }
 
 /// One search. `purpose` is required by construction: there is no way to
@@ -220,9 +283,9 @@ impl DehashedClient {
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .header(API_KEY_HEADER, self.key.expose());
-        let response = send(self.http.as_ref(), http_request)?;
+        let (response, fetched) = send(self.http.as_ref(), http_request)?;
         let response_sha256 = hex32(&sha256(&response.body));
-        let parsed = decode(&response)?;
+        let parsed = decode(&response, &fetched)?;
 
         Ok(SearchOutcome {
             query,
@@ -236,25 +299,42 @@ impl DehashedClient {
     }
 }
 
-fn send(http: &dyn Transport, request: Request) -> Result<Response, DehashedError> {
-    let result = fetch(
+/// One request through [`fetch`], redirects off, with the response and what the fetch made of
+/// it. No response is [`DehashedError::Transport`] carrying the fetch's cause; nothing the
+/// transport said is kept, since it can name the request.
+fn send(
+    http: &dyn Transport,
+    request: Request,
+) -> Result<(Response, SourceExecutionOutcome), DehashedError> {
+    let fetched = fetch(
         http,
         request,
         None,
         &FetchOptions::no_redirects(),
         "dehashed",
-        0,
+        clock::unix_now(),
     )
-    .map_err(|_| DehashedError::Transport)?;
-    let response = result.response.ok_or(DehashedError::Transport)?;
+    .map_err(|_| DehashedError::Transport(SourceOutcomeKind::Inconclusive))?;
+    let Some(response) = fetched.response else {
+        return Err(DehashedError::Transport(fetched.outcome.kind));
+    };
     if response.truncated {
         return Err(DehashedError::Decode("response exceeds body limit".into()));
     }
-    Ok(response)
+    Ok((response, fetched.outcome))
 }
 
-fn decode(response: &Response) -> Result<SearchResponse, DehashedError> {
+/// The search `response` answers. The status decides first; a 200 is decoded only when the
+/// fetch did not read it as a challenge page, and a 429 carries the pause the fetch read from
+/// its `Retry-After` (delta-seconds or an HTTP-date, capped at an hour).
+fn decode(
+    response: &Response,
+    fetched: &SourceExecutionOutcome,
+) -> Result<SearchResponse, DehashedError> {
     match response.status {
+        200 if fetched.kind != SourceOutcomeKind::Inconclusive => {
+            Err(DehashedError::NotAnAnswer(fetched.kind))
+        }
         200 => serde_json::from_slice(&response.body).map_err(|_| {
             // The body is deliberately not echoed: it holds personal data.
             DehashedError::Decode("unexpected response shape".into())
@@ -263,10 +343,7 @@ fn decode(response: &Response) -> Result<SearchResponse, DehashedError> {
         401 => Err(DehashedError::Unauthorized),
         403 => Err(DehashedError::Forbidden),
         429 => Err(DehashedError::RateLimited {
-            retry_after: response
-                .header_value("retry-after")
-                .and_then(|v| v.trim().parse::<u64>().ok())
-                .map(Duration::from_secs),
+            retry_after: fetched.retry_after_secs.map(Duration::from_secs),
         }),
         500..=599 => Err(DehashedError::Server(response.status)),
         other => Err(DehashedError::Unexpected(other)),

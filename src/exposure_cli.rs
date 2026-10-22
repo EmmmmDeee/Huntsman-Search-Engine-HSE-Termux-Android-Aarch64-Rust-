@@ -47,7 +47,7 @@ use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::module_selection::Selection;
 use crate::oathnet::{self, OathnetError};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_http_status};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::stolen_tax::{self, StolenTaxError};
 use crate::tags;
 use crate::textnorm::{decode_html_entities, escape_controls, is_escaped};
@@ -803,16 +803,28 @@ fn hibp_leg(
             outcome
         }
         Err(err) => {
-            if let HibpError::Transport(msg) = &err {
-                network.get_or_insert_with(|| msg.clone());
+            if let HibpError::Transport { message, .. } = &err {
+                network.get_or_insert_with(|| message.clone());
             }
-            SourceExecutionOutcome::failed(
+            let outcome = SourceExecutionOutcome::failed(
                 SOURCE,
                 now_unix,
                 outcome_kind(&err),
-                None,
+                err.http_status(),
                 err.to_string(),
-            )
+            );
+            match err {
+                // HIBP's client waits on the pause as sent; the outcome records it within the
+                // bound every other leg's fetch applies.
+                HibpError::RateLimited {
+                    retry_after: Some(retry_after),
+                } => outcome.with_retry_after(
+                    retry_after
+                        .as_secs()
+                        .min(crate::fetch::MAX_RETRY_AFTER_SECS),
+                ),
+                _ => outcome,
+            }
         }
     }
 }
@@ -1014,22 +1026,10 @@ fn dehashed_leg(
             }
         }
         Err(err) => {
-            if matches!(err, DehashedError::Transport) {
+            if matches!(err, DehashedError::Transport(_)) {
                 network.get_or_insert_with(|| err.to_string());
             }
-            let outcome = SourceExecutionOutcome::failed(
-                DEHASHED_SOURCE,
-                now_unix,
-                dehashed_outcome_kind(&err),
-                dehashed_http_status(&err),
-                err.to_string(),
-            );
-            match err {
-                DehashedError::RateLimited {
-                    retry_after: Some(retry_after),
-                } => outcome.with_retry_after(retry_after.as_secs()),
-                _ => outcome,
-            }
+            err.outcome(DEHASHED_SOURCE, now_unix)
         }
     }
 }
@@ -1076,38 +1076,8 @@ fn dehashed_entities(email: &str, scan_id: &str, search: &ExposureSearch) -> Vec
     entities
 }
 
-/// The outcome a failed `DeHashed` lookup records. Mirrors the standalone collector's mapping so
-/// one provider error means the same thing on both paths.
-fn dehashed_outcome_kind(err: &DehashedError) -> SourceOutcomeKind {
-    match err {
-        DehashedError::Unauthorized => SourceOutcomeKind::AuthRejected,
-        DehashedError::Forbidden => SourceOutcomeKind::EntitlementDenied,
-        DehashedError::RateLimited { .. } => SourceOutcomeKind::RateLimited,
-        DehashedError::BadRequest => SourceOutcomeKind::Upstream4xx,
-        DehashedError::Server(_) => SourceOutcomeKind::Upstream5xx,
-        DehashedError::Unexpected(status) => classify_http_status(*status),
-        DehashedError::Decode(_) => SourceOutcomeKind::SchemaDrift,
-        DehashedError::Transport
-        | DehashedError::Query(_)
-        | DehashedError::MissingKey
-        | DehashedError::KeyFilePermissions
-        | DehashedError::InvalidSize(_)
-        | DehashedError::InvalidPage(_) => SourceOutcomeKind::Inconclusive,
-    }
-}
-
-/// The HTTP status behind a `DeHashed` failure, when there was one.
-fn dehashed_http_status(err: &DehashedError) -> Option<u16> {
-    match err {
-        DehashedError::Unauthorized => Some(401),
-        DehashedError::Forbidden => Some(403),
-        DehashedError::BadRequest => Some(400),
-        DehashedError::RateLimited { .. } => Some(429),
-        DehashedError::Server(status) | DehashedError::Unexpected(status) => Some(*status),
-        _ => None,
-    }
-}
-
+/// The outcome a failed HIBP lookup records. A failure without a response keeps the cause the
+/// fetch observed, as the `OathNet` and `DeHashed` legs do.
 fn outcome_kind(err: &HibpError) -> SourceOutcomeKind {
     match err {
         HibpError::MissingKey => SourceOutcomeKind::NotConfigured,
@@ -1119,7 +1089,7 @@ fn outcome_kind(err: &HibpError) -> SourceOutcomeKind {
             SourceOutcomeKind::Upstream4xx
         }
         HibpError::Decode(_) => SourceOutcomeKind::SchemaDrift,
-        HibpError::Transport(_) => SourceOutcomeKind::ConnectFailure,
+        HibpError::Transport { kind, .. } | HibpError::NotAnAnswer(kind) => *kind,
         HibpError::InvalidInput(_) | HibpError::OAuth(_) => SourceOutcomeKind::Inconclusive,
     }
 }
@@ -2811,6 +2781,233 @@ mod tests {
             outcome_kind(&HibpError::Decode("x".into())),
             SourceOutcomeKind::SchemaDrift
         );
+        let no_response = HibpError::Transport {
+            message: "request failed".into(),
+            kind: SourceOutcomeKind::TlsFailure,
+        };
+        assert_eq!(outcome_kind(&no_response), SourceOutcomeKind::TlsFailure);
+        assert_eq!(
+            outcome_kind(&HibpError::NotAnAnswer(SourceOutcomeKind::BotWaf)),
+            SourceOutcomeKind::BotWaf
+        );
+        let statuses = [
+            (HibpError::BadRequest("x".into()), Some(400)),
+            (HibpError::Unauthorized("x".into()), Some(401)),
+            (HibpError::Forbidden("x".into()), Some(403)),
+            (HibpError::RateLimited { retry_after: None }, Some(429)),
+            (
+                HibpError::Server {
+                    status: 503,
+                    body: String::new(),
+                },
+                Some(503),
+            ),
+            (
+                HibpError::UnexpectedStatus {
+                    status: 418,
+                    body: String::new(),
+                },
+                Some(418),
+            ),
+            (no_response, None),
+            (HibpError::Decode("x".into()), None),
+            (HibpError::MissingKey, None),
+        ];
+        for (error, status) in statuses {
+            assert_eq!(error.http_status(), status, "{error:?}");
+        }
+    }
+
+    /// Answers every request with one fixed result, so a client can be asked more than once.
+    struct Answers(Result<crate::http::Response, crate::http::TransportFailure>);
+
+    impl Transport for Answers {
+        fn send(
+            &self,
+            _: &crate::http::Request,
+        ) -> Result<crate::http::Response, crate::http::TransportFailure> {
+            self.0.clone()
+        }
+    }
+
+    /// A keyed HIBP client over [`Answers`], with local pacing off.
+    fn hibp_answering(
+        answer: Result<crate::http::Response, crate::http::TransportFailure>,
+    ) -> HibpClient {
+        let Some(key) = crate::hibp::key::ApiKey::new("0123456789abcdef0123456789abcdef") else {
+            panic!("the fixture key is a valid HIBP key");
+        };
+        HibpClient::with_config(
+            std::sync::Arc::new(Answers(answer)),
+            crate::hibp::client::Auth::ApiKey(key),
+            crate::hibp::client::HibpConfig::default(),
+            std::sync::Arc::new(crate::hibp::rate_limit::RateLimiter::per_minute(0)),
+        )
+    }
+
+    /// A `DeHashed` client over [`Answers`], with local pacing off.
+    fn dehashed_answering(
+        answer: Result<crate::http::Response, crate::http::TransportFailure>,
+    ) -> DehashedClient {
+        let secret = crate::keys::Secret::new("dh-test-key-0123456789".to_owned())
+            .unwrap_or_else(|e| panic!("fixture secret: {e}"));
+        DehashedClient::with_limiter(
+            std::sync::Arc::new(Answers(answer)),
+            secret,
+            crate::hibp::rate_limit::RateLimiter::per_minute(0),
+        )
+    }
+
+    /// A response with `status`, `headers` and no body.
+    fn status_only(status: u16, headers: &[(&str, &str)]) -> crate::http::Response {
+        crate::http::Response {
+            status,
+            headers: headers
+                .iter()
+                .map(|(name, value)| ((*name).into(), (*value).into()))
+                .collect(),
+            body: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    /// A Cloudflare interstitial served with 200 in place of the API's answer.
+    const CHALLENGE: &str = "<html><title>Just a moment...</title>\
+        <script src=\"https://challenges.cloudflare.com/x\"></script></html>";
+
+    #[test]
+    fn a_keyed_leg_without_a_response_keeps_the_cause_the_fetch_saw() {
+        for kind in [
+            SourceOutcomeKind::DnsFailure,
+            SourceOutcomeKind::TlsFailure,
+            SourceOutcomeKind::TtfbTimeout,
+        ] {
+            let failure = || {
+                Err(crate::http::TransportFailure {
+                    kind,
+                    detail: "ada@example.com".into(),
+                    blocked: false,
+                })
+            };
+            let mut network = None;
+            let hibp = hibp_leg(
+                &hibp_answering(failure()),
+                "ada@example.com",
+                "scan-1",
+                7,
+                &mut Report::default(),
+                &mut network,
+            );
+            assert_eq!(hibp.kind, kind, "{hibp:?}");
+            assert_eq!(network.as_deref(), Some("request failed"));
+            let mut network = None;
+            let dehashed = dehashed_leg(
+                &dehashed_answering(failure()),
+                "ada@example.com",
+                "scan-1",
+                7,
+                &mut Report::default(),
+                &mut network,
+            );
+            assert_eq!(dehashed.kind, kind, "{dehashed:?}");
+            assert_eq!(
+                network.as_deref(),
+                Some("dehashed: transport error: request failed")
+            );
+        }
+    }
+
+    #[test]
+    fn a_challenge_page_is_a_wall_on_a_keyed_leg_not_a_network_failure() {
+        let page = || Ok(crate::test_support::html_ok(CHALLENGE));
+        let mut network = None;
+        let hibp = hibp_leg(
+            &hibp_answering(page()),
+            "ada@example.com",
+            "scan-1",
+            7,
+            &mut Report::default(),
+            &mut network,
+        );
+        assert_eq!(hibp.kind, SourceOutcomeKind::BotWaf, "{hibp:?}");
+        let dehashed = dehashed_leg(
+            &dehashed_answering(page()),
+            "ada@example.com",
+            "scan-1",
+            7,
+            &mut Report::default(),
+            &mut network,
+        );
+        assert_eq!(dehashed.kind, SourceOutcomeKind::BotWaf, "{dehashed:?}");
+        assert_eq!(
+            network, None,
+            "a page answered, so the network did not fail"
+        );
+    }
+
+    #[test]
+    fn a_hibp_rate_limit_records_its_status_and_pause() {
+        // Longer than the client waits for, so it gives up at once; a pause past the hour every
+        // other leg's fetch allows is recorded at that bound.
+        for (sent, recorded) in [("120", 120), ("999999", 3600)] {
+            let limited = status_only(429, &[("retry-after", sent)]);
+            let outcome = hibp_leg(
+                &hibp_answering(Ok(limited)),
+                "ada@example.com",
+                "scan-1",
+                7,
+                &mut Report::default(),
+                &mut None,
+            );
+            assert_eq!(
+                (outcome.kind, outcome.http_status, outcome.retry_after_secs),
+                (SourceOutcomeKind::RateLimited, Some(429), Some(recorded)),
+                "{sent}: {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dehashed_failure_reads_the_same_on_the_exposure_leg_and_in_the_collector_receipt() {
+        let answers = [
+            Ok(status_only(400, &[])),
+            Ok(status_only(401, &[])),
+            Ok(status_only(403, &[])),
+            Ok(status_only(429, &[("retry-after", "42")])),
+            Ok(status_only(429, &[])),
+            Ok(status_only(503, &[])),
+            Ok(status_only(418, &[])),
+            Ok(status_only(302, &[])),
+            Ok(crate::test_support::html_ok(CHALLENGE)),
+            Ok(crate::test_support::json_ok(r#"{"results": "x"}"#)),
+            Err(crate::http::TransportFailure {
+                kind: SourceOutcomeKind::DnsFailure,
+                detail: "ada@example.com".into(),
+                blocked: false,
+            }),
+        ];
+        let selector = Entity::new(EntityKind::Email, "ada@example.com", 1.0, "scan-1");
+        for answer in answers {
+            let client = dehashed_answering(answer.clone());
+            let leg = dehashed_leg(
+                &client,
+                "ada@example.com",
+                "scan-1",
+                7,
+                &mut Report::default(),
+                &mut None,
+            );
+            let batch = dehashed::collect(
+                &client,
+                &selector,
+                dehashed::Purpose::OwnAccount,
+                &crate::collector::CollectionLimits::default(),
+                7,
+            )
+            .unwrap_or_else(|e| panic!("{answer:?}: {e:?}"));
+            assert!(!leg.kind.is_accepted(), "{answer:?} gave {leg:?}");
+            assert_eq!(leg, batch.receipts[0].outcome, "{answer:?}");
+        }
     }
 
     /// Every leg's first request waits here until all the legs have sent one, or five seconds

@@ -7,10 +7,11 @@ use super::cli;
 use super::client::{
     API_KEY_HEADER, DEHASHED_API_BASE, DehashedClient, DehashedError, SearchRequest,
 };
-use super::query::{Field, Purpose, Selector};
+use super::query::{Field, Purpose, QueryError, Selector};
 use crate::hibp::rate_limit::RateLimiter;
 use crate::http::{Request, Response, Transport, TransportFailure};
 use crate::keys::Secret;
+use crate::source_outcome::SourceOutcomeKind;
 
 const KEY: &str = "test-key-7f3a9c";
 
@@ -199,6 +200,148 @@ fn rate_limit_reports_retry_after_without_retrying() {
 }
 
 #[test]
+fn rate_limit_reads_retry_after_as_the_fetch_does() {
+    // A date already past is no wait at all, so `Some(0)` proves the date was read, not dropped.
+    let cases = [
+        ("Wed, 21 Oct 2015 07:28:00 GMT", Some(0)),
+        ("999999", Some(3600)),
+        ("soon", None),
+    ];
+    for (value, expected) in cases {
+        let fake = Fake::with(429, "", &[("retry-after", value)]);
+        let error = client(&fake)
+            .search(&email_request(Purpose::OwnAccount))
+            .unwrap_err();
+        match error {
+            DehashedError::RateLimited { retry_after } => {
+                assert_eq!(retry_after.map(|d| d.as_secs()), expected, "{value}");
+            }
+            other => panic!("{value}: {other:?}"),
+        }
+    }
+}
+
+/// A Cloudflare interstitial served with 200 in place of the API's answer.
+const CHALLENGE: &str = "<html><title>Just a moment...</title>\
+    <script src=\"https://challenges.cloudflare.com/x\"></script></html>";
+
+#[test]
+fn no_response_keeps_the_cause_and_a_challenge_page_is_not_an_answer() {
+    let fake = Arc::new(Fake {
+        fail: true,
+        ..Fake::default()
+    });
+    let error = client(&fake)
+        .search(&email_request(Purpose::OwnAccount))
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            DehashedError::Transport(SourceOutcomeKind::TtfbTimeout)
+        ),
+        "{error:?}"
+    );
+    let fake = Fake::with(200, CHALLENGE, &[]);
+    let error = client(&fake)
+        .search(&email_request(Purpose::OwnAccount))
+        .unwrap_err();
+    assert!(
+        matches!(error, DehashedError::NotAnAnswer(SourceOutcomeKind::BotWaf)),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn every_error_names_one_outcome() {
+    let pause = Some(std::time::Duration::from_secs(42));
+    let cases = [
+        (
+            DehashedError::Query(QueryError::Invalid("empty")),
+            SourceOutcomeKind::Inconclusive,
+            None,
+        ),
+        (
+            DehashedError::MissingKey,
+            SourceOutcomeKind::NotConfigured,
+            None,
+        ),
+        (
+            DehashedError::KeyFilePermissions,
+            SourceOutcomeKind::Inconclusive,
+            None,
+        ),
+        (
+            DehashedError::InvalidSize(0),
+            SourceOutcomeKind::Inconclusive,
+            None,
+        ),
+        (
+            DehashedError::InvalidPage(0),
+            SourceOutcomeKind::Inconclusive,
+            None,
+        ),
+        (
+            DehashedError::Unauthorized,
+            SourceOutcomeKind::AuthRejected,
+            Some(401),
+        ),
+        (
+            DehashedError::Forbidden,
+            SourceOutcomeKind::EntitlementDenied,
+            Some(403),
+        ),
+        (
+            DehashedError::BadRequest,
+            SourceOutcomeKind::Upstream4xx,
+            Some(400),
+        ),
+        (
+            DehashedError::RateLimited { retry_after: pause },
+            SourceOutcomeKind::RateLimited,
+            Some(429),
+        ),
+        (
+            DehashedError::Server(503),
+            SourceOutcomeKind::Upstream5xx,
+            Some(503),
+        ),
+        (
+            DehashedError::Unexpected(302),
+            SourceOutcomeKind::RedirectChanged,
+            Some(302),
+        ),
+        (
+            DehashedError::Transport(SourceOutcomeKind::DnsFailure),
+            SourceOutcomeKind::DnsFailure,
+            None,
+        ),
+        (
+            DehashedError::NotAnAnswer(SourceOutcomeKind::BotWaf),
+            SourceOutcomeKind::BotWaf,
+            None,
+        ),
+        (
+            DehashedError::Decode("x".into()),
+            SourceOutcomeKind::SchemaDrift,
+            None,
+        ),
+    ];
+    for (error, kind, status) in cases {
+        assert_eq!(error.outcome_kind(), kind, "{error:?}");
+        assert_eq!(error.http_status(), status, "{error:?}");
+        let outcome = error.outcome("dehashed", 7);
+        assert_eq!(
+            (outcome.kind, outcome.http_status, outcome.found),
+            (kind, status, None),
+            "{error:?}"
+        );
+        assert_eq!(outcome.detail, Some(error.to_string()), "{error:?}");
+        let pause = matches!(error, DehashedError::RateLimited { .. }).then_some(42);
+        assert_eq!(outcome.retry_after_secs, pause, "{error:?}");
+    }
+}
+
+#[test]
 fn unexpected_body_shape_is_an_error_and_is_not_echoed() {
     let fake = Fake::with(200, r#"{"results": "a@example.com"}"#, &[]);
     let error = client(&fake)
@@ -347,7 +490,6 @@ mod collector_tests {
     use crate::dehashed::collector::{COLLECTOR_ID, collect};
     use crate::entity::{Entity, EntityKind};
     use crate::lineage::Lineage;
-    use crate::source_outcome::SourceOutcomeKind;
 
     const RECORDS: &str = r#"{
         "entries": [

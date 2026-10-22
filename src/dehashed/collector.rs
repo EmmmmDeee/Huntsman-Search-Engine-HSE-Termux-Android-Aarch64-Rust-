@@ -26,7 +26,7 @@ use crate::collector::{
     ObservationReceipt,
 };
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_http_status};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const COLLECTOR_ID: &str = "dehashed";
 /// Confidence for an entity read from a breach record. Calibrated lower than
@@ -161,56 +161,18 @@ fn receipt(
     }
 }
 
-/// A receipt for a network or upstream failure. The detail is the error's
-/// message, which never contains the identifier or a response body.
+/// A receipt for a network or upstream failure, recording the outcome the error names
+/// ([`DehashedError::outcome`]). The detail is the error's message, which never contains the
+/// identifier or a response body.
 fn failure_receipt(error: &DehashedError, now_unix: u64) -> ObservationReceipt {
-    let kind = failure_kind(error);
-    let status = failure_status(error);
-    let execution =
-        SourceExecutionOutcome::failed(COLLECTOR_ID, now_unix, kind, status, error.to_string());
-    let execution = match error {
-        DehashedError::RateLimited {
-            retry_after: Some(retry_after),
-        } => execution.with_retry_after(retry_after.as_secs()),
-        _ => execution,
-    };
     ObservationReceipt {
         source: COLLECTOR_ID.into(),
         dataset: None,
         observed_at_unix: now_unix,
         response_sha256: None,
-        outcome: execution,
+        outcome: error.outcome(COLLECTOR_ID, now_unix),
         parsed_rows: 0,
         truncated: false,
-    }
-}
-
-const fn failure_kind(error: &DehashedError) -> SourceOutcomeKind {
-    match error {
-        DehashedError::Unauthorized => SourceOutcomeKind::AuthRejected,
-        DehashedError::Forbidden => SourceOutcomeKind::EntitlementDenied,
-        DehashedError::RateLimited { .. } => SourceOutcomeKind::RateLimited,
-        DehashedError::BadRequest => SourceOutcomeKind::Upstream4xx,
-        DehashedError::Server(_) => SourceOutcomeKind::Upstream5xx,
-        DehashedError::Unexpected(status) => classify_http_status(*status),
-        DehashedError::Decode(_) => SourceOutcomeKind::SchemaDrift,
-        DehashedError::Transport
-        | DehashedError::Query(_)
-        | DehashedError::MissingKey
-        | DehashedError::KeyFilePermissions
-        | DehashedError::InvalidSize(_)
-        | DehashedError::InvalidPage(_) => SourceOutcomeKind::Inconclusive,
-    }
-}
-
-const fn failure_status(error: &DehashedError) -> Option<u16> {
-    match error {
-        DehashedError::Unauthorized => Some(401),
-        DehashedError::Forbidden => Some(403),
-        DehashedError::BadRequest => Some(400),
-        DehashedError::RateLimited { .. } => Some(429),
-        DehashedError::Server(status) | DehashedError::Unexpected(status) => Some(*status),
-        _ => None,
     }
 }
 

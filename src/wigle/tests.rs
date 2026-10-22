@@ -353,6 +353,29 @@ fn statuses_map_to_outcomes_and_never_quote_the_body_or_credentials() {
 }
 
 #[test]
+fn a_rate_limit_reads_retry_after_as_the_fetch_does() {
+    // 80 s before the date, as `fetch`'s own test counts it.
+    const NOW: u64 = 1_792_567_600;
+    let cases = [
+        ("Wed, 21 Oct 2026 07:28:00 GMT", Some(80)),
+        ("999999", Some(3600)),
+        ("soon", None),
+    ];
+    for (value, expected) in cases {
+        let mut limited = status(429, "{}");
+        limited.headers.push(("retry-after".into(), value.into()));
+        let transport = Recorder::new(vec![limited]);
+        assert_eq!(
+            search(&transport, &keys(), Database::Wifi, &bssid(), NOW),
+            Err(WigleError::RateLimited {
+                retry_after: expected
+            }),
+            "{value}"
+        );
+    }
+}
+
+#[test]
 fn a_redirect_is_not_followed_so_the_credentials_go_nowhere_else() {
     let mut moved = status(302, "");
     moved
