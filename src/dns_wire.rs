@@ -206,7 +206,10 @@ impl Data {
                 target,
             } => format!("{priority} {weight} {port} {target}"),
             Self::Caa { flags, tag, value } => format!("{flags} {tag} \"{value}\""),
-            Self::Other(bytes) => format!("\\# {}", base16_lower(bytes)),
+            // RFC 3597 section 5: `\#`, the length, then the data in hex, which is absent when
+            // the length is zero.
+            Self::Other(bytes) if bytes.is_empty() => "\\# 0".to_owned(),
+            Self::Other(bytes) => format!("\\# {} {}", bytes.len(), base16_lower(bytes)),
         }
     }
 }

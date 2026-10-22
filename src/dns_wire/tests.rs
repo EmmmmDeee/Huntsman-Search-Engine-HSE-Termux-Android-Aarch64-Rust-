@@ -211,6 +211,7 @@ fn every_record_type_reads_in_presentation_form() {
             (257, Rdata::Raw(caa)),
             (6, Rdata::Raw(soa)),
             (99, Rdata::Raw(vec![0xde, 0xad])),
+            (100, Rdata::Raw(Vec::new())),
         ],
         Some((0, "")),
     );
@@ -230,11 +231,24 @@ fn every_record_type_reads_in_presentation_form() {
             "SRV 1 2 443 sip.example.com",
             "CAA 0 issue \"letsencrypt.org\"",
             "SOA ns.example.com hostmaster.example.com 2024 7200 3600 1209600 300",
-            "TYPE99 \\# dead",
+            "TYPE99 \\# 2 dead",
+            "TYPE100 \\# 0",
         ]
     );
     assert_eq!(message.extended_errors[0].describe(), "0 Other");
     assert!(!message.extended_errors[0].withheld());
+}
+
+/// Data of a type without a presentation form of its own is written in RFC 3597 section 5's
+/// generic form: `\#`, the data's length in bytes, then its hex, and `\# 0` when there is none.
+#[test]
+fn unknown_record_data_takes_the_rfc_3597_generic_form() {
+    assert_eq!(Data::Other(vec![0xde, 0xad]).presentation(), "\\# 2 dead");
+    assert_eq!(Data::Other(Vec::new()).presentation(), "\\# 0");
+    assert_eq!(
+        Data::Other(vec![0xab; 300]).presentation(),
+        format!("\\# 300 {}", "ab".repeat(300))
+    );
 }
 
 /// A cut, looping or malformed body is an error, never a panic.

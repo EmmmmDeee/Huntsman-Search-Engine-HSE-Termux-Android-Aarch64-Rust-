@@ -8,3 +8,7 @@
   `&#0;` and `&#xD800;` stay as written. Whitespace a reference decodes to is trimmed from a
   value's ends as literal whitespace is, so a value ending in `&#xA;` keeps no line feed and a
   list item that is only `&#32;` is dropped.
+- A filtering resolver's answer records (`dns_filter_records` in a domain lookup) write the data
+  of a record type without a presentation form of its own in RFC 3597's generic form, `\# 2 dead`
+  (the length in bytes, then the hex) and `\# 0` when there is none, instead of `\# dead`, which
+  has no length and so does not read back as record data.
