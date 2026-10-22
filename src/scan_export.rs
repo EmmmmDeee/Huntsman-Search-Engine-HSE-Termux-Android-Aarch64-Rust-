@@ -625,7 +625,10 @@ mod tests {
             );
             assert_eq!(rows[index]["id"], rows[index + count]["id"]);
             assert_eq!(rows[index]["scan_name"], rows[index + count]["scan_name"]);
-            assert_eq!(rows[index]["scan_target"], rows[index + count]["scan_target"]);
+            assert_eq!(
+                rows[index]["scan_target"],
+                rows[index + count]["scan_target"]
+            );
         }
     }
 
