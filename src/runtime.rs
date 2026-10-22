@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn offline_geo_distances_cross_the_antimeridian_without_identity_inference() {
-        let seeds = ["0,179.99", "0,-179.99", "0,0", "example.org"].map(str::to_owned);
+        let seeds = ["0.0,179.99", "0.0,-179.99", "0.0,0.0", "example.org"].map(str::to_owned);
         let view = analyze_offline(&seeds).expect("offline analysis");
         let distances = view["geo_distances"].as_array().expect("geo distances");
         assert_eq!(distances.len(), 3, "{view}");
