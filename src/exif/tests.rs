@@ -233,7 +233,12 @@ fn webp_without_exif_is_clean_and_truncation_is_rejected() {
 fn webp_gps_becomes_a_coordinates_entity_not_just_metadata_text() {
     match run(&exif_webp(false), "sample.webp", 1) {
         ExifRun::Printed { report, .. } => {
-            assert!(report.entities.iter().any(|entity| entity.kind == EntityKind::Coordinates));
+            assert!(
+                report
+                    .entities
+                    .iter()
+                    .any(|entity| entity.kind == EntityKind::Coordinates)
+            );
         }
         ExifRun::Network(error) | ExifRun::Failed(error) => panic!("{error}"),
     }
