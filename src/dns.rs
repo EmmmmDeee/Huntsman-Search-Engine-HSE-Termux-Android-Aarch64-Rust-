@@ -534,27 +534,40 @@ pub fn soa_rname_to_email(rname: &str) -> String {
     String::new()
 }
 
+/// The labels a reverse name gives `ip`, without a zone: the four octets reversed (IPv4,
+/// RFC 1035) or the 32 nibbles reversed (IPv6, RFC 3596). [`reverse_name`] puts them under
+/// `in-addr.arpa` or `ip6.arpa`, and a DNS blocklist under its own zone. **Pure.**
+#[must_use]
+pub fn reversed_labels(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, c, d] = v4.octets();
+            format!("{d}.{c}.{b}.{a}")
+        }
+        IpAddr::V6(v6) => {
+            let mut labels = String::with_capacity(63);
+            for byte in v6.octets().iter().rev() {
+                for nibble in [byte & 0x0f, byte >> 4] {
+                    if !labels.is_empty() {
+                        labels.push('.');
+                    }
+                    labels.push(char::from_digit(u32::from(nibble), 16).unwrap_or('0'));
+                }
+            }
+            labels
+        }
+    }
+}
+
 /// The `in-addr.arpa` name (IPv4, RFC 1035) or nibble-format `ip6.arpa` name (IPv6, RFC 3596)
 /// whose PTR records name `ip`. **Pure.**
 #[must_use]
 pub fn reverse_name(ip: IpAddr) -> String {
-    match ip {
-        IpAddr::V4(v4) => {
-            let [a, b, c, d] = v4.octets();
-            format!("{d}.{c}.{b}.{a}.in-addr.arpa")
-        }
-        IpAddr::V6(v6) => {
-            let mut name = String::with_capacity(72);
-            for byte in v6.octets().iter().rev() {
-                for nibble in [byte & 0x0f, byte >> 4] {
-                    name.push(char::from_digit(u32::from(nibble), 16).unwrap_or('0'));
-                    name.push('.');
-                }
-            }
-            name.push_str("ip6.arpa");
-            name
-        }
-    }
+    let zone = match ip {
+        IpAddr::V4(_) => "in-addr.arpa",
+        IpAddr::V6(_) => "ip6.arpa",
+    };
+    format!("{}.{zone}", reversed_labels(ip))
 }
 
 /// The PTR records of `ip` over the `DoH` pool, as published (a trailing root dot kept).
@@ -962,6 +975,30 @@ mod tests {
             reverse_name(v6),
             "b.a.9.8.7.6.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
         );
+    }
+
+    /// A reverse name is its reversed labels under the family's zone, for an IPv4-mapped IPv6
+    /// address too, which is named by its nibbles like any other IPv6 address.
+    #[test]
+    fn a_reverse_name_is_the_reversed_labels_under_the_family_zone() {
+        let cases = [
+            ("192.0.2.10", "10.2.0.192", "in-addr.arpa"),
+            (
+                "2001:db8::1",
+                "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+                "ip6.arpa",
+            ),
+            (
+                "::ffff:1.2.3.4",
+                "4.0.3.0.2.0.1.0.f.f.f.f.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0",
+                "ip6.arpa",
+            ),
+        ];
+        for (address, labels, zone) in cases {
+            let ip: IpAddr = address.parse().expect("an address");
+            assert_eq!(reversed_labels(ip), labels, "{address}");
+            assert_eq!(reverse_name(ip), format!("{labels}.{zone}"), "{address}");
+        }
     }
 
     /// A PTR lookup asks for the reverse name's PTR records and keeps only those, as published;

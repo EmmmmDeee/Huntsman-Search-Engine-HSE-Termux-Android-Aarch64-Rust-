@@ -16,6 +16,7 @@
 
 use std::net::IpAddr;
 
+use crate::dns::reversed_labels;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::http::{Transport, TransportFailure};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
@@ -240,7 +241,7 @@ impl Subject<'_> {
     /// The name asked under `zone`. **Pure.**
     fn query(&self, zone: &str) -> String {
         match self {
-            Self::Address(address) => format!("{}.{zone}", reversed(*address)),
+            Self::Address(address) => format!("{}.{zone}", reversed_labels(*address)),
             Self::Domain(domain) => format!("{domain}.{zone}"),
         }
     }
@@ -250,25 +251,6 @@ impl Subject<'_> {
             Self::Address(address) => address.to_string(),
             Self::Domain(domain) => (*domain).to_owned(),
         }
-    }
-}
-
-/// An address as a blocklist names it: IPv4 octets reversed, IPv6 nibbles reversed. **Pure.**
-#[must_use]
-pub fn reversed(address: IpAddr) -> String {
-    match address {
-        IpAddr::V4(v4) => {
-            let [a, b, c, d] = v4.octets();
-            format!("{d}.{c}.{b}.{a}")
-        }
-        IpAddr::V6(v6) => v6
-            .octets()
-            .iter()
-            .rev()
-            .flat_map(|octet| [octet & 0x0f, octet >> 4])
-            .map(|nibble| format!("{nibble:x}"))
-            .collect::<Vec<_>>()
-            .join("."),
     }
 }
 
