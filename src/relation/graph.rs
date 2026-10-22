@@ -1,16 +1,14 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap};
 
 use crate::union_find::UnionFind;
 
-use super::types::{Basis, Relation, RelationKind};
+use super::types::{Basis, Relation};
 
 /// How deep a pathway that `disjoint_pathways` counts may run.
 const PATHWAY_MAX_DEPTH: usize = 8;
 /// How deep a path whose intermediate nodes `connection_brokers` scores may run.
 const BROKER_MAX_DEPTH: usize = 6;
-/// How deep a path whose relation kinds `connection_templates` counts may run.
-const TEMPLATE_MAX_DEPTH: usize = 4;
 /// The parent of a search's first step.
 const ROOT: usize = usize::MAX;
 
@@ -86,12 +84,6 @@ impl<'a> IdentityIndex<'a> {
     fn across(&self, edge: usize, node: usize) -> usize {
         let (from, to, _) = self.edges[edge];
         if from == node { to } else { from }
-    }
-
-    fn owned(&self, path: &[usize]) -> Vec<String> {
-        path.iter()
-            .map(|&node| self.uids[node].to_owned())
-            .collect()
     }
 
     /// The component of identity relations each node falls in, named by one of its nodes.
@@ -202,10 +194,10 @@ impl<'a> IdentityIndex<'a> {
         }
     }
 
-    /// Calls `visit` with the path `strongest_path` returns, within `max_depth`, from each node
-    /// to each node after it in uid order. One search from each node finds all of them: a search
-    /// pops paths in the same order whichever node it is looking for, so the first path it pops
-    /// to a node is the one a search that stops there returns.
+    /// Calls `visit` with the strongest path (see [`Search::run`]), within `max_depth`, from each
+    /// node to each node after it in uid order. One search from each node finds all of them: a
+    /// search pops paths in the same order whichever node it is looking for, so the first path
+    /// it pops to a node is the one a search that stops there returns.
     ///
     /// A node in a complete, bounded component (see [`Shape`]) needs no search: no path is wider
     /// than the edge joining its ends, because its first and last edges are no wider than the
@@ -336,11 +328,12 @@ impl Search {
         }
     }
 
-    /// Runs the widest-path search `strongest_path` has always run, from `start` over the edges
-    /// whose basis is not `removed`: a path never revisits a node, expands no deeper than
-    /// `max_depth`, and expands a node only when it is wider than every path that expanded the
-    /// node before. Each path popped is offered to `accept`, by its last node and step, before it
-    /// is expanded.
+    /// Runs the widest-path search from `start` over the edges whose basis is not `removed`. The
+    /// first path it pops to a node is the strongest path there: the path whose weakest relation
+    /// is strongest, the shallower of two equally wide paths. A path never revisits a node,
+    /// expands no deeper than `max_depth`, and expands a node only when it is wider than every
+    /// path that expanded the node before. Each path popped is offered to `accept`, by its last
+    /// node and step, before it is expanded.
     /// Returns the step of the first path accepted, or `None` once no path is left.
     fn run(
         &mut self,
@@ -501,56 +494,6 @@ impl<'i, 'a> PathwayCounter<'i, 'a> {
     }
 }
 
-#[must_use]
-pub fn provenance_chain(start_uid: &str, relations: &[Relation]) -> Vec<String> {
-    let mut parents = relations
-        .iter()
-        .filter(|relation| relation.kind == RelationKind::DerivedFrom)
-        .collect::<Vec<_>>();
-    parents.sort_by(|left, right| {
-        right
-            .confidence
-            .partial_cmp(&left.confidence)
-            .unwrap_or(Ordering::Equal)
-            .then(left.to_uid.cmp(&right.to_uid))
-    });
-    let mut seen = HashSet::<String>::new();
-    let mut chain = vec![start_uid.to_owned()];
-    seen.insert(start_uid.to_owned());
-    let mut current = start_uid.to_owned();
-    while let Some(next) = parents
-        .iter()
-        .find(|relation| relation.from_uid == current && !seen.contains(&relation.to_uid))
-        .map(|relation| relation.to_uid.clone())
-    {
-        seen.insert(next.clone());
-        chain.push(next.clone());
-        current = next;
-    }
-    chain
-}
-
-/// The widest path of identity-binding relations from `start_uid` to `end_uid`, at most
-/// `max_depth` relations long: the path whose weakest relation is strongest, the shallower of
-/// two equally wide paths.
-#[must_use]
-pub fn strongest_path(
-    start_uid: &str,
-    end_uid: &str,
-    relations: &[Relation],
-    max_depth: usize,
-) -> Option<Vec<String>> {
-    if start_uid == end_uid {
-        return Some(vec![start_uid.to_owned()]);
-    }
-    let index = IdentityIndex::new(relations);
-    let (start, end) = (index.node(start_uid)?, index.node(end_uid)?);
-    let removed = vec![false; index.bases.len()];
-    let mut search = Search::new(index.len());
-    let step = search.run(&index, start, &removed, max_depth, |node, _| node == end)?;
-    Some(index.owned(&search.path(step)))
-}
-
 /// How many pathways connect `start_uid` to `end_uid` when each pathway counted uses up what it
 /// rests on: the strongest path within eight relations, then the strongest over what is left,
 /// until none is left. Each relation a pathway takes uses up its basis (see `Relation::basis`).
@@ -697,43 +640,6 @@ pub fn resolve_identity_clusters(relations: &[Relation]) -> Vec<Vec<String>> {
     groups
 }
 
-/// How often each sequence of relation kinds makes up the strongest path, within four
-/// relations, between two uids. A step's kind is that of the first relation joining its two
-/// uids, either way round.
-#[must_use]
-pub fn connection_templates(relations: &[Relation]) -> BTreeMap<Vec<RelationKind>, usize> {
-    let mut joining = HashMap::<(&str, &str), RelationKind>::new();
-    for relation in relations {
-        joining
-            .entry(unordered(&relation.from_uid, &relation.to_uid))
-            .or_insert(relation.kind);
-    }
-    let index = IdentityIndex::new(relations);
-    let mut counts = BTreeMap::<Vec<RelationKind>, usize>::new();
-    index.each_strongest_path(TEMPLATE_MAX_DEPTH, |path| {
-        let kinds = path
-            .windows(2)
-            .filter_map(|pair| {
-                joining
-                    .get(&unordered(index.uids[pair[0]], index.uids[pair[1]]))
-                    .copied()
-            })
-            .collect::<Vec<_>>();
-        if !kinds.is_empty() {
-            *counts.entry(kinds).or_default() += 1;
-        }
-    });
-    counts
-}
-
-fn unordered<'s>(left: &'s str, right: &'s str) -> (&'s str, &'s str) {
-    if left <= right {
-        (left, right)
-    } else {
-        (right, left)
-    }
-}
-
 /// The uids that the strongest paths, within six relations, between other uids pass through,
 /// with how many such paths pass through each: most first, then by uid.
 #[must_use]
@@ -755,31 +661,11 @@ pub fn connection_brokers(relations: &[Relation]) -> Vec<(String, usize)> {
     ranked
 }
 
-#[must_use]
-pub fn reachable_count(start_uid: &str, relations: &[Relation]) -> usize {
-    let index = IdentityIndex::new(relations);
-    let Some(start) = index.node(start_uid) else {
-        return 0;
-    };
-    let mut seen = vec![false; index.len()];
-    seen[start] = true;
-    let mut queue = vec![start];
-    let mut head = 0;
-    while let Some(&node) = queue.get(head) {
-        head += 1;
-        for &edge in &index.incident[node] {
-            let next = index.across(edge, node);
-            if !seen[next] {
-                seen[next] = true;
-                queue.push(next);
-            }
-        }
-    }
-    queue.len() - 1
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use super::super::types::RelationKind;
     use super::*;
 
     /// The position and count of each pair, without the basis.
@@ -791,34 +677,12 @@ mod tests {
     }
 
     #[test]
-    fn provenance_chain_walks_back_safely() {
-        let relations = vec![
-            Relation::new("child", "root", RelationKind::DerivedFrom, 0.9, "s"),
-            Relation::new("grand", "child", RelationKind::DerivedFrom, 0.9, "s"),
-        ];
-        assert_eq!(
-            provenance_chain("grand", &relations),
-            ["grand", "child", "root"]
-        );
-        let cycle = vec![
-            Relation::new("a", "b", RelationKind::DerivedFrom, 0.9, "s"),
-            Relation::new("b", "a", RelationKind::DerivedFrom, 0.9, "s"),
-        ];
-        assert_eq!(provenance_chain("a", &cycle), ["a", "b"]);
-    }
-
-    #[test]
-    fn strongest_path_and_clusters_follow_identity_edges() {
+    fn clusters_follow_identity_edges() {
         let relations = vec![
             Relation::new("a", "b", RelationKind::AliasOf, 0.8, "s"),
             Relation::new("b", "c", RelationKind::IdentifiedBy, 0.7, "s"),
             Relation::new("c", "d", RelationKind::AssociatedWith, 0.9, "s"),
         ];
-        assert_eq!(
-            strongest_path("a", "c", &relations, 4).unwrap(),
-            ["a", "b", "c"]
-        );
-        assert_eq!(reachable_count("a", &relations), 2);
         assert_eq!(
             resolve_identity_clusters(&relations),
             vec![vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]]
@@ -852,8 +716,6 @@ mod tests {
         ];
         let identity = ["ann", "ann@corp", "ann@mail"].map(str::to_owned);
         assert_eq!(resolve_identity_clusters(&relations), [identity.to_vec()]);
-        assert_eq!(strongest_path("bob@corp", "ann@corp", &relations, 8), None);
-        assert_eq!(reachable_count("corp", &relations), 0);
         let mut uids = relations
             .iter()
             .flat_map(|relation| [relation.from_uid.as_str(), relation.to_uid.as_str()])
@@ -989,9 +851,9 @@ mod tests {
     /// changed from run to run.
     mod reference {
         use std::cmp::Ordering;
-        use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
+        use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
 
-        use super::super::super::types::{Relation, RelationKind};
+        use super::super::super::types::Relation;
 
         fn identity_edges(relations: &[Relation]) -> HashMap<&str, Vec<&Relation>> {
             let mut out = HashMap::<&str, Vec<&Relation>>::new();
@@ -1115,32 +977,6 @@ mod tests {
             count
         }
 
-        pub fn connection_templates(relations: &[Relation]) -> BTreeMap<Vec<RelationKind>, usize> {
-            let adj = identity_edges(relations);
-            let nodes = sorted_nodes(&adj);
-            let mut counts = BTreeMap::<Vec<RelationKind>, usize>::new();
-            for left in 0..nodes.len() {
-                for right in left + 1..nodes.len() {
-                    let Some(path) = strongest_path(nodes[left], nodes[right], relations, 4) else {
-                        continue;
-                    };
-                    let mut kinds = Vec::new();
-                    for pair in path.windows(2) {
-                        if let Some(relation) = relations.iter().find(|relation| {
-                            (relation.from_uid == pair[0] && relation.to_uid == pair[1])
-                                || (relation.from_uid == pair[1] && relation.to_uid == pair[0])
-                        }) {
-                            kinds.push(relation.kind);
-                        }
-                    }
-                    if !kinds.is_empty() {
-                        *counts.entry(kinds).or_default() += 1;
-                    }
-                }
-            }
-            counts
-        }
-
         pub fn connection_brokers(relations: &[Relation]) -> Vec<(String, usize)> {
             let adj = identity_edges(relations);
             let nodes = sorted_nodes(&adj);
@@ -1157,25 +993,6 @@ mod tests {
             let mut ranked = scores.into_iter().collect::<Vec<_>>();
             ranked.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
             ranked
-        }
-
-        pub fn reachable_count(start_uid: &str, relations: &[Relation]) -> usize {
-            let adj = identity_edges(relations);
-            let mut seen = HashSet::<String>::from([start_uid.to_owned()]);
-            let mut queue = VecDeque::from([start_uid.to_owned()]);
-            while let Some(node) = queue.pop_front() {
-                for relation in adj.get(node.as_str()).into_iter().flatten() {
-                    let next = if relation.from_uid == node {
-                        relation.to_uid.clone()
-                    } else {
-                        relation.from_uid.clone()
-                    };
-                    if seen.insert(next.clone()) {
-                        queue.push_back(next);
-                    }
-                }
-            }
-            seen.len().saturating_sub(1)
         }
     }
 
@@ -1363,7 +1180,8 @@ mod tests {
     }
 
     /// Every multi-hop query answers exactly as the per-pair searches it replaced did, on random
-    /// multigraphs, for every pair of known and unknown uids and every depth the rules use.
+    /// multigraphs: the pathways between every pair of known and unknown uids, within the eight
+    /// relations they count, and the brokers, within the six they score.
     #[test]
     fn the_shared_searches_answer_exactly_as_the_per_pair_searches_did() {
         let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
@@ -1373,33 +1191,16 @@ mod tests {
             uids.push("ghost");
             for &from in &uids {
                 for &to in &uids {
-                    for depth in [0, 1, 2, 3, 4, 6, 8] {
-                        assert_eq!(
-                            strongest_path(from, to, &relations, depth),
-                            reference::strongest_path(from, to, &relations, depth),
-                            "round {round}: {from} to {to} within {depth}: {relations:?}"
-                        );
-                    }
                     assert_eq!(
                         disjoint_pathways(from, to, &relations),
                         reference::disjoint_pathways(from, to, &relations),
                         "round {round}: {from} to {to}: {relations:?}"
                     );
                 }
-                assert_eq!(
-                    reachable_count(from, &relations),
-                    reference::reachable_count(from, &relations),
-                    "round {round}: {from}: {relations:?}"
-                );
             }
             assert_eq!(
                 connection_brokers(&relations),
                 reference::connection_brokers(&relations),
-                "round {round}: {relations:?}"
-            );
-            assert_eq!(
-                connection_templates(&relations),
-                reference::connection_templates(&relations),
                 "round {round}: {relations:?}"
             );
         }
@@ -1615,11 +1416,6 @@ mod tests {
                 reference::connection_brokers(&relations),
                 "round {round}: {relations:?}"
             );
-            assert_eq!(
-                connection_templates(&relations),
-                reference::connection_templates(&relations),
-                "round {round}: {relations:?}"
-            );
             let mut uids = nodes.clone();
             uids.extend((0..rng.below(3)).map(|_| nodes[rng.below(nodes.len())]));
             uids.push("ghost");
@@ -1635,6 +1431,58 @@ mod tests {
             }
         }
         assert!(carried >= 150 && bounded >= 150, "{carried} {bounded}");
+    }
+
+    /// Identity clusters written as plainly as they can be, as the oracle the cluster test
+    /// compares against: each identity-binding relation merges the groups that hold its two uids,
+    /// with them, into one, and the groups come out sorted, each holding its uids in order.
+    fn merged_clusters(relations: &[Relation]) -> Vec<Vec<String>> {
+        let mut groups = Vec::<BTreeSet<String>>::new();
+        for relation in relations
+            .iter()
+            .filter(|relation| relation.kind.binds_identity())
+        {
+            let ends = [&relation.from_uid, &relation.to_uid];
+            let (joined, apart): (Vec<_>, Vec<_>) = groups
+                .into_iter()
+                .partition(|group| ends.iter().any(|&uid| group.contains(uid)));
+            let mut merged = joined.into_iter().flatten().collect::<BTreeSet<_>>();
+            merged.extend(ends.into_iter().cloned());
+            groups = apart;
+            groups.push(merged);
+        }
+        let mut clusters = groups
+            .into_iter()
+            .map(|group| group.into_iter().collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        clusters.sort();
+        clusters
+    }
+
+    /// The identity clusters the correlator reads (AU-060, AU-071) are the groups the plain
+    /// oracle merges, in its order, on random multigraphs and random cliques: self-loops,
+    /// repeated and reversed relations and relations that bind no identity included. Many rounds
+    /// split the uids into more than one cluster, and some have none.
+    #[test]
+    fn identity_clusters_are_the_groups_identity_relations_merge() {
+        let mut rng = XorShift(0xBB67_AE85_84CA_A73B);
+        let (mut split, mut empty) = (0, 0);
+        for round in 0..800 {
+            let (_, relations) = if round % 2 == 0 {
+                random_relations(&mut rng)
+            } else {
+                random_clique(&mut rng)
+            };
+            let clusters = resolve_identity_clusters(&relations);
+            assert_eq!(
+                clusters,
+                merged_clusters(&relations),
+                "round {round}: {relations:?}"
+            );
+            split += usize::from(clusters.len() > 1);
+            empty += usize::from(clusters.is_empty());
+        }
+        assert!(split >= 75 && empty >= 25, "{split} {empty}");
     }
 
     /// A person identified by a thousand handles joins every pair of them through itself. Each

@@ -247,32 +247,6 @@ impl Graph {
         distances
     }
 
-    #[must_use]
-    pub fn connected_components(&self) -> Vec<Vec<usize>> {
-        let mut seen = vec![false; self.uids.len()];
-        let mut components = Vec::new();
-        for start in 0..self.uids.len() {
-            if seen[start] {
-                continue;
-            }
-            let mut component = Vec::new();
-            let mut queue = VecDeque::from([start]);
-            seen[start] = true;
-            while let Some(node) = queue.pop_front() {
-                component.push(node);
-                for &next in &self.adj[node] {
-                    if !seen[next] {
-                        seen[next] = true;
-                        queue.push_back(next);
-                    }
-                }
-            }
-            component.sort_unstable();
-            components.push(component);
-        }
-        components
-    }
-
     /// The core number of each node: the largest `k` such that the node lies in a subgraph
     /// whose every node has at least `k` neighbours in it. Computed by Batagelj and Zaversnik's
     /// bucket peeling in O(V + E): nodes sit in one array sorted by remaining degree, and peeling
@@ -622,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_sparse_scale_keeps_component_and_core_results() {
+    fn graph_sparse_scale_keeps_core_and_cut_results() {
         let nodes = (0..2_000)
             .map(|i| entity(&format!("sparse-{i}")))
             .collect::<Vec<_>>();
@@ -639,7 +613,6 @@ mod tests {
         let graph = Graph::build(&nodes, &relations);
         assert_eq!(graph.node_count(), nodes.len());
         assert_eq!(graph.edge_count(), nodes.len() - 1);
-        assert_eq!(graph.connected_components().len(), 1);
         assert!(graph.coreness().iter().all(|&core| core == 1));
         let (cut_vertices, bridges) = graph.cut_vertices_and_bridges();
         assert_eq!(cut_vertices.len(), nodes.len() - 2);
