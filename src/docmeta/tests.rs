@@ -575,3 +575,67 @@ startxref\n0\n%%EOF";
     assert_eq!(field(&parsed, "info:Title"), Some("Public"));
     assert!(field(&parsed, "pdf:Encrypted").is_none());
 }
+
+#[test]
+fn xmp_gps_rejects_invalid_hemispheres_and_coordinate_components() {
+    // A previous parse accepted any trailing letter as positive and normalised
+    // minutes >= 60, silently turning invalid metadata into plausible GEOINT.
+    for invalid in [
+        "48,51Q",
+        "48,51E",
+        "48,60N",
+        "48,-1N",
+        "48,30,60N",
+        "48,51,0,1N",
+        "91N",
+        "90,0.01N",
+        "-48,51N",
+        "NaNN",
+        "infN",
+    ] {
+        let packet = xmp_packet().replace("48,51.00N", invalid);
+        let parsed = parse(packet.as_bytes());
+        assert!(parsed.gps.is_none(), "accepted invalid latitude {invalid}");
+    }
+    for invalid in [
+        "2,20Q",
+        "2,20N",
+        "2,60E",
+        "2,30,60E",
+        "181E",
+        "180,0.01E",
+        "-2,20E",
+        "NaNE",
+    ] {
+        let packet = xmp_packet().replace("2,20.00E", invalid);
+        let parsed = parse(packet.as_bytes());
+        assert!(parsed.gps.is_none(), "accepted invalid longitude {invalid}");
+    }
+}
+
+#[test]
+fn xmp_gps_accepts_lowercase_and_valid_world_boundaries() {
+    let packet = xmp_packet()
+        .replace("48,51.00N", "90n")
+        .replace("2,20.00E", "180w");
+    assert_eq!(parse(packet.as_bytes()).gps, Some((90.0, -180.0)));
+
+    let packet = xmp_packet()
+        .replace("48,51.00N", "48,30,30s")
+        .replace("2,20.00E", "2,15,15e");
+    let (lat, lon) = parse(packet.as_bytes()).gps.expect("valid DMS position");
+    assert!((lat + 48.508_333).abs() < 0.000_001);
+    assert!((lon - 2.254_166_667).abs() < 0.000_001);
+}
+
+#[test]
+fn invalid_xmp_gps_never_becomes_a_coordinates_entity() {
+    let packet = xmp_packet().replace("48,51.00N", "48,99N");
+    match run(packet.as_bytes(), "invalid-gps.jpg", 1) {
+        DocmetaRun::Printed { report, .. } => {
+            assert!(report.entities.iter().any(|e| e.kind == EntityKind::Document));
+            assert!(report.entities.iter().all(|e| e.kind != EntityKind::Coordinates));
+        }
+        DocmetaRun::Network(reason) | DocmetaRun::Failed(reason) => panic!("{reason}"),
+    }
+}
