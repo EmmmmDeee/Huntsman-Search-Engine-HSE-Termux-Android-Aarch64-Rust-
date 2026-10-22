@@ -31,6 +31,11 @@ pub const HUNTSMAN_HOME_ENV: &str = "HUNTSMAN_HOME";
 /// The runtime variables file `install.sh` creates instead of `~/.huntsman.env` when this is set.
 /// `huntsman-recon` reads only `~/.huntsman.env`; `doctor` reports the difference.
 pub const HUNTSMAN_ENV_FILE_ENV: &str = "HUNTSMAN_ENV_FILE";
+/// Unsupported name found in some older install configurations. Do not add it to
+/// KNOWN_VARIABLES: no provider or runtime process reads its value.
+pub const LEGACY_INSTALL_DIR_ENV: &str = "HUNTSMAN_INSTALL_DIR";
+/// Installer-only override, read by install.sh when invoked, never by the runtime.
+pub const INSTALL_ROOT_ENV: &str = "HUNTSMAN_INSTALL_ROOT";
 /// The address `serve` binds when no `--bind` is given.
 pub const SERVE_BIND_ENV: &str = "HSE_BIND";
 /// A PEM bundle of root certificates that replaces the bundled Mozilla roots for every
