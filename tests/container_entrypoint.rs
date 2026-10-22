@@ -67,10 +67,23 @@ fn wait_for(mut ready: impl FnMut() -> bool) -> bool {
 /// `docker stop` sends, and would be killed when the grace period ends. So the server must run
 /// as the entrypoint's child, and the entrypoint must hand it the stop signal and exit with the
 /// server's status.
+/// The stop signal races the entrypoint starting its server, and the status it exits with can
+/// be lost when the shell handles the signal while it waits. One round is quick but rarely
+/// loses the race, so each test runs many rounds.
 #[test]
 fn the_server_runs_under_the_entrypoint_which_hands_it_the_stop_signal() {
-    let root: PathBuf =
-        std::env::temp_dir().join(format!("huntsman-entrypoint-stop-{}", std::process::id()));
+    for round in 0..STOP_ROUNDS {
+        stop_signal_round(round);
+    }
+}
+
+const STOP_ROUNDS: u32 = 100;
+
+fn stop_signal_round(round: u32) {
+    let root: PathBuf = std::env::temp_dir().join(format!(
+        "huntsman-entrypoint-stop-{}-{round}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&root);
     let data = root.join("data");
     fs::create_dir_all(&data).unwrap();
