@@ -188,6 +188,8 @@ verify_api() {
     grep -Fq '"status":"FINISHED"' "$persisted" || return 1
     # Compare the entire stored scan response, not only its identity and status.
     # Both requests use the same endpoint and the synthetic scan is immutable.
+    [ -s "$WORK_DIR/lookup-scan.json" ] || return 1
+    [ -s "$persisted" ] || return 1
     cmp -s "$WORK_DIR/lookup-scan.json" "$persisted" || return 1
     pass 'saved scan survives server restart'
   fi
