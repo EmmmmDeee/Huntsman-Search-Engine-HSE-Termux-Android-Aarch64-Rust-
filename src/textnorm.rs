@@ -648,34 +648,6 @@ pub fn slugify(s: &str) -> String {
     out
 }
 
-/// Byte offset of the first ASCII-case-insensitive substring match.
-#[must_use]
-pub fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
-    let (hay, nee) = (haystack.as_bytes(), needle.as_bytes());
-    if nee.is_empty() {
-        return Some(0);
-    }
-    if hay.len() < nee.len() {
-        return None;
-    }
-    (0..=hay.len() - nee.len())
-        .find(|&offset| hay[offset..offset + nee.len()].eq_ignore_ascii_case(nee))
-}
-
-/// Byte offset of the last whole-word ASCII-case-insensitive match.
-#[must_use]
-pub fn rfind_word_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
-    let (hay, nee) = (haystack.as_bytes(), needle.as_bytes());
-    if nee.is_empty() || hay.len() < nee.len() {
-        return None;
-    }
-    (0..=hay.len() - nee.len()).rev().find(|&offset| {
-        hay[offset..offset + nee.len()].eq_ignore_ascii_case(nee)
-            && (offset == 0 || !hay[offset - 1].is_ascii_alphanumeric())
-            && (offset + nee.len() == hay.len() || !hay[offset + nee.len()].is_ascii_alphanumeric())
-    })
-}
-
 /// Case-insensitive equality over Unicode letters: two words are equal when their characters
 /// lowercase, one at a time, to the same sequence, so `Émile` equals `émile`.
 ///
@@ -788,11 +760,6 @@ mod tests {
             let prefix = truncate_safe(sample, start);
             assert!(sample.starts_with(prefix));
         }
-        assert_eq!(
-            rfind_word_ascii_ci("EDWARD 12 COTTESLOE WA 6011", "WA"),
-            Some(20)
-        );
-        assert_eq!(find_ascii_ci("Hello World", "WORLD"), Some(6));
     }
 
     #[test]

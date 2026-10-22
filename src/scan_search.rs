@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use crate::pattern::{Pattern, PatternError};
 use crate::scan_store::ScanResults;
 use crate::sf_elements::DataElement;
+use crate::value_syntax::find_ascii_ci;
 
 /// A parsed search.
 #[derive(Debug)]
@@ -63,10 +64,7 @@ impl Query {
                     && needle.is_ascii()
                     && needle.bytes().all(|byte| !byte.is_ascii_uppercase()) =>
             {
-                value
-                    .as_bytes()
-                    .windows(needle.len())
-                    .any(|candidate| candidate.eq_ignore_ascii_case(needle.as_bytes()))
+                find_ascii_ci(value, needle).is_some()
             }
             Self::Contains(needle) => value.to_lowercase().contains(needle.as_str()),
         }

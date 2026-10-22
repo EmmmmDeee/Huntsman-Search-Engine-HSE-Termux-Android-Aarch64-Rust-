@@ -17,6 +17,7 @@ use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport, append_query_param};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
 use crate::textnorm::{decode_html_entities, escape_controls};
+use crate::value_syntax::find_ascii_ci_bytes;
 
 const MAX_RESULTS_PER_ENGINE: usize = 20;
 const MAX_ADAPTIVE_QUERY_BYTES: usize = 512;
@@ -554,7 +555,7 @@ fn href_values(html: &str) -> Vec<&str> {
                 None
             };
             if let Some(closer) = closer {
-                let Some(skip) = find_ascii_case_insensitive(&bytes[end + 1..], closer) else {
+                let Some(skip) = find_ascii_ci_bytes(&bytes[end + 1..], closer) else {
                     break;
                 };
                 index = end + 1 + skip;
@@ -645,18 +646,6 @@ fn anchor_href(html: &str, mut index: usize, end: usize) -> Option<&str> {
         }
     }
     None
-}
-
-fn find_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack.windows(needle.len()).position(|window| {
-        window
-            .iter()
-            .zip(needle.iter())
-            .all(|(left, right)| left.eq_ignore_ascii_case(right))
-    })
 }
 
 fn is_engine_or_navigation_url(url: &str) -> bool {

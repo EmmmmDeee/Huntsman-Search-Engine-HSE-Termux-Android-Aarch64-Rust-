@@ -313,19 +313,31 @@ pub fn is_role_localpart(local: &str) -> bool {
     })
 }
 
-fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
-    let needle = needle.as_bytes();
+/// Byte offset of the first ASCII-case-insensitive match of `needle` in `haystack`: `Some(0)` for
+/// an empty needle, `None` for one longer than the haystack. Bytes outside ASCII match only
+/// themselves. **Pure.**
+#[must_use]
+pub fn find_ascii_ci_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
     haystack
-        .as_bytes()
         .windows(needle.len())
-        .any(|window| window.eq_ignore_ascii_case(needle))
+        .position(|window| window.eq_ignore_ascii_case(needle))
+}
+
+/// [`find_ascii_ci_bytes`] over text. A match starts where the needle's first character does, so
+/// the offset is always a character boundary of `haystack`. **Pure.**
+#[must_use]
+pub fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    find_ascii_ci_bytes(haystack.as_bytes(), needle.as_bytes())
 }
 
 #[must_use]
 pub fn is_whois_privacy_placeholder(value: &str) -> bool {
     WHOIS_PRIVACY_MARKERS
         .iter()
-        .any(|marker| contains_ascii_case_insensitive(value, marker))
+        .any(|marker| find_ascii_ci(value, marker).is_some())
 }
 
 /// `application/x-www-form-urlencoded` value decoding: `+` is a space and `%XX` a byte. `None`
@@ -557,6 +569,22 @@ mod tests {
             host_from_url("https://Example.org/a"),
             Some("example.org".into())
         );
+    }
+
+    #[test]
+    fn ascii_case_search_finds_the_first_match_at_its_byte_offset() {
+        assert_eq!(find_ascii_ci("Hello World", "WORLD"), Some(6));
+        assert_eq!(find_ascii_ci("abc", ""), Some(0));
+        assert_eq!(find_ascii_ci("", ""), Some(0));
+        assert_eq!(find_ascii_ci("ab", "abc"), None);
+        assert_eq!(find_ascii_ci("", "a"), None);
+        assert_eq!(find_ascii_ci("\u{e9}</SCRIPT>", "</script"), Some(2));
+        assert_eq!(find_ascii_ci("x\u{c9}y \u{e9}y", "\u{e9}Y"), Some(5));
+        assert_eq!(
+            find_ascii_ci_bytes(b"<a></Style></style>", b"</style"),
+            Some(3)
+        );
+        assert_eq!(find_ascii_ci_bytes(b"no closer", b"</style"), None);
     }
 
     #[test]
