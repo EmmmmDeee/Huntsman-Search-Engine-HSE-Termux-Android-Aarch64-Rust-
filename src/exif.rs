@@ -30,7 +30,7 @@ pub const EXIF_USAGE: &str = "usage: huntsman-recon exif IMAGE-FILE";
 
 pub const EXIF_HELP: &str = "\
 exif IMAGE-FILE
-Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG and TIFF images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG or TIFF image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
+Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG, TIFF and WebP images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG, TIFF or WebP image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
 
 /// The largest image read, in bytes. EXIF sits at the head of the file, but the whole file is read
 /// so a TIFF whose directories point deep into it still parses; a larger file is refused by name.
@@ -121,8 +121,16 @@ pub fn parse(image: &[u8]) -> Result<Parsed, &'static str> {
         }
     } else if image.starts_with(b"II\x2a\x00") || image.starts_with(b"MM\x00\x2a") {
         decode_tiff(image, "TIFF")
+    } else if image.starts_with(b"RIFF") && image.get(8..12) == Some(b"WEBP") {
+        match find_webp_exif(image)? {
+            Some(tiff) => decode_tiff(tiff, "WebP"),
+            None => Ok(Parsed {
+                format: "WebP",
+                ..Parsed::default()
+            }),
+        }
     } else {
-        Err("not a JPEG or TIFF image")
+        Err("not a JPEG, TIFF or WebP image")
     }
 }
 
@@ -255,6 +263,57 @@ fn find_jpeg_exif(image: &[u8]) -> Option<&[u8]> {
 fn be_u16(buf: &[u8], offset: usize) -> Option<u16> {
     let bytes: [u8; 2] = buf.get(offset..offset + 2)?.try_into().ok()?;
     Some(u16::from_be_bytes(bytes))
+}
+
+// ── WebP RIFF container ────────────────────────────────────────────────────────────────
+
+/// Read the EXIF payload in a bounded WebP RIFF chunk stream. An EXIF chunk contains the
+/// existing TIFF structure, sometimes preceded by the six-byte Exif signature.
+/// Malformed bounds are an error, never a clean absence of metadata.
+fn find_webp_exif(image: &[u8]) -> Result<Option<&[u8]>, &'static str> {
+    if !image.starts_with(b"RIFF") || image.get(8..12) != Some(b"WEBP") {
+        return Err("WebP: invalid RIFF header");
+    }
+    let size: [u8; 4] = image
+        .get(4..8)
+        .and_then(|raw| raw.try_into().ok())
+        .ok_or("WebP: truncated RIFF size")?;
+    let end = usize::try_from(u32::from_le_bytes(size))
+        .ok()
+        .and_then(|length| length.checked_add(8))
+        .ok_or("WebP: invalid RIFF size")?;
+    if end < 12 || end > image.len() {
+        return Err("WebP: truncated RIFF container");
+    }
+    let mut offset = 12usize;
+    while offset < end {
+        let header = image
+            .get(offset..offset + 8)
+            .filter(|_| offset + 8 <= end)
+            .ok_or("WebP: truncated chunk header")?;
+        let length = u32::from_le_bytes(
+            header[4..8]
+                .try_into()
+                .map_err(|_| "WebP: invalid chunk size")?,
+        );
+        let start = offset + 8;
+        let tail = usize::try_from(length)
+            .ok()
+            .and_then(|len| start.checked_add(len))
+            .ok_or("WebP: invalid chunk size")?;
+        let next = tail
+            .checked_add(usize::from(length % 2))
+            .ok_or("WebP: invalid chunk padding")?;
+        if next > end {
+            return Err("WebP: truncated chunk payload");
+        }
+        if &header[..4] == b"EXIF" {
+            let payload = &image[start..tail];
+            return Ok(Some(payload.strip_prefix(b"Exif\x00\x00").unwrap_or(payload)));
+        }
+        offset = next;
+    }
+    Ok(None)
 }
 
 // ── TIFF directories ─────────────────────────────────────────────────────────────────────
