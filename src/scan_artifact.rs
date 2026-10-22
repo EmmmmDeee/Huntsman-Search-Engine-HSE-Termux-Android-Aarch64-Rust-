@@ -473,10 +473,10 @@ mod tests {
 
     /// A saved scan correlates exactly as the analysis behind `plan` and the web UI correlates the
     /// same entities. An email, its local part as a handle and that handle's profile form an
-    /// identity cluster (AU-060) of single-pathway links (AU-063), and two domains share a hosting
-    /// address (AU-110). Before, `correlate` gave the rules only the relations stored in the
-    /// artifact, and `dehashed --save-artifact`, the only writer, stores none, so no relation rule
-    /// ever fired on a saved scan.
+    /// identity cluster (AU-060) of links the count finds one pathway for (AU-063), and two
+    /// domains share a hosting address (AU-110). Before, `correlate` gave the rules only the
+    /// relations stored in the artifact, and `dehashed --save-artifact`, the only writer,
+    /// stores none, so no relation rule ever fired on a saved scan.
     #[test]
     fn a_saved_scan_correlates_as_the_analysis_of_its_entities() {
         use crate::analysis::analyze_snapshot;

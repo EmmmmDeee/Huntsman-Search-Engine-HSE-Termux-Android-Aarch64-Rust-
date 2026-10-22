@@ -895,6 +895,32 @@ mod tests {
         );
     }
 
+    /// Two addresses with one handle are one pair joined by one pathway, the handle. Nothing else
+    /// connects them, so the count is exact, and the gap says only what the search found.
+    #[test]
+    fn two_addresses_with_one_handle_gap_says_what_was_found() {
+        let entities = (0..2)
+            .map(|site| {
+                ent(
+                    EntityKind::Email,
+                    &format!("jsmith.alpha@site{site}.example"),
+                    0.9,
+                    "dehashed",
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+        let gaps = evaluate_rules(&entities, &[], "scan")
+            .into_iter()
+            .filter(|correlation| correlation.rule_id == "AU-063")
+            .map(|correlation| correlation.description)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            gaps,
+            ["one identity pathway found connects the pair; the search found no second"]
+        );
+    }
+
     /// Evidence that rests on something other than the shared handle still corroborates. A
     /// breach record naming one owner for two of four addresses with one handle gives the owner
     /// with each of the two a second pathway (AU-062), and the two addresses also share a
@@ -973,7 +999,7 @@ mod tests {
             .map(|entity| entity.uid.clone())
             .collect::<Vec<_>>();
         addresses.sort();
-        let single = "one identity pathway found connects the pair; a second may exist that the search did not take";
+        let single = "one identity pathway found connects the pair; the search found no second";
         let mut expected = vec![
             (
                 addresses,

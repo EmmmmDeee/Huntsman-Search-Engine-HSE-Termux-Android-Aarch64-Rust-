@@ -401,8 +401,7 @@ pub fn rule_au_063_corroboration_gap(
     };
     let pair_gap = |pair: &PairPathways<'_>| {
         gap(
-            "one identity pathway found connects the pair; a second may exist that the search did not take"
-                .to_owned(),
+            "one identity pathway found connects the pair; the search found no second".to_owned(),
             vec![ids[pair.left].to_owned(), ids[pair.right].to_owned()],
         )
     };
