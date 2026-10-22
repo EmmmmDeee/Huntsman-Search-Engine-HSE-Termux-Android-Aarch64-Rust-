@@ -334,23 +334,21 @@ fn find_webp_exif(image: &[u8]) -> Result<Option<&[u8]>, &'static str> {
 /// The PNG file signature: the eight bytes every PNG begins with.
 pub(crate) const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
-/// Most PNG chunks walked before giving up, so a file claiming countless chunks is bounded.
-const MAX_PNG_CHUNKS: usize = 4096;
-
-/// Each chunk of a PNG after its signature, as its four-byte type and its body, through `IEND` and
-/// at most [`MAX_PNG_CHUNKS`]: the one chunk walker, shared with [`crate::docmeta`]. A chunk that
-/// runs past the end of the file is an `Err` item and ends the walk; a file that ends cleanly on a
-/// chunk boundary without `IEND` ends it too. **Pure.**
+/// Each chunk of a PNG after its signature, as its four-byte type and its body, through `IEND`: the
+/// one chunk walker, shared with [`crate::docmeta`]. A chunk that runs past the end of the file is an
+/// `Err` item and ends the walk; a file that ends cleanly on a chunk boundary without `IEND` ends it
+/// too. Every chunk takes at least twelve bytes, so the walk is bounded by the file, never by a count
+/// that a large image's thousands of `IDAT` chunks would reach before a later `eXIf` or text chunk.
+/// **Pure.**
 pub(crate) fn png_chunks(
     data: &[u8],
 ) -> impl Iterator<Item = Result<(&[u8], &[u8]), &'static str>> {
     let mut at = PNG_SIGNATURE.len();
-    let mut left = MAX_PNG_CHUNKS;
+    let mut done = false;
     std::iter::from_fn(move || {
-        if left == 0 || at == data.len() {
+        if done || at == data.len() {
             return None;
         }
-        left -= 1;
         let chunk = data.get(at..at + 8).and_then(|header| {
             let length = usize::try_from(u32::from_be_bytes(header[..4].try_into().ok()?)).ok()?;
             let body_end = (at + 8).checked_add(length)?;
@@ -359,13 +357,11 @@ pub(crate) fn png_chunks(
             Some((&header[4..], body, body_end.checked_add(4)?))
         });
         let Some((kind, body, next)) = chunk else {
-            left = 0;
+            done = true;
             return Some(Err("PNG: truncated chunk"));
         };
         at = next.min(data.len());
-        if kind == b"IEND" {
-            left = 0;
-        }
+        done = kind == b"IEND";
         Some(Ok((kind, body)))
     })
 }

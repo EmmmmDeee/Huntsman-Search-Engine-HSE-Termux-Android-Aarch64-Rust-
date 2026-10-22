@@ -9,3 +9,6 @@
 - Tests now pin `/api/inspect`'s real handler, which keeps `docmeta`'s findings when `exif` cannot
   read a file and merges the two into one document, and prove the upload gate refuses a head
   before reading its body: the previous test passed with the gate deleted.
+- The PNG chunk walk is bounded by the file, not by a count of 4096 chunks: libpng writes 8 KiB
+  `IDAT` chunks, so a PNG over about 34 MB with its `eXIf` or text chunks after its image data
+  was reported as having none.

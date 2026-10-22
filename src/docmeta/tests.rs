@@ -815,3 +815,21 @@ fn countless_unclosed_trailers_are_scanned_in_linear_time() {
     pdf.extend_from_slice(b"trailer\n<< /Info 1 0 R >>\nstartxref\n9\n%%EOF\n");
     assert_eq!(field(&parse(&pdf), "info:Title"), Some("Kept"));
 }
+
+#[test]
+fn a_png_text_chunk_after_thousands_of_image_chunks_is_read() {
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut chunk = |kind: &[u8; 4], body: &[u8]| {
+        png.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+        png.extend_from_slice(kind);
+        png.extend_from_slice(body);
+        png.extend_from_slice(&[0; 4]);
+    };
+    chunk(b"IHDR", &[0; 13]);
+    for _ in 0..5000 {
+        chunk(b"IDAT", &[0; 8]);
+    }
+    chunk(b"tEXt", b"Author\0Jane Doe");
+    chunk(b"IEND", &[]);
+    assert_eq!(field(&parse(&png), "png:Author"), Some("Jane Doe"));
+}

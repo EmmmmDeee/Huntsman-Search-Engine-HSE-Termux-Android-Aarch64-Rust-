@@ -302,3 +302,21 @@ fn a_png_without_exif_is_clean_and_truncation_is_rejected() {
     broken.truncate(broken.len() - 30);
     assert!(parse(&broken).is_err());
 }
+
+#[test]
+fn a_png_exif_chunk_is_found_however_many_chunks_come_first() {
+    // libpng writes 8 KiB IDAT chunks, so a large PNG has thousands of chunks, and an eXIf may
+    // follow them; private chunks may come before it too. The walk is bounded by the file.
+    let mut after_idat = b"\x89PNG\r\n\x1a\n".to_vec();
+    png_chunk(&mut after_idat, *b"IHDR", &[0; 13]);
+    for _ in 0..5000 {
+        png_chunk(&mut after_idat, *b"IDAT", &[0; 8]);
+    }
+    png_chunk(&mut after_idat, *b"eXIf", &exif_tiff());
+    png_chunk(&mut after_idat, *b"IEND", &[]);
+    let gps = parse(&after_idat)
+        .expect("valid PNG")
+        .gps
+        .expect("GPS after 5000 IDATs");
+    assert!((gps.lat - 48.85).abs() < 1e-6);
+}
