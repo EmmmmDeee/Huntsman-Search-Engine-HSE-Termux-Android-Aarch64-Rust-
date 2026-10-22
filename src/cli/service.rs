@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use super::fail;
+use huntsman_recon::clock;
 use huntsman_recon::diagnostics::TermuxState;
+use huntsman_recon::entity::merge_by_uid;
 use huntsman_recon::environment::SERVE_TOKEN_ENV;
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
@@ -17,6 +19,7 @@ use huntsman_recon::scan_route::{
     ScanKind, canonical_selector, explicit_people_is_name, infer_kind, inferred_people_is_name,
     parse_kind,
 };
+use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceRun};
 use huntsman_recon::web_server::{
     LookupError, LookupQuery, LookupReport, ServeConfig, Server, resolve_serve_bind,
 };
@@ -47,6 +50,56 @@ fn web_analyze(
             _ => 500,
         },
         message: error.to_string(),
+    })
+}
+
+/// `/api/inspect`: the `exif` and `docmeta` commands over one uploaded file, as one report. Both read
+/// the same bytes the commands read from disk; their entities for the file merge into one. A file
+/// `exif` cannot decode (not a JPEG or TIFF, or a damaged EXIF block) keeps `docmeta`'s findings and
+/// says why in an inconclusive `exif` outcome.
+fn web_inspect(label: &str, bytes: &[u8]) -> Result<LookupReport, LookupError> {
+    let now = clock::unix_now();
+    let mut entities = Vec::new();
+    let mut outcomes = Vec::new();
+    match huntsman_recon::exif::run(bytes, label, now) {
+        SourceRun::Printed { report, .. } => {
+            entities.extend(report.entities);
+            outcomes.extend(report.outcomes);
+        }
+        SourceRun::Network(why) | SourceRun::Failed(why) => {
+            outcomes.push(SourceExecutionOutcome::inconclusive(
+                huntsman_recon::exif::SOURCE,
+                now,
+                why,
+            ));
+        }
+    }
+    match huntsman_recon::docmeta::run(bytes, label, now) {
+        SourceRun::Printed { report, .. } => {
+            entities.extend(report.entities);
+            outcomes.extend(report.outcomes);
+        }
+        SourceRun::Network(why) | SourceRun::Failed(why) => {
+            return Err(LookupError {
+                status: 422,
+                message: why,
+            });
+        }
+    }
+    merge_by_uid(&mut entities);
+    let text = huntsman_recon::lookup_report::render(&entities, &outcomes).map_err(|message| {
+        LookupError {
+            status: 500,
+            message,
+        }
+    })?;
+    Ok(LookupReport {
+        route: "inspect",
+        text,
+        entities,
+        outcomes,
+        scan: None,
+        status: None,
     })
 }
 
@@ -243,6 +296,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
             let server = server
                 .with_lookup(std::sync::Arc::new(web_lookup))
                 .with_radar(std::sync::Arc::new(web_radar))
+                .with_inspect(std::sync::Arc::new(web_inspect))
                 .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
                     web_analyze(seeds, analyze_history.as_deref())
                 }));

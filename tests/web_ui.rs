@@ -24,8 +24,9 @@ const PAGE: &str = include_str!("../src/web_ui.html");
 /// the phone's CPU each time the tab loads. Spiderfoot's own UI loads about 1 MiB of scripts and
 /// styles for the same views; this page is one file with no library. At 92 KB the browser check
 /// measured its content loaded in 59 ms and painted in 64 ms, so the budget leaves room for the
-/// views Spiderfoot lacks without letting the page grow unchecked.
-const PAGE_BUDGET: usize = 112 * 1024;
+/// views Spiderfoot lacks without letting the page grow unchecked. It was raised from 112 KiB for
+/// the Inspect view (file metadata): at 114 KiB the check measured 46 ms loaded, 56 ms painted.
+const PAGE_BUDGET: usize = 116 * 1024;
 /// WCAG 2.2 AA for text under 18.66 px bold or 24 px: the page has none larger.
 const AA: f64 = 4.5;
 /// WCAG 2.2 AA for a graphical object a reader must see (1.4.11), such as a graph node.
