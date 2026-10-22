@@ -47,7 +47,8 @@ fn container_runtime_contract_is_current_and_shell_valid() {
         "\"$HUNTSMAN_BIN\" check",
         "\"$HUNTSMAN_BIN\" verify var/ledger.json",
         "gosu huntsman \"$HUNTSMAN_BIN\" \"$@\" &",
-        "trap 'kill -TERM \"$server\" 2>/dev/null || true' TERM INT HUP",
+        "trap forward_stop TERM INT HUP",
+        "kill -TERM \"$server\" 2>/dev/null || true",
     ] {
         assert!(
             entrypoint.contains(required),
