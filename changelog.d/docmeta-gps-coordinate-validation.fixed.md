@@ -1,3 +1,1 @@
-### Fixed
-
-- `docmeta` refuses XMP latitude/longitude claims with invalid hemisphere letters, negative or non-finite components, minutes/seconds outside 0–59, surplus components, or coordinates outside world bounds. Prevents invalid embedded claims from becoming GEOINT entities; valid southern/western coordinates and boundary values remain supported.
+- `docmeta` rejects XMP GPS claims with invalid latitude/longitude hemisphere letters, negative or non-finite components, minutes or seconds outside 0–59, extra components, or positions outside world bounds. Invalid metadata no longer becomes a GEOINT entity; valid southern/western and boundary coordinates remain supported.
