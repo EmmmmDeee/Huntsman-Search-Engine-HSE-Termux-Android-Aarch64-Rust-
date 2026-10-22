@@ -7,4 +7,4 @@
   applies to GitHub, Bluesky, Gravatar, Keybase, Duolingo, the App Store search and Wikipedia.
 - A rate limit or other refusal from a keyless source keeps the pause the provider asked for in
   the outcome's `retry_after_secs`. This applies to GitHub, Bluesky, Gravatar, Keybase, Duolingo,
-  the App Store search and Wikipedia.
+  the App Store search, Wikipedia and the keys.openpgp.org key index.
