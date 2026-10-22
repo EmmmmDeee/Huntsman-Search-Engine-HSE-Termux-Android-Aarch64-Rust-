@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::attack;
 use crate::classifier;
 use crate::dependency::{Module, ModuleGraph, Target, TargetKind};
 use crate::module::{
@@ -250,6 +251,89 @@ fn utility_cmp(
     }
 }
 
+/// ATT&CK Reconnaissance technique opportunities that this candidate's provider class can
+/// contribute to. These are possible acquisition methods, never claims of observed evidence.
+fn reconnaissance_opportunities(
+    dispatch: &PlannedDispatch,
+    modules: &[Arc<dyn Module>],
+) -> Vec<&'static str> {
+    let DispatchAction::Module { module_index } = &dispatch.action else {
+        return Vec::new();
+    };
+    let Some(module) = modules.get(*module_index) else {
+        return Vec::new();
+    };
+    attack::techniques_for_category(module.category())
+        .iter()
+        .copied()
+        .filter(|id| {
+            attack::technique(id)
+                .is_some_and(|technique| technique.tactics.contains(&"reconnaissance"))
+        })
+        .collect()
+}
+
+/// Preserve the existing ROI ordering exactly across different utility values. Inside a
+/// genuine utility tie, greedily prefer providers that add ATT&CK Reconnaissance opportunities
+/// not already selected for the same target. This changes which executable modules survive a
+/// tight dispatch cap; no additional network requests or new target identifiers are generated.
+/// Unmapped modules remain eligible and retain the existing stable name tie-break.
+fn diversify_equal_utility(
+    candidates: Vec<(String, PlannedDispatch)>,
+    modules: &[Arc<dyn Module>],
+) -> Vec<(String, PlannedDispatch)> {
+    let mut ordered = Vec::with_capacity(candidates.len());
+    let mut seen = BTreeSet::<(TargetKind, String, &'static str)>::new();
+    let mut remaining = candidates.into_iter().peekable();
+    while let Some(first) = remaining.next() {
+        let score = first.1.utility.as_ref().map(|utility| utility.final_utility);
+        let mut group = vec![first];
+        while remaining
+            .peek()
+            .is_some_and(|(_, item)| item.utility.as_ref().map(|u| u.final_utility) == score)
+        {
+            if let Some(next) = remaining.next() {
+                group.push(next);
+            }
+        }
+        let mut group = group
+            .into_iter()
+            .map(|(name, item)| {
+                let opportunities = reconnaissance_opportunities(&item, modules);
+                (name, item, opportunities)
+            })
+            .collect::<Vec<_>>();
+        while !group.is_empty() {
+            let best = (0..group.len())
+                .max_by(|&a, &b| {
+                    let novelty = |index: usize| {
+                        group[index]
+                            .2
+                            .iter()
+                            .filter(|&&id| {
+                                !seen.contains(&(
+                                    group[index].1.target.kind,
+                                    group[index].1.target.value.clone(),
+                                    id,
+                                ))
+                            })
+                            .count()
+                    };
+                    novelty(a)
+                        .cmp(&novelty(b))
+                        .then_with(|| group[b].0.cmp(&group[a].0))
+                })
+                .unwrap_or(0);
+            let (name, item, opportunities) = group.swap_remove(best);
+            for technique in opportunities {
+                seen.insert((item.target.kind, item.target.value.clone(), technique));
+            }
+            ordered.push((name, item));
+        }
+    }
+    ordered
+}
+
 #[must_use]
 pub fn build_dispatch_plan(
     modules: &[Arc<dyn Module>],
@@ -304,6 +388,9 @@ pub fn build_dispatch_plan(
         .map(|item| (action_id(&item.action, modules), item))
         .collect::<Vec<_>>();
     keyed.sort_by(utility_cmp);
+    // ATT&CK affects actual module admission under max_dispatches, not only report labels.
+    // Never trade a higher-valued action for a lower-valued one.
+    let keyed = diversify_equal_utility(keyed, modules);
     let mut selected = keyed.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
     excluded.sort_by(|left, right| {
         left.provider_id
