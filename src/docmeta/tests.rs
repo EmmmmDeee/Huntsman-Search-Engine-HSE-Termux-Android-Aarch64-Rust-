@@ -549,3 +549,29 @@ fn a_truncated_png_chunk_is_a_clean_result_not_a_panic() {
     // The over-long chunk is refused rather than read out of bounds, so nothing surfaces.
     assert!(parsed.fields.is_empty());
 }
+
+#[test]
+fn a_comment_cannot_replace_the_last_trailer_info_reference() {
+    let bytes = b"%PDF-1.4\n\
+1 0 obj\n<< /Title (Original) >>\nendobj\n\
+2 0 obj\n<< /Title (Forged) >>\nendobj\n\
+trailer\n<< /Size 3 /Info 1 0 R >>\n\
+% /Info 2 0 R\n\
+% trailer << /Info 2 0 R >>\n\
+startxref\n0\n%%EOF";
+    let parsed = parse(bytes);
+    assert_eq!(field(&parsed, "info:Title"), Some("Original"));
+    assert!(field(&parsed, "info-prior:Title").is_none());
+}
+
+#[test]
+fn an_unrelated_encrypt_name_does_not_suppress_public_pdf_info() {
+    let bytes = b"%PDF-1.4\n\
+1 0 obj\n<< /Title (Public) >>\nendobj\n\
+2 0 obj\n<< /Encrypt 9 0 R >>\nendobj\n\
+trailer\n<< /Size 3 /Info 1 0 R >>\n\
+startxref\n0\n%%EOF";
+    let parsed = parse(bytes);
+    assert_eq!(field(&parsed, "info:Title"), Some("Public"));
+    assert!(field(&parsed, "pdf:Encrypted").is_none());
+}
