@@ -289,6 +289,103 @@ pub fn fetch_within<T: Transport + ?Sized>(
     )
 }
 
+/// The response of `fetched`, when it was read whole. With no response the outcome is
+/// `fetched`'s own (the transport failure, the spent deadline, the open circuit); a body cut at
+/// the transport's limit is `ParserDrift`, never a document to read. `what` names the provider in
+/// the diagnostic. **Pure.**
+///
+/// A source reads one answer through this, [`answer`] and [`decode_json`], in that order. A
+/// provider rule that reads the status alone (a documented "not found") goes before this one, and a
+/// rule that reads the body (an explicit "no such profile" document) between this and [`answer`].
+///
+/// # Errors
+/// The outcome to record when there is no whole response.
+pub fn whole_response<'a>(
+    fetched: &'a Fetched,
+    what: &str,
+) -> Result<&'a Response, SourceExecutionOutcome> {
+    let Some(response) = &fetched.response else {
+        return Err(fetched.outcome.clone());
+    };
+    if response.truncated {
+        return Err(SourceExecutionOutcome::failed(
+            &fetched.outcome.module,
+            fetched.outcome.observed_at_unix,
+            SourceOutcomeKind::ParserDrift,
+            Some(response.status),
+            format!("truncated {what} response"),
+        ));
+    }
+    Ok(response)
+}
+
+/// `Ok` when `fetched` is an answer to read: its outcome is still `Inconclusive`, so the status is
+/// a 2xx and the body no challenge page. Otherwise the failed outcome of the kind the fetch gave
+/// it, with its status and the pause the provider asked for; after a sent credential a `401` is
+/// therefore `AuthRejected`, not `AuthRequired`. **Pure.**
+///
+/// # Errors
+/// The outcome to record when the response is a refusal, a wall or an error.
+pub fn answer(fetched: &Fetched, what: &str) -> Result<(), SourceExecutionOutcome> {
+    let outcome = &fetched.outcome;
+    if fetched.response.is_none() {
+        return Err(outcome.clone());
+    }
+    if outcome.kind == SourceOutcomeKind::Inconclusive {
+        return Ok(());
+    }
+    let failed = SourceExecutionOutcome::failed(
+        &outcome.module,
+        outcome.observed_at_unix,
+        outcome.kind,
+        outcome.http_status,
+        format!("{what} answered with a refusal, a wall or an error, not a document"),
+    );
+    Err(match outcome.retry_after_secs {
+        Some(secs) => failed.with_retry_after(secs),
+        None => failed,
+    })
+}
+
+/// `response`'s body as `D`, or `ParserDrift` naming only the error's category and position (see
+/// [`json_error_detail`]). **Pure.**
+///
+/// # Errors
+/// The outcome to record when the body is not `D`.
+pub fn decode_json<D: serde::de::DeserializeOwned>(
+    response: &Response,
+    module: &str,
+    now_unix: u64,
+    what: &str,
+) -> Result<D, SourceExecutionOutcome> {
+    serde_json::from_slice(&response.body).map_err(|error| {
+        SourceExecutionOutcome::failed(
+            module,
+            now_unix,
+            SourceOutcomeKind::ParserDrift,
+            Some(response.status),
+            format!("{what} JSON: {}", json_error_detail(&error)),
+        )
+    })
+}
+
+/// A JSON decode error as a diagnostic may give it: its category and position, never serde's
+/// message, which can quote the body. Diagnostics are saved in ledgers. **Pure.**
+#[must_use]
+pub fn json_error_detail(error: &serde_json::Error) -> String {
+    let category = match error.classify() {
+        serde_json::error::Category::Io => "io",
+        serde_json::error::Category::Syntax => "syntax",
+        serde_json::error::Category::Data => "data",
+        serde_json::error::Category::Eof => "eof",
+    };
+    format!(
+        "{category} error at line {} column {}",
+        error.line(),
+        error.column()
+    )
+}
+
 fn fetch_hops<T: Transport + ?Sized>(
     transport: &T,
     request: Request,
@@ -1165,6 +1262,133 @@ mod tests {
         let f = Fake::new(vec![Ok(resp(401, &[], "no"))]);
         let sent = run(&f, "https://a.example/", Some(&c), 0).expect("fetch");
         assert_eq!(sent.outcome.kind, SourceOutcomeKind::AuthRejected);
+    }
+
+    /// What a source reading `sent` through `whole_response`, `answer` and `decode_json` records:
+    /// the decoded document's id, or the kind, status and pause of the first gate that refused it.
+    /// Whatever refused it, the outcome quotes no word of the body.
+    fn through_the_gates(
+        sent: Result<Response, TransportFailure>,
+        credential: Option<&Credential>,
+    ) -> Result<u64, (SourceOutcomeKind, Option<u16>, Option<u64>)> {
+        #[derive(Debug, serde::Deserialize)]
+        struct Doc {
+            id: u64,
+        }
+        let f = Fake::new(vec![sent]);
+        let fetched = run(&f, "https://a.example/", credential, 0).expect("fetch");
+        if let Some(response) = &fetched.response {
+            // The kind the gates read is the one each source classified for itself from the
+            // lossy text, but for a rejected key.
+            let own = match classify_fetch(response.status, &response.text()) {
+                SourceOutcomeKind::AuthRequired if credential.is_some() => {
+                    SourceOutcomeKind::AuthRejected
+                }
+                own => own,
+            };
+            assert_eq!(fetched.outcome.kind, own);
+        }
+        let read = whole_response(&fetched, "Example").and_then(|response| {
+            answer(&fetched, "Example")?;
+            decode_json::<Doc>(response, "t", 100, "Example")
+        });
+        read.map(|doc| doc.id).map_err(|outcome| {
+            assert_eq!((outcome.module.as_str(), outcome.found), ("t", None));
+            let detail = outcome.detail.clone().unwrap_or_default();
+            assert!(!detail.contains("secret"), "{detail}");
+            (outcome.kind, outcome.http_status, outcome.retry_after_secs)
+        })
+    }
+
+    #[test]
+    fn the_response_gates_pass_only_a_whole_answer_and_never_quote_the_body() {
+        use SourceOutcomeKind as K;
+        let key = cred("tok-abcdef-123456", AuthStyle::Bearer);
+        let challenge = "<html><title>Just a moment...</title>Cloudflare secret@example.com</html>";
+        let timeout = TransportFailure {
+            kind: K::TtfbTimeout,
+            detail: "timed out".into(),
+            blocked: false,
+        };
+        assert_eq!(
+            through_the_gates(Err(timeout), None),
+            Err((K::TtfbTimeout, None, None))
+        );
+        let limited = resp(429, &[("retry-after", "30")], "{}");
+        assert_eq!(
+            through_the_gates(Ok(limited), None),
+            Err((K::RateLimited, Some(429), Some(30)))
+        );
+        assert_eq!(
+            through_the_gates(Ok(resp(403, &[], challenge)), None),
+            Err((K::BotWaf, Some(403), None))
+        );
+        let mut lossy = resp(403, &[], "");
+        lossy.body = [b"\xff\xfe".as_slice(), challenge.as_bytes()].concat();
+        assert_eq!(
+            through_the_gates(Ok(lossy), None),
+            Err((K::BotWaf, Some(403), None))
+        );
+        assert_eq!(
+            through_the_gates(Ok(resp(401, &[], "{}")), None),
+            Err((K::AuthRequired, Some(401), None))
+        );
+        assert_eq!(
+            through_the_gates(Ok(resp(401, &[], "{}")), Some(&key)),
+            Err((K::AuthRejected, Some(401), None))
+        );
+        let mut cut = resp(200, &[], r#"{"id":7,"secret@example.com""#);
+        cut.truncated = true;
+        assert_eq!(
+            through_the_gates(Ok(cut), None),
+            Err((K::ParserDrift, Some(200), None))
+        );
+        assert_eq!(
+            through_the_gates(Ok(resp(503, &[], "{}")), None),
+            Err((K::Upstream5xx, Some(503), None))
+        );
+        assert_eq!(
+            through_the_gates(Ok(resp(200, &[], r#"{"id":7}"#)), None),
+            Ok(7)
+        );
+        for body in ["secret@example.com", r#"{"id":"secret@example.com"}"#] {
+            assert_eq!(
+                through_the_gates(Ok(resp(200, &[], body)), None),
+                Err((K::ParserDrift, Some(200), None)),
+                "{body}"
+            );
+        }
+    }
+
+    /// With no response `answer` has nothing to read, so the outcome `fetch` gave the request is
+    /// the one recorded, whatever its kind. An open circuit's `Inconclusive` is the case that would
+    /// read as an answer if `answer` judged the kind alone.
+    #[test]
+    fn answer_without_a_response_returns_the_fetch_outcome_unchanged() {
+        let f = Fake::new(vec![Err(TransportFailure {
+            kind: SourceOutcomeKind::TtfbTimeout,
+            detail: "timed out".into(),
+            blocked: false,
+        })]);
+        let timed_out = run(&f, "https://a.example/", None, 0).expect("fetch");
+        let held = suppressed("t", 100, "https://a.example/");
+        for fetched in [timed_out, held] {
+            assert!(fetched.response.is_none());
+            let err = answer(&fetched, "Example").expect_err("no response is no answer");
+            assert_eq!(err, fetched.outcome);
+        }
+    }
+
+    #[test]
+    fn a_decode_error_names_its_category_and_position_only() {
+        let Err(error) = serde_json::from_str::<u64>("\"secret@example.com\"") else {
+            panic!("a string is not a number");
+        };
+        assert_eq!(json_error_detail(&error), "data error at line 1 column 20");
+        let Err(error) = serde_json::from_str::<serde_json::Value>("[1,") else {
+            panic!("an unclosed array is not a document");
+        };
+        assert_eq!(json_error_detail(&error), "eof error at line 1 column 3");
     }
 
     #[test]
