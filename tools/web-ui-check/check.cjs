@@ -495,6 +495,14 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await audit(page, `${scheme} analysis`);
       await page.reload({ waitUntil: 'networkidle' });
       check(`${scheme}: analysis survives a reload`, await page.evaluate(() => !document.getElementById('aresult').hidden), 'analysis hidden');
+      await page.fill('#seeds', '0.0,179.99\n0.0,-179.99');
+      await page.click('#arun');
+      await page.waitForSelector('#aresult:not([hidden])', { timeout: 20000 });
+      const geoTable = await page.textContent('#ageo');
+      check(`${scheme}: GEOINT shows the short antimeridian distance from two seeds`,
+        (await page.$$('#ageo tr')).length === 1 && geoTable.includes('2223') &&
+        !await page.textContent('#ageonote'), geoTable);
+
 
       // The scan list, Settings and About.
       await page.goto(base + '/#/scans', { waitUntil: 'networkidle' });
