@@ -302,7 +302,7 @@ fn find_webp_exif(image: &[u8]) -> Result<Option<&[u8]>, &'static str> {
             .and_then(|len| start.checked_add(len))
             .ok_or("WebP: invalid chunk size")?;
         let next = tail
-            .checked_add(usize::from(length % 2))
+            .checked_add(usize::from(u8::from(length % 2 != 0)))
             .ok_or("WebP: invalid chunk padding")?;
         if next > end {
             return Err("WebP: truncated chunk payload");
