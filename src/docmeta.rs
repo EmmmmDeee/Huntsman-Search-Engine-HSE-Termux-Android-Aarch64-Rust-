@@ -581,12 +581,18 @@ fn xmp_gps(fields: &[(String, String)]) -> Option<(f64, f64)> {
 /// as signed decimal degrees. `negative` is the hemisphere letter that negates it (`S` or `W`).
 /// **Pure.**
 fn parse_xmp_coord(value: &str, negative: char) -> Option<f64> {
+    let (positive, negative_mark, maximum) = match negative {
+        'S' => (b'N', b'S', 90.0),
+        'W' => (b'E', b'W', 180.0),
+        _ => return None,
+    };
     let value = value.trim();
-    let hemisphere = value.chars().last()?;
-    if !hemisphere.is_ascii_alphabetic() {
+    let hemisphere = value.as_bytes().last()?.to_ascii_uppercase();
+    if hemisphere != positive && hemisphere != negative_mark {
         return None;
     }
-    let body = &value[..value.len() - hemisphere.len_utf8()];
+    // Hemisphere is an ASCII byte. Do not infer north/east from any other trailing letter.
+    let body = value.get(..value.len().checked_sub(1)?)?;
     let mut parts = body.split(',');
     let degrees: f64 = parts.next()?.trim().parse().ok()?;
     let minutes: f64 = match parts.next() {
@@ -597,8 +603,25 @@ fn parse_xmp_coord(value: &str, negative: char) -> Option<f64> {
         Some(raw) => raw.trim().parse().ok()?,
         None => 0.0,
     };
+    // A fourth component, negative angle, non-finite value or minute/second overflow
+    // cannot be interpreted as a location. Reject it rather than normalising a bad claim.
+    if parts.next().is_some()
+        || !degrees.is_finite()
+        || !minutes.is_finite()
+        || !seconds.is_finite()
+        || degrees < 0.0
+        || minutes < 0.0
+        || minutes >= 60.0
+        || seconds < 0.0
+        || seconds >= 60.0
+    {
+        return None;
+    }
     let magnitude = degrees + minutes / 60.0 + seconds / 3600.0;
-    Some(if hemisphere.eq_ignore_ascii_case(&negative) {
+    if !magnitude.is_finite() || magnitude > maximum {
+        return None;
+    }
+    Some(if hemisphere == negative_mark {
         -magnitude
     } else {
         magnitude
