@@ -285,13 +285,13 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       const misticked = boxes.filter(b => { const m = asked.find(x => x.name === b.name); return !m || b.checked !== m.lookups.length > 0 || b.disabled !== !m.lookups.length; });
       check(`${scheme}: By Module ticks each module a scan lookup asks and closes the rest`, boxes.length === asked.length && boxes.some(b => b.checked) && !misticked.length, misticked.slice(0, 5));
       await audit(page, `${scheme} new scan by module`);
-      const techniqueChoices = await page.$eval('#nattackfocus option', l => l.map(x => x.value).filter(Boolean));
+      const techniqueChoices = await page.$$eval('#nattackfocus option', l => l.map(x => x.value).filter(Boolean));
       const focusedTechnique = techniqueChoices.find(id => asked.some(m => (m.attack_techniques || []).includes(id) && m.lookups.length && m.configured !== false));
       check(`${scheme}: ATT&CK focus exposes executable technique mappings`, !!focusedTechnique, techniqueChoices.length);
       if (focusedTechnique) {
         await page.selectOption('#nattackfocus', focusedTechnique);
         await page.click('#nattackapply');
-        const selected = await page.$eval('#modlist input:checked', l => l.map(i => i.value).sort());
+        const selected = await page.$$eval('#modlist input:checked', l => l.map(i => i.value).sort());
         const expected = asked.filter(m => m.lookups.length && m.configured !== false && (m.attack_techniques || []).includes(focusedTechnique)).map(m => m.name).sort();
         check(`${scheme}: ATT&CK focus changes real scan source admission`,
           selected.length > 0 && JSON.stringify(selected) === JSON.stringify(expected), { selected, expected });
