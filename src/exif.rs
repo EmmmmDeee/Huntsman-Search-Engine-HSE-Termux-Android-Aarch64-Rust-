@@ -53,6 +53,28 @@ const MAX_IFD_ENTRIES: u16 = 4096;
 /// rather than allocated in full.
 const MAX_EXIF_VALUE_BYTES: usize = 8192;
 
+/// Most metadata fields surfaced from one file, by this reader and by [`crate::docmeta`] alike. A
+/// real file declares a few dozen; a larger count is corrupt or hostile and is not collected past
+/// this bound, so what one file yields, and one inspection's answer, stays bounded.
+pub(crate) const MAX_METADATA_FIELDS: usize = 512;
+
+/// Most bytes one field's displayed value may occupy, for both readers. A value rendered longer, such
+/// as an array of thousands of numbers, is truncated for display.
+pub(crate) const MAX_METADATA_VALUE_BYTES: usize = 8192;
+
+/// `value` trimmed and truncated to [`MAX_METADATA_VALUE_BYTES`] on a char boundary. **Pure.**
+pub(crate) fn cap_value(value: &str) -> String {
+    let value = value.trim();
+    if value.len() <= MAX_METADATA_VALUE_BYTES {
+        return value.to_owned();
+    }
+    let mut end = MAX_METADATA_VALUE_BYTES;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
+}
+
 pub type ExifRun = SourceRun<Report>;
 
 /// A finished `exif` run: the rendered report, the entities it is made of, and the source outcome.
@@ -242,35 +264,60 @@ fn exif_summary(parsed: &Parsed, label: &str) -> String {
 
 /// The TIFF block inside a JPEG's `APP1 Exif\0\0` segment, or `None` when there is none. **Pure.**
 fn find_jpeg_exif(image: &[u8]) -> Option<&[u8]> {
+    jpeg_segments(image).find_map(|segment| {
+        (segment.marker == 0xE1)
+            .then_some(segment.payload)?
+            .strip_prefix(b"Exif\x00\x00")
+    })
+}
+
+/// One marker segment of a JPEG: its marker byte, its whole span from its `0xFF`, and the payload
+/// after its length.
+pub(crate) struct JpegSegment<'a> {
+    pub(crate) marker: u8,
+    pub(crate) span: std::ops::Range<usize>,
+    pub(crate) payload: &'a [u8],
+}
+
+/// Each marker segment of a JPEG after its SOI marker, up to the start of scan or end of image: the
+/// one JPEG segment walker, shared with [`crate::docmeta`]. Fill bytes are skipped and standalone
+/// markers carry no segment; a malformed segment ends the walk. **Pure.**
+pub(crate) fn jpeg_segments(image: &[u8]) -> impl Iterator<Item = JpegSegment<'_>> {
     let mut i = 2; // past the SOI marker
-    loop {
-        // Skip any 0xFF fill bytes before a marker.
-        while image.get(i) == Some(&0xFF) && image.get(i + 1) == Some(&0xFF) {
-            i += 1;
+    std::iter::from_fn(move || {
+        loop {
+            // Skip any 0xFF fill bytes before a marker.
+            while image.get(i) == Some(&0xFF) && image.get(i + 1) == Some(&0xFF) {
+                i += 1;
+            }
+            if *image.get(i)? != 0xFF {
+                return None;
+            }
+            let start = i;
+            let marker = *image.get(i + 1)?;
+            i += 2;
+            // Start of scan or end of image: no metadata segment follows.
+            if marker == 0xDA || marker == 0xD9 {
+                return None;
+            }
+            // Standalone markers carry no length.
+            if marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+                continue;
+            }
+            let length = usize::from(be_u16(image, i)?);
+            if length < 2 {
+                return None;
+            }
+            let payload = image.get(i + 2..i + length)?;
+            i += length;
+            return Some(JpegSegment {
+                marker,
+                span: start..i,
+                payload,
+            });
         }
-        if *image.get(i)? != 0xFF {
-            return None;
-        }
-        let marker = *image.get(i + 1)?;
-        i += 2;
-        // Start of scan or end of image: no metadata segment follows.
-        if marker == 0xDA || marker == 0xD9 {
-            return None;
-        }
-        // Standalone markers carry no length.
-        if marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
-            continue;
-        }
-        let length = be_u16(image, i)? as usize;
-        if length < 2 {
-            return None;
-        }
-        let payload = image.get(i + 2..i + length)?;
-        if marker == 0xE1 && payload.starts_with(b"Exif\x00\x00") {
-            return payload.get(6..);
-        }
-        i += length;
-    }
+    })
+    .fuse()
 }
 
 /// A big-endian u16 at `offset`. **Pure.**
@@ -529,10 +576,12 @@ fn pointer(tiff: &Tiff, entry: &Entry) -> Option<usize> {
     usize::try_from(offset).ok()
 }
 
-/// Append a named field, skipping an empty display value. **Pure.**
+/// Append a named field with its display value capped, skipping an empty one and any past
+/// [`MAX_METADATA_FIELDS`]. **Pure.**
 fn push_field(fields: &mut Vec<(String, String)>, name: String, value: &str) {
-    if !value.is_empty() {
-        fields.push((name, value.to_owned()));
+    let value = cap_value(value);
+    if !value.is_empty() && fields.len() < MAX_METADATA_FIELDS {
+        fields.push((name, value));
     }
 }
 

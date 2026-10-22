@@ -320,3 +320,32 @@ fn a_png_exif_chunk_is_found_however_many_chunks_come_first() {
         .expect("GPS after 5000 IDATs");
     assert!((gps.lat - 48.85).abs() < 1e-6);
 }
+
+#[test]
+fn a_small_hostile_tiff_cannot_render_into_a_huge_report() {
+    // 4096 directory entries, each a 4096-number SHORT array, all pointing at the same 8 KiB: a
+    // 57 KB file that rendered every array in full came to some 235 MB of text.
+    let n: u16 = 4096;
+    let data = 8 + 2 + u32::from(n) * 12 + 4;
+    let mut tiff = b"II*\0".to_vec();
+    tiff.extend_from_slice(&8_u32.to_le_bytes());
+    tiff.extend_from_slice(&n.to_le_bytes());
+    for tag in 0..n {
+        tiff.extend_from_slice(&(0x1000 + tag).to_le_bytes());
+        tiff.extend_from_slice(&3_u16.to_le_bytes());
+        tiff.extend_from_slice(&4096_u32.to_le_bytes());
+        tiff.extend_from_slice(&data.to_le_bytes());
+    }
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    tiff.extend(std::iter::repeat_n(0xFF_u8, 8192));
+    let parsed = parse(&tiff).expect("a readable TIFF");
+    assert!(parsed.fields.len() <= crate::exif::MAX_METADATA_FIELDS);
+    let rendered: usize = parsed.fields.iter().map(|(k, v)| k.len() + v.len()).sum();
+    assert!(rendered <= 5 * 1024 * 1024, "{rendered} bytes of fields");
+    assert!(
+        parsed
+            .fields
+            .iter()
+            .all(|(_, v)| v.len() <= crate::exif::MAX_METADATA_VALUE_BYTES)
+    );
+}
