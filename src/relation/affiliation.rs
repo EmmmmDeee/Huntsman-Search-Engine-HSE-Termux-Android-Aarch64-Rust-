@@ -2,11 +2,7 @@ use std::collections::HashMap;
 
 use crate::entity::{Entity, EntityKind, normalise};
 
-use super::types::{Relation, RelationKind};
-
-fn endpoint_confidence(left: &Entity, right: &Entity) -> f64 {
-    left.confidence.min(right.confidence)
-}
+use super::types::{Relation, RelationKind, endpoint_confidence};
 
 fn push_named_links(
     out: &mut Vec<Relation>,

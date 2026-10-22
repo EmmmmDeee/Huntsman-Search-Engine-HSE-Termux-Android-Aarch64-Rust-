@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use huntsman_recon::benchmark::{
     ExpectedPublicFact, ForbiddenPublicFact, score_person_resolution_with_ancestry,
@@ -8,8 +8,14 @@ use huntsman_recon::collection::{
     UpstreamOrigin,
 };
 use huntsman_recon::dependency::{Target, TargetKind};
-use huntsman_recon::entity::EntityKind;
-use huntsman_recon::evidence_ancestry::IndependenceBasis;
+use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+use huntsman_recon::evidence_ancestry::{
+    DEFAULT_INDEPENDENCE_SEARCH_STATES, EvidenceAncestryGraph, EvidenceAncestryNode,
+    EvidenceNodeId, IndependenceBasis,
+};
+use huntsman_recon::identity_resolution::{
+    AutoMergePolicy, HoldReason, IdentityResolutionDecision, ResolutionState,
+};
 use huntsman_recon::pipeline::{PipelineLimits, normalize_observations};
 use huntsman_recon::retrieval_artifact::ArtifactId;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
@@ -327,5 +333,88 @@ fn unresolved_independence_origin_fails_normalization_closed() {
     assert!(
         normalize_observations(batch, &PipelineLimits::default()).is_err(),
         "an independence assertion whose origin has no observed root must fail closed"
+    );
+}
+
+/// The acceptance benchmark and the automatic-merge gate search for independent routes within
+/// one budget. A person supported by so many unproven roots that their pairs outnumber it
+/// exhausts the search, so the benchmark may not call the independence check complete or accept
+/// the person, and the gate holds the merge for the same reason, however well the rest scores.
+#[test]
+fn benchmark_and_merge_gate_share_one_independence_budget() {
+    let roots = (2..DEFAULT_INDEPENDENCE_SEARCH_STATES)
+        .find(|n| n * (n - 1) / 2 > DEFAULT_INDEPENDENCE_SEARCH_STATES)
+        .unwrap();
+    let ids = (0..roots)
+        .map(|n| EvidenceNodeId(format!("root-{n}")))
+        .collect::<Vec<_>>();
+    let mut graph = EvidenceAncestryGraph::default();
+    for id in &ids {
+        graph
+            .insert(EvidenceAncestryNode {
+                id: id.clone(),
+                source_family: id.0.clone(),
+                parents: BTreeSet::new(),
+                derived: false,
+            })
+            .unwrap();
+    }
+    let search = graph
+        .proven_independent_route_count(&ids, 2, DEFAULT_INDEPENDENCE_SEARCH_STATES)
+        .unwrap();
+    assert!(
+        search.incomplete,
+        "{roots} roots fit the budget: {search:?}"
+    );
+
+    let person = ids
+        .iter()
+        .fold(
+            Entity::builder(EntityKind::Person, "Talia Bacot-Keating", 0.9, SCAN_ID),
+            |person, id| {
+                person.evidence(
+                    Evidence::new(EvidenceProvenance::new("public_profile"), id.0.clone())
+                        .with_ancestry(id.clone()),
+                )
+            },
+        )
+        .build();
+    let score = score_person_resolution_with_ancestry(
+        &[person],
+        &[expected(
+            EntityKind::Person,
+            "Talia Bacot-Keating",
+            "public_profile",
+        )],
+        &[],
+        Some(&graph),
+        2,
+    );
+    assert!(score.recall.is_complete() && score.precision.is_complete());
+    assert!(score.provenance_coverage.is_complete());
+    assert_eq!(score.proven_independent_person_support, 1);
+    assert!(!score.independence_check_complete, "{score:?}");
+    assert!(!score.accepted, "{score:?}");
+
+    let decision = IdentityResolutionDecision {
+        left_entity_uid: "person:talia".into(),
+        right_entity_uid: "profile:talia".into(),
+        state: ResolutionState::Match,
+        probability: Some(0.99),
+        supporting: ids,
+        contradicting: Vec::new(),
+        temporal_conflict: false,
+        geographic_conflict: false,
+        decided_at_unix: 1_700_000_000,
+    };
+    assert_eq!(
+        decision.hold_reasons(&graph, AutoMergePolicy::default()),
+        [
+            HoldReason::IncompleteIndependenceProof,
+            HoldReason::InsufficientIndependentFamilies {
+                found: 1,
+                required: 2,
+            },
+        ]
     );
 }

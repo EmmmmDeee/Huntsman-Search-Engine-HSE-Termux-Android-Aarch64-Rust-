@@ -21,7 +21,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::evidence_ancestry::{AncestryError, EvidenceAncestryGraph, EvidenceNodeId};
+use crate::evidence_ancestry::{
+    AncestryError, DEFAULT_INDEPENDENCE_SEARCH_STATES, EvidenceAncestryGraph, EvidenceNodeId,
+};
 
 /// Boost per `ln n` in the multiplicative term.
 pub const CORROBORATION_COEFF: f64 = 0.15;
@@ -31,8 +33,6 @@ pub const CORROBORATION_DOUBT_DECAY: f64 = 0.65;
 pub const VERIFIED_MIN: f64 = 0.75;
 /// Lower bound of the Probable tier.
 pub const PROBABLE_MIN: f64 = 0.40;
-
-const MAX_INDEPENDENCE_SEARCH_STATES: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Classification {
@@ -148,7 +148,7 @@ pub fn effective_from_ancestry(
     let routes = graph.proven_independent_route_count(
         support.iter(),
         required,
-        MAX_INDEPENDENCE_SEARCH_STATES,
+        DEFAULT_INDEPENDENCE_SEARCH_STATES,
     )?;
     Ok(effective(
         confidence,

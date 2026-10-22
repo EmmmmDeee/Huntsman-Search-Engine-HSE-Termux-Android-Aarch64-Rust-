@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::clock;
-use crate::entity::{EntityKind, normalise};
+use crate::entity::{Entity, EntityKind, normalise};
 use crate::sha256::{hex32, sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -174,6 +174,12 @@ pub enum Basis<'r> {
     Link(&'r str, &'r str),
 }
 
+/// How strong a relation derived between `left` and `right` may be: as strong as the weaker of
+/// the two entities it joins.
+pub(super) fn endpoint_confidence(left: &Entity, right: &Entity) -> f64 {
+    left.confidence.min(right.confidence)
+}
+
 #[must_use]
 pub fn domain_key(raw: &str) -> String {
     normalise(&EntityKind::Domain, raw)
@@ -208,5 +214,16 @@ mod tests {
         let named = back.clone().with_basis("handle:jsmith");
         assert_eq!(named.rests_on(), Basis::Named("handle:jsmith"));
         assert_ne!(named.rests_on(), back.rests_on());
+    }
+
+    /// A relation derived between two entities is as strong as the weaker of them, whichever
+    /// way round it runs.
+    #[test]
+    fn a_derived_relation_is_as_strong_as_its_weaker_end() {
+        let strong = Entity::new(EntityKind::Email, "ann@example.com", 0.9, "s");
+        let weak = Entity::new(EntityKind::Username, "ann", 0.4, "s");
+        assert!((endpoint_confidence(&strong, &weak) - 0.4).abs() < 1e-12);
+        assert!((endpoint_confidence(&weak, &strong) - 0.4).abs() < 1e-12);
+        assert!((endpoint_confidence(&strong, &strong) - 0.9).abs() < 1e-12);
     }
 }

@@ -4,7 +4,7 @@
 use serde::Serialize;
 
 use crate::entity::Entity;
-use crate::evidence_ancestry::EvidenceAncestryGraph;
+use crate::evidence_ancestry::{DEFAULT_INDEPENDENCE_SEARCH_STATES, EvidenceAncestryGraph};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ExpectedPublicFact {
@@ -95,7 +95,11 @@ fn person_independence_support(
         .collect();
     let count = ancestry.and_then(|graph| {
         graph
-            .proven_independent_route_count(nodes.iter().copied(), required, 100_000)
+            .proven_independent_route_count(
+                nodes.iter().copied(),
+                required,
+                DEFAULT_INDEPENDENCE_SEARCH_STATES,
+            )
             .ok()
     });
     let proven = count.map_or(0, |value| value.proven);

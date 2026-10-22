@@ -10,17 +10,13 @@ use super::affiliation::{
     derive_officership, derive_org_identity,
 };
 use super::social_extract::derive_profile_links;
-use super::types::{Relation, RelationKind, domain_key, is_identity_kind};
+use super::types::{Relation, RelationKind, domain_key, endpoint_confidence, is_identity_kind};
 
 mod topology;
 
 pub use topology::{derive_colocation, derive_registration, derive_resolution, derive_structural};
 
 const SHARED_SELECTOR_MAX_GROUP: usize = 8;
-
-fn endpoint_confidence(left: &Entity, right: &Entity) -> f64 {
-    left.confidence.min(right.confidence)
-}
 
 fn entity_attr_values<'a>(entity: &'a Entity, keys: &[&str]) -> Vec<&'a str> {
     let mut out = Vec::new();

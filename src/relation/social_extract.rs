@@ -3,11 +3,7 @@ use std::collections::HashMap;
 use crate::canonical::{canonical_handle, canonical_url};
 use crate::entity::{Entity, EntityKind};
 
-use super::types::{Relation, RelationKind};
-
-fn endpoint_confidence(left: &Entity, right: &Entity) -> f64 {
-    left.confidence.min(right.confidence)
-}
+use super::types::{Relation, RelationKind, endpoint_confidence};
 
 fn extract_username_from_profile_url(url: &str) -> Option<String> {
     let canonical = canonical_url(url)?;
