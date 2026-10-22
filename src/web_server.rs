@@ -837,13 +837,9 @@ fn inspect_admits(head: &str, config: &ServeConfig, routes: &Routes) -> Option<(
     let parsed = parse_request(head)?;
     let admitted = parsed.method == Method::Post
         && parsed.path == INSPECT_PATH
-        && parsed.lookup_header
-        && same_site(parsed.sec_fetch_site)
-        && config
-            .bearer_token
-            .as_deref()
-            .is_none_or(|expected| bearer_matches(parsed.authorization, expected))
-        && (!config.bind.ip().is_loopback() || host_is_allowed_for_loopback(parsed.host));
+        && page_refusal(&parsed, "inspection", true).is_none()
+        && authorized(&parsed, config)
+        && host_allowed(&parsed, config);
     if !admitted {
         return None;
     }
@@ -863,6 +859,40 @@ fn takes_post(path: &str) -> bool {
 /// site.
 fn same_site(sec_fetch_site: Option<&str>) -> bool {
     sec_fetch_site.is_none_or(|site| matches!(site, "same-origin" | "none"))
+}
+
+/// The `403` a browser-facing API route answers before anything else, naming the route as `noun`:
+/// a fetch another site started, or, when the route `needs_header`, one without the page's
+/// `X-Huntsman-Lookup: 1` header, which another origin cannot send without a CORS preflight this
+/// server never approves. `None` when the request may go on. Every such route asks this one
+/// function, so their guards cannot drift apart.
+fn page_refusal(parsed: &ParsedRequest<'_>, noun: &str, needs_header: bool) -> Option<String> {
+    if !same_site(parsed.sec_fetch_site) {
+        return Some(json_error(403, &format!("cross-site {noun} refused")));
+    }
+    (needs_header && !parsed.lookup_header).then(|| {
+        json_error(
+            403,
+            &format!("{noun} needs the X-Huntsman-Lookup: 1 header"),
+        )
+    })
+}
+
+/// Whether the request carries the bearer token this server needs, or the server needs none.
+fn authorized(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> bool {
+    config
+        .bearer_token
+        .as_deref()
+        .is_none_or(|expected| bearer_matches(parsed.authorization, expected))
+}
+
+/// The DNS-rebinding guard. A loopback server is reached from a page whose origin is a public name
+/// rebound to a loopback address, so the browser sends that public name in `Host`: a loopback
+/// server answers only loopback authorities (or an absent `Host`). A non-loopback bind is
+/// intentionally public, gated by the bearer token, and its legitimate `Host` is not known here, so
+/// the guard passes it.
+fn host_allowed(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> bool {
+    !config.bind.ip().is_loopback() || host_is_allowed_for_loopback(parsed.host)
 }
 
 /// The body to read after a request's `head`: the `Content-Length` it announces, when that is at
@@ -1053,7 +1083,7 @@ fn respond_with(
     config: &ServeConfig,
     routes: &Routes,
 ) -> Vec<u8> {
-    let (bind, bearer_token) = (config.bind, config.bearer_token.as_deref());
+    let bearer_token = config.bearer_token.as_deref();
     if request == "REQUEST_TOO_LARGE" {
         return response(
             413,
@@ -1072,12 +1102,7 @@ fn respond_with(
         return response(400, "text/plain; charset=utf-8", "bad request\n", false).into_bytes();
     };
 
-    // DNS-rebinding guard. A loopback server is reached from a page whose origin is
-    // a public name rebound to a loopback address, so the browser sends that public
-    // name in `Host`. Answer only loopback authorities (or an absent `Host`). A
-    // non-loopback bind is intentionally public, gated by the bearer token, and its
-    // legitimate `Host` is not known here, so the guard skips it.
-    if bind.ip().is_loopback() && !host_is_allowed_for_loopback(parsed.host) {
+    if !host_allowed(&parsed, config) {
         return response(
             403,
             "text/plain; charset=utf-8",
@@ -1108,9 +1133,7 @@ fn respond_with(
             | KEYS_PATH
             | INSPECT_PATH
     ) || ScanApi::handles(parsed.path);
-    if protected
-        && bearer_token.is_some_and(|expected| !bearer_matches(parsed.authorization, expected))
-    {
+    if protected && !authorized(&parsed, config) {
         return response(401, "application/json; charset=utf-8", UNAUTHORIZED, head).into_bytes();
     }
 
@@ -1200,14 +1223,8 @@ fn radar_response(parsed: &ParsedRequest<'_>, radar: Option<&Radar>) -> String {
     if parsed.method != Method::Get {
         return json_error(405, "Wi-Fi radar needs GET");
     }
-    if parsed
-        .sec_fetch_site
-        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
-    {
-        return json_error(403, "cross-site Wi-Fi radar request refused");
-    }
-    if !parsed.lookup_header {
-        return json_error(403, "Wi-Fi radar needs the X-Huntsman-Lookup: 1 header");
+    if let Some(refused) = page_refusal(parsed, "Wi-Fi radar request", true) {
+        return refused;
     }
     if !parsed.query.is_empty() {
         return json_error(400, "Wi-Fi radar takes no query parameters");
@@ -1259,14 +1276,8 @@ fn lookup_response(
     }
     // `none` is a typed URL or bookmark; `same-origin` is this page. Anything else came from
     // another site, which must not spend this operator's egress or keys.
-    if parsed
-        .sec_fetch_site
-        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
-    {
-        return json_error(403, "cross-site lookup refused");
-    }
-    if !parsed.lookup_header {
-        return json_error(403, "lookup needs the X-Huntsman-Lookup: 1 header");
+    if let Some(refused) = page_refusal(parsed, "lookup", true) {
+        return refused;
     }
     let query = match parse_lookup_query(parsed.query) {
         Ok(query) => query,
@@ -1398,14 +1409,8 @@ fn scans_response(parsed: &ParsedRequest<'_>, scans: Option<&Arc<ScanApi>>) -> V
     let Some(scans) = scans else {
         return json_error(404, "saved scans are not enabled on this server").into_bytes();
     };
-    if parsed
-        .sec_fetch_site
-        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
-    {
-        return json_error(403, "cross-site scan request refused").into_bytes();
-    }
-    if !parsed.lookup_header {
-        return json_error(403, "the scan API needs the X-Huntsman-Lookup: 1 header").into_bytes();
+    if let Some(refused) = page_refusal(parsed, "scan request", true) {
+        return refused.into_bytes();
     }
     if parsed.has_body {
         return json_error(400, "send the parameters in the query string, with no body")
@@ -1508,14 +1513,8 @@ fn keys_response(parsed: &ParsedRequest<'_>, home: Option<&Path>) -> String {
             "this server keeps no keys file: start it with HOME set to an absolute directory",
         );
     };
-    if parsed
-        .sec_fetch_site
-        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
-    {
-        return json_error(403, "cross-site key request refused");
-    }
-    if !parsed.lookup_header {
-        return json_error(403, "the key settings need the X-Huntsman-Lookup: 1 header");
+    if let Some(refused) = page_refusal(parsed, "key request", true) {
+        return refused;
     }
     // A URL is kept in history and logs, so a key must not reach this route in one, even beside
     // a form that would be saved.
@@ -1676,11 +1675,8 @@ fn analyze_response(parsed: &ParsedRequest<'_>, analyze: Option<&AnalyzeHandler>
     if parsed.method != Method::Get {
         return json_error(405, "analysis needs GET");
     }
-    if parsed
-        .sec_fetch_site
-        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
-    {
-        return json_error(403, "cross-site analysis refused");
+    if let Some(refused) = page_refusal(parsed, "analysis", false) {
+        return refused;
     }
     let seeds = match parse_analyze_seeds(parsed.query) {
         Ok(seeds) => seeds,
@@ -1716,11 +1712,8 @@ fn inspect_response(
     if parsed.method != Method::Post {
         return json_error(405, "inspection needs POST with the file as the body");
     }
-    if !same_site(parsed.sec_fetch_site) {
-        return json_error(403, "cross-site inspection refused");
-    }
-    if !parsed.lookup_header {
-        return json_error(403, "inspection needs the X-Huntsman-Lookup: 1 header");
+    if let Some(refused) = page_refusal(parsed, "inspection", true) {
+        return refused;
     }
     let length = match parsed.content_length {
         None | Some(0) => return json_error(400, "inspection needs the file as the body"),
@@ -4369,5 +4362,96 @@ mod tests {
         assert!(inspect_label("name=%FF").is_err());
         let long = inspect_label(&format!("name={}", "é".repeat(400))).unwrap();
         assert!(long.len() <= MAX_INSPECT_NAME_BYTES && long.starts_with('é'));
+    }
+
+    /// Every browser-facing API route refuses a fetch another site started, and each route that
+    /// needs the page's header refuses a request without it, through the one [`page_refusal`]
+    /// guard, in the same words. The upload gate refuses the same requests before reading a body.
+    #[test]
+    fn every_page_route_refuses_other_sites_through_one_guard() {
+        let refuse = |_: &str, _: &[u8]| -> Result<LookupReport, LookupError> {
+            Err(LookupError {
+                status: 422,
+                message: "unused".into(),
+            })
+        };
+        let home = key_home("guard");
+        let routes = Routes {
+            lookups: Some(echo_lookups()),
+            radar: Some(Radar {
+                handler: Arc::new(|| {
+                    Err(LookupError {
+                        status: 422,
+                        message: "unused".into(),
+                    })
+                }),
+                live: Arc::new(AtomicUsize::new(0)),
+            }),
+            analyze: echo_seeds().analyze,
+            inspect: Some(Inspect {
+                handler: Arc::new(refuse),
+                live: Arc::new(AtomicUsize::new(0)),
+            }),
+            scans: scan_routes("guard").0.scans,
+            keys_home: Some(home.clone()),
+        };
+        let config = test_config(loopback_bind(), None);
+        let ask = |method: &str, target: &str, extra: &str| {
+            let length = if method == "POST" {
+                "Content-Length: 3\r\n"
+            } else {
+                ""
+            };
+            text(respond(
+                &format!("{method} {target} HTTP/1.1\r\nHost: localhost\r\n{extra}{length}\r\n"),
+                &config,
+                &routes,
+            ))
+        };
+        for (method, target, noun, needs_header) in [
+            ("GET", "/api/lookup?q=a", "lookup", true),
+            ("GET", "/api/radar/wifi", "Wi-Fi radar request", true),
+            ("GET", "/api/scans", "scan request", true),
+            ("GET", KEYS_PATH, "key request", true),
+            ("GET", "/api/analyze?seeds=a", "analysis", false),
+            ("POST", "/api/inspect?name=a", "inspection", true),
+        ] {
+            for site in ["cross-site", "same-site"] {
+                let answer = ask(
+                    method,
+                    target,
+                    &format!("{HEADER}Sec-Fetch-Site: {site}\r\n"),
+                );
+                assert!(
+                    answer.starts_with("HTTP/1.1 403"),
+                    "{target} {site}: {answer}"
+                );
+                assert!(
+                    answer.contains(&format!("cross-site {noun} refused")),
+                    "{answer}"
+                );
+            }
+            let bare = ask(method, target, "Sec-Fetch-Site: same-origin\r\n");
+            let header_refusal = format!("{noun} needs the X-Huntsman-Lookup: 1 header");
+            if needs_header {
+                assert!(bare.starts_with("HTTP/1.1 403"), "{target}: {bare}");
+                assert!(bare.contains(&header_refusal), "{bare}");
+            } else {
+                assert!(
+                    !bare.contains("refused") && !bare.contains("needs the X-Huntsman"),
+                    "{bare}"
+                );
+            }
+        }
+        for extra in ["Sec-Fetch-Site: cross-site\r\nX-Huntsman-Lookup: 1\r\n", ""] {
+            let head = format!(
+                "POST /api/inspect HTTP/1.1\r\nHost: localhost\r\n{extra}Content-Length: 3\r\n\r\n"
+            );
+            assert!(
+                inspect_admits(&head, &config, &routes).is_none(),
+                "{extra:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
