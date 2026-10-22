@@ -180,3 +180,66 @@ fn args_parse_one_path_and_reject_the_rest() {
     assert!(ExifArgs::parse(&["a".into(), "b".into()]).is_err());
     assert!(ExifArgs::parse(&["   ".into()]).is_err());
 }
+
+fn exif_webp(prefixed: bool) -> Vec<u8> {
+    let mut payload = exif_tiff();
+    if prefixed {
+        let mut wrapped = b"Exif\x00\x00".to_vec();
+        wrapped.extend_from_slice(&payload);
+        payload = wrapped;
+    }
+    let padding = payload.len() % 2;
+    let riff_size = u32::try_from(4 + 8 + payload.len() + padding).unwrap();
+    let mut webp = b"RIFF".to_vec();
+    webp.extend_from_slice(&riff_size.to_le_bytes());
+    webp.extend_from_slice(b"WEBP");
+    webp.extend_from_slice(b"EXIF");
+    webp.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
+    webp.extend_from_slice(&payload);
+    if padding != 0 {
+        webp.push(0);
+    }
+    webp
+}
+
+#[test]
+fn reads_exif_and_gps_from_webp_riff_chunk() {
+    for prefixed in [false, true] {
+        let parsed = parse(&exif_webp(prefixed)).expect("valid WebP EXIF");
+        assert_eq!(parsed.format, "WebP");
+        let gps = parsed.gps.expect("WebP GPS fix");
+        assert!((gps.lat - 48.85).abs() < 1e-6);
+        assert!((gps.lon - 2.333_333).abs() < 1e-5);
+    }
+}
+
+#[test]
+fn webp_without_exif_is_clean_and_truncation_is_rejected() {
+    let clean = b"RIFF\x04\x00\x00\x00WEBP";
+    let parsed = parse(clean).expect("WebP with no EXIF chunk");
+    assert_eq!(parsed.format, "WebP");
+    assert!(parsed.fields.is_empty());
+    assert!(parsed.gps.is_none());
+
+    let mut broken = exif_webp(false);
+    broken.pop();
+    assert!(parse(&broken).is_err());
+    let mut broken_chunk = exif_webp(false);
+    broken_chunk[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(parse(&broken_chunk).is_err());
+}
+
+#[test]
+fn webp_gps_becomes_a_coordinates_entity_not_just_metadata_text() {
+    match run(&exif_webp(false), "sample.webp", 1) {
+        ExifRun::Printed { report, .. } => {
+            assert!(
+                report
+                    .entities
+                    .iter()
+                    .any(|entity| entity.kind == EntityKind::Coordinates)
+            );
+        }
+        ExifRun::Network(error) | ExifRun::Failed(error) => panic!("{error}"),
+    }
+}
