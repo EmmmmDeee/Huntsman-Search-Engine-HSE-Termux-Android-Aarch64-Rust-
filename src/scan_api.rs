@@ -328,6 +328,9 @@ impl ScanApi {
                     "network": module.network,
                     "command": module.command,
                     "description": module.description,
+                    // The same TA0043 mapping used by operational source selection.
+                    // Metadata is an acquisition opportunity, never proof of a finding.
+                    "attack_techniques": module.attack_techniques,
                     "key_env": key_env,
                     "configured": configured,
                     "lookups": crate::lookup_modules::lookups_asking(module.name),
@@ -2058,6 +2061,12 @@ mod tests {
         // Each module names the lookups that ask it, as New Scan's By Module list shows.
         let modules = settings["modules"].as_array().unwrap();
         assert!(modules.iter().all(|module| module["lookups"].is_array()));
+        assert!(modules.iter().all(|module| module["attack_techniques"].is_array()));
+        let dns = modules.iter().find(|module| module["name"] == "ripestat").unwrap();
+        assert!(dns["attack_techniques"].as_array().unwrap().iter().any(|id| {
+            id.as_str()
+                .is_some_and(|name| crate::attack::technique(name).is_some())
+        }));
         let ripestat = modules.iter().find(|module| module["name"] == "ripestat");
         assert_eq!(
             ripestat.unwrap()["lookups"],
