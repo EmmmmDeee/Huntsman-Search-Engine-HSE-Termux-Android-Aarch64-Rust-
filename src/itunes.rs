@@ -11,9 +11,9 @@ use serde::Deserialize;
 
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, fetch};
-use crate::http::{Request, Response, Transport, percent_encode_unreserved};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
+use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
+use crate::http::{Request, Transport, percent_encode_unreserved};
+use crate::source_outcome::SourceExecutionOutcome;
 
 pub const SOURCE: &str = "apple_itunes";
 const HOST: &str = "https://itunes.apple.com/search";
@@ -85,13 +85,7 @@ pub fn lookup<T: Transport + ?Sized>(
         now_unix,
     )?;
 
-    let Some(response) = fetched.response else {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: fetched.outcome,
-        });
-    };
-    Ok(interpret(&response, term, scan_id, now_unix))
+    Ok(interpret(&fetched, term, scan_id, now_unix).unwrap_or_else(miss))
 }
 
 fn miss(outcome: SourceExecutionOutcome) -> Report {
@@ -101,44 +95,18 @@ fn miss(outcome: SourceExecutionOutcome) -> Report {
     }
 }
 
-/// Turn one fetched response into a report. **Pure.**
-fn interpret(response: &Response, term: &str, scan_id: &str, now_unix: u64) -> Report {
-    if response.truncated {
-        return miss(SourceExecutionOutcome::failed(
-            SOURCE,
-            now_unix,
-            SourceOutcomeKind::ParserDrift,
-            Some(response.status),
-            "truncated iTunes Search response",
-        ));
-    }
-
-    let body = response.text();
-    let classified = classify_fetch(response.status, &body);
-    if classified != SourceOutcomeKind::Inconclusive {
-        return miss(SourceExecutionOutcome::failed(
-            SOURCE,
-            now_unix,
-            classified,
-            Some(response.status),
-            "iTunes Search answered with a refusal or a wall, not a result set",
-        ));
-    }
-
-    let search: Search = match serde_json::from_slice(&response.body) {
-        Ok(search) => search,
-        Err(error) => {
-            return miss(SourceExecutionOutcome::failed(
-                SOURCE,
-                now_unix,
-                SourceOutcomeKind::ParserDrift,
-                Some(response.status),
-                format!("iTunes Search JSON: {error}"),
-            ));
-        }
-    };
-
-    decode(&search, term, scan_id, now_unix, response.status)
+/// Turn one fetched response into a report; `Err` is the outcome of a response that was not a
+/// result set. **Pure.**
+fn interpret(
+    fetched: &Fetched,
+    term: &str,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<Report, SourceExecutionOutcome> {
+    let response = whole_response(fetched, "iTunes Search")?;
+    answer(fetched, "iTunes Search")?;
+    let search: Search = decode_json(response, SOURCE, now_unix, "iTunes Search")?;
+    Ok(decode(&search, term, scan_id, now_unix, response.status))
 }
 
 /// Build the report from a parsed search. **Pure.**
@@ -197,6 +165,7 @@ fn decode(search: &Search, term: &str, scan_id: &str, now_unix: u64, status: u16
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::OneResponse;
 
     /// Fictional records with the API's field names; no real app or seller data is committed.
@@ -282,6 +251,23 @@ mod tests {
             Ok(report) => {
                 assert!(report.entities.is_empty());
                 assert!(!report.outcome.kind.is_accepted());
+            }
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    #[test]
+    fn a_wrong_typed_result_set_is_parser_drift_that_quotes_none_of_it() {
+        match lookup(
+            &OneResponse::json(200, r#"{"results":"secret@example.com"}"#),
+            "Example Co",
+            "scan-itunes",
+            1,
+        ) {
+            Ok(report) => {
+                assert_eq!(report.outcome.kind, SourceOutcomeKind::ParserDrift);
+                let detail = report.outcome.detail.unwrap_or_default();
+                assert!(!detail.contains("secret@example.com"), "{detail}");
             }
             Err(error) => panic!("{error}"),
         }
