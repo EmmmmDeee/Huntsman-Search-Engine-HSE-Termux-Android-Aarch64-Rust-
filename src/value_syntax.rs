@@ -332,12 +332,25 @@ pub fn is_whois_privacy_placeholder(value: &str) -> bool {
 /// for a malformed escape or bytes that are not UTF-8.
 #[must_use]
 pub fn form_decode(raw: &str) -> Option<String> {
+    percent_decode(raw, true)
+}
+
+/// Strict `%XX` decoding. Unlike [`form_decode`], `+` stays a plus: it is legal in an address.
+/// `None` for a malformed escape or bytes that are not UTF-8.
+#[must_use]
+pub fn percent_decode_strict(raw: &str) -> Option<String> {
+    percent_decode(raw, false)
+}
+
+/// The one `%XX` decoder behind [`form_decode`] and [`percent_decode_strict`]: `plus_is_space`
+/// is the only difference between them.
+fn percent_decode(raw: &str, plus_is_space: bool) -> Option<String> {
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
         match bytes[index] {
-            b'+' => out.push(b' '),
+            b'+' if plus_is_space => out.push(b' '),
             b'%' => {
                 let hex = bytes.get(index + 1..index + 3)?;
                 if !hex.iter().all(u8::is_ascii_hexdigit) {
@@ -421,6 +434,30 @@ mod form_tests {
     fn record_tag_parser_normalises_name_and_trims_value() {
         assert_eq!(record_tag(" Pct = 75 "), Some(("pct".to_string(), "75")));
         assert_eq!(record_tag("missing"), None);
+    }
+
+    /// Both decoding modes over one table: `+` is the only byte they read differently, and a bad
+    /// escape or bytes that are not UTF-8 refuse the whole value in either.
+    #[test]
+    fn form_and_strict_decoding_differ_only_in_the_plus() {
+        let cases: [(&str, Option<&str>, Option<&str>); 8] = [
+            ("a+b%40c", Some("a b@c"), Some("a+b@c")),
+            ("%C3%A9", Some("\u{e9}"), Some("\u{e9}")),
+            ("plain", Some("plain"), Some("plain")),
+            ("%+1", None, None),
+            ("%zz", None, None),
+            ("%4", None, None),
+            ("%", None, None),
+            ("%FF", None, None),
+        ];
+        for (raw, form, strict) in cases {
+            assert_eq!(form_decode(raw).as_deref(), form, "form {raw}");
+            assert_eq!(
+                percent_decode_strict(raw).as_deref(),
+                strict,
+                "strict {raw}"
+            );
+        }
     }
 }
 

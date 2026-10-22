@@ -16,6 +16,7 @@ use crate::error::Error;
 use crate::fetch::{FetchOptions, Fetched, answer, fetch, whole_response};
 use crate::http::{Request, Transport, append_query_param};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::value_syntax::percent_decode_strict;
 
 pub const SRC: &str = "openpgp_keys";
 
@@ -142,7 +143,7 @@ fn parse_index(body: &str) -> Option<Vec<Key>> {
                 });
             }
             "uid" => {
-                let uid = percent_decode(fields.get(1).copied().unwrap_or(""))?;
+                let uid = percent_decode_strict(fields.get(1).copied().unwrap_or(""))?;
                 keys.last_mut()?.uids.push(uid);
             }
             // Unknown record types are ignored, as the format requires.
@@ -150,27 +151,6 @@ fn parse_index(body: &str) -> Option<Vec<Key>> {
         }
     }
     Some(keys)
-}
-
-/// Strict `%XX` decoding. Unlike form decoding, `+` stays a plus: it is legal in an address.
-fn percent_decode(raw: &str) -> Option<String> {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let hex = std::str::from_utf8(bytes.get(index + 1..index + 3)?).ok()?;
-            if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return None;
-            }
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            index += 3;
-        } else {
-            out.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8(out).ok()
 }
 
 /// Split a user ID of the form `Name (comment) <addr>` into its name and address.
@@ -427,13 +407,6 @@ uid:Jane%20%3Cjane.doe@example.net%3E::\n";
         );
         assert!(!report.entities.iter().any(|e| e.kind == EntityKind::Person));
         assert!(owned_addresses(body, "jane@example.org").is_empty());
-    }
-
-    #[test]
-    fn plus_in_an_address_survives_decoding() {
-        assert_eq!(percent_decode("a+b%40c").as_deref(), Some("a+b@c"));
-        assert_eq!(percent_decode("%4"), None);
-        assert_eq!(percent_decode("%zz"), None);
     }
 
     #[test]

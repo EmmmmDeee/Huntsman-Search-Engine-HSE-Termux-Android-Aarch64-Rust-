@@ -46,7 +46,7 @@ use crate::scan_service::{ScanRequest, ScanService};
 use crate::scan_store::{LogLevel, ScanStatus};
 use crate::sha256::sha256;
 use crate::source_outcome::SourceExecutionOutcome;
-use crate::value_syntax::form_pairs;
+use crate::value_syntax::{form_decode, form_pairs};
 use crate::wifi_radar::WifiScan;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
@@ -1550,7 +1550,7 @@ fn parse_lookup_query(raw: &str) -> Result<LookupQuery, &'static str> {
     let mut selector = None;
     for pair in raw.split('&').filter(|pair| !pair.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        let value = percent_decode(value).ok_or("query is not valid percent-encoded UTF-8")?;
+        let value = form_decode(value).ok_or("query is not valid percent-encoded UTF-8")?;
         match key {
             "kind" => kind = Some(value),
             "q" => selector = Some(value),
@@ -1842,7 +1842,7 @@ fn inspect_label(raw: &str) -> Result<String, &'static str> {
     for pair in raw.split('&').filter(|pair| !pair.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         if key == "name" {
-            name = percent_decode(value).ok_or("name is not valid percent-encoded UTF-8")?;
+            name = form_decode(value).ok_or("name is not valid percent-encoded UTF-8")?;
         }
     }
     let base = name.rsplit(['/', '\\']).next().unwrap_or("");
@@ -1868,7 +1868,7 @@ fn parse_analyze_seeds(raw: &str) -> Result<Vec<String>, String> {
     for pair in raw.split('&').filter(|pair| !pair.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         if key == "seeds" {
-            text = percent_decode(value)
+            text = form_decode(value)
                 .ok_or_else(|| "query is not valid percent-encoded UTF-8".to_owned())?;
         }
     }
@@ -1888,29 +1888,6 @@ fn parse_analyze_seeds(raw: &str) -> Result<Vec<String>, String> {
         return Err(format!("a seed is longer than {MAX_SELECTOR_BYTES} bytes"));
     }
     Ok(seeds)
-}
-
-/// `application/x-www-form-urlencoded` value decoding: `+` is a space and `%XX` a byte.
-fn percent_decode(raw: &str) -> Option<String> {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'+' => out.push(b' '),
-            b'%' => {
-                let hex = bytes.get(index + 1..index + 3)?;
-                if !hex.iter().all(u8::is_ascii_hexdigit) {
-                    return None;
-                }
-                out.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
-                index += 2;
-            }
-            byte => out.push(byte),
-        }
-        index += 1;
-    }
-    String::from_utf8(out).ok()
 }
 
 fn bearer_matches(header: Option<&str>, expected: &str) -> bool {
@@ -3319,15 +3296,6 @@ mod tests {
             ScanStatus::ErrorFailed
         );
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn percent_decoding_is_strict() {
-        assert_eq!(percent_decode("a+b%40c").as_deref(), Some("a b@c"));
-        assert_eq!(percent_decode("%C3%A9").as_deref(), Some("\u{e9}"));
-        for bad in ["%+1", "%zz", "%4", "%", "%FF"] {
-            assert_eq!(percent_decode(bad), None, "{bad}");
-        }
     }
 
     fn header<'a>(response: &'a str, name: &str) -> Option<&'a str> {
