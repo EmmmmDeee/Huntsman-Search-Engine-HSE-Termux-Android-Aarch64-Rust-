@@ -26,7 +26,7 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_
 
 pub const DEFAULT_MAX_REDIRECTS: u32 = 5;
 /// A provider asking for a longer pause than this is reported as one hour.
-const MAX_RETRY_AFTER_SECS: u64 = 3600;
+pub(crate) const MAX_RETRY_AFTER_SECS: u64 = 3600;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthStyle {

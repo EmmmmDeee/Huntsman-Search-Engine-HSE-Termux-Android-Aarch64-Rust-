@@ -286,7 +286,7 @@ fn send<T: Transport + ?Sized>(
     if response.status == 404 {
         return Ok(Answer::NotFound(response.body));
     }
-    status_error(&response)?;
+    status_error(&response, fetched.outcome.retry_after_secs)?;
     if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
         return Err(LegError::NotAnAnswer(fetched.outcome.kind));
     }
@@ -319,18 +319,16 @@ fn credential(
         .map_err(|e| LegError::Refused(e.to_string()))
 }
 
-/// The error a non-2xx, non-404 status means. **Pure.**
-fn status_error(response: &Response) -> Result<(), LegError> {
+/// The error a non-2xx, non-404 status means. A rate limit carries `retry_after`, the pause
+/// [`fetch`] read from the response's `Retry-After` (delta-seconds or an HTTP-date, capped at an
+/// hour). **Pure.**
+fn status_error(response: &Response, retry_after: Option<u64>) -> Result<(), LegError> {
     match response.status {
         200..=299 => Ok(()),
         400 | 422 => Err(LegError::BadRequest(response.status)),
         401 => Err(LegError::Unauthorized),
         402 | 403 => Err(LegError::Forbidden),
-        429 => Err(LegError::RateLimited {
-            retry_after: response
-                .header_value("retry-after")
-                .and_then(|v| v.trim().parse::<u64>().ok()),
-        }),
+        429 => Err(LegError::RateLimited { retry_after }),
         status @ 500..=599 => Err(LegError::Server(status)),
         status => Err(LegError::Unexpected(status)),
     }
@@ -588,6 +586,34 @@ mod tests {
         assert_eq!(outcome.retry_after_secs, Some(42));
         assert_eq!(outcome.http_status, Some(429));
         assert_eq!(outcome.module, "fixture");
+    }
+
+    #[test]
+    fn a_rate_limit_reads_retry_after_as_the_fetch_does() {
+        // 80 s before the date, as `fetch`'s own test counts it.
+        const NOW: u64 = 1_792_567_600;
+        let cases = [
+            ("Wed, 21 Oct 2026 07:28:00 GMT", Some(80)),
+            ("999999", Some(3600)),
+            ("soon", None),
+        ];
+        for (value, expected) in cases {
+            let mut transport = Recorder::new(429, "{}");
+            transport.headers = vec![("Retry-After".into(), value.into())];
+            let err = match get(&transport, &KEYED, &keys(), URL, NOW) {
+                Err(err) => err,
+                Ok(answer) => panic!("a 429 is not an answer: {answer:?}"),
+            };
+            assert_eq!(
+                err,
+                LegError::RateLimited {
+                    retry_after: expected
+                },
+                "{value}"
+            );
+            let outcome = err.outcome(&KEYED, NOW);
+            assert_eq!(outcome.retry_after_secs, expected, "{value}");
+        }
     }
 
     #[test]

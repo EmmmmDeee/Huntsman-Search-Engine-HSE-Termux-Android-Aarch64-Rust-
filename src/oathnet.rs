@@ -310,7 +310,7 @@ pub fn search<T: Transport + ?Sized>(
     let Some(response) = fetched.response else {
         return Err(OathnetError::Transport(fetched.outcome.kind));
     };
-    status_error(&response)?;
+    status_error(&response, fetched.outcome.retry_after_secs)?;
     if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
         return Err(OathnetError::NotAnAnswer(fetched.outcome.kind));
     }
@@ -336,17 +336,15 @@ fn credential(secret: Secret, now_unix: u64) -> Result<Credential, OathnetError>
 }
 
 /// The error a non-2xx status means. The status decides first, as `OathNet`'s error guide says.
-fn status_error(response: &Response) -> Result<(), OathnetError> {
+/// A rate limit carries `retry_after`, the pause [`fetch`] read from the response's `Retry-After`
+/// (delta-seconds or an HTTP-date, capped at an hour).
+fn status_error(response: &Response, retry_after: Option<u64>) -> Result<(), OathnetError> {
     match response.status {
         200..=299 => Ok(()),
         400 => Err(OathnetError::BadRequest),
         401 => Err(OathnetError::Unauthorized),
         403 => Err(OathnetError::Forbidden),
-        429 => Err(OathnetError::RateLimited {
-            retry_after: response
-                .header_value("retry-after")
-                .and_then(|v| v.trim().parse::<u64>().ok()),
-        }),
+        429 => Err(OathnetError::RateLimited { retry_after }),
         status @ 500..=599 => Err(OathnetError::Server(status)),
         status => Err(OathnetError::Unexpected(status)),
     }

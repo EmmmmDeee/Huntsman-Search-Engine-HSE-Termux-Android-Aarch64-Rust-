@@ -354,7 +354,7 @@ pub fn search<T: Transport + ?Sized>(
     let Some(response) = fetched.response else {
         return Err(WigleError::Transport(fetched.outcome.kind));
     };
-    status_error(&response)?;
+    status_error(&response, fetched.outcome.retry_after_secs)?;
     if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
         return Err(WigleError::NotAnAnswer(fetched.outcome.kind));
     }
@@ -365,18 +365,16 @@ pub fn search<T: Transport + ?Sized>(
 }
 
 /// The error a non-2xx status means. The status decides first.
-fn status_error(response: &Response) -> Result<(), WigleError> {
+/// A rate limit carries `retry_after`, the pause [`fetch`] read from the response's `Retry-After`
+/// (delta-seconds or an HTTP-date, capped at an hour).
+fn status_error(response: &Response, retry_after: Option<u64>) -> Result<(), WigleError> {
     match response.status {
         200..=299 => Ok(()),
         400 => Err(WigleError::BadRequest),
         401 => Err(WigleError::Unauthorized),
         status @ (402 | 403) => Err(WigleError::Forbidden(status)),
         410 => Err(WigleError::QueryFailed),
-        429 => Err(WigleError::RateLimited {
-            retry_after: response
-                .header_value("retry-after")
-                .and_then(|v| v.trim().parse::<u64>().ok()),
-        }),
+        429 => Err(WigleError::RateLimited { retry_after }),
         status @ 500..=599 => Err(WigleError::Server(status)),
         status => Err(WigleError::Unexpected(status)),
     }

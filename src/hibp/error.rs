@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use crate::source_outcome::SourceOutcomeKind;
+
 /// Everything the HIBP client can fail with. No variant ever carries an API
 /// key or token: upstream bodies are redacted before they get here.
 #[derive(Debug, thiserror::Error)]
@@ -54,15 +56,39 @@ pub enum HibpError {
     /// Invalid input rejected before any request (bad prefix, empty email…).
     #[error("hibp: invalid input: {0}")]
     InvalidInput(String),
-    /// Transport failure.
-    #[error("hibp: transport error: {0}")]
-    Transport(String),
+    /// Transport failure: no response.
+    #[error("hibp: transport error: {message}")]
+    Transport {
+        /// What failed, without the URL, the identifier or any secret.
+        message: String,
+        /// The cause the fetch observed (DNS, connect, TLS, a timeout), or `ConnectFailure` for
+        /// a request refused before it was sent.
+        kind: SourceOutcomeKind,
+    },
+    /// A 2xx that is not an API answer: a challenge page served in its place.
+    #[error("hibp: response is not an API answer ({0:?})")]
+    NotAnAnswer(SourceOutcomeKind),
     /// The body did not decode as the documented shape.
     #[error("hibp: could not decode response: {0}")]
     Decode(String),
     /// OAuth flow failure.
     #[error("hibp oauth: {0}")]
     OAuth(String),
+}
+
+impl HibpError {
+    /// The HTTP status behind the failure, when there was one.
+    #[must_use]
+    pub const fn http_status(&self) -> Option<u16> {
+        match self {
+            Self::BadRequest(_) => Some(400),
+            Self::Unauthorized(_) => Some(401),
+            Self::Forbidden(_) => Some(403),
+            Self::RateLimited { .. } => Some(429),
+            Self::Server { status, .. } | Self::UnexpectedStatus { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
 }
 
 impl From<HibpError> for crate::error::Error {

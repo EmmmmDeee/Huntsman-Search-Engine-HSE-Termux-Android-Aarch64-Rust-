@@ -60,7 +60,8 @@ impl From<DehashedError> for Failure {
             | DehashedError::RateLimited { .. }
             | DehashedError::Server(_)
             | DehashedError::Unexpected(_)
-            | DehashedError::Transport
+            | DehashedError::Transport(_)
+            | DehashedError::NotAnAnswer(_)
             | DehashedError::Decode(_) => EX_UNAVAILABLE,
         };
         Self {
