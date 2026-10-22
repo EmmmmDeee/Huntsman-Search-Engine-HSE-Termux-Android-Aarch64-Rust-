@@ -812,6 +812,31 @@ fn key_precedence() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Keys and tokens print the crate's one redaction marker. Their characters appear nowhere
+/// in that text, so a leaked head, tail or single character would show.
+#[test]
+fn api_key_and_tokens_print_the_crate_redaction_marker_and_nothing_of_the_secret() {
+    const SECRET: &str = "QZXJWV9876";
+    let leaks = |printed: &str| printed.contains(|c| SECRET.contains(c));
+    let key = ApiKey::new(SECRET).unwrap();
+    assert_eq!(key.to_string(), crate::redact::REDACTED);
+    let printed = format!("{key:?}");
+    assert!(printed.contains(crate::redact::REDACTED), "{printed}");
+    assert!(!leaks(&printed), "{printed}");
+
+    let tokens: oauth::TokenSet = serde_json::from_str(&format!(
+        r#"{{"access_token":"{SECRET}","refresh_token":"{SECRET}","id_token":"{SECRET}"}}"#
+    ))
+    .unwrap();
+    let printed = format!("{tokens:?}");
+    assert_eq!(
+        printed.matches(crate::redact::REDACTED).count(),
+        3,
+        "{printed}"
+    );
+    assert!(!leaks(&printed), "{printed}");
+}
+
 #[test]
 fn token_store_private_atomic_bounded_and_memory_roundtrip() {
     let dir = scratch("tokens");

@@ -1,6 +1,6 @@
 //! DMARC (RFC 7489) parsing and analysis.
 
-use crate::signals::record_tag;
+use crate::value_syntax::{self, record_tag};
 
 /// True if `txt` starts with `v=DMARC1` (ASCII-case-insensitive).
 #[must_use]
@@ -171,12 +171,12 @@ pub fn parse(txt: &str) -> Option<DmarcRecord> {
             }
             "rua" => {
                 if seen.insert(name) {
-                    rec.rua = parse_mailto_list(value);
+                    rec.rua = value_syntax::parse_mailto_list(value);
                 }
             }
             "ruf" => {
                 if seen.insert(name) {
-                    rec.ruf = parse_mailto_list(value);
+                    rec.ruf = value_syntax::parse_mailto_list(value);
                 }
             }
             "fo" => {
@@ -202,21 +202,6 @@ pub fn parse(txt: &str) -> Option<DmarcRecord> {
     }
 
     Some(rec)
-}
-
-fn parse_mailto_list(raw: &str) -> Vec<String> {
-    raw.split(',')
-        .filter_map(|entry| {
-            let trimmed = entry.trim();
-            let addr = trimmed.strip_prefix("mailto:")?;
-            let addr = addr.split('!').next().unwrap_or(addr).trim();
-            if addr.contains('@') && addr.len() >= 5 {
-                Some(addr.to_string())
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 impl DmarcRecord {
@@ -248,19 +233,6 @@ impl DmarcRecord {
         }
         issues
     }
-
-    #[must_use]
-    pub fn report_addresses(&self) -> Vec<&str> {
-        let mut addresses: Vec<&str> = self
-            .rua
-            .iter()
-            .chain(self.ruf.iter())
-            .map(String::as_str)
-            .collect();
-        addresses.sort_unstable();
-        addresses.dedup();
-        addresses
-    }
 }
 
 #[cfg(test)]
@@ -277,11 +249,20 @@ mod tests {
         assert_eq!(record.pct, 75);
         assert_eq!(record.adkim, AlignmentMode::Strict);
         assert_eq!(record.aspf, AlignmentMode::Strict);
-        assert_eq!(
-            record.report_addresses(),
-            vec!["agg@example.com", "dmarc@example.com"]
-        );
+        assert_eq!(record.rua, ["dmarc@example.com", "agg@example.com"]);
+        assert_eq!(record.ruf, ["dmarc@example.com"]);
         assert!(record.issues().contains(&DmarcIssue::PartialCoverage(75)));
+    }
+
+    #[test]
+    fn tag_names_ignore_case_and_spaces_around_the_equals_sign() {
+        let record =
+            parse("v=DMARC1; P = reject ; SP=quarantine; Pct= 50 ; RUA = mailto:a@b.example")
+                .expect("record");
+        assert_eq!(record.policy, Some(DmarcPolicy::Reject));
+        assert_eq!(record.sp, Some(DmarcPolicy::Quarantine));
+        assert_eq!(record.pct, 50);
+        assert_eq!(record.rua, ["a@b.example"]);
     }
 
     #[test]

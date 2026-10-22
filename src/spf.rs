@@ -1,54 +1,12 @@
 //! SPF (RFC 7208) parsing and analysis.
 
-use std::net::IpAddr;
-
 use crate::netblock::{Ipv4Cidr, Ipv6Cidr};
-use crate::signals::record_tag;
+use crate::value_syntax::record_tag;
 
 #[must_use]
 pub fn is_spf(txt: &str) -> bool {
     let bytes = txt.as_bytes();
     bytes.len() >= 6 && bytes[..6].eq_ignore_ascii_case(b"v=spf1")
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Member<'a> {
-    Ip(&'a str),
-    Include(&'a str),
-    Redirect(&'a str),
-    A(&'a str),
-    Mx(&'a str),
-}
-
-pub fn members(txt: &str) -> impl Iterator<Item = Member<'_>> {
-    fn usable_domain(value: &str) -> bool {
-        value.contains('.') && !value.contains('%')
-    }
-
-    txt.split_whitespace().filter_map(|part| {
-        let mech = part.strip_prefix(['+', '-', '~', '?']).unwrap_or(part);
-        if let Some(ip) = mech
-            .strip_prefix("ip4:")
-            .or_else(|| mech.strip_prefix("ip6:"))
-        {
-            let ip = ip.split('/').next().unwrap_or(ip);
-            if ip.is_empty() {
-                None
-            } else {
-                Some(Member::Ip(ip))
-            }
-        } else if let Some(include) = mech.strip_prefix("include:") {
-            usable_domain(include).then_some(Member::Include(include))
-        } else if let Some(redirect) = part.strip_prefix("redirect=") {
-            usable_domain(redirect).then_some(Member::Redirect(redirect))
-        } else if let Some(domain) = mech.strip_prefix("a:") {
-            usable_domain(domain).then_some(Member::A(domain))
-        } else if let Some(domain) = mech.strip_prefix("mx:") {
-            usable_domain(domain).then_some(Member::Mx(domain))
-        } else {
-            None
-        }
-    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,22 +262,6 @@ impl SpfRecord {
         }
         issues
     }
-
-    #[must_use]
-    pub fn lists_ip(&self, ip: IpAddr) -> Option<Qualifier> {
-        for (qualifier, mechanism) in &self.directives {
-            match (mechanism, ip) {
-                (Mechanism::Ip4(cidr), IpAddr::V4(addr)) if cidr.contains(addr) => {
-                    return Some(*qualifier);
-                }
-                (Mechanism::Ip6(cidr), IpAddr::V6(addr)) if cidr.contains(addr) => {
-                    return Some(*qualifier);
-                }
-                _ => {}
-            }
-        }
-        None
-    }
 }
 
 #[cfg(test)]
@@ -328,33 +270,28 @@ mod tests {
     use std::fmt::Write as _;
 
     #[test]
-    fn extracts_members_and_policies() {
-        let members_found: Vec<Member<'_>> = members(
-            "v=spf1 +ip4:198.51.100.1 -ip6:2001:db8::1 include:_spf.example.com a:mail.example.com mx:relay.example.net redirect=_spf.redirect.test -all",
-        )
-        .collect();
-        assert_eq!(
-            members_found,
-            vec![
-                Member::Ip("198.51.100.1"),
-                Member::Ip("2001:db8::1"),
-                Member::Include("_spf.example.com"),
-                Member::A("mail.example.com"),
-                Member::Mx("relay.example.net"),
-                Member::Redirect("_spf.redirect.test"),
-            ]
-        );
-
+    fn extracts_policies() {
         let record =
             parse("v=spf1 ip4:198.51.100.0/24 include:_spf.example.com -all").expect("SPF record");
         assert_eq!(record.all_policy(), AllPolicy::HardFail);
         assert_eq!(record.dns_lookup_count(), 1);
         let issues = record.issues();
         assert!(issues.is_empty(), "{issues:?}");
-        assert_eq!(
-            record.lists_ip("198.51.100.17".parse().expect("ip")),
-            Some(Qualifier::Pass)
-        );
+    }
+
+    #[test]
+    fn modifier_names_ignore_case_but_not_spaces() {
+        let record =
+            parse("v=spf1 Redirect=_spf.example.com EXP=explain.example.com").expect("record");
+        assert_eq!(record.redirect.as_deref(), Some("_spf.example.com"));
+        assert_eq!(record.exp.as_deref(), Some("explain.example.com"));
+        assert_eq!(record.unknown_modifiers, 0);
+        assert_eq!(record.all_policy(), AllPolicy::Redirect);
+
+        // Terms are separated by spaces, so `name = value` is three terms and none a modifier.
+        let spaced = parse("v=spf1 redirect = _spf.example.com").expect("record");
+        assert_eq!(spaced.redirect, None);
+        assert_eq!(spaced.invalid_terms, ["redirect", "=", "_spf.example.com"]);
     }
 
     #[test]

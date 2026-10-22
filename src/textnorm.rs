@@ -602,18 +602,6 @@ pub fn slugify(s: &str) -> String {
     out
 }
 
-/// Display a secret as a 4+ellipsis+4 hint when long enough.
-#[must_use]
-pub fn mask_secret(value: &str) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    if chars.len() < 16 {
-        return "•".repeat(chars.len().max(1));
-    }
-    let head: String = chars.iter().take(4).collect();
-    let tail: String = chars[chars.len() - 4..].iter().collect();
-    format!("{head}…{tail}")
-}
-
 /// Byte offset of the first ASCII-case-insensitive substring match.
 #[must_use]
 pub fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
@@ -822,10 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn masking_and_token_matching_follow_contract() {
-        assert_eq!(mask_secret(""), "•");
-        assert_eq!(mask_secret("abcdefghijklmno"), "•••••••••••••••");
-        assert_eq!(mask_secret("AKIAIOSFODNN7EXAMPLE"), "AKIA…MPLE");
+    fn token_matching_follows_contract() {
         assert!(whole_word_token_match("Linus Torvalds", "linus torvalds"));
         assert!(!whole_word_token_match("Mildred Smith", "red"));
         assert!(shares_whole_word_token(
