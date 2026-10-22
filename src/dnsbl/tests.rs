@@ -84,9 +84,9 @@ fn row<'a>(rows: &'a [SourceExecutionOutcome], source: &str) -> &'a SourceExecut
 
 #[test]
 fn addresses_and_domains_are_asked_as_each_list_names_them() {
-    assert_eq!(reversed(ip("192.0.2.10")), "10.2.0.192");
+    assert_eq!(reversed_labels(ip("192.0.2.10")), "10.2.0.192");
     assert_eq!(
-        reversed(ip("2001:db8::1")),
+        reversed_labels(ip("2001:db8::1")),
         "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2"
     );
     let v4 = Subject::Address(ip("192.0.2.10"));

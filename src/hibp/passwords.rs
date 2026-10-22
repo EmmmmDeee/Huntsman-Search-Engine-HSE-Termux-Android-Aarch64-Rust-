@@ -1,6 +1,7 @@
 //! Legacy SHA-1 / NTLM hashing for HIBP range lookup only, never for password storage.
 
 use super::error::HibpError;
+use crate::base64::base16_upper;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasswordHashMode {
@@ -55,7 +56,7 @@ pub fn hash_password(password: &str, mode: PasswordHashMode) -> String {
             let bytes = utf16le(password);
             let digest = super::md4::md4(&bytes);
             wipe(bytes);
-            hex(&digest)
+            base16_upper(&digest)
         }
     }
 }
@@ -84,15 +85,6 @@ pub fn count_for(entries: &[RangeEntry], suffix: &str) -> u64 {
 pub(super) fn wipe(mut bytes: Vec<u8>) {
     bytes.fill(0);
     std::hint::black_box(&bytes);
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut out = String::new();
-    for byte in bytes {
-        let _ = write!(out, "{byte:02X}");
-    }
-    out
 }
 
 // FIPS 180-4 SHA-1, required by HIBP's protocol (not a security primitive here).
@@ -147,8 +139,9 @@ pub(super) fn sha1_hex(data: &[u8]) -> String {
     }
     // The padded copy holds the password itself.
     wipe(message);
-    hex(&state
-        .into_iter()
-        .flat_map(u32::to_be_bytes)
-        .collect::<Vec<_>>())
+    let mut digest = [0_u8; 20];
+    for (out, word) in digest.chunks_exact_mut(4).zip(state) {
+        out.copy_from_slice(&word.to_be_bytes());
+    }
+    base16_upper(&digest)
 }

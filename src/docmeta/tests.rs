@@ -76,6 +76,87 @@ fn flattens_an_xmp_packet_into_prefixed_fields() {
     assert!(parsed.fields.iter().all(|(k, _)| !k.starts_with("xmlns")));
 }
 
+/// XML's numeric character references (`&#xA;`, the line feed XMP writers put in a multi-line
+/// description, and `&#169;`) are decoded in list items, element text and attribute values alike,
+/// and an escaped ampersand is decoded once.
+#[test]
+fn numeric_character_references_in_xmp_are_decoded() {
+    let packet = xmp_packet()
+        .replace(
+            "xmp:CreatorTool=\"Acme Scanner 3.0\"",
+            "xmp:CreatorTool=\"Acme&#x20;Scanner &#51;.0\"",
+        )
+        .replace(
+            "   <dc:title>",
+            "   <dc:description>\n    <rdf:Alt>\n     \
+             <rdf:li xml:lang=\"x-default\">line one&#xA;line two &#169; 2024</rdf:li>\n    \
+             </rdf:Alt>\n   </dc:description>\n   \
+             <dc:rights>&#169; Ada &amp;amp; co</dc:rights>\n   <dc:title>",
+        );
+    let mut jpeg = vec![0xFF, 0xD8];
+    jpeg.extend_from_slice(packet.as_bytes());
+    let parsed = parse(&jpeg);
+    assert_eq!(
+        field(&parsed, "dc:description"),
+        Some("line one\nline two \u{a9} 2024")
+    );
+    assert_eq!(field(&parsed, "dc:rights"), Some("\u{a9} Ada &amp; co"));
+    assert_eq!(field(&parsed, "xmp:CreatorTool"), Some("Acme Scanner 3.0"));
+    assert_eq!(field(&parsed, "dc:title"), Some("Field & Stream Notes"));
+}
+
+/// XMP is XML, so its references are read by XML's rules and not HTML's. `&nbsp;` is not an XML
+/// entity and stays as written, and so do `&#X41;` (an upper-case `x`), `&#+65;` (a sign), `&#0;`
+/// and `&#x1;` (characters XML does not allow) and `&#xD800;` (a surrogate). The five named
+/// entities and the numeric references to allowed characters decode, each once.
+#[test]
+fn xmp_references_are_read_by_xml_rules_not_html() {
+    let packet = xmp_packet()
+        .replace(
+            "xmp:CreatorTool=\"Acme Scanner 3.0\"",
+            "xmp:CreatorTool=\"Acme&nbsp;&#X41;&#+65;&#0;&#x1;&#169;\"",
+        )
+        .replace(
+            "   <dc:title>",
+            "   <dc:rights>[&nbsp;&#X41;&#+65;&#0;&#x1;&#xA;&#32;&amp;&#169;\
+             &#xD800;]</dc:rights>\n   <dc:title>",
+        );
+    let mut jpeg = vec![0xFF, 0xD8];
+    jpeg.extend_from_slice(packet.as_bytes());
+    let parsed = parse(&jpeg);
+    assert_eq!(
+        field(&parsed, "xmp:CreatorTool"),
+        Some("Acme&nbsp;&#X41;&#+65;&#0;&#x1;\u{a9}")
+    );
+    assert_eq!(
+        field(&parsed, "dc:rights"),
+        Some("[&nbsp;&#X41;&#+65;&#0;&#x1;\n &\u{a9}&#xD800;]")
+    );
+}
+
+/// A reference that decodes to whitespace is trimmed as literal whitespace is. A list item that is
+/// only a decoded space is empty and is dropped, and a value that ends in a decoded line feed does
+/// not keep it.
+#[test]
+fn whitespace_a_reference_decodes_to_is_trimmed_like_literal_whitespace() {
+    let packet = xmp_packet().replace(
+        "   <dc:title>",
+        "   <dc:subject>\n    <rdf:Bag>\n     <rdf:li>&#32;</rdf:li>\n     \
+             <rdf:li>kept</rdf:li>\n    </rdf:Bag>\n   </dc:subject>\n   \
+             <dc:format>\n    <rdf:Bag>\n     <rdf:li>&#32;</rdf:li>\n    </rdf:Bag>\n   \
+             </dc:format>\n   <dc:description>\n    <rdf:Alt>\n     \
+             <rdf:li xml:lang=\"x-default\">line one&#xA;</rdf:li>\n    </rdf:Alt>\n   \
+             </dc:description>\n   <dc:rights>&#32;&#xA;</dc:rights>\n   <dc:title>",
+    );
+    let mut jpeg = vec![0xFF, 0xD8];
+    jpeg.extend_from_slice(packet.as_bytes());
+    let parsed = parse(&jpeg);
+    assert_eq!(field(&parsed, "dc:subject"), Some("kept"));
+    assert_eq!(field(&parsed, "dc:description"), Some("line one"));
+    assert!(field(&parsed, "dc:format").is_none());
+    assert!(field(&parsed, "dc:rights").is_none());
+}
+
 #[test]
 fn reads_an_embedded_gps_position_from_xmp() {
     let parsed = parse(&jpeg_with_xmp());

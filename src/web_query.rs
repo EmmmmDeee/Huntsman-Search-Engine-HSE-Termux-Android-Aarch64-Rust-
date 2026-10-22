@@ -16,7 +16,8 @@ use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport, append_query_param};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
-use crate::textnorm::escape_controls;
+use crate::textnorm::{decode_html_entities, escape_controls};
+use crate::value_syntax::find_ascii_ci_bytes;
 
 const MAX_RESULTS_PER_ENGINE: usize = 20;
 const MAX_ADAPTIVE_QUERY_BYTES: usize = 512;
@@ -485,7 +486,7 @@ pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
     let mut seen = BTreeSet::new();
     let mut hits = Vec::new();
     for href in href_values(html) {
-        let decoded = decode_minimal_html_entities(href);
+        let decoded = decode_html_entities(href);
         let Some(url) = canonical_url(&decoded) else {
             continue;
         };
@@ -554,7 +555,7 @@ fn href_values(html: &str) -> Vec<&str> {
                 None
             };
             if let Some(closer) = closer {
-                let Some(skip) = find_ascii_case_insensitive(&bytes[end + 1..], closer) else {
+                let Some(skip) = find_ascii_ci_bytes(&bytes[end + 1..], closer) else {
                     break;
                 };
                 index = end + 1 + skip;
@@ -645,24 +646,6 @@ fn anchor_href(html: &str, mut index: usize, end: usize) -> Option<&str> {
         }
     }
     None
-}
-
-fn find_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack.windows(needle.len()).position(|window| {
-        window
-            .iter()
-            .zip(needle.iter())
-            .all(|(left, right)| left.eq_ignore_ascii_case(right))
-    })
-}
-
-fn decode_minimal_html_entities(raw: &str) -> String {
-    raw.replace("&amp;", "&")
-        .replace("&#38;", "&")
-        .replace("&#x26;", "&")
 }
 
 fn is_engine_or_navigation_url(url: &str) -> bool {
@@ -829,6 +812,25 @@ mod tests {
                 "https://example.org/unquoted",
                 "https://example.net/other?x=1&y=2",
                 "https://example.com/real",
+            ]
+        );
+    }
+
+    /// An href's character references are decoded once, as HTML reads them: `&#233;` is `é`, not
+    /// the start of a fragment, and `&amp;#38;` is the text `&#38;`, whose `#` does start one.
+    #[test]
+    fn parser_decodes_each_character_reference_in_an_href_once() {
+        let html = concat!(
+            "<a href=\"https://example.org/caf&#233;?q=1&amp;r=2\">accented</a>",
+            "<a href=\"https://example.net/p?a=1&amp;#38;b=2\">escaped</a>",
+        );
+        let hits = parse_hits(html, "bing");
+        let urls: Vec<_> = hits.iter().map(|hit| hit.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://example.org/caf\u{e9}?q=1&r=2",
+                "https://example.net/p?a=1",
             ]
         );
     }

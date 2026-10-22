@@ -41,6 +41,7 @@ use crate::exif::{
 };
 use crate::lookup_report;
 use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
+use crate::textnorm::decode_xml_references;
 
 /// The source/module name this command reports its findings under.
 pub const SOURCE: &str = "docmeta";
@@ -475,6 +476,12 @@ fn is_property(name: &str) -> bool {
     name.contains(':') && !name.starts_with("rdf:") && !name.starts_with("x:")
 }
 
+/// The text of a value's raw XML, decoded by XML's rules and trimmed on both sides after decoding,
+/// so a reference that decodes to whitespace is trimmed as literal whitespace is. **Pure.**
+fn decoded_text(raw: &str) -> String {
+    decode_xml_references(raw.trim()).trim().to_owned()
+}
+
 /// The value of the property `name` whose start tag ends at `open_end`, and the index just past it:
 /// its text when the next tag is its own close, or its joined items when its content is a list of text
 /// `rdf:li`. `None` for structured content, which the caller descends into. **Pure.**
@@ -491,8 +498,7 @@ fn property_value(
         .and_then(|rest| rest.strip_prefix(name))
         .is_some_and(|rest| rest.starts_with('>'))
     {
-        let value = unescape_xml(text[open_end..next].trim());
-        return Some((value, next + name.len() + 3));
+        return Some((decoded_text(&text[open_end..next]), next + name.len() + 3));
     }
     let &(_, close) = XMP_CONTAINERS.iter().find(|(container, _)| {
         after_lt
@@ -527,14 +533,14 @@ fn parse_attrs(tag: &str, element: Option<&str>, fields: &mut Fields) {
         let value = &body[..end];
         if name == "rdf:resource" {
             if let Some(element) = element {
-                fields.push(element, unescape_xml(value));
+                fields.push(element, decode_xml_references(value));
             }
         } else if name.contains(':')
             && !name.starts_with("xmlns")
             && !name.starts_with("xml:")
             && !name.starts_with("rdf:")
         {
-            fields.push(name, unescape_xml(value));
+            fields.push(name, decode_xml_references(value));
         }
         rest = &body[end + 1..];
     }
@@ -603,22 +609,12 @@ fn list_items(
         if !text[content_end..].starts_with(item_close) {
             return None;
         }
-        let item = unescape_xml(text[content..content_end].trim());
+        let item = decoded_text(&text[content..content_end]);
         if !item.is_empty() {
             items.push(item);
         }
         i = content_end + item_close.len();
     }
-}
-
-/// Replace the five predefined XML entities. **Pure.**
-fn unescape_xml(value: &str) -> String {
-    value
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
 }
 
 // ── XMP GPS ──────────────────────────────────────────────────────────────────────────────

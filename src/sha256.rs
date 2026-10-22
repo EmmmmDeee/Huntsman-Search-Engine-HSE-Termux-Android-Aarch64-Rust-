@@ -208,13 +208,7 @@ fn compress(h: &mut [u32; 8], chunk: &[u8]) {
 
 #[must_use]
 pub fn hex32(bytes: &[u8; 32]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(64);
-    for b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0xf) as usize] as char);
-    }
-    s
+    crate::base64::base16_lower(bytes)
 }
 
 #[cfg(test)]
