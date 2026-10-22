@@ -618,7 +618,9 @@ fn xmp_gps_accepts_lowercase_and_valid_world_boundaries() {
     let packet = xmp_packet()
         .replace("48,51.00N", "90n")
         .replace("2,20.00E", "180w");
-    assert_eq!(parse(packet.as_bytes()).gps, Some((90.0, -180.0)));
+    let (lat, lon) = parse(packet.as_bytes()).gps.expect("valid boundary position");
+    assert!((lat - 90.0).abs() < f64::EPSILON);
+    assert!((lon + 180.0).abs() < f64::EPSILON);
 
     let packet = xmp_packet()
         .replace("48,51.00N", "48,30,30s")
