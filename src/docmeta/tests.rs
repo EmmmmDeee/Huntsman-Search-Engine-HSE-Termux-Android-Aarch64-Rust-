@@ -234,3 +234,117 @@ fn args_parse_one_path_and_reject_the_rest() {
     assert!(DocmetaArgs::parse(&["a".into(), "b".into()]).is_err());
     assert!(DocmetaArgs::parse(&["   ".into()]).is_err());
 }
+
+/// One PNG chunk: a four-byte big-endian length, the four-byte type, the body, and a four-byte CRC
+/// placeholder (the parser does not validate the CRC, so any four bytes serve).
+fn png_chunk(kind: &[u8], body: &[u8]) -> Vec<u8> {
+    let mut chunk = Vec::new();
+    let length = u32::try_from(body.len()).unwrap_or_default();
+    chunk.extend_from_slice(&length.to_be_bytes());
+    chunk.extend_from_slice(kind);
+    chunk.extend_from_slice(body);
+    chunk.extend_from_slice(&[0, 0, 0, 0]);
+    chunk
+}
+
+/// A PNG assembled from the signature, the given chunks, and a closing `IEND`.
+fn png(chunks: &[Vec<u8>]) -> Vec<u8> {
+    let mut data = b"\x89PNG\r\n\x1a\n".to_vec();
+    for chunk in chunks {
+        data.extend_from_slice(chunk);
+    }
+    data.extend_from_slice(&png_chunk(b"IEND", &[]));
+    data
+}
+
+/// A PNG with a `tEXt` (`Author`), an uncompressed `iTXt` (`Description`, non-ASCII UTF-8), a
+/// compressed `iTXt` (`Comment`, which must be skipped) and a `tIME` chunk.
+fn png_with_text() -> Vec<u8> {
+    let mut author = b"Author".to_vec();
+    author.push(0);
+    author.extend_from_slice(b"Ada Lovelace");
+
+    // iTXt: keyword NUL flag(0) method(0) lang NUL transkeyword NUL text(UTF-8).
+    let mut description = b"Description".to_vec();
+    description.push(0);
+    description.extend_from_slice(&[0, 0]);
+    description.push(0);
+    description.push(0);
+    description.extend_from_slice("Survey près du café".as_bytes());
+
+    // iTXt with the compression flag set: its bytes must never be inflated.
+    let mut comment = b"Comment".to_vec();
+    comment.push(0);
+    comment.extend_from_slice(&[1, 0]);
+    comment.push(0);
+    comment.push(0);
+    comment.extend_from_slice(&[0x78, 0x9c, 0xde, 0xad]);
+
+    let time = [0x07, 0xE8, 1, 2, 3, 4, 5];
+
+    png(&[
+        png_chunk(b"tEXt", &author),
+        png_chunk(b"iTXt", &description),
+        png_chunk(b"iTXt", &comment),
+        png_chunk(b"tIME", &time),
+    ])
+}
+
+#[test]
+fn reads_png_textual_and_time_chunks() {
+    let parsed = parse(&png_with_text());
+    assert_eq!(parsed.format, "PNG");
+    assert_eq!(field(&parsed, "png:Author"), Some("Ada Lovelace"));
+    assert_eq!(
+        field(&parsed, "png:Description"),
+        Some("Survey près du café")
+    );
+    assert_eq!(
+        field(&parsed, "png:ModificationTime"),
+        Some("2024-01-02 03:04:05")
+    );
+    // A compressed iTXt is never inflated, so its keyword yields no field.
+    assert!(field(&parsed, "png:Comment").is_none());
+}
+
+#[test]
+fn a_png_surfaces_both_its_text_chunk_and_an_embedded_xmp_packet() {
+    let mut software = b"Software".to_vec();
+    software.push(0);
+    software.extend_from_slice(b"Acme Editor 1.0");
+
+    // The XMP packet carried as an uncompressed iTXt keyed XML:com.adobe.xmp.
+    let mut xmp = b"XML:com.adobe.xmp".to_vec();
+    xmp.push(0);
+    xmp.extend_from_slice(&[0, 0]);
+    xmp.push(0);
+    xmp.push(0);
+    xmp.extend_from_slice(xmp_packet().as_bytes());
+
+    let parsed = parse(&png(&[
+        png_chunk(b"tEXt", &software),
+        png_chunk(b"iTXt", &xmp),
+    ]));
+    assert_eq!(parsed.format, "PNG");
+    // The tEXt chunk is read as a png:* field.
+    assert_eq!(field(&parsed, "png:Software"), Some("Acme Editor 1.0"));
+    // The XMP packet inside the iTXt is read by the XMP scanner...
+    assert_eq!(field(&parsed, "xmp:CreatorTool"), Some("Acme Scanner 3.0"));
+    // ...and is not also dumped verbatim as a png: field.
+    assert!(field(&parsed, "png:XML:com.adobe.xmp").is_none());
+    // The embedded GPS still becomes a position.
+    assert!(parsed.gps.is_some());
+}
+
+#[test]
+fn a_truncated_png_chunk_is_a_clean_result_not_a_panic() {
+    // A tEXt chunk whose declared length runs far past the end of the file.
+    let mut data = b"\x89PNG\r\n\x1a\n".to_vec();
+    data.extend_from_slice(&1000u32.to_be_bytes());
+    data.extend_from_slice(b"tEXt");
+    data.extend_from_slice(b"Author\x00Ada");
+    let parsed = parse(&data);
+    assert_eq!(parsed.format, "PNG");
+    // The over-long chunk is refused rather than read out of bounds, so nothing surfaces.
+    assert!(parsed.fields.is_empty());
+}
