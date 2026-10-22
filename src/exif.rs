@@ -309,7 +309,9 @@ fn find_webp_exif(image: &[u8]) -> Result<Option<&[u8]>, &'static str> {
         }
         if &header[..4] == b"EXIF" {
             let payload = &image[start..tail];
-            return Ok(Some(payload.strip_prefix(b"Exif\x00\x00").unwrap_or(payload)));
+            return Ok(Some(
+                payload.strip_prefix(b"Exif\x00\x00").unwrap_or(payload),
+            ));
         }
         offset = next;
     }
