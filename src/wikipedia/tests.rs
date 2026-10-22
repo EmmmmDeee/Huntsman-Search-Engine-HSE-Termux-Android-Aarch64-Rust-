@@ -169,6 +169,20 @@ fn a_missing_contributions_payload_is_not_a_clean_negative() {
 }
 
 #[test]
+fn a_wrong_typed_contributions_list_is_parser_drift_that_quotes_none_of_it() {
+    let got = lookup(
+        &OneResponse::json(200, r#"{"query":{"usercontribs":"secret@example.com"}}"#),
+        "jane",
+        "scan",
+        1,
+    )
+    .unwrap();
+    assert_eq!(got.outcome.kind, SourceOutcomeKind::ParserDrift);
+    let detail = got.outcome.detail.unwrap_or_default();
+    assert!(!detail.contains("secret@example.com"), "{detail}");
+}
+
+#[test]
 fn a_body_that_is_not_json_is_parser_drift() {
     let got = lookup(
         &OneResponse::json(200, "not json at all"),

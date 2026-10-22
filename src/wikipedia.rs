@@ -12,9 +12,9 @@ use serde::Deserialize;
 
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, fetch};
-use crate::http::{Request, Response, Transport, append_query_param};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
+use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
+use crate::http::{Request, Transport, append_query_param};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::tags;
 
 /// The source/module name this leg reports its findings under.
@@ -112,10 +112,7 @@ pub fn lookup<T: Transport + ?Sized>(
         now_unix,
     )?;
 
-    let Some(response) = fetched.response else {
-        return Ok(miss(fetched.outcome));
-    };
-    Ok(interpret(&response, selector, scan_id, now_unix))
+    Ok(interpret(&fetched, selector, scan_id, now_unix).unwrap_or_else(miss))
 }
 
 /// A report that found nothing, carrying only its outcome. **Pure.**
@@ -126,42 +123,17 @@ fn miss(outcome: SourceExecutionOutcome) -> Report {
     }
 }
 
-/// Turn one fetched `usercontribs` response into a report. **Pure.**
-fn interpret(response: &Response, selector: &str, scan_id: &str, now_unix: u64) -> Report {
-    if response.truncated {
-        return miss(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            SourceOutcomeKind::ParserDrift,
-            Some(response.status),
-            "truncated Wikipedia response",
-        ));
-    }
-
-    let body = response.text();
-    let classified = classify_fetch(response.status, &body);
-    if classified != SourceOutcomeKind::Inconclusive {
-        return miss(SourceExecutionOutcome::failed(
-            SRC,
-            now_unix,
-            classified,
-            Some(response.status),
-            "Wikipedia response was not a contributions document",
-        ));
-    }
-
-    let parsed: ApiResponse = match serde_json::from_slice(&response.body) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            return miss(SourceExecutionOutcome::failed(
-                SRC,
-                now_unix,
-                SourceOutcomeKind::ParserDrift,
-                Some(response.status),
-                format!("Wikipedia JSON: {error}"),
-            ));
-        }
-    };
+/// Turn one fetched `usercontribs` response into a report; `Err` is the outcome of a response
+/// that named no edit. **Pure.**
+fn interpret(
+    fetched: &Fetched,
+    selector: &str,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<Report, SourceExecutionOutcome> {
+    let response = whole_response(fetched, "Wikipedia")?;
+    answer(fetched, "Wikipedia")?;
+    let parsed: ApiResponse = decode_json(response, SRC, now_unix, "Wikipedia")?;
 
     // Only a rejected account selector is a clean negative. Other API errors must not
     // masquerade as evidence that an account has no public contributions.
@@ -171,8 +143,8 @@ fn interpret(response: &Response, selector: &str, scan_id: &str, now_unix: u64) 
             .and_then(serde_json::Value::as_str)
             .unwrap_or("unknown");
         if code == "baduser_ucuser" {
-            return miss(
-                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status),
+            return Err(
+                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
             );
         }
         let kind = if matches!(code, "ratelimited" | "maxlag") {
@@ -180,7 +152,7 @@ fn interpret(response: &Response, selector: &str, scan_id: &str, now_unix: u64) 
         } else {
             SourceOutcomeKind::Inconclusive
         };
-        return miss(SourceExecutionOutcome::failed(
+        return Err(SourceExecutionOutcome::failed(
             SRC,
             now_unix,
             kind,
@@ -189,7 +161,7 @@ fn interpret(response: &Response, selector: &str, scan_id: &str, now_unix: u64) 
         ));
     }
     let Some(query) = parsed.query else {
-        return miss(SourceExecutionOutcome::failed(
+        return Err(SourceExecutionOutcome::failed(
             SRC,
             now_unix,
             SourceOutcomeKind::ParserDrift,
@@ -201,16 +173,16 @@ fn interpret(response: &Response, selector: &str, scan_id: &str, now_unix: u64) 
 
     let mut entities = build_entities(selector, &contribs, scan_id);
     if entities.is_empty() {
-        return miss(
-            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status),
+        return Err(
+            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
         );
     }
     merge_by_uid(&mut entities);
-    Report {
+    Ok(Report {
         outcome: SourceExecutionOutcome::success(SRC, now_unix, entities.len())
             .with_http_status(response.status),
         entities,
-    }
+    })
 }
 
 /// Build the edit URLs and the account anchor from the contributions. **Pure.**

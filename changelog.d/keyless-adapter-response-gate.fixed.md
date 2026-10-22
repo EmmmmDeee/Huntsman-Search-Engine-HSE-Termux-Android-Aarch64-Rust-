@@ -4,6 +4,7 @@
 - A keyless source's answer that is not the JSON document it expects is still `parser_drift`, but
   its diagnostic names only the decode error's category and position. It kept serde's message,
   which quotes the body, so a saved ledger could hold text from the provider's answer. This
-  applies to GitHub, Bluesky, Gravatar, Keybase, Duolingo and the App Store search.
+  applies to GitHub, Bluesky, Gravatar, Keybase, Duolingo, the App Store search and Wikipedia.
 - A rate limit or other refusal from a keyless source keeps the pause the provider asked for in
-  the outcome's `retry_after_secs`. This applies to GitHub, Bluesky, Gravatar, Keybase, Duolingo and the App Store search.
+  the outcome's `retry_after_secs`. This applies to GitHub, Bluesky, Gravatar, Keybase, Duolingo,
+  the App Store search and Wikipedia.
