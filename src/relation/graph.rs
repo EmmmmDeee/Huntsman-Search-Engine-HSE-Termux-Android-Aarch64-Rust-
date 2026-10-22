@@ -329,11 +329,13 @@ impl Search {
     }
 
     /// Runs the widest-path search from `start` over the edges whose basis is not `removed`. The
-    /// first path it pops to a node is the strongest path there: the path whose weakest relation
-    /// is strongest, the shallower of two equally wide paths. A path never revisits a node,
-    /// expands no deeper than `max_depth`, and expands a node only when it is wider than every
-    /// path that expanded the node before. Each path popped is offered to `accept`, by its last
-    /// node and step, before it is expanded.
+    /// first path it pops to a node is the widest path the search has reached there: the path whose
+    /// weakest relation is strongest, the shallower of two equally wide paths. A path never revisits
+    /// a node, expands no deeper than `max_depth`, and expands a node only when it is wider than
+    /// every path that expanded the node before. A wider path that is deeper can expand a node first
+    /// and so prune a narrower, shallower path to it, so the result is not guaranteed to be the
+    /// widest path within `max_depth`. Each path popped is offered to `accept`, by its last node and
+    /// step, before it is expanded.
     /// Returns the step of the first path accepted, or `None` once no path is left.
     fn run(
         &mut self,
