@@ -278,7 +278,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <tr><td><label class="cb"><input type="radio" name="usecase" value="passive" id="uc-passive"></label></td><td><label for="uc-passive"><b>Passive</b>When you don't want the target to even suspect they are being investigated. Only modules that do not touch the target or its affiliates are enabled.</label></td></tr>
 </tbody></table></div>
 <div class="panel" id="np-types" role="tabpanel" aria-labelledby="nt-types" hidden><div class="panel-body"><div class="checks" id="typelist"></div></div></div>
-<div class="panel" id="np-modules" role="tabpanel" aria-labelledby="nt-modules" hidden><p class="help pad">Choose the modules the scan asks, as Spiderfoot's By Module scan does. A module is asked only by the lookups listed under it, for the target and for what the scan follows; one that no scan lookup asks runs as its own command and cannot be chosen here.</p><table class="uc"><tbody id="modlist"></tbody></table></div>
+<div class="panel" id="np-modules" role="tabpanel" aria-labelledby="nt-modules" hidden><div class="panel-body"><label class="fl" for="nattackfocus">ATT&amp;CK Reconnaissance source focus</label><div class="toolbar"><select id="nattackfocus" aria-label="Reconnaissance technique"><option value="">Choose a mapped technique</option></select><button type="button" class="btn" id="nattackapply">Select Matching Sources</button></div><p class="help" id="nattackstatus" role="status">Select a technique to narrow the modules this scan will actually run; no scan is started until Run Scan Now.</p></div><p class="help pad">Choose the modules the scan asks, as Spiderfoot's By Module scan does. A module is asked only by the lookups listed under it, for the target and for what the scan follows; one that no scan lookup asks runs as its own command and cannot be chosen here.</p><table class="uc"><tbody id="modlist"></tbody></table></div>
 <p class="alert" id="nerror" role="alert" hidden></p>
 <div><button class="btn btn-primary" id="runscan" type="submit">Run Scan Now</button></div>
 </form>
@@ -693,7 +693,7 @@ async function exportJson(ids,format='json'){
   catch(e){fail(view==='scan'?'scerror':'serror',e.message)}
 }
 // New Scan: a target and Spiderfoot's three ways of choosing what runs.
-let ntab='usecase',modules=null;
+let ntab='usecase',modules=null,attackModules=[];
 const loaded={};
 function newTab(t){
   ntab=t;
@@ -715,6 +715,18 @@ async function loadMods(){
   const tb=$('modlist');tb.replaceChildren();
   try{
     let list;try{list=(await api('/api/settings')).modules}catch(_){list=await moduleList()}
+    attackModules=list;
+    // Build the technique filter from the server's compiled Rust registry, not a UI-only
+    // ATT&CK lookup table. Only source legs callable by a scan are candidates.
+    const techniqueCounts=new Map();
+    for(const m of list)if(m.lookups&&m.lookups.length)for(const id of m.attack_techniques||[]){
+      if(/^T\\d{4}(?:\\.\\d{3})?$/.test(id))techniqueCounts.set(id,(techniqueCounts.get(id)||0)+1);
+    }
+    const tech=$('nattackfocus');tech.replaceChildren();
+    const initial=el('option','','Choose a mapped technique');initial.value='';tech.append(initial);
+    for(const id of [...techniqueCounts.keys()].sort()){
+      const o=el('option','',id+' · '+techniqueCounts.get(id)+' source(s)');o.value=id;tech.append(o);
+    }
     const kinds=Object.fromEntries([...$('skind').options].map(o=>[o.value,o.textContent]));
     for(const m of list){
       const tr=el('tr'),i=el('input'),box=el('label','cb'),text=el('label'),name=el('b','',m.name),asks=m.lookups,open=!asks||asks.length>0;
@@ -727,6 +739,22 @@ async function loadMods(){
     loaded.modules=true;
   }catch(e){none(tb,e.message,2)}
 }
+// ATT&CK changes the modules sent to the real saved-scan service: it does not merely
+// highlight catalogue names. Unconfigured sources are not silently claimed usable.
+$('nattackapply').onclick=()=>{
+  const id=$('nattackfocus').value;
+  if(!id){$('nattackstatus').textContent='Choose a technique first.';return}
+  const catalog=new Map(attackModules.map(m=>[m.name,m]));
+  let count=0;
+  for(const input of $('modlist').querySelectorAll('input[type=checkbox]')){
+    const m=catalog.get(input.value);
+    input.checked=!!(m&&!input.disabled&&m.configured!==false&&(m.attack_techniques||[]).includes(id));
+    if(input.checked)count++;
+  }
+  $('nattackstatus').textContent=count?
+    count+' configured source(s) selected for '+id+'. Only these will run when you submit the scan.':
+    'No configured scan-compatible sources match '+id+'; choose another technique or configure its provider key.';
+};
 function setAll(on){for(const i of $('np-'+ntab).querySelectorAll('input[type=checkbox]'))if(!i.disabled)i.checked=on}
 $('nall').onclick=()=>setAll(true);$('nnone').onclick=()=>setAll(false);
 $('newscan').onsubmit=async ev=>{
