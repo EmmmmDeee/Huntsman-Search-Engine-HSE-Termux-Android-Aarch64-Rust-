@@ -334,6 +334,61 @@ mod tests {
         assert!(!verdict.all_available_providers_answered());
     }
 
+    /// One wire contract: an event names its variant in a snake-case `kind` field beside the
+    /// variant's own fields, and reads back unchanged. A `type` tag is not another spelling of it.
+    #[test]
+    fn event_kind_is_tagged_by_kind_on_the_wire() {
+        let event = module_event(EventKind::ModuleSkipped {
+            module: "shodan".to_string(),
+            reason: "private/reserved ip".to_string(),
+            class: Some(SkipClass::NotApplicable),
+        });
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "scan_id": "scan",
+                "ts": 0,
+                "kind": {
+                    "kind": "module_skipped",
+                    "module": "shodan",
+                    "reason": "private/reserved ip",
+                    "class": "not_applicable",
+                },
+            })
+        );
+        assert_eq!(serde_json::from_value::<Event>(json).unwrap(), event);
+
+        for (kind, tag) in [
+            (
+                EventKind::ModuleDone {
+                    module: "registry".to_string(),
+                    found: 2,
+                },
+                "module_done",
+            ),
+            (
+                EventKind::ModuleError {
+                    module: "registry".to_string(),
+                    error: "upstream 502".to_string(),
+                },
+                "module_error",
+            ),
+            (
+                EventKind::ExpansionStop {
+                    reason: "budget".to_string(),
+                },
+                "expansion_stop",
+            ),
+        ] {
+            let json = serde_json::to_value(&kind).unwrap();
+            assert_eq!(json["kind"], tag, "{json}");
+            assert_eq!(serde_json::from_value::<EventKind>(json).unwrap(), kind);
+        }
+        let typed = serde_json::json!({"type": "expansion_stop", "reason": "budget"});
+        assert!(serde_json::from_value::<EventKind>(typed).is_err());
+    }
+
     #[test]
     fn partial_outage_dominates_successes_beside_it() {
         let events = vec![

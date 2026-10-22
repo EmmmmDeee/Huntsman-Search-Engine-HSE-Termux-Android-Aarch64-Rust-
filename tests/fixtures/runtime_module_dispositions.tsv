@@ -2,8 +2,6 @@ abuseipdb	adapter	AbuseIPDB check leg reached through ip_cli from ip, scan -k ip
 address_au	leaf	Australian address and phone normalization utility
 analysis	runtime	shared analysis fan-out
 api_leg	runtime	shared request path, key binding and status mapping of the free-tier API legs
-archive	leaf	pure historical archive model
-archive_bridge	adapter	archive records into collection observations
 artifacts	exporter	bounded shared-state artifact renderer
 asic_director	adapter	ASIC director source client
 asic_persons	adapter	ASIC people source client
@@ -64,7 +62,6 @@ entity	runtime	canonical entity and evidence model
 entity_reality	leaf	read-only bounded source-attributed saved-entity claim assessment reached through scan_api and scans reality
 environment	leaf	the process environment, read through one module
 error	leaf	shared error type
-event	leaf	event primitive
 evidence_ancestry	runtime	independent-origin ancestry graph
 exit	leaf	process exit statuses shared by the binaries
 exposure	runtime	exposure analysis through intelligence report
@@ -170,7 +167,6 @@ scan_route	runtime	deterministic lookup-front-end selector routing
 scan_search	runtime	Spiderfoot's search over one or every saved scan, reached through scans search, the scan API and the console
 scan_service	runtime	saved-scan runner reached through scans run and the scan API
 scan_store	runtime	private on-disk saved-scan store with crash recovery read by scans and the scan API
-scraper_health	diagnostic	source drift diagnostics
 search	diagnostic	local search utility
 securitytrails	adapter	SecurityTrails subdomain leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set
 seeknow	adapter	SeekNow/See-Know source client

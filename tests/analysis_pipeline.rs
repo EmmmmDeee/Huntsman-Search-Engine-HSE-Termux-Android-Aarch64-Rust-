@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
 use huntsman_recon::analysis::{analyze_snapshot, analyze_snapshot_with_cross_scan};
-use huntsman_recon::archive::{ArchiveCapture, ArchiveSource, merge_captures, parse_archive_url};
-use huntsman_recon::archive_bridge::records_to_observation_batch;
 use huntsman_recon::cross_scan::{CrossScanCategory, CrossScanStore};
 use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use huntsman_recon::error::Error;
@@ -126,71 +124,4 @@ fn cross_scan_analysis_uses_pipeline_limits() {
                 | CrossScanCategory::Transitive { .. },
         )
     ));
-}
-
-#[test]
-fn archive_records_enter_collection_pipeline_with_provenance_and_metadata() {
-    let url = "https://example.com/admin/backup.zip?version=1";
-    let key = parse_archive_url(url).expect("archive URL");
-    let records = merge_captures(vec![ArchiveCapture {
-        source: ArchiveSource::Wayback,
-        dataset: "cdx".to_string(),
-        collection: Some("2025".to_string()),
-        original_url: url.to_string(),
-        key,
-        captured_at: "20250101000000".to_string(),
-        status: Some(200),
-        mime: Some("application/zip".to_string()),
-        digest: Some("sha1:fixture".to_string()),
-        source_url: Some("https://web.archive.org/fixture".to_string()),
-    }]);
-    let batch = records_to_observation_batch(&records, "scan", &PipelineLimits::default());
-    assert_eq!(batch.observations.len(), 1);
-    let observation = &batch.observations[0];
-    assert_eq!(observation.provider_id, "wayback");
-    assert_eq!(
-        observation
-            .upstream
-            .as_ref()
-            .and_then(|origin| origin.dataset.as_deref()),
-        Some("cdx")
-    );
-    let interests = observation
-        .attributes
-        .get("archive_interests")
-        .expect("interest metadata");
-    assert!(interests.contains("archive_or_backup"));
-    assert!(interests.contains("admin_auth_api_like"));
-    assert!(interests.contains("parameterized"));
-}
-
-#[test]
-fn archive_cap_surfaces_truncation() {
-    let records = (0..3)
-        .map(|index| {
-            let url = format!("https://example.com/file{index}.pdf");
-            let key = parse_archive_url(&url).expect("archive URL");
-            ArchiveCapture {
-                source: ArchiveSource::CommonCrawl,
-                dataset: format!("CC-MAIN-{index}"),
-                collection: None,
-                original_url: url,
-                key,
-                captured_at: "20250101000000".to_string(),
-                status: Some(200),
-                mime: Some("application/pdf".to_string()),
-                digest: None,
-                source_url: None,
-            }
-        })
-        .collect::<Vec<_>>();
-    let merged = merge_captures(records);
-    let limits = PipelineLimits {
-        max_archive_captures: 2,
-        ..PipelineLimits::default()
-    };
-    let batch = records_to_observation_batch(&merged, "scan", &limits);
-    assert_eq!(batch.observations.len(), 2);
-    assert!(batch.truncated);
-    assert!(batch.events.iter().all(|event| event.truncated));
 }

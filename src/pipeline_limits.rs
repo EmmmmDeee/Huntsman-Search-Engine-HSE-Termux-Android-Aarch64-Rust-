@@ -9,7 +9,6 @@ pub struct PipelineLimits {
     pub max_relations: usize,
     pub max_dispatches: usize,
     pub max_response_bytes: usize,
-    pub max_archive_captures: usize,
     pub max_cross_scan_frontier: usize,
     pub max_cross_scan_visited: usize,
     pub max_generation: u32,
@@ -24,7 +23,6 @@ impl Default for PipelineLimits {
             max_relations: 8192,
             max_dispatches: 512,
             max_response_bytes: crate::http::DEFAULT_MAX_BODY,
-            max_archive_captures: 4096,
             max_cross_scan_frontier: 128,
             max_cross_scan_visited: 512,
             max_generation: 4,
@@ -45,5 +43,17 @@ mod tests {
         assert!(limits.max_relations >= limits.max_entities);
         assert!(limits.max_dispatches > 0);
         assert_eq!(limits.max_response_bytes, crate::http::DEFAULT_MAX_BODY);
+    }
+
+    /// Limits written while `max_archive_captures` existed still read, the old bound ignored.
+    #[test]
+    fn limits_written_with_the_archive_bound_still_read() {
+        let mut json = serde_json::to_value(PipelineLimits::default()).unwrap();
+        // Not the old default, so the field being read again would show.
+        json["max_archive_captures"] = 1.into();
+        assert_eq!(
+            serde_json::from_value::<PipelineLimits>(json).unwrap(),
+            PipelineLimits::default()
+        );
     }
 }

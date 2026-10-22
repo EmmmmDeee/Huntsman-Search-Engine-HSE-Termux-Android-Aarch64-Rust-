@@ -10,8 +10,6 @@
 
 use crate::error::Error;
 
-pub use crate::{address_au, postcode_au};
-
 const COMPANY_SUFFIXES: &[&str] = &[
     " PTY LTD ",
     " LIMITED ",

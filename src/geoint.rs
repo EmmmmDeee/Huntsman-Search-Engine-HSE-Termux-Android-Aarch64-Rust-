@@ -2,8 +2,6 @@
 
 use crate::error::Error;
 
-pub use crate::radar;
-
 /// Parse `LAT,LON` in decimal degrees. NaN, infinities, and out-of-range values are refused.
 ///
 /// # Errors
