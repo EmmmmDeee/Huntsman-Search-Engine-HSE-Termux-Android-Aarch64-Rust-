@@ -200,7 +200,7 @@ struct Inspect {
 /// One `/api/inspect` body, read whole, and the inspection place it holds until it is answered.
 struct Upload {
     body: Vec<u8>,
-    _place: Slot,
+    place: Slot,
 }
 
 /// One bounded, no-root Android OS-cached Wi-Fi observation read.
@@ -700,15 +700,48 @@ fn handle_stream_with(
     // A whole request: the connection is busy now, not idle, and is no longer closed early.
     drop(waiting);
     let response = respond_with(&request, upload.as_ref(), config, routes);
-    // The file and its inspection place are done with once the answer is built: a client that
-    // reads its answer slowly must hold neither.
-    drop(upload);
-    stream
-        .write_all(&response)
-        .map_err(|error| Error::Store(format!("serve write: {error}")))?;
+    // The file is done with once the answer is built. The inspection place is held until the
+    // answer is written, so one inspection's answer is in memory at a time, and a slow reader holds
+    // it no longer than the deadline its upload had.
+    let place = upload.map(|Upload { body, place }| {
+        drop(body);
+        place
+    });
+    let deadline = place.as_ref().map(|_| Instant::now() + INSPECT_DEADLINE);
+    write_within(&mut stream, &response, deadline)?;
+    drop(place);
     stream
         .flush()
         .map_err(|error| Error::Store(format!("serve flush: {error}")))
+}
+
+/// Write all of `bytes`, each write within [`IO_TIMEOUT`] and, when there is one, all of them before
+/// `deadline`, so a reader that takes a little at a time cannot hold the connection for ever.
+fn write_within(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: Option<Instant>,
+) -> Result<(), Error> {
+    while !bytes.is_empty() {
+        if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::Store(
+                    "serve write: the reader ran out of time".into(),
+                ));
+            }
+            stream
+                .set_write_timeout(Some(remaining.min(IO_TIMEOUT)))
+                .map_err(|error| Error::Store(format!("serve write timeout: {error}")))?;
+        }
+        match stream.write(bytes) {
+            Ok(0) => return Err(Error::Store("serve write: the connection closed".into())),
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(Error::Store(format!("serve write: {error}"))),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -821,13 +854,7 @@ fn read_request_with(
         // The head is moved out and the body kept in place, so the file is held once, not twice.
         let text = String::from_utf8_lossy(&bytes[..head]).into_owned();
         bytes.drain(..head);
-        return Ok((
-            text,
-            Some(Upload {
-                body: bytes,
-                _place: place,
-            }),
-        ));
+        return Ok((text, Some(Upload { body: bytes, place })));
     }
 
     if bytes.len() >= MAX_REQUEST_BYTES && !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -4428,7 +4455,7 @@ mod tests {
         // An upload that ended early is named, not passed on short.
         let short = Upload {
             body: vec![1, 2, 3],
-            _place: inspect_admits(&head, &config, &routes).unwrap().1,
+            place: inspect_admits(&head, &config, &routes).unwrap().1,
         };
         let ended = text(respond_with(&head, Some(&short), &config, &routes));
         assert!(ended.starts_with("HTTP/1.1 400"), "{ended}");
@@ -4673,10 +4700,11 @@ mod tests {
         }
     }
 
-    /// A client that reads its answer slowly holds neither the file nor the one inspection place:
-    /// another upload is read and answered meanwhile.
+    /// One inspection's answer is in memory at a time: while a client that has stopped reading holds
+    /// the one place, another upload is answered `503` unread, and once that write times out the
+    /// place comes back.
     #[test]
-    fn a_slow_reader_does_not_hold_the_inspection_place() {
+    fn an_answer_holds_the_inspection_place_only_until_its_write_ends() {
         let calls = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&calls);
         let server = Server::bind(ServeConfig::parse("127.0.0.1:0", None).unwrap())
@@ -4701,18 +4729,27 @@ mod tests {
         thread::spawn(move || {
             let _ = server.run(|_| {});
         });
-        let mut slow = TcpStream::connect(addr).unwrap();
-        slow.write_all(inspect_head("big", 3, HEADER).as_bytes())
+        let mut stalled = TcpStream::connect(addr).unwrap();
+        stalled
+            .write_all(inspect_head("big", 3, HEADER).as_bytes())
             .unwrap();
-        slow.write_all(b"abc").unwrap();
+        stalled.write_all(b"abc").unwrap();
         thread::sleep(Duration::from_millis(1500));
-        let other = upload(addr, &inspect_head("small", 3, HEADER), b"abc");
-        assert!(other.starts_with("HTTP/1.1 200"), "{other}");
+        let busy = upload(addr, &inspect_head("small", 3, HEADER), b"abc");
+        assert!(busy.starts_with("HTTP/1.1 503"), "{busy}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // The stalled write gives up after IO_TIMEOUT without progress, well before the 90 s deadline
+        // that bounds a reader still taking a little at a time.
+        let started = Instant::now();
+        let after = loop {
+            let answer = upload(addr, &inspect_head("small", 3, HEADER), b"abc");
+            if !answer.starts_with("HTTP/1.1 503") || started.elapsed() > Duration::from_secs(60) {
+                break answer;
+            }
+            thread::sleep(Duration::from_millis(250));
+        };
+        assert!(after.starts_with("HTTP/1.1 200"), "{after}");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        slow.set_read_timeout(Some(Duration::from_secs(20)))
-            .unwrap();
-        let mut answer = Vec::new();
-        let _ = slow.read_to_end(&mut answer);
-        assert!(answer.starts_with(b"HTTP/1.1 200"));
+        drop(stalled);
     }
 }

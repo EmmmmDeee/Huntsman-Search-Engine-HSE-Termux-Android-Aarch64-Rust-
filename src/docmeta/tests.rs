@@ -1,6 +1,8 @@
 //! Parser and command tests over hand-built byte streams, so no binary fixture is committed and the
 //! whole XMP-packet and PDF `/Info` path -- including embedded GPS -- is exercised deterministically.
 
+use std::fmt::Write as _;
+
 use super::{DocmetaArgs, DocmetaRun, EntityKind, parse, run};
 
 /// An XMP packet with `dc:creator` (a Seq list), a localised `dc:title`, two `xmp:*` attributes and
@@ -230,7 +232,7 @@ fn run_on_a_plain_file_still_succeeds_with_a_document_entity() {
 
 #[test]
 fn a_value_is_capped_and_fields_are_bounded() {
-    let huge = "A".repeat(super::MAX_DOCMETA_VALUE_BYTES * 2);
+    let huge = "A".repeat(crate::exif::MAX_METADATA_VALUE_BYTES * 2);
     let packet = format!(
         "<x:xmpmeta><rdf:RDF><rdf:Description xmlns:dc=\"d\" dc:rights=\"{huge}\">\
          </rdf:Description></rdf:RDF></x:xmpmeta>"
@@ -238,7 +240,7 @@ fn a_value_is_capped_and_fields_are_bounded() {
     let parsed = parse(packet.as_bytes());
     let rights = field(&parsed, "dc:rights").expect("the capped field");
     assert!(
-        rights.len() <= super::MAX_DOCMETA_VALUE_BYTES,
+        rights.len() <= crate::exif::MAX_METADATA_VALUE_BYTES,
         "len {}",
         rights.len()
     );
@@ -388,11 +390,14 @@ fn a_hostile_packet_is_scanned_in_linear_time() {
         "<a:b><c:d>t</c:e>",
         "<a:b><rdf:Seq><rdf:li>t",
         "<a:b><rdf:Bag> <rdf:li/>",
+        "<a:b><rdf:Seq><!--",
+        "<a:b><rdf:Alt><?x ",
+        "<a:b><rdf:Bag><!--c--><rdf:li>t</rdf:li><?p?>",
     ];
     for (unit, tail) in units.iter().flat_map(|unit| {
         [
             (unit, ""),
-            (unit, "</rdf:li></rdf:Seq></rdf:Bag></rdf:Alt></a:b>"),
+            (unit, "--> ?></rdf:li></rdf:Seq></rdf:Bag></rdf:Alt></a:b>"),
         ]
     }) {
         let mut packet = String::from("<x:xmpmeta>");
@@ -409,7 +414,7 @@ fn a_hostile_packet_is_scanned_in_linear_time() {
             elapsed < std::time::Duration::from_secs(10),
             "{unit:?} {tail:?}: {elapsed:?}"
         );
-        assert!(parsed.fields.len() <= super::MAX_FIELDS);
+        assert!(parsed.fields.len() <= crate::exif::MAX_METADATA_FIELDS);
     }
 }
 
@@ -832,4 +837,143 @@ fn a_png_text_chunk_after_thousands_of_image_chunks_is_read() {
     chunk(b"tEXt", b"Author\0Jane Doe");
     chunk(b"IEND", &[]);
     assert_eq!(field(&parse(&png), "png:Author"), Some("Jane Doe"));
+}
+
+#[test]
+fn junk_trailer_lines_never_cost_the_real_trailer_its_scan() {
+    // A PDF 1.5 file whose trailer is a cross-reference stream, after a stream holding eight
+    // unclosed `trailer <<` lines each followed by more than a dictionary scan's worth of bytes.
+    // Every dictionary has its own scan window, so the junk cannot use up the real trailer's.
+    let mut junk = Vec::new();
+    for _ in 0..8 {
+        junk.extend_from_slice(b"trailer <<\n");
+        junk.extend(std::iter::repeat_n(b'A', 260 * 1024));
+        junk.push(b'\n');
+    }
+    let mut pdf =
+        b"%PDF-1.5\n4 0 obj\n<< /Title (Secret Plan) /Author (Alice) >>\nendobj\n".to_vec();
+    pdf.extend_from_slice(format!("5 0 obj\n<< /Length {} >>\nstream\n", junk.len()).as_bytes());
+    pdf.extend_from_slice(&junk);
+    pdf.extend_from_slice(b"endstream\nendobj\n");
+    let xref = pdf.len();
+    pdf.extend_from_slice(
+        b"6 0 obj\n<< /Type /XRef /Size 7 /Info 4 0 R /Length 0 >>\nstream\n\nendstream\nendobj\n",
+    );
+    pdf.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
+    let parsed = parse(&pdf);
+    assert_eq!(field(&parsed, "info:Title"), Some("Secret Plan"));
+    assert_eq!(field(&parsed, "info:Author"), Some("Alice"));
+}
+
+#[test]
+fn a_bare_trailer_word_takes_no_place_from_a_real_trailer() {
+    // A linearized-style file names /Info only in its first trailer; a stream after it holds many
+    // text lines that start with the word "trailer" but open no dictionary.
+    let mut text = String::new();
+    for n in 0..200 {
+        writeln!(text, "trailer {n} arrived at dock 4").unwrap();
+    }
+    let pdf = format!(
+        "%PDF-1.4\nxref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 6 /Info 4 0 R >>\nstartxref\n9\n%%EOF\n\
+4 0 obj\n<< /Title (Secret Plan) >>\nendobj\n5 0 obj\n<< /Length {} >>\nstream\n{text}endstream\nendobj\n\
+xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 6 >>\nstartxref\n9\n%%EOF\n",
+        text.len()
+    );
+    assert_eq!(
+        field(&parse(pdf.as_bytes()), "info:Title"),
+        Some("Secret Plan")
+    );
+}
+
+#[test]
+fn a_comment_or_processing_instruction_inside_a_list_is_skipped() {
+    let packet = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\
+<rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n\
+<dc:creator><rdf:Seq>\n <!-- primary author -->\n <rdf:li>Jane Doe</rdf:li>\n</rdf:Seq></dc:creator>\n\
+<dc:subject><rdf:Bag>\n <rdf:li>protest</rdf:li>\n <?editor added?>\n <rdf:li>Kyiv</rdf:li>\n</rdf:Bag></dc:subject>\n\
+<dc:rights><rdf:Alt><rdf:li xml:lang=\"x-default\">CC-BY</rdf:li><!-- trailing --></rdf:Alt></dc:rights>\n\
+</rdf:Description></rdf:RDF></x:xmpmeta>\n";
+    let parsed = parse(packet.as_bytes());
+    assert_eq!(field(&parsed, "dc:creator"), Some("Jane Doe"));
+    assert_eq!(field(&parsed, "dc:subject"), Some("protest; Kyiv"));
+    assert_eq!(field(&parsed, "dc:rights"), Some("CC-BY"));
+}
+
+#[test]
+fn a_forward_search_that_moves_back_searches_again() {
+    let mut search = super::Forward::new("-->");
+    let text = "a-->b-->c";
+    assert_eq!(search.find(text, 5), Some(5));
+    assert_eq!(search.find(text, 0), Some(1));
+    assert_eq!(search.find(text, 2), Some(5));
+    assert_eq!(search.find(text, 9), None);
+    assert_eq!(search.find(text, 3), Some(5));
+}
+
+/// A JPEG with a main XMP packet and an extended XMP packet split into `APP1` chunks at `cuts`, the
+/// chunks stored in the order `order`.
+fn jpeg_with_extended_xmp(extended: &str, cuts: &[usize], order: &[usize]) -> Vec<u8> {
+    let segment = |jpeg: &mut Vec<u8>, payload: &[u8]| {
+        jpeg.extend_from_slice(&[0xFF, 0xE1]);
+        jpeg.extend_from_slice(&u16::try_from(payload.len() + 2).unwrap().to_be_bytes());
+        jpeg.extend_from_slice(payload);
+    };
+    let mut jpeg = vec![0xFF, 0xD8];
+    let main = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\
+<rdf:Description rdf:about=\"\" xmlns:xmpNote=\"http://ns.adobe.com/xmp/note/\" xmpNote:HasExtendedXMP=\"0123456789ABCDEF0123456789ABCDEF\"/>\
+</rdf:RDF></x:xmpmeta>";
+    segment(
+        &mut jpeg,
+        &[
+            b"http://ns.adobe.com/xap/1.0/\0".as_slice(),
+            main.as_bytes(),
+        ]
+        .concat(),
+    );
+    let mut bounds = vec![0];
+    bounds.extend_from_slice(cuts);
+    bounds.push(extended.len());
+    for &chunk in order {
+        let (start, end) = (bounds[chunk], bounds[chunk + 1]);
+        let mut payload = b"http://ns.adobe.com/xmp/extension/\0".to_vec();
+        payload.extend_from_slice(b"0123456789ABCDEF0123456789ABCDEF");
+        payload.extend_from_slice(&u32::try_from(extended.len()).unwrap().to_be_bytes());
+        payload.extend_from_slice(&u32::try_from(start).unwrap().to_be_bytes());
+        payload.extend_from_slice(&extended.as_bytes()[start..end]);
+        segment(&mut jpeg, &payload);
+    }
+    jpeg.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02, 0x11, 0x22, 0xFF, 0xD9]);
+    jpeg
+}
+
+#[test]
+fn an_extended_xmp_list_split_across_segments_is_read_whole() {
+    let ancestors: Vec<String> = (0..40)
+        .map(|n| format!("adobe:docid:photoshop:{n:04x}-0d37"))
+        .collect();
+    let mut items = String::new();
+    for id in &ancestors {
+        write!(items, "\n            <rdf:li>{id}</rdf:li>").unwrap();
+    }
+    let extended = format!(
+        "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\
+<rdf:Description rdf:about=\"\" xmlns:photoshop=\"http://ns.adobe.com/photoshop/1.0/\">\
+<photoshop:DocumentAncestors><rdf:Bag>{items}\n</rdf:Bag></photoshop:DocumentAncestors>\
+</rdf:Description></rdf:RDF></x:xmpmeta>"
+    );
+    // Splits inside an item's open tag, in the indentation between items, and inside a close tag:
+    // each lost the list or an item before.
+    let open = extended.match_indices("<rdf:li>").nth(5).unwrap().0 + 4;
+    let indent = extended.match_indices("\n      ").nth(15).unwrap().0 + 3;
+    let close = extended.match_indices("</rdf:li>").nth(30).unwrap().0 + 5;
+    let jpeg = jpeg_with_extended_xmp(&extended, &[open, indent, close], &[1, 0, 3, 2]);
+    let parsed = parse(&jpeg);
+    assert_eq!(
+        field(&parsed, "photoshop:DocumentAncestors"),
+        Some(ancestors.join("; ").as_str())
+    );
+    assert_eq!(
+        field(&parsed, "xmpNote:HasExtendedXMP"),
+        Some("0123456789ABCDEF0123456789ABCDEF")
+    );
 }
