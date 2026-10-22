@@ -649,9 +649,36 @@ fn extract_pdf_info(data: &[u8], fields: &mut Fields) {
 
 /// Whether a trailer names an `/Encrypt` dictionary (`/Encrypt N G R` or an inline `<<`). **Pure.**
 fn pdf_is_encrypted(data: &[u8]) -> bool {
-    pdf_name_values(data, b"/Encrypt").any(|at| {
-        let at = skip_pdf_whitespace(data, at);
-        data.get(at) == Some(&b'<') || pdf_reference(data, at).is_some()
+    pdf_trailer_dictionaries(data).any(|trailer| {
+        pdf_name_values(trailer, b"/Encrypt").any(|at| {
+            let at = skip_pdf_whitespace(trailer, at);
+            trailer.get(at) == Some(&b'<') || pdf_reference(trailer, at).is_some()
+        })
+    })
+}
+
+/// Read only explicit uncompressed trailer dictionaries. A keyword inside a PDF object or comment
+/// must not select unrelated metadata. Cross-reference streams need separate structured parsing.
+fn pdf_trailer_dictionaries(data: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut from = 0usize;
+    std::iter::from_fn(move || {
+        loop {
+            let at = from + find_bytes(data.get(from..)?, b"trailer")?;
+            from = at + b"trailer".len();
+            if data.get(from).is_some_and(|byte| !is_pdf_delimiter(*byte)) {
+                continue;
+            }
+            let mut line_start = at;
+            while line_start > 0 && matches!(data[line_start - 1], b' ' | b'\t') {
+                line_start -= 1;
+            }
+            if line_start > 0 && !matches!(data[line_start - 1], b'\n' | b'\r') {
+                continue;
+            }
+            if let Some(dict) = pdf_dictionary(data, skip_pdf_whitespace(data, from)) {
+                return Some(dict);
+            }
+        }
     })
 }
 
@@ -662,11 +689,13 @@ fn pdf_is_encrypted(data: &[u8]) -> bool {
 /// uncompressed. **Pure.**
 fn pdf_info_revisions(data: &[u8]) -> Vec<&[u8]> {
     let mut references: Vec<(u32, u16)> = Vec::new();
-    for reference in pdf_name_values(data, b"/Info")
-        .filter_map(|at| pdf_reference(data, skip_pdf_whitespace(data, at)))
-    {
-        references.retain(|known| *known != reference);
-        references.push(reference);
+    for trailer in pdf_trailer_dictionaries(data) {
+        for reference in pdf_name_values(trailer, b"/Info")
+            .filter_map(|at| pdf_reference(trailer, skip_pdf_whitespace(trailer, at)))
+        {
+            references.retain(|known| *known != reference);
+            references.push(reference);
+        }
     }
     let Some(&current) = references.last() else {
         return Vec::new();
