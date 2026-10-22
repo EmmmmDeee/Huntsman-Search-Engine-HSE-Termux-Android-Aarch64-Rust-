@@ -877,10 +877,22 @@ mod tests {
         let keys = Keys::parse(&format!("{slot}=/tmp/private-install-value\n")).expect("keys");
         assert_eq!(unrecognised_slots(&keys), vec![slot]);
         let rendered = render(&keys);
-        assert!(rendered.contains(&format!("unrecognised_slot={slot}")), "{rendered}");
-        assert!(rendered.contains("huntsman-recon keys remove"), "{rendered}");
-        assert!(rendered.contains(crate::environment::INSTALL_ROOT_ENV), "{rendered}");
-        assert!(!rendered.contains("/tmp/private-install-value"), "{rendered}");
+        assert!(
+            rendered.contains(&format!("unrecognised_slot={slot}")),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("huntsman-recon keys remove"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(crate::environment::INSTALL_ROOT_ENV),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("/tmp/private-install-value"),
+            "{rendered}"
+        );
     }
 
     #[test]
