@@ -73,10 +73,8 @@ fetch	leaf	guarded causal fetch boundary
 fetch_cli	diagnostic	low-level fetch command parsing
 fsio	leaf	bounded atomic file I/O
 gap	runtime	coverage and expansion gap analysis
-geo	leaf	GEOINT model utility
 geohash	leaf	geohash codec
 geoint	leaf	GEOINT distance and parsing helpers
-geometry	leaf	geometry helpers
 gexf	exporter	GEXF graph output
 github_user	adapter	public GitHub profile source client
 graph	runtime	shared deterministic graph model
@@ -142,7 +140,6 @@ phone_intl	leaf	international phone canonicalization and country-prefix lookup
 pipeline	runtime	bounded normalization and evidence composition
 pipeline_limits	leaf	shared bounded-execution limits
 pivot	runtime	graph pivot ranking
-place	leaf	place primitive
 planner	runtime	deterministic dispatch planning
 postcode_au	leaf	Australian postcode lookup/model
 profiles	runtime	entity profiles through intelligence report

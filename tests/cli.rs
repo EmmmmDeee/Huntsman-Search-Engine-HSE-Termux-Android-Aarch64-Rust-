@@ -1038,6 +1038,30 @@ fn multibyte_documents_do_not_crash_search() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// `geo` prints whole metres on the sphere of `geohash::EARTH_RADIUS_KM`, the figure `check`
+/// reports as `brisbane_sydney_m`, in either order of the two coordinates.
+#[test]
+fn geo_prints_the_great_circle_distance_in_whole_metres() {
+    for pair in [
+        ["-27.4698,153.0251", "-33.8688,151.2093"],
+        ["-33.8688,151.2093", "-27.4698,153.0251"],
+    ] {
+        let out = bin().arg("geo").args(pair).output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{pair:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "732379\n",
+            "{pair:?}"
+        );
+        assert!(out.stderr.is_empty(), "{pair:?}: {:?}", out.stderr);
+    }
+}
+
 #[test]
 fn identifier_geohash_and_coarsen_commands() {
     let run = |args: &[&str]| {

@@ -8,7 +8,7 @@
 //! a library with fake-transport tests. `people` calls it; a WAF is [`Error::Invalid`]
 //! so it cannot be read as "no director records", and `people_cli` records that
 //! without aborting other sources. Coordinates
-//! use [`crate::postcode_au::offline_centroid`] (L3), not `geo` (L6). ATT&CK
+//! use [`crate::postcode_au::offline_centroid`] (L3). ATT&CK
 //! self-labels from the legacy module are not copied.
 
 use crate::address_au;
@@ -307,7 +307,7 @@ fn extract_company_name(line: &str, acn: &str) -> String {
 }
 
 /// State abbreviation plus a 4-digit postcode in the ASIC Connect display range
-/// 2000–7999 (the oracle for this HTML scrape; not [`postcode_au::is_in_au_range`]).
+/// 2000–7999 (the oracle for this HTML scrape; not the wider 0800–9999 AU range).
 fn extract_au_address(text: &str) -> Option<String> {
     let tokens: Vec<&str> = text.split_whitespace().collect();
     tokens.iter().enumerate().find_map(|(i, tok)| {
