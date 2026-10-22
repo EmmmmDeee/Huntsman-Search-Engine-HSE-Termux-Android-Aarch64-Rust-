@@ -195,6 +195,27 @@ fn a_body_that_is_not_json_is_drift_not_a_zero() {
 }
 
 #[test]
+fn a_wrong_typed_place_is_drift_that_quotes_none_of_it() {
+    // serde's own message names the value it refused; the drift detail keeps only the decode
+    // error's category and position.
+    let report = forward(
+        &OneResponse::json(200, r#"[{"place_rank":"secret@example.com"}]"#),
+        "wrong typed place",
+        "scan-geo",
+        1,
+    )
+    .expect("forward");
+    assert!(report.entities.is_empty());
+    assert_eq!(report.outcome.kind, SourceOutcomeKind::ParserDrift);
+    let detail = report.outcome.detail.unwrap_or_default();
+    assert!(!detail.contains("secret@example.com"), "{detail}");
+    assert!(
+        detail.starts_with("Nominatim JSON: data error at line 1 column "),
+        "{detail}"
+    );
+}
+
+#[test]
 fn forward_preserves_every_raw_provider_field_and_observation_time() {
     let mut place: serde_json::Value = serde_json::from_str(PLACE).expect("valid fixture");
     place["unexpected_nested"] = serde_json::json!({"flags": [true, null, 3], "label": "retained"});

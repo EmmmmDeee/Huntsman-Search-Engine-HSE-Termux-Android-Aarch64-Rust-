@@ -295,8 +295,9 @@ pub fn fetch_within<T: Transport + ?Sized>(
 /// the diagnostic. **Pure.**
 ///
 /// A source reads one answer through this, [`answer`] and [`decode_json`], in that order. A
-/// provider rule that reads the status alone (a documented "not found") goes before this one, and a
-/// rule that reads the body (an explicit "no such profile" document) between this and [`answer`].
+/// provider rule on the status (a documented "not found", which only a plain 4xx in `fetch`'s kind
+/// is) goes before this one, and a rule that reads the body (an explicit "no such profile"
+/// document) between this and [`answer`].
 ///
 /// # Errors
 /// The outcome to record when there is no whole response.
