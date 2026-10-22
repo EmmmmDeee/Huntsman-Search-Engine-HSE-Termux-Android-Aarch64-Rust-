@@ -618,8 +618,11 @@ mod tests {
         assert!(count > 0);
         assert_eq!(rows.len(), 2 * count);
         for index in 0..count {
-            assert_eq!(rows[index]["scan_id"], first.id);
-            assert_eq!(rows[index + count]["scan_id"], second.id);
+            assert_eq!(rows[index]["scan_id"].as_str(), Some(first.id.as_str()));
+            assert_eq!(
+                rows[index + count]["scan_id"].as_str(),
+                Some(second.id.as_str())
+            );
             assert_eq!(rows[index]["id"], rows[index + count]["id"]);
             assert_eq!(rows[index]["scan_name"], rows[index + count]["scan_name"]);
             assert_eq!(rows[index]["scan_target"], rows[index + count]["scan_target"]);
