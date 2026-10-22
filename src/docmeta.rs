@@ -53,7 +53,7 @@ const GPS_CONFIDENCE: f64 = 0.85;
 const MAX_FIELDS: usize = 512;
 
 /// Most bytes one field's value may occupy. Longer values are truncated for display.
-const MAX_VALUE_BYTES: usize = 8192;
+const MAX_DOCMETA_VALUE_BYTES: usize = 8192;
 
 /// Most bytes of one XMP packet scanned, so a file that claims a huge packet is bounded.
 const MAX_XMP_BYTES: usize = 1024 * 1024;
@@ -231,13 +231,13 @@ fn push_field(
     fields.push((key, value));
 }
 
-/// Truncate `value` to [`MAX_VALUE_BYTES`] on a char boundary. **Pure.**
+/// Truncate `value` to [`MAX_DOCMETA_VALUE_BYTES`] on a char boundary. **Pure.**
 fn cap(value: &str) -> String {
     let value = value.trim();
-    if value.len() <= MAX_VALUE_BYTES {
+    if value.len() <= MAX_DOCMETA_VALUE_BYTES {
         return value.to_owned();
     }
-    let mut end = MAX_VALUE_BYTES;
+    let mut end = MAX_DOCMETA_VALUE_BYTES;
     while end > 0 && !value.is_char_boundary(end) {
         end -= 1;
     }
@@ -544,7 +544,7 @@ fn read_pdf_literal(data: &[u8], start: usize) -> String {
             }
             other => out.push(other),
         }
-        if out.len() > MAX_VALUE_BYTES {
+        if out.len() > MAX_DOCMETA_VALUE_BYTES {
             break;
         }
         i += 1;
@@ -582,7 +582,7 @@ fn read_pdf_hex(data: &[u8], start: usize) -> String {
         if let Some(value) = (byte as char).to_digit(16) {
             nibbles.push(u8::try_from(value).unwrap_or(0));
         }
-        if nibbles.len() > MAX_VALUE_BYTES * 2 {
+        if nibbles.len() > MAX_DOCMETA_VALUE_BYTES * 2 {
             break;
         }
         i += 1;

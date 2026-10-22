@@ -210,7 +210,7 @@ fn run_on_a_plain_file_still_succeeds_with_a_document_entity() {
 
 #[test]
 fn a_value_is_capped_and_fields_are_bounded() {
-    let huge = "A".repeat(super::MAX_VALUE_BYTES * 2);
+    let huge = "A".repeat(super::MAX_DOCMETA_VALUE_BYTES * 2);
     let packet = format!(
         "<x:xmpmeta><rdf:RDF><rdf:Description xmlns:dc=\"d\" dc:rights=\"{huge}\">\
          </rdf:Description></rdf:RDF></x:xmpmeta>"
@@ -218,7 +218,7 @@ fn a_value_is_capped_and_fields_are_bounded() {
     let parsed = parse(packet.as_bytes());
     let rights = field(&parsed, "dc:rights").expect("the capped field");
     assert!(
-        rights.len() <= super::MAX_VALUE_BYTES,
+        rights.len() <= super::MAX_DOCMETA_VALUE_BYTES,
         "len {}",
         rights.len()
     );
