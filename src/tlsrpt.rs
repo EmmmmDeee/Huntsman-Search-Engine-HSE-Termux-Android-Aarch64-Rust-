@@ -1,6 +1,6 @@
 //! TLSRPT (RFC 8460) parsing.
 
-use crate::{domains, http};
+use crate::{dmarc, http};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TlsRptRecord {
@@ -29,43 +29,17 @@ pub fn parse(txt: &str) -> Option<TlsRptRecord> {
         let Some(list) = list else {
             continue;
         };
-        for uri in list
+        // A mailbox is read as DMARC reads its `rua`, so the two records agree on one.
+        record.emails = dmarc::parse_mailto_list(list);
+        record.urls = list
             .split(',')
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            if let Some(addr) = uri.strip_prefix("mailto:") {
-                let addr = addr.split('!').next().unwrap_or(addr).trim();
-                if addr.contains('@') && addr.len() >= 5 {
-                    record.emails.push(addr.to_string());
-                }
-            } else if http::parse_http_uri(uri).is_ok() {
-                record.urls.push(uri.to_string());
-            }
-        }
+            .filter(|uri| !uri.starts_with("mailto:") && http::parse_http_uri(uri).is_ok())
+            .map(str::to_string)
+            .collect();
         break;
     }
     Some(record)
-}
-
-#[must_use]
-pub fn report_hosts(record: &TlsRptRecord, domain: &str) -> Vec<String> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut out = Vec::new();
-    for url in &record.urls {
-        if let Some(host) = host_of_absolute_http_url(url) {
-            if host.contains('.') && host != domain && seen.insert(host.clone()) {
-                out.push(host);
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-fn host_of_absolute_http_url(url: &str) -> Option<String> {
-    http::parse_http_uri(url).ok()?;
-    domains::host_from_url(url)
 }
 
 #[cfg(test)]
@@ -83,13 +57,30 @@ mod tests {
     }
 
     #[test]
-    fn first_rua_wins_and_hosts_dedup() {
+    fn first_rua_wins() {
         let record = parse(
             "v=TLSRPTv1; rua=https://tlsrpt.example.net/a,https://tlsrpt.example.net/b,https://other.example.org/r; rua=mailto:ignored@example.com",
         )
         .expect("record");
-        let hosts = report_hosts(&record, "fabrikam.example");
-        assert_eq!(hosts, vec!["other.example.org", "tlsrpt.example.net"]);
+        assert_eq!(
+            record.urls,
+            [
+                "https://tlsrpt.example.net/a",
+                "https://tlsrpt.example.net/b",
+                "https://other.example.org/r"
+            ]
+        );
+        assert!(record.emails.is_empty(), "{:?}", record.emails);
+    }
+
+    #[test]
+    fn mailto_entries_are_the_mailboxes_dmarc_reads() {
+        let list = "mailto:a@b.example!10m, mailto:x, https://r.example/v1";
+        let dmarc = dmarc::parse(&format!("v=DMARC1; p=none; rua={list}")).expect("DMARC record");
+        let record = parse(&format!("v=TLSRPTv1; rua={list}")).expect("TLSRPT record");
+        assert_eq!(record.emails, ["a@b.example"]);
+        assert_eq!(record.emails, dmarc.rua);
+        assert_eq!(record.urls, ["https://r.example/v1"]);
     }
 
     #[test]

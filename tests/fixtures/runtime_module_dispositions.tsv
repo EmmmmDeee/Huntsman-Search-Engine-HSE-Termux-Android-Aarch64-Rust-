@@ -183,7 +183,6 @@ sf_types	runtime	Spiderfoot 4.0 data-element type catalogue read by sf -T, scans
 sha256	leaf	SHA-256 primitive
 shadow_assessment	leaf	shadow-mode claim assessment reporting
 shodan	adapter	Shodan host and DNS leg reached through indicator_legs from ip, domain, scan and /api/lookup when its key is set
-signals	leaf	signal primitive
 snake_graph	exporter	compact graph rendering
 source_outcome	runtime	causal provider outcome model
 source_registry	runtime	lead-only discovery route registry
@@ -208,7 +207,7 @@ urlscan	adapter	urlscan.io search leg reached through indicator_legs from ip, do
 username_cli	diagnostic	username enrichment command front-end
 username_variants	leaf	deterministic handle normalization variants
 validation	runtime	seed/entity validation
-value_syntax	leaf	dependency-free domain mailbox URL-host and E.164 syntax primitives
+value_syntax	leaf	dependency-free domain mailbox URL-host E.164 and TXT-record tag syntax primitives
 virustotal	adapter	VirusTotal leg reached through ip_cli and domain_cli when its key is set
 web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API

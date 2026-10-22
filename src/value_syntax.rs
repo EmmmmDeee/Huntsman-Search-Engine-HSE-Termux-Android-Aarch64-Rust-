@@ -1,7 +1,7 @@
 //! Dependency-free lexical and syntax primitives shared by L3 normalisation modules.
 //!
-//! This module exists to keep domain, mailbox, URL-host, and E.164 syntax rules in one
-//! place without forcing the higher-level normalisers to depend on one another.
+//! This module exists to keep domain, mailbox, URL-host, E.164 and TXT-record tag syntax rules
+//! in one place without forcing the higher-level normalisers to depend on one another.
 
 const ROLE_LOCALPARTS: &[&str] = &[
     "admin",
@@ -367,6 +367,16 @@ pub fn form_pairs(query: &str) -> Option<Vec<(String, String)>> {
         .collect()
 }
 
+/// One `name=value` tag of a TXT record, as SPF modifiers and DMARC tags are written: the
+/// name trimmed and ASCII-lowercased, the value trimmed. `None` without an `=` or a name.
+#[must_use]
+pub(crate) fn record_tag(raw: &str) -> Option<(String, &str)> {
+    let tag = raw.trim();
+    let (name, value) = tag.split_once('=')?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| (name.to_ascii_lowercase(), value.trim()))
+}
+
 #[cfg(test)]
 mod form_tests {
     use super::*;
@@ -387,6 +397,12 @@ mod form_tests {
             ])
         );
         assert_eq!(form_pairs("a=%zz"), None);
+    }
+
+    #[test]
+    fn record_tag_parser_normalises_name_and_trims_value() {
+        assert_eq!(record_tag(" Pct = 75 "), Some(("pct".to_string(), "75")));
+        assert_eq!(record_tag("missing"), None);
     }
 }
 
