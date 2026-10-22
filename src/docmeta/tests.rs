@@ -618,7 +618,9 @@ fn xmp_gps_accepts_lowercase_and_valid_world_boundaries() {
     let packet = xmp_packet()
         .replace("48,51.00N", "90n")
         .replace("2,20.00E", "180w");
-    let (lat, lon) = parse(packet.as_bytes()).gps.expect("valid boundary position");
+    let (lat, lon) = parse(packet.as_bytes())
+        .gps
+        .expect("valid boundary position");
     assert!((lat - 90.0).abs() < f64::EPSILON);
     assert!((lon + 180.0).abs() < f64::EPSILON);
 
@@ -635,8 +637,18 @@ fn invalid_xmp_gps_never_becomes_a_coordinates_entity() {
     let packet = xmp_packet().replace("48,51.00N", "48,99N");
     match run(packet.as_bytes(), "invalid-gps.jpg", 1) {
         DocmetaRun::Printed { report, .. } => {
-            assert!(report.entities.iter().any(|e| e.kind == EntityKind::Document));
-            assert!(report.entities.iter().all(|e| e.kind != EntityKind::Coordinates));
+            assert!(
+                report
+                    .entities
+                    .iter()
+                    .any(|e| e.kind == EntityKind::Document)
+            );
+            assert!(
+                report
+                    .entities
+                    .iter()
+                    .all(|e| e.kind != EntityKind::Coordinates)
+            );
         }
         DocmetaRun::Network(reason) | DocmetaRun::Failed(reason) => panic!("{reason}"),
     }
