@@ -1,6 +1,6 @@
 //! DMARC (RFC 7489) parsing and analysis.
 
-use crate::value_syntax::record_tag;
+use crate::value_syntax::{self, record_tag};
 
 /// True if `txt` starts with `v=DMARC1` (ASCII-case-insensitive).
 #[must_use]
@@ -171,12 +171,12 @@ pub fn parse(txt: &str) -> Option<DmarcRecord> {
             }
             "rua" => {
                 if seen.insert(name) {
-                    rec.rua = parse_mailto_list(value);
+                    rec.rua = value_syntax::parse_mailto_list(value);
                 }
             }
             "ruf" => {
                 if seen.insert(name) {
-                    rec.ruf = parse_mailto_list(value);
+                    rec.ruf = value_syntax::parse_mailto_list(value);
                 }
             }
             "fo" => {
@@ -202,23 +202,6 @@ pub fn parse(txt: &str) -> Option<DmarcRecord> {
     }
 
     Some(rec)
-}
-
-/// The mailboxes of a comma-separated report URI list (`rua`, `ruf`, TLS-RPT's `rua`): each
-/// `mailto:` entry without its `!size` limit, kept when it holds an `@`. Other schemes are skipped.
-pub(crate) fn parse_mailto_list(raw: &str) -> Vec<String> {
-    raw.split(',')
-        .filter_map(|entry| {
-            let trimmed = entry.trim();
-            let addr = trimmed.strip_prefix("mailto:")?;
-            let addr = addr.split('!').next().unwrap_or(addr).trim();
-            if addr.contains('@') && addr.len() >= 5 {
-                Some(addr.to_string())
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 impl DmarcRecord {

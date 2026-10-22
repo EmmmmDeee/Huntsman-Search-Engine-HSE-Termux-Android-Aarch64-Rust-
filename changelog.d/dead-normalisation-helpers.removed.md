@@ -12,6 +12,4 @@
   are what mark an anycast edge; `egress`'s tests now also refuse the reserved addresses the
   deleted classifier test asserted. `recon` keeps `ReconTargetKind`.
 - `hibp::key::ApiKey::redact_in`, `textnorm::mask_secret`, which showed a secret's first and last
-  four characters, and `hibp::key::REDACTED`. An HIBP API key, OAuth token set or PKCE verifier
-  now prints the crate's one redaction marker, `[redacted]`, where it printed `<redacted>`, as
-  sensitive request headers already did.
+  four characters, and `hibp::key::REDACTED`.

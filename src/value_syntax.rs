@@ -377,6 +377,24 @@ pub(crate) fn record_tag(raw: &str) -> Option<(String, &str)> {
     (!name.is_empty()).then(|| (name.to_ascii_lowercase(), value.trim()))
 }
 
+/// The mailboxes of a comma-separated report URI list (`rua`, `ruf`, TLS-RPT's `rua`): each
+/// `mailto:` entry without its `!size` limit, kept when it holds an `@` and is at least five
+/// bytes long. Other schemes are skipped.
+pub(crate) fn parse_mailto_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .filter_map(|entry| {
+            let trimmed = entry.trim();
+            let addr = trimmed.strip_prefix("mailto:")?;
+            let addr = addr.split('!').next().unwrap_or(addr).trim();
+            if addr.contains('@') && addr.len() >= 5 {
+                Some(addr.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod form_tests {
     use super::*;

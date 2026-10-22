@@ -1,6 +1,6 @@
 //! TLSRPT (RFC 8460) parsing.
 
-use crate::{dmarc, http};
+use crate::{http, value_syntax};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TlsRptRecord {
@@ -30,7 +30,7 @@ pub fn parse(txt: &str) -> Option<TlsRptRecord> {
             continue;
         };
         // A mailbox is read as DMARC reads its `rua`, so the two records agree on one.
-        record.emails = dmarc::parse_mailto_list(list);
+        record.emails = value_syntax::parse_mailto_list(list);
         record.urls = list
             .split(',')
             .map(str::trim)
@@ -76,7 +76,8 @@ mod tests {
     #[test]
     fn mailto_entries_are_the_mailboxes_dmarc_reads() {
         let list = "mailto:a@b.example!10m, mailto:x, https://r.example/v1";
-        let dmarc = dmarc::parse(&format!("v=DMARC1; p=none; rua={list}")).expect("DMARC record");
+        let dmarc =
+            crate::dmarc::parse(&format!("v=DMARC1; p=none; rua={list}")).expect("DMARC record");
         let record = parse(&format!("v=TLSRPTv1; rua={list}")).expect("TLSRPT record");
         assert_eq!(record.emails, ["a@b.example"]);
         assert_eq!(record.emails, dmarc.rua);
