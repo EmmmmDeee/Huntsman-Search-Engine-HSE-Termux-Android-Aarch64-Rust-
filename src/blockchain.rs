@@ -10,9 +10,9 @@ use serde::Deserialize;
 
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
-use crate::fetch::{FetchOptions, fetch};
-use crate::http::{Request, Response, Transport, percent_encode_component};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
+use crate::fetch::{FetchOptions, Fetched, answer, decode_json, fetch, whole_response};
+use crate::http::{Request, Transport, percent_encode_component};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SOURCE: &str = "blockchain";
 const HOST: &str = "https://blockchain.info/rawaddr/";
@@ -82,13 +82,7 @@ pub fn lookup<T: Transport + ?Sized>(
         now_unix,
     )?;
 
-    let Some(response) = fetched.response else {
-        return Ok(Report {
-            entities: Vec::new(),
-            outcome: fetched.outcome,
-        });
-    };
-    Ok(interpret(&response, scan_id, now_unix))
+    Ok(interpret(&fetched, scan_id, now_unix).unwrap_or_else(miss))
 }
 
 fn miss(outcome: SourceExecutionOutcome) -> Report {
@@ -98,51 +92,28 @@ fn miss(outcome: SourceExecutionOutcome) -> Report {
     }
 }
 
-/// Turn one fetched response into a report. **Pure.**
-fn interpret(response: &Response, scan_id: &str, now_unix: u64) -> Report {
-    // blockchain.info answers an address it cannot parse or does not hold with a 4xx and a short
-    // text body ("Address not found" / "Invalid Bitcoin Address"); both are clean negatives.
-    if (400..500).contains(&response.status) {
-        return miss(
-            SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status),
+/// Turn one fetched response into a report; `Err` is the outcome of a response that named no
+/// account. **Pure.**
+fn interpret(
+    fetched: &Fetched,
+    scan_id: &str,
+    now_unix: u64,
+) -> Result<Report, SourceExecutionOutcome> {
+    // blockchain.info answers an address it cannot parse or does not hold with a 400 or 404 and a
+    // short text body ("Invalid Bitcoin Address" / "Address not found"); both are clean negatives.
+    // A rate limit, a refusal, a challenge page and any other 4xx are not: none of them says the
+    // address is absent.
+    if let Some(response) = fetched.response.as_ref().filter(|r| {
+        matches!(r.status, 400 | 404) && fetched.outcome.kind == SourceOutcomeKind::Upstream4xx
+    }) {
+        return Err(
+            SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status)
         );
     }
-    if response.truncated {
-        return miss(SourceExecutionOutcome::failed(
-            SOURCE,
-            now_unix,
-            SourceOutcomeKind::ParserDrift,
-            Some(response.status),
-            "truncated blockchain.info response",
-        ));
-    }
-
-    let body = response.text();
-    let classified = classify_fetch(response.status, &body);
-    if classified != SourceOutcomeKind::Inconclusive {
-        return miss(SourceExecutionOutcome::failed(
-            SOURCE,
-            now_unix,
-            classified,
-            Some(response.status),
-            "blockchain.info response was not an account document",
-        ));
-    }
-
-    let account: Account = match serde_json::from_slice(&response.body) {
-        Ok(account) => account,
-        Err(error) => {
-            return miss(SourceExecutionOutcome::failed(
-                SOURCE,
-                now_unix,
-                SourceOutcomeKind::ParserDrift,
-                Some(response.status),
-                format!("blockchain.info JSON: {error}"),
-            ));
-        }
-    };
-
-    decode(&account, scan_id, now_unix, response.status)
+    let response = whole_response(fetched, "blockchain.info")?;
+    answer(fetched, "blockchain.info")?;
+    let account: Account = decode_json(response, SOURCE, now_unix, "blockchain.info")?;
+    Ok(decode(&account, scan_id, now_unix, response.status))
 }
 
 /// Build the report from a parsed account. **Pure.**
@@ -280,6 +251,41 @@ mod tests {
         assert!(got.entities.is_empty());
     }
 
+    /// `interpret` over `status` and `body` fetched unpaced, so a refusal here never opens the
+    /// shared blockchain.info circuit every paced lookup in these tests goes through.
+    fn interpreted(status: u16, body: &str) -> Report {
+        let fetched = fetch(
+            &OneResponse::json(status, body),
+            Request::get(url("1abc")),
+            None,
+            &FetchOptions::no_redirects(),
+            SOURCE,
+            1,
+        )
+        .unwrap();
+        interpret(&fetched, "scan", 1).unwrap_or_else(miss)
+    }
+
+    #[test]
+    fn only_a_plain_400_or_404_is_a_clean_negative() {
+        let challenge = "<html><title>Just a moment...</title>Cloudflare</html>";
+        for (status, body, kind) in [
+            (400, "Invalid Bitcoin Address", SourceOutcomeKind::ValidZero),
+            (404, "Address not found", SourceOutcomeKind::ValidZero),
+            (429, "Too Many Requests", SourceOutcomeKind::RateLimited),
+            (403, challenge, SourceOutcomeKind::BotWaf),
+            (404, challenge, SourceOutcomeKind::BotWaf),
+            (403, "forbidden", SourceOutcomeKind::AuthRejected),
+            (401, "", SourceOutcomeKind::AuthRequired),
+            (410, "gone", SourceOutcomeKind::Upstream4xx),
+        ] {
+            let got = interpreted(status, body);
+            assert_eq!(got.outcome.kind, kind, "HTTP {status} {body}");
+            assert_eq!(got.outcome.http_status, Some(status));
+            assert!(got.entities.is_empty());
+        }
+    }
+
     #[test]
     fn a_document_without_an_address_is_schema_drift() {
         let got = lookup(&OneResponse::json(200, r#"{"n_tx":1}"#), "1abc", "scan", 1).unwrap();
@@ -290,5 +296,19 @@ mod tests {
     fn non_json_is_parser_drift() {
         let got = lookup(&OneResponse::json(200, "not json"), "1abc", "scan", 1).unwrap();
         assert_eq!(got.outcome.kind, SourceOutcomeKind::ParserDrift);
+    }
+
+    #[test]
+    fn a_wrong_typed_account_is_parser_drift_that_quotes_none_of_it() {
+        let got = lookup(
+            &OneResponse::json(200, r#"{"address":"1abc","n_tx":"secret@example.com"}"#),
+            "1abc",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::ParserDrift);
+        let detail = got.outcome.detail.unwrap_or_default();
+        assert!(!detail.contains("secret@example.com"), "{detail}");
     }
 }
