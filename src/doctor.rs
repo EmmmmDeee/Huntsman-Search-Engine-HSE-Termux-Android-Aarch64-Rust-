@@ -581,7 +581,16 @@ fn env_file(ctx: &Context<'_>) -> Check {
                                 unrecognised.len(),
                                 unrecognised.join(", ")
                             ),
-                            "huntsman-recon credential-status",
+                            if unrecognised.len() == 1
+                                && unrecognised[0] == crate::environment::LEGACY_INSTALL_DIR_ENV
+                            {
+                                format!(
+                                    "huntsman-recon keys remove {}",
+                                    crate::environment::LEGACY_INSTALL_DIR_ENV
+                                )
+                            } else {
+                                "huntsman-recon credential-status".to_owned()
+                            },
                         )
                     }
                 }
