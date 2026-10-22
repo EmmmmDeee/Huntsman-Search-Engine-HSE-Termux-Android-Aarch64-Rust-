@@ -4,8 +4,9 @@
 //! the EXIF block a camera embeds. JPEG (the `APP1` `Exif\0\0` segment), TIFF (the whole file),
 //! WebP (the `EXIF` RIFF chunk) and PNG (the `eXIf` chunk) are understood; all carry the same
 //! TIFF-structured image-file directories (IFDs). Every tag the
-//! directories name is kept as evidence on a [`EntityKind::Document`] entity for the file, so no part
-//! of the metadata is dropped, and when the GPS IFD holds a position it also becomes a
+//! directories name is kept as evidence on a [`EntityKind::Document`] entity for the file, up to
+//! [`MAX_METADATA_FIELDS`] shared between the directories so none crowds out another, with a count of
+//! any not kept, and when the GPS IFD holds a position it also becomes a
 //! [`EntityKind::Coordinates`] entity -- the same `lat,lon` the `geocode` command reverse-geocodes
 //! into an address. Nothing is inferred beyond what the tags state; EXIF can be edited, so the
 //! position is the file's embedded claim, not an independently verified location.
@@ -23,6 +24,7 @@ use crate::entity::{
 use crate::error::Error;
 use crate::lookup_report;
 use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
+use crate::textnorm;
 
 /// The source/module name this command reports its findings under.
 pub const SOURCE: &str = "exif";
@@ -31,7 +33,7 @@ pub const EXIF_USAGE: &str = "usage: huntsman-recon exif IMAGE-FILE";
 
 pub const EXIF_HELP: &str = "\
 exif IMAGE-FILE
-Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG, TIFF, WebP and PNG images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG, TIFF, WebP or PNG image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
+Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG, TIFF, WebP and PNG images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved, up to 512 fields shared between the directories so none crowds out another (a file holding more says how many were not kept), each value shown up to 8 KiB and a long list of numbers as whole numbers with its count. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG, TIFF, WebP or PNG image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
 
 /// The largest image read, in bytes. EXIF sits at the head of the file, but the whole file is read
 /// so a TIFF whose directories point deep into it still parses; a larger file is refused by name.
@@ -62,17 +64,24 @@ pub(crate) const MAX_METADATA_FIELDS: usize = 512;
 /// as an array of thousands of numbers, is truncated for display.
 pub(crate) const MAX_METADATA_VALUE_BYTES: usize = 8192;
 
-/// `value` trimmed and truncated to [`MAX_METADATA_VALUE_BYTES`] on a char boundary. **Pure.**
+/// `value` trimmed and cut on a char boundary so its rendering is at most
+/// [`MAX_METADATA_VALUE_BYTES`]: a character the report escapes ([`textnorm::is_escaped`]) counts at
+/// the length of its escape, so a value of control bytes cannot render several times the bound.
+/// **Pure.**
 pub(crate) fn cap_value(value: &str) -> String {
     let value = value.trim();
-    if value.len() <= MAX_METADATA_VALUE_BYTES {
-        return value.to_owned();
+    let mut shown = 0usize;
+    for (at, c) in value.char_indices() {
+        shown += if textnorm::is_escaped(c) {
+            c.escape_default().len()
+        } else {
+            c.len_utf8()
+        };
+        if shown > MAX_METADATA_VALUE_BYTES {
+            return value[..at].to_owned();
+        }
     }
-    let mut end = MAX_METADATA_VALUE_BYTES;
-    while end > 0 && !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value[..end].to_owned()
+    value.to_owned()
 }
 
 pub type ExifRun = SourceRun<Report>;
@@ -123,6 +132,8 @@ pub struct GpsFix {
 pub struct Parsed {
     pub format: &'static str,
     pub fields: Vec<(String, String)>,
+    /// Fields the file holds past [`MAX_METADATA_FIELDS`], which are not kept.
+    pub omitted: usize,
     pub gps: Option<GpsFix>,
 }
 
@@ -203,6 +214,9 @@ fn document_entity(entities: &mut Vec<Entity>, parsed: &Parsed, label: &str, sid
     )
     .with_attr("format", parsed.format)
     .with_attr("exif_field_count", parsed.fields.len().to_string());
+    if parsed.omitted > 0 {
+        evidence = evidence.with_attr("exif_fields_omitted", parsed.omitted.to_string());
+    }
     for (name, value) in &parsed.fields {
         evidence = evidence.with_attr(format!("exif_{name}"), value.as_str());
     }
@@ -251,6 +265,13 @@ fn gps_entity(entities: &mut Vec<Entity>, gps: Option<&GpsFix>, label: &str, sid
 fn exif_summary(parsed: &Parsed, label: &str) -> String {
     if parsed.fields.is_empty() {
         format!("{} image {label} with no EXIF metadata", parsed.format)
+    } else if parsed.omitted > 0 {
+        format!(
+            "{} image {label} with {} EXIF field(s) kept and {} more not kept",
+            parsed.format,
+            parsed.fields.len(),
+            parsed.omitted
+        )
     } else {
         format!(
             "{} image {label} with {} EXIF field(s)",
@@ -482,7 +503,11 @@ fn decode_tiff(buf: &[u8], format: &'static str) -> Result<Parsed, &'static str>
     }
     let ifd0 = tiff.u32(4).ok_or("EXIF: truncated TIFF header")? as usize;
 
-    let mut fields = Vec::new();
+    let (mut image, mut camera, mut position) = (
+        Directory::default(),
+        Directory::default(),
+        Directory::default(),
+    );
     let mut gps_offset = None;
     let mut exif_offset = None;
 
@@ -490,11 +515,7 @@ fn decode_tiff(buf: &[u8], format: &'static str) -> Result<Parsed, &'static str>
         match entry.tag {
             0x8769 => exif_offset = pointer(&tiff, &entry),
             0x8825 => gps_offset = pointer(&tiff, &entry),
-            _ => push_field(
-                &mut fields,
-                ifd0_tag_name(entry.tag),
-                &named_value(&tiff, &entry),
-            ),
+            _ => image.push(ifd0_tag_name(entry.tag), &named_value(&tiff, &entry)),
         }
     }
     if let Some(offset) = exif_offset {
@@ -502,21 +523,64 @@ fn decode_tiff(buf: &[u8], format: &'static str) -> Result<Parsed, &'static str>
             if entry.tag == 0x8825 {
                 gps_offset = gps_offset.or_else(|| pointer(&tiff, &entry));
             } else {
-                push_field(
-                    &mut fields,
-                    exif_tag_name(entry.tag),
-                    &named_value(&tiff, &entry),
-                );
+                camera.push(exif_tag_name(entry.tag), &named_value(&tiff, &entry));
             }
         }
     }
-    let gps = gps_offset.and_then(|offset| decode_gps(&tiff, offset, &mut fields));
+    let gps = gps_offset.and_then(|offset| decode_gps(&tiff, offset, &mut position));
+    let (fields, omitted) = share_fields([image, camera, position]);
 
     Ok(Parsed {
         format,
         fields,
+        omitted,
         gps,
     })
+}
+
+/// The fields one directory (IFD0, the Exif sub-IFD, the GPS IFD) yields, at most
+/// [`MAX_METADATA_FIELDS`], and how many more it held.
+#[derive(Default)]
+struct Directory {
+    fields: Vec<(String, String)>,
+    omitted: usize,
+}
+
+impl Directory {
+    /// Keep a named field with its display value capped, skipping an empty one. **Pure.**
+    fn push(&mut self, name: String, value: &str) {
+        let value = cap_value(value);
+        if value.is_empty() {
+            return;
+        }
+        if self.fields.len() < MAX_METADATA_FIELDS {
+            self.fields.push((name, value));
+        } else {
+            self.omitted += 1;
+        }
+    }
+}
+
+/// The directories' fields in directory order within [`MAX_METADATA_FIELDS`], shared so that no
+/// directory crowds out another: the smallest keep all of theirs and the rest share what is left
+/// equally, so a first directory padded with junk tags cannot hide the camera and GPS fields after
+/// it. Returns them with the count of fields not kept. **Pure.**
+fn share_fields(directories: [Directory; 3]) -> (Vec<(String, String)>, usize) {
+    let mut smallest_first = [0, 1, 2];
+    smallest_first.sort_by_key(|&at| directories[at].fields.len());
+    let mut share = [0; 3];
+    let mut left = MAX_METADATA_FIELDS;
+    for (done, &at) in smallest_first.iter().enumerate() {
+        share[at] = directories[at].fields.len().min(left / (3 - done));
+        left -= share[at];
+    }
+    let mut fields = Vec::new();
+    let mut omitted = 0;
+    for (directory, share) in directories.into_iter().zip(share) {
+        omitted += directory.omitted + directory.fields.len() - share;
+        fields.extend(directory.fields.into_iter().take(share));
+    }
+    (fields, omitted)
 }
 
 /// The entries of the IFD at `offset`, bounded by [`MAX_IFD_ENTRIES`]. **Pure.**
@@ -576,15 +640,6 @@ fn pointer(tiff: &Tiff, entry: &Entry) -> Option<usize> {
     usize::try_from(offset).ok()
 }
 
-/// Append a named field with its display value capped, skipping an empty one and any past
-/// [`MAX_METADATA_FIELDS`]. **Pure.**
-fn push_field(fields: &mut Vec<(String, String)>, name: String, value: &str) {
-    let value = cap_value(value);
-    if !value.is_empty() && fields.len() < MAX_METADATA_FIELDS {
-        fields.push((name, value));
-    }
-}
-
 // ── value formatting ─────────────────────────────────────────────────────────────────────
 
 /// A human-readable rendering of one entry's value. **Pure.**
@@ -618,29 +673,47 @@ fn bytes_hint(bytes: &[u8]) -> String {
 
 /// A comma-joined list of fixed-width integers read by `read`. **Pure.**
 fn numbers(bytes: &[u8], width: usize, read: impl Fn(&[u8]) -> u64) -> String {
-    bytes
-        .chunks_exact(width)
-        .map(|chunk| read(chunk).to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+    listed(
+        bytes
+            .chunks_exact(width)
+            .map(|chunk| read(chunk).to_string()),
+    )
+}
+
+/// `items` joined with `", "`, as many whole ones as fit in [`MAX_METADATA_VALUE_BYTES`]; when some
+/// do not, the text ends with how many there are, so a value is never shown cut part way through.
+/// **Pure.**
+fn listed(items: impl ExactSizeIterator<Item = String>) -> String {
+    let total = items.len();
+    let more = format!(" \u{2026} ({total} values)");
+    let mut out = String::new();
+    for (at, item) in items.enumerate() {
+        let separator = if at == 0 { 0 } else { 2 };
+        let reserve = if at + 1 < total { more.len() } else { 0 };
+        if out.len() + separator + item.len() + reserve > MAX_METADATA_VALUE_BYTES {
+            out.push_str(&more);
+            return out;
+        }
+        if separator > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&item);
+    }
+    out
 }
 
 /// A comma-joined list of rationals, each `num/den` or its decimal when it divides evenly. **Pure.**
 fn rationals(endian: Endian, bytes: &[u8], signed: bool) -> String {
-    bytes
-        .chunks_exact(8)
-        .map(|chunk| {
-            let (num, den) = read_rational(endian, chunk, signed);
-            if den == 0 {
-                format!("{num}/0")
-            } else if num % den == 0 {
-                (num / den).to_string()
-            } else {
-                format!("{num}/{den}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
+    listed(bytes.chunks_exact(8).map(|chunk| {
+        let (num, den) = read_rational(endian, chunk, signed);
+        if den == 0 {
+            format!("{num}/0")
+        } else if num % den == 0 {
+            (num / den).to_string()
+        } else {
+            format!("{num}/{den}")
+        }
+    }))
 }
 
 /// A single rational's numerator and denominator (as `i64` so signed and unsigned share a path).
@@ -681,7 +754,7 @@ fn read_u32(endian: Endian, bytes: &[u8]) -> u32 {
 
 /// Decode the GPS IFD at `offset`: add every GPS tag to `fields` and return the position when the
 /// coordinate tags resolve to an in-range `lat,lon`. **Pure.**
-fn decode_gps(tiff: &Tiff, offset: usize, fields: &mut Vec<(String, String)>) -> Option<GpsFix> {
+fn decode_gps(tiff: &Tiff, offset: usize, fields: &mut Directory) -> Option<GpsFix> {
     let entries = read_ifd(tiff, offset);
     let mut lat_ref = None;
     let mut lon_ref = None;
@@ -693,7 +766,7 @@ fn decode_gps(tiff: &Tiff, offset: usize, fields: &mut Vec<(String, String)>) ->
     let mut date = None;
 
     for entry in &entries {
-        push_field(fields, gps_tag_name(entry.tag), &named_value(tiff, entry));
+        fields.push(gps_tag_name(entry.tag), &named_value(tiff, entry));
         match entry.tag {
             0x0001 => lat_ref = Some(ascii(&entry.value)),
             0x0002 => lat = degrees(tiff.endian, &entry.value),
