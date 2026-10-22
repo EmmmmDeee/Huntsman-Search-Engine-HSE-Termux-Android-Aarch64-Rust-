@@ -32,7 +32,7 @@ pub const HUNTSMAN_HOME_ENV: &str = "HUNTSMAN_HOME";
 /// `huntsman-recon` reads only `~/.huntsman.env`; `doctor` reports the difference.
 pub const HUNTSMAN_ENV_FILE_ENV: &str = "HUNTSMAN_ENV_FILE";
 /// Unsupported name found in some older install configurations. Do not add it to
-/// KNOWN_VARIABLES: no provider or runtime process reads its value.
+/// `KNOWN_VARIABLES`: no provider or runtime process reads its value.
 pub const LEGACY_INSTALL_DIR_ENV: &str = "HUNTSMAN_INSTALL_DIR";
 /// Installer-only override, read by install.sh when invoked, never by the runtime.
 pub const INSTALL_ROOT_ENV: &str = "HUNTSMAN_INSTALL_ROOT";
