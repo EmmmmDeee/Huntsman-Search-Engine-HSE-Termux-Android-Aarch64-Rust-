@@ -16,6 +16,7 @@ use huntsman_recon::clock;
 use huntsman_recon::concurrent;
 use huntsman_recon::crypto_cli::{self, CRYPTO_USAGE, CryptoArgs};
 use huntsman_recon::dehashed::{self, client::DehashedClient};
+use huntsman_recon::docmeta::{self, DOCMETA_USAGE, DocmetaArgs};
 use huntsman_recon::domain_cli::{DOMAIN_USAGE, DomainArgs};
 use huntsman_recon::email_cli::{EMAIL_USAGE, EmailArgs, EmailRun};
 use huntsman_recon::entity::{Entity, EntityKind, merge_by_uid};
@@ -730,6 +731,27 @@ pub(in crate::cli) fn exif_cmd(args: &[String]) -> ExitCode {
         Err(error) => return fail(EX_NOINPUT, &error.to_string()),
     };
     match source_report(exif::run(&bytes, &parsed.label, clock::unix_now())) {
+        Ok((text, _)) => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        Err(refused) => fail(refused.exit_status(), refused.message()),
+    }
+}
+
+/// Embedded XMP-packet and PDF `/Info` metadata of one local file: keyless and offline, no transport.
+/// The file is read here and the bytes are handed to the library; a file with no metadata still
+/// prints its format and size, and an embedded GPS position becomes a coordinates entity.
+pub(in crate::cli) fn docmeta_cmd(args: &[String]) -> ExitCode {
+    let parsed = match DocmetaArgs::parse(args) {
+        Ok(p) => p,
+        Err(e) => return usage_failure(&e, DOCMETA_USAGE),
+    };
+    let bytes = match read_bounded(&parsed.path, docmeta::MAX_FILE_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) => return fail(EX_NOINPUT, &error.to_string()),
+    };
+    match source_report(docmeta::run(&bytes, &parsed.label, clock::unix_now())) {
         Ok((text, _)) => {
             print!("{text}");
             ExitCode::SUCCESS

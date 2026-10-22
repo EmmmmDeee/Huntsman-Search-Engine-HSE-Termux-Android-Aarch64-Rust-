@@ -182,6 +182,7 @@ cargo run -- crypto 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa  # keyless blockchain.inf
 cargo run -- itunes "Example Co"  # keyless App Store search by keyword: matching apps, sellers, bundle identifiers; network
 cargo run -- geocode "1600 Amphitheatre Parkway, Mountain View"  # keyless OpenStreetMap Nominatim: a place or address to coordinates + full address (a LAT,LON argument is reverse-geocoded instead); network
 cargo run -- exif --help                  # keyless, offline EXIF metadata + GPS coordinates from a local image
+cargo run -- docmeta --help               # keyless, offline XMP packet + PDF /Info metadata + embedded GPS from a local file
 cargo run -- radar --help                 # no root, explain Termux:API Wi-Fi cache acquisition; offline
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction

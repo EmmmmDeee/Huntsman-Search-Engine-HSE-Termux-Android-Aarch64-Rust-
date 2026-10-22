@@ -488,6 +488,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "GPS coordinates and camera/device metadata read from a local image's EXIF, keyless and offline",
     },
     ReachableModule {
+        name: "docmeta",
+        command: "docmeta FILE",
+        access: "keyless",
+        network: false,
+        category: ModuleCategory::Geo,
+        attack_techniques: &["T1591.001"],
+        description: "author, creator tool, timestamps, document IDs and embedded GPS read from a local file's XMP packet and PDF /Info dictionary, keyless and offline",
+    },
+    ReachableModule {
         name: "phone_intl",
         command: "phone NUMBER",
         access: "offline",
