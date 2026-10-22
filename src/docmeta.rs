@@ -195,7 +195,13 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> DocmetaRun {
 }
 
 /// The document entity for the file, carrying its format and every field as evidence.
-fn document_entity(entities: &mut Vec<Entity>, parsed: &Parsed, label: &str, sid: &str, data: &[u8]) {
+fn document_entity(
+    entities: &mut Vec<Entity>,
+    parsed: &Parsed,
+    label: &str,
+    sid: &str,
+    data: &[u8],
+) {
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(SOURCE, sid),
         summary(parsed, label),
