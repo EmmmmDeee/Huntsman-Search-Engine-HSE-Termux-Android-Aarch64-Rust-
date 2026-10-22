@@ -687,12 +687,22 @@ fn handle_stream_with(
         .map_err(|error| Error::Store(format!("serve write timeout: {error}")))?;
 
     let deadline = Instant::now() + REQUEST_DEADLINE;
+    let waiting = std::cell::Cell::new(waiting);
     let (request, upload) = read_request_with(&mut stream, deadline, |head| {
-        inspect_admits(head, config, routes)
+        let admitted = inspect_admits(head, config, routes);
+        if admitted.is_some() {
+            // An admitted upload streams its body for up to INSPECT_DEADLINE: it is busy, and an
+            // idle connection is what a full server closes to make room.
+            drop(waiting.take());
+        }
+        admitted
     })?;
     // A whole request: the connection is busy now, not idle, and is no longer closed early.
     drop(waiting);
     let response = respond_with(&request, upload.as_ref(), config, routes);
+    // The file and its inspection place are done with once the answer is built: a client that
+    // reads its answer slowly must hold neither.
+    drop(upload);
     stream
         .write_all(&response)
         .map_err(|error| Error::Store(format!("serve write: {error}")))?;
@@ -791,6 +801,8 @@ fn read_request_with(
             {
                 let head = scan_from + at + 4;
                 if let Some((length, place)) = admit(&String::from_utf8_lossy(&bytes[..head])) {
+                    // The read that ended the head may hold bytes past the announced body.
+                    bytes.truncate(head + length);
                     bytes.reserve_exact((head + length).saturating_sub(bytes.len()));
                     deadline = deadline.max(Instant::now() + INSPECT_DEADLINE);
                     upload = Some((head, place));
@@ -837,6 +849,7 @@ fn inspect_admits(head: &str, config: &ServeConfig, routes: &Routes) -> Option<(
     let parsed = parse_request(head)?;
     let admitted = parsed.method == Method::Post
         && parsed.path == INSPECT_PATH
+        && !parsed.transfer_encoding
         && page_refusal(&parsed, "inspection", true).is_none()
         && authorized(&parsed, config)
         && host_allowed(&parsed, config);
@@ -936,10 +949,14 @@ struct ParsedRequest<'a> {
     sec_fetch_site: Option<&'a str>,
     /// A request body was announced: a non-zero `Content-Length` or any `Transfer-Encoding`.
     has_body: bool,
+    /// A `Transfer-Encoding` was sent. It would override any `Content-Length` (RFC 9112 6.3), and
+    /// this server reads no chunked body, so every route refuses it.
+    transfer_encoding: bool,
     /// The `Content-Length`, when it is a number.
     content_length: Option<usize>,
-    /// What followed the head, as far as it was read.
-    body: &'a str,
+    /// What followed the head, as far as it was read; `None` when the head never ended in its
+    /// blank line, because the client stopped part way through it.
+    body: Option<&'a str>,
 }
 
 fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
@@ -959,6 +976,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
     let mut lookup_header = false;
     let mut sec_fetch_site = None;
     let mut has_body = false;
+    let mut transfer_encoding = false;
     let mut content_length = None;
 
     // The head ends at the first blank line; anything after it is body, never a header.
@@ -983,6 +1001,7 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
             content_length = value.trim().parse().ok();
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             has_body = true;
+            transfer_encoding = true;
         }
     }
 
@@ -995,8 +1014,9 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
         lookup_header,
         sec_fetch_site,
         has_body,
+        transfer_encoding,
         content_length,
-        body: request.split_once("\r\n\r\n").map_or("", |(_, body)| body),
+        body: request.split_once("\r\n\r\n").map(|(_, body)| body),
     })
 }
 
@@ -1076,14 +1096,14 @@ fn respond(request: &str, config: &ServeConfig, routes: &Routes) -> Vec<u8> {
 }
 
 /// The bytes to write for one request and the file it uploaded, if any: text for every answer but
-/// a scan export that is a workbook.
+/// a scan export that is a workbook. A `HEAD` answer is the `GET` answer's head alone, whichever
+/// route built it.
 fn respond_with(
     request: &str,
     upload: Option<&Upload>,
     config: &ServeConfig,
     routes: &Routes,
 ) -> Vec<u8> {
-    let bearer_token = config.bearer_token.as_deref();
     if request == "REQUEST_TOO_LARGE" {
         return response(
             413,
@@ -1101,13 +1121,38 @@ fn respond_with(
     let Some(parsed) = parse_request(request) else {
         return response(400, "text/plain; charset=utf-8", "bad request\n", false).into_bytes();
     };
+    let mut bytes = route(&parsed, upload, config, routes);
+    if parsed.method == Method::Head {
+        if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            bytes.truncate(end + 4);
+        }
+    }
+    bytes
+}
 
-    if !host_allowed(&parsed, config) {
+/// The answer to a parsed request: the guards every route shares, then the route's own.
+fn route(
+    parsed: &ParsedRequest<'_>,
+    upload: Option<&Upload>,
+    config: &ServeConfig,
+    routes: &Routes,
+) -> Vec<u8> {
+    if !host_allowed(parsed, config) {
         return response(
             403,
             "text/plain; charset=utf-8",
             "host not allowed\n",
             parsed.method == Method::Head,
+        )
+        .into_bytes();
+    }
+
+    if parsed.transfer_encoding {
+        return response(
+            400,
+            "text/plain; charset=utf-8",
+            "send a request body with a Content-Length, not a Transfer-Encoding\n",
+            false,
         )
         .into_bytes();
     }
@@ -1133,12 +1178,12 @@ fn respond_with(
             | KEYS_PATH
             | INSPECT_PATH
     ) || ScanApi::handles(parsed.path);
-    if protected && !authorized(&parsed, config) {
+    if protected && !authorized(parsed, config) {
         return response(401, "application/json; charset=utf-8", UNAUTHORIZED, head).into_bytes();
     }
 
     if ScanApi::handles(parsed.path) {
-        return scans_response(&parsed, routes.scans.as_ref());
+        return scans_response(parsed, routes.scans.as_ref());
     }
     let text = match parsed.path {
         "/" | "/index.html" => response(200, "text/html; charset=utf-8", &PAGE, head),
@@ -1148,7 +1193,7 @@ fn respond_with(
                 name: "huntsman-recon",
                 version: env!("CARGO_PKG_VERSION"),
                 page: &PAGE_ID,
-                auth: if bearer_token.is_some() {
+                auth: if config.bearer_token.is_some() {
                     "token"
                 } else {
                     "none"
@@ -1174,11 +1219,11 @@ fn respond_with(
                 head,
             ),
         },
-        "/api/lookup" => lookup_response(&parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
-        "/api/radar/wifi" => radar_response(&parsed, routes.radar.as_ref()),
-        "/api/analyze" => analyze_response(&parsed, routes.analyze.as_ref()),
-        KEYS_PATH => keys_response(&parsed, routes.keys_home.as_deref()),
-        INSPECT_PATH => inspect_response(&parsed, upload, routes.inspect.as_ref()),
+        "/api/lookup" => lookup_response(parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
+        "/api/radar/wifi" => radar_response(parsed, routes.radar.as_ref()),
+        "/api/analyze" => analyze_response(parsed, routes.analyze.as_ref()),
+        KEYS_PATH => keys_response(parsed, routes.keys_home.as_deref()),
+        INSPECT_PATH => inspect_response(parsed, upload, routes.inspect.as_ref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
@@ -1547,13 +1592,13 @@ struct Imported {
 /// catalogue, and `value`, the key, or empty to remove the slot; or a key import, `import`, the
 /// text of a file holding keys. The refusal is the answer to send.
 fn save_key(parsed: &ParsedRequest<'_>, file: &Path) -> Result<Option<Imported>, String> {
-    if parsed.content_length != Some(parsed.body.len()) {
+    if parsed.content_length != parsed.body.map(str::len) {
         return Err(json_error(
             400,
             &format!("send the form as a body of at most {MAX_FORM_BYTES} bytes"),
         ));
     }
-    let Some(form) = form_pairs(parsed.body) else {
+    let Some(form) = parsed.body.and_then(form_pairs) else {
         return Err(json_error(
             400,
             "the form is not valid percent-encoded UTF-8",
@@ -1723,7 +1768,11 @@ fn inspect_response(
         Some(length) => length,
     };
     let Some(upload) = upload else {
-        // Every other check passed, so the one place was taken.
+        // The upload gate only sees a head that ended in its blank line, so one that never did was
+        // cut short. Otherwise every other check passed, and the one place was taken.
+        if parsed.body.is_none() {
+            return json_error(400, "the request ended before its head did");
+        }
         return json_error(503, "an inspection is already running; retry shortly");
     };
     if upload.body.len() != length {
@@ -4453,5 +4502,181 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// An upload streaming its body is busy, not idle: a full server making room closes an idle
+    /// connection, never the one sending a file.
+    #[test]
+    fn a_full_server_never_closes_the_upload_it_is_reading() {
+        let (addr, calls) = inspect_server(None, "127.0.0.1:0");
+        let file = vec![7_u8; 4096];
+        let mut sender = TcpStream::connect(addr).unwrap();
+        sender
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        sender
+            .write_all(inspect_head("a", file.len(), HEADER).as_bytes())
+            .unwrap();
+        sender.write_all(&file[..100]).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        let idle: Vec<TcpStream> = (1..MAX_CONNECTIONS)
+            .map(|_| TcpStream::connect(addr).unwrap())
+            .collect();
+        thread::sleep(IDLE_GRACE + Duration::from_millis(300));
+        // One past the cap: the server closes the connection that has waited longest idle.
+        let _extra = TcpStream::connect(addr).unwrap();
+        thread::sleep(Duration::from_millis(300));
+        sender.write_all(&file[100..]).unwrap();
+        let mut answer = Vec::new();
+        let _ = sender.read_to_end(&mut answer);
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        drop(idle);
+    }
+
+    /// Bytes a client sends after the body it announced are not the file, and do not make it look
+    /// short; a chunked body is refused, never handed over as the file with its framing; and a head
+    /// the client stopped part way through is called that, not a busy server.
+    #[test]
+    fn an_upload_is_exactly_its_content_length_and_nothing_else_passes_for_one() {
+        let (addr, calls) = inspect_server(None, "127.0.0.1:0");
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut request = inspect_head("a", 4, HEADER).into_bytes();
+        request.extend_from_slice(b"abcd\r\n");
+        client.write_all(&request).unwrap();
+        let mut answer = Vec::new();
+        let _ = client.read_to_end(&mut answer);
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(answer.contains("a:4:[97, 98, 99, 100]"), "{answer}");
+
+        let chunked = b"4\r\nabcd\r\n0\r\n\r\n";
+        let refused = upload(
+            addr,
+            &inspect_head(
+                "a",
+                chunked.len(),
+                &format!("{HEADER}Transfer-Encoding: chunked\r\n"),
+            ),
+            chunked,
+        );
+        assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
+        assert!(refused.contains("Transfer-Encoding"), "{refused}");
+
+        let cut = upload(
+            addr,
+            &format!(
+                "POST /api/inspect?name=a HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: 10\r\n"
+            ),
+            b"",
+        );
+        assert!(cut.starts_with("HTTP/1.1 400"), "{cut}");
+        assert!(cut.contains("ended before its head did"), "{cut}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// No route takes a chunked body: the router refuses `Transfer-Encoding` for every one.
+    #[test]
+    fn every_route_refuses_a_transfer_encoding() {
+        let config = test_config(loopback_bind(), None);
+        for (method, path) in [
+            ("POST", KEYS_PATH),
+            ("POST", "/api/scans?target=a"),
+            ("GET", "/api/health"),
+        ] {
+            let answer = text(respond(
+                &format!(
+                    "{method} {path} HTTP/1.1\r\nHost: localhost\r\n{HEADER}Transfer-Encoding: chunked\r\n\r\n"
+                ),
+                &config,
+                &Routes::default(),
+            ));
+            assert!(answer.starts_with("HTTP/1.1 400"), "{path}: {answer}");
+        }
+    }
+
+    /// A HEAD answer is the GET answer's head alone, on the JSON routes and the scan API as on the
+    /// page.
+    #[test]
+    fn a_head_answer_never_carries_a_body() {
+        let config = test_config(loopback_bind(), None);
+        let routes = Routes {
+            lookups: Some(echo_lookups()),
+            analyze: echo_seeds().analyze,
+            inspect: Some(Inspect {
+                handler: Arc::new(|_: &str, _: &[u8]| {
+                    Err(LookupError {
+                        status: 422,
+                        message: "unused".into(),
+                    })
+                }),
+                live: Arc::new(AtomicUsize::new(0)),
+            }),
+            ..Routes::default()
+        };
+        for path in [
+            "/api/inspect?name=a",
+            "/api/lookup?q=a",
+            "/api/analyze?seeds=",
+            "/api/scans",
+            "/api/missing",
+            "/",
+        ] {
+            let answer = text(respond(
+                &format!("HEAD {path} HTTP/1.1\r\nHost: localhost\r\n{HEADER}\r\n"),
+                &config,
+                &routes,
+            ));
+            let (head, body) = answer.split_once("\r\n\r\n").unwrap();
+            assert!(head.starts_with("HTTP/1.1 "), "{path}: {answer}");
+            assert!(body.is_empty(), "{path}: a HEAD answer carried {body:?}");
+        }
+    }
+
+    /// A client that reads its answer slowly holds neither the file nor the one inspection place:
+    /// another upload is read and answered meanwhile.
+    #[test]
+    fn a_slow_reader_does_not_hold_the_inspection_place() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let server = Server::bind(ServeConfig::parse("127.0.0.1:0", None).unwrap())
+            .unwrap()
+            .with_inspect(Arc::new(move |label: &str, _: &[u8]| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                Ok(LookupReport {
+                    route: "inspect",
+                    // Far more than the socket buffers hold, so its write waits on the reader.
+                    text: if label == "big" {
+                        "x".repeat(32 * 1024 * 1024)
+                    } else {
+                        String::new()
+                    },
+                    entities: Vec::new(),
+                    outcomes: Vec::new(),
+                    scan: None,
+                    status: None,
+                })
+            }));
+        let addr = server.local_addr().unwrap();
+        thread::spawn(move || {
+            let _ = server.run(|_| {});
+        });
+        let mut slow = TcpStream::connect(addr).unwrap();
+        slow.write_all(inspect_head("big", 3, HEADER).as_bytes())
+            .unwrap();
+        slow.write_all(b"abc").unwrap();
+        thread::sleep(Duration::from_millis(1500));
+        let other = upload(addr, &inspect_head("small", 3, HEADER), b"abc");
+        assert!(other.starts_with("HTTP/1.1 200"), "{other}");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        slow.set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        let mut answer = Vec::new();
+        let _ = slow.read_to_end(&mut answer);
+        assert!(answer.starts_with(b"HTTP/1.1 200"));
     }
 }
