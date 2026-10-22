@@ -40,17 +40,25 @@ pub fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     crate::geohash::haversine_km(lat1, lon1, lat2, lon2) * 1000.0
 }
 
+/// Correlate only geographically valid fixes. `Fix` is public, so callers may
+/// bypass `parse_latlon`; malformed coordinates must never produce an attribution.
 #[must_use]
 pub fn colocated(fixes: &[Fix], radius_m: f64, window_secs: u64) -> Vec<CoLocation> {
+    let valid: Vec<&Fix> = fixes
+        .iter()
+        .filter(|fix| {
+            (-90.0..=90.0).contains(&fix.lat) && (-180.0..=180.0).contains(&fix.lon)
+        })
+        .collect();
     let mut out = Vec::new();
-    for i in 0..fixes.len() {
-        for j in (i + 1)..fixes.len() {
-            let meters = haversine_m(fixes[i].lat, fixes[i].lon, fixes[j].lat, fixes[j].lon);
-            let delta = fixes[i].at_unix.abs_diff(fixes[j].at_unix);
+    for i in 0..valid.len() {
+        for j in (i + 1)..valid.len() {
+            let meters = haversine_m(valid[i].lat, valid[i].lon, valid[j].lat, valid[j].lon);
+            let delta = valid[i].at_unix.abs_diff(valid[j].at_unix);
             if meters <= radius_m && delta <= window_secs {
                 out.push(CoLocation {
-                    left: fixes[i].id.clone(),
-                    right: fixes[j].id.clone(),
+                    left: valid[i].id.clone(),
+                    right: valid[j].id.clone(),
                     meters,
                     delta_secs: delta,
                 });
@@ -134,6 +142,34 @@ mod tests {
         let pairs = colocated(&fixes, 1.0, u64::MAX - 1);
         assert!(pairs.is_empty(), "{pairs:?}");
         assert_eq!(colocated(&fixes, 1.0, u64::MAX).len(), 1);
+    }
+
+    #[test]
+    fn rejects_invalid_public_fixes_before_spatial_correlation() {
+        let fix = |id: &str, lat: f64, lon: f64| Fix {
+            id: id.into(),
+            lat,
+            lon,
+            at_unix: 100,
+        };
+        let fixes = [
+            fix("valid-a", 0.0, 0.0),
+            fix("invalid-lat-a", 95.0, 0.0),
+            fix("invalid-lat-b", 95.0, 0.0),
+            fix("invalid-lon-a", 0.0, 181.0),
+            fix("invalid-lon-b", 0.0, 181.0),
+            fix("nan", f64::NAN, 0.0),
+            fix("infinity", 0.0, f64::INFINITY),
+            fix("valid-b", 0.0, 0.0),
+        ];
+        let pairs = colocated(&fixes, 1.0, 0);
+        assert_eq!(pairs.len(), 1, "{pairs:?}");
+        assert_eq!(pairs[0].left, "valid-a");
+        assert_eq!(pairs[0].right, "valid-b");
+        assert_eq!(pairs[0].meters, 0.0);
+
+        let boundaries = [fix("south-a", -90.0, -180.0), fix("south-b", -90.0, -180.0)];
+        assert_eq!(colocated(&boundaries, 0.0, 0).len(), 1);
     }
 
     #[test]
