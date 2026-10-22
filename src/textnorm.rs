@@ -46,11 +46,33 @@ pub fn escape_controls_keep_lines(s: &str) -> String {
 /// malformed, or not a valid character is left as it is, and so is any `&` that does not begin one.
 #[must_use]
 pub fn decode_html_entities(s: &str) -> String {
+    decode_references(s, Syntax::Html)
+}
+
+/// Decodes the references in `s` by XML 1.0's rules, for XML that is not HTML, such as an XMP
+/// packet: the five predefined entities, and numeric references to characters XML allows. Anything
+/// else is left as it is, so `&nbsp;`, which XML does not define, stays as written.
+#[must_use]
+pub fn decode_xml_references(s: &str) -> String {
+    decode_references(s, Syntax::Xml)
+}
+
+/// The rules a reference is read by: HTML's, which takes `&nbsp;`, an upper-case `X` and a sign, or
+/// XML's.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Syntax {
+    Html,
+    Xml,
+}
+
+/// One pass over `s`: a reference that `syntax` reads is replaced by its character, and any other
+/// character is copied as it is, so a decoded `&` is never decoded again.
+fn decode_references(s: &str, syntax: Syntax) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while !rest.is_empty() {
         let decoded = if rest.as_bytes()[0] == b'&' {
-            decode_one_html_entity(rest)
+            decode_one_reference(rest, syntax)
         } else {
             None
         };
@@ -81,32 +103,12 @@ fn reference_end(s: &str) -> Option<usize> {
     None
 }
 
-fn decode_one_html_entity(rest: &str) -> Option<(char, usize)> {
-    let after_amp = rest.get(1..)?;
-    if after_amp.starts_with('#') {
-        let hex = after_amp
-            .as_bytes()
-            .get(1)
-            .is_some_and(|b| *b == b'x' || *b == b'X');
-        let digits = if hex {
-            after_amp.get(2..)?
-        } else {
-            after_amp.get(1..)?
-        };
-        let end = reference_end(digits)?;
-        let raw = &digits[..end];
-        if raw.is_empty() {
-            return None;
-        }
-        let value = if hex {
-            u32::from_str_radix(raw, 16).ok()?
-        } else {
-            raw.parse::<u32>().ok()?
-        };
-        let ch = char::from_u32(value)?;
-        let consumed = 2 + usize::from(hex) + raw.len() + 1;
-        return Some((ch, consumed));
+/// The reference at the start of `rest`, which begins with `&`, and the bytes it spans.
+fn decode_one_reference(rest: &str, syntax: Syntax) -> Option<(char, usize)> {
+    if rest.starts_with("&#") {
+        return decode_numeric(rest, syntax);
     }
+    let after_amp = rest.get(1..)?;
     let end = reference_end(after_amp)?;
     let name = &after_amp[..end];
     let ch = match name {
@@ -115,10 +117,54 @@ fn decode_one_html_entity(rest: &str) -> Option<(char, usize)> {
         "gt" => '>',
         "quot" => '"',
         "apos" => '\'',
-        "nbsp" => ' ',
+        "nbsp" if syntax == Syntax::Html => ' ',
         _ => return None,
     };
     Some((ch, 1 + name.len() + 1))
+}
+
+/// The character a numeric reference at the start of `rest`, which begins with `&#`, names, and the
+/// bytes it spans. HTML takes `x` or `X` for hex and a sign before the digits, and any code point a
+/// `char` holds. XML takes a lower-case `x` and digits only, and only a code point XML 1.0 allows.
+fn decode_numeric(rest: &str, syntax: Syntax) -> Option<(char, usize)> {
+    let html = syntax == Syntax::Html;
+    let after_hash = rest.get(2..)?;
+    let (hex, digits) = match after_hash.strip_prefix(|c: char| c == 'x' || (html && c == 'X')) {
+        Some(hex_digits) => (true, hex_digits),
+        None => (false, after_hash),
+    };
+    let end = reference_end(digits)?;
+    let raw = &digits[..end];
+    if raw.is_empty() {
+        return None;
+    }
+    let digit = |b: u8| {
+        if hex {
+            b.is_ascii_hexdigit()
+        } else {
+            b.is_ascii_digit()
+        }
+    };
+    if !html && !raw.bytes().all(digit) {
+        return None;
+    }
+    let value = u32::from_str_radix(raw, if hex { 16 } else { 10 }).ok()?;
+    let ch = char::from_u32(value)?;
+    if !html && !is_xml_char(ch) {
+        return None;
+    }
+    let consumed = 2 + usize::from(hex) + raw.len() + 1;
+    Some((ch, consumed))
+}
+
+/// Whether XML 1.0 allows `c` in a document: tab, line feed, carriage return, and the characters
+/// from U+0020 to U+D7FF, U+E000 to U+FFFD and U+10000 to U+10FFFF. A surrogate is not a `char`.
+fn is_xml_char(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\r')
+        || matches!(
+            c,
+            '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}'
+        )
 }
 
 /// The alphabetic runs of `full` that are at least two characters long, lowercased. These are the
@@ -977,6 +1023,30 @@ mod tests {
             decode_html_entities("&bogus; &#xD800; & done"),
             "&bogus; &#xD800; & done"
         );
+    }
+
+    #[test]
+    fn xml_references_decode_by_xml_rules_and_the_rest_are_left_alone() {
+        for (text, decoded) in [
+            ("&nbsp;", "&nbsp;"),
+            ("&#X41;", "&#X41;"),
+            ("&#+65;", "&#+65;"),
+            ("&#0;", "&#0;"),
+            ("&#x1;", "&#x1;"),
+            ("&#xA;", "\n"),
+            ("&#32;", " "),
+            ("&amp;", "&"),
+            ("&#169;", "\u{a9}"),
+            ("&#xD800;", "&#xD800;"),
+        ] {
+            assert_eq!(decode_xml_references(text), decoded, "{text}");
+        }
+        assert_eq!(
+            decode_xml_references("&lt;a&gt; &#x41;&#65;&#x9;&#x0041;&#xFFFE;&#x10FFFF;"),
+            "<a> AA\tA&#xFFFE;\u{10ffff}"
+        );
+        // One pass: an escaped reference is not decoded again.
+        assert_eq!(decode_xml_references("&amp;#38; &amp;amp;"), "&#38; &amp;");
     }
 
     #[test]

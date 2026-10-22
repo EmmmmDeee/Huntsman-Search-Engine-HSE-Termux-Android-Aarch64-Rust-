@@ -16,7 +16,7 @@ use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport, append_query_param};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
-use crate::textnorm::escape_controls;
+use crate::textnorm::{decode_html_entities, escape_controls};
 
 const MAX_RESULTS_PER_ENGINE: usize = 20;
 const MAX_ADAPTIVE_QUERY_BYTES: usize = 512;
@@ -485,7 +485,7 @@ pub fn parse_hits(html: &str, engine: &str) -> Vec<SearchHit> {
     let mut seen = BTreeSet::new();
     let mut hits = Vec::new();
     for href in href_values(html) {
-        let decoded = decode_minimal_html_entities(href);
+        let decoded = decode_html_entities(href);
         let Some(url) = canonical_url(&decoded) else {
             continue;
         };
@@ -659,12 +659,6 @@ fn find_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> 
     })
 }
 
-fn decode_minimal_html_entities(raw: &str) -> String {
-    raw.replace("&amp;", "&")
-        .replace("&#38;", "&")
-        .replace("&#x26;", "&")
-}
-
 fn is_engine_or_navigation_url(url: &str) -> bool {
     let Some(host) = host_of(url) else {
         return true;
@@ -829,6 +823,25 @@ mod tests {
                 "https://example.org/unquoted",
                 "https://example.net/other?x=1&y=2",
                 "https://example.com/real",
+            ]
+        );
+    }
+
+    /// An href's character references are decoded once, as HTML reads them: `&#233;` is `é`, not
+    /// the start of a fragment, and `&amp;#38;` is the text `&#38;`, whose `#` does start one.
+    #[test]
+    fn parser_decodes_each_character_reference_in_an_href_once() {
+        let html = concat!(
+            "<a href=\"https://example.org/caf&#233;?q=1&amp;r=2\">accented</a>",
+            "<a href=\"https://example.net/p?a=1&amp;#38;b=2\">escaped</a>",
+        );
+        let hits = parse_hits(html, "bing");
+        let urls: Vec<_> = hits.iter().map(|hit| hit.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://example.org/caf\u{e9}?q=1&r=2",
+                "https://example.net/p?a=1",
             ]
         );
     }
