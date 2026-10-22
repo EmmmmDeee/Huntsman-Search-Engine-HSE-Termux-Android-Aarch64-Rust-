@@ -307,33 +307,26 @@ fn diversify_equal_utility(
                 (name, item, opportunities)
             })
             .collect::<Vec<_>>();
-        while !group.is_empty() {
-            let best = (0..group.len())
-                .max_by(|&a, &b| {
-                    let novelty = |index: usize| {
-                        group[index]
-                            .2
-                            .iter()
-                            .filter(|&&id| {
-                                !seen.contains(&(
-                                    group[index].1.target.kind,
-                                    group[index].1.target.value.clone(),
-                                    id,
-                                ))
-                            })
-                            .count()
-                    };
-                    novelty(a)
-                        .cmp(&novelty(b))
-                        .then_with(|| group[b].0.cmp(&group[a].0))
-                })
-                .unwrap_or(0);
-            let (name, item, opportunities) = group.swap_remove(best);
-            for technique in opportunities {
-                seen.insert((item.target.kind, item.target.value.clone(), technique));
+        // One bounded sort, then a single pass: even 256 seeds multiplied by many
+        // modules must not turn ATT&CK diversification into quadratic phone work.
+        group.sort_by(|a, b| b.2.len().cmp(&a.2.len()).then_with(|| a.0.cmp(&b.0)));
+        let mut deferred = Vec::new();
+        for (name, item, opportunities) in group {
+            let adds_technique = opportunities.iter().any(|&technique| {
+                !seen.contains(&(item.target.kind, item.target.value.clone(), technique))
+            });
+            if adds_technique {
+                for technique in opportunities {
+                    seen.insert((item.target.kind, item.target.value.clone(), technique));
+                }
+                ordered.push((name, item));
+            } else {
+                deferred.push((name, item));
             }
-            ordered.push((name, item));
         }
+        // Retain tied sources with overlapping or absent mappings, even when a
+        // constrained admission budget later excludes them.
+        ordered.extend(deferred);
     }
     ordered
 }
