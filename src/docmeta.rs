@@ -657,14 +657,33 @@ fn pdf_is_encrypted(data: &[u8]) -> bool {
     })
 }
 
-/// Read only explicit uncompressed trailer dictionaries. A keyword inside a PDF object or comment
-/// must not select unrelated metadata. Cross-reference streams need separate structured parsing.
+/// The document's trailer dictionaries, in file order: each explicit `trailer << … >>` that starts
+/// a line, and each cross-reference stream dictionary (`/Type /XRef`, how PDF 1.5 and later write
+/// a trailer, with no `trailer` keyword) that a `startxref` offset points at. Only these name the
+/// document's `/Info` and `/Encrypt`; the same keywords inside an object, a string or a comment
+/// select nothing. **Pure.**
 fn pdf_trailer_dictionaries(data: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut found: Vec<(usize, &[u8])> = pdf_keyword_lines(data, b"trailer")
+        .filter_map(|at| Some((at, pdf_dictionary(data, skip_pdf_whitespace(data, at))?)))
+        .collect();
+    found.extend(pdf_keyword_lines(data, b"startxref").filter_map(|at| {
+        let (offset, _) = pdf_integer(data, skip_pdf_whitespace(data, at))?;
+        let offset = usize::try_from(offset).ok()?;
+        Some((offset, pdf_xref_stream_dictionary(data, offset)?))
+    }));
+    found.sort_unstable_by_key(|&(at, _)| at);
+    found.dedup_by_key(|&mut (at, _)| at);
+    found.into_iter().map(|(_, dict)| dict)
+}
+
+/// The index just past each `keyword` that starts a line (after optional spaces) and ends at a
+/// delimiter. **Pure.**
+fn pdf_keyword_lines<'a>(data: &'a [u8], keyword: &'a [u8]) -> impl Iterator<Item = usize> + 'a {
     let mut from = 0usize;
     std::iter::from_fn(move || {
         loop {
-            let at = from + find_bytes(data.get(from..)?, b"trailer")?;
-            from = at + b"trailer".len();
+            let at = from + find_bytes(data.get(from..)?, keyword)?;
+            from = at + keyword.len();
             if data.get(from).is_some_and(|byte| !is_pdf_delimiter(*byte)) {
                 continue;
             }
@@ -672,14 +691,31 @@ fn pdf_trailer_dictionaries(data: &[u8]) -> impl Iterator<Item = &[u8]> {
             while line_start > 0 && matches!(data[line_start - 1], b' ' | b'\t') {
                 line_start -= 1;
             }
-            if line_start > 0 && !matches!(data[line_start - 1], b'\n' | b'\r') {
-                continue;
-            }
-            if let Some(dict) = pdf_dictionary(data, skip_pdf_whitespace(data, from)) {
-                return Some(dict);
+            if line_start == 0 || matches!(data[line_start - 1], b'\n' | b'\r') {
+                return Some(from);
             }
         }
     })
+}
+
+/// The dictionary of the cross-reference stream object `N G obj << /Type /XRef … >>` starting at
+/// `offset`, or `None` when no such object starts there (a classic `xref` table, whose trailer
+/// [`pdf_trailer_dictionaries`] reads by its keyword, or a wrong offset). **Pure.**
+fn pdf_xref_stream_dictionary(data: &[u8], offset: usize) -> Option<&[u8]> {
+    let (_, at) = pdf_integer(data, offset)?;
+    let (_, at) = pdf_integer(data, skip_pdf_whitespace(data, at))?;
+    let at = skip_pdf_whitespace(data, at);
+    if data.get(at..at + 3)? != b"obj" {
+        return None;
+    }
+    let dict = pdf_dictionary(data, skip_pdf_whitespace(data, at + 3))?;
+    pdf_name_values(dict, b"/Type")
+        .any(|at| {
+            let at = skip_pdf_whitespace(dict, at);
+            dict.get(at..at + 5) == Some(b"/XRef")
+                && dict.get(at + 5).is_none_or(|byte| is_pdf_delimiter(*byte))
+        })
+        .then_some(dict)
 }
 
 /// Every revision of the document's `/Info` dictionary, oldest first and the current one last: each

@@ -575,3 +575,40 @@ startxref\n0\n%%EOF";
     assert_eq!(field(&parsed, "info:Title"), Some("Public"));
     assert!(field(&parsed, "pdf:Encrypted").is_none());
 }
+
+/// A PDF 1.5 file whose trailer is a cross-reference stream: no `trailer` keyword, its `/Info`
+/// reference in the `/Type /XRef` stream dictionary that `startxref` points at. `forged` is an
+/// object that looks like one but that no `startxref` names.
+fn pdf_with_xref_stream(forged: &str) -> Vec<u8> {
+    let mut pdf = format!(
+        "%PDF-1.5\n1 0 obj\n<< /Title (Thesis) /Author (Ada) >>\nendobj\n\
+         2 0 obj\n<< /Title (Forged) >>\nendobj\n{forged}"
+    )
+    .into_bytes();
+    let offset = pdf.len();
+    pdf.extend_from_slice(
+        b"5 0 obj\n<< /Type /XRef /Size 6 /W [1 2 1] /Root 3 0 R /Info 1 0 R /Length 4 >>\n\
+          stream\n\x01\x00\x0f\x00\nendstream\nendobj\n",
+    );
+    pdf.extend_from_slice(format!("startxref\n{offset}\n%%EOF\n").as_bytes());
+    pdf
+}
+
+#[test]
+fn a_cross_reference_stream_trailer_names_the_info() {
+    let parsed = parse(&pdf_with_xref_stream(""));
+    assert_eq!(field(&parsed, "info:Title"), Some("Thesis"));
+    assert_eq!(field(&parsed, "info:Author"), Some("Ada"));
+}
+
+#[test]
+fn an_object_that_only_looks_like_a_cross_reference_stream_names_nothing() {
+    // The forged XRef dictionary sits earlier in the file but no `startxref` points at it, so the
+    // real one still decides, and neither its `/Info` nor its `/Encrypt` is read.
+    let forged =
+        "4 0 obj\n<< /Type /XRef /Info 2 0 R /Encrypt 9 0 R >>\nstream\nendstream\nendobj\n";
+    let parsed = parse(&pdf_with_xref_stream(forged));
+    assert_eq!(field(&parsed, "info:Title"), Some("Thesis"));
+    assert!(field(&parsed, "info-prior:Title").is_none());
+    assert!(field(&parsed, "pdf:Encrypted").is_none());
+}
