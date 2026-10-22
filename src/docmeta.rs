@@ -2,8 +2,9 @@
 //!
 //! One `docmeta FILE` reads the bytes already on the device -- no network, no key -- and surfaces
 //! the provenance a file carries without anyone meaning to ship it: the XMP metadata packet (the
-//! uncompressed `<x:xmpmeta>` XML block that PDFs, JPEG, TIFF and PNG embed) and, for a PDF, the
-//! `/Info` dictionary. Author, creator tool, create and modify timestamps, document and instance
+//! uncompressed `<x:xmpmeta>` XML block that PDFs, JPEG, TIFF and PNG embed), for a PDF the
+//! `/Info` dictionary, and for a PNG its uncompressed textual chunks (`tEXt`, `iTXt`) and
+//! modification time (`tIME`). Author, creator tool, create and modify timestamps, document and instance
 //! identifiers, producer and title are kept as evidence on a [`EntityKind::Document`] entity for the
 //! file, so nothing the metadata states is dropped. When the XMP carries a GPS position it also
 //! becomes a [`EntityKind::Coordinates`] entity -- the same `lat,lon` the `geocode` command
@@ -15,7 +16,9 @@
 //! allocation-bounded: it searches for the uncompressed metadata only, never decompresses, and caps
 //! the packet, the field count and each value, so a malformed or hostile file yields a clean result,
 //! never a panic or a runaway. Office Open XML (`.docx`, `.xlsx`, `.pptx`) keeps its core properties
-//! in a deflate-compressed part, which is not read here; an embedded XMP packet in such a file is.
+//! in a deflate-compressed part, which is not read here; an embedded XMP packet in such a file is. A
+//! PNG's compressed text chunks (`zTXt`, compressed `iTXt`) are likewise not inflated, and its binary
+//! `eXIf` block is left to the `exif` command.
 
 use std::path::PathBuf;
 
@@ -34,7 +37,7 @@ pub const DOCMETA_USAGE: &str = "usage: huntsman-recon docmeta FILE";
 
 pub const DOCMETA_HELP: &str = "\
 docmeta FILE
-Read the metadata a document embeds in itself, keyless and offline: no network request and no key. The uncompressed XMP metadata packet (the <x:xmpmeta> XML block PDFs, JPEG, TIFF and PNG carry) is flattened field by field, and a PDF's /Info dictionary (Title, Author, Subject, Keywords, Creator, Producer, CreationDate, ModDate) is read too; every field is kept as evidence on a document entity for the file, so author, creator tool, create/modify timestamps, document and instance identifiers and title are preserved. When the XMP holds a GPS position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address. Metadata is editable, so each field is the file's embedded claim, not an independently verified fact. This complements the exif command, which decodes the binary EXIF block; docmeta reads the XMP packet and PDF dictionary instead. A file with no embedded metadata is a clean result naming its format and size. Office Open XML (.docx, .xlsx, .pptx) keeps its core properties in a deflate-compressed part, which is not read; an embedded XMP packet in such a file is.";
+Read the metadata a document embeds in itself, keyless and offline: no network request and no key. The uncompressed XMP metadata packet (the <x:xmpmeta> XML block PDFs, JPEG, TIFF and PNG carry) is flattened field by field, and a PDF's /Info dictionary (Title, Author, Subject, Keywords, Creator, Producer, CreationDate, ModDate) is read too, and for a PNG its uncompressed textual chunks (tEXt and iTXt) and modification time (tIME) become png:* fields (compressed chunks and the binary EXIF block, left to the exif command, are not read); every field is kept as evidence on a document entity for the file, so author, creator tool, create/modify timestamps, document and instance identifiers and title are preserved. When the XMP holds a GPS position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address. Metadata is editable, so each field is the file's embedded claim, not an independently verified fact. This complements the exif command, which decodes the binary EXIF block; docmeta reads the XMP packet and PDF dictionary instead. A file with no embedded metadata is a clean result naming its format and size. Office Open XML (.docx, .xlsx, .pptx) keeps its core properties in a deflate-compressed part, which is not read; an embedded XMP packet in such a file is.";
 
 /// The largest file read, in bytes. The whole file is read because a PDF's `/Info` and the XMP
 /// packet can sit anywhere in it; a larger file is refused by name.
@@ -57,6 +60,12 @@ const MAX_DOCMETA_VALUE_BYTES: usize = 8192;
 
 /// Most bytes of one XMP packet scanned, so a file that claims a huge packet is bounded.
 const MAX_XMP_BYTES: usize = 1024 * 1024;
+
+/// The PNG file signature: the eight bytes every PNG begins with.
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// Most PNG chunks walked before giving up, so a file claiming countless chunks is bounded.
+const MAX_PNG_CHUNKS: usize = 4096;
 
 /// The PDF `/Info` string keys read, in report order.
 const PDF_INFO_KEYS: &[&str] = &[
@@ -120,6 +129,9 @@ pub fn parse(data: &[u8]) -> Parsed {
     let mut fields = Vec::new();
     if format.starts_with("PDF") {
         extract_pdf_info(data, &mut fields);
+    }
+    if format == "PNG" {
+        extract_png_text(data, &mut fields);
     }
     for (key, value) in extract_xmp(data) {
         push_field(&mut fields, key, value);
@@ -263,7 +275,7 @@ fn detect_format(data: &[u8]) -> String {
         "JPEG".to_owned()
     } else if data.starts_with(b"II\x2a\x00") || data.starts_with(b"MM\x00\x2a") {
         "TIFF".to_owned()
-    } else if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+    } else if data.starts_with(PNG_SIGNATURE) {
         "PNG".to_owned()
     } else if data.starts_with(b"PK\x03\x04") {
         "ZIP/OOXML".to_owned()
@@ -611,6 +623,126 @@ fn decode_pdf_text(bytes: &[u8]) -> String {
     }
 }
 
+// ── PNG textual chunks ───────────────────────────────────────────────────────────────────
+
+/// Collect a PNG's uncompressed textual and time metadata, kept on the file as `png:*` fields: each
+/// `tEXt` and uncompressed `iTXt` chunk as `png:<keyword>`, and `tIME` as `png:ModificationTime`.
+/// Compressed chunks (`zTXt` and compressed `iTXt`) are not inflated and the binary `eXIf` block is
+/// left to the `exif` command, keeping the no-decompression, complement-not-duplicate contract. An
+/// `iTXt` that merely carries the XMP packet (`XML:com.adobe.xmp`) is skipped, since [`extract_xmp`]
+/// already reads it. A chunk that runs past the end of the file stops the walk. **Pure.**
+fn extract_png_text(data: &[u8], fields: &mut Vec<(String, String)>) {
+    let mut at = PNG_SIGNATURE.len();
+    let mut chunks = 0usize;
+    while chunks < MAX_PNG_CHUNKS && fields.len() < MAX_FIELDS {
+        chunks += 1;
+        let Some(length) = data.get(at..at + 4).map(read_u32_be) else {
+            break;
+        };
+        let Some(kind) = data.get(at + 4..at + 8) else {
+            break;
+        };
+        let body_start = at + 8;
+        let Some(body) = body_start
+            .checked_add(length)
+            .and_then(|end| data.get(body_start..end))
+        else {
+            break;
+        };
+        match kind {
+            b"IEND" => break,
+            b"tEXt" => png_text_chunk(body, fields),
+            b"iTXt" => png_itxt_chunk(body, fields),
+            b"tIME" => png_time_chunk(body, fields),
+            _ => {}
+        }
+        // length(4) + type(4) + body(length) + crc(4).
+        let Some(next) = body_start
+            .checked_add(length)
+            .and_then(|e| e.checked_add(4))
+        else {
+            break;
+        };
+        at = next;
+    }
+}
+
+/// A `tEXt` chunk: a Latin-1 `keyword`, a `NUL`, then Latin-1 text. **Pure.**
+fn png_text_chunk(body: &[u8], fields: &mut Vec<(String, String)>) {
+    let Some(sep) = body.iter().position(|&b| b == 0) else {
+        return;
+    };
+    let keyword = latin1(&body[..sep]);
+    let text = latin1(body.get(sep + 1..).unwrap_or_default());
+    push_png_field(fields, &keyword, text);
+}
+
+/// An `iTXt` chunk: `keyword NUL flag method lang NUL transkeyword NUL text`. Only uncompressed text
+/// (compression flag `0`) is read, as UTF-8; a compressed chunk, and an XMP packet carried as an
+/// `iTXt`, are skipped. **Pure.**
+fn png_itxt_chunk(body: &[u8], fields: &mut Vec<(String, String)>) {
+    let Some(k_end) = body.iter().position(|&b| b == 0) else {
+        return;
+    };
+    let keyword = latin1(&body[..k_end]);
+    if keyword == "XML:com.adobe.xmp" {
+        return;
+    }
+    // The compression flag must be present and zero, or the text is compressed and not inflated.
+    if body.get(k_end + 1).copied() != Some(0) {
+        return;
+    }
+    // Skip the flag and compression-method bytes, then the NUL-terminated language and translated
+    // keyword, to reach the text.
+    let mut cursor = k_end + 3;
+    for _ in 0..2 {
+        let Some(rel) = body
+            .get(cursor..)
+            .and_then(|rest| rest.iter().position(|&b| b == 0))
+        else {
+            return;
+        };
+        cursor += rel + 1;
+    }
+    let text = String::from_utf8_lossy(body.get(cursor..).unwrap_or_default()).into_owned();
+    push_png_field(fields, &keyword, text);
+}
+
+/// A `tIME` chunk: year (two bytes), month, day, hour, minute, second, as `png:ModificationTime`.
+/// **Pure.**
+fn png_time_chunk(body: &[u8], fields: &mut Vec<(String, String)>) {
+    let Some(b) = body.get(..7) else {
+        return;
+    };
+    let year = u16::from_be_bytes([b[0], b[1]]);
+    push_field(
+        fields,
+        "png:ModificationTime",
+        format!(
+            "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}",
+            month = b[2],
+            day = b[3],
+            hour = b[4],
+            minute = b[5],
+            second = b[6],
+        ),
+    );
+}
+
+/// Add a `tEXt`/`iTXt` value as a `png:<keyword>` field, skipping an empty keyword. **Pure.**
+fn push_png_field(fields: &mut Vec<(String, String)>, keyword: &str, text: String) {
+    let keyword = keyword.trim();
+    if keyword.is_empty() {
+        return;
+    }
+    push_field(fields, format!("png:{keyword}"), text);
+}
+
+/// Decode Latin-1 bytes, each byte one code point, to a `String`. **Pure.**
+fn latin1(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| char::from(b)).collect()
+}
+
 // ── bytes ──────────────────────────────────────────────────────────────────────────────────
 
 /// The first index of `needle` in `haystack`, or `None`. **Pure.**
@@ -619,6 +751,11 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         return None;
     }
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// A big-endian `u32` read from a four-byte slice, as a `usize`. **Pure.**
+fn read_u32_be(bytes: &[u8]) -> usize {
+    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize
 }
 
 #[cfg(test)]
