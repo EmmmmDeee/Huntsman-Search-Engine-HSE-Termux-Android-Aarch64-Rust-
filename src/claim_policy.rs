@@ -8,14 +8,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceNodeId, IndependenceRouteCount};
+use crate::evidence_ancestry::{
+    DEFAULT_INDEPENDENCE_SEARCH_STATES, EvidenceAncestryGraph, EvidenceNodeId,
+    IndependenceRouteCount,
+};
 use crate::intelligence::{
     Claim, ClaimId, ClaimState, Defeat, DefeatKind, EvidenceId, EvidenceNature, IntelligenceLedger,
     LedgerError,
 };
 use crate::proof::{MinimalProofEnvironment, ProofEnvironmentSet};
-
-const MAX_INDEPENDENCE_SEARCH_STATES: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerificationPolicy {
@@ -423,7 +424,7 @@ impl IntelligenceLedger {
         let route_count = match graph.proven_independent_route_count(
             resolved_nodes.iter(),
             policy.min_proven_roots,
-            MAX_INDEPENDENCE_SEARCH_STATES,
+            DEFAULT_INDEPENDENCE_SEARCH_STATES,
         ) {
             Ok(count) => count,
             Err(_) => IndependenceRouteCount {
@@ -501,7 +502,7 @@ impl IntelligenceLedger {
             .proven_independent_route_count(
                 resolved_nodes.iter(),
                 policy.min_proven_roots,
-                MAX_INDEPENDENCE_SEARCH_STATES,
+                DEFAULT_INDEPENDENCE_SEARCH_STATES,
             )
             .unwrap_or(IndependenceRouteCount {
                 proven: 0,

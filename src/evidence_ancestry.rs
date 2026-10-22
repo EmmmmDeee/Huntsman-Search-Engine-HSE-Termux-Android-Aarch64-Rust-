@@ -156,6 +156,12 @@ fn canonical_pair(
     })
 }
 
+/// The state budget of the search behind
+/// [`EvidenceAncestryGraph::proven_independent_route_count`]. Confidence boosting, claim
+/// verification, the automatic identity merge and the person-resolution benchmark all search
+/// within it, so the benchmark cannot accept independence the merge gate would leave unproven.
+pub const DEFAULT_INDEPENDENCE_SEARCH_STATES: usize = 4_096;
+
 struct IndependenceSearch<'a> {
     graph: &'a EvidenceAncestryGraph,
     roots: &'a [EvidenceNodeId],
@@ -422,7 +428,8 @@ impl EvidenceAncestryGraph {
     }
 
     /// Count a conservative lower bound of mutually proven-independent proof
-    /// routes. The deterministic search is bounded by `max_search_states`.
+    /// routes. The deterministic search is bounded by `max_search_states`; every
+    /// caller in the engine passes [`DEFAULT_INDEPENDENCE_SEARCH_STATES`].
     /// Exhaustion marks the result incomplete and never adds an unproven route.
     ///
     /// # Errors

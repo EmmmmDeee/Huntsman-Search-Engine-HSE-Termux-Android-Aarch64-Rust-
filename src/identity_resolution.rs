@@ -16,9 +16,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::evidence_ancestry::{EvidenceAncestryGraph, EvidenceNodeId, IndependenceRouteCount};
-
-const MAX_INDEPENDENCE_SEARCH_STATES: usize = 4_096;
+use crate::evidence_ancestry::{
+    DEFAULT_INDEPENDENCE_SEARCH_STATES, EvidenceAncestryGraph, EvidenceNodeId,
+    IndependenceRouteCount,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -142,7 +143,7 @@ impl IdentityResolutionDecision {
             .proven_independent_route_count(
                 &self.supporting,
                 required.max(1),
-                MAX_INDEPENDENCE_SEARCH_STATES,
+                DEFAULT_INDEPENDENCE_SEARCH_STATES,
             )
             .map_err(|error| error.to_string())
     }
