@@ -286,7 +286,11 @@ fn diversify_equal_utility(
     let mut seen = BTreeSet::<(TargetKind, String, &'static str)>::new();
     let mut remaining = candidates.into_iter().peekable();
     while let Some(first) = remaining.next() {
-        let score = first.1.utility.as_ref().map(|utility| utility.final_utility);
+        let score = first
+            .1
+            .utility
+            .as_ref()
+            .map(|utility| utility.final_utility);
         let mut group = vec![first];
         while remaining
             .peek()
