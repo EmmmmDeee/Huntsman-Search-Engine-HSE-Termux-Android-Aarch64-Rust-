@@ -467,7 +467,6 @@ fn a_long_number_array_shows_whole_numbers_and_how_many_there_are() {
     assert!(shown.split(", ").all(|number| number == "12345"), "{shown}");
 }
 
-
 #[test]
 fn png_chunks_require_the_complete_crc_field() {
     // CRC presence is a structural invariant; checksum verification is a separate concern.
