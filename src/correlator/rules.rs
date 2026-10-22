@@ -377,10 +377,11 @@ pub fn rule_au_062_multipath_corroboration(
         .collect()
 }
 
-/// A gap for each pair that one identity pathway alone connects. When that pathway rests
-/// entirely on one shared basis, such as a handle that many addresses share, the pairs it alone
-/// connects are one gap, reported once for every entity in them: one handle on 96 sites leaves
-/// 4,560 such pairs, and closing the gap means corroborating the handle, not each pair.
+/// A gap for each pair whose count finds one identity pathway and no second. The count takes the
+/// strongest pathway first, so a second pathway it misses is not ruled out. When that pathway rests
+/// entirely on one shared basis, such as a handle that many addresses share, the pairs whose one
+/// pathway rests on it are one gap, reported once for every entity in them: one handle on 96 sites
+/// leaves 4,560 such pairs, and closing the gap means corroborating the handle, not each pair.
 pub fn rule_au_063_corroboration_gap(
     context: &RuleContext<'_>,
     scan_id: &str,
@@ -400,7 +401,7 @@ pub fn rule_au_063_corroboration_gap(
     };
     let pair_gap = |pair: &PairPathways<'_>| {
         gap(
-            "only one identity pathway currently connects the pair".to_owned(),
+            "one identity pathway found connects the pair; the search found no second".to_owned(),
             vec![ids[pair.left].to_owned(), ids[pair.right].to_owned()],
         )
     };
@@ -423,10 +424,10 @@ pub fn rule_au_063_corroboration_gap(
             .collect::<BTreeSet<_>>();
         out.push(gap(
             format!(
-                "only a shared {} connects {} pairs among these {} entities",
-                basis_kind(basis),
+                "{} pairs among these {} entities each have one identity pathway found, which rests on a shared {}",
                 pairs.len(),
-                members.len()
+                members.len(),
+                basis_kind(basis)
             ),
             members
                 .into_iter()

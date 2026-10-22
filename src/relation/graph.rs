@@ -502,7 +502,8 @@ impl<'i, 'a> PathwayCounter<'i, 'a> {
 /// A relation without one rests on the link between its two uids, so the pathway uses up every
 /// such relation joining them. A relation that rests on a handle many addresses share uses up
 /// every relation resting on that handle, so the handle connects them by one pathway, not by
-/// one through each address.
+/// one through each address. The strongest path is taken first and never reconsidered, so this can
+/// count fewer disjoint pathways than the most that exist.
 #[must_use]
 pub fn disjoint_pathways(start_uid: &str, end_uid: &str, relations: &[Relation]) -> usize {
     let index = IdentityIndex::new(relations);
@@ -521,8 +522,8 @@ pub struct PairPathways<'r> {
     /// How many pathways connect the pair, up to the cap.
     pub count: usize,
     /// The basis (see `Relation::basis`) that every relation of the pair's strongest pathway
-    /// rests on, when one basis carries all of it. With a `count` of one, that basis is all that
-    /// connects the pair.
+    /// rests on, when one basis carries all of it. With a `count` of one, that basis is all the
+    /// one pathway found rests on.
     pub basis: Option<&'r str>,
 }
 
