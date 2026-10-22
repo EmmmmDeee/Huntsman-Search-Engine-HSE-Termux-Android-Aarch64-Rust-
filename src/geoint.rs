@@ -46,9 +46,7 @@ pub fn haversine_m(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 pub fn colocated(fixes: &[Fix], radius_m: f64, window_secs: u64) -> Vec<CoLocation> {
     let valid: Vec<&Fix> = fixes
         .iter()
-        .filter(|fix| {
-            (-90.0..=90.0).contains(&fix.lat) && (-180.0..=180.0).contains(&fix.lon)
-        })
+        .filter(|fix| (-90.0..=90.0).contains(&fix.lat) && (-180.0..=180.0).contains(&fix.lon))
         .collect();
     let mut out = Vec::new();
     for i in 0..valid.len() {
