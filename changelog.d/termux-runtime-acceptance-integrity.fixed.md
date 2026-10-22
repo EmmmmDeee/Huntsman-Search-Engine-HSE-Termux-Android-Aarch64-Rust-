@@ -1,0 +1,1 @@
+- Termux runtime acceptance now verifies saved synthetic scans survive a server restart and fails when idle-connection probing cannot run, rather than reporting an unexecuted check as passing.
