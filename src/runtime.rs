@@ -262,7 +262,7 @@ fn geo_distances(seeds: &[NormalizedSeed]) -> (Vec<GeoDistance>, bool) {
         .collect();
     let truncated = coordinates.len() > MAX_GEO_POINTS;
     let coordinates = &coordinates[..coordinates.len().min(MAX_GEO_POINTS)];
-    let mut distances = Vec::with_capacity(coordinates.len() * (coordinates.len() - 1) / 2);
+    let mut distances = Vec::with_capacity(coordinates.len() * coordinates.len().saturating_sub(1) / 2);
     for (index, &(left, lat_a, lon_a)) in coordinates.iter().enumerate() {
         for &(right, lat_b, lon_b) in &coordinates[index + 1..] {
             let meters = crate::geoint::haversine_m(lat_a, lon_a, lat_b, lon_b);
