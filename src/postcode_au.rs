@@ -1,9 +1,5 @@
-//! AU postcode lookup rebuilt from the monolith's `util::postcode_au`.
-//! Network I/O is injected through the shared HTTP transport; tests use fakes.
-
-use serde::Deserialize;
-
-use crate::http::{Request, Response, Transport};
+//! AU postcode shape checks and the offline gazetteer, rebuilt from the monolith's
+//! `util::postcode_au`. Pure, no I/O.
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Locality {
@@ -12,38 +8,14 @@ pub struct Locality {
     pub lon: f64,
 }
 
-#[derive(Debug, Deserialize, Default)]
-struct ZippoResp {
-    #[serde(default)]
-    places: Vec<ZippoPlace>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct ZippoPlace {
-    #[serde(rename = "place name", default)]
-    place_name: String,
-    #[serde(rename = "latitude", default)]
-    latitude: String,
-    #[serde(rename = "longitude", default)]
-    longitude: String,
-}
-
 #[must_use]
 pub fn is_shaped(value: &str) -> bool {
     value.len() == 4 && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-#[must_use]
-pub fn is_in_au_range(value: &str) -> bool {
-    is_shaped(value)
-        && value
-            .parse::<u32>()
-            .is_ok_and(|number| (800..=9999).contains(&number))
-}
-
 /// Whether `value` is a display postcode on the ASIC and TPS register pages: four digits from
 /// 2000 to 7999, the range from New South Wales to Tasmania. The register HTML is the oracle for
-/// this range, which is deliberately narrower than [`is_in_au_range`].
+/// this range, which is deliberately narrower than the 0800 to 9999 AU range.
 #[must_use]
 pub fn is_display_postcode(value: &str) -> bool {
     is_shaped(value)
@@ -53,68 +25,10 @@ pub fn is_display_postcode(value: &str) -> bool {
 }
 
 #[must_use]
-pub fn parse(json: &str) -> Vec<Locality> {
-    let response: ZippoResp = serde_json::from_str(json).unwrap_or_default();
-    from_resp(&response)
-}
-
-#[must_use]
 pub fn offline_centroid(postcode: &str) -> Option<(f64, f64)> {
     offline_fallback(postcode)
         .first()
         .map(|locality| (locality.lat, locality.lon))
-}
-
-/// Resolve an AU postcode to localities. The caller supplies the shared transport.
-/// Any transport/status/parse miss falls back to the validated offline gazetteer.
-pub fn localities_with<T: Transport>(postcode: &str, transport: &T) -> Vec<Locality> {
-    if !is_shaped(postcode) {
-        return Vec::new();
-    }
-    let request = Request::get(format!("https://api.zippopotam.us/au/{postcode}"))
-        .header("accept", "application/json");
-    let online = match transport.send(&request) {
-        Ok(response) if response.status == 200 && !response.truncated => parse_response(&response),
-        _ => Vec::new(),
-    };
-    if online.is_empty() {
-        offline_fallback(postcode)
-    } else {
-        online
-    }
-}
-
-fn parse_response(response: &Response) -> Vec<Locality> {
-    crate::http::parse_json_body::<ZippoResp>(response)
-        .ok()
-        .map_or_else(Vec::new, |parsed| from_resp(&parsed))
-}
-
-fn from_resp(response: &ZippoResp) -> Vec<Locality> {
-    response
-        .places
-        .iter()
-        .filter_map(|place| {
-            let suburb = place.place_name.trim();
-            if suburb.is_empty() {
-                return None;
-            }
-            let lat = place.latitude.trim().parse::<f64>().ok()?;
-            let lon = place.longitude.trim().parse::<f64>().ok()?;
-            if !(lat.is_finite()
-                && lon.is_finite()
-                && (-44.0..=-10.0).contains(&lat)
-                && (112.0..=154.0).contains(&lon))
-            {
-                return None;
-            }
-            Some(Locality {
-                suburb: suburb.to_string(),
-                lat,
-                lon,
-            })
-        })
-        .collect()
 }
 
 fn offline_fallback(postcode: &str) -> Vec<Locality> {
@@ -153,105 +67,15 @@ fn offline_fallback(postcode: &str) -> Vec<Locality> {
 
 #[cfg(test)]
 mod tests {
-
-    use crate::{
-        http::{Method, Response, TransportFailure},
-        source_outcome::SourceOutcomeKind,
-    };
-
     use super::*;
-    use crate::test_support::ScriptedTransport;
-
-    #[test]
-    fn parses_real_4552_payload() {
-        let raw = r#"{
-            "post code": "4552", "country": "Australia", "country abbreviation": "AU",
-            "places": [
-                {"place name": "Maleny", "longitude": "152.7554", "state": "Queensland", "state abbreviation": "QLD", "latitude": "-26.729"},
-                {"place name": "Booroobin", "longitude": "152.7554", "state": "Queensland", "state abbreviation": "QLD", "latitude": "-26.729"},
-                {"place name": "Conondale", "longitude": "152.7167", "state": "Queensland", "state abbreviation": "QLD", "latitude": "-26.7333"}
-            ]
-        }"#;
-        let localities = parse(raw);
-        assert_eq!(localities.len(), 3);
-        assert_eq!(localities[0].suburb, "Maleny");
-        assert!((localities[0].lat + 26.729).abs() < 1e-6);
-        assert!((localities[0].lon - 152.7554).abs() < 1e-6);
-        assert!(localities.iter().any(|row| row.suburb == "Booroobin"));
-    }
-
-    #[test]
-    fn parse_skips_blank_or_nonsensical_coords() {
-        let mixed = r#"{"places":[
-            {"place name":"","latitude":"-27.5","longitude":"153.0"},
-            {"place name":"NullIsland","latitude":"0","longitude":"0"},
-            {"place name":"OutOfRange","latitude":"200","longitude":"-999"},
-            {"place name":"Good","latitude":"-27.5","longitude":"153.0"}
-        ]}"#;
-        let localities = parse(mixed);
-        assert_eq!(localities.len(), 1);
-        assert_eq!(localities[0].suburb, "Good");
-        let parsed = parse("not json");
-        assert!(parsed.is_empty(), "{parsed:?}");
-    }
 
     #[test]
     fn shape_and_centroid_helpers_work() {
         assert!(is_shaped("4552"));
         assert!(is_shaped("0800"));
-        assert!(is_in_au_range("4552"));
         assert!(!is_shaped("455"));
         assert!(!is_shaped("45a2"));
-        assert!(!is_in_au_range("0100"));
         assert_eq!(offline_centroid("7250"), Some((-41.4388, 147.1347)));
-    }
-
-    #[test]
-    fn online_lookup_uses_shared_transport_and_falls_back_cleanly() {
-        let transport = ScriptedTransport::new(vec![Ok(Response {
-            status: 200,
-            headers: Vec::new(),
-            body: br#"{"places":[{"place name":"Maleny","latitude":"-26.729","longitude":"152.7554"}]}"#.to_vec(),
-            truncated: false,
-        })]);
-        let localities = localities_with("4552", &transport);
-        assert_eq!(localities.len(), 1);
-        let seen = transport.seen.borrow();
-        let request = seen.first().expect("request recorded");
-        assert_eq!(request.method, Method::Get);
-        assert_eq!(request.url, "https://api.zippopotam.us/au/4552");
-        assert_eq!(request.header_value("accept"), Some("application/json"));
-        assert!(request.body.is_empty(), "{:?}", request.body);
-
-        let fallback = localities_with(
-            "4552",
-            &ScriptedTransport::new(vec![Err(TransportFailure {
-                kind: SourceOutcomeKind::ConnectFailure,
-                detail: "boom".into(),
-                blocked: false,
-            })]),
-        );
-        assert_eq!(fallback.len(), 3);
-        let empty = localities_with(
-            "4552",
-            &ScriptedTransport::new(vec![Ok(Response {
-                status: 404,
-                headers: Vec::new(),
-                body: Vec::new(),
-                truncated: false,
-            })]),
-        );
-        assert_eq!(empty.len(), 3);
-        let unshaped = localities_with(
-            "bad",
-            &ScriptedTransport::new(vec![Ok(Response {
-                status: 200,
-                headers: Vec::new(),
-                body: Vec::new(),
-                truncated: false,
-            })]),
-        );
-        assert!(unshaped.is_empty(), "{unshaped:?}");
     }
 
     #[test]
@@ -261,7 +85,5 @@ mod tests {
         assert!(is_display_postcode("7999"));
         assert!(!is_display_postcode("8000"));
         assert!(!is_display_postcode("20x0"));
-        // 8000 to 9999 is still an AU postcode range, so the wider check accepts it.
-        assert!(is_in_au_range("8000"));
     }
 }

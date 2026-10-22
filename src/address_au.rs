@@ -331,23 +331,6 @@ pub fn state_code(text: &str) -> Option<&'static str> {
 }
 
 #[must_use]
-pub fn single_state_code(text: &str) -> Option<&'static str> {
-    let lowered = text.to_ascii_lowercase();
-    let names = STATE_NAMES
-        .iter()
-        .filter(|(name, _)| lowered.contains(name))
-        .map(|(_, code)| *code);
-    let mut found = None;
-    for code in state_abbrev_tokens(text).chain(names) {
-        match found {
-            Some(prev) if prev != code => return None,
-            _ => found = Some(code),
-        }
-    }
-    found
-}
-
-#[must_use]
 pub fn normalise_phone(s: &str) -> Option<String> {
     crate::value_syntax::normalise_au_phone(s)
 }
@@ -687,8 +670,6 @@ mod tests {
             state_code("5528 North 73rd Avenue, Glendale, AZ, 85303, US"),
             None
         );
-        assert_eq!(single_state_code("Sydney / NSW / ACT"), None);
-        assert_eq!(single_state_code("Melbourne / VIC"), Some("VIC"));
         assert_eq!(
             locality_key("Kuraby, QLD"),
             locality_key("Kuraby, Queensland")

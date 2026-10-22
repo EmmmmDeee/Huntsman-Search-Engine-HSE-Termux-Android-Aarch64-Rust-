@@ -1,20 +1,14 @@
 #![allow(clippy::cast_precision_loss)]
 
-//! Geohash encode/decode plus the monolith's missing pure place helpers.
+//! Geohash encode/decode, `lat,lon` parsing, and the one great-circle distance.
 
 use crate::error::Error;
-
-pub use crate::place::{
-    AddressComponents, GEO_OUTLIER_KM, country_name_for_iso, is_bare_country, parse_address,
-    reverse_country_iso, timezone_for,
-};
 
 const BASE32: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
 /// Radius of the sphere every distance in this crate is measured on, in kilometres. For Brisbane to
 /// Sydney the sphere gives a distance 0.27 % longer than the WGS84 geodesic. The largest absolute
 /// difference over 1,500 random pairs above 50 km was 0.53 %.
 pub const EARTH_RADIUS_KM: f64 = 6_371.0;
-const MAX_PRECISION_U8: u8 = 12;
 
 /// 12 characters are 60 bits, 30 per axis: the most an `f64` splits without loss.
 pub const MAX_PRECISION: usize = 12;
@@ -81,12 +75,6 @@ pub fn encode(lat: f64, lon: f64, precision: usize) -> Result<String, Error> {
         out.push(char::from(BASE32[idx]));
     }
     Ok(out)
-}
-
-/// Legacy-compatible wrapper: invalid input yields `""` and precision is clamped.
-#[must_use]
-pub fn geohash(lat: f64, lon: f64, precision: u8) -> String {
-    encode(lat, lon, usize::from(precision.clamp(1, MAX_PRECISION_U8))).unwrap_or_default()
 }
 
 /// The cell named by `hash`. Lowercase only: `a`, `i`, `l`, `o` are not in the alphabet.
@@ -168,17 +156,6 @@ mod tests {
         assert_eq!(encode(42.605, -5.603, 5).unwrap(), "ezs42");
         assert_eq!(encode(0.0, 0.0, 1).unwrap(), "s");
         assert_eq!(encode(-27.4698, 153.0251, 6).unwrap(), "r7hgdp");
-    }
-
-    #[test]
-    fn legacy_wrapper_keeps_old_totality_contract() {
-        let hash = geohash(-33.8568, 151.2153, 7);
-        assert!(hash.starts_with("r3gx2"), "{hash}");
-        assert_eq!(hash.len(), 7);
-        assert_eq!(geohash(91.0, 0.0, 7), "");
-        assert_eq!(geohash(0.0, 200.0, 7), "");
-        assert_eq!(geohash(0.0, 0.0, 0).len(), 1);
-        assert_eq!(geohash(0.0, 0.0, 20).len(), MAX_PRECISION);
     }
 
     #[test]
