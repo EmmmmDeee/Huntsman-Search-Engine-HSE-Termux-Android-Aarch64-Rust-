@@ -49,22 +49,102 @@ struct Phase {
 // This mirrors the repository's canonical functional council. Names identify responsibility,
 // not separate agents, endorsements, or evidence that any person performed work.
 const ROLES: &[Role] = &[
-    Role { id: "strategy", owner: "JEFF DEAN", parent: None, responsibility: "objectives and acceptance criteria" },
-    Role { id: "systems", owner: "JAMES HAMILTON", parent: Some("strategy"), responsibility: "architecture and execution coordination" },
-    Role { id: "integration", owner: "DANIEL STENBERG", parent: Some("systems"), responsibility: "integration and core security" },
-    Role { id: "research", owner: "JURE LESKOVEC", parent: Some("systems"), responsibility: "research and development" },
-    Role { id: "production", owner: "JEZ HUMBLE", parent: Some("systems"), responsibility: "production scalability" },
-    Role { id: "refactoring", owner: "MARTIN FOWLER", parent: Some("systems"), responsibility: "structural improvement" },
-    Role { id: "distributed", owner: "LESLIE LAMPORT", parent: Some("systems"), responsibility: "distributed correctness and redundancy" },
-    Role { id: "information", owner: "ELIOT HIGGINS", parent: Some("systems"), responsibility: "source verification and provenance" },
-    Role { id: "operations", owner: "URS HÖLZLE", parent: Some("systems"), responsibility: "operational capacity and infrastructure" },
-    Role { id: "platform", owner: "MITCHELL HASHIMOTO", parent: Some("systems"), responsibility: "platform and release engineering" },
-    Role { id: "implementation", owner: "ANDREW GALLANT", parent: Some("systems"), responsibility: "Rust implementation" },
-    Role { id: "performance", owner: "BRENDAN GREGG", parent: Some("systems"), responsibility: "profiling and performance measurement" },
-    Role { id: "verification", owner: "RALF JUNG", parent: Some("systems"), responsibility: "independent correctness and tests" },
-    Role { id: "security", owner: "TAVIS ORMANDY", parent: Some("systems"), responsibility: "independent defensive security gates" },
-    Role { id: "resources", owner: "PATRICK COLLISON", parent: Some("systems"), responsibility: "cost and resource allocation" },
-    Role { id: "economics", owner: "PIETER LEVELS", parent: Some("systems"), responsibility: "expected net value and self-funding analysis" },
+    Role {
+        id: "strategy",
+        owner: "JEFF DEAN",
+        parent: None,
+        responsibility: "objectives and acceptance criteria",
+    },
+    Role {
+        id: "systems",
+        owner: "JAMES HAMILTON",
+        parent: Some("strategy"),
+        responsibility: "architecture and execution coordination",
+    },
+    Role {
+        id: "integration",
+        owner: "DANIEL STENBERG",
+        parent: Some("systems"),
+        responsibility: "integration and core security",
+    },
+    Role {
+        id: "research",
+        owner: "JURE LESKOVEC",
+        parent: Some("systems"),
+        responsibility: "research and development",
+    },
+    Role {
+        id: "production",
+        owner: "JEZ HUMBLE",
+        parent: Some("systems"),
+        responsibility: "production scalability",
+    },
+    Role {
+        id: "refactoring",
+        owner: "MARTIN FOWLER",
+        parent: Some("systems"),
+        responsibility: "structural improvement",
+    },
+    Role {
+        id: "distributed",
+        owner: "LESLIE LAMPORT",
+        parent: Some("systems"),
+        responsibility: "distributed correctness and redundancy",
+    },
+    Role {
+        id: "information",
+        owner: "ELIOT HIGGINS",
+        parent: Some("systems"),
+        responsibility: "source verification and provenance",
+    },
+    Role {
+        id: "operations",
+        owner: "URS HÖLZLE",
+        parent: Some("systems"),
+        responsibility: "operational capacity and infrastructure",
+    },
+    Role {
+        id: "platform",
+        owner: "MITCHELL HASHIMOTO",
+        parent: Some("systems"),
+        responsibility: "platform and release engineering",
+    },
+    Role {
+        id: "implementation",
+        owner: "ANDREW GALLANT",
+        parent: Some("systems"),
+        responsibility: "Rust implementation",
+    },
+    Role {
+        id: "performance",
+        owner: "BRENDAN GREGG",
+        parent: Some("systems"),
+        responsibility: "profiling and performance measurement",
+    },
+    Role {
+        id: "verification",
+        owner: "RALF JUNG",
+        parent: Some("systems"),
+        responsibility: "independent correctness and tests",
+    },
+    Role {
+        id: "security",
+        owner: "TAVIS ORMANDY",
+        parent: Some("systems"),
+        responsibility: "independent defensive security gates",
+    },
+    Role {
+        id: "resources",
+        owner: "PATRICK COLLISON",
+        parent: Some("systems"),
+        responsibility: "cost and resource allocation",
+    },
+    Role {
+        id: "economics",
+        owner: "PIETER LEVELS",
+        parent: Some("systems"),
+        responsibility: "expected net value and self-funding analysis",
+    },
 ];
 
 const PHASES: &[Phase] = &[
@@ -241,7 +321,7 @@ fn checked_text(root: &Path, name: &str) -> Result<String> {
 
 fn contains_all(text: &str, required: &[&str], path: &str) -> Result<()> {
     for term in required {
-        if !text.contains(term) {
+        if !text.contains(*term) {
             return Err(Error::Refused(format!(
                 "{path}: missing expected gate wiring {term:?}"
             )));
@@ -275,7 +355,9 @@ fn validate(root: &Path) -> Result<()> {
         "scripts/termux-runtime-acceptance.sh",
     ] {
         if !root.join(path).is_file() {
-            return Err(Error::Refused(format!("required integration file missing: {path}")));
+            return Err(Error::Refused(format!(
+                "required integration file missing: {path}"
+            )));
         }
     }
     Ok(())
@@ -316,9 +398,9 @@ fn parse_amounts(values: [&str; 5]) -> Result<[u64; 5]> {
                 index + 1
             )));
         }
-        result[index] = value.parse().map_err(|_| {
-            Error::Invalid(format!("amount {} exceeds u64", index + 1))
-        })?;
+        result[index] = value
+            .parse()
+            .map_err(|_| Error::Invalid(format!("amount {} exceeds u64", index + 1)))?;
     }
     Ok(result)
 }
