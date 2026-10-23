@@ -32,6 +32,12 @@ case "$SCENARIO" in
       exit 23
     fi
     ;;
+  rate_limited_then_pass)
+    if [ "$n" -eq 1 ]; then
+      echo 'unexpected status code https://registry-1.docker.io/v2/foo: 429 Too Many Requests'
+      exit 23
+    fi
+    ;;
   permanent)
     echo 'error: Rust source does not compile'
     exit 23
@@ -93,6 +99,11 @@ echo "build-ok $*"
 #[test]
 fn transient_registry_failure_recovers_on_second_attempt() {
     check("transient_then_pass", 0, 2);
+}
+
+#[test]
+fn registry_rate_limit_recovers_on_second_attempt() {
+    check("rate_limited_then_pass", 0, 2);
 }
 
 #[test]
