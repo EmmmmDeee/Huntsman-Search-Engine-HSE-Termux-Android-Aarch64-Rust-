@@ -749,7 +749,7 @@ mod tests {
         let (api, record) = offline_scan_fixture(&directory);
         let source = directory.join(&record.id).join("results.json");
         let original = std::fs::read(&source).expect("saved scan results");
-        assert_ne!(original.as_slice(), &[]);
+        assert_ne!(original, Vec::<u8>::new());
         let before = results_digest(api.service().store(), &record).expect("first digest");
         let mut altered = original.clone();
         altered[0] ^= 1;
