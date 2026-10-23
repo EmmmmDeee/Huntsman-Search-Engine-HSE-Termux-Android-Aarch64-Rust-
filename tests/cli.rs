@@ -542,6 +542,29 @@ fn sf_metadata_and_offline_phone_path_work() {
     assert!(stdout.contains("PHONE_NUMBER"), "{stdout:?}");
 }
 
+/// A southern-hemisphere point's leading dash is a value, not an option: `scans run` routes
+/// `-33.86,151.21` to the network lookup as it does `33.86,151.21`. Choosing a module that does
+/// not take a point stops both offline, after routing.
+#[test]
+fn scans_run_takes_a_point_with_a_negative_latitude() {
+    let home = scratch("scans-negative-point");
+    for point in ["-33.86,151.21", "33.86,151.21"] {
+        let out = bin()
+            .args(["scans", "run", point, "-m", "sfp_hibp"])
+            .env("HOME", &home)
+            .env_remove("HUNTSMAN_HOME")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(64), "{point}: {stderr}");
+        assert!(
+            stderr.contains("the network lookup asks"),
+            "{point}: {stderr}"
+        );
+    }
+    let _ = fs::remove_dir_all(&home);
+}
+
 /// `sf -s` saves its scan with the others, as `sf.py` does, so `scans` reads it and `sf -C`
 /// correlates it again.
 #[test]
