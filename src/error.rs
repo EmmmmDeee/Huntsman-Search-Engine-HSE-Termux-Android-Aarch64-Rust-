@@ -35,18 +35,6 @@ pub enum Error {
 }
 
 impl Error {
-    /// Refuse a blank required field.
-    #[must_use]
-    pub fn missing_field(name: impl Into<String>) -> Self {
-        Self::MissingField(name.into())
-    }
-
-    /// Refuse termination.
-    #[must_use]
-    pub fn terminate_refused(reason: impl Into<String>) -> Self {
-        Self::TerminateRefused(reason.into())
-    }
-
     /// Reject input that fails a local contract.
     #[must_use]
     pub fn invalid(reason: impl Into<String>) -> Self {
@@ -64,31 +52,6 @@ impl Error {
     pub fn missing_credential(reason: impl Into<String>) -> Self {
         Self::MissingCredential(reason.into())
     }
-
-    /// Record a local store failure.
-    #[must_use]
-    pub fn store(reason: impl Into<String>) -> Self {
-        Self::Store(reason.into())
-    }
-
-    /// Refuse a request before or during transport.
-    #[must_use]
-    pub fn network(reason: impl Into<String>) -> Self {
-        Self::Network(reason.into())
-    }
-
-    /// True when this is a local contract failure, not a transport refusal.
-    #[must_use]
-    pub const fn is_local_contract(&self) -> bool {
-        matches!(
-            self,
-            Self::MissingField(_)
-                | Self::Invalid(_)
-                | Self::InvalidValue(_)
-                | Self::MissingCredential(_)
-                | Self::TerminateRefused(_)
-        )
-    }
 }
 
 #[cfg(test)]
@@ -98,11 +61,11 @@ mod tests {
     #[test]
     fn display_text_is_stable() {
         assert_eq!(
-            Error::missing_field("seed").to_string(),
+            Error::MissingField("seed".into()).to_string(),
             "missing field: seed"
         );
         assert_eq!(
-            Error::terminate_refused("open gap").to_string(),
+            Error::TerminateRefused("open gap".into()).to_string(),
             "terminate refused: open gap"
         );
         assert_eq!(
@@ -117,19 +80,10 @@ mod tests {
             Error::missing_credential("HSE_AUTH_TOKEN").to_string(),
             "missing credential: HSE_AUTH_TOKEN"
         );
-        assert_eq!(Error::store("io").to_string(), "store: io");
+        assert_eq!(Error::Store("io".into()).to_string(), "store: io");
         assert_eq!(
-            Error::network("egress-policy").to_string(),
+            Error::Network("egress-policy".into()).to_string(),
             "network: egress-policy"
         );
-    }
-
-    #[test]
-    fn local_contract_is_not_a_network_refusal() {
-        assert!(Error::invalid("x").is_local_contract());
-        assert!(Error::invalid_value("x").is_local_contract());
-        assert!(Error::missing_credential("x").is_local_contract());
-        assert!(!Error::network("x").is_local_contract());
-        assert!(!Error::store("x").is_local_contract());
     }
 }

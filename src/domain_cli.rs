@@ -77,12 +77,9 @@ impl DomainArgs {
     /// # Errors
     /// Invalid or missing domain, repeated `--save`, or an unknown option.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let LookupTokens { positional, save } = LookupTokens::split(args)?;
-        if positional.len() != 1 {
-            return Err(Error::Invalid("domain needs exactly one DOMAIN".into()));
-        }
-        let domain = canonical_domain(&positional[0])
-            .ok_or_else(|| Error::invalid_value("invalid domain"))?;
+        let (raw, save) = LookupTokens::single(args, "domain needs exactly one DOMAIN")?;
+        let domain =
+            canonical_domain(&raw).ok_or_else(|| Error::invalid_value("invalid domain"))?;
         Ok(Self { domain, save })
     }
 }

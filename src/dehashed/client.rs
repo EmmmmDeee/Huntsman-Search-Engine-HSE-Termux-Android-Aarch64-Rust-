@@ -15,7 +15,7 @@
 //! `exposure` leg and the collector's receipt.
 
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -218,7 +218,7 @@ struct SearchBody<'a> {
 pub struct DehashedClient {
     http: Arc<dyn Transport + Send + Sync>,
     key: Secret,
-    limiter: Arc<Mutex<RateLimiter>>,
+    limiter: Arc<RateLimiter>,
 }
 
 impl fmt::Debug for DehashedClient {
@@ -250,7 +250,7 @@ impl DehashedClient {
         Self {
             http,
             key,
-            limiter: Arc::new(Mutex::new(limiter)),
+            limiter: Arc::new(limiter),
         }
     }
 
@@ -272,12 +272,7 @@ impl DehashedClient {
         })
         .map_err(|_| DehashedError::Decode("could not encode request".into()))?;
 
-        // A poisoned limiter still holds valid state; recover it rather than
-        // dropping the budget guarantee.
-        self.limiter
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .acquire();
+        self.limiter.acquire();
 
         let http_request = Request::post(format!("{DEHASHED_API_BASE}/search"), body)
             .header("Content-Type", "application/json")

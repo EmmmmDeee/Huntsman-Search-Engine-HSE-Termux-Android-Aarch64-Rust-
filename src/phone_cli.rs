@@ -47,13 +47,8 @@ impl PhoneArgs {
     /// Missing/repeated arguments, unknown options, or a phone value that cannot
     /// be canonicalised without guessing a country.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let LookupTokens { positional, save } = LookupTokens::split(args)?;
-
-        if positional.len() != 1 {
-            return Err(Error::Invalid("phone needs exactly one NUMBER".into()));
-        }
-
-        let phone = phone_intl::canonicalize(&positional[0]).ok_or_else(|| {
+        let (raw, save) = LookupTokens::single(args, "phone needs exactly one NUMBER")?;
+        let phone = phone_intl::canonicalize(&raw).ok_or_else(|| {
             Error::invalid_value(
                 "phone must be explicit international form or a recognised Australian number",
             )

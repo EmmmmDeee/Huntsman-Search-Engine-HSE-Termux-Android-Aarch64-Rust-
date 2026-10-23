@@ -671,10 +671,74 @@ fn limiter_sliding_window_and_shared_block() {
     let start = Instant::now();
     limiter.acquire();
     assert!(start.elapsed() >= Duration::from_millis(20));
-    limiter.block_for(Duration::from_millis(30)).unwrap();
+    limiter.block_for(Duration::from_millis(30));
     let start = Instant::now();
     limiter.acquire();
     assert!(start.elapsed() >= Duration::from_millis(20));
+
+    limiter.block_for(Duration::from_secs(10));
+    let start = Instant::now();
+    let remaining = limiter
+        .acquire_within(Duration::from_millis(50))
+        .unwrap_err();
+    assert!(remaining > Duration::from_secs(9), "{remaining:?}");
+    assert!(start.elapsed() < Duration::from_secs(1));
+}
+
+fn push_429(fake: &Fake, retry_after: &str) {
+    fake.push(429, "");
+    fake.responses
+        .lock()
+        .unwrap()
+        .back_mut()
+        .unwrap()
+        .headers
+        .push(("retry-after".into(), retry_after.into()));
+}
+
+#[test]
+fn a_long_server_block_refuses_later_keyed_calls_instead_of_sleeping() {
+    let (client, fake) = keyed();
+    push_429(&fake, "3600");
+    assert!(matches!(
+        client.paste_account("a@example.com"),
+        Err(HibpError::RateLimited { retry_after: Some(d) }) if d == Duration::from_secs(3600)
+    ));
+    let start = Instant::now();
+    let error = client.paste_account("b@example.com").unwrap_err();
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "slept out the block"
+    );
+    assert!(
+        matches!(error, HibpError::RateLimited { retry_after: Some(d) }
+            if (3590..=3600).contains(&d.as_secs())),
+        "{error:?}"
+    );
+    assert_eq!(
+        fake.requests().len(),
+        1,
+        "nothing is sent before the server's time"
+    );
+}
+
+#[test]
+fn a_retry_after_beyond_the_clock_is_a_rate_limit_held_for_an_hour() {
+    let (client, fake) = keyed();
+    push_429(&fake, "18446744073709551615");
+    let error = client.paste_account("a@example.com").unwrap_err();
+    assert!(
+        matches!(error, HibpError::RateLimited { retry_after: Some(d) }
+            if d == Duration::from_secs(u64::MAX)),
+        "{error:?}"
+    );
+    let error = client.paste_account("b@example.com").unwrap_err();
+    assert!(
+        matches!(error, HibpError::RateLimited { retry_after: Some(d) }
+            if (3590..=3600).contains(&d.as_secs())),
+        "{error:?}"
+    );
+    assert_eq!(fake.requests().len(), 1);
 }
 
 fn metadata() -> oauth::AuthServerMetadata {

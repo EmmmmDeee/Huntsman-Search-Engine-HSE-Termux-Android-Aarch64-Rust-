@@ -20,10 +20,6 @@ use crate::environment;
 /// Default budget: 10 requests per minute, the lowest HIBP plan's rate.
 pub const DEFAULT_REQUESTS_PER_MINUTE: u32 = 10;
 
-/// Environment variable overriding [`DEFAULT_REQUESTS_PER_MINUTE`] for the
-/// process-wide limiter. `0` disables client-side limiting (429 handling stays).
-pub use crate::environment::HIBP_RATE_LIMIT_ENV as RATE_LIMIT_ENV;
-
 /// A sliding-window limiter: at most `limit` acquisitions per `window`.
 #[derive(Debug)]
 pub struct RateLimiter {
@@ -82,6 +78,14 @@ impl RateLimiter {
 
     /// Wait until a request may be sent, then record it.
     pub fn acquire(&self) {
+        let _ = self.acquire_within(Duration::MAX);
+    }
+
+    /// Like [`acquire`](Self::acquire), but refuse to sit out a server block
+    /// (from [`block_for`](Self::block_for)) with more than `max_wait` left:
+    /// return `Err(remaining)` at once, recording no send. The sliding-window
+    /// wait is at most one window and is always taken.
+    pub fn acquire_within(&self, max_wait: Duration) -> Result<(), Duration> {
         loop {
             let wait = {
                 let mut st = self
@@ -90,7 +94,13 @@ impl RateLimiter {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let now = Instant::now();
                 match st.blocked_until {
-                    Some(until) if until > now => Some(until - now),
+                    Some(until) if until > now => {
+                        let remaining = until - now;
+                        if remaining > max_wait {
+                            return Err(remaining);
+                        }
+                        Some(remaining)
+                    }
                     _ => {
                         st.blocked_until = None;
                         let limit = self.limit();
@@ -115,27 +125,25 @@ impl RateLimiter {
                 }
             };
             match wait {
-                None => return,
+                None => return Ok(()),
                 Some(d) => std::thread::sleep(d),
             }
         }
     }
 
-    /// Hold every caller for at least `d` (a 429's `retry-after`).
-    pub fn block_for(&self, d: Duration) -> Result<(), super::HibpError> {
+    /// Hold every caller for at least `d` (a 429's `retry-after`), capped at
+    /// [`fetch::MAX_RETRY_AFTER_SECS`](crate::fetch::MAX_RETRY_AFTER_SECS) like
+    /// every other provider pause.
+    pub fn block_for(&self, d: Duration) {
+        let d = d.min(Duration::from_secs(crate::fetch::MAX_RETRY_AFTER_SECS));
+        let now = Instant::now();
+        let until = now.checked_add(d).unwrap_or(now);
         let mut st = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(until) = Instant::now().checked_add(d) {
-            if st.blocked_until.is_none_or(|b| b < until) {
-                st.blocked_until = Some(until);
-            }
-        } else {
-            return Err(super::HibpError::Decode(
-                "retry delay exceeds clock range".into(),
-            ));
+        if st.blocked_until.is_none_or(|b| b < until) {
+            st.blocked_until = Some(until);
         }
-        Ok(())
     }
 }

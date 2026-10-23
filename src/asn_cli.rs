@@ -59,11 +59,8 @@ impl AsnArgs {
     /// [`Error::Invalid`] for a missing or extra argument, [`Error::InvalidValue`] for a value
     /// that is not a public AS number.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let LookupTokens { positional, save } = LookupTokens::split(args)?;
-        if positional.len() != 1 {
-            return Err(Error::Invalid("asn needs exactly one AS number".into()));
-        }
-        let asn = canonical_asn(&positional[0])
+        let (raw, save) = LookupTokens::single(args, "asn needs exactly one AS number")?;
+        let asn = canonical_asn(&raw)
             .ok_or_else(|| Error::invalid_value("not a public AS number (AS13335)"))?;
         Ok(Self { asn, save })
     }
