@@ -378,7 +378,7 @@ fn recurse_scan(args: &[String]) -> ExitCode {
     // Analyse everything the crawl reached with the shared spine once, and hand the result to
     // whichever renderer runs: the text and JSON outputs show the same analysis, never a different
     // one.
-    let analysis = recursion_analysis(&report);
+    let analysis = recursion_analysis(&report, policy.expand_confidence_floor);
     if json {
         let view = recursion_json(seeds.len(), &report, &analysis);
         match terminal_json_pretty(&view) {
@@ -467,7 +467,7 @@ fn recursion_json<'a>(
 /// them with the relations they imply ([`pipeline::snapshot_from_entities`]); the scan id mirrors
 /// the spine's own fallback. Nothing is redacted: analysis is additive over the already-collected
 /// entities, never a filter on them.
-fn recursion_analysis(report: &RecursionReport) -> InvestigationReport {
+fn recursion_analysis(report: &RecursionReport, expand_floor: f64) -> InvestigationReport {
     let scan_id = report
         .entities
         .first()
@@ -493,7 +493,7 @@ fn recursion_analysis(report: &RecursionReport) -> InvestigationReport {
         snapshot.relations.truncate(limits.max_relations);
         snapshot.truncated = true;
     }
-    analysis::analyze_snapshot(&snapshot)
+    analysis::analyze_snapshot_with_expand_floor(&snapshot, expand_floor)
 }
 
 /// Print the crawl result in full: no uid masking, no counts in place of values — the real linkage
@@ -557,11 +557,11 @@ fn print_recursion(seed_count: usize, report: &RecursionReport, analysis: &Inves
         );
     }
     println!(
-        "dispatches={} visited={} generations={} termination={:?} truncated={}",
+        "dispatches={} visited={} generations={} termination={} truncated={}",
         report.dispatches,
         report.visited,
         report.generations.len(),
-        report.termination,
+        report.termination.as_str(),
         report.truncated
     );
 }
@@ -651,6 +651,7 @@ fn print_recursion_analysis(
 mod tests {
     use super::{per_seed_save_path, recursion_analysis, recursion_json};
     use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+    use huntsman_recon::gap::{EXPAND_FLOOR, Isolation};
     use huntsman_recon::recursion::{PivotEdge, RecursionReport, Target};
     use huntsman_recon::scan_route::{ScanKind, canonical_selector};
     use huntsman_recon::termination::TerminationReason;
@@ -673,6 +674,20 @@ mod tests {
     }
 
     #[test]
+    fn the_crawl_floor_decides_which_orphans_are_below_it() {
+        // `--expand-floor 0.1` expands a 0.3 domain; the report must not call it below the floor.
+        let report = report_of(vec![Entity::new(
+            EntityKind::Domain,
+            "weak.example.test",
+            0.3,
+            "recurse",
+        )]);
+        let isolation = |floor: f64| recursion_analysis(&report, floor).gaps.orphans[0].isolation;
+        assert_eq!(isolation(0.1), Isolation::Unexpanded);
+        assert_eq!(isolation(EXPAND_FLOOR), Isolation::BelowExpandFloor);
+    }
+
+    #[test]
     fn the_crawl_feeds_its_pivot_lineage_into_the_analysis_graph() {
         // A crawl pivots e-mail -> phone: the two share no handle, address or registrant, so content
         // derivation finds no relation between them. Without the lineage the analysis reports both
@@ -691,7 +706,8 @@ mod tests {
             generation: 1,
         };
 
-        let baseline = recursion_analysis(&report_of(vec![email.clone(), phone.clone()]));
+        let baseline =
+            recursion_analysis(&report_of(vec![email.clone(), phone.clone()]), EXPAND_FLOOR);
         assert_eq!(
             baseline.metrics.total_relations, 0,
             "the e-mail and phone share no content linkage, so content derivation yields no relation"
@@ -699,7 +715,7 @@ mod tests {
 
         let mut linked = report_of(vec![email, phone]);
         linked.edges = vec![edge];
-        let report = recursion_analysis(&linked);
+        let report = recursion_analysis(&linked, EXPAND_FLOOR);
         assert!(
             report.metrics.total_relations >= 1,
             "the crawl's pivot lineage must reach the analysis as a relation: {:?}",
@@ -728,7 +744,7 @@ mod tests {
             Entity::new(EntityKind::Email, "person@example.com", 0.9, "recurse"),
             Entity::new(EntityKind::Username, "person", 0.9, "recurse"),
         ]);
-        let correlations = recursion_analysis(&report).correlations;
+        let correlations = recursion_analysis(&report, EXPAND_FLOOR).correlations;
         assert!(
             correlations
                 .iter()
@@ -760,7 +776,9 @@ mod tests {
             "recurse",
         )]);
         assert!(
-            recursion_analysis(&report).correlations.is_empty(),
+            recursion_analysis(&report, EXPAND_FLOOR)
+                .correlations
+                .is_empty(),
             "a lone entity should produce no correlation"
         );
     }
@@ -778,7 +796,7 @@ mod tests {
             kind: ScanKind::Email,
             selector: "person@example.com".to_owned(),
         }];
-        let analysis = recursion_analysis(&report);
+        let analysis = recursion_analysis(&report, EXPAND_FLOOR);
         let view = recursion_json(1, &report, &analysis);
         let value = serde_json::to_value(&view).expect("the view serialises");
 
@@ -837,7 +855,7 @@ mod tests {
             hosted_on("beta.example", "192.0.2.10"),
             Entity::new(EntityKind::IpAddress, "192.0.2.10", 0.9, "recurse"),
         ]);
-        let analysis = recursion_analysis(&report);
+        let analysis = recursion_analysis(&report, EXPAND_FLOOR);
         assert!(
             analysis.metrics.total_relations >= 1,
             "the derived hosting relation never reached the metrics: {:?}",

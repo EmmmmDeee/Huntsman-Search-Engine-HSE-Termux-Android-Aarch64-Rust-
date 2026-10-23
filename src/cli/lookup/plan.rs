@@ -52,13 +52,13 @@ pub(in crate::cli) fn plan_cmd(args: &[String]) -> ExitCode {
         })
     });
     println!(
-        "accepted={} rejected={} entities={} relations={} planned={} termination={:?} truncated={}",
+        "accepted={} rejected={} entities={} relations={} planned={} termination={} truncated={}",
         outcome.normalization.accepted.len(),
         outcome.normalization.rejected.len(),
         outcome.snapshot.entities.len(),
         outcome.snapshot.relations.len(),
         outcome.plan.selected.len(),
-        outcome.report.termination,
+        outcome.report.termination.as_str(),
         outcome.report.truncated || outcome.artifacts.truncated,
     );
     // The same statuses as a lookup's `--save`: a failed write is an output error.

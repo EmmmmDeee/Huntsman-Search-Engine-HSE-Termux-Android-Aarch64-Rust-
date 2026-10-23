@@ -72,9 +72,18 @@ pub struct GapReport {
     pub orphans: Vec<OrphanSeed>,
 }
 
+/// The gap report over `entities` and `relations`, an orphan below [`EXPAND_FLOOR`] counting as
+/// below the expansion floor.
 #[must_use]
 pub fn analyze(entities: &[Entity], relations: &[EntityRelation]) -> GapReport {
-    let graph = Graph::build(entities, relations);
+    analyze_on(&Graph::build(entities, relations), entities, EXPAND_FLOOR)
+}
+
+/// The gap report over `entities` on their already-built `graph`. An orphan whose effective
+/// confidence is below `expand_floor` (the floor the crawl expanded by) counts as below the
+/// expansion floor; one at or above it was eligible and counts as unexpanded.
+#[must_use]
+pub fn analyze_on(graph: &Graph, entities: &[Entity], expand_floor: f64) -> GapReport {
     let mut linked_seeds = 0;
     let mut total_seeds = 0;
     let mut isolation = IsolationCounts {
@@ -101,7 +110,7 @@ pub fn analyze(entities: &[Entity], relations: &[EntityRelation]) -> GapReport {
         let classification = if reinjection_target.is_none() {
             isolation.terminal += 1;
             Isolation::Terminal
-        } else if entity.c_effective() < EXPAND_FLOOR {
+        } else if entity.c_effective() < expand_floor {
             isolation.below_expand_floor += 1;
             Isolation::BelowExpandFloor
         } else {
@@ -146,6 +155,21 @@ mod tests {
 
     fn ent(kind: EntityKind, value: &str, confidence: f64) -> Entity {
         Entity::new(kind, value, confidence, "gap-scan")
+    }
+
+    #[test]
+    fn an_orphan_is_judged_against_the_floor_the_crawl_used() {
+        let isolation = |confidence: f64, floor: f64| {
+            let entity = ent(EntityKind::Domain, "weak.example.test", confidence);
+            let graph = Graph::build(std::slice::from_ref(&entity), &[]);
+            analyze_on(&graph, &[entity], floor).orphans[0].isolation
+        };
+        // A crawl at 0.2 expanded a 0.3 domain, so it is unexpanded, not below the floor.
+        assert_eq!(isolation(0.3, 0.2), Isolation::Unexpanded);
+        assert_eq!(isolation(0.3, EXPAND_FLOOR), Isolation::BelowExpandFloor);
+        // A crawl at 0.9 refused a 0.7 domain.
+        assert_eq!(isolation(0.7, 0.9), Isolation::BelowExpandFloor);
+        assert_eq!(isolation(0.7, EXPAND_FLOOR), Isolation::Unexpanded);
     }
 
     #[test]
