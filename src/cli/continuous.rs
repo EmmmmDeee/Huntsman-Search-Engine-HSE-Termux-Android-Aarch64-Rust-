@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Duration;
 
 use huntsman_recon::clock;
-use huntsman_recon::fsio::{read_bounded_replacing, write_atomic_private};
+use huntsman_recon::fsio::{read_bounded, write_atomic_private};
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_service::{ScanRequest, plan};
 use huntsman_recon::scan_store::{MAX_RESULTS_BYTES, ScanOptions, ScanRecord, ScanStatus};
@@ -162,7 +162,7 @@ fn archive_current(path: &Path) -> Result<bool, String> {
 }
 
 fn source_hash(path: &Path) -> Result<String, String> {
-    let bytes = read_bounded_replacing(path, MAX_RESULTS_BYTES)
+    let bytes = read_bounded(path, MAX_RESULTS_BYTES)
         .map_err(|error| format!("saved-results read failed: {error}"))?;
     Ok(hex32(&sha256(&bytes)))
 }
@@ -193,30 +193,45 @@ fn normalise_saved(
     let response = api.handle("GET", &format!("/api/scans/{}/analyze", record.id), "");
     if response.status != 200 {
         return Err(format!(
-            "scan {} analysis refused (HTTP {})", record.id, response.status
+            "scan {} analysis refused (HTTP {})",
+            record.id, response.status
         ));
     }
     // Double-check exact source bytes, not just timestamps, against concurrent writes.
     if revision_stamp(&source)? != expected || source_hash(&source)? != before {
-        return Err(format!("scan {} results changed during analysis", record.id));
+        return Err(format!(
+            "scan {} results changed during analysis",
+            record.id
+        ));
     }
     let mut report: serde_json::Value = serde_json::from_slice(&response.body)
         .map_err(|error| format!("scan {} analysis JSON invalid: {error}", record.id))?;
-    let object = report.as_object_mut()
+    let object = report
+        .as_object_mut()
         .ok_or_else(|| format!("scan {} analysis is not an object", record.id))?;
-    object.insert("source_revision".to_owned(), serde_json::json!({
-        "scan_id": record.id,
-        "results_sha256": before,
-        "results_bytes": expected.bytes,
-        "modified_unix_ns": expected.modified_ns,
-    }));
+    object.insert(
+        "source_revision".to_owned(),
+        serde_json::json!({
+            "scan_id": record.id,
+            "results_sha256": before,
+            "results_bytes": expected.bytes,
+            "modified_unix_ns": expected.modified_ns,
+        }),
+    );
     let body = serde_json::to_vec(&report)
         .map_err(|error| format!("analysis serialization failed: {error}"))?;
     if body.len() as u64 > MAX_ANALYSIS_BYTES {
-        return Err(format!("scan {} analysis exceeds bounded output", record.id));
+        return Err(format!(
+            "scan {} analysis exceeds bounded output",
+            record.id
+        ));
     }
-    write_atomic_private(&normalised_path(record, directory), &body, MAX_ANALYSIS_BYTES)
-        .map_err(|error| format!("normalisation write failed: {error}"))?;
+    write_atomic_private(
+        &normalised_path(record, directory),
+        &body,
+        MAX_ANALYSIS_BYTES,
+    )
+    .map_err(|error| format!("normalisation write failed: {error}"))?;
     Ok(true)
 }
 
@@ -300,7 +315,10 @@ fn cycle(
             continue;
         }
         observed.remove(&output);
-        if retry_after.get(&analysis_key).is_some_and(|until| now < *until) {
+        if retry_after
+            .get(&analysis_key)
+            .is_some_and(|until| now < *until)
+        {
             continue;
         }
         match normalise_saved(api, record, &config.normalised_dir, stamp) {
