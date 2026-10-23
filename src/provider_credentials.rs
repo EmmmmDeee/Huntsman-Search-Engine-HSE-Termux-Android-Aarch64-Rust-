@@ -431,9 +431,19 @@ fn write_unrecognised(out: &mut String, keys: &Keys) {
     for slot in unrecognised_slots(keys) {
         out.push_str("unrecognised_slot=");
         out.push_str(slot);
-        out.push_str(
-            "\tstate=unread\tnote=matches no provider; rename it to the exact slot or remove it\n",
-        );
+        out.push_str("\tstate=unread\tnote=");
+        if slot == crate::environment::LEGACY_INSTALL_DIR_ENV {
+            out.push_str(
+                "obsolete installer setting, not a provider key; remove with huntsman-recon keys remove ",
+            );
+            out.push_str(crate::environment::LEGACY_INSTALL_DIR_ENV);
+            out.push_str(" (installer uses ");
+            out.push_str(crate::environment::INSTALL_ROOT_ENV);
+            out.push_str(" only when invoked)");
+        } else {
+            out.push_str("matches no provider; rename it to the exact slot or remove it");
+        }
+        out.push('\n');
     }
 }
 
@@ -866,6 +876,18 @@ mod tests {
                 "{name} should be unrecognised"
             );
         }
+    }
+
+    #[test]
+    fn obsolete_install_dir_is_not_mistaken_for_a_credential() {
+        let slot = crate::environment::LEGACY_INSTALL_DIR_ENV;
+        let keys = Keys::parse(&format!("{slot}=/tmp/private-install-value\n")).expect("keys");
+        assert_eq!(unrecognised_slots(&keys), vec![slot]);
+        let rendered = render(&keys);
+        assert!(rendered.contains(&format!("unrecognised_slot={slot}")), "{rendered}");
+        assert!(rendered.contains("huntsman-recon keys remove"), "{rendered}");
+        assert!(rendered.contains(crate::environment::INSTALL_ROOT_ENV), "{rendered}");
+        assert!(!rendered.contains("/tmp/private-install-value"), "{rendered}");
     }
 
     #[test]
