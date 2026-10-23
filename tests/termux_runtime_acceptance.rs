@@ -35,6 +35,7 @@ fn termux_runtime_harness_targets_current_binary_and_api_contract() {
         "idle connections do not delay a request",
         "TERMUX_RUNTIME_ACCEPTANCE",
         "server lifecycle pass=2 (restart)",
+        "saved scan survives server restart",
         "aarch64|arm64",
         "/data/data/com.termux/files/usr",
     ] {
@@ -152,6 +153,7 @@ fn the_harness_passes_against_the_built_binary_in_host_mode() {
         "PASS  module and command APIs return current structured state",
         "PASS  web UI page loads under its policy and its offline analysis answers",
         "PASS  idle connections do not delay a request",
+        "PASS  saved scan survives server restart",
         "PASS  server lifecycle pass=2 (restart)",
         "PASS  HOST_RUNTIME_ACCEPTANCE (not a handset pass)",
     ] {
