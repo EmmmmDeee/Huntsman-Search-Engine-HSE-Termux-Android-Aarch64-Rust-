@@ -290,6 +290,25 @@ fn every_main_push_starts_a_build_so_the_head_has_its_own() {
 }
 
 #[test]
+fn termux_acceptance_changes_trigger_release_dry_run_on_pull_requests() {
+    let wf = release();
+    let paths = wf
+        .split_once("  pull_request:\n")
+        .and_then(|(_, rest)| rest.split_once("\npermissions:"))
+        .map(|(paths, _)| paths)
+        .expect("the release workflow must have a pull-request path filter");
+    for path in [
+        r#"- "scripts/termux-runtime-acceptance.sh""#,
+        r#"- "tests/termux_runtime_acceptance.rs""#,
+    ] {
+        assert!(
+            paths.contains(path),
+            "release PR acceptance must be triggered by {path}"
+        );
+    }
+}
+
+#[test]
 fn superseded_main_builds_are_verified_without_historical_release_failures() {
     let wf = release();
     let publish = job(&wf, "publish");
