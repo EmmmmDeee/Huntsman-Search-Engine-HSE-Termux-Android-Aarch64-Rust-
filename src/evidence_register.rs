@@ -304,6 +304,7 @@ pub fn compile(
         "counts":counts,
         "current_record_count":current.len(),
         "baseline_record_count":earlier.as_ref().map(BTreeMap::len),
+        "uncertainty_register":crate::scan_uncertainty::derive(scan, Some(saved)),
         "records":records,
         "limitations":[
             "saved_scan_not_independent_factual_corroboration",
