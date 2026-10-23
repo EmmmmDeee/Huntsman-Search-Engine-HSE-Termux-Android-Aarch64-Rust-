@@ -169,12 +169,34 @@ fn decode_numeric(rest: &str, syntax: Syntax) -> Option<(char, usize)> {
         return None;
     }
     let value = u32::from_str_radix(raw, if hex { 16 } else { 10 }).ok()?;
-    let ch = char::from_u32(value)?;
+    let ch = if html {
+        html_numeric_char(value)?
+    } else {
+        char::from_u32(value)?
+    };
     if !html && !is_xml_char(ch) {
         return None;
     }
     let consumed = 2 + usize::from(hex) + raw.len() + 1;
     Some((ch, consumed))
+}
+
+/// The character an HTML numeric reference to `value` stands for, as the HTML parser reads it: a
+/// reference to 0 is U+FFFD, and one to `80`-`9F`, which pages written in Windows-1252 use for its
+/// quotes and dashes, is that Windows-1252 character, so `&#146;` is `’`. **Pure.**
+fn html_numeric_char(value: u32) -> Option<char> {
+    const WINDOWS_1252: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž',
+        '\u{8f}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}',
+        'ž', 'Ÿ',
+    ];
+    match value {
+        0 => Some(char::REPLACEMENT_CHARACTER),
+        0x80..=0x9f => usize::try_from(value - 0x80)
+            .ok()
+            .map(|at| WINDOWS_1252[at]),
+        _ => char::from_u32(value),
+    }
 }
 
 /// Whether XML 1.0 allows `c` in a document: tab, line feed, carriage return, and the characters
@@ -1011,6 +1033,20 @@ mod tests {
             decode_html_entities("&bogus; &#xD800; & done"),
             "&bogus; &#xD800; & done"
         );
+    }
+
+    /// The HTML parser reads a reference into `80`-`9F` as the Windows-1252 character a page meant,
+    /// and a reference to 0 as U+FFFD; XML keeps its own rules.
+    #[test]
+    fn html_references_to_c1_codes_read_as_windows_1252() {
+        assert_eq!(
+            decode_html_entities("it&#146;s &#150; &#x93;q&#x94; &#128;5 &#159;"),
+            "it’s – “q” €5 Ÿ"
+        );
+        assert_eq!(decode_html_entities("&#129;&#x8D;"), "\u{81}\u{8d}");
+        assert_eq!(decode_html_entities("a&#0;b"), "a\u{fffd}b");
+        assert_eq!(decode_html_entities("&#160;&#255;"), "\u{a0}ÿ");
+        assert_eq!(decode_xml_references("&#146;"), "\u{92}");
     }
 
     #[test]
