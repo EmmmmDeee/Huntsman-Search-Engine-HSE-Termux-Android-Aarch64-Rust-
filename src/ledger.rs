@@ -151,8 +151,9 @@ pub fn admitted(entries: &[LedgerEntry]) -> Vec<&LedgerEntry> {
 }
 
 /// The entries whose claims pass the interop gate under `bindings`. An invalid,
-/// reordered, truncated or spliced chain admits no claims, even when individual
-/// entries have plausible hashes and verified-looking statuses. Both STIX and
+/// reordered, missing-prefix or spliced chain admits no claims, even when individual
+/// entries have plausible hashes and verified-looking statuses. A valid prefix can
+/// still be truncated at the tail: the chain is not a signature or anti-rollback proof. Both STIX and
 /// ATT&CK Navigator use this gate, including their explicit-binding test seams.
 ///
 /// Verify the complete chain once before iterating, rather than rehashing it
