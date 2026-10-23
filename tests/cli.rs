@@ -741,6 +741,15 @@ fn scans_search_finds_values_in_every_scan_or_the_ones_named() {
     );
     assert_eq!(run(&["scans", "search"]).status.code(), Some(64));
     assert_eq!(run(&["scans", "search", "/(a/"]).status.code(), Some(64));
+    // Groups nested past the limit are a bad pattern too, not a stack overflow.
+    let hostile = run(&["scans", "search", &format!("/{}/", "(".repeat(100_000))]);
+    assert_eq!(
+        hostile.status.code(),
+        Some(64),
+        "{}",
+        String::from_utf8_lossy(&hostile.stderr)
+    );
+    assert!(String::from_utf8_lossy(&hostile.stderr).contains("nested too deeply"));
     assert_eq!(
         run(&["scans", "search", "x", "0000000000000000"])
             .status
