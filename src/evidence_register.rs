@@ -2,6 +2,7 @@
 //!
 //! Does not collect, infer identities, or write a second evidence copy. Output is
 //! bounded; an over-limit scan fails explicitly instead of silently truncating.
+pub mod case_audit;
 mod matrix;
 pub use matrix::{compile_matrix, matrix_raw_text};
 

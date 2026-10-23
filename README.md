@@ -155,7 +155,8 @@ cargo run -- search "brisbane port" docs/
 cargo run -- sources example.com       # classify + build curated routes; no network
 cargo run -- domain-lifecycle analyze docs/domain-lifecycle-example.json --as-of 1000  # offline timeline comparison
 cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
-cargo run -- id "53 004 085 616"        # ABN/ACN/BSB, strict grouping
+cargo run -- id "53 004 085 616"
+cargo run -- case-check examples/vero-case-evidence.json examples/vero-case-advert.txt  # verify the original advertisement SHA-256 and reference structure offline        # ABN/ACN/BSB, strict grouping
 cargo run -- geohash -27.4698,153.0251 9
 cargo run -- geohash r7hgdpm # decode: the cell's centre and bounds
 cargo run -- coarsen -27.4698,153.0251 # one decimal place, ~11 km

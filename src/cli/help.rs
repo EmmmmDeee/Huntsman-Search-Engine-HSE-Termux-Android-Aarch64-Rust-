@@ -52,6 +52,10 @@ fn scan_help() -> &'static str {
     "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto] [--save-dir DIR] | scan --recurse SELECTOR [SELECTOR ...] [--max-generations N] [--expand-floor F] [--json]\nRoute one selector or a bounded one-target-per-line file into rebuilt lookup front-ends; a domain routes to domain, and a BSSID or LAT,LON to network. A Bitcoin address is an explicit route: pass -k crypto. Batch input trims lines, ignores blank/# comment lines, de-duplicates exact seeds, attempts every seed, and exits non-zero after the batch if any seed failed. --save is single-selector only; --save-dir DIR writes one ledger per batch seed, numbered by its position. --recurse runs a bounded fetch-expand-fetch crawl: each lookup's pivotable findings (e-mail, username, domain, phone, plus a public IP or BSSID) become the next generation's seeds, de-duplicated and capped by the shared limits (default up to 4 hops beyond the seeds, expansion confidence floor 0.5), and it prints the full linkage with the pivot lineage (which lookup found each finding), the correlation findings, by-kind element/relation summary, capability gaps, and graph-pivot ranking the shared analysis engine derives across everything reached, every source outcome, and the termination reason; --json prints that same result as one JSON object instead of the text report. Makes network requests."
 }
 
+const CASE_HELP: &str = "case-check CASE-JSON ORIGINAL-ADVERT-TEXT\nCheck bounded OSINT package JSON against exact source text, SHA-256, source IDs and claim references. This offline structural audit does not validate external claims, licences or advertisement authorship.";
+const GEO_HELP: &str =
+    "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres.";
+
 /// The help text of a dispatched command, or `None` for a word that is not one.
 pub(super) fn command_help(command: &str) -> Option<&'static str> {
     let help = match command {
@@ -74,15 +78,14 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "directive" => {
             "directive check|sync [ROOT]\nVerify or repair the pinned canonical Huntsman directive. Without ROOT, check auto-discovers a source checkout from the current directory or its parents and otherwise verifies the embedded canonical artifact; sync requires a source checkout."
         }
-        "geo" => {
-            "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres."
-        }
+        "geo" => GEO_HELP,
         "geohash" => {
             "geohash LAT,LON [PRECISION] | geohash HASH\nEncode coordinates as a geohash (precision defaults to 7), or decode a geohash to the centre and bounds of the cell it names."
         }
         "coarsen" => {
             "coarsen LAT,LON\nRound coordinates to one decimal place for approximate location sharing."
         }
+        "case-check" => CASE_HELP,
         "id" => {
             "id TOKEN...\nClassify and validate an Australian ABN, ACN, or BSB. The rest of the line is the token, so spaced digits need no quotes."
         }
