@@ -63,6 +63,7 @@ entity_reality	leaf	read-only bounded source-attributed saved-entity claim asses
 environment	leaf	the process environment, read through one module
 error	leaf	shared error type
 evidence_ancestry	runtime	independent-origin ancestry graph
+evidence_register	exporter	bounded offline evidence and semantic-delta export reachable through scan_api and scans CLI
 exit	leaf	process exit statuses shared by the binaries
 exposure	runtime	exposure analysis through intelligence report
 exposure_cli	diagnostic	breach exposure query command front-end
