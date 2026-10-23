@@ -490,7 +490,7 @@ impl IntelligenceLedger {
             if roots.is_empty() {
                 return ProofEnvironmentEvaluation::Malformed;
             }
-            canonical_roots.extend(roots.into_iter().map(|root| root.0));
+            canonical_roots.extend(roots);
             resolved_nodes.push(node_id.clone());
         }
 
@@ -580,8 +580,8 @@ impl IntelligenceLedger {
     /// assumptions, malformed environments, bounded-search truncation, or an
     /// incomplete proof set fail closed.
     ///
-    /// `MinimalProofEnvironment::roots` is interpreted here as canonical
-    /// `EvidenceNodeId` strings, never provider labels or cached family names.
+    /// `MinimalProofEnvironment::roots` are canonical [`EvidenceNodeId`]s, never
+    /// provider labels or cached family names.
     ///
     /// # Errors
     /// Returns [`LedgerError::MissingClaim`] or [`LedgerError::MissingEvidence`]

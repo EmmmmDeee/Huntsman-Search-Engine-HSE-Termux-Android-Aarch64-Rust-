@@ -87,7 +87,7 @@ fn proof(
     ProofEnvironmentSet {
         environments: vec![MinimalProofEnvironment {
             assertions: assertions.iter().cloned().collect(),
-            roots: roots.iter().map(|root| (*root).to_owned()).collect(),
+            roots: roots.iter().copied().map(EvidenceNodeId::from).collect(),
             assumptions: assumptions
                 .iter()
                 .copied()

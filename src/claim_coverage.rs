@@ -87,6 +87,13 @@ impl CoverageRequirement {
         claim_id: &ClaimId,
         observations: &[CoverageObservation],
     ) -> CoverageAssessment {
+        if !self.is_well_formed() {
+            return CoverageAssessment {
+                negative_admissible: false,
+                qualifying_providers: BTreeSet::new(),
+                blockers: BTreeSet::from([CoverageBlocker::NoApplicableObservation]),
+            };
+        }
         let mut qualifying_providers = BTreeSet::new();
         let mut saw_applicable = false;
         let mut saw_failure = false;
@@ -101,6 +108,9 @@ impl CoverageRequirement {
 
             match observation.outcome {
                 CoverageOutcome::Positive => saw_positive = true,
+                // An unnamed provider cannot vouch for absence; its positive,
+                // failure or partial result still counts against the claim.
+                CoverageOutcome::CleanNegative if observation.provider_id.trim().is_empty() => {}
                 CoverageOutcome::CleanNegative => {
                     if observation
                         .completeness
@@ -143,6 +153,16 @@ impl CoverageRequirement {
             qualifying_providers,
             blockers,
         }
+    }
+
+    /// A blank class or scope, or a window that ends before it starts, matches
+    /// nothing a negative could honestly cover.
+    fn is_well_formed(&self) -> bool {
+        let ordered = match (self.temporal.not_before_unix, self.temporal.not_after_unix) {
+            (Some(start), Some(end)) => start <= end,
+            _ => true,
+        };
+        ordered && !self.evidence_class.trim().is_empty() && !self.query_scope.trim().is_empty()
     }
 
     fn applies_to(&self, claim_id: &ClaimId, observation: &CoverageObservation) -> bool {

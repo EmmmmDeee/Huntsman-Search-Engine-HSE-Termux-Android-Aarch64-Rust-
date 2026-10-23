@@ -629,8 +629,9 @@ pub fn resolve_identity_clusters(relations: &[Relation]) -> Vec<Vec<String>> {
             index[relation.to_uid.as_str()],
         );
     }
-    let mut groups = uf
-        .groups()
+    // `ids` is sorted and each group lists its indices in order, so the groups come out
+    // sorted by their first uid.
+    uf.groups()
         .into_iter()
         .map(|group| {
             group
@@ -638,9 +639,7 @@ pub fn resolve_identity_clusters(relations: &[Relation]) -> Vec<Vec<String>> {
                 .map(|idx| ids[idx].to_owned())
                 .collect::<Vec<_>>()
         })
-        .collect::<Vec<_>>();
-    groups.sort();
-    groups
+        .collect()
 }
 
 /// The uids that the strongest paths, within six relations, between other uids pass through,

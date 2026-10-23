@@ -150,3 +150,74 @@ fn bounded_observation_cannot_cover_unbounded_requirement() {
             .contains(&CoverageBlocker::NoApplicableObservation)
     );
 }
+
+#[test]
+fn a_malformed_requirement_admits_no_negative() {
+    let clean = observation(
+        "provider-a",
+        CoverageOutcome::CleanNegative,
+        CoverageCompleteness::Complete,
+    );
+    let mut inverted = requirement();
+    inverted.temporal = TemporalValidity {
+        not_before_unix: Some(1_800_000_000),
+        not_after_unix: Some(1_700_000_000),
+    };
+    let mut point = clean.clone();
+    point.temporal = TemporalValidity {
+        not_before_unix: Some(1_750_000_000),
+        not_after_unix: Some(1_750_000_000),
+    };
+    let mut blank_class = requirement();
+    blank_class.evidence_class = " ".into();
+    let mut blank_scope = requirement();
+    blank_scope.query_scope = String::new();
+    let mut blank_scope_observation = clean.clone();
+    blank_scope_observation.query_scope = String::new();
+
+    for (requirement, observation) in [
+        (inverted, point),
+        (blank_class, clean),
+        (blank_scope, blank_scope_observation),
+    ] {
+        let assessment = requirement.evaluate(&ClaimId::from("claim-1"), &[observation]);
+        assert!(!assessment.negative_admissible, "{requirement:?}");
+        assert!(assessment.qualifying_providers.is_empty());
+        assert_eq!(
+            assessment.blockers,
+            BTreeSet::from([CoverageBlocker::NoApplicableObservation])
+        );
+    }
+}
+
+#[test]
+fn an_unnamed_provider_cannot_vouch_for_absence_but_still_counts_against_it() {
+    let unnamed = observation(
+        "  ",
+        CoverageOutcome::CleanNegative,
+        CoverageCompleteness::Complete,
+    );
+    let assessment = requirement().evaluate(&ClaimId::from("claim-1"), &[unnamed]);
+    assert!(!assessment.negative_admissible);
+    assert!(assessment.qualifying_providers.is_empty());
+
+    let observations = [
+        observation(
+            "provider-a",
+            CoverageOutcome::CleanNegative,
+            CoverageCompleteness::Complete,
+        ),
+        observation(
+            "",
+            CoverageOutcome::Positive,
+            CoverageCompleteness::Complete,
+        ),
+    ];
+    let assessment = requirement().evaluate(&ClaimId::from("claim-1"), &observations);
+    assert!(!assessment.negative_admissible);
+    assert!(
+        assessment
+            .blockers
+            .contains(&CoverageBlocker::PositiveObservation)
+    );
+}

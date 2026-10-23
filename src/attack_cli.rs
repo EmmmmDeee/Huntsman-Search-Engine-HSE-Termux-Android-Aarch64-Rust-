@@ -17,6 +17,16 @@ use crate::navigator;
 pub const ATTACK_USAGE: &str =
     "usage: huntsman-recon attack status|coverage|gaps [--json] | attack navigator";
 
+/// An `attack` invocation outside the grammar; it displays as [`ATTACK_USAGE`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Usage;
+
+impl std::fmt::Display for Usage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(ATTACK_USAGE)
+    }
+}
+
 fn module_index() -> BTreeMap<&'static str, Vec<&'static str>> {
     let mut index = BTreeMap::<&'static str, Vec<&'static str>>::new();
     for module in reachable_modules().iter().filter(|module| module.network) {
@@ -46,20 +56,18 @@ fn coverage_state() -> (
     (modules, raw, hierarchy)
 }
 
-fn json_line(value: &serde_json::Value) -> Result<String, String> {
-    serde_json::to_string_pretty(value)
-        .map(|mut text| {
-            text.push('\n');
-            text
-        })
-        .map_err(|error| format!("serialize ATT&CK output: {error}"))
+fn json_line(value: &serde_json::Value) -> String {
+    // A `Value` has string keys and no non-finite numbers, so it always serialises.
+    let mut text = serde_json::to_string_pretty(value).expect("a JSON value serialises");
+    text.push('\n');
+    text
 }
 
-fn parse_json_flag(args: &[String]) -> Result<bool, String> {
+fn parse_json_flag(args: &[String]) -> Result<bool, Usage> {
     match args {
         [] => Ok(false),
         [flag] if flag == "--json" => Ok(true),
-        _ => Err(ATTACK_USAGE.to_string()),
+        _ => Err(Usage),
     }
 }
 
@@ -79,7 +87,7 @@ fn mapped_module_count(index: &BTreeMap<&'static str, Vec<&'static str>>) -> usi
         .len()
 }
 
-fn status(json_output: bool) -> Result<String, String> {
+fn status(json_output: bool) -> String {
     let (index, raw, hierarchy) = coverage_state();
     if json_output {
         return json_line(&json!({
@@ -104,7 +112,7 @@ fn status(json_output: bool) -> Result<String, String> {
         }));
     }
 
-    Ok(format!(
+    format!(
         "MITRE ATT&CK posture — Huntsman Recon\n\n\
 Recon catalogue   : ATT&CK Enterprise TA0043 v{}\n\
 Recon source      : {}\n\
@@ -135,10 +143,10 @@ Coverage reports reachable module mapping, not technique execution or detection 
         index.len(),
         mapped_module_count(&index),
         reachable_modules().len(),
-    ))
+    )
 }
 
-fn coverage(json_output: bool) -> Result<String, String> {
+fn coverage(json_output: bool) -> String {
     let (index, _raw, hierarchy) = coverage_state();
     if json_output {
         let covered = hierarchy
@@ -181,41 +189,37 @@ fn coverage(json_output: bool) -> Result<String, String> {
     }
 
     let mut output = String::from("MITRE ATT&CK — Huntsman Reconnaissance coverage\n\n");
-    writeln!(
+    let _ = writeln!(
         &mut output,
         "{:<12}  {:<36}  MODULES (evidence)",
         "TECHNIQUE", "NAME"
-    )
-    .map_err(|error| error.to_string())?;
-    writeln!(&mut output, "{}", "─".repeat(96)).map_err(|error| error.to_string())?;
+    );
+    let _ = writeln!(&mut output, "{}", "─".repeat(96));
     for technique in &hierarchy.covered_leaves {
         let modules = modules_for(&index, technique.id);
         let evidence = modules.join(", ");
-        writeln!(
+        let _ = writeln!(
             &mut output,
             "{:<12}  {:<36}  {}",
             technique.id, technique.name, evidence
-        )
-        .map_err(|error| error.to_string())?;
+        );
     }
-    writeln!(
+    let _ = writeln!(
         &mut output,
         "\n{}/{} independent leaf techniques covered ({:.1}%).",
         hierarchy.leaf_techniques_covered,
         hierarchy.leaf_techniques_total,
         hierarchy.coverage_fraction * 100.0
-    )
-    .map_err(|error| error.to_string())?;
-    writeln!(
+    );
+    let _ = writeln!(
         &mut output,
         "\nParent roll-ups (not scored)\n{:<12}  {:<36}  {:<8}  MODULES (mapped to the parent)",
         "TECHNIQUE", "NAME", "CHILDREN"
-    )
-    .map_err(|error| error.to_string())?;
-    writeln!(&mut output, "{}", "─".repeat(96)).map_err(|error| error.to_string())?;
+    );
+    let _ = writeln!(&mut output, "{}", "─".repeat(96));
     for rollup in &hierarchy.parent_rollups {
         let modules = modules_for(&index, rollup.id);
-        writeln!(
+        let _ = writeln!(
             &mut output,
             "{:<12}  {:<36}  {:<8}  {}",
             rollup.id,
@@ -226,13 +230,12 @@ fn coverage(json_output: bool) -> Result<String, String> {
             } else {
                 modules.join(", ")
             }
-        )
-        .map_err(|error| error.to_string())?;
+        );
     }
-    Ok(output)
+    output
 }
 
-fn gaps(json_output: bool) -> Result<String, String> {
+fn gaps(json_output: bool) -> String {
     let (_index, _raw, hierarchy) = coverage_state();
     if json_output {
         let gaps = hierarchy
@@ -247,23 +250,21 @@ fn gaps(json_output: bool) -> Result<String, String> {
     }
 
     let mut output = String::from("MITRE ATT&CK — Huntsman Reconnaissance coverage gaps\n\n");
-    writeln!(&mut output, "{:<12}  NAME", "TECHNIQUE").map_err(|error| error.to_string())?;
-    writeln!(&mut output, "{}", "─".repeat(60)).map_err(|error| error.to_string())?;
+    let _ = writeln!(&mut output, "{:<12}  NAME", "TECHNIQUE");
+    let _ = writeln!(&mut output, "{}", "─".repeat(60));
     for technique in &hierarchy.uncovered_leaves {
-        writeln!(&mut output, "{:<12}  {}", technique.id, technique.name)
-            .map_err(|error| error.to_string())?;
+        let _ = writeln!(&mut output, "{:<12}  {}", technique.id, technique.name);
     }
-    writeln!(
+    let _ = writeln!(
         &mut output,
         "\n{} of {} independent leaf techniques are uncovered.",
         hierarchy.uncovered_leaves.len(),
         hierarchy.leaf_techniques_total
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(output)
+    );
+    output
 }
 
-fn navigator_layer() -> Result<String, String> {
+fn navigator_layer() -> String {
     let (_index, raw, _hierarchy) = coverage_state();
     json_line(&navigator::coverage_layer(
         &raw,
@@ -274,17 +275,17 @@ fn navigator_layer() -> Result<String, String> {
 /// Render one legacy-compatible `attack` subcommand.
 ///
 /// # Errors
-/// Returns the usage contract for an invalid verb/flag or a serialization failure.
-pub fn render(args: &[String]) -> Result<String, String> {
+/// [`Usage`] for an unknown verb or flag.
+pub fn render(args: &[String]) -> Result<String, Usage> {
     let Some((verb, rest)) = args.split_first() else {
-        return Err(ATTACK_USAGE.to_string());
+        return Err(Usage);
     };
     match verb.as_str() {
-        "status" => status(parse_json_flag(rest)?),
-        "coverage" => coverage(parse_json_flag(rest)?),
-        "gaps" => gaps(parse_json_flag(rest)?),
-        "navigator" if rest.is_empty() => navigator_layer(),
-        _ => Err(ATTACK_USAGE.to_string()),
+        "status" => Ok(status(parse_json_flag(rest)?)),
+        "coverage" => Ok(coverage(parse_json_flag(rest)?)),
+        "gaps" => Ok(gaps(parse_json_flag(rest)?)),
+        "navigator" if rest.is_empty() => Ok(navigator_layer()),
+        _ => Err(Usage),
     }
 }
 
@@ -309,11 +310,16 @@ mod tests {
         ] {
             assert!(render(&args(values)).is_ok(), "{values:?}");
         }
-        assert_eq!(render(&[]).unwrap_err(), ATTACK_USAGE);
-        assert_eq!(
-            render(&args(&["navigator", "--json"])).unwrap_err(),
-            ATTACK_USAGE
-        );
+        for values in [
+            &[][..],
+            &["navigator", "--json"][..],
+            &["status", "--json", "extra"][..],
+            &["status", "--xml"][..],
+            &["bogus"][..],
+        ] {
+            assert_eq!(render(&args(values)), Err(Usage), "{values:?}");
+        }
+        assert_eq!(Usage.to_string(), ATTACK_USAGE);
     }
 
     #[test]

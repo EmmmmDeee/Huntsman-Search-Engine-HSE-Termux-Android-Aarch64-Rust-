@@ -46,7 +46,7 @@ fn proof(ids: &[EvidenceId], roots: &[&str], incomplete: bool) -> ProofEnvironme
     ProofEnvironmentSet {
         environments: vec![MinimalProofEnvironment {
             assertions: ids.iter().cloned().collect(),
-            roots: roots.iter().map(|root| (*root).to_owned()).collect(),
+            roots: roots.iter().copied().map(EvidenceNodeId::from).collect(),
             ..MinimalProofEnvironment::default()
         }],
         incomplete,
