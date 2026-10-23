@@ -122,15 +122,25 @@ fn revision_stamp(path: &Path) -> Result<RevisionStamp, String> {
     if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_RESULTS_BYTES {
         return Err(format!("{}: invalid saved-results file", path.display()));
     }
-    let modified = meta.modified().map_err(|e| e.to_string())?
-        .duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?;
+    let modified = meta
+        .modified()
+        .map_err(|e| e.to_string())?
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?;
     let modified_ns = u64::try_from(modified.as_nanos())
         .map_err(|_| "saved-results timestamp overflow".to_owned())?;
-    Ok(RevisionStamp { bytes: meta.len(), modified_ns })
+    Ok(RevisionStamp {
+        bytes: meta.len(),
+        modified_ns,
+    })
 }
 
 fn results_path(api: &ScanApi, record: &ScanRecord) -> PathBuf {
-    api.service().store().dir().join(&record.id).join("results.json")
+    api.service()
+        .store()
+        .dir()
+        .join(&record.id)
+        .join("results.json")
 }
 
 fn normalised_path(record: &ScanRecord, directory: &Path) -> PathBuf {
@@ -144,13 +154,15 @@ fn archive_current(path: &Path) -> Result<bool, String> {
     match fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(format!("{}: {e}", path.display())),
-        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() =>
-            return Err(format!("{}: invalid current report", path.display())),
+        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
+            return Err(format!("{}: invalid current report", path.display()));
+        }
         Ok(_) => {}
     }
     for offset in 0..32_u64 {
         let stale = path.with_extension(format!(
-            "stale-{}.json", clock::unix_now_millis().saturating_add(offset)
+            "stale-{}.json",
+            clock::unix_now_millis().saturating_add(offset)
         ));
         if fs::symlink_metadata(&stale).is_ok() {
             continue;
@@ -183,12 +195,18 @@ fn normalise_saved(
     expected: RevisionStamp,
 ) -> Result<bool, String> {
     if record.status != ScanStatus::Finished {
-        return Err(format!("scan {} is not finished; refusing current analysis", record.id));
+        return Err(format!(
+            "scan {} is not finished; refusing current analysis",
+            record.id
+        ));
     }
     let source = results_path(api, record);
     let before = source_hash(&source)?;
     if revision_stamp(&source)? != expected {
-        return Err(format!("scan {} results changed before analysis", record.id));
+        return Err(format!(
+            "scan {} results changed before analysis",
+            record.id
+        ));
     }
     let response = api.handle("GET", &format!("/api/scans/{}/analyze", record.id), "");
     if response.status != 200 {
