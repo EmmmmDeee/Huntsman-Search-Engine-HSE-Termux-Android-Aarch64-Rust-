@@ -535,7 +535,7 @@ fn release_publish_requires_shared_quality_gate() {
 
     for required in [
         "cargo run --locked -p xtask -- gate full",
-        "docker build --pull --build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\" -f Dockerfile -t huntsman-recon:container .",
+        "bash scripts/container-build-retry.sh --pull --build-arg HUNTSMAN_BUILD_SHA=\"$GITHUB_SHA\" -f Dockerfile -t huntsman-recon:container .",
         "bash scripts/container-live-acceptance.sh",
         "persist-credentials: false",
     ] {
