@@ -15,8 +15,8 @@ use huntsman_recon::fsio::{read_bounded, write_atomic_private};
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_service::{ScanRequest, plan};
 use huntsman_recon::scan_store::{ScanOptions, ScanRecord, ScanStore};
-use serde_json::{Value, json};
 use huntsman_recon::sha256::{hex32, sha256};
+use serde_json::{Value, json};
 
 use super::scans::default_scan_dir;
 
@@ -477,15 +477,15 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        archive_previous, config, cycle, due, file_stamp, invalidate_saved, normalised_path,
-        source_revision, prune_tracking_state, RetryKey,
+        RetryKey, archive_previous, config, cycle, due, file_stamp, invalidate_saved,
+        normalised_path, prune_tracking_state, source_revision,
     };
     use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
     use huntsman_recon::scan_api::ScanApi;
     use huntsman_recon::scan_service::{LookupOutput, ScanLookup, ScanRequest, ScanService};
     use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus, ScanStore};
     use huntsman_recon::source_outcome::SourceExecutionOutcome;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::Arc;
 
