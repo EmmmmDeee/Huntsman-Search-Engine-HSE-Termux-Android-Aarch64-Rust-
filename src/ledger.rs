@@ -69,11 +69,6 @@ fn binds(bindings: &[(&str, &str)], component: &str, technique: &str) -> bool {
         .any(|(path, id)| *path == component && *id == technique)
 }
 
-#[must_use]
-pub fn method_implements(component: &str, technique: &str) -> bool {
-    binds(BINDINGS, component, technique)
-}
-
 /// ATT&CK enterprise ids: `T` and exactly four digits, optionally `.` and three digits.
 #[must_use]
 pub fn valid_technique(id: &str) -> bool {

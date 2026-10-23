@@ -289,32 +289,6 @@ pub fn parse_asn(s: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-/// Floor an index to a UTF-8 character boundary.
-#[must_use]
-pub fn floor_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut cursor = index;
-    while cursor > 0 && !s.is_char_boundary(cursor) {
-        cursor -= 1;
-    }
-    cursor
-}
-
-/// Ceil an index to a UTF-8 character boundary.
-#[must_use]
-pub fn ceil_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut cursor = index;
-    while cursor < s.len() && !s.is_char_boundary(cursor) {
-        cursor += 1;
-    }
-    cursor
-}
-
 /// The ASCII text that each lowercase Latin letter with a diacritic folds to, sorted by code point
 /// for the binary search in [`fold_latin`]. The rows with a canonical decomposition are the
 /// lowercase letters of U+00C0-U+024F and U+1E00-U+1EFF whose decomposition is one ASCII letter

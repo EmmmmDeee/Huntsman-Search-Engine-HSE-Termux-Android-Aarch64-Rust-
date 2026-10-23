@@ -29,12 +29,7 @@ pub enum BridgeTier {
     Related,
 }
 
-impl BridgeTier {
-    #[must_use]
-    pub fn is_stronger_than(self, other: Self) -> bool {
-        self < other
-    }
-}
+impl BridgeTier {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BridgedEntity {
@@ -121,17 +116,6 @@ pub fn build_cross_scan_history(entities: &[Entity]) -> Vec<CrossScanRecord> {
             .then_with(|| left.uid.cmp(&right.uid))
     });
     records
-}
-
-/// Classifies a scan using stored cross-scan history.
-///
-/// # Errors
-/// Returns storage-layer lookup failures.
-pub fn category_for_scan<S: CrossScanStore>(
-    store: &S,
-    scan_id: &str,
-) -> Result<CrossScanCategory, Error> {
-    category_for_scan_with(store, scan_id, CrossScanOptions::default())
 }
 
 /// Classifies a scan using stored history and explicit traversal limits.

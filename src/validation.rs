@@ -45,19 +45,6 @@ pub enum ValueKind {
 const RESERVED_PLACEHOLDER_TLDS: &[&str] = &["example", "invalid", "localhost", "local", "test"];
 
 #[must_use]
-pub fn email_local(s: &str) -> &str {
-    s.split('@').next().unwrap_or(s)
-}
-
-#[must_use]
-pub fn is_role_mailbox(email: &str) -> bool {
-    let Some((local, _)) = email.split_once('@') else {
-        return false;
-    };
-    crate::value_syntax::is_role_localpart(local)
-}
-
-#[must_use]
 pub fn validate_email_syntax(s: &str) -> ValidationReport {
     let Some((local, domain)) = s.split_once('@') else {
         return ValidationReport::fail("email.bad_at_count", "expected exactly one '@'");
@@ -104,11 +91,6 @@ pub fn validate_phone_e164(s: &str) -> ValidationReport {
             format!("expected 10..=15 digits, got {length}"),
         ),
     }
-}
-
-#[must_use]
-pub fn to_e164_au(s: &str) -> Option<String> {
-    crate::value_syntax::canonical_phone(s)
 }
 
 /// Scan a blob for E.164 numbers. Returns `true` when `cap` was reached.
@@ -508,14 +490,17 @@ mod tests {
             validate_phone_e164("+0123456789").reason,
             "e164.cc_leading_zero"
         );
-        assert_eq!(to_e164_au("0412 345 678").as_deref(), Some("+61412345678"));
         assert_eq!(
-            to_e164_au("+1 555 123 4567").as_deref(),
+            crate::value_syntax::canonical_phone("0412 345 678").as_deref(),
+            Some("+61412345678")
+        );
+        assert_eq!(
+            crate::value_syntax::canonical_phone("+1 555 123 4567").as_deref(),
             Some("+15551234567")
         );
         assert!(validate_email_syntax("a.b+c@example.co.uk").valid);
         assert_eq!(validate_email_syntax("a@b").reason, "email.domain_shape");
-        assert!(is_role_mailbox("No-Reply+ticket@example.com"));
+        assert!(crate::value_syntax::is_role_localpart("No-Reply+ticket"));
     }
 
     #[test]
