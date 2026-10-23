@@ -372,6 +372,29 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         sourceCoverage.includes(expectedCoverage.not_configured + ' not configured') &&
         sourceCoverage.includes('does not establish exhaustive source coverage'),
         { sourceCoverage, expectedCoverage });
+      const uncertainty = row.uncertainty_register;
+      const shownUncertainty = await page.evaluate(() => ({
+        total: document.getElementById('unc-n').textContent,
+        rows: document.querySelectorAll('#uncrows tr').length,
+        note: document.getElementById('uncnote').textContent,
+        text: document.getElementById('uncrows').textContent
+      }));
+      check(`${scheme}: Uncertainty register exposes saved evidence and acknowledges discovery limits`,
+        uncertainty && shownUncertainty.total === String(uncertainty.items.length) &&
+        shownUncertainty.rows === Math.max(1, Math.min(200, uncertainty.items.length)) &&
+        shownUncertainty.note.includes('discovery completeness remains unverified') &&
+        shownUncertainty.text.includes('Recorded sources do not establish exhaustive'),
+        { shownUncertainty, uncertainty });
+      if (scheme === 'dark') {
+        const [uncertaintyDownload] = await Promise.all([
+          page.waitForEvent('download', { timeout: 10000 }),
+          page.click('#uncdownload')
+        ]);
+        const exportedUncertainties = JSON.parse(fs.readFileSync(await uncertaintyDownload.path(), 'utf8'));
+        check('Uncertainty JSON export reproduces the saved-scan API register',
+          JSON.stringify(exportedUncertainties) === JSON.stringify(uncertainty),
+          { exportedUncertainties, uncertainty });
+      }
       await audit(page, `${scheme} summary`);
 
       // Browse: the data types, then one type's elements with the full raw record behind each.
