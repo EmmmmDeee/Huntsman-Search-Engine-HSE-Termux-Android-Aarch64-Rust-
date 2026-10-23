@@ -21,7 +21,8 @@ use crate::timefmt::civil_from_days;
 use crate::xlsx::{self, Sheet};
 
 /// The formats [`render`] writes. `excel` is taken for `xlsx`, as Spiderfoot takes it.
-pub const FORMATS: [&str; 5] = ["csv", "tsv", "xlsx", "json", "gexf"];
+/// `html` is the client-ready investigation report ([`report`]).
+pub const FORMATS: [&str; 6] = ["csv", "tsv", "xlsx", "json", "gexf", "html"];
 
 /// The formats several scans export together in, with [`render_many`].
 pub const MANY_FORMATS: [&str; 4] = ["csv", "tsv", "xlsx", "json"];
@@ -304,6 +305,10 @@ pub fn render(
             gexf(scan, results).into_bytes(),
             "application/gexf+xml; charset=utf-8",
         ),
+        "html" => (
+            report(scan, results).into_bytes(),
+            "text/html; charset=utf-8",
+        ),
         _ => {
             let lines = rows(results, kind)
                 .into_iter()
@@ -438,6 +443,224 @@ pub fn gexf(scan: &ScanRecord, results: &ScanResults) -> String {
     out.push_str("</edges>\n</graph>\n</gexf>\n");
     out
 }
+
+/// What every report says about how to read it. Findings are leads with their sources, never an
+/// identity verdict: CLAUDE.md's rule that weak correlations do not assert who someone is.
+const REPORT_METHOD: &str = "Every finding below was collected by Huntsman from the public or \
+operator-authorised sources named beside it, at the time shown, and is reported as that source \
+returned it. A confidence is the strength of the source's own statement, not a verification of \
+identity: two findings that share a value or appear together are leads that call for \
+corroboration, and nothing in this report asserts who holds an address, number, account or \
+domain. Sources answer differently over time, and a source that returned nothing or failed is \
+listed as such under Sources consulted rather than read as an absence. Findings the analyst \
+marked as false positives are left out and counted.";
+
+/// The investigation report for a saved scan: one self-contained HTML document a client can read
+/// on a phone or print to PDF. Inline styles only, no script and nothing fetched, so opening it
+/// sends nothing anywhere; every value a source returned is escaped, so no scraped text can
+/// become markup. Findings are grouped by kind, most confident first, each with every source that
+/// reported it and when; then correlations, every source consulted and its outcome, and how to
+/// read it all. **Pure.**
+#[must_use]
+pub fn report(scan: &ScanRecord, results: &ScanResults) -> String {
+    let esc = |text: &str| escape_xml(text);
+    let when = |millis: Option<u64>| {
+        millis.map_or_else(
+            || "not recorded".to_owned(),
+            |millis| crate::timefmt::format_unix(i64::try_from(millis / 1000).unwrap_or(i64::MAX)),
+        )
+    };
+    let kept = report_findings(results);
+    let aside = results.entities.len() - kept.len();
+
+    let mut out = String::with_capacity(4096 + 512 * kept.len());
+    let title = format!("Investigation report: {}", scan.target);
+    let _ = write!(
+        out,
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+<title>{}</title><style>{REPORT_STYLE}</style></head><body><main>\n<h1>{}</h1>\n",
+        esc(&title),
+        esc(&title)
+    );
+    let _ = writeln!(
+        out,
+        "<table class=\"meta\"><tr><th>Subject</th><td>{}</td></tr><tr><th>Lookup</th><td>{}</td></tr>\
+<tr><th>Scan</th><td>{} ({})</td></tr><tr><th>Status</th><td>{}</td></tr>\
+<tr><th>Started</th><td>{}</td></tr><tr><th>Finished</th><td>{}</td></tr>\
+<tr><th>Built from</th><td>Huntsman {}</td></tr></table>",
+        esc(&scan.target),
+        esc(&scan.kind),
+        esc(&scan.name),
+        esc(&scan.id),
+        scan.status.as_str(),
+        when(scan.started.or(Some(scan.created))),
+        when(scan.ended),
+        esc(crate::diagnostics::embedded_build_sha()),
+    );
+
+    let answered = results
+        .outcomes
+        .iter()
+        .filter(|o| o.kind.is_accepted())
+        .count();
+    let _ = writeln!(
+        out,
+        "<h2>Summary</h2><p>{} finding{} from {} of {} source{} consulted{}; {} correlation{}.</p>",
+        kept.len(),
+        if kept.len() == 1 { "" } else { "s" },
+        answered,
+        results.outcomes.len(),
+        if results.outcomes.len() == 1 { "" } else { "s" },
+        if aside == 0 {
+            String::new()
+        } else {
+            format!(
+                "; {aside} set aside by the analyst as false positive{}",
+                if aside == 1 { "" } else { "s" }
+            )
+        },
+        results.correlations.len(),
+        if results.correlations.len() == 1 {
+            ""
+        } else {
+            "s"
+        },
+    );
+
+    out.push_str("<h2>Findings</h2>\n");
+    if kept.is_empty() {
+        out.push_str("<p>No findings.</p>\n");
+    }
+    let mut current = "";
+    for entity in &kept {
+        let kind = entity.kind.as_str();
+        if kind != current {
+            let _ = writeln!(out, "<h3>{}</h3>", esc(kind));
+            current = kind;
+        }
+        report_finding(&mut out, entity);
+    }
+
+    report_tail(&mut out, results);
+    out
+}
+
+/// The entities the report presents, by kind then most confident first, and leaving out each one
+/// the analyst set aside: every element of it they saw is marked as a false positive.
+fn report_findings(results: &ScanResults) -> Vec<&crate::entity::Entity> {
+    let mut marks: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for element in &results.elements {
+        if let Some(uid) = element.entity.as_deref() {
+            let mark = marks.entry(uid).or_default();
+            mark.0 += 1;
+            mark.1 += usize::from(element.fp);
+        }
+    }
+    let mut kept: Vec<&crate::entity::Entity> = results
+        .entities
+        .iter()
+        .filter(|entity| {
+            !marks
+                .get(entity.uid.as_str())
+                .is_some_and(|&(all, fp)| all > 0 && all == fp)
+        })
+        .collect();
+    kept.sort_by(|a, b| {
+        a.kind
+            .as_str()
+            .cmp(b.kind.as_str())
+            .then(b.confidence.total_cmp(&a.confidence))
+            .then(a.value.cmp(&b.value))
+    });
+    kept
+}
+
+/// One finding: its value and confidence, its tags, and every source that reported it, when, and
+/// with what attributes.
+fn report_finding(out: &mut String, entity: &crate::entity::Entity) {
+    let esc = |text: &str| escape_xml(text);
+    let _ = write!(
+        out,
+        "<section class=\"finding\"><p class=\"value\">{} <span class=\"conf\">{:.0}%</span></p>",
+        esc(&entity.value),
+        (entity.confidence * 100.0).clamp(0.0, 100.0)
+    );
+    if !entity.tags.is_empty() {
+        let tags: Vec<String> = entity.tags.iter().map(|tag| esc(tag)).collect();
+        let _ = write!(out, "<p class=\"tags\">{}</p>", tags.join(" · "));
+    }
+    out.push_str("<ul>");
+    for evidence in &entity.evidence {
+        let _ = write!(
+            out,
+            "<li><b>{}</b>, {}: {}",
+            esc(&evidence.provenance.source),
+            crate::timefmt::format_unix(
+                i64::try_from(evidence.provenance.recorded_at_unix).unwrap_or(i64::MAX)
+            ),
+            esc(&evidence.summary)
+        );
+        if !evidence.attributes.is_empty() {
+            out.push_str("<dl>");
+            for (key, value) in &evidence.attributes {
+                let _ = write!(out, "<dt>{}</dt><dd>{}</dd>", esc(key), esc(value));
+            }
+            out.push_str("</dl>");
+        }
+        out.push_str("</li>");
+    }
+    out.push_str("</ul></section>\n");
+}
+
+/// The report's correlations, every source consulted with its outcome, and how to read it.
+fn report_tail(out: &mut String, results: &ScanResults) {
+    let esc = |text: &str| escape_xml(text);
+    if !results.correlations.is_empty() {
+        out.push_str("<h2>Correlations</h2>\n<ul>");
+        for correlation in &results.correlations {
+            let _ = write!(
+                out,
+                "<li><b>{}</b> {}: {}</li>",
+                correlation.risk.as_str(),
+                esc(&correlation.title),
+                esc(&correlation.description)
+            );
+        }
+        out.push_str("</ul>\n");
+    }
+
+    out.push_str("<h2>Sources consulted</h2>\n<table><tr><th>Source</th><th>Outcome</th><th>Found</th><th>Detail</th></tr>");
+    for outcome in &results.outcomes {
+        let _ = write!(
+            out,
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            esc(&outcome.module),
+            outcome.kind.as_str(),
+            outcome
+                .found
+                .map_or_else(String::new, |found| found.to_string()),
+            esc(outcome.detail.as_deref().unwrap_or(""))
+        );
+    }
+    out.push_str("</table>\n");
+    let _ = write!(
+        out,
+        "<h2>How to read this report</h2><p>{}</p>\n</main></body></html>\n",
+        esc(REPORT_METHOD)
+    );
+}
+
+/// The report's styles: readable on a phone, and printed without the screen's colours.
+const REPORT_STYLE: &str = "body{font:15px/1.5 system-ui,sans-serif;color:#1d2330;background:#fff;margin:0}\
+main{max-width:860px;margin:0 auto;padding:16px}h1{font-size:1.5em;margin:.2em 0 .6em}\
+h2{border-bottom:2px solid #1f4e8c;padding-bottom:4px;margin-top:1.6em}h3{color:#1f4e8c;text-transform:capitalize}\
+table{border-collapse:collapse;width:100%;font-size:.92em}th,td{border:1px solid #d5dbe5;padding:4px 6px;text-align:left;vertical-align:top;word-break:break-word}\
+.meta th{width:9em;background:#f2f5fa}.finding{border-left:3px solid #1f4e8c;padding:2px 0 2px 10px;margin:10px 0}\
+.value{font-weight:600;margin:0;word-break:break-all}.conf{font-weight:400;color:#556;font-size:.9em}\
+.tags{color:#556;font-size:.85em;margin:2px 0}ul{margin:4px 0;padding-left:18px}dl{margin:2px 0 4px;font-size:.88em}\
+dt{float:left;clear:left;color:#556;margin-right:6px}dd{margin:0;word-break:break-word}\
+@media print{body{font-size:11pt}h2{break-after:avoid}.finding{break-inside:avoid}}";
 
 #[cfg(test)]
 mod tests {
@@ -740,5 +963,71 @@ mod tests {
         // Ordinary multi-line text keeps its line feed inside quotes, and a tab in TSV stays `\t`.
         assert_eq!(csv_cell("line 1\nline 2"), "\"line 1\nline 2\"");
         assert_eq!(tsv_cell("a\tb"), "a\\tb");
+    }
+
+    /// The report is one document a client can open safely: everything a source returned is
+    /// escaped, nothing is fetched or run, each finding names its source and time, the most
+    /// confident first, and what the analyst marked false is left out but counted.
+    #[test]
+    fn the_html_report_escapes_every_source_value_and_sets_aside_what_the_analyst_marked() {
+        let (scan, mut results) = scan();
+        let mut hostile = Evidence::new(
+            EvidenceProvenance::for_scan("crtsh", "s"),
+            "<script>alert(1)</script> seen",
+        )
+        .with_attr("note", "\"><img src=x onerror=alert(2)>");
+        hostile.provenance.recorded_at_unix = 1_700_000_000;
+        let strong = Entity::builder(EntityKind::Email, "ops@example.com", 0.95, "s")
+            .evidence(hostile)
+            .build();
+        let weak = Entity::builder(EntityKind::Email, "maybe@example.com", 0.40, "s").build();
+        results.entities.push(weak.clone());
+        results.entities.push(strong);
+        // The analyst marked every element of the =cmd host false.
+        let marked = results.entities[1].uid.clone();
+        for element in results
+            .elements
+            .iter_mut()
+            .filter(|element| element.entity.as_deref() == Some(marked.as_str()))
+        {
+            element.fp = true;
+        }
+
+        let export = render(&scan, &results, "HTML", None).unwrap();
+        assert_eq!(export.content_type, "text/html; charset=utf-8");
+        assert!(
+            std::path::Path::new(&export.filename)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("html")),
+            "{}",
+            export.filename
+        );
+        let html = text(&export);
+        assert!(html.starts_with("<!doctype html>"));
+        for forbidden in [
+            "<script",
+            "<img",
+            "onerror=alert(2)>",
+            "src=\"http",
+            "href=\"http",
+            "@import",
+        ] {
+            assert!(!html.contains(forbidden), "{forbidden} in the report");
+        }
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt; seen"));
+        assert!(html.contains("&quot;&gt;&lt;img src=x onerror=alert(2)&gt;"));
+        assert!(html.contains("<b>crtsh</b>, 2023-11-14T22:13:20Z:"));
+        let strong_at = html.find("ops@example.com").expect("the confident finding");
+        let weak_at = html.find("maybe@example.com").expect("the weak finding");
+        assert!(strong_at < weak_at, "most confident first within a kind");
+        assert!(
+            !html.contains("=cmd.example.com"),
+            "a finding marked false is left out"
+        );
+        assert!(
+            html.contains("; 1 set aside by the analyst as false positive;"),
+            "{html}"
+        );
+        assert!(html.contains("How to read this report"));
     }
 }

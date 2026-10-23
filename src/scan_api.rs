@@ -21,7 +21,7 @@
 //! | `correlationrules` | `GET /api/correlationrules` |
 //! | `scanlog`, `scanerrors` | `GET /api/scans/ID/log[?level=ERROR]` |
 //! | `scanviz` | `GET /api/scans/ID/graph` |
-//! | `scaneventresultexport`, `scanviz?gexf=1` | `GET /api/scans/ID/export?format=csv|tsv|xlsx|json|gexf[&type=T]` |
+//! | `scaneventresultexport`, `scanviz?gexf=1` | `GET /api/scans/ID/export?format=csv|tsv|xlsx|json|gexf|html[&type=T]` |
 //! | `scaneventresultexportmulti`, `scanexportjsonmulti` | `GET /api/scans/export?ids=A,B[&format=json|csv|tsv|xlsx][&type=T]` |
 //! | (none: Spiderfoot cannot compare scans) | `GET /api/scans/compare?ids=EARLIER,LATER[&format=json|csv|tsv|xlsx]` |
 //! | `search` (one scan, or every scan here) | `GET /api/scans/search?value=V[&type=T][&ids=A,B][&hidefp=1]` |
