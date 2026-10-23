@@ -20,12 +20,6 @@ pub struct ExposureFinding {
     pub reasons: Vec<ExposureReason>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ExposureIndex {
-    pub findings: Vec<ExposureFinding>,
-    pub total_score: u32,
-}
-
 fn tag_weight(tag: &str) -> Option<u32> {
     Some(match tag {
         tags::STEALER_LOG => 35,
@@ -39,8 +33,9 @@ fn tag_weight(tag: &str) -> Option<u32> {
     })
 }
 
+/// Every entity's exposure, highest score first, then by classification rank and uid.
 #[must_use]
-pub fn compute_exposure(entities: &[Entity]) -> ExposureIndex {
+pub fn compute_exposure(entities: &[Entity]) -> Vec<ExposureFinding> {
     let mut findings = entities
         .iter()
         .map(|entity| {
@@ -82,11 +77,7 @@ pub fn compute_exposure(entities: &[Entity]) -> ExposureIndex {
             .then_with(|| right.classification.rank().cmp(&left.classification.rank()))
             .then_with(|| left.uid.cmp(&right.uid))
     });
-    let total_score = findings.iter().map(|finding| finding.score).sum();
-    ExposureIndex {
-        findings,
-        total_score,
-    }
+    findings
 }
 
 #[cfg(test)]
@@ -100,7 +91,7 @@ mod tests {
             .tag(tags::STEALER_LOG)
             .tag(tags::PASSWORD_AT_RISK)
             .build();
-        let index = compute_exposure(&[entity]);
-        assert!(index.findings[0].score >= 65);
+        let findings = compute_exposure(&[entity]);
+        assert!(findings[0].score >= 65);
     }
 }

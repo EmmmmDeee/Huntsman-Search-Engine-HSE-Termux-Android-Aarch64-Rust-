@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::community::detect_communities;
+use crate::community::community_count;
 use crate::entity::Entity;
 use crate::exposure::{ExposureFinding, compute_exposure};
 use crate::geohash::haversine_km;
@@ -732,19 +732,21 @@ pub fn build_intelligence_report(
     relations: &[EntityRelation],
 ) -> IntelligenceReport {
     let graph = Graph::build(entities, relations);
-    let (cuts, _) = graph.cut_vertices_and_bridges();
+    let (cuts, bridges) = graph.cut_vertices_and_bridges();
+    // Each view is computed once and shared by the views built from it.
     let exposures = compute_exposure(entities);
+    let timeline = reconstruct(entities);
     IntelligenceReport {
         graph: GraphSummary {
             node_count: graph.node_count(),
             edge_count: graph.edge_count(),
             articulation_count: cuts.len(),
-            community_count: detect_communities(&graph).len(),
+            community_count: community_count(&graph, &bridges),
         },
-        profiles: build_profiles(entities),
-        leads: rank_leads(entities),
-        timeline: reconstruct(entities),
-        exposures: exposures.findings,
+        profiles: build_profiles(entities, &exposures, &timeline),
+        leads: rank_leads(entities, &exposures),
+        timeline,
+        exposures,
     }
 }
 
