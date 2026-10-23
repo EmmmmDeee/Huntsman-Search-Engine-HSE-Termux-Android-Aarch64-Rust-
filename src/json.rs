@@ -27,14 +27,6 @@ impl Serialize for Canonical<'_> {
     }
 }
 
-/// Compact JSON with every object's keys in ascending order.
-///
-/// # Errors
-/// Returns the underlying serialization failure.
-pub fn to_canonical_string(value: &Value) -> serde_json::Result<String> {
-    serde_json::to_string(&Canonical(value))
-}
-
 #[derive(Debug)]
 struct BoundedWriter {
     bytes: Vec<u8>,
@@ -117,11 +109,17 @@ pub fn to_bounded_json<T: Serialize>(
 mod tests {
     use super::*;
 
+    /// The canonical document as text, with no byte budget.
+    fn canonical_text(value: &Value) -> serde_json::Result<String> {
+        let bytes = to_canonical_bounded(value, usize::MAX)?.expect("unbounded");
+        Ok(String::from_utf8(bytes).expect("JSON is UTF-8"))
+    }
+
     #[test]
     fn nested_objects_sort_by_key() {
         let value = serde_json::json!({"b":1,"a":{"z":1,"y":2}});
         assert_eq!(
-            to_canonical_string(&value).unwrap(),
+            canonical_text(&value).unwrap(),
             r#"{"a":{"y":2,"z":1},"b":1}"#
         );
     }
@@ -132,7 +130,7 @@ mod tests {
             "z": [{"note": "café 🌐 \n \"quoted\""}],
             "a": {"nested": [true, false, null], "count": 42}
         });
-        let text = to_canonical_string(&value).unwrap();
+        let text = canonical_text(&value).unwrap();
         assert_eq!(
             to_canonical_bounded(&value, text.len()).unwrap(),
             Ok(text.as_bytes().to_vec())

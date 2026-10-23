@@ -1,14 +1,5 @@
 use crate::dependency::ModuleCategory;
-use crate::entity::{Entity, EntityKind};
-
-pub const SATURATION_CORROBORATION: u32 = 2;
-pub const SATURATION_CONFIDENCE: f64 = 0.85;
-
-#[must_use]
-pub fn is_saturated(entity: &Entity) -> bool {
-    entity.source_count() >= SATURATION_CORROBORATION
-        && entity.c_effective() >= SATURATION_CONFIDENCE
-}
+use crate::entity::EntityKind;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DispatchUtility {
@@ -154,18 +145,6 @@ const _: () = assert!(W_GEO * 4.0 < W_INFO, "W_GEO must stay well below W_INFO")
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::{Evidence, EvidenceProvenance};
-
-    fn make(confidence: f64, corroboration: usize) -> Entity {
-        let mut entity = Entity::new(EntityKind::Email, "x@y.com", confidence, "scan");
-        for idx in 1..corroboration {
-            entity.add_evidence(Evidence::new(
-                EvidenceProvenance::new(format!("source-{idx}")),
-                "seen",
-            ));
-        }
-        entity
-    }
 
     fn baseline_inputs() -> DispatchUtilityInputs {
         DispatchUtilityInputs {
@@ -180,14 +159,6 @@ mod tests {
             already_dispatched_this_module_target: false,
             geoint_bearing: false,
         }
-    }
-
-    #[test]
-    fn saturation_requires_sources_and_effective_confidence() {
-        assert!(!is_saturated(&make(0.95, 1)));
-        assert!(!is_saturated(&make(0.50, 2)));
-        assert!(is_saturated(&make(0.90, 3)));
-        assert!(is_saturated(&make(0.50, 5)));
     }
 
     #[test]
