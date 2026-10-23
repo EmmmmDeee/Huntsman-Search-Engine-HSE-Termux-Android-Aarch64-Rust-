@@ -3,9 +3,7 @@ use std::fs::File;
 use std::io::Read;
 use std::process::ExitCode;
 
-use huntsman_recon::evidence_register::case_audit::{
-    MAX_ADVERT_BYTES, MAX_CASE_BYTES, audit_case,
-};
+use huntsman_recon::evidence_register::case_audit::{MAX_ADVERT_BYTES, MAX_CASE_BYTES, audit_case};
 use huntsman_recon::exit::{EX_DATAERR, EX_USAGE};
 
 use super::fail;
@@ -43,8 +41,14 @@ pub(super) fn case_check_cmd(args: &[String]) -> ExitCode {
             println!("case={}", audit.case_id);
             println!("sources={}", audit.source_count);
             println!("claims={}", audit.claim_count);
-            println!("unresolved_claim_ids={}", audit.unresolved_claim_ids.join(","));
-            println!("original_publication_unknown={}", audit.original_publication_unknown);
+            println!(
+                "unresolved_claim_ids={}",
+                audit.unresolved_claim_ids.join(",")
+            );
+            println!(
+                "original_publication_unknown={}",
+                audit.original_publication_unknown
+            );
             println!("original_year_unknown={}", audit.original_year_unknown);
             println!("case_structure=verified; external_claims=not_verified_by_this_command");
             ExitCode::SUCCESS
