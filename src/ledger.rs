@@ -147,10 +147,18 @@ pub fn chain_intact(entries: &[LedgerEntry]) -> bool {
 
 #[must_use]
 pub fn admitted(entries: &[LedgerEntry]) -> Vec<&LedgerEntry> {
+    admitted_with(entries, BINDINGS).collect()
+}
+
+/// The entries whose claims pass the interop gate under `bindings`: the one admission rule every
+/// interop export (STIX, ATT&CK Navigator) applies.
+pub fn admitted_with<'a>(
+    entries: &'a [LedgerEntry],
+    bindings: &'a [(&'a str, &'a str)],
+) -> impl Iterator<Item = &'a LedgerEntry> {
     entries
         .iter()
-        .filter(|e| e.claim.admits_interop())
-        .collect()
+        .filter(move |e| e.claim.admits_interop_with(bindings))
 }
 
 /// The ceiling on a saved ledger, for writing and for reading alike. It is the ceiling on a saved

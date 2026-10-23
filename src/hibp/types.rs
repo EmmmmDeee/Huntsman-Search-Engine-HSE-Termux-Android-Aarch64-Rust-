@@ -180,6 +180,19 @@ pub struct BreachedAccountOptions {
     pub include_unverified: Option<bool>,
 }
 
+impl BreachedAccountOptions {
+    /// The full breach model (`truncateResponse=false`), every other option at the API default:
+    /// what a lookup asks for, since a breach's description, dates and flags are part of its
+    /// report and the truncated answer carries only names.
+    #[must_use]
+    pub fn full_model() -> Self {
+        Self {
+            truncate_response: Some(false),
+            ..Self::default()
+        }
+    }
+}
+
 /// `/breaches` filters.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BreachesFilter {

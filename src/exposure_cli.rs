@@ -770,10 +770,7 @@ fn hibp_leg(
     report: &mut Report,
     network: &mut Option<String>,
 ) -> SourceExecutionOutcome {
-    let options = BreachedAccountOptions {
-        truncate_response: Some(false),
-        ..BreachedAccountOptions::default()
-    };
+    let options = BreachedAccountOptions::full_model();
     match client.breached_account(email, &options) {
         Ok(breaches) if breaches.is_empty() => {
             report.incidents = Some(Vec::new());

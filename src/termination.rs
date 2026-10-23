@@ -20,6 +20,24 @@ pub enum TerminationReason {
     FatalError,
 }
 
+impl TerminationReason {
+    /// The reason's name as JSON writes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FixedPoint => "fixed_point",
+            Self::MaxDepth => "max_depth",
+            Self::TimeLimit => "time_limit",
+            Self::RequestBudget => "request_budget",
+            Self::ProviderBudget => "provider_budget",
+            Self::ResourceLimit => "resource_limit",
+            Self::MarginalGainLimit => "marginal_gain_limit",
+            Self::Cancelled => "cancelled",
+            Self::FatalError => "fatal_error",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrontierState {
     pub admissible_work: usize,
@@ -86,6 +104,23 @@ pub const fn decide_termination(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_reason_is_named_as_json_names_it() {
+        for reason in [
+            TerminationReason::FixedPoint,
+            TerminationReason::MaxDepth,
+            TerminationReason::TimeLimit,
+            TerminationReason::RequestBudget,
+            TerminationReason::ProviderBudget,
+            TerminationReason::ResourceLimit,
+            TerminationReason::MarginalGainLimit,
+            TerminationReason::Cancelled,
+            TerminationReason::FatalError,
+        ] {
+            assert_eq!(serde_json::to_value(reason).unwrap(), reason.as_str());
+        }
+    }
 
     #[test]
     fn delayed_retry_prevents_false_fixed_point() {

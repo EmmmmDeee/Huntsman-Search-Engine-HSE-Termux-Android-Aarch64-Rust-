@@ -4,7 +4,7 @@
 use serde_json::{Value, json};
 
 use crate::attack::{Coverage, attack_spec_major, reconnaissance_spec_major};
-use crate::ledger::{LedgerEntry, bindings};
+use crate::ledger::{LedgerEntry, admitted_with, bindings};
 
 #[must_use]
 pub fn layer(entries: &[LedgerEntry]) -> Value {
@@ -15,10 +15,7 @@ pub fn layer(entries: &[LedgerEntry]) -> Value {
 #[must_use]
 pub fn layer_with(entries: &[LedgerEntry], bindings: &[(&str, &str)]) -> Value {
     let mut techniques = Vec::new();
-    for entry in entries
-        .iter()
-        .filter(|e| e.claim.admits_interop_with(bindings))
-    {
+    for entry in admitted_with(entries, bindings) {
         let Some(id) = entry.claim.technique_id.clone() else {
             continue;
         };

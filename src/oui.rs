@@ -2,8 +2,6 @@
 
 use crate::oui_ieee as ieee;
 
-pub use crate::oui_ieee::registry_len;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceClass {
     Phone,

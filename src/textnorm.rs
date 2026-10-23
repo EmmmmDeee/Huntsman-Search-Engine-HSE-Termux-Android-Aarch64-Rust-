@@ -280,12 +280,6 @@ pub fn is_handle(s: &str, min: usize, max: usize) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
-/// True when `s` is a dotted domain-style handle.
-#[must_use]
-pub fn is_domain_handle(s: &str) -> bool {
-    crate::value_syntax::canonical_domain(s).is_some()
-}
-
 /// Floor an index to a UTF-8 character boundary.
 #[must_use]
 pub fn floor_char_boundary(s: &str, index: usize) -> usize {
@@ -997,19 +991,6 @@ mod tests {
         assert!(eq_ignore_case("\u{1E9E}", "\u{DF}"));
         assert!(eq_ignore_case("É", "é"));
         assert!(!eq_ignore_case("E", "É"));
-    }
-
-    #[test]
-    fn dotted_handles_use_domain_policy() {
-        assert!(is_domain_handle("alice.dev"));
-        assert!(is_domain_handle(" Example.COM. "));
-        assert!(is_domain_handle("a-b.example"));
-        assert!(!is_domain_handle("alice"));
-        assert!(!is_domain_handle("-bad.example"));
-        assert!(!is_domain_handle("bad-.example"));
-        assert!(!is_domain_handle("bad..example"));
-        assert!(!is_domain_handle("bad_example.com"));
-        assert!(!is_domain_handle("example.café"));
     }
 
     #[test]

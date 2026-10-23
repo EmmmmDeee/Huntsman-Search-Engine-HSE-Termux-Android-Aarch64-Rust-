@@ -1,0 +1,9 @@
+- Checks that several modules wrote out each for themselves now have one home each, and unused library items are gone. Output is unchanged.
+  - Bluesky's bare-name and handle checks use the shared domain rules in `canonical` (new `is_domain_label`).
+  - Scrubbing a provider's text, then cutting it and neutralising control characters, is `redact::scrub_bounded`, used by OathNet, stolen.tax and WiGLE. URL redaction in `http` uses the shared `REDACTED` mask.
+  - The STIX and ATT&CK Navigator exports admit entries through `ledger::admitted_with`.
+  - Both HIBP lookups ask for the full breach model through `BreachedAccountOptions::full_model`.
+  - Recursion's default expansion floor is `gap::EXPAND_FLOOR`.
+  - The Wi-Fi radar's group-address test is `oui::is_multicast`.
+  - A scan's stop reason is named by `TerminationReason::as_str`.
+- Removed from the library: `EvidenceLevel`'s `Display` and `FromStr`, `UnionFind::len` and `is_empty`, the `oui::registry_len` re-export, `atproto::is_dns_label` and `is_handle`, and `textnorm::is_domain_handle`. `atproto::handle_domain_confidence` takes the handle alone.

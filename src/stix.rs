@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ledger::{LedgerEntry, bindings};
+use crate::ledger::{LedgerEntry, admitted_with, bindings};
 
 #[must_use]
 pub fn bundle(entries: &[LedgerEntry]) -> Value {
@@ -14,10 +14,7 @@ pub fn bundle(entries: &[LedgerEntry]) -> Value {
 #[must_use]
 pub fn bundle_with(entries: &[LedgerEntry], bindings: &[(&str, &str)]) -> Value {
     let mut objects = Vec::new();
-    for entry in entries
-        .iter()
-        .filter(|e| e.claim.admits_interop_with(bindings))
-    {
+    for entry in admitted_with(entries, bindings) {
         let id = stix_id(&entry.hash);
         objects.push(json!({
             "type": "indicator",

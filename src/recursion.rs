@@ -103,7 +103,7 @@ impl Default for RecursionPolicy {
         let limits = PipelineLimits::default();
         Self {
             max_generations: limits.max_generation,
-            expand_confidence_floor: 0.5,
+            expand_confidence_floor: crate::gap::EXPAND_FLOOR,
             max_dispatches: limits.max_dispatches,
             max_entities: limits.max_entities,
             max_frontier_per_generation: limits.max_targets,

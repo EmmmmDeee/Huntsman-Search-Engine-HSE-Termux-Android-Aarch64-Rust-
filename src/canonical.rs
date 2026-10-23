@@ -109,6 +109,12 @@ pub fn canonical_domain(raw: &str) -> Option<String> {
     crate::value_syntax::canonical_domain(raw)
 }
 
+/// Whether `label` is one valid DNS label.
+#[must_use]
+pub fn is_domain_label(label: &str) -> bool {
+    crate::value_syntax::is_domain_label(label)
+}
+
 #[must_use]
 pub fn canonical_domain_host(raw: &str) -> Option<String> {
     crate::value_syntax::canonical_domain_host(raw)

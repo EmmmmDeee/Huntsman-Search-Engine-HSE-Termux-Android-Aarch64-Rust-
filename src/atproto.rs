@@ -1,20 +1,6 @@
 //! AT Protocol handle and DID helpers.
 
-#[must_use]
-pub fn is_dns_label(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 63
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        && !value.starts_with('-')
-        && !value.ends_with('-')
-}
-
-#[must_use]
-pub fn is_handle(value: &str) -> bool {
-    crate::textnorm::is_domain_handle(value)
-}
+use crate::canonical::canonical_domain;
 
 #[must_use]
 pub fn is_plc_did(value: &str) -> bool {
@@ -30,10 +16,10 @@ pub fn is_plc_did(value: &str) -> bool {
 #[must_use]
 pub fn web_did_host(value: &str) -> Option<&str> {
     let host = value.strip_prefix("did:web:")?;
-    is_handle(host).then_some(host)
+    canonical_domain(host).is_some().then_some(host)
 }
 
-pub const PLATFORM_HANDLE_SUFFIXES: &[&str] =
+const PLATFORM_HANDLE_SUFFIXES: &[&str] =
     &[".bsky.social", ".bsky.team", ".brid.gy", ".translate.goog"];
 
 #[must_use]
@@ -53,17 +39,18 @@ pub fn bare_handle(handle: &str) -> &str {
     }
 }
 
-#[must_use]
-pub fn handle_labels(handle: &str) -> usize {
+fn handle_labels(handle: &str) -> usize {
     handle.split('.').filter(|label| !label.is_empty()).count()
 }
 
+/// How far a current domain handle stands for its domain: a registrable name (two labels)
+/// more than a subdomain an operator may have issued.
 #[must_use]
-pub fn handle_domain_confidence(current: bool, handle: &str) -> f64 {
-    match (current, handle_labels(handle) <= 2) {
-        (true, true) => 0.93,
-        (true, false) | (false, true) => 0.81,
-        (false, false) => 0.42,
+pub fn handle_domain_confidence(handle: &str) -> f64 {
+    if handle_labels(handle) <= 2 {
+        0.93
+    } else {
+        0.81
     }
 }
 
@@ -81,11 +68,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validates_labels_handles_and_dids() {
-        assert!(is_dns_label("alice"));
-        assert!(!is_dns_label("_alice"));
-        assert!(is_handle("alice.dev"));
-        assert!(!is_handle("alice"));
+    fn validates_dids() {
         assert!(is_plc_did("did:plc:oky5czdrnfjpqslsw2a5iclo"));
         assert!(!is_plc_did("did:plc:../../../../etc/passwd/xx"));
         assert_eq!(web_did_host("did:web:example.com"), Some("example.com"));
@@ -101,8 +84,8 @@ mod tests {
             Some(".bsky.social")
         );
         assert!(
-            handle_domain_confidence(true, "pfrazee.com")
-                > handle_domain_confidence(false, "alice.pds.example.org")
+            handle_domain_confidence("pfrazee.com")
+                > handle_domain_confidence("alice.pds.example.org")
         );
         assert!(is_bluesky_operated_pds("morel.us-east.host.bsky.network"));
         assert!(!is_bluesky_operated_pds("pds.robocracy.org"));
