@@ -16,6 +16,7 @@
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -887,10 +888,17 @@ fn cache_dir(ctx: &Context<'_>, provenance: &ProvenanceRead) -> Option<PathBuf> 
     recorded.or_else(|| ctx.home.as_ref().map(|home| home.join(BUILD_CACHE)))
 }
 
-/// A directory Cargo tagged as its build cache.
+/// A directory Cargo tagged as its build cache. Only the signature's bytes are read: the tag file
+/// can be any size, or a symlink to a file that never ends, such as `/dev/zero`.
 fn tagged_cache(dir: &Path) -> bool {
-    fs::read_to_string(dir.join("CACHEDIR.TAG"))
-        .is_ok_and(|tag| tag.starts_with(CACHEDIR_SIGNATURE))
+    let Ok(file) = fs::File::open(dir.join("CACHEDIR.TAG")) else {
+        return false;
+    };
+    let mut prefix = Vec::with_capacity(CACHEDIR_SIGNATURE.len());
+    file.take(CACHEDIR_SIGNATURE.len() as u64)
+        .read_to_end(&mut prefix)
+        .is_ok()
+        && prefix == CACHEDIR_SIGNATURE.as_bytes()
 }
 
 fn disk(ctx: &Context<'_>, host: &dyn Host, provenance: &ProvenanceRead) -> Check {
