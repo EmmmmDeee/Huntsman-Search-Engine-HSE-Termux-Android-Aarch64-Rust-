@@ -60,6 +60,16 @@ A successful `full` gate requires:
 - `huntsman-recon check`;
 - verification does not mutate tracked or untracked repository content, including a worktree that was already dirty before the gate.
 
+The baseline snapshot is capped at **16 MiB** in memory. Git diff output,
+Git's untracked-path listing and the captured bytes of regular untracked
+files are bounded; oversized snapshots are **refused** with an explicit
+error, never truncated or reported as a pass. Non-regular file candidates
+are rejected before reading, avoiding accidental blocking reads. On a
+memory-constrained phone, move unrelated large temporary files outside the
+checkout or ignore appropriate generated files before rerunning the gate.
+This limit does not apply to scan evidence: it only limits the verification
+tool's temporary in-memory representation of the source checkout.
+
 Each step's output is kept under `target/repair-gate/<run>/`. `NN.log` holds one step, numbered in the order the steps ran, and `summary.txt` has one line per step: `NN`, the status (`PASS`, `FAIL`, `TIMEOUT` or `NOT-STARTED`), the seconds it took, and the command. `target/` is git-ignored, so these files never enter a commit. The terminal shows each command. A failing step prints the last 80 lines of its log and the log's path. A passing run prints the run directory as `logs=`. The newest five runs are kept, and older run directories are removed when a new run starts.
 
 ## Acceptance scope matrix
