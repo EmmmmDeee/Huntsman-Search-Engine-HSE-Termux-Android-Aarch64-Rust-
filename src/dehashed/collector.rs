@@ -236,19 +236,15 @@ fn append_entries(
 
 /// Emails and usernames in one record, de-duplicated and blank-free.
 fn entry_values(entry: &Entry) -> Vec<(EntityKind, String)> {
-    let mut values = BTreeSet::new();
-    for email in &entry.email {
-        let value = email.trim();
-        if !value.is_empty() {
-            values.insert((EntityKind::Email, value.to_string()));
-        }
-    }
-    for username in &entry.username {
-        let value = username.trim();
-        if !value.is_empty() {
-            values.insert((EntityKind::Username, value.to_string()));
-        }
-    }
+    let values: BTreeSet<(EntityKind, String)> = entry
+        .emails()
+        .map(|value| (EntityKind::Email, value.to_owned()))
+        .chain(
+            entry
+                .usernames()
+                .map(|value| (EntityKind::Username, value.to_owned())),
+        )
+        .collect();
     values.into_iter().collect()
 }
 

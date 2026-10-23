@@ -266,6 +266,21 @@ pub enum SourceRun<R> {
     Failed(String),
 }
 
+/// Why one page of `records` breach records is not the whole answer, or `None` when it is: the
+/// source says it holds more (`has_more`), or its `total` is more than the page read.
+#[must_use]
+pub fn partial_page_note(records: usize, total: Option<u64>, has_more: bool) -> Option<String> {
+    let more_than_read = total.is_some_and(|total| total > records as u64);
+    if !(has_more || more_than_read) {
+        return None;
+    }
+    let total = total.map_or_else(|| "an unreported number".to_owned(), |t| t.to_string());
+    Some(format!(
+        "partial: read the first {records} of {total} matching records; absence of a breach here \
+         is not evidence of absence"
+    ))
+}
+
 /// Dispatch action derived from a causal source outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -624,5 +639,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_page_is_partial_when_the_source_holds_more_than_it_read() {
+        assert_eq!(partial_page_note(3, Some(3), false), None);
+        assert_eq!(partial_page_note(3, None, false), None);
+        assert_eq!(
+            partial_page_note(3, Some(7), false).as_deref(),
+            Some(
+                "partial: read the first 3 of 7 matching records; absence of a breach here is \
+                 not evidence of absence"
+            )
+        );
+        assert!(
+            partial_page_note(200, None, true)
+                .is_some_and(|note| note.contains("first 200 of an unreported number"))
+        );
     }
 }

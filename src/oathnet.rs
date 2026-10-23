@@ -7,13 +7,13 @@
 //! are those of `OathNet`'s published `OpenAPI` document (`https://docs.oathnet.org/openapi.yaml`,
 //! `V2BreachSearchResponse`); they are not verified against a live key here.
 //!
-//! What is kept is exposure metadata: per breach database (`dbname`), how many records hold the
-//! address, which field types those records expose, whether a password or hash is among them,
+//! What is kept, per breach database (`dbname`): how many records hold the address, which field
+//! types those records expose, the distinct values each non-credential field holds (bounded by
+//! [`MAX_VALUES_PER_FIELD`] and [`MAX_VALUE_BYTES`]), whether a password or hash is among them,
 //! the breach's public date, title, domain and size from `dbname_info`, and when `OathNet`
-//! indexed the records. Usernames and other addresses in the records become pivots. No other
-//! value of a record is kept: a password, hash, salt, phone number, street address or any other
-//! field is reduced to its field name before decoding returns, so it cannot reach an entity, a
-//! report or a saved ledger.
+//! indexed the records. Usernames and other addresses in the records become pivots. A password,
+//! hash or salt is reduced to its field name and the fact that it was exposed before decoding
+//! returns, so its value cannot reach an entity, a report or a saved ledger.
 //!
 //! The lookup reads one page of [`PAGE_SIZE`] records. When `OathNet` says there are more, the
 //! answer is marked partial, never complete. A key, plan or quota refusal, a `success: false`
@@ -184,18 +184,7 @@ impl Search {
     /// Why this page is not the whole answer, or `None` when it is.
     #[must_use]
     pub fn truncation(&self) -> Option<String> {
-        let more_than_read = self.total.is_some_and(|total| total > self.records as u64);
-        if !(self.has_more || more_than_read) {
-            return None;
-        }
-        let total = self
-            .total
-            .map_or_else(|| "an unreported number".to_owned(), |t| t.to_string());
-        Some(format!(
-            "partial: read the first {} of {total} matching records; absence of a breach here \
-             is not evidence of absence",
-            self.records
-        ))
+        crate::source_outcome::partial_page_note(self.records, self.total, self.has_more)
     }
 }
 
