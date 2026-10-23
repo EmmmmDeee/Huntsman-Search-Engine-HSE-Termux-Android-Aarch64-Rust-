@@ -36,13 +36,13 @@ fn grouped(elements: &[DataElement]) -> Result<Grid, String> {
             MAX_RECORDS
         ));
     }
-    let mut grid = BTreeMap::new();
+    let mut grid: Grid = BTreeMap::new();
     for element in elements {
         let cell = grid
             .entry((element.kind.clone(), element.data.clone()))
-            .or_insert_with(BTreeMap::new)
+            .or_default()
             .entry(element.module.clone())
-            .or_insert_with(Cell::default);
+            .or_default();
         cell.ids.push(element.id.clone());
         cell.flagged += usize::from(element.fp);
     }
