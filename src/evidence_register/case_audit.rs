@@ -55,8 +55,8 @@ pub fn audit_case(case_bytes: &[u8], advert_bytes: &[u8]) -> Result<CaseAudit, S
     if case_bytes.len() > MAX_CASE_BYTES || advert_bytes.len() > MAX_ADVERT_BYTES {
         return Err("input exceeds bounded case or advertisement size".into());
     }
-    let case: Value = serde_json::from_slice(case_bytes)
-        .map_err(|e| format!("invalid case JSON: {e}"))?;
+    let case: Value =
+        serde_json::from_slice(case_bytes).map_err(|e| format!("invalid case JSON: {e}"))?;
     let case_id = text_field(&case, "case_id")?.to_owned();
     let input = field(&case, "primary_input")?;
     let expected_bytes = field(input, "bytes")?
@@ -116,9 +116,14 @@ pub fn audit_case(case_bytes: &[u8], advert_bytes: &[u8]) -> Result<CaseAudit, S
             }
         }
         if class == "verified_primary_record" && !authoritative_registry {
-            return Err(format!("claim {id} asserts government verification without a registry source"));
+            return Err(format!(
+                "claim {id} asserts government verification without a registry source"
+            ));
         }
-        if matches!(class, "unverified" | "inference_not_verified" | "not_stated") {
+        if matches!(
+            class,
+            "unverified" | "inference_not_verified" | "not_stated"
+        ) {
             unresolved.push(id.to_owned());
         }
     }
@@ -127,9 +132,7 @@ pub fn audit_case(case_bytes: &[u8], advert_bytes: &[u8]) -> Result<CaseAudit, S
         source_count: sources.len(),
         claim_count: claims.len(),
         unresolved_claim_ids: unresolved,
-        original_publication_unknown: input
-            .get("original_url")
-            .is_none_or(Value::is_null),
+        original_publication_unknown: input.get("original_url").is_none_or(Value::is_null),
         original_year_unknown: input.get("year").is_none_or(Value::is_null),
     })
 }
@@ -190,7 +193,10 @@ mod tests {
         assert!(check(&v).is_err());
         let mut v = example();
         let claim = v["facts_and_assessments"][0].clone();
-        v["facts_and_assessments"].as_array_mut().expect("array").push(claim);
+        v["facts_and_assessments"]
+            .as_array_mut()
+            .expect("array")
+            .push(claim);
         assert!(check(&v).is_err());
     }
 
