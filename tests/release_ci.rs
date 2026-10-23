@@ -1255,7 +1255,7 @@ fn run_installer_with(
         .env("FAKE_ASSETS", &assets)
         .env("HUNTSMAN_CHANNEL", "recon")
         .env("HUNTSMAN_RELEASE_TAG", "main-0a1b2c3")
-        .env("HUNTSMAN_TEST_BUILD_SHA", "0a1b2c300000000000000000000000000000000")
+        .env("HUNTSMAN_TEST_BUILD_SHA", "0a1b2c3000000000000000000000000000000000")
         .output()
         .expect("bash must run");
     let text =
