@@ -1157,3 +1157,18 @@ fn document_fingerprint_tracks_exact_bytes_not_the_filename_or_editable_metadata
     assert_eq!(original, report_fingerprint(b"abc", "renamed.txt"));
     assert_ne!(original, report_fingerprint(b"abd", "first.txt"));
 }
+
+/// Every corruption of a well-formed XMP-bearing JPEG and a PDF with an `/Info` dictionary (a
+/// byte, an extreme number, a cut, a repeated stretch) is read: none panics.
+#[test]
+fn a_corrupted_document_is_read_never_a_panic() {
+    for (name, document) in [("xmp", jpeg_with_xmp()), ("pdf", pdf_with_info())] {
+        for (case, bytes) in crate::test_support::mutations(&document, 0xD0C_3E7A, 3_000)
+            .into_iter()
+            .enumerate()
+        {
+            let outcome = std::panic::catch_unwind(|| parse(&bytes));
+            assert!(outcome.is_ok(), "{name} case {case} panicked");
+        }
+    }
+}

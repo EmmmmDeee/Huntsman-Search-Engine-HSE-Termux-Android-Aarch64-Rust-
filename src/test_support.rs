@@ -197,3 +197,47 @@ mod tests {
         assert!(unexpected_controls("plain \u{e9}", &[]).is_empty());
     }
 }
+
+/// `count` corruptions of `input`, from a fixed seed so a failing case is reproduced by its
+/// index: a byte overwritten, a 4-byte field set to an extreme (`0`, `0x7fff_ffff`,
+/// `0xffff_ffff`, which planted as a count or offset points far past the end), the input cut
+/// short, or a stretch of it repeated.
+#[must_use]
+pub fn mutations(input: &[u8], seed: u64, count: usize) -> Vec<Vec<u8>> {
+    let mut state = seed | 1;
+    let mut draw = move |bound: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        usize::try_from(state % u64::try_from(bound.max(1)).unwrap_or(1)).unwrap_or(0)
+    };
+    (0..count)
+        .map(|_| {
+            let mut bytes = input.to_vec();
+            for _ in 0..=draw(3) {
+                if bytes.is_empty() {
+                    break;
+                }
+                let at = draw(bytes.len());
+                match draw(4) {
+                    0 => bytes[at] = u8::try_from(draw(256)).unwrap_or(0),
+                    1 => {
+                        let extreme = [[0; 4], [0x7f, 0xff, 0xff, 0xff], [0xff; 4]][draw(3)];
+                        for (offset, byte) in extreme.iter().enumerate() {
+                            if let Some(slot) = bytes.get_mut(at + offset) {
+                                *slot = *byte;
+                            }
+                        }
+                    }
+                    2 => bytes.truncate(at),
+                    _ => {
+                        let end = (at + draw(64)).min(bytes.len());
+                        let stretch = bytes[at..end].to_vec();
+                        bytes.splice(at..at, stretch);
+                    }
+                }
+            }
+            bytes
+        })
+        .collect()
+}
