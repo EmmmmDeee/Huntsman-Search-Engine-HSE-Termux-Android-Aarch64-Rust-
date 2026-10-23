@@ -224,10 +224,11 @@ pub fn compile_matrix(scan: &ScanRecord, saved: &ScanResults) -> Result<Value, S
 /// Refuses serialization errors or over-limit output.
 pub fn matrix_raw_text(report: &Value) -> Result<String, String> {
     let mut output = format!(
-        "[HUNTSMAN_MATRIX]\nSCAN: {}\nSUMMARY: {}\nUNCERTAINTY_REGISTER: {}\n",
+        "[HUNTSMAN_MATRIX]\nSCAN: {}\nSUMMARY: {}\nUNCERTAINTY_REGISTER: {}\nNORMALIZATION_CANDIDATES: {}\n",
         report["scan"]["id"].as_str().unwrap_or("UNKNOWN"),
         escape_unsafe_text(&report["summary"].to_string()),
-        escape_unsafe_text(&report["uncertainty_register"].to_string())
+        escape_unsafe_text(&report["uncertainty_register"].to_string()),
+        escape_unsafe_text(&report["normalization_candidates"].to_string())
     );
     for row in report["rows"].as_array().into_iter().flatten() {
         let encoded = serde_json::to_string(row).map_err(|error| error.to_string())?;
