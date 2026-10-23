@@ -184,7 +184,10 @@ impl<'a> IdentityIndex<'a> {
         if start == end || cap == 0 {
             return Some(0);
         }
-        if self.edges.len() > EXACT_MAX_EDGES || self.bases.len() > EXACT_MAX_BASES || self.len() > EXACT_MAX_NODES {
+        if self.edges.len() > EXACT_MAX_EDGES
+            || self.bases.len() > EXACT_MAX_BASES
+            || self.len() > EXACT_MAX_NODES
+        {
             return None;
         }
 
