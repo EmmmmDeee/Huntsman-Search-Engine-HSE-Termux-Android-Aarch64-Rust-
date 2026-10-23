@@ -478,7 +478,7 @@ pub(super) fn run_history_cmd(args: &[String]) -> ExitCode {
         }
         let Some((passed, failed)) = huntsman_recon::run_history::parse_libtest_summary(&buffer)
         else {
-            eprintln!("run-history: no 'test result:' line found in stdin");
+            eprintln!("run-history: no usable 'test result:' totals in stdin");
             return ExitCode::from(EX_DATAERR);
         };
         let mut rewritten: Vec<String> = args

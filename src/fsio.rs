@@ -38,21 +38,27 @@ pub(crate) enum SymlinkRefusal {
 }
 
 /// The policy for every write in this crate: a symbolic link is refused, so a write cannot land in
-/// whatever file the link points at. A path that does not exist yet is allowed.
-pub(crate) fn check_not_symlink(path: &Path) -> Result<(), SymlinkRefusal> {
+/// whatever file the link points at. A path that does not exist yet is allowed. Returns the
+/// `lstat` result of an existing path (`None` when it does not exist), for a writer that compares
+/// it with the descriptor it then opens.
+pub(crate) fn check_not_symlink(path: &Path) -> Result<Option<fs::Metadata>, SymlinkRefusal> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => Err(SymlinkRefusal::Linked),
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(meta) => Ok(Some(meta)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(SymlinkRefusal::Unreadable(e)),
     }
 }
 
 fn refuse_symlink(path: &Path) -> Result<(), Error> {
-    check_not_symlink(path).map_err(|refusal| match refusal {
-        SymlinkRefusal::Linked => Error::Store(format!("{}: {REFUSED_SYMLINK}", path.display())),
-        SymlinkRefusal::Unreadable(e) => store_err(path, &e),
-    })
+    check_not_symlink(path)
+        .map(|_| ())
+        .map_err(|refusal| match refusal {
+            SymlinkRefusal::Linked => {
+                Error::Store(format!("{}: {REFUSED_SYMLINK}", path.display()))
+            }
+            SymlinkRefusal::Unreadable(e) => store_err(path, &e),
+        })
 }
 
 fn require_regular_file(path: &Path, meta: &fs::Metadata) -> Result<(), Error> {

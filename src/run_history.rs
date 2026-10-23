@@ -10,7 +10,7 @@ use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
-use crate::fsio::{CHANGED_WHILE_OPENING, NOT_REGULAR_FILE, REFUSED_SYMLINK};
+use crate::fsio::{CHANGED_WHILE_OPENING, NOT_REGULAR_FILE, REFUSED_SYMLINK, SymlinkRefusal};
 
 /// Upper bound on a history file, in bytes, for every read of it.
 ///
@@ -38,16 +38,14 @@ fn refusal(path: &Path, reason: &str) -> HistoryError {
     HistoryError::Io(io::Error::other(format!("{}: {reason}", path.display())))
 }
 
-/// `lstat` the history before a write, matching `fsio`: a symlink is refused, since
-/// writing through a planted link would land in whatever file it points at. `None`
-/// when the path does not exist yet.
+/// `lstat` the history before a write, through `fsio`'s write policy: a symlink is
+/// refused, since writing through a planted link would land in whatever file it
+/// points at. `None` when the path does not exist yet.
 fn lstat_for_write(path: &Path) -> Result<Option<Metadata>, HistoryError> {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => Err(refusal(path, REFUSED_SYMLINK)),
-        Ok(meta) => Ok(Some(meta)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(HistoryError::Io(e)),
-    }
+    crate::fsio::check_not_symlink(path).map_err(|r| match r {
+        SymlinkRefusal::Linked => refusal(path, REFUSED_SYMLINK),
+        SymlinkRefusal::Unreadable(e) => HistoryError::Io(e),
+    })
 }
 
 /// Open the history for an in-place write through a descriptor that is the file
@@ -121,13 +119,16 @@ pub enum HistoryError {
 /// The default path is `var/run_history.jsonl`, relative to the working
 /// directory, so without creating the parent `run-history record` failed in any
 /// directory without a `var/` — a Termux user's `$HOME`, say — with an IO error
-/// and no record written. Creating it mirrors every other writer in the crate
-/// (`fsio::write_atomic`, the session `store`).
+/// and no record written. Missing parents are created as `fsio::write_atomic`
+/// and the session `store` create theirs, but unlike them a parent that is a
+/// symlink is not refused: only the history file itself is checked.
 ///
 /// Before writing, a torn tail left by a previously interrupted append — bytes
-/// not ended by a newline, which are not a committed record — is truncated, so
-/// the new record is never fused onto a partial line. This assumes a single
-/// writer, which the regression store has (one CI step or one host).
+/// not ended by a newline that do not parse as a record — is truncated, so the
+/// new record is never fused onto a partial line. A complete record that only
+/// lacks its newline is one [`load`] returns, so it is kept and terminated
+/// instead. This assumes a single writer, which the regression store has (one CI
+/// step or one host).
 pub fn append(path: &Path, record: &RunRecord) -> Result<(), HistoryError> {
     let mut line = serde_json::to_string(record).map_err(|e| HistoryError::Malformed {
         line: 0,
@@ -149,9 +150,12 @@ pub fn append(path: &Path, record: &RunRecord) -> Result<(), HistoryError> {
     Ok(())
 }
 
-/// Drop an unterminated trailing fragment so the file stays a clean sequence of
-/// whole lines. A missing file, an empty file, or one already ending in a
-/// newline needs no repair.
+/// Repair an unterminated trailing fragment so the file stays a clean sequence of
+/// whole lines. A fragment that parses as a record lost only its newline (a crash
+/// after its last byte, or an editor that saves without a final newline) and is
+/// terminated, since [`load`] returns it; any other fragment is a torn write and
+/// is dropped. A missing file, an empty file, or one already ending in a newline
+/// needs no repair.
 fn heal_torn_tail(path: &Path) -> Result<(), HistoryError> {
     let Some(bytes) = read_history(path)? else {
         return Ok(());
@@ -163,6 +167,14 @@ fn heal_torn_tail(path: &Path) -> Result<(), HistoryError> {
         .iter()
         .rposition(|b| *b == b'\n')
         .map_or(0, |index| index + 1);
+    if parse_line(&bytes[keep..]).is_some() {
+        let mut options = OpenOptions::new();
+        options.append(true);
+        let mut file = open_checked(path, &mut options, false)?;
+        file.write_all(b"\n")?;
+        file.sync_data()?;
+        return Ok(());
+    }
     let mut options = OpenOptions::new();
     options.write(true);
     let file = open_checked(path, &mut options, false)?;
@@ -171,15 +183,25 @@ fn heal_torn_tail(path: &Path) -> Result<(), HistoryError> {
     Ok(())
 }
 
+/// One history line as a record, or `None` when it is not UTF-8 or not a record:
+/// the one parse rule [`load`] and [`heal_torn_tail`] share.
+fn parse_line(segment: &[u8]) -> Option<RunRecord> {
+    std::str::from_utf8(segment)
+        .ok()
+        .and_then(|text| serde_json::from_str::<RunRecord>(text.trim()).ok())
+}
+
 /// Load every run in file order. Missing file means an empty history.
 pub fn load(path: &Path) -> Result<Vec<RunRecord>, HistoryError> {
     // Read bytes, not lines: an append interrupted mid-write can leave a torn
     // final line, possibly splitting a multi-byte character, which a UTF-8
     // line reader would itself reject. A completed append always ends in '\n',
-    // so a file that does not is missing its last line's terminator — that
-    // final fragment is the torn write and is dropped, losing at most the line
-    // being written, exactly as this module guarantees. A malformed line that
-    // is *not* the unterminated tail is genuine corruption and still errors.
+    // so a file that does not is missing its last line's terminator. A final
+    // fragment that does not parse is the torn write and is dropped, losing at
+    // most the line being written, exactly as this module guarantees; one that
+    // parses is a complete record that lost only its newline, and is kept. A
+    // malformed line that is *not* the unterminated tail is genuine corruption
+    // and still errors.
     let Some(bytes) = read_history(path)? else {
         return Ok(Vec::new());
     };
@@ -197,10 +219,7 @@ pub fn load(path: &Path) -> Result<Vec<RunRecord>, HistoryError> {
         if segment.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let parsed = std::str::from_utf8(segment)
-            .ok()
-            .and_then(|text| serde_json::from_str::<RunRecord>(text.trim()).ok());
-        match parsed {
+        match parse_line(segment) {
             Some(record) => out.push(record),
             None if index == last && !complete => break,
             None => {
@@ -252,7 +271,8 @@ pub fn verdict(history: &[RunRecord], current: &RunRecord) -> Verdict {
 /// `test result: ok. 12 passed; 0 failed; 1 ignored; 0 measured; 3 filtered out`.
 /// A `cargo test --workspace` run prints many; this totals them. Returns `None`
 /// when no summary line is present, so an empty or unrelated input is an error
-/// at the call site rather than a silent zero.
+/// at the call site rather than a silent zero, and when a total overflows `u64`,
+/// so an absurd input is refused rather than wrapped.
 #[must_use]
 pub fn parse_libtest_summary(output: &str) -> Option<(u64, u64)> {
     let mut passed = 0u64;
@@ -281,8 +301,8 @@ pub fn parse_libtest_summary(output: &str) -> Option<(u64, u64)> {
             }
         }
         if let (Some(p), Some(f)) = (line_passed, line_failed) {
-            passed += p;
-            failed += f;
+            passed = passed.checked_add(p)?;
+            failed = failed.checked_add(f)?;
             seen = true;
         }
     }
@@ -464,6 +484,22 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; 
     }
 
     #[test]
+    fn libtest_summary_is_none_when_a_total_overflows() {
+        // Each count is any u64, so two lines can sum past u64::MAX: a debug build panicked on
+        // the addition and a release build wrapped it to a small count and recorded that.
+        let passed = "\
+test result: ok. 18446744073709551615 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+";
+        assert_eq!(parse_libtest_summary(passed), None);
+        let failed = "\
+test result: FAILED. 0 passed; 18446744073709551615 failed; 0 ignored; 0 measured; 0 filtered out
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+";
+        assert_eq!(parse_libtest_summary(failed), None);
+    }
+
+    #[test]
     fn a_torn_final_line_loses_only_itself_and_keeps_prior_records() {
         // Simulate an append interrupted mid-write: a complete record, then a
         // partial final line with no trailing newline.
@@ -477,6 +513,28 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; 
         // And recording continues to work: the torn tail does not block appends.
         append(&path, &run("unit", 11, 0)).unwrap();
         assert_eq!(load(&path).unwrap().last().unwrap().passed, 11);
+    }
+
+    #[test]
+    fn a_complete_final_record_without_a_newline_survives_the_next_append() {
+        // A record that lost only its newline (a crash after its last byte, or an editor that
+        // saves without a final newline) is one load returns, so record measures its verdict
+        // against it. The next append used to truncate it as a torn tail and delete it.
+        let path = scratch("unterminated");
+        let first = serde_json::to_string(&run("unit", 10, 0)).unwrap();
+        std::fs::write(&path, &first).unwrap();
+        assert_eq!(load(&path).unwrap(), vec![run("unit", 10, 0)]);
+        append(&path, &run("unit", 9, 0)).unwrap();
+        assert_eq!(
+            load(&path).unwrap(),
+            vec![run("unit", 10, 0), run("unit", 9, 0)]
+        );
+        let second = serde_json::to_string(&run("unit", 9, 0)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("{first}\n{second}\n"),
+            "each record must be its own terminated line"
+        );
     }
 
     #[test]
@@ -531,8 +589,8 @@ pub mod cli {
     use std::io::Write;
     use std::path::PathBuf;
 
-    use super::{RunRecord, Verdict, append, load, verdict};
-    use crate::exit::{EX_DATAERR, EX_IOERR, EX_USAGE};
+    use super::{HistoryError, RunRecord, Verdict, append, load, verdict};
+    use crate::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_USAGE};
     use crate::textnorm::escape_controls;
 
     pub const USAGE: &str = "usage: huntsman-recon run-history (record --suite NAME (--passed N --failed N | --from-stdin) [--commit SHA] [--file PATH] | show [--suite NAME] [--file PATH])";
@@ -549,38 +607,45 @@ pub mod cli {
         file: PathBuf,
     }
 
+    /// The argument after `flag`, as its value.
+    fn flag_value<'a>(
+        flag: &str,
+        iter: &mut std::slice::Iter<'a, String>,
+    ) -> Result<&'a String, String> {
+        match iter.next() {
+            // A value beginning with "--" is the next flag, not this flag's
+            // value: reject it rather than silently swallowing it.
+            Some(next) if next.starts_with("--") => {
+                Err(format!("{flag} needs a value, got the flag {next:?}"))
+            }
+            Some(next) => Ok(next),
+            None => Err(format!("{flag} needs a value")),
+        }
+    }
+
     fn parse_record(args: &[String]) -> Result<RecordArgs, String> {
         let (mut suite, mut passed, mut failed, mut commit, mut file) =
             (None, None, None, None, None);
         let mut iter = args.iter();
         while let Some(flag) = iter.next() {
-            let mut value = || match iter.next() {
-                // A value beginning with "--" is the next flag, not this flag's
-                // value: reject it rather than silently swallowing it.
-                Some(next) if next.starts_with("--") => {
-                    Err(format!("{flag} needs a value, got the flag {next:?}"))
-                }
-                Some(next) => Ok(next),
-                None => Err(format!("{flag} needs a value")),
-            };
             match flag.as_str() {
-                "--suite" => suite = Some(value()?.clone()),
+                "--suite" => suite = Some(flag_value(flag, &mut iter)?.clone()),
                 "--passed" => {
                     passed = Some(
-                        value()?
+                        flag_value(flag, &mut iter)?
                             .parse::<u64>()
                             .map_err(|_| "--passed must be a number".to_string())?,
                     );
                 }
                 "--failed" => {
                     failed = Some(
-                        value()?
+                        flag_value(flag, &mut iter)?
                             .parse::<u64>()
                             .map_err(|_| "--failed must be a number".to_string())?,
                     );
                 }
-                "--commit" => commit = Some(value()?.clone()),
-                "--file" => file = Some(PathBuf::from(value()?)),
+                "--commit" => commit = Some(flag_value(flag, &mut iter)?.clone()),
+                "--file" => file = Some(PathBuf::from(flag_value(flag, &mut iter)?)),
                 other => return Err(format!("unknown argument {other:?}")),
             }
         }
@@ -597,16 +662,9 @@ pub mod cli {
         let (mut suite, mut file) = (None, None);
         let mut iter = args.iter();
         while let Some(flag) = iter.next() {
-            let mut value = || match iter.next() {
-                Some(next) if next.starts_with("--") => {
-                    Err(format!("{flag} needs a value, got the flag {next:?}"))
-                }
-                Some(next) => Ok(next),
-                None => Err(format!("{flag} needs a value")),
-            };
             match flag.as_str() {
-                "--suite" => suite = Some(value()?.clone()),
-                "--file" => file = Some(PathBuf::from(value()?)),
+                "--suite" => suite = Some(flag_value(flag, &mut iter)?.clone()),
+                "--file" => file = Some(PathBuf::from(flag_value(flag, &mut iter)?)),
                 other => return Err(format!("unknown argument {other:?}")),
             }
         }
@@ -642,7 +700,12 @@ pub mod cli {
             Ok(history) => history,
             Err(error) => {
                 let _ = writeln!(err, "run-history: {error}");
-                return EX_IOERR;
+                // A malformed history keeps EX_IOERR here, so a CI step piping `cargo test`
+                // in can tell it from a regression verdict, which exits EX_DATAERR.
+                return match &error {
+                    HistoryError::Io(_) => load_status(&error),
+                    HistoryError::Malformed { .. } => EX_IOERR,
+                };
             }
         };
         let record = RunRecord {
@@ -683,7 +746,7 @@ pub mod cli {
             Ok(history) => history,
             Err(error) => {
                 let _ = writeln!(err, "run-history: {error}");
-                return EX_IOERR;
+                return load_status(&error);
             }
         };
         for record in history
@@ -702,6 +765,16 @@ pub mod cli {
             );
         }
         0
+    }
+
+    /// The status for a history that could not be loaded, by the README's exit-code
+    /// contract for every command that reads a file: unreadable input (a symlink, a
+    /// non-file, a file over the cap, an IO error) or bad data (a malformed line).
+    fn load_status(error: &HistoryError) -> u8 {
+        match error {
+            HistoryError::Io(_) => EX_NOINPUT,
+            HistoryError::Malformed { .. } => EX_DATAERR,
+        }
     }
 
     fn describe(verdict: &Verdict) -> String {
@@ -886,6 +959,62 @@ pub mod cli {
             let code = run(&argv(&["show", "--suite", "--file"]), 0, &mut o, &mut e);
             assert_eq!(code, EX_USAGE);
             assert!(o.is_empty(), "nothing should print on a usage error");
+        }
+
+        #[test]
+        fn show_exits_bad_data_for_a_malformed_history() {
+            // show writes nothing, so a history it read but cannot parse is bad data (65),
+            // not the write failure (74) it used to exit with.
+            let file = scratch("show-malformed");
+            std::fs::write(&file, b"{not json}\n").unwrap();
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            let code = run(
+                &argv(&["show", "--file", file.to_str().unwrap()]),
+                0,
+                &mut o,
+                &mut e,
+            );
+            assert_eq!(code, EX_DATAERR, "{}", String::from_utf8_lossy(&e));
+            assert!(
+                String::from_utf8(e)
+                    .unwrap()
+                    .contains("line 1 is malformed")
+            );
+            assert!(o.is_empty());
+        }
+
+        #[test]
+        fn show_and_record_exit_unreadable_input_for_a_history_they_cannot_read() {
+            // A history over the cap (like a symlink or a non-file) is unreadable input (66),
+            // not a write failure (74), and record refuses it before writing anything.
+            let file = scratch("unreadable");
+            let f = file.to_str().unwrap();
+            let oversized = std::fs::File::create(&file).unwrap();
+            oversized
+                .set_len(crate::run_history::MAX_RUN_HISTORY_BYTES + 1)
+                .unwrap();
+            drop(oversized);
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            let code = run(&argv(&["show", "--file", f]), 0, &mut o, &mut e);
+            assert_eq!(code, EX_NOINPUT, "{}", String::from_utf8_lossy(&e));
+            assert!(o.is_empty());
+
+            let before = std::fs::read(&file).unwrap();
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            let code = run(
+                &argv(&[
+                    "record", "--suite", "unit", "--passed", "1", "--failed", "0", "--file", f,
+                ]),
+                1,
+                &mut o,
+                &mut e,
+            );
+            assert_eq!(code, EX_NOINPUT, "{}", String::from_utf8_lossy(&e));
+            assert!(o.is_empty());
+            assert!(
+                std::fs::read(&file).unwrap() == before,
+                "record must not touch a history it cannot read"
+            );
         }
     }
 }
