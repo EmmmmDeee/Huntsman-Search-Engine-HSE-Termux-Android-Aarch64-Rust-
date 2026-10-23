@@ -182,38 +182,46 @@ fn rows(saved: &ScanResults) -> Result<BTreeMap<String, Row>, String> {
 /// Drop only per-run bookkeeping for semantic comparison. Exact raw bytes and
 /// provenance remain in each record; changes to these fields are "reobserved",
 /// not silently labelled identical.
-fn semantic(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for key in ["scan_id", "created", "observed_at_unix", "recorded_at_unix"] {
-                map.remove(key);
-            }
-            for child in map.values_mut() {
-                semantic(child);
+fn semantic(value: &mut Value, kind: &str) {
+    let Value::Object(map) = value else {
+        return;
+    };
+    match kind {
+        "entity" => {
+            map.remove("scan_id");
+            map.remove("observed_at_unix");
+            if let Some(Value::Array(evidence)) = map.get_mut("evidence") {
+                for item in evidence {
+                    if let Some(Value::Object(provenance)) = item.get_mut("provenance") {
+                        provenance.remove("scan_id");
+                        provenance.remove("recorded_at_unix");
+                    }
+                }
             }
         }
-        Value::Array(items) => {
-            for child in items {
-                semantic(child);
-            }
+        "element" => {
+            map.remove("created");
+        }
+        "source_outcome" => {
+            map.remove("observed_at_unix");
         }
         _ => {}
     }
 }
 
-fn signature(value: &Value, strip_clock: bool) -> Result<String, String> {
+fn signature(value: &Value, strip_clock: bool, kind: &str) -> Result<String, String> {
     let mut copy = value.clone();
     if strip_clock {
-        semantic(&mut copy);
+        semantic(&mut copy, kind);
     }
     let bytes = serde_json::to_vec(&copy).map_err(|error| error.to_string())?;
     Ok(hex32(&sha256(&bytes)))
 }
 
 fn change(now: &Row, previous: &Row) -> Result<&'static str, String> {
-    if signature(&now.raw, false)? == signature(&previous.raw, false)? {
+    if signature(&now.raw, false, now.kind)? == signature(&previous.raw, false, previous.kind)? {
         Ok("unchanged")
-    } else if signature(&now.raw, true)? == signature(&previous.raw, true)? {
+    } else if signature(&now.raw, true, now.kind)? == signature(&previous.raw, true, previous.kind)? {
         Ok("reobserved")
     } else {
         Ok("changed")
@@ -241,7 +249,7 @@ fn to_json(row: &Row, change_status: &str) -> Result<Value, String> {
         "RETRIEVED_UTC": null,
         "EVENT_TIMESTAMP": row.observed_at_unix.map(|unix| json!({"unix_seconds":unix})),
         "RAW_DATA": row.raw,
-        "RAW_SHA256": signature(&row.raw, false)?,
+        "RAW_SHA256": signature(&row.raw, false, row.kind)?,
         "METADATA": {"origin": "saved_scan", "false_positive_flag": row.false_positive},
         "CROSS_REFERENCES": row.links,
         "CORRELATED_ENTITIES": [],
@@ -417,16 +425,24 @@ mod tests {
 
     #[test]
     fn per_run_timestamps_cannot_hide_material_change() {
-        let mut old = json!({"value":"same","observed_at_unix":2,"detail":{"scan_id":"old"}});
-        let mut next = json!({"value":"same","observed_at_unix":4,"detail":{"scan_id":"new"}});
+        let mut old = json!({
+            "value":"same","observed_at_unix":2,
+            "evidence":[{"provenance":{"scan_id":"old","recorded_at_unix":2},
+                         "attributes":{"created":"source fact"}}]
+        });
+        let mut next = json!({
+            "value":"same","observed_at_unix":4,
+            "evidence":[{"provenance":{"scan_id":"new","recorded_at_unix":4},
+                         "attributes":{"created":"source fact"}}]
+        });
         assert_ne!(
-            signature(&old, false).unwrap(),
-            signature(&next, false).unwrap()
+            signature(&old, false, "entity").unwrap(),
+            signature(&next, false, "entity").unwrap()
         );
-        semantic(&mut old);
-        semantic(&mut next);
+        semantic(&mut old, "entity");
+        semantic(&mut next, "entity");
         assert_eq!(old, next);
-        next["value"] = json!("changed");
+        next["evidence"][0]["attributes"]["created"] = json!("changed");
         assert_ne!(old, next);
     }
 
