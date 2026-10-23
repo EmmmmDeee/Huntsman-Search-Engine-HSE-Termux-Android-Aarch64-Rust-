@@ -481,6 +481,7 @@ mod tests {
             errors: 0,
             modules_run: Vec::new(),
             owner: None,
+            owner_started: None,
         };
         let results = ScanResults {
             format_version: FORMAT_VERSION,

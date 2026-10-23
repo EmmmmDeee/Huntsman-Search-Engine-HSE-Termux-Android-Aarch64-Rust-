@@ -562,6 +562,7 @@ mod tests {
             errors: 0,
             modules_run: Vec::new(),
             owner: None,
+            owner_started: None,
         };
         store.create(&record).expect("create scan");
         let first = source_revision(&store, &record).expect("initial revision");
@@ -630,6 +631,7 @@ mod tests {
             errors: 0,
             modules_run: Vec::new(),
             owner: None,
+            owner_started: None,
         };
         let path = normalised_path(&record, &directory);
         let original = br#"{"report":{"confirmed":true}}"#;
@@ -807,6 +809,7 @@ mod tests {
             errors: 0,
             modules_run: Vec::new(),
             owner: None,
+            owner_started: None,
         };
         assert!(!due(Some(&record), 500_000, 60_000));
         record.status = ScanStatus::ErrorFailed;
@@ -848,6 +851,7 @@ mod tests {
             errors: 0,
             modules_run: Vec::new(),
             owner: None,
+            owner_started: None,
         };
         let mut observed = BTreeMap::from([
             ("0123456789abcdef".to_owned(), "rev1".to_owned()),

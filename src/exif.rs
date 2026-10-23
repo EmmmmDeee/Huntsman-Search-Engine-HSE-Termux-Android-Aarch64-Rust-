@@ -771,9 +771,9 @@ fn decode_gps(tiff: &Tiff, offset: usize, fields: &mut Directory) -> Option<GpsF
         fields.push(gps_tag_name(entry.tag), &named_value(tiff, entry));
         match entry.tag {
             0x0001 => lat_ref = Some(ascii(&entry.value)),
-            0x0002 => lat = degrees(tiff.endian, &entry.value),
+            0x0002 => lat = degrees(tiff.endian, &entry.value, 90.0),
             0x0003 => lon_ref = Some(ascii(&entry.value)),
-            0x0004 => lon = degrees(tiff.endian, &entry.value),
+            0x0004 => lon = degrees(tiff.endian, &entry.value, 180.0),
             0x0005 => altitude_ref = entry.value.first().copied().unwrap_or(0),
             0x0006 => altitude = first_ratio(tiff.endian, &entry.value),
             0x0007 => time = gps_time(tiff.endian, &entry.value),
@@ -802,8 +802,10 @@ fn apply_sign(value: f64, reference: Option<&str>, negative: &str) -> f64 {
     }
 }
 
-/// Decimal degrees from the three `deg, min, sec` rationals of a GPS coordinate. **Pure.**
-fn degrees(endian: Endian, bytes: &[u8]) -> Option<f64> {
+/// Decimal degrees from the three `deg, min, sec` rationals of a GPS coordinate, `None` when
+/// minutes or seconds reach 60 or the result passes `maximum`: such a value names no place, and
+/// is refused as docmeta's XMP coordinates are. **Pure.**
+fn degrees(endian: Endian, bytes: &[u8], maximum: f64) -> Option<f64> {
     let parts: Vec<f64> = bytes
         .chunks_exact(8)
         .map(|chunk| {
@@ -814,7 +816,11 @@ fn degrees(endian: Endian, bytes: &[u8]) -> Option<f64> {
     let degrees = *parts.first()?;
     let minutes = parts.get(1).copied().unwrap_or(0.0);
     let seconds = parts.get(2).copied().unwrap_or(0.0);
-    Some(degrees + minutes / 60.0 + seconds / 3600.0)
+    if !(0.0..60.0).contains(&minutes) || !(0.0..60.0).contains(&seconds) {
+        return None;
+    }
+    let value = degrees + minutes / 60.0 + seconds / 3600.0;
+    (0.0..=maximum).contains(&value).then_some(value)
 }
 
 /// The first rational of a value as a float, when it is defined. **Pure.**

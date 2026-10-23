@@ -492,3 +492,25 @@ fn png_chunks_require_the_complete_crc_field() {
         }
     }
 }
+
+/// A coordinate past the poles or the antimeridian, or with 60 or more minutes or seconds, names
+/// no place, and gives no fix rather than an impossible one.
+#[test]
+fn an_impossible_gps_coordinate_gives_no_fix() {
+    // In `exif_tiff`'s heap the latitude's rationals start at 97 and the longitude's at 121,
+    // each degrees, minutes, seconds as numerator then denominator.
+    let with = |patches: &[(usize, u32)]| {
+        let mut tiff = exif_tiff();
+        for &(at, value) in patches {
+            tiff[at..at + 4].copy_from_slice(&le32(value));
+        }
+        parse(&tiff).expect("valid TIFF").gps
+    };
+    assert!(with(&[(97, 200)]).is_none(), "latitude 200");
+    assert!(with(&[(97, 90)]).is_none(), "latitude 90 and 51 minutes");
+    assert!(with(&[(105, 60)]).is_none(), "60 minutes");
+    assert!(with(&[(113, 60)]).is_none(), "60 seconds");
+    assert!(with(&[(121, 181), (129, 0)]).is_none(), "longitude 181");
+    let edge = with(&[(97, 90), (105, 0), (121, 180), (129, 0)]).expect("the poles and 180");
+    assert!((edge.lat - 90.0).abs() < 1e-9 && (edge.lon - 180.0).abs() < 1e-9);
+}

@@ -204,6 +204,11 @@ pub struct ScanRecord {
     /// process (a `scans run` beside `serve`) is still running.
     #[serde(default)]
     pub owner: Option<u32>,
+    /// When [`Self::owner`] started, in clock ticks since boot ([`process_start_ticks`]), so a
+    /// later process that reuses the pid, after a restart or a reboot, is not taken for the
+    /// owner. A row written before this field, or where `/proc` is unreadable, has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_started: Option<u64>,
 }
 
 /// One correlation on a saved scan, with the elements it is about: a row of Spiderfoot's
@@ -742,7 +747,9 @@ impl ScanStore {
         for mut record in self.list()? {
             if !record.status.is_active()
                 || self.get(&record.id).is_err()
-                || record.owner.is_some_and(other_process_alive)
+                || record
+                    .owner
+                    .is_some_and(|pid| other_process_alive(pid, record.owner_started))
             {
                 continue;
             }
@@ -768,10 +775,41 @@ impl ScanStore {
     }
 }
 
-/// Whether `pid` is a running process other than this one. Android shows another app's
-/// processes to no one, so a reused pid there reads as gone; without `/proc` every owner does.
-fn other_process_alive(pid: u32) -> bool {
-    pid != std::process::id() && Path::new("/proc").join(pid.to_string()).exists()
+/// This process's id and start time, as a scan it runs records them in its row.
+#[must_use]
+pub fn this_process() -> (u32, Option<u64>) {
+    static STARTED: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    let pid = std::process::id();
+    (pid, *STARTED.get_or_init(|| process_start_ticks(pid)))
+}
+
+/// When process `pid` started, in clock ticks since boot: field 22 of `/proc/PID/stat`. `None`
+/// without `/proc`, or for a process that is gone or hidden. Its name, field 2, is in
+/// parentheses and may hold spaces and `)`, so the fields are counted after the last `)`.
+#[must_use]
+pub fn process_start_ticks(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
+    start_ticks_from_stat(&stat)
+}
+
+/// Field 22 of a `/proc/PID/stat` line. **Pure.**
+fn start_ticks_from_stat(stat: &str) -> Option<u64> {
+    let after_name = &stat[stat.rfind(')')? + 1..];
+    after_name.split_ascii_whitespace().nth(19)?.parse().ok()
+}
+
+/// Whether `pid` is a running process other than this one, and, when its start time `started`
+/// was recorded, the same process that recorded it rather than a later one given the same pid.
+/// Android shows another app's processes to no one, so a reused pid there reads as gone; without
+/// `/proc` every owner does.
+fn other_process_alive(pid: u32, started: Option<u64>) -> bool {
+    if pid == std::process::id() {
+        return false;
+    }
+    match started {
+        Some(started) => process_start_ticks(pid) == Some(started),
+        None => Path::new("/proc").join(pid.to_string()).exists(),
+    }
 }
 
 /// Open an append descriptor only after confirming that the path is a regular
@@ -868,6 +906,7 @@ fn unreadable(id: &str, error: &StoreError) -> ScanRecord {
         errors: 1,
         modules_run: Vec::new(),
         owner: None,
+        owner_started: None,
     }
 }
 
@@ -915,6 +954,7 @@ mod tests {
             errors: 0,
             modules_run: Vec::new(),
             owner: None,
+            owner_started: None,
         }
     }
 
@@ -1275,6 +1315,53 @@ mod tests {
         assert_eq!(store.get(&theirs.id).unwrap().status, ScanStatus::Running);
         assert_eq!(store.get(&ours.id).unwrap().status, ScanStatus::Aborted);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recovery_aborts_a_scan_whose_owner_pid_now_names_another_process() {
+        let dir = scratch("reused-pid");
+        let store = ScanStore::open(&dir).unwrap();
+        let parent = std::os::unix::process::parent_id();
+        let started = process_start_ticks(parent).expect("the parent's start time");
+        // The pid is live, but the process holding it started at another time: the recorded
+        // owner is gone and the pid was reused, as after a restart or a reboot.
+        let mut stale = record(&new_id("s", 8, 0), 8_000, ScanStatus::Running);
+        stale.owner = Some(parent);
+        stale.owner_started = Some(started.wrapping_add(1));
+        let mut live = record(&new_id("l", 9, 0), 9_000, ScanStatus::Running);
+        live.owner = Some(parent);
+        live.owner_started = Some(started);
+        store.create(&stale).unwrap();
+        store.create(&live).unwrap();
+        assert_eq!(store.recover(10_000).unwrap(), 1);
+        assert_eq!(store.get(&stale.id).unwrap().status, ScanStatus::Aborted);
+        assert_eq!(store.get(&live.id).unwrap().status, ScanStatus::Running);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_start_time_reads_past_a_name_holding_spaces_and_parentheses() {
+        let stat = "42 (a) b (c)) S 1 42 42 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1 2";
+        assert_eq!(start_ticks_from_stat(stat), Some(987_654));
+        assert_eq!(start_ticks_from_stat("42 (truncated) S 1 2"), None);
+        assert_eq!(start_ticks_from_stat("no name"), None);
+        let (pid, started) = this_process();
+        assert_eq!(pid, std::process::id());
+        assert!(started.is_some());
+        assert_eq!(started, process_start_ticks(pid));
+        assert_eq!(process_start_ticks(u32::MAX), None);
+    }
+
+    #[test]
+    fn a_row_without_an_owner_start_time_still_parses_and_omits_it() {
+        let mut row =
+            serde_json::to_value(record(&new_id("o", 1, 0), 1, ScanStatus::Running)).unwrap();
+        assert!(row.get("owner_started").is_none());
+        row["owner"] = serde_json::json!(7);
+        let parsed: ScanRecord = serde_json::from_value(row).unwrap();
+        assert_eq!((parsed.owner, parsed.owner_started), (Some(7), None));
     }
 
     #[cfg(unix)]
