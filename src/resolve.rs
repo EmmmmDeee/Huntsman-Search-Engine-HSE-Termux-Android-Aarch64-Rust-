@@ -56,6 +56,60 @@ pub fn automatic_clusters(
         .collect()
 }
 
+/** Project adjudicated lineage outcomes into deterministic identity clusters.
+ *
+ * This read-only projection does not re-evaluate or relax the lineage
+ * independence gate. Held-only identities remain visible as singletons.
+ */
+#[must_use]
+pub fn clusters_from_lineage(resolution: &crate::lineage::Resolution) -> Vec<ResolutionCluster> {
+    let mut ids = resolution
+        .candidates
+        .iter()
+        .flat_map(|candidate| {
+            [
+                candidate.decision.left_entity_uid.clone(),
+                candidate.decision.right_entity_uid.clone(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    let index = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.clone(), i))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut uf = UnionFind::new(ids.len());
+    let mut approved = Vec::new();
+    for candidate in &resolution.candidates {
+        if !matches!(candidate.outcome, crate::lineage::MergeOutcome::AutoMerge) {
+            continue;
+        }
+        let left = index[&candidate.decision.left_entity_uid];
+        let right = index[&candidate.decision.right_entity_uid];
+        uf.union(left, right);
+        approved.push(left);
+    }
+    let mut counts = std::collections::BTreeMap::<usize, usize>::new();
+    for left in approved {
+        *counts.entry(uf.find(left)).or_default() += 1;
+    }
+    let mut clusters = uf
+        .groups()
+        .into_iter()
+        .map(|group| {
+            let root = group[0];
+            ResolutionCluster {
+                members: group.into_iter().map(|idx| ids[idx].clone()).collect(),
+                decision_count: counts.get(&uf.find(root)).copied().unwrap_or(0),
+            }
+        })
+        .collect::<Vec<_>>();
+    clusters.sort_by(|a, b| a.members.cmp(&b.members));
+    clusters
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +190,33 @@ mod tests {
             assert_eq!(members, [["a", "d"], ["b", "c"]]);
             assert!(clusters.iter().all(|c| c.decision_count == 1));
         }
+    }
+
+    #[test]
+    fn lineage_projection_preserves_held_candidates() {
+        use crate::lineage::{CandidateOutcome, MergeOutcome, Resolution};
+        let accepted = CandidateOutcome {
+            decision: decision("b", "a"),
+            independent_families: vec![],
+            unattributed_support: vec![],
+            outcome: MergeOutcome::AutoMerge,
+        };
+        let held = CandidateOutcome {
+            decision: decision("b", "c"),
+            independent_families: vec![],
+            unattributed_support: vec![],
+            outcome: MergeOutcome::Held { reasons: vec![] },
+        };
+        let resolution = Resolution {
+            policy: AutoMergePolicy::default(),
+            observations: vec![],
+            candidates: vec![held, accepted],
+        };
+        let clusters = clusters_from_lineage(&resolution);
+        assert_eq!(clusters.len(), 2);
+        assert_eq!(clusters[0].members, ["a", "b"]);
+        assert_eq!(clusters[0].decision_count, 1);
+        assert_eq!(clusters[1].members, ["c"]);
+        assert_eq!(clusters[1].decision_count, 0);
     }
 }
