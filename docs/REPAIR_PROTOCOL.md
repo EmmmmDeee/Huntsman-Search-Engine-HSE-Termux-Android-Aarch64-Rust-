@@ -64,7 +64,10 @@ The baseline snapshot is capped at **16 MiB** in memory. Git diff output,
 Git's untracked-path listing and the captured bytes of regular untracked
 files are bounded; oversized snapshots are **refused** with an explicit
 error, never truncated or reported as a pass. Non-regular file candidates
-are rejected before reading, avoiding accidental blocking reads. On a
+are rejected before reading, avoiding accidental blocking reads. On Linux and Android,
+opened file handles use non-blocking, no-follow flags, so replacing a regular file
+with a FIFO or symlink between the initial check and open cannot stall the gate
+or redirect it to an unrelated file. On a
 memory-constrained phone, move unrelated large temporary files outside the
 checkout or ignore appropriate generated files before rerunning the gate.
 This limit does not apply to scan evidence: it only limits the verification
