@@ -11,6 +11,8 @@ fn termux_runtime_harness_targets_current_binary_and_api_contract() {
 
     for required in [
         "command -v huntsman-recon",
+        "umask 077",
+        "chmod 600 \"$REPORT\" \"$SERVER_LOG\"",
         r#"ORIGINAL_PWD="$(pwd -P)""#,
         r#"HSE_BIN="$ORIGINAL_PWD/$HSE_BIN""#,
         r#"STATE_DIR="$(anchor_path "${HUNTSMAN_HOME:-$HOME/.huntsman}")""#,
@@ -102,8 +104,21 @@ fn free_port_below_the_ephemeral_range() -> u16 {
 /// Huntsman settings. Returns the process output and the report it wrote.
 fn run_harness(tag: &str, extra: &[(&str, &str)]) -> (Output, String) {
     let home = scratch(tag);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let state = home.join(".huntsman");
+        fs::create_dir_all(&state).unwrap();
+        for name in ["termux-acceptance.txt", "termux-acceptance-server.log"] {
+            let path = state.join(name);
+            fs::write(&path, b"previous run\n").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+        }
+    }
     let mut command = Command::new("bash");
     command
+        // Emulate a permissive caller; the harness must establish its own privacy.
+        .args(["-c", "umask 000; exec bash \"$1\"", "harness-test"])
         .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(HARNESS))
         .current_dir(&home)
         .env("HOME", &home)
@@ -124,6 +139,15 @@ fn run_harness(tag: &str, extra: &[(&str, &str)]) -> (Output, String) {
     let out = command.output().expect("bash runs the harness");
     let report =
         fs::read_to_string(home.join(".huntsman/termux-acceptance.txt")).unwrap_or_default();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for name in ["termux-acceptance.txt", "termux-acceptance-server.log"] {
+            let file = home.join(".huntsman").join(name);
+            let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{} must stay private", file.display());
+        }
+    }
     let _ = fs::remove_dir_all(&home);
     (out, report)
 }
