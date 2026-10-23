@@ -223,6 +223,5 @@ xposedornot	adapter	XposedOrNot breach-name leg reached through indicator_legs f
 yaml_lite	leaf	dependency-free YAML subset reader for Spiderfoot correlation rules
 submd	adapter	sub.md passive subdomain leg reached through indicator_legs from domain, scan and /api/lookup
 opencellid	adapter	OpenCelliD cell position leg reached through indicator_legs from network cell:MCC:MNC:AREA:CELL, scan and /api/lookup when its key is set
-mozilla_location	adapter	Mozilla Location Service BSSID leg reached through indicator_legs when its key is set
 exif	adapter	image EXIF metadata and GPS source reached from the exif command
 docmeta	adapter	document XMP packet and PDF /Info metadata and embedded GPS source reached from the docmeta command

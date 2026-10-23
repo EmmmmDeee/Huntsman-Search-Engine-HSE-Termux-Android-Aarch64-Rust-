@@ -1022,21 +1022,12 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
     },
     ReachableModule {
         name: "opencellid",
-        command: "cell MCC:MNC:LAC:CELLID",
+        command: "network cell:MCC:MNC:AREA:CELL",
         access: "keyed",
         network: true,
         category: ModuleCategory::Infrastructure,
         attack_techniques: &["T1590.005"],
         description: "OpenCelliD cell tower position (keyed)",
-    },
-    ReachableModule {
-        name: "mozilla_location",
-        command: "network BSSID",
-        access: "keyed",
-        network: true,
-        category: ModuleCategory::Infrastructure,
-        attack_techniques: &["T1590.005"],
-        description: "Mozilla Location Service WiFi BSSID geolocation (keyed)",
     },
     ReachableModule {
         name: "stopforumspam",

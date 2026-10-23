@@ -244,7 +244,6 @@ pub use ledger::{
 pub use session::Session;
 pub use stage::{EvidenceLevel, Status};
 
-pub mod mozilla_location;
 pub mod opencellid;
 #[cfg(test)]
 mod test_support;
