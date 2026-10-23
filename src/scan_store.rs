@@ -776,11 +776,12 @@ impl ScanStore {
 }
 
 /// This process's id and start time, as a scan it runs records them in its row.
+/// Read the current PID's start time each call: a fork inherits static caches,
+/// but its child PID must not inherit the parent's process-start identity.
 #[must_use]
 pub fn this_process() -> (u32, Option<u64>) {
-    static STARTED: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
     let pid = std::process::id();
-    (pid, *STARTED.get_or_init(|| process_start_ticks(pid)))
+    (pid, process_start_ticks(pid))
 }
 
 /// When process `pid` started, in clock ticks since boot: field 22 of `/proc/PID/stat`. `None`
