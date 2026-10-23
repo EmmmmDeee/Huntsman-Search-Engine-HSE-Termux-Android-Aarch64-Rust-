@@ -332,6 +332,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 </div>
 <div class="panel"><div class="panel-heading">Data Types <span class="badge" id="bars-n"></span></div><div class="bars" id="bars"></div></div>
 <div class="panel"><div class="panel-heading">Sources <span class="badge" id="srcs-n"></span></div><p class="help pad" id="srcs-coverage" role="status"></p><div class="table-wrap"><table class="sortable"><thead><tr><th>Source</th><th>Outcome</th><th>Detail</th></tr></thead><tbody id="srcs"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Uncertainty register <span class="badge" id="unc-n"></span> <button class="btn" id="uncdownload" type="button">Save JSON</button></div><p class="help pad" id="uncnote" role="status"></p><div class="table-wrap"><table><thead><tr><th>Priority</th><th>Uncertainty / source</th><th>Evidence</th><th>Next verification</th></tr></thead><tbody id="uncrows"></tbody></table></div></div>
 </div>
 <div id="pane-correlations" hidden>
 <div class="toolbar"><button class="btn" id="recorrelate" type="button">Re-run Correlations</button><details class="menu" id="cexport"><summary class="btn">Export Correlations</summary><div class="menu-list"><button type="button" data-cformat="csv">CSV</button><button type="button" data-cformat="xlsx">Excel</button><button type="button" data-cformat="json">JSON</button><button type="button" data-cformat="tsv">TSV</button></div></details></div>
@@ -872,6 +873,7 @@ $('scdelete').onclick=()=>act1('delete',[sid]);
 const errors=s=>Array.isArray(s.errors)?s.errors.length:(s.errors||0);
 // A source's outcome as the scan saved it: what it found, its HTTP status, when to retry, and why.
 const why=o=>[o.found!=null&&'found '+o.found,o.http_status&&'HTTP '+o.http_status,o.retry_after_secs&&'retry after '+o.retry_after_secs+' s',o.detail].filter(Boolean).join(' · ');
+$('uncdownload').onclick=()=>{if(scan?.uncertainty_register)save(scan.uncertainty_register,'huntsman-uncertainties-'+sid)};
 // These are saved source execution outcomes, not a claim that all available sources ran.
 const coverage=s=>!s||s.unit!=='source_execution'?'Execution coverage unavailable; inspect the source outcomes.':
   !s.total?'No recorded source executions; coverage is unknown.':
@@ -896,6 +898,18 @@ async function summary(){
   $('srcs-coverage').textContent=coverage(scan.source_execution_summary);
   fill('srcs',src,o=>[o.module,'',why(o)]);
   [...$('srcs').rows].forEach((tr,i)=>{const o=src[i];if(o)tr.cells[1].replaceChildren(el('span','label '+(tone[o.outcome]||'bad'),o.outcome))});
+  const register=scan.uncertainty_register;
+  const unresolved=register?.items||[];
+  $('unc-n').textContent=unresolved.length;
+  $('uncnote').textContent=register?
+    register.unresolved_executions+' unresolved execution(s) across '+register.distinct_provider_issues+' distinct provider issue(s); discovery completeness remains unverified.':
+    'Uncertainty register unavailable in this scan response.';
+  fill('uncrows',unresolved,i=>[
+    'P'+i.priority,
+    (i.module?i.module+': ':'')+i.uncertainty,
+    i.evidence_path+(i.observations?' · '+i.observations+' observation(s)'+(i.last_observed_unix?' · last '+when(i.last_observed_unix*1000):''):''),
+    i.next_action
+  ]);
 }
 // A data element as Spiderfoot lists it, opening to the whole raw record it came from.
 function value(v){
