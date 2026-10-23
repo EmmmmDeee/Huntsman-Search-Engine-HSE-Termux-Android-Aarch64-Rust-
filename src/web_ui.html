@@ -332,7 +332,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 </div>
 <div class="panel"><div class="panel-heading">Data Types <span class="badge" id="bars-n"></span></div><div class="bars" id="bars"></div></div>
 <div class="panel"><div class="panel-heading">Sources <span class="badge" id="srcs-n"></span></div><p class="help pad" id="srcs-coverage" role="status"></p><div class="table-wrap"><table class="sortable"><thead><tr><th>Source</th><th>Outcome</th><th>Detail</th></tr></thead><tbody id="srcs"></tbody></table></div></div>
-<div class="panel"><div class="panel-heading">Uncertainty register <span class="badge" id="unc-n"></span> <button class="btn" id="uncdownload" type="button">Save JSON</button></div><p class="help pad" id="uncnote" role="status"></p><div class="table-wrap"><table><thead><tr><th>Priority</th><th>Uncertainty / source</th><th>Evidence</th><th>Next verification</th></tr></thead><tbody id="uncrows"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Uncertainty register <span class="badge" id="unc-n"></span> <button class="btn" id="uncdownload" type="button">Save JSON</button> <button class="btn" id="rawdownload" type="button">Save full TXT</button></div><p class="help pad" id="uncnote" role="status"></p><div class="table-wrap"><table><thead><tr><th>Priority</th><th>Uncertainty / source</th><th>Evidence</th><th>Next verification</th></tr></thead><tbody id="uncrows"></tbody></table></div></div>
 </div>
 <div id="pane-correlations" hidden>
 <div class="toolbar"><button class="btn" id="recorrelate" type="button">Re-run Correlations</button><details class="menu" id="cexport"><summary class="btn">Export Correlations</summary><div class="menu-list"><button type="button" data-cformat="csv">CSV</button><button type="button" data-cformat="xlsx">Excel</button><button type="button" data-cformat="json">JSON</button><button type="button" data-cformat="tsv">TSV</button></div></details></div>
@@ -874,6 +874,47 @@ const errors=s=>Array.isArray(s.errors)?s.errors.length:(s.errors||0);
 // A source's outcome as the scan saved it: what it found, its HTTP status, when to retry, and why.
 const why=o=>[o.found!=null&&'found '+o.found,o.http_status&&'HTTP '+o.http_status,o.retry_after_secs&&'retry after '+o.retry_after_secs+' s',o.detail].filter(Boolean).join(' · ');
 $('uncdownload').onclick=()=>{if(scan?.uncertainty_register)save(scan.uncertainty_register,'huntsman-uncertainties-'+sid)};
+
+// An explicit, lossless export of everything the saved-scan API returns from these endpoints.
+// Raw JSON objects are preserved unchanged; no 200-row UI pagination applies to the export.
+// This is not a claim of exhaustive external collection and the endpoint reads are not atomic.
+$('rawdownload').onclick=async()=>{
+  const control=$('rawdownload');
+  control.disabled=true;
+  try{
+    if(!scan)throw Error('No scan has been loaded.');
+    const snapshot=scan;
+    const scanId=sid;
+    const allElements=await elements('');
+    const allCorrelations=await get('correlations',base()+'/correlations');
+    const allGraph=await get('graph',base()+'/graph');
+    const fence=String.fromCharCode(96).repeat(3);
+    const parts=[fence+'text\n',
+      '[HUNTSMAN_SAVED_SCAN_RAW_DUMP_V1]\n',
+      'SCAN_ID: '+scanId+'\n',
+      'EXPORTED_AT_UTC: '+new Date().toISOString()+'\n',
+      'EVIDENCE_SCOPE: SAVED_SCAN_AND_DERIVED_ENDPOINTS\n',
+      'COVERAGE: UNKNOWN_BEYOND_RECORDED_SOURCES\n',
+      'CONSISTENCY: NON_ATOMIC_ENDPOINT_SNAPSHOT\n'];
+    const append=(label,value)=>{
+      parts.push('\n[START_'+label+']\n',JSON.stringify(value),'\n[END_'+label+']\n');
+    };
+    append('SCAN_METADATA',snapshot);
+    append('SOURCE_EXECUTIONS',snapshot.sources||[]);
+    append('UNCERTAINTY_REGISTER',snapshot.uncertainty_register??null);
+    append('DATA_ELEMENTS',allElements);
+    append('CORRELATIONS',allCorrelations);
+    append('RELATIONSHIP_GRAPH',allGraph);
+    parts.push('[END_HUNTSMAN_SAVED_SCAN_RAW_DUMP_V1]\n',fence+'\n');
+    download(new Blob(parts,{type:'text/plain;charset=utf-8'}),
+      'huntsman-evidence-'+scanId+'-'+Date.now()+'.txt');
+  }catch(e){
+    fail('scerror','Full TXT export unavailable: '+e.message);
+  }finally{
+    control.disabled=false;
+  }
+};
+
 // These are saved source execution outcomes, not a claim that all available sources ran.
 const coverage=s=>!s||s.unit!=='source_execution'?'Execution coverage unavailable; inspect the source outcomes.':
   !s.total?'No recorded source executions; coverage is unknown.':
