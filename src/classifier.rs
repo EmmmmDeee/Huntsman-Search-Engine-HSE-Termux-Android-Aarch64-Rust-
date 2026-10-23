@@ -142,7 +142,8 @@ fn abn_acn(value: &str) -> Option<String> {
 /// and no `::`, which is how an EUI-64, Fibre Channel WWN or IEEE 802.15.4 identifier is
 /// written, not an address. The compressed form [`classify`] stores is checked as well as the
 /// input, so `0010:0020:...` and `10:20:...` are refused alike and a stored value classifies
-/// as it did.
+/// as it did. The rule reads how a value is written: the same 128 bits written with a
+/// one-digit group (`50:6:1:60:3b:20:19:88`) are still an address.
 fn parse_ipv6(value: &str) -> Option<std::net::Ipv6Addr> {
     let two_digit_groups = |text: &str| text.split(':').all(|group| group.len() == 2);
     if two_digit_groups(value) {

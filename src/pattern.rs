@@ -529,7 +529,7 @@ impl Compiler {
     }
 
     /// One more copy of a repeat's `node`. The first is compiled and its span kept in `body`;
-    /// each later one moves that code, jumps and all, to the end of the program, so a copy
+    /// each later one copies that code, jumps shifted, onto the end of the program, so a copy
     /// costs its instructions and never the body's own work again: `(?:a{0}...a{0}b){19999}`
     /// compiles its thousands of `a{0}` once, not once a copy.
     fn copy(&mut self, node: &Node, body: &mut Option<(usize, usize)>) -> Result<(), String> {
@@ -539,7 +539,7 @@ impl Compiler {
             *body = Some((start, self.prog.len()));
             return Ok(());
         };
-        // Every jump in the body lands inside it or just past its end, so one shift moves them.
+        // Every jump in the body lands inside it or just past its end, so one shift fits them all.
         let shift = self.prog.len() - start;
         for index in start..end {
             let inst = match &self.prog[index] {
@@ -856,7 +856,7 @@ mod tests {
         let body = "(?:x|y(?:z|[0-9])*\\b|w{2,3})";
         let once = node_calls(body);
         // The repeat and one compile of its body: every other copy, required, optional or the
-        // loop of `{n,}`, moves that code, so the count does not depend on timing.
+        // loop of `{n,}`, copies that code, so the count does not depend on timing.
         for bounds in ["{3}", "{1,3}", "{0,3}", "{2,}", "+", "*", "?"] {
             assert_eq!(node_calls(&format!("{body}{bounds}")), once + 1, "{bounds}");
         }
