@@ -194,7 +194,7 @@ jobs:
       - name: Run shared host repair acceptance
         run: cargo run --locked -p xtask -- gate full
       - name: Build portable self-hosted container
-        run: docker build --pull --build-arg HUNTSMAN_BUILD_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:container .
+        run: bash scripts/container-build-retry.sh --pull --build-arg HUNTSMAN_BUILD_SHA="$GITHUB_SHA" -f Dockerfile -t huntsman-recon:container .
       - name: Exercise self-hosted container runtime
         shell: bash
         run: |
