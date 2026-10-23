@@ -1255,7 +1255,10 @@ fn run_installer_with(
         .env("FAKE_ASSETS", &assets)
         .env("HUNTSMAN_CHANNEL", "recon")
         .env("HUNTSMAN_RELEASE_TAG", "main-0a1b2c3")
-        .env("HUNTSMAN_TEST_BUILD_SHA", "0a1b2c3000000000000000000000000000000000")
+        .env(
+            "HUNTSMAN_TEST_BUILD_SHA",
+            "0a1b2c3000000000000000000000000000000000",
+        )
         .output()
         .expect("bash must run");
     let text =
@@ -1401,7 +1404,10 @@ fn installer_rejects_missing_or_invalid_embedded_revision() {
     let sha = installer_sha_line("invalid-embedded-revision", invalid.as_bytes());
     let (code, text, root) = run_installer("invalid-revision", invalid.as_bytes(), &sha);
     assert_ne!(code, Some(0), "invalid revision was accepted: {text}");
-    assert!(text.contains("staged binary has invalid build-sha"), "{text}");
+    assert!(
+        text.contains("staged binary has invalid build-sha"),
+        "{text}"
+    );
     assert_eq!(
         fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
         b"old build\n"
@@ -1587,14 +1593,13 @@ fn the_repository_installer_installs_the_newest_published_recon_build() {
     }
     // main~0 has no build yet (a docs-only change, or one still building); main~1 has one.
     let refs = [commit_id('a'), commit_id('b'), commit_id('c')];
-    let (code, text, urls, root) =
-        run_tag_resolving_installer(
-            "newest",
-            Path::new(INSTALL),
-            &refs,
-            &[&refs[1], &refs[2]],
-            &refs[1],
-        );
+    let (code, text, urls, root) = run_tag_resolving_installer(
+        "newest",
+        Path::new(INSTALL),
+        &refs,
+        &[&refs[1], &refs[2]],
+        &refs[1],
+    );
     assert_eq!(code, Some(0), "{text}");
     assert_eq!(
         fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
@@ -1659,13 +1664,7 @@ fn a_release_stamped_installer_never_asks_the_api_for_a_tag() {
     fs::write(&stamped, source.replace("@RECON_TAG@", "main-eeeeeee")).unwrap();
     let refs = [commit_id('a'), commit_id('e')];
     let (code, text, urls, root) =
-        run_tag_resolving_installer(
-            "stamped",
-            &stamped,
-            &refs,
-            &[&refs[0], &refs[1]],
-            &refs[1],
-        );
+        run_tag_resolving_installer("stamped", &stamped, &refs, &[&refs[0], &refs[1]], &refs[1]);
     assert_eq!(code, Some(0), "{text}");
     assert!(text.contains("(main-eeeeeee)"), "{text}");
     assert!(!urls.contains("api.github.com"), "{urls}");
