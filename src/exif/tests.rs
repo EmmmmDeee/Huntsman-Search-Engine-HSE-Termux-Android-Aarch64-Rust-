@@ -476,12 +476,17 @@ fn png_chunks_require_the_complete_crc_field() {
         full.extend_from_slice(kind);
         full.extend_from_slice(&[0_u8; 4]);
         let complete = super::png_chunks(&full)
-            .next().expect("one chunk").expect("complete CRC");
+            .next()
+            .expect("one chunk")
+            .expect("complete CRC");
         assert_eq!(complete.0, kind);
         for missing in 1..=4 {
             let truncated = &full[..full.len() - missing];
             assert!(
-                super::png_chunks(truncated).next().expect("truncated chunk").is_err(),
+                super::png_chunks(truncated)
+                    .next()
+                    .expect("truncated chunk")
+                    .is_err(),
                 "{kind:?}: missing {missing} CRC bytes must be rejected"
             );
         }
