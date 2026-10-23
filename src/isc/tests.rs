@@ -84,6 +84,18 @@ fn reports_count_and_an_empty_record_is_a_valid_zero() {
 }
 
 #[test]
+fn web_honeypot_activity_alone_is_malicious_not_a_valid_zero() {
+    let weblogs_only = r#"{"ip":{"number":"45.148.10.99","count":null,"attacks":null,"weblogs":{"count":5,"firstseen":"2026-02-04","lastseen":"2026-02-04"}}}"#;
+    let found = finding(weblogs_only, "45.148.10.99");
+    assert_eq!(found.tags, [tags::MALICIOUS]);
+    assert_eq!(attr(&found, "malicious"), Some("5"));
+    assert_eq!(
+        attr(&found, "weblogs"),
+        Some("count=5, firstseen=2026-02-04, lastseen=2026-02-04")
+    );
+}
+
+#[test]
 fn an_answer_on_another_address_or_not_the_shape_is_refused() {
     assert!(matches!(
         decode(NETWORK_ONLY.as_bytes(), Indicator::Ip("192.0.2.9")),

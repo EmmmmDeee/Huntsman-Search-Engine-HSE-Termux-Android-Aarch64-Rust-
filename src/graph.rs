@@ -82,18 +82,6 @@ impl EntityRelation {
             evidence: Vec::new(),
         }
     }
-
-    #[must_use]
-    pub fn with_label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
-        self
-    }
-
-    #[must_use]
-    pub fn with_evidence(mut self, evidence: Evidence) -> Self {
-        self.evidence.push(evidence);
-        self
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

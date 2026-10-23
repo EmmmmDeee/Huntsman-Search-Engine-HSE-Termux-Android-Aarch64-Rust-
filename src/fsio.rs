@@ -18,7 +18,7 @@ static TEMP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 /// exited. A margin against a writer that has only just gone.
 const STALE_TEMP_AGE: Duration = Duration::from_secs(10 * 60);
 
-fn store_err(path: &Path, e: &std::io::Error) -> Error {
+pub(crate) fn store_err(path: &Path, e: &std::io::Error) -> Error {
     Error::Store(format!("{}: {e}", path.display()))
 }
 
@@ -87,15 +87,42 @@ pub(crate) fn same_inode(_linked: &fs::Metadata, _opened: &fs::Metadata) -> bool
     true
 }
 
+/// Open a read candidate without blocking on a FIFO swapped in after `lstat`.
+///
+/// Linux and Android expose `O_NONBLOCK` (0o4000) and `O_NOFOLLOW` (0o400000);
+/// the opened descriptor must still pass the existing regular-file and inode
+/// checks. Keep the ordinary portable open on other targets.
+fn open_read_candidate(path: &Path) -> Result<File, Error> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        const O_NONBLOCK: i32 = 0o4_000;
+        const O_NOFOLLOW: i32 = 0o400_000;
+        options.custom_flags(O_NONBLOCK | O_NOFOLLOW);
+    }
+    options.open(path).map_err(|error| {
+        // O_NOFOLLOW reports ELOOP when the checked file was swapped for a
+        // symlink. Preserve the public refusal contract rather than exposing
+        // an arbitrary platform error or retrying through the link.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if error.raw_os_error() == Some(40) {
+            return Error::Store(format!("{}: {REFUSED_SYMLINK}", path.display()));
+        }
+        store_err(path, &error)
+    })
+}
+
 /// Read at most `max` bytes. Larger files, symlinks, and non-files are refused.
 ///
 /// The path is checked before opening so FIFOs/devices are rejected instead of
 /// potentially blocking or triggering device behavior. The opened handle is
 /// checked again before reading: it must be the inode `lstat` saw and a regular
 /// file, so a link or a replacement planted between the check and the open is
-/// refused rather than followed. `O_NOFOLLOW` is not set, because its value
-/// differs per architecture and would need the `libc` crate; comparing the
-/// descriptor with the `lstat` result closes the same window.
+/// refused rather than followed. On Linux/Android, `O_NONBLOCK | O_NOFOLLOW`
+/// also prevents FIFO blocking and symlink traversal before the descriptor is
+/// validated; inode comparison remains mandatory after opening.
 ///
 /// # Errors
 /// `Error::Store` on a symlink, non-file, IO failure, a file over `max` bytes, or
@@ -103,7 +130,7 @@ pub(crate) fn same_inode(_linked: &fs::Metadata, _opened: &fs::Metadata) -> bool
 pub fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, Error> {
     let path_meta = fs::symlink_metadata(path).map_err(|e| store_err(path, &e))?;
     require_regular_file(path, &path_meta)?;
-    let file = File::open(path).map_err(|e| store_err(path, &e))?;
+    let file = open_read_candidate(path)?;
     read_opened(path, &path_meta, file, max)
 }
 
@@ -133,7 +160,7 @@ fn read_bounded_replacing_with(
         let linked = fs::symlink_metadata(path).map_err(|e| store_err(path, &e))?;
         require_regular_file(path, &linked)?;
         after_check();
-        let file = File::open(path).map_err(|e| store_err(path, &e))?;
+        let file = open_read_candidate(path)?;
         let opened = file.metadata().map_err(|e| store_err(path, &e))?;
         if !same_inode(&linked, &opened) {
             if attempt + 1 < MAX_ATTEMPTS {
@@ -160,6 +187,12 @@ fn read_opened(path: &Path, linked: &fs::Metadata, file: File, max: u64) -> Resu
         )));
     }
     require_regular_file(path, &opened)?;
+    read_to_bound(path, file, max)
+}
+
+/// At most `max` bytes of `file`, opened from `path` and already checked: a file that holds more
+/// is refused without reading past `max + 1` bytes, even if it grew after the check.
+pub(crate) fn read_to_bound(path: &Path, file: File, max: u64) -> Result<Vec<u8>, Error> {
     let mut body = Vec::new();
     file.take(max.saturating_add(1))
         .read_to_end(&mut body)
@@ -585,6 +618,39 @@ mod tests {
         .expect_err("a new symlink must never be accepted as an atomic replacement");
         assert!(failure.to_string().contains(REFUSED_SYMLINK));
         assert_eq!(fs::read(&other).unwrap(), b"unrelated");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn replacing_reader_does_not_block_when_a_fifo_replaces_a_checked_file() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = scratch("fifo-after-check");
+        let path = dir.join("scan.json");
+        fs::write(&path, b"original").unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let candidate = path.clone();
+        let worker = std::thread::spawn(move || {
+            let result = read_bounded_replacing_with(&candidate, 32, || {
+                if fs::symlink_metadata(&candidate).is_ok_and(|meta| meta.is_file()) {
+                    fs::remove_file(&candidate).unwrap();
+                    let created = std::process::Command::new("mkfifo")
+                        .arg(&candidate)
+                        .status()
+                        .expect("mkfifo available on Linux/Termux");
+                    assert!(created.success(), "could not replace file with FIFO");
+                }
+            });
+            let _ = sender.send(result.map(|_| ()).map_err(|error| error.to_string()));
+        });
+        let result = receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("FIFO replacement must not block the bounded reader");
+        worker.join().expect("reader worker");
+        let message = result.expect_err("replaced FIFO must not be read");
+        assert!(message.contains(NOT_REGULAR_FILE), "{message}");
         let _ = fs::remove_dir_all(&dir);
     }
 

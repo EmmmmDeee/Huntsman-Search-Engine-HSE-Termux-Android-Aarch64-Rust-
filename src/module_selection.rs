@@ -52,14 +52,6 @@ impl Selection {
     pub const fn is_all(&self) -> bool {
         self.only.is_none()
     }
-
-    /// The modules chosen, in name order; `None` when every module runs.
-    #[must_use]
-    pub fn names(&self) -> Option<Vec<&str>> {
-        self.only
-            .as_ref()
-            .map(|names| names.iter().map(String::as_str).collect())
-    }
 }
 
 /// `inner`, asking only the modules `selection` runs. Every request, resolution and UDP exchange
@@ -76,14 +68,9 @@ impl<T> Selected<T> {
     pub const fn new(inner: T, selection: Selection) -> Self {
         Self { inner, selection }
     }
-
-    #[must_use]
-    pub const fn selection(&self) -> &Selection {
-        &self.selection
-    }
 }
 
-impl<T: Transport> Transport for Selected<T> {
+impl<T: Transport + Sync> Transport for Selected<T> {
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
         self.inner.send(request)
     }
@@ -102,6 +89,11 @@ impl<T: Transport> Transport for Selected<T> {
 
     fn runs_module(&self, module: &str) -> bool {
         self.selection.runs(module) && self.inner.runs_module(module)
+    }
+
+    /// Shared as itself, so a source asked from another thread is still held to the selection.
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        self.inner.shared().map(|_| self as &(dyn Transport + Sync))
     }
 }
 
@@ -125,12 +117,11 @@ mod tests {
     #[test]
     fn a_selection_runs_what_it_names_and_all_runs_everything() {
         let all = Selection::all();
-        assert!(all.is_all() && all.runs("shodan") && all.names().is_none());
+        assert!(all.is_all() && all.runs("shodan"));
         let some = Selection::only(["spamhaus", "crtsh"]);
         assert!(!some.is_all());
         assert!(some.runs("spamhaus") && some.runs("crtsh"));
         assert!(!some.runs("shodan") && !some.runs("spamhaus.zen"));
-        assert_eq!(some.names(), Some(vec!["crtsh", "spamhaus"]));
         assert!(!Selection::only(Vec::<String>::new()).runs("crtsh"));
     }
 

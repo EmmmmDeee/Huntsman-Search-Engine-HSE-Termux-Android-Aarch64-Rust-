@@ -376,14 +376,24 @@ pub const PROVIDERS: &[Provider] = &[
     },
 ];
 
+/// The slots that read a second name, as `(slot, alias)`: `HUNTSMAN_HIBP_KEY` falls back to a
+/// `HIBP_API_KEY` entry, HIBP's own name for the same key. A slot reads its alias only when the
+/// slot itself is unset.
+pub(crate) const SLOT_FALLBACKS: &[(&str, &str)] = &[(
+    crate::environment::HUNTSMAN_HIBP_KEY_ENV,
+    crate::environment::HIBP_API_KEY_ENV,
+)];
+
 /// The secret `keys` holds for `slot`: the one rule from a slot to its key, which
 /// `credential-status` reports with and a lookup must use. `HUNTSMAN_HIBP_KEY` falls back to a
 /// `HIBP_API_KEY` entry, HIBP's own name for the same key.
 #[must_use]
 pub fn secret_for_slot(keys: &Keys, slot: &str) -> Option<Secret> {
-    keys.get(slot).or_else(|| match slot {
-        crate::environment::HUNTSMAN_HIBP_KEY_ENV => keys.get(crate::environment::HIBP_API_KEY_ENV),
-        _ => None,
+    keys.get(slot).or_else(|| {
+        SLOT_FALLBACKS
+            .iter()
+            .find(|(fallback, _)| *fallback == slot)
+            .and_then(|(_, alias)| keys.get(alias))
     })
 }
 
@@ -440,6 +450,11 @@ fn write_unrecognised(out: &mut String, keys: &Keys) {
             out.push_str(" (installer uses ");
             out.push_str(crate::environment::INSTALL_ROOT_ENV);
             out.push_str(" only when invoked)");
+        } else if slot == crate::environment::RETIRED_MOZILLA_LOCATION_KEY_ENV {
+            out.push_str(
+                "Mozilla retired the Location Service API on 2024-06-12 and nothing reads this key; remove with huntsman-recon keys remove ",
+            );
+            out.push_str(crate::environment::RETIRED_MOZILLA_LOCATION_KEY_ENV);
         } else {
             out.push_str("matches no provider; rename it to the exact slot or remove it");
         }
@@ -491,7 +506,7 @@ pub fn probe<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> Vec<ProviderP
                     evidence: Vec::new(),
                 };
             };
-            match probe_service(transport, service.name, secret.expose()) {
+            match probe_service(transport, service.name, &secret) {
                 Ok(result) => {
                     let probe = match result.verdict {
                         ProbeVerdict::Valid => ProbeState::Valid,
@@ -808,6 +823,30 @@ mod tests {
     }
 
     #[test]
+    fn a_challenge_page_leaves_the_hibp_key_unchecked() {
+        // HIBP is behind Cloudflare. Its interstitial, served with 403 or with 200, never reached
+        // HIBP, so the key is neither rejected nor valid.
+        let keys = Keys::parse("HUNTSMAN_HIBP_KEY=fake-hibp-key-never-render\n").expect("keys");
+        let page = "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>cloudflare <script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/jsch/v1\"></script></body></html>";
+        for status in [403, 200] {
+            let transport = FakeTransport {
+                response: Response {
+                    status,
+                    headers: Vec::new(),
+                    body: page.as_bytes().to_vec(),
+                    truncated: false,
+                },
+                seen: RefCell::new(Vec::new()),
+            };
+            let rendered = render_probed(&keys, &transport);
+            assert!(
+                rendered.contains("provider=HIBP\tstate=configured\tprobe=indeterminate"),
+                "HTTP {status}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
     fn unconfigured_and_unregistered_probes_stay_explicit() {
         let keys = Keys::parse("HUNTSMAN_BRAVE_KEY=brave-key\n").expect("keys");
         let transport = FakeTransport {
@@ -876,6 +915,26 @@ mod tests {
                 "{name} should be unrecognised"
             );
         }
+    }
+
+    /// A key for the retired Mozilla Location Service is read by nothing; it is named as retired,
+    /// with the command that removes it, and its value is never shown.
+    #[test]
+    fn a_retired_mozilla_location_key_is_named_as_retired() {
+        let slot = crate::environment::RETIRED_MOZILLA_LOCATION_KEY_ENV;
+        let keys = Keys::parse(&format!("{slot}=mls-private-value\n")).expect("keys");
+        assert_eq!(unrecognised_slots(&keys), vec![slot]);
+        let rendered = render(&keys);
+        assert!(
+            rendered.contains(&format!("unrecognised_slot={slot}")),
+            "{rendered}"
+        );
+        assert!(rendered.contains("retired"), "{rendered}");
+        assert!(
+            rendered.contains(&format!("huntsman-recon keys remove {slot}")),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("mls-private-value"), "{rendered}");
     }
 
     #[test]

@@ -741,6 +741,15 @@ fn scans_search_finds_values_in_every_scan_or_the_ones_named() {
     );
     assert_eq!(run(&["scans", "search"]).status.code(), Some(64));
     assert_eq!(run(&["scans", "search", "/(a/"]).status.code(), Some(64));
+    // Groups nested past the limit are a bad pattern too, not a stack overflow.
+    let hostile = run(&["scans", "search", &format!("/{}/", "(".repeat(100_000))]);
+    assert_eq!(
+        hostile.status.code(),
+        Some(64),
+        "{}",
+        String::from_utf8_lossy(&hostile.stderr)
+    );
+    assert!(String::from_utf8_lossy(&hostile.stderr).contains("nested too deeply"));
     assert_eq!(
         run(&["scans", "search", "x", "0000000000000000"])
             .status
@@ -977,6 +986,24 @@ fn investigate_reports_digit_groups_as_whole_identifiers_and_addresses() {
 }
 
 #[test]
+fn investigate_reads_addresses_in_angle_brackets_and_bare_ipv6() {
+    let out = bin()
+        .arg("investigate")
+        .arg("From: Ada Lovelace <ada@example.com> via 2606:4700:4700::1111, order 123456")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("entities=2"), "{stdout:?}");
+    assert!(stdout.contains("email\tada@example.com"), "{stdout:?}");
+    assert!(
+        stdout.contains("ip_address\t2606:4700:4700::1111"),
+        "{stdout:?}"
+    );
+    assert!(!stdout.contains("abn_acn"), "{stdout:?}");
+}
+
+#[test]
 fn investigate_reads_one_bounded_local_file() {
     let dir = scratch("investigate-file");
     let path = dir.join("input.txt");
@@ -1096,6 +1123,27 @@ fn identifier_geohash_and_coarsen_commands() {
     );
     assert_eq!(run(&["geohash", "0,0", "99"]).0, Some(65));
     assert_eq!(run(&["geohash", "0,0", "x"]).0, Some(65));
+    // A hash on its own decodes to the cell it names, which holds the encoded point.
+    assert_eq!(
+        run(&["geohash", "u4pruydqqvj"]),
+        (
+            Some(0),
+            "center=57.64911063,10.40743969\nlat_min=57.64910996\nlat_max=57.64911130\n\
+             lon_min=10.40743902\nlon_max=10.40744036\n"
+                .into()
+        )
+    );
+    assert_eq!(run(&["geohash", "U4PRUYD"]).0, Some(0), "case is folded");
+    assert_eq!(
+        run(&["geohash", "u4pa"]).0,
+        Some(65),
+        "a is not in the alphabet"
+    );
+    assert_eq!(
+        run(&["geohash", "u4pruydqqvjxy"]).0,
+        Some(65),
+        "13 characters"
+    );
     assert_eq!(
         run(&["coarsen", "-27.4698,153.0251"]),
         (Some(0), "-27.5,153.0\n".into())

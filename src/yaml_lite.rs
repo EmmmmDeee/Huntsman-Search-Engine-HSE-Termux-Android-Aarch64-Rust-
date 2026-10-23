@@ -303,7 +303,12 @@ impl Reader {
             out = content.join("\n");
         }
         match chomp {
-            Chomp::Strip => {}
+            Chomp::Strip => {
+                // A folded scalar's more-indented last line ends in its line break.
+                if out.ends_with('\n') {
+                    out.pop();
+                }
+            }
             Chomp::Clip => {
                 if !out.is_empty() && !out.ends_with('\n') {
                     out.push('\n');
@@ -605,6 +610,9 @@ literal: |
 stripped: >-
   folded
   text
+stripped_indented: >-
+  folded
+    more indented
 ";
         assert_eq!(
             parse(doc).unwrap(),
@@ -620,6 +628,7 @@ stripped: >-
                 "list": ["one", {"two": 2, "three": 3}, ["nested"]],
                 "literal": "line one\n  indented\nline three\n",
                 "stripped": "folded text",
+                "stripped_indented": "folded\n  more indented",
             })
         );
     }
@@ -640,5 +649,79 @@ stripped: >-
         }
         let deep: String = (0..100).map(|depth| " ".repeat(depth) + "k:\n").collect();
         assert!(parse(&deep).unwrap_err().reason.contains("deeply"));
+    }
+}
+
+#[cfg(test)]
+mod hostile {
+    use super::*;
+
+    /// A fixed-seed xorshift, so a failing document is reproduced by its case number.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn pick<'a>(&mut self, from: &[&'a str]) -> &'a str {
+            from[usize::try_from(self.next() % from.len() as u64).unwrap_or(0)]
+        }
+    }
+
+    const PIECES: &[&str] = &[
+        "- ", "-", "key: ", "k:", "a b: ", "'", "''", "\"", "\\\"", "\\u12", "|", "|-", "|+", ">",
+        ">-", "#", " #c", "---", "...", "[", "{", "&a", "*a", "!t", "true", "~", "1e9", "-0",
+        "0x1f", "é", "😀", "\u{FEFF}", ":", "  ", "    ", "x", "- - ", "? ",
+    ];
+
+    /// Any document built from YAML's own syntax is either read or refused with a line: none
+    /// panics, and each is answered in bounded time.
+    #[test]
+    fn every_generated_document_is_read_or_refused_never_a_panic() {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for case in 0..20_000 {
+            let mut doc = String::new();
+            for _ in 0..(rng.next() % 12) {
+                for _ in 0..(rng.next() % 4) {
+                    doc.push_str(rng.pick(&["", " ", "  ", "    ", "      "]));
+                }
+                for _ in 0..(rng.next() % 5) {
+                    doc.push_str(rng.pick(PIECES));
+                }
+                doc.push('\n');
+            }
+            let outcome = std::panic::catch_unwind(|| parse(&doc));
+            assert!(outcome.is_ok(), "case {case} panicked on {doc:?}");
+            if let Ok(Err(error)) = outcome {
+                assert!(error.line >= 1, "case {case}: {error:?}");
+            }
+        }
+    }
+
+    /// Nesting past the limit is refused, whichever way it nests, before the stack runs out.
+    #[test]
+    fn nesting_past_the_limit_is_refused_not_a_stack_overflow() {
+        // Indented nesting costs its depth in bytes per line, so 300 levels stay under MAX_BYTES;
+        // nesting on one line costs two bytes a level.
+        let indented = 300;
+        let (mut mappings, mut sequences) = (String::new(), String::new());
+        for level in 0..indented {
+            mappings.push_str(&" ".repeat(level));
+            mappings.push('k');
+            mappings.push_str(&level.to_string());
+            mappings.push_str(":\n");
+            sequences.push_str(&" ".repeat(level * 2));
+            sequences.push_str("-\n");
+        }
+        let inline = format!("{}x\n", "- ".repeat(50_000));
+        for doc in [mappings, sequences, inline] {
+            assert!(doc.len() <= MAX_BYTES, "{}", doc.len());
+            let error = parse(&doc).expect_err("too deep");
+            assert!(error.reason.contains("deep"), "{error:?}");
+        }
     }
 }

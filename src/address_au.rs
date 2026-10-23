@@ -379,11 +379,6 @@ impl AuLineType {
             Self::Premium => "premium-rate",
         }
     }
-
-    #[must_use]
-    pub fn is_business_service(self) -> bool {
-        matches!(self, Self::Freephone | Self::LocalRate | Self::Premium)
-    }
 }
 
 #[must_use]
@@ -601,11 +596,9 @@ fn au_network_operator_in(
         .map(|(_, canon, kind, _)| (*canon, *kind))
 }
 
-#[must_use]
-pub fn au_network_operator(haystack: &str) -> Option<(&'static str, AuNetworkKind)> {
-    au_network_operator_in(haystack, true)
-}
-
+/// The Australian network operator a registry record names: `structured` is a handle such as
+/// `RIPEstat`'s `ASN-TELSTRA`, where a common word such as `belong` can only be the operator's
+/// name, and `descr` free text such as `Telstra Limited`, where such a word is not trusted.
 #[must_use]
 pub fn au_network_operator_split(
     structured: &str,
@@ -715,7 +708,11 @@ mod tests {
             Some("commercial")
         );
         assert_eq!(
-            au_network_operator("AS1221 Telstra Corporation"),
+            au_network_operator_split("ASN-TELSTRA", "Telstra Limited"),
+            Some(("Telstra", AuNetworkKind::Consumer))
+        );
+        assert_eq!(
+            au_network_operator_split("", "AS1221 Telstra Corporation"),
             Some(("Telstra", AuNetworkKind::Consumer))
         );
         assert_eq!(

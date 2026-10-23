@@ -29,12 +29,7 @@ pub enum BridgeTier {
     Related,
 }
 
-impl BridgeTier {
-    #[must_use]
-    pub fn is_stronger_than(self, other: Self) -> bool {
-        self < other
-    }
-}
+impl BridgeTier {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BridgedEntity {
@@ -121,17 +116,6 @@ pub fn build_cross_scan_history(entities: &[Entity]) -> Vec<CrossScanRecord> {
             .then_with(|| left.uid.cmp(&right.uid))
     });
     records
-}
-
-/// Classifies a scan using stored cross-scan history.
-///
-/// # Errors
-/// Returns storage-layer lookup failures.
-pub fn category_for_scan<S: CrossScanStore>(
-    store: &S,
-    scan_id: &str,
-) -> Result<CrossScanCategory, Error> {
-    category_for_scan_with(store, scan_id, CrossScanOptions::default())
 }
 
 /// Classifies a scan using stored history and explicit traversal limits.
@@ -364,6 +348,9 @@ pub fn is_bridgeable(entity: &Entity) -> bool {
         EntityKind::Username => crate::canonical::canonical_handle(&entity.value)
             .is_some_and(|canonical| canonical.len() >= 3),
         EntityKind::Email => !alias_handles(&entity.value).is_empty() || entity.value.contains('@'),
+        // Thousands of unrelated networks broadcast `xfinitywifi` or `NETGEAR-Guest`; sharing one
+        // says nothing about who runs either network, so it never joins two scans.
+        EntityKind::Ssid => !crate::value_syntax::is_generic_ssid(&entity.value),
         _ => true,
     }
 }
@@ -521,6 +508,29 @@ mod tests {
             }
             other => panic!("expected transitive bridge, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_generic_ssid_never_bridges_scans_and_a_distinctive_one_does() {
+        for generic in ["xfinitywifi", "NETGEAR-Guest", "Free Public WiFi"] {
+            let mut store = FakeStore::default();
+            store.insert(entity(EntityKind::Ssid, generic, 0.8, "scan-a"));
+            store.insert(entity(EntityKind::Ssid, generic, 0.8, "scan-b"));
+            let current = store.entities_for_scan("scan-a").unwrap();
+            let category =
+                category_from_entities(&store, "scan-a", &current, CrossScanOptions::default())
+                    .unwrap();
+            assert_eq!(category, CrossScanCategory::None, "{generic}");
+        }
+
+        let mut store = FakeStore::default();
+        store.insert(entity(EntityKind::Ssid, "Lovelace-House", 0.8, "scan-a"));
+        store.insert(entity(EntityKind::Ssid, "Lovelace-House", 0.8, "scan-b"));
+        let current = store.entities_for_scan("scan-a").unwrap();
+        let category =
+            category_from_entities(&store, "scan-a", &current, CrossScanOptions::default())
+                .unwrap();
+        assert_ne!(category, CrossScanCategory::None);
     }
 
     #[test]

@@ -14,10 +14,8 @@ use crate::canonical::{
     canonical_phone, canonical_provenance_family, canonical_url, canonical_whitespace,
 };
 use crate::clock;
-use crate::confidence::{
-    Classification, VerificationMethod, depth_decayed, effective, effective_from_ancestry,
-};
-use crate::evidence_ancestry::{AncestryError, EvidenceAncestryGraph, EvidenceNodeId};
+use crate::confidence::{Classification, VerificationMethod, effective};
+use crate::evidence_ancestry::EvidenceNodeId;
 use crate::sha256::{hex32, sha256};
 use crate::tags;
 
@@ -405,29 +403,6 @@ impl Entity {
     #[must_use]
     pub fn c_effective(&self) -> f64 {
         effective(self.confidence, self.source_count())
-    }
-
-    /// # Errors
-    /// Returns ancestry validation errors when support nodes are missing or cyclic.
-    pub fn c_effective_from_ancestry(
-        &self,
-        graph: &EvidenceAncestryGraph,
-    ) -> Result<f64, AncestryError> {
-        let support: Vec<EvidenceNodeId> = self
-            .evidence
-            .iter()
-            .filter_map(|evidence| evidence.ancestry_node.clone())
-            .collect();
-        if support.is_empty() {
-            Ok(self.c_effective())
-        } else {
-            effective_from_ancestry(self.confidence, graph, &support)
-        }
-    }
-
-    #[must_use]
-    pub fn c_effective_depth_decayed(&self, base: f64) -> Option<f64> {
-        depth_decayed(self.c_effective(), base, self.generation)
     }
 
     #[must_use]
@@ -857,7 +832,7 @@ mod tests {
     fn builder_matches_hand_rolled_entity() {
         let mut hand = Entity::new(EntityKind::Domain, "Example.COM", 0.83, "scan-1");
         hand.tag("archived");
-        hand.tag("web");
+        hand.tag(crate::tags::WEB);
         hand.add_evidence(
             evidence("wayback", "3 snapshots")
                 .with_attr("snapshot_count", "3")
@@ -865,7 +840,7 @@ mod tests {
         );
         let built = Entity::builder(EntityKind::Domain, "Example.COM", 0.83, "scan-1")
             .tag("archived")
-            .tag("web")
+            .tag(crate::tags::WEB)
             .evidence(
                 evidence("wayback", "3 snapshots")
                     .with_attr("snapshot_count", "3")

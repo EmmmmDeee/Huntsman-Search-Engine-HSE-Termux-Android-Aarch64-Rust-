@@ -51,7 +51,7 @@ pub fn canonical_name(raw: &str) -> String {
 }
 
 /// Canonical form of a Bitcoin mainnet address, or `None`. Recognises the three on-chain forms by
-/// their distinctive prefix and character set, the same way [`crate::classifier`] does: base58
+/// their distinctive prefix and character set, and is the rule [`crate::classifier`] uses: base58
 /// P2PKH (`1…`) and P2SH (`3…`) of 25-34 characters without the ambiguous `0`, `O`, `I`, `l`, and
 /// bech32 (`bc1…`) of 25-90 characters over its restricted alphabet. bech32 is case-insensitive by
 /// BIP173 (an address is written all lower or all upper, never mixed) and is canonicalised to

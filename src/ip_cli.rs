@@ -19,6 +19,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::abuseipdb;
+use crate::address_au::AuNetworkKind;
 use crate::api_leg::{Api, LegError};
 use crate::canonical::{canonical_domain, canonical_ip};
 use crate::dns::{self, RESOLVE_SOURCE, ResolveErrorKind};
@@ -42,7 +43,7 @@ use crate::virustotal;
 pub const IP_USAGE: &str = "usage: huntsman-recon ip ADDRESS [--save FILE]";
 pub const IP_HELP: &str = "\
 ip ADDRESS [--save FILE]
-Look up one public IPv4 or IPv6 address: the names its PTR records carry, its network's RDAP registration (range, holder, contacts and the record as published), open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat, internet-scanner status from GreyNoise Community (IPv4 only), threat risk from Pulsedive, scan data from Netlas, threat pulses from AlienVault OTX, public page scans from urlscan.io, hostname, network and city from IPinfo, the route and passive DNS names from Robtex, domains hosted on the address from HackerTarget, forum-spam reports from StopForumSpam, and listings on the Spamhaus ZEN, SpamCop, UCEPROTECT, DroneBL, SORBS and SURBL blocklists over the system resolver, all keyless. The address and every name the lookup found are checked against the threat feeds Spiderfoot downloads (abuse.ch Feodo Tracker and URLhaus, AlienVault IP Reputation, blocklist.de, botvrij.eu, CINS Army, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black's hosts, Tor's exit relays, VoIPBL and VXVault), each downloaded once and kept in $HUNTSMAN_HOME/feeds, else ~/.huntsman/feeds, until it is older than Spiderfoot keeps it. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs, and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY, HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
+Look up one public IPv4 or IPv6 address: the names its PTR records carry, its network's RDAP registration (range, holder, contacts and the record as published), open ports, hostnames, CPEs and known CVEs from Shodan InternetDB, the covering prefix and origin AS from RIPEstat (and whether an Australian consumer provider or AARNet holds that AS), internet-scanner status from GreyNoise Community (IPv4 only), threat risk from Pulsedive, scan data from Netlas, threat pulses from AlienVault OTX, public page scans from urlscan.io, hostname, network and city from IPinfo, the route and passive DNS names from Robtex, domains hosted on the address from HackerTarget, forum-spam reports from StopForumSpam, and listings on the Spamhaus ZEN, SpamCop, UCEPROTECT, DroneBL, SORBS and SURBL blocklists over the system resolver, all keyless. The address and every name the lookup found are checked against the threat feeds Spiderfoot downloads (abuse.ch Feodo Tracker and URLhaus, AlienVault IP Reputation, blocklist.de, botvrij.eu, CINS Army, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black's hosts, Tor's exit relays, VoIPBL and VXVault), each downloaded once and kept in $HUNTSMAN_HOME/feeds, else ~/.huntsman/feeds, until it is older than Spiderfoot keeps it. With HUNTSMAN_ABUSEIPDB_KEY set it adds AbuseIPDB abuse reports, with HUNTSMAN_VIRUSTOTAL_KEY VirusTotal engine verdicts, with HUNTSMAN_SHODAN_KEY Shodan services, with HUNTSMAN_LEAKIX_KEY LeakIX exposed services and leaks, with HUNTSMAN_THREATFOX_KEY ThreatFox IOCs, with HUNTSMAN_ABUSECH_KEY URLhaus malware URLs, and with HUNTSMAN_IPQS_KEY the IPQualityScore fraud score and proxy/VPN flags; HUNTSMAN_GREYNOISE_KEY, HUNTSMAN_PULSEDIVE_KEY and HUNTSMAN_NETLAS_KEY raise those limits. A leg whose key is not set makes no request, and a key that is set always runs its leg. A private, loopback, documentation or other non-public address is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
 
 /// Confidence of the queried address itself.
 const SEED_CONFIDENCE: f64 = 0.90;
@@ -413,6 +414,23 @@ fn ripestat_leg(lookup: &mut Lookup<'_>, routing: &ripestat::Routing) {
                 ("holder", origin.holder.as_deref()),
             ]);
         lookup.pivot(EntityKind::Asn, &asn, evidence);
+        if let Some((operator, kind)) = origin.holder.as_deref().and_then(au_operator) {
+            let (summary, tag) = match kind {
+                AuNetworkKind::Consumer => (
+                    format!("{asn} is {operator}'s, an Australian consumer internet provider"),
+                    tags::AU_CONSUMER_ISP,
+                ),
+                AuNetworkKind::Academic => (
+                    format!("{asn} is {operator}'s, Australia's research and education network"),
+                    tags::AU_ACADEMIC_NETWORK,
+                ),
+            };
+            let evidence = lookup
+                .evidence(api, summary)
+                .with_attr("asn", &asn)
+                .with_attr("network_operator", operator);
+            lookup.on_address(evidence, &[tag]);
+        }
         if let Some(holder) = origin.holder.as_deref() {
             let evidence = lookup
                 .evidence(api, format!("Holder of {asn}"))
@@ -421,6 +439,14 @@ fn ripestat_leg(lookup: &mut Lookup<'_>, routing: &ripestat::Routing) {
         }
     }
     lookup.found(api, routing.origins.len().max(1));
+}
+
+/// The Australian operator an origin AS holder names. `RIPEstat` writes a holder as
+/// `HANDLE - Name` (`ASN-TELSTRA - Telstra Limited`): the handle is structured, the name free
+/// text, so a common word such as `belong` names an operator only in the handle. **Pure.**
+fn au_operator(holder: &str) -> Option<(&'static str, AuNetworkKind)> {
+    let (handle, name) = holder.split_once(" - ").unwrap_or(("", holder));
+    crate::address_au::au_network_operator_split(handle, name)
 }
 
 /// Where `RIPEstat` places the address, as one record on it. Its outcome is the routing leg's, so

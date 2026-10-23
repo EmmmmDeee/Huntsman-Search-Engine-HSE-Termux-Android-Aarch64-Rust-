@@ -2,21 +2,24 @@
 //! findings into entities and outcomes, for the `ip` and `domain` front-ends.
 //!
 //! A finding becomes evidence on the queried indicator itself, with its tags; each pivot becomes
-//! its own entity, but only in canonical form: a pivot address that is not public, or a pivot
-//! domain or email that does not parse, is dropped rather than recorded as provider text. Every
-//! source that runs leaves exactly one outcome: success with its count, the provider's "nothing
-//! known" as a valid zero, or the typed failure.
+//! its own entity, but only in canonical form: a pivot address or AS number that is not public,
+//! or a pivot domain or email that does not parse, is dropped rather than recorded as provider
+//! text. Every source that runs leaves exactly one outcome: success with its count, the
+//! provider's "nothing known" as a valid zero, or the typed failure.
 
-use crate::canonical::{canonical_coordinates, canonical_domain, canonical_email, canonical_ip};
+use crate::canonical::{
+    canonical_asn, canonical_coordinates, canonical_domain, canonical_email, canonical_ip,
+};
+use crate::concurrent::{self, Job};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::http::Transport;
 use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Source};
 use crate::keys::Keys;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::{
-    hackertarget, hudsonrock, hunter, ipinfo, ipqs, isc, kickbox, leakix, maltiverse,
-    mozilla_location, netlas, opencellid, otx, phishstats, pulsedive, robtex, securitytrails,
-    shodan, stopforumspam, submd, tags, threatfox, urlhaus, urlscan, whoxy, xposedornot,
+    hackertarget, hudsonrock, hunter, ipinfo, ipqs, isc, kickbox, leakix, maltiverse, netlas,
+    opencellid, otx, phishstats, pulsedive, robtex, securitytrails, shodan, stopforumspam, submd,
+    tags, threatfox, urlhaus, urlscan, whoxy, xposedornot,
 };
 
 /// Every indicator source, in the order a lookup runs them.
@@ -31,7 +34,6 @@ pub const SOURCES: &[Source] = &[
     hackertarget::INTEL,
     submd::INTEL,
     opencellid::INTEL,
-    mozilla_location::INTEL,
     stopforumspam::INTEL,
     isc::INTEL,
     maltiverse::INTEL,
@@ -52,6 +54,9 @@ pub const SOURCES: &[Source] = &[
 const SEED_CONFIDENCE: f64 = 0.90;
 /// Confidence of an indicator a provider ties to it.
 const PIVOT_CONFIDENCE: f64 = 0.60;
+
+/// One source's answer: what it found, nothing, or why it could not say.
+type Answer = Result<Option<Finding>, crate::api_leg::LegError>;
 
 /// What the indicator legs produced.
 #[derive(Debug, Default)]
@@ -81,13 +86,33 @@ pub fn run<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Legs {
     let transport = DynTransport(transport);
+    let sources: Vec<&'static Source> = planned(indicator, keys)
+        .into_iter()
+        .filter(|source| transport.runs_module(source.api.source))
+        .collect();
+    // Each source asks its own provider, so through a transport threads may share they are all
+    // asked at once and the lookup takes as long as the slowest; through one they cannot, one
+    // after another. Either way the answers are folded in the sources' order, so the report is
+    // the same.
+    let answers: Vec<Answer> = match transport.shared() {
+        Some(shared) => concurrent::all(
+            sources
+                .iter()
+                .map(|source| {
+                    let lookup = source.lookup;
+                    Box::new(move || lookup(shared, keys, indicator, now_unix)) as Job<'_, Answer>
+                })
+                .collect(),
+        ),
+        None => sources
+            .iter()
+            .map(|source| (source.lookup)(&transport, keys, indicator, now_unix))
+            .collect(),
+    };
     let mut legs = Legs::default();
-    for source in planned(indicator, keys) {
-        if !transport.runs_module(source.api.source) {
-            continue;
-        }
+    for (source, answer) in sources.into_iter().zip(answers) {
         let api = source.api;
-        match (source.lookup)(&transport, keys, indicator, now_unix) {
+        match answer {
             Ok(Some(finding)) => {
                 let count = fold(&mut legs.entities, indicator, scan_id, api.source, finding);
                 legs.outcomes.push(
@@ -118,11 +143,7 @@ fn pivot_entity(kind: PivotKind, value: &str) -> Option<(EntityKind, String)> {
         }
         PivotKind::Ip => canonical_ip(value).map(|v| (EntityKind::IpAddress, v)),
         PivotKind::Email => canonical_email(value).map(|v| (EntityKind::Email, v)),
-        PivotKind::Asn => {
-            let digits = value.trim().trim_start_matches(['A', 'S', 'a', 's']);
-            let asn: u32 = digits.parse().ok().filter(|n| *n > 0)?;
-            Some((EntityKind::Asn, format!("AS{asn}")))
-        }
+        PivotKind::Asn => canonical_asn(value).map(|v| (EntityKind::Asn, v)),
         PivotKind::Organisation => {
             let name = value.trim();
             (!name.is_empty()).then(|| (EntityKind::Organisation, name.to_owned()))
@@ -263,6 +284,87 @@ mod tests {
         assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 11);
     }
 
+    /// A transport threads may share whose every answer is an empty document after `delay`, so
+    /// no source's circuit opens and each one really sends; it counts what was sent.
+    struct SlowShared {
+        sent: Mutex<usize>,
+        delay: std::time::Duration,
+    }
+
+    impl Transport for SlowShared {
+        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
+            std::thread::sleep(self.delay);
+            *self
+                .sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+            Ok(Response {
+                status: 200,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: b"{}".to_vec(),
+                truncated: false,
+            })
+        }
+
+        fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+            Some(self)
+        }
+    }
+
+    fn modules(legs: &Legs) -> Vec<&str> {
+        legs.outcomes.iter().map(|o| o.module.as_str()).collect()
+    }
+
+    /// Through a transport threads may share, every leg is asked at once: a dozen legs that each
+    /// wait 200 ms answer in well under a second, not their sum, and in the same order.
+    #[test]
+    fn through_a_shared_transport_the_legs_are_asked_at_once_in_order() {
+        let keys = all_keys();
+        let indicator = Indicator::Domain("example.com");
+        let sequential = run(&Offline::default(), &keys, indicator, "s", 1);
+        let slow = SlowShared {
+            sent: Mutex::new(0),
+            delay: std::time::Duration::from_millis(200),
+        };
+        let started = std::time::Instant::now();
+        let shared = run(&slow, &keys, indicator, "s", 1);
+        let took = started.elapsed();
+        let asked = shared.outcomes.len();
+        assert!(asked >= 10, "{:?}", modules(&shared));
+        assert_eq!(modules(&shared), modules(&sequential));
+        let sent = *slow
+            .sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(sent >= asked, "{sent} requests for {asked} legs");
+        assert!(
+            took < std::time::Duration::from_millis(1_000),
+            "{asked} legs of 200 ms took {took:?}"
+        );
+    }
+
+    /// A shared transport is still held to the scan's chosen modules: the others send nothing.
+    #[test]
+    fn a_shared_selection_still_asks_only_the_chosen_modules() {
+        let slow = SlowShared {
+            sent: Mutex::new(0),
+            delay: std::time::Duration::ZERO,
+        };
+        let chosen = crate::module_selection::Selected::new(
+            slow,
+            crate::module_selection::Selection::only(["otx", "robtex"]),
+        );
+        assert!(chosen.shared().is_some());
+        let legs = run(
+            &chosen,
+            &all_keys(),
+            Indicator::Domain("example.com"),
+            "s",
+            1,
+        );
+        assert_eq!(modules(&legs), ["otx", "robtex"]);
+    }
+
     #[test]
     fn every_configured_key_runs_its_source() {
         let keys = all_keys();
@@ -298,7 +400,7 @@ mod tests {
         };
         let v4 = ran("1.1.1.1");
         let v6 = ran("2606:4700:4700::1111");
-        for source in [hackertarget::SOURCE, netlas::SOURCE] {
+        for source in [hackertarget::SOURCE, netlas::SOURCE, isc::SOURCE] {
             assert!(v4.iter().any(|m| m == source), "{source} skipped IPv4");
             assert!(!v6.iter().any(|m| m == source), "{source} ran for IPv6");
         }
@@ -346,6 +448,65 @@ mod tests {
         }
     }
 
+    /// Answers every request with one fixed response.
+    struct Fixed(u16, &'static str);
+
+    impl Transport for Fixed {
+        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
+            Ok(Response {
+                status: self.0,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: self.1.as_bytes().to_vec(),
+                truncated: false,
+            })
+        }
+    }
+
+    /// One contract for every leg, so each provider client is held to the same reading of a
+    /// refusal: a rejected key, a rate limit, a server error or a body that is not the provider's
+    /// document is never an answer and never an entity, and a rate limit is named as one.
+    #[test]
+    fn every_leg_reads_a_refusal_as_a_failure_never_an_answer() {
+        let keys = all_keys();
+        let mut broken = Vec::new();
+        for source in SOURCES {
+            for &kind in source.kinds {
+                let indicator = sample(kind);
+                for (status, body) in [
+                    (401, r#"{"error":"unauthorized"}"#),
+                    (403, r#"{"error":"forbidden"}"#),
+                    (429, r#"{"error":"slow down"}"#),
+                    (500, r#"{"error":"boom"}"#),
+                    (200, "<html>not the provider's document</html>"),
+                ] {
+                    let legs = run(&Fixed(status, body), &keys, indicator, "s", 1);
+                    let name = source.api.source;
+                    let Some(outcome) = legs.outcomes.iter().find(|o| o.module == name) else {
+                        broken.push(format!("{name}: no outcome for HTTP {status}"));
+                        continue;
+                    };
+                    if outcome.kind.is_accepted() {
+                        broken.push(format!(
+                            "{name}: HTTP {status} {body:?} read as {:?}",
+                            outcome.kind
+                        ));
+                    }
+                    if legs
+                        .entities
+                        .iter()
+                        .any(|e| e.evidence.iter().any(|ev| ev.provenance.source == name))
+                    {
+                        broken.push(format!("{name}: entities from HTTP {status}"));
+                    }
+                    if status == 429 && outcome.kind != SourceOutcomeKind::RateLimited {
+                        broken.push(format!("{name}: HTTP 429 read as {:?}", outcome.kind));
+                    }
+                }
+            }
+        }
+        assert!(broken.is_empty(), "{}", broken.join("\n"));
+    }
+
     #[test]
     fn pivots_are_kept_only_in_canonical_form() {
         let finding = [
@@ -354,19 +515,31 @@ mod tests {
             (PivotKind::Domain, "ns1.example.net."),
             (PivotKind::Domain, "not a domain"),
             (PivotKind::Asn, "as13335"),
+            (PivotKind::Asn, "AS64512"),
+            (PivotKind::Asn, "ASN 15169"),
             (PivotKind::Email, "nope"),
             (PivotKind::Ip, "1.1.1.1"),
         ]
         .into_iter()
         .fold(
-            Finding::new("s").attr("k", "v").tag("malicious"),
+            Finding::new("s").attr("k", "v").tag(crate::tags::MALICIOUS),
             |finding, (kind, value)| finding.pivot(kind, value, "p"),
         );
         let mut entities = Vec::new();
         let count = fold(&mut entities, Indicator::Ip("1.1.1.1"), "s", "x", finding);
         let values: Vec<&str> = entities.iter().map(|e| e.raw_value.as_str()).collect();
-        assert_eq!(values, ["1.1.1.1", "8.8.8.8", "ns1.example.net", "AS13335"]);
-        assert_eq!(count, 4);
+        // A private-use AS number is dropped, as a private address is; `ASN 15169` is AS15169.
+        assert_eq!(
+            values,
+            [
+                "1.1.1.1",
+                "8.8.8.8",
+                "ns1.example.net",
+                "AS13335",
+                "AS15169"
+            ]
+        );
+        assert_eq!(count, 5);
         assert!(entities[0].tags.iter().any(|t| t == "malicious"));
     }
 }

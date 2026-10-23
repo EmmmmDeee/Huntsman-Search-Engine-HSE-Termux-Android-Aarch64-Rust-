@@ -7,7 +7,6 @@ use std::collections::BTreeSet;
 use huntsman_recon::confidence::{Classification, VERIFIED_MIN, effective};
 use huntsman_recon::correlator::{RuleContext, rule_au_003_high_corroboration};
 use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
-use huntsman_recon::roi::is_saturated;
 
 fn honest(collector: &str) -> Evidence {
     Evidence::new(EvidenceProvenance::new(collector), "breach record").with_attr("breach", "Adobe")
@@ -193,14 +192,13 @@ fn just_under_band_edge_stays_probable() {
     }
 }
 
-/// On main a spoofed second family met `SATURATION_CORROBORATION` (2) and, from
-/// confidence 0.7692 (`1 - 0.15/0.65`; tested at 0.85), marked the entity saturated.
+/// A spoofed stored family is not a second source, however confident the entity; two real
+/// collectors are.
 #[test]
-fn tampered_family_cannot_mark_an_entity_saturated() {
+fn tampered_family_cannot_add_a_corroborating_source() {
     let spoofed = reloaded_at(0.85, &["hibp", "hibp"], &[(1, "spoof-corpus")]);
     assert_eq!(spoofed.source_count(), 1);
-    assert!(!is_saturated(&spoofed));
 
     let real = reloaded_at(0.85, &["hibp", "dehashed"], &[]);
-    assert!(is_saturated(&real), "control");
+    assert_eq!(real.source_count(), 2, "control");
 }

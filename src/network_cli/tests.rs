@@ -266,9 +266,21 @@ fn a_coordinate_selector_searches_the_box_around_it() {
     let (text, report) = printed(run(Some((&transport, &keys)), "-27.4698,153.0251", 7));
     let urls = transport.urls();
     assert!(urls[0].contains("latrange1=-27.471800"), "{urls:?}");
+    let row = |source: &str| {
+        report
+            .outcomes
+            .iter()
+            .find(|o| o.module == source)
+            .map(|o| o.kind)
+    };
     assert_eq!(
-        report.outcomes.last().map(|o| o.kind),
+        row(wigle::BLUETOOTH_SOURCE),
         Some(SourceOutcomeKind::ValidZero)
+    );
+    // Without its key OpenCelliD's area search makes no request and says so.
+    assert_eq!(
+        row(opencellid::SOURCE),
+        Some(SourceOutcomeKind::NotConfigured)
     );
     assert_eq!(urls.len(), 2, "WiFi then Bluetooth: {urls:?}");
     assert!(urls[1].starts_with(wigle::BLUETOOTH_URL), "{urls:?}");
@@ -380,5 +392,173 @@ fn a_mac_found_as_a_bluetooth_device_is_reported_with_its_class() {
              last_seen=2026-09-01T10:00:00.000Z\taddress=unknown\n"
         ),
         "{text}"
+    );
+}
+
+/// A cell site, as `radar cells` reports one, is a network selector of its own: written
+/// `cell:MCC:MNC:AREA:CELL`, inferred by `scan`, and never taken for an SSID unless written as one.
+#[test]
+fn a_cell_site_selector_parses_canonically_and_is_inferred() {
+    for (raw, canonical) in [
+        ("cell:505:01:17:91", "cell:505:01:17:91"),
+        (" CELL:505:010:17:91 ", "cell:505:010:17:91"),
+        (
+            "cell:310:410:65535:68719476735",
+            "cell:310:410:65535:68719476735",
+        ),
+    ] {
+        let selector = NetworkSelector::parse(raw).expect(raw);
+        assert!(matches!(selector, NetworkSelector::Cell { .. }), "{raw}");
+        assert_eq!(selector.canonical(), canonical);
+        assert_eq!(NetworkSelector::parse(canonical), Some(selector));
+        assert_eq!(
+            crate::scan_route::infer_kind(raw),
+            crate::scan_route::ScanKind::Network
+        );
+    }
+    for bad in [
+        "cell:000:01:17:91",
+        "cell:505:1:17:91",
+        "cell:505:01:17",
+        "cell:505:01:17:91:2",
+        "cell:505:01:+17:91",
+        "cell:505:01:17:68719476736",
+        "cell:5050:01:17:91",
+    ] {
+        assert_eq!(NetworkSelector::parse_identifier(bad), None, "{bad}");
+        // A mistyped cell site is refused, not searched for as a network named after it.
+        assert_eq!(NetworkSelector::parse(bad), None, "{bad}");
+    }
+    // An SSID that reads as a cell site is written with its prefix, and reads back as an SSID.
+    let ssid = NetworkSelector::parse("ssid:cell:505:01:17:91").expect("an SSID");
+    assert_eq!(ssid, NetworkSelector::Ssid("cell:505:01:17:91".into()));
+    assert_eq!(ssid.canonical(), "ssid:cell:505:01:17:91");
+}
+
+/// Without the `OpenCelliD` key a cell lookup makes no request and says so; it does not print
+/// `WiGLE` rows, since `WiGLE` is not searched for a cell.
+#[test]
+fn without_its_key_a_cell_lookup_reports_opencellid_not_configured() {
+    let transport = Canned::json(&serde_json::json!({}));
+    for wigle in [None, Some((&transport as &dyn Transport, &keys()))] {
+        let (text, report) = printed(run(wigle, "cell:505:01:17:91", 7));
+        let legs: Vec<_> = report
+            .outcomes
+            .iter()
+            .map(|o| (o.module.as_str(), o.kind))
+            .collect();
+        assert_eq!(
+            legs,
+            [(opencellid::SOURCE, SourceOutcomeKind::NotConfigured)]
+        );
+        assert!(text.contains(opencellid::KEY_SLOT), "{text}");
+        assert!(!text.contains("wigle_"), "{text}");
+    }
+    assert!(transport.urls().is_empty(), "no request was made");
+}
+
+/// With the key, `OpenCelliD` is asked for the cell, a 5G cell's 36-bit identity whole, and the
+/// position it gives is evidence on the lookup.
+#[test]
+fn a_cell_site_is_looked_up_in_opencellid() {
+    let keys = Keys::parse(&format!(
+        "{}=ocid-test-key-0123456789\n",
+        opencellid::KEY_SLOT
+    ))
+    .expect("fixture keys");
+    let transport = Canned::json(&serde_json::json!({
+        "lat": -27.4698, "lon": 153.0251, "range": 1200, "samples": 40
+    }));
+    let (text, report) = printed(run(
+        Some((&transport, &keys)),
+        "cell:505:01:20:68719476735",
+        7,
+    ));
+    let urls = transport.urls();
+    assert_eq!(urls.len(), 1, "{urls:?}");
+    assert!(
+        urls[0].starts_with(
+            "https://opencellid.org/cell/get?mcc=505&mnc=1&lac=20&cellid=68719476735&format=json"
+        ),
+        "{}",
+        urls[0]
+    );
+    assert_eq!(report.outcomes.len(), 1, "{:?}", report.outcomes);
+    assert_eq!(report.outcomes[0].module, opencellid::SOURCE);
+    assert!(
+        report.outcomes[0].kind.is_accepted(),
+        "{:?}",
+        report.outcomes
+    );
+    assert!(text.contains("-27.4698"), "{text}");
+    assert!(!text.contains("wigle_"), "{text}");
+}
+
+/// With the `OpenCelliD` key a point is searched for the cell sites listed in the square around
+/// it: one bounded `getInArea` request, each site a `cell:` entity the lookup can take back
+/// whole (a 36-bit NR identity included), and a note when the area holds more than are listed.
+#[test]
+fn a_point_lists_the_cell_sites_opencellid_places_around_it() {
+    let keys = Keys::parse(&format!(
+        "{}=ocid-test-key-0123456789\n",
+        opencellid::KEY_SLOT
+    ))
+    .expect("fixture keys");
+    let transport = Canned::json(&serde_json::json!({"count": 120, "cells": [
+        {"lat": -27.4701, "lon": 153.0249, "mcc": 505, "mnc": 1, "lac": 20,
+         "cellid": 68_719_476_735_u64, "radio": "NR", "range": 900, "samples": 12},
+        {"lat": -27.4690, "lon": 153.0260, "mcc": 505, "mnc": 2, "lac": 7, "cellid": 17811,
+         "radio": "LTE"}
+    ]}));
+    let (_, report) = printed(run(Some((&transport, &keys)), "-27.4698,153.0251", 7));
+    let urls = transport.urls();
+    assert_eq!(urls.len(), 1, "only OpenCelliD has a key: {urls:?}");
+    assert!(
+        urls[0].starts_with(
+            "https://opencellid.org/cell/getInArea?BBOX=-27.477885,153.015988,-27.461715,153.034212&limit=50&format=json"
+        ),
+        "{}",
+        urls[0]
+    );
+    assert!(urls[0].contains("&limit=50&format=json"), "{}", urls[0]);
+    let row = report
+        .outcomes
+        .iter()
+        .find(|o| o.module == opencellid::SOURCE)
+        .expect("an OpenCelliD row");
+    assert_eq!(row.kind, SourceOutcomeKind::Success);
+    assert_eq!(row.found, Some(2));
+
+    let nr = report
+        .entities
+        .iter()
+        .find(|e| e.value == "cell:505:01:20:68719476735")
+        .expect("the NR site");
+    assert!(nr.has_tag(tags::GEOINT));
+    assert!(
+        nr.evidence[0]
+            .attr_values("position")
+            .eq(["-27.470100,153.024900"])
+    );
+    assert!(nr.evidence[0].attr_values("radio").eq(["NR"]));
+    assert!(matches!(
+        NetworkSelector::parse(&nr.value),
+        Some(NetworkSelector::Cell {
+            cell: 68_719_476_735,
+            ..
+        })
+    ));
+    let point = report
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("the point");
+    assert!(
+        point
+            .evidence
+            .iter()
+            .any(|ev| ev.attr_values("cells_in_area").eq(["120"])),
+        "{:#?}",
+        point.evidence
     );
 }

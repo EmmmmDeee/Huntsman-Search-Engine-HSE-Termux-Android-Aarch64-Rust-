@@ -123,6 +123,7 @@ pub mod lookup_modules;
 pub mod lookup_report;
 pub mod lookup_save;
 pub mod maltiverse;
+pub mod mastodon_user;
 pub mod md5;
 pub mod meta_plan;
 pub mod metrics;
@@ -244,7 +245,6 @@ pub use ledger::{
 pub use session::Session;
 pub use stage::{EvidenceLevel, Status};
 
-pub mod mozilla_location;
 pub mod opencellid;
 #[cfg(test)]
 mod test_support;

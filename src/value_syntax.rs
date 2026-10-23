@@ -422,6 +422,58 @@ pub(crate) fn parse_mailto_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Router makers, carriers and platforms whose name in an SSID marks it as a factory or
+/// shared default; matched as a substring.
+pub const GENERIC_SSID_BRANDS: &[&str] = &[
+    "android", "dlink", "eduroam", "galaxy", "hidden", "iphone", "linksys", "netgear", "optimum",
+    "optus", "spectrum", "telstra", "tp-link", "tplink", "unnamed", "unknown", "vodafone",
+    "xfinity",
+];
+
+/// Words that mark an SSID as a default, guest or public network; matched as a whole token.
+pub const GENERIC_SSID_WORDS: &[&str] = &[
+    "admin", "asus", "att", "config", "cox", "default", "free", "guest", "nbn", "open", "pixel",
+    "public", "setup", "test",
+];
+
+/// Whether an SSID is one many unrelated networks broadcast (a factory default, a carrier's
+/// hotspot, a guest or public network), so sharing it says nothing about who runs the network.
+#[must_use]
+pub fn is_generic_ssid(ssid: &str) -> bool {
+    let lower = ssid.to_ascii_lowercase();
+    if GENERIC_SSID_BRANDS
+        .iter()
+        .any(|brand| lower.contains(brand))
+    {
+        return true;
+    }
+    ssid_tokens(&lower).any(|token| GENERIC_SSID_WORDS.contains(&token))
+}
+
+fn ssid_tokens(lower: &str) -> impl Iterator<Item = &str> {
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .flat_map(|part| {
+            let mut tokens = Vec::new();
+            let mut start = 0usize;
+            let mut prev: Option<char> = None;
+            for (index, ch) in part.char_indices() {
+                if let Some(prev_char) = prev {
+                    if prev_char.is_ascii_digit() != ch.is_ascii_digit() {
+                        tokens.push(&part[start..index]);
+                        start = index;
+                    }
+                }
+                prev = Some(ch);
+            }
+            if start < part.len() {
+                tokens.push(&part[start..]);
+            }
+            tokens
+        })
+        .filter(|token| !token.is_empty())
+}
+
 #[cfg(test)]
 mod form_tests {
     use super::*;
@@ -642,5 +694,36 @@ mod au_phone_key_contract {
             normalise_au_phone("+61 1300 123 456").as_deref(),
             Some("+611300123456")
         );
+    }
+}
+
+#[cfg(test)]
+mod ssid_tests {
+    use super::*;
+
+    #[test]
+    fn generic_ssid_detection_uses_substrings_for_brands_and_tokens_for_words() {
+        for ssid in [
+            "linksys",
+            "xfinitywifi",
+            "NETGEAR-Guest",
+            "Telstra-Home-123",
+            "Free Public WiFi",
+        ] {
+            assert!(is_generic_ssid(ssid), "{ssid}");
+        }
+        for ssid in [
+            "Freeman-Family",
+            "Seattle-Cafe",
+            "Testa-Household",
+            "Openshaw-House",
+            "Hancox-Home",
+            "Attwood-Residence",
+            "Nbnalla-House",
+            "Smith-WiFi",
+            "Johnson WLAN",
+        ] {
+            assert!(!is_generic_ssid(ssid), "{ssid}");
+        }
     }
 }

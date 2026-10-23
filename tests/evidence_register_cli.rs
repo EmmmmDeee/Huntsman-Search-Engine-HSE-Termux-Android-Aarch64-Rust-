@@ -111,6 +111,16 @@ fn evidence_export_preserves_raw_and_supports_delta() {
     assert_eq!(matrix["truncated"], false);
     assert!(matrix["rows"].is_array());
     assert!(matrix["columns"].is_array());
+    assert!(matrix["normalization_candidates"].is_array());
+    assert!(matrix["summary"]["root_elements_excluded_from_matrix"].is_number());
+    assert!(matrix["summary"]["matrix_elements"].is_number());
+    assert_eq!(
+        matrix["summary"]["matrix_elements"].as_u64().unwrap_or(0)
+            + matrix["summary"]["root_elements_excluded_from_matrix"]
+                .as_u64()
+                .unwrap_or(0),
+        matrix["summary"]["recorded_elements"].as_u64().unwrap_or(0)
+    );
     assert!(matrix["uncertainty_register"]["items"].is_array());
     assert!(
         matrix["summary"]["recorded_elements"].as_u64().unwrap_or(0)
@@ -126,6 +136,7 @@ fn evidence_export_preserves_raw_and_supports_delta() {
     let output = String::from_utf8(matrix_raw.stdout).expect("raw matrix utf8");
     assert!(output.starts_with("[HUNTSMAN_MATRIX]"));
     assert!(output.contains("[END_HUNTSMAN_MATRIX]"));
+    assert!(output.contains("NORMALIZATION_CANDIDATES:"));
 
     let invalid = run(&home, &["scans", "matrix", &second, "-f", "bad"]);
     assert!(!invalid.status.success());

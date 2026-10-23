@@ -27,20 +27,24 @@ pub struct Sheet {
     pub rows: Vec<Vec<String>>,
 }
 
-/// A name Excel accepts for a sheet: none of `[]:*?/\`, not blank, at most
-/// [`MAX_SHEET_NAME_CHARS`] characters, and unlike every name in `taken` (Excel compares them
-/// without case), numbered ` (2)`, ` (3)`, ... when it would repeat one.
+/// A name Excel accepts for a sheet: none of `[]:*?/\` nor a character XML cannot carry, not
+/// blank, not starting or ending with an apostrophe, at most [`MAX_SHEET_NAME_CHARS`] characters,
+/// and unlike every name in `taken` (Excel compares them without case), numbered ` (2)`, ` (3)`,
+/// ... when it would repeat one.
 fn sheet_name(wanted: &str, taken: &mut BTreeSet<String>) -> String {
     let clean: String = wanted
         .chars()
-        .filter(|c| !matches!(c, '[' | ']' | ':' | '*' | '?' | '/' | '\\') && !c.is_control())
+        .filter(|c| {
+            !matches!(
+                c,
+                '[' | ']' | ':' | '*' | '?' | '/' | '\\' | '\u{fffe}' | '\u{ffff}'
+            ) && !c.is_control()
+        })
         .collect();
     let clean = clean.trim().trim_matches('\'');
-    let base: String = if clean.is_empty() { "Sheet" } else { clean }
-        .chars()
-        .take(MAX_SHEET_NAME_CHARS)
-        .collect();
-    let base = base.trim_end().to_owned();
+    let cut: String = clean.chars().take(MAX_SHEET_NAME_CHARS).collect();
+    let cut = cut.trim_end_matches(|c: char| c == '\'' || c.is_whitespace());
+    let base = if cut.is_empty() { "Sheet" } else { cut }.to_owned();
     let mut name = base.clone();
     let mut number = 2;
     while !taken.insert(name.to_lowercase()) {
@@ -486,6 +490,31 @@ pub(crate) mod tests {
         assert_eq!(first, "HSE_A_VERY_LONG_DATA_ELEMENT_TY");
         let second = sheet_name(long, &mut taken);
         assert_eq!(second, "HSE_A_VERY_LONG_DATA_ELEMEN (2)");
+        // Nothing left once apostrophes and spaces go, a cut that ends in an apostrophe, and a
+        // noncharacter XML 1.0 cannot carry.
+        let mut fresh = BTreeSet::new();
+        assert_eq!(sheet_name("' '", &mut fresh), "Sheet");
+        assert_eq!(
+            sheet_name("Exposed services on the vendor's network", &mut fresh),
+            "Exposed services on the vendor"
+        );
+        assert_eq!(
+            sheet_name("Bad \u{fffe} name\u{ffff}", &mut fresh),
+            "Bad  name"
+        );
+        let names = [
+            "' '",
+            "Exposed services on the vendor's network",
+            "Bad \u{fffe} name",
+        ];
+        let bytes = workbook(&names.map(|name| Sheet {
+            name: name.into(),
+            rows: Vec::new(),
+        }));
+        assert_eq!(
+            sheet_names(&bytes),
+            ["Sheet", "Exposed services on the vendor", "Bad  name"]
+        );
         assert_eq!(
             [0, 25, 26, 27, 51, 52, 701, 702].map(column),
             ["A", "Z", "AA", "AB", "AZ", "BA", "ZZ", "AAA"]

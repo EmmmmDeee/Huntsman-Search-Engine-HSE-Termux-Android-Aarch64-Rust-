@@ -16,7 +16,6 @@
 //! input can never raise a tier. Depth decay refuses a base above 1, which would have
 //! amplified confidence.
 
-use std::collections::BTreeSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -68,11 +67,6 @@ impl Classification {
     }
 
     #[must_use]
-    pub fn from_c_eff(c_eff: f64) -> Self {
-        Self::from_effective(c_eff)
-    }
-
-    #[must_use]
     pub const fn rank(self) -> u8 {
         match self {
             Self::Candidate => 0,
@@ -114,20 +108,6 @@ pub fn effective(confidence: f64, sources: u32) -> f64 {
     let decay = CORROBORATION_DOUBT_DECAY.max(1.0 - c);
     let agreement = 1.0 - (1.0 - c) * decay.powf(n - 1.0);
     multiplicative.max(agreement).clamp(c, 1.0)
-}
-
-#[must_use]
-pub fn effective_from_distinct_sources<'a>(
-    confidence: f64,
-    sources: impl IntoIterator<Item = &'a str>,
-) -> f64 {
-    let count = sources
-        .into_iter()
-        .map(str::trim)
-        .filter(|source| !source.is_empty())
-        .collect::<BTreeSet<_>>()
-        .len();
-    effective(confidence, u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 /// [`effective`] with `n` taken from a conservative lower bound of mutually

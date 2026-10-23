@@ -248,7 +248,7 @@ fn gps_entity(entities: &mut Vec<Entity>, gps: Option<(f64, f64)>, label: &str, 
         GPS_CONFIDENCE,
         sid,
         evidence,
-        &[SOURCE, "gps", "geoint"],
+        &[SOURCE, "gps", crate::tags::GEOINT],
     );
 }
 
@@ -1117,6 +1117,13 @@ fn read_pdf_literal(data: &[u8], start: usize) -> String {
                     b'b' => out.push(0x08),
                     b'f' => out.push(0x0c),
                     b'0'..=b'7' => i = push_octal(data, i, &mut out),
+                    // A backslash before an end of line joins the lines: neither is kept.
+                    b'\r' => {
+                        if data.get(i + 1) == Some(&b'\n') {
+                            i += 1;
+                        }
+                    }
+                    b'\n' => {}
                     other => out.push(other),
                 }
             }
@@ -1186,8 +1193,10 @@ fn read_pdf_hex(data: &[u8], start: usize) -> String {
     decode_pdf_text(&bytes)
 }
 
-/// Decode a PDF text string: UTF-16BE when it starts with the `FE FF` byte-order mark, otherwise the
-/// bytes as lossy UTF-8 (a superset of the common ASCII case). **Pure.**
+/// Decode a PDF text string (PDF 32000 section 7.9.2.2): UTF-16BE after the `FE FF` byte-order
+/// mark, UTF-8 after `EF BB BF` (PDF 2.0), and otherwise `PDFDocEncoding`. Bytes that are already
+/// valid UTF-8 without the mark, as some producers write, are read as UTF-8: `PDFDocEncoding` text
+/// almost never forms valid multi-byte UTF-8, and ASCII reads the same either way. **Pure.**
 fn decode_pdf_text(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
         let units: Vec<u16> = rest
@@ -1195,8 +1204,33 @@ fn decode_pdf_text(bytes: &[u8]) -> String {
             .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
             .collect();
         String::from_utf16_lossy(&units).trim().to_owned()
+    } else if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        String::from_utf8_lossy(rest).trim().to_owned()
+    } else if let Ok(text) = std::str::from_utf8(bytes) {
+        text.trim().to_owned()
     } else {
-        String::from_utf8_lossy(bytes).trim().to_owned()
+        bytes
+            .iter()
+            .map(|&byte| pdf_doc_char(byte))
+            .collect::<String>()
+            .trim()
+            .to_owned()
+    }
+}
+
+/// One `PDFDocEncoding` byte (PDF 32000 Annex D.2): Latin-1 but for the accents at `18`-`1F`, the
+/// punctuation and letters at `80`-`A0`, and the codes it leaves undefined. **Pure.**
+fn pdf_doc_char(byte: u8) -> char {
+    const ACCENTS: [char; 8] = ['˘', 'ˇ', 'ˆ', '˙', '˝', '˛', '˚', '˜'];
+    const HIGH: [char; 33] = [
+        '•', '†', '‡', '…', '—', '–', 'ƒ', '⁄', '‹', '›', '−', '‰', '„', '“', '”', '‘', '’', '‚',
+        '™', 'ﬁ', 'ﬂ', 'Ł', 'Œ', 'Š', 'Ÿ', 'Ž', 'ı', 'ł', 'œ', 'š', 'ž', '\u{FFFD}', '€',
+    ];
+    match byte {
+        0x18..=0x1F => ACCENTS[usize::from(byte - 0x18)],
+        0x80..=0xA0 => HIGH[usize::from(byte - 0x80)],
+        0x7F | 0xAD => char::REPLACEMENT_CHARACTER,
+        _ => char::from(byte),
     }
 }
 

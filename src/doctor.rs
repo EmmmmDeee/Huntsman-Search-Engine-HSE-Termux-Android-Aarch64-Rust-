@@ -23,7 +23,9 @@ use serde::Serialize;
 
 use crate::diagnostics::{TERMUX_APP_DATA, TermuxState, normalized_build_sha};
 use crate::fsio::write_atomic_private;
-use crate::keys::{DEFAULT_KEYS_FILE, DefaultFileRefusal, Keys, read_private_file};
+use crate::keys::{
+    DEFAULT_KEYS_FILE, DefaultFileRefusal, Keys, MAX_KEYS_FILE_BYTES, read_private_file,
+};
 use crate::ledger::load_chain;
 use crate::provider_credentials::{self, ProbeState, ProviderProbeStatus};
 use crate::serve_probe::{ServeProbe, ServeState};
@@ -50,7 +52,6 @@ pub const DISK_FAIL_BYTES: u64 = 256 * 1024 * 1024;
 /// Below this much free space a source rebuild under Termux may not fit.
 pub const DISK_WARN_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_PROVENANCE_BYTES: u64 = 4096;
-const MAX_KEYS_BYTES: u64 = 64 * 1024;
 /// Files the ledger scan reads at most, so a huge state directory cannot stall `doctor`.
 const MAX_SCANNED_FILES: usize = 2000;
 const MAX_SCAN_DEPTH: usize = 4;
@@ -551,7 +552,7 @@ fn env_file(ctx: &Context<'_>) -> Check {
         );
     };
     let shown = ctx.show(&path);
-    let check = match read_private_file(&path, MAX_KEYS_BYTES) {
+    let check = match read_private_file(&path, MAX_KEYS_FILE_BYTES) {
         Ok(None) => Check::warn(
             ID,
             format!("{shown} does not exist; keys can only come from the environment"),
@@ -583,12 +584,13 @@ fn env_file(ctx: &Context<'_>) -> Check {
                                 unrecognised.join(", ")
                             ),
                             if unrecognised.len() == 1
-                                && unrecognised[0] == crate::environment::LEGACY_INSTALL_DIR_ENV
+                                && [
+                                    crate::environment::LEGACY_INSTALL_DIR_ENV,
+                                    crate::environment::RETIRED_MOZILLA_LOCATION_KEY_ENV,
+                                ]
+                                .contains(&unrecognised[0])
                             {
-                                format!(
-                                    "huntsman-recon keys remove {}",
-                                    crate::environment::LEGACY_INSTALL_DIR_ENV
-                                )
+                                format!("huntsman-recon keys remove {}", unrecognised[0])
                             } else {
                                 "huntsman-recon credential-status".to_owned()
                             },
@@ -656,7 +658,7 @@ fn refusal_check(id: &'static str, path: &Path, shown: &str, refusal: DefaultFil
         DefaultFileRefusal::UnknownCurrentUser => Check::fail(
             id,
             "the current uid cannot be read from /proc/self/status, so the keys file is not read",
-            "pass --keys FILE to each command",
+            "set the keys in the environment instead",
         ),
         DefaultFileRefusal::ChangedWhileOpening => Check::warn(
             id,

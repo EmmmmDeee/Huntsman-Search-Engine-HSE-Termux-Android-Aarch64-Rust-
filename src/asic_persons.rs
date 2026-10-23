@@ -593,7 +593,7 @@ fn push_address(
     c.tag("au");
     c.tag("asic");
     c.tag("addr-derived");
-    c.tag("geoint");
+    c.tag(crate::tags::GEOINT);
     c.tag("country:AU");
     if let Some(state) = sc {
         c.tag(format!("au-state:{state}"));

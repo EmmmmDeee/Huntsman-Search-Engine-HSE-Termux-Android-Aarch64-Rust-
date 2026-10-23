@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::bluesky_user;
 use crate::canonical::canonical_handle;
+use crate::concurrent::{self, Job};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::github_user;
@@ -12,6 +13,7 @@ use crate::keybase;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
+use crate::mastodon_user;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
@@ -20,7 +22,10 @@ use crate::wikipedia;
 pub const USERNAME_USAGE: &str = "usage: huntsman-recon username HANDLE [--save FILE]";
 pub const USERNAME_HELP: &str = "\
 username HANDLE [--save FILE]
-Derive deterministic handle variants and query keyless public GitHub, Bluesky and Keybase profiles and the handle's recent public Wikipedia edits. --save FILE writes an unverified ledger that verify can reload.";
+Derive deterministic handle variants and query keyless public GitHub, Bluesky, Keybase and Mastodon (mastodon.social) profiles and the handle's recent public Wikipedia edits, all at once. --save FILE writes an unverified ledger that verify can reload.";
+
+/// One source's answer: what it found and its outcome, or the refusal that stopped it.
+type Found = Result<(Vec<Entity>, SourceExecutionOutcome), Error>;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -50,10 +55,10 @@ pub enum UsernameRun {
     Failed(String),
 }
 
-/// Run deterministic variants and the keyless public-profile collectors, each when the
-/// transport's lookup asks its module ([`Transport::runs_module`]).
+/// Run deterministic variants and the keyless public-profile sources, each when the transport's
+/// lookup asks its module ([`Transport::runs_module`]), all at once.
 #[must_use]
-pub fn run<T: Transport + ?Sized>(
+pub fn run<T: Transport + Sync + ?Sized>(
     transport: &T,
     keys: &Keys,
     username: &str,
@@ -69,17 +74,64 @@ pub fn run<T: Transport + ?Sized>(
         outcomes: Vec::new(),
     };
 
-    if transport.runs_module(github_user::SRC) {
-        collect_github(transport, keys, &username, &scan_id, now_unix, &mut report);
-    }
-    if transport.runs_module(bluesky_user::SRC) {
-        collect_bluesky(transport, &username, &scan_id, now_unix, &mut report);
-    }
-    if transport.runs_module(keybase::SRC) {
-        collect_keybase(transport, &username, &scan_id, now_unix, &mut report);
-    }
-    if transport.runs_module(wikipedia::SRC) {
-        collect_wikipedia(transport, &username, &scan_id, now_unix, &mut report);
+    // Each source asks a different server about the handle alone, so they run at once and the
+    // lookup takes as long as the slowest of them. Their answers are folded in this order, so the
+    // report is the one they gave when they ran one after another.
+    let (name, scan) = (username.as_str(), scan_id.as_str());
+    let sources: [(&str, Job<'_, Found>); 5] = [
+        (
+            github_user::SRC,
+            Box::new(move || {
+                github_user::lookup(transport, keys, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            bluesky_user::SRC,
+            Box::new(move || {
+                bluesky_user::lookup(transport, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            keybase::SRC,
+            Box::new(move || {
+                keybase::lookup(transport, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            wikipedia::SRC,
+            Box::new(move || {
+                wikipedia::lookup(transport, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            mastodon_user::SRC,
+            Box::new(move || {
+                mastodon_user::lookup(transport, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+    ];
+    let (modules, jobs): (Vec<&str>, Vec<Job<'_, Found>>) = sources
+        .into_iter()
+        .filter(|(module, _)| transport.runs_module(module))
+        .unzip();
+    for (module, found) in modules.into_iter().zip(concurrent::all(jobs)) {
+        match found {
+            Ok((entities, outcome)) => {
+                report.entities.extend(entities);
+                report.outcomes.push(outcome);
+            }
+            // A URL the guarded fetch refused names nothing about the handle.
+            Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
+                module,
+                now_unix,
+                error.to_string(),
+            )),
+        }
     }
     merge_by_uid(&mut report.entities);
 
@@ -131,9 +183,9 @@ fn derived_entities(username: &str, scan_id: &str) -> Vec<Entity> {
         if entity.uid == seed_uid {
             continue;
         }
-        entity.tag("derived");
+        entity.tag(crate::tags::DERIVED);
         entity.tag("variant");
-        entity.tag("candidate");
+        entity.tag(crate::tags::CANDIDATE);
         entity.add_evidence(
             Evidence::new(
                 EvidenceProvenance::for_scan("username_variants", scan_id),
@@ -148,91 +200,9 @@ fn derived_entities(username: &str, scan_id: &str) -> Vec<Entity> {
     entities
 }
 
-fn collect_github<T: Transport + ?Sized>(
-    transport: &T,
-    keys: &Keys,
-    username: &str,
-    scan_id: &str,
-    now_unix: u64,
-    report: &mut Report,
-) {
-    match github_user::lookup(transport, keys, username, scan_id, now_unix) {
-        Ok(found) => {
-            report.entities.extend(found.entities);
-            report.outcomes.push(found.outcome);
-        }
-        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
-            github_user::SRC,
-            now_unix,
-            error.to_string(),
-        )),
-    }
-}
-
-fn collect_bluesky<T: Transport + ?Sized>(
-    transport: &T,
-    username: &str,
-    scan_id: &str,
-    now_unix: u64,
-    report: &mut Report,
-) {
-    match bluesky_user::lookup(transport, username, scan_id, now_unix) {
-        Ok(found) => {
-            report.entities.extend(found.entities);
-            report.outcomes.push(found.outcome);
-        }
-        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
-            bluesky_user::SRC,
-            now_unix,
-            error.to_string(),
-        )),
-    }
-}
-
-fn collect_keybase<T: Transport + ?Sized>(
-    transport: &T,
-    username: &str,
-    scan_id: &str,
-    now_unix: u64,
-    report: &mut Report,
-) {
-    match keybase::lookup(transport, username, scan_id, now_unix) {
-        Ok(found) => {
-            report.entities.extend(found.entities);
-            report.outcomes.push(found.outcome);
-        }
-        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
-            keybase::SRC,
-            now_unix,
-            error.to_string(),
-        )),
-    }
-}
-
-fn collect_wikipedia<T: Transport + ?Sized>(
-    transport: &T,
-    username: &str,
-    scan_id: &str,
-    now_unix: u64,
-    report: &mut Report,
-) {
-    match wikipedia::lookup(transport, username, scan_id, now_unix) {
-        Ok(found) => {
-            report.entities.extend(found.entities);
-            report.outcomes.push(found.outcome);
-        }
-        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
-            wikipedia::SRC,
-            now_unix,
-            error.to_string(),
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
 
     #[test]
     fn the_seed_stays_the_operators_seed_after_its_variants_are_merged() {
@@ -252,30 +222,40 @@ mod tests {
             "{entities:?}"
         );
     }
-    use std::collections::VecDeque;
 
     use crate::http::{Request, Response, TransportFailure};
     use crate::source_outcome::SourceOutcomeKind;
     use crate::test_support::unexpected_controls;
 
+    const GITHUB: &str = "api.github.com";
+    const BLUESKY: &str = "public.api.bsky.app";
+    const KEYBASE: &str = "keybase.io";
+    const WIKIPEDIA: &str = "en.wikipedia.org";
+    const MASTODON: &str = "mastodon.social";
+
+    /// Answers each source by its host, as the sources run at once and in no fixed order; a host
+    /// with no reply answers nothing, which no source may take for absence.
     struct Fake {
-        replies: RefCell<VecDeque<Result<Response, TransportFailure>>>,
+        replies: Vec<(&'static str, Response)>,
     }
 
     impl Fake {
-        fn new(replies: Vec<Result<Response, TransportFailure>>) -> Self {
-            Self {
-                replies: RefCell::new(replies.into()),
-            }
+        fn new(replies: Vec<(&'static str, Response)>) -> Self {
+            Self { replies }
         }
     }
 
     impl Transport for Fake {
-        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
             self.replies
-                .borrow_mut()
-                .pop_front()
-                .expect("unexpected request")
+                .iter()
+                .find(|(host, _)| request.url.starts_with(&format!("https://{host}/")))
+                .map(|(_, reply)| reply.clone())
+                .ok_or_else(|| TransportFailure {
+                    kind: SourceOutcomeKind::ConnectFailure,
+                    detail: format!("no reply scripted for {}", request.url),
+                    blocked: false,
+                })
         }
     }
 
@@ -317,9 +297,9 @@ mod tests {
           "did":"did:plc:oky5czdrnfjpqslsw2a5iclo"
         }"#;
         let fake = Fake::new(vec![
-            Ok(response(200, github)),
-            Ok(response(200, bluesky)),
-            Ok(response(200, r#"{"query":{"usercontribs":[]}}"#)),
+            (GITHUB, response(200, github)),
+            (BLUESKY, response(200, bluesky)),
+            (WIKIPEDIA, response(200, r#"{"query":{"usercontribs":[]}}"#)),
         ]);
         match run(&fake, &Keys::default(), "jane-doe", 1) {
             UsernameRun::Printed { text, report } => {
@@ -351,9 +331,9 @@ mod tests {
           "did":"did:plc:oky5czdrnfjpqslsw2a5iclo"
         }"#;
         let fake = Fake::new(vec![
-            Ok(response(200, github)),
-            Ok(response(200, bluesky)),
-            Ok(response(200, r#"{"query":{"usercontribs":[]}}"#)),
+            (GITHUB, response(200, github)),
+            (BLUESKY, response(200, bluesky)),
+            (WIKIPEDIA, response(200, r#"{"query":{"usercontribs":[]}}"#)),
         ]);
         let UsernameRun::Printed { text, report } = run(&fake, &Keys::default(), "jane-doe", 1)
         else {
@@ -385,10 +365,11 @@ mod tests {
         let bluesky = r#"{"handle":"nobody.bsky.social"}"#;
         let keybase = r#"{"status":{"code":0,"name":"OK"},"them":[null]}"#;
         let fake = Fake::new(vec![
-            Ok(response(404, "")),
-            Ok(response(200, bluesky)),
-            Ok(response(200, keybase)),
-            Ok(response(200, r#"{"query":{"usercontribs":[]}}"#)),
+            (GITHUB, response(404, "")),
+            (BLUESKY, response(200, bluesky)),
+            (KEYBASE, response(200, keybase)),
+            (WIKIPEDIA, response(200, r#"{"query":{"usercontribs":[]}}"#)),
+            (MASTODON, response(404, r#"{"error":"Record not found"}"#)),
         ]);
         match run(&fake, &Keys::default(), "nobody", 1) {
             UsernameRun::Printed { report, text } => {
@@ -421,10 +402,11 @@ mod tests {
           }]
         }"#;
         let fake = Fake::new(vec![
-            Ok(response(200, github)),
-            Ok(response(200, bluesky)),
-            Ok(response(200, keybase)),
-            Ok(response(200, r#"{"query":{"usercontribs":[]}}"#)),
+            (GITHUB, response(200, github)),
+            (BLUESKY, response(200, bluesky)),
+            (KEYBASE, response(200, keybase)),
+            (WIKIPEDIA, response(200, r#"{"query":{"usercontribs":[]}}"#)),
+            (MASTODON, response(404, r#"{"error":"Record not found"}"#)),
         ]);
         let UsernameRun::Printed { report, text } = run(&fake, &Keys::default(), "max", 1) else {
             panic!("the lookup should print a report");
@@ -440,19 +422,88 @@ mod tests {
         );
     }
 
+    /// The sources run at once, yet the report lists them in one fixed order, so a lookup reads
+    /// the same however its answers raced.
+    #[test]
+    fn every_source_answers_in_a_fixed_order() {
+        let fake = Fake::new(vec![
+            (GITHUB, response(404, "")),
+            (BLUESKY, response(200, r#"{"handle":"max.bsky.social"}"#)),
+            (
+                KEYBASE,
+                response(200, r#"{"status":{"code":0,"name":"OK"},"them":[null]}"#),
+            ),
+            (WIKIPEDIA, response(200, r#"{"query":{"usercontribs":[]}}"#)),
+            (MASTODON, response(404, r#"{"error":"Record not found"}"#)),
+        ]);
+        for _ in 0..8 {
+            let UsernameRun::Printed { report, .. } = run(&fake, &Keys::default(), "max", 1) else {
+                panic!("the lookup should print a report");
+            };
+            let modules: Vec<&str> = report.outcomes.iter().map(|o| o.module.as_str()).collect();
+            assert_eq!(
+                modules,
+                [
+                    github_user::SRC,
+                    bluesky_user::SRC,
+                    keybase::SRC,
+                    wikipedia::SRC,
+                    mastodon_user::SRC
+                ]
+            );
+        }
+    }
+
+    /// Each source waits on its own server, so five that take 200 ms each answer in about 200 ms,
+    /// not the second they took one after another.
+    #[test]
+    fn the_sources_run_at_once() {
+        struct Slow(Fake);
+        impl Transport for Slow {
+            fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                self.0.send(request)
+            }
+        }
+        let slow = Slow(Fake::new(vec![
+            (GITHUB, response(404, "")),
+            (
+                BLUESKY,
+                response(200, r#"{"handle":"maxslow.bsky.social"}"#),
+            ),
+            (
+                KEYBASE,
+                response(200, r#"{"status":{"code":0,"name":"OK"},"them":[null]}"#),
+            ),
+            (WIKIPEDIA, response(200, r#"{"query":{"usercontribs":[]}}"#)),
+            (MASTODON, response(404, r#"{"error":"Record not found"}"#)),
+        ]));
+        let started = std::time::Instant::now();
+        let UsernameRun::Printed { report, .. } = run(&slow, &Keys::default(), "maxslow", 1) else {
+            panic!("the lookup should print a report");
+        };
+        let took = started.elapsed();
+        assert_eq!(report.outcomes.len(), 5);
+        assert!(
+            took < std::time::Duration::from_millis(800),
+            "five 200 ms sources took {took:?}"
+        );
+    }
+
     #[test]
     fn wikipedia_edits_reach_the_combined_report() {
         let wiki = r#"{"query":{"usercontribs":[
           {"user":"Max","revid":900001,"title":"Reconnaissance","timestamp":"2024-05-01T00:00:00Z","comment":"typo"}
         ]}}"#;
         let fake = Fake::new(vec![
-            Ok(response(404, "")),
-            Ok(response(200, r#"{"handle":"max.bsky.social"}"#)),
-            Ok(response(
-                200,
-                r#"{"status":{"code":0,"name":"OK"},"them":[null]}"#,
-            )),
-            Ok(response(200, wiki)),
+            (GITHUB, response(404, "")),
+            (BLUESKY, response(200, r#"{"handle":"max.bsky.social"}"#)),
+            (
+                KEYBASE,
+                response(200, r#"{"status":{"code":0,"name":"OK"},"them":[null]}"#),
+            ),
+            (WIKIPEDIA, response(200, wiki)),
+            (MASTODON, response(404, r#"{"error":"Record not found"}"#)),
         ]);
         let UsernameRun::Printed { report, text } = run(&fake, &Keys::default(), "max", 1) else {
             panic!("the lookup should print a report");
@@ -463,7 +514,7 @@ mod tests {
                 .entities
                 .iter()
                 .any(|entity| entity.kind == EntityKind::Url
-                    && entity.has_tag("wikipedia-edit")
+                    && entity.has_tag(crate::tags::WIKIPEDIA_EDIT)
                     && entity.value.contains("oldid=900001"))
         );
     }

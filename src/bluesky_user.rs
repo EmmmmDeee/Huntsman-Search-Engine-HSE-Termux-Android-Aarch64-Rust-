@@ -3,7 +3,8 @@
 use serde::Deserialize;
 
 use crate::atproto::{
-    bare_handle, handle_domain_confidence, is_plc_did, platform_handle_suffix, web_did_host,
+    DOMAIN_HANDLE_ATTRIBUTION, DOMAIN_HANDLE_CAVEAT, bare_handle, handle_domain_confidence,
+    is_plc_did, platform_handle_suffix, web_did_host,
 };
 use crate::canonical::{canonical_domain, is_domain_label};
 use crate::classifier;
@@ -219,6 +220,8 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
         );
     }
 
+    // A domain handle shows control of the domain's DNS or web root when it was verified, not who
+    // registered the domain: the domain carries both statements, so it is never read as more.
     let domain = profile.handle.trim_end_matches('.');
     if platform_handle_suffix(domain).is_none() && canonical_domain(domain).is_some() {
         push_entity(
@@ -227,7 +230,10 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
             domain,
             handle_domain_confidence(domain),
             scan_id,
-            profile_evidence.clone(),
+            profile_evidence
+                .clone()
+                .with_attr("handle_verification", DOMAIN_HANDLE_ATTRIBUTION)
+                .with_attr("handle_caveat", DOMAIN_HANDLE_CAVEAT),
             &["bluesky", "custom-handle", "verified-control"],
         );
     }
@@ -436,11 +442,22 @@ mod tests {
             1,
         )
         .unwrap();
+        let domain = got
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Domain && entity.value == "alice.example.org")
+            .expect("the handle's domain");
+        // What the handle proves, and what it does not, travel with the domain.
+        let evidence = &domain.evidence[0];
         assert!(
-            got.entities
-                .iter()
-                .any(|entity| entity.kind == EntityKind::Domain
-                    && entity.value == "alice.example.org")
+            evidence
+                .attr_values("handle_verification")
+                .eq([DOMAIN_HANDLE_ATTRIBUTION])
+        );
+        assert!(
+            evidence
+                .attr_values("handle_caveat")
+                .eq([DOMAIN_HANDLE_CAVEAT])
         );
     }
 

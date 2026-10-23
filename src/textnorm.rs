@@ -169,12 +169,34 @@ fn decode_numeric(rest: &str, syntax: Syntax) -> Option<(char, usize)> {
         return None;
     }
     let value = u32::from_str_radix(raw, if hex { 16 } else { 10 }).ok()?;
-    let ch = char::from_u32(value)?;
+    let ch = if html {
+        html_numeric_char(value)?
+    } else {
+        char::from_u32(value)?
+    };
     if !html && !is_xml_char(ch) {
         return None;
     }
     let consumed = 2 + usize::from(hex) + raw.len() + 1;
     Some((ch, consumed))
+}
+
+/// The character an HTML numeric reference to `value` stands for, as the HTML parser reads it: a
+/// reference to 0 is U+FFFD, and one to `80`-`9F`, which pages written in Windows-1252 use for its
+/// quotes and dashes, is that Windows-1252 character, so `&#146;` is `’`. **Pure.**
+fn html_numeric_char(value: u32) -> Option<char> {
+    const WINDOWS_1252: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž',
+        '\u{8f}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}',
+        'ž', 'Ÿ',
+    ];
+    match value {
+        0 => Some(char::REPLACEMENT_CHARACTER),
+        0x80..=0x9f => usize::try_from(value - 0x80)
+            .ok()
+            .map(|at| WINDOWS_1252[at]),
+        _ => char::from_u32(value),
+    }
 }
 
 /// Whether XML 1.0 allows `c` in a document: tab, line feed, carriage return, and the characters
@@ -202,11 +224,6 @@ pub fn name_tokens(full: &str) -> Vec<String> {
 #[must_use]
 pub fn nonempty(value: &Option<String>) -> Option<&str> {
     value.as_deref().map(str::trim).filter(|s| !s.is_empty())
-}
-
-/// Iterate over non-empty trimmed fields in a pipe-delimited string.
-pub fn pipe_delimited(s: &str) -> impl Iterator<Item = &str> {
-    s.split('|').map(str::trim).filter(|part| !part.is_empty())
 }
 
 /// Title-case each whitespace-delimited word.
@@ -270,54 +287,6 @@ pub fn parse_asn(s: &str) -> Option<u64> {
         return None;
     }
     digits.parse().ok()
-}
-
-/// True when `s` fits the ASCII handle policy and length bounds.
-#[must_use]
-pub fn is_handle(s: &str, min: usize, max: usize) -> bool {
-    (min..=max).contains(&s.len())
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-}
-
-/// Floor an index to a UTF-8 character boundary.
-#[must_use]
-pub fn floor_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut cursor = index;
-    while cursor > 0 && !s.is_char_boundary(cursor) {
-        cursor -= 1;
-    }
-    cursor
-}
-
-/// Ceil an index to a UTF-8 character boundary.
-#[must_use]
-pub fn ceil_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut cursor = index;
-    while cursor < s.len() && !s.is_char_boundary(cursor) {
-        cursor += 1;
-    }
-    cursor
-}
-
-/// Borrow the longest UTF-8 prefix whose length is at most `max`.
-#[must_use]
-pub fn truncate_safe(s: &str, max: usize) -> &str {
-    &s[..floor_char_boundary(s, max)]
-}
-
-/// Safe byte window rounded out to UTF-8 boundaries.
-#[must_use]
-pub fn char_window(s: &str, start: usize, end: usize) -> &str {
-    let begin = ceil_char_boundary(s, start);
-    let finish = ceil_char_boundary(s, end).max(begin);
-    &s[begin..finish]
 }
 
 /// The ASCII text that each lowercase Latin letter with a diacritic folds to, sorted by code point
@@ -642,26 +611,6 @@ pub fn normalise_token(word: &str) -> String {
     out
 }
 
-/// Lowercase ASCII slug with runs of non-alnum collapsed to `-`.
-#[must_use]
-pub fn slugify(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut last_dash = true;
-    for ch in s.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            last_dash = false;
-        } else if !last_dash {
-            out.push('-');
-            last_dash = true;
-        }
-    }
-    if out.ends_with('-') {
-        out.pop();
-    }
-    out
-}
-
 /// Case-insensitive equality over Unicode letters: two words are equal when their characters
 /// lowercase, one at a time, to the same sequence, so `Émile` equals `émile`.
 ///
@@ -779,21 +728,6 @@ mod tests {
         assert_eq!(parse_asn("AS13335"), Some(13_335));
         assert_eq!(parse_asn("AS 13335"), Some(13_335));
         assert_eq!(parse_asn("ASN13335"), None);
-        assert!(is_handle("a-b_c9", 3, 20));
-        assert!(!is_handle("bad.handle", 3, 20));
-    }
-
-    #[test]
-    fn safe_slicing_is_total() {
-        let sample = "aé😀b xÿz";
-        for start in 0..=sample.len() + 2 {
-            for end in 0..=sample.len() + 2 {
-                let window = char_window(sample, start, end);
-                assert!(window.is_empty() || sample.contains(window));
-            }
-            let prefix = truncate_safe(sample, start);
-            assert!(sample.starts_with(prefix));
-        }
     }
 
     #[test]
@@ -802,11 +736,6 @@ mod tests {
         assert_eq!(normalise_token("Müller"), "muller");
         assert_eq!(normalise_token("Nguyễn"), "nguyen");
         assert_eq!(normalise_token("Straße"), "strasse");
-        assert_eq!(
-            slugify("client transfer prohibited"),
-            "client-transfer-prohibited"
-        );
-        assert_eq!(slugify("café¹"), "caf");
     }
 
     #[test]
@@ -997,10 +926,6 @@ mod tests {
     fn optional_and_pipe_helpers_trim() {
         assert_eq!(nonempty(&Some("  hi ".to_string())), Some("hi"));
         assert_eq!(nonempty(&Some("   ".to_string())), None);
-        assert_eq!(
-            pipe_delimited(" alpha | |beta|| ").collect::<Vec<_>>(),
-            ["alpha", "beta"]
-        );
     }
 
     #[test]
@@ -1011,6 +936,20 @@ mod tests {
             decode_html_entities("&bogus; &#xD800; & done"),
             "&bogus; &#xD800; & done"
         );
+    }
+
+    /// The HTML parser reads a reference into `80`-`9F` as the Windows-1252 character a page meant,
+    /// and a reference to 0 as U+FFFD; XML keeps its own rules.
+    #[test]
+    fn html_references_to_c1_codes_read_as_windows_1252() {
+        assert_eq!(
+            decode_html_entities("it&#146;s &#150; &#x93;q&#x94; &#128;5 &#159;"),
+            "it’s – “q” €5 Ÿ"
+        );
+        assert_eq!(decode_html_entities("&#129;&#x8D;"), "\u{81}\u{8d}");
+        assert_eq!(decode_html_entities("a&#0;b"), "a\u{fffd}b");
+        assert_eq!(decode_html_entities("&#160;&#255;"), "\u{a0}ÿ");
+        assert_eq!(decode_xml_references("&#146;"), "\u{92}");
     }
 
     #[test]

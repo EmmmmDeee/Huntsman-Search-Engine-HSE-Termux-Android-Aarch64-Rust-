@@ -19,7 +19,7 @@ use serde_json::Value;
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport};
 use crate::netblock::{Ipv4Cidr, Ipv6Cidr, Netblock};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_http_status};
 
 /// The module name on outcome rows and evidence; Spiderfoot's `sfp_whois` does its work.
 pub const SOURCE: &str = "rdap";
@@ -36,12 +36,24 @@ pub struct Failure {
     pub kind: SourceOutcomeKind,
     pub http_status: Option<u16>,
     pub detail: String,
+    /// The delay a 429 or 503 asked for in `Retry-After`, in seconds.
+    pub retry_after_secs: Option<u64>,
 }
 
 impl Failure {
     #[must_use]
     pub fn outcome(&self, now_unix: u64) -> SourceExecutionOutcome {
-        SourceExecutionOutcome::failed(SOURCE, now_unix, self.kind, self.http_status, &self.detail)
+        let outcome = SourceExecutionOutcome::failed(
+            SOURCE,
+            now_unix,
+            self.kind,
+            self.http_status,
+            &self.detail,
+        );
+        match self.retry_after_secs {
+            Some(secs) => outcome.with_retry_after(secs),
+            None => outcome,
+        }
     }
 }
 
@@ -226,16 +238,17 @@ struct Cidr0 {
 pub fn lookup_domain<T: Transport + ?Sized>(
     transport: &T,
     domain: &str,
+    now_unix: u64,
 ) -> Result<Answer, Failure> {
     let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
-    let bootstrap = bootstrap(transport, BOOTSTRAP_DNS)?;
+    let bootstrap = bootstrap(transport, BOOTSTRAP_DNS, now_unix)?;
     let Some(service) = service_for_domain(&bootstrap, &domain) else {
         let tld = domain.rsplit('.').next().unwrap_or(&domain);
         return Ok(Answer::NoService(format!(
             "the IANA bootstrap names no RDAP service for .{tld}"
         )));
     };
-    object(transport, &format!("{service}domain/{domain}"))
+    object(transport, &format!("{service}domain/{domain}"), now_unix)
 }
 
 /// Look up the registration of the network that holds `ip`, from the registry the bootstrap
@@ -243,8 +256,12 @@ pub fn lookup_domain<T: Transport + ?Sized>(
 ///
 /// # Errors
 /// [`Failure`] when the bootstrap or the registry gave no usable answer.
-pub fn lookup_ip<T: Transport + ?Sized>(transport: &T, ip: IpAddr) -> Result<Answer, Failure> {
-    network(transport, ip, &ip.to_string())
+pub fn lookup_ip<T: Transport + ?Sized>(
+    transport: &T,
+    ip: IpAddr,
+    now_unix: u64,
+) -> Result<Answer, Failure> {
+    network(transport, ip, &ip.to_string(), now_unix)
 }
 
 /// Look up the registration of `block`: the smallest registered network that holds all of it
@@ -256,8 +273,9 @@ pub fn lookup_ip<T: Transport + ?Sized>(transport: &T, ip: IpAddr) -> Result<Ans
 pub fn lookup_netblock<T: Transport + ?Sized>(
     transport: &T,
     block: Netblock,
+    now_unix: u64,
 ) -> Result<Answer, Failure> {
-    network(transport, block.network(), &block.to_string())
+    network(transport, block.network(), &block.to_string(), now_unix)
 }
 
 /// Look up the registration of AS number `asn`, from the registry the bootstrap names for its
@@ -265,33 +283,38 @@ pub fn lookup_netblock<T: Transport + ?Sized>(
 ///
 /// # Errors
 /// [`Failure`] when the bootstrap or the registry gave no usable answer.
-pub fn lookup_asn<T: Transport + ?Sized>(transport: &T, asn: u32) -> Result<Answer, Failure> {
-    let bootstrap = bootstrap(transport, BOOTSTRAP_ASN)?;
+pub fn lookup_asn<T: Transport + ?Sized>(
+    transport: &T,
+    asn: u32,
+    now_unix: u64,
+) -> Result<Answer, Failure> {
+    let bootstrap = bootstrap(transport, BOOTSTRAP_ASN, now_unix)?;
     let Some(service) = service_for_asn(&bootstrap, asn) else {
         return Ok(Answer::NoService(format!(
             "the IANA bootstrap names no RDAP service for AS{asn}"
         )));
     };
-    object(transport, &format!("{service}autnum/{asn}"))
+    object(transport, &format!("{service}autnum/{asn}"), now_unix)
 }
 
 fn network<T: Transport + ?Sized>(
     transport: &T,
     first: IpAddr,
     resource: &str,
+    now_unix: u64,
 ) -> Result<Answer, Failure> {
     let url = if first.is_ipv4() {
         BOOTSTRAP_IPV4
     } else {
         BOOTSTRAP_IPV6
     };
-    let bootstrap = bootstrap(transport, url)?;
+    let bootstrap = bootstrap(transport, url, now_unix)?;
     let Some(service) = service_for_ip(&bootstrap, first) else {
         return Ok(Answer::NoService(format!(
             "the IANA bootstrap names no RDAP service for {resource}"
         )));
     };
-    object(transport, &format!("{service}ip/{resource}"))
+    object(transport, &format!("{service}ip/{resource}"), now_unix)
 }
 
 /// The service base URL for `domain`: the entry whose TLD is the longest dot-aligned suffix of
@@ -366,41 +389,70 @@ fn base_url(urls: &[String]) -> Option<String> {
     })
 }
 
-fn bootstrap<T: Transport + ?Sized>(transport: &T, url: &str) -> Result<Bootstrap, Failure> {
-    let response = get(
+fn bootstrap<T: Transport + ?Sized>(
+    transport: &T,
+    url: &str,
+    now_unix: u64,
+) -> Result<Bootstrap, Failure> {
+    let reply = get(
         transport,
         url,
         "application/json",
         &FetchOptions::no_redirects(),
+        now_unix,
     )?;
+    let response = &reply.response;
     if !(200..300).contains(&response.status) {
-        return Err(status_failure(&response));
+        return Err(status_failure(&reply));
     }
-    crate::http::parse_json_body(&response).map_err(|error| Failure {
+    crate::http::parse_json_body(response).map_err(|error| Failure {
         kind: SourceOutcomeKind::SchemaDrift,
         http_status: Some(response.status),
         detail: format!("not an RDAP bootstrap registry: {error}"),
+        retry_after_secs: None,
     })
 }
 
-fn object<T: Transport + ?Sized>(transport: &T, url: &str) -> Result<Answer, Failure> {
-    let response = get(transport, url, RDAP_ACCEPT, &FetchOptions::default())?;
+fn object<T: Transport + ?Sized>(
+    transport: &T,
+    url: &str,
+    now_unix: u64,
+) -> Result<Answer, Failure> {
+    let reply = get(
+        transport,
+        url,
+        RDAP_ACCEPT,
+        &FetchOptions::default(),
+        now_unix,
+    )?;
+    let response = &reply.response;
     if response.status == 404 {
         return Ok(Answer::NotFound);
     }
     if !(200..300).contains(&response.status) {
-        return Err(status_failure(&response));
+        return Err(status_failure(&reply));
     }
-    let parsed: Object = crate::http::parse_json_body(&response).map_err(|error| Failure {
+    let parsed: Object = crate::http::parse_json_body(response).map_err(|error| Failure {
         kind: SourceOutcomeKind::SchemaDrift,
         http_status: Some(response.status),
         detail: format!("not an RDAP object: {error}"),
+        retry_after_secs: None,
     })?;
+    // After a referral the record is the last hop's, so it names that URL.
     Ok(Answer::Registered(Box::new(record(
         parsed,
-        url,
+        &reply.final_url,
         response.text(),
     ))))
+}
+
+/// A response with what fetch read around it.
+struct Reply {
+    response: Response,
+    /// The URL of the hop that answered, redacted as fetch reports it.
+    final_url: String,
+    /// The delay a 429 or 503 asked for, counted from the scan's clock.
+    retry_after_secs: Option<u64>,
 }
 
 fn get<T: Transport + ?Sized>(
@@ -408,15 +460,18 @@ fn get<T: Transport + ?Sized>(
     url: &str,
     accept: &str,
     options: &FetchOptions,
-) -> Result<Response, Failure> {
+    now_unix: u64,
+) -> Result<Reply, Failure> {
     let request = Request::get(url)
         .header("Accept", accept)
         .with_timeout(TIMEOUT);
-    let fetched = fetch(transport, request, None, options, SOURCE, 0).map_err(|error| Failure {
-        kind: SourceOutcomeKind::Inconclusive,
-        http_status: None,
-        detail: error.to_string(),
-    })?;
+    let fetched =
+        fetch(transport, request, None, options, SOURCE, now_unix).map_err(|error| Failure {
+            kind: SourceOutcomeKind::Inconclusive,
+            http_status: None,
+            detail: error.to_string(),
+            retry_after_secs: None,
+        })?;
     let Some(response) = fetched.response else {
         return Err(Failure {
             kind: fetched.outcome.kind,
@@ -425,6 +480,7 @@ fn get<T: Transport + ?Sized>(
                 .outcome
                 .detail
                 .unwrap_or_else(|| "no response".into()),
+            retry_after_secs: None,
         });
     };
     if crate::classify::is_challenge(&response.text_view()) {
@@ -432,6 +488,7 @@ fn get<T: Transport + ?Sized>(
             kind: SourceOutcomeKind::BotWaf,
             http_status: Some(response.status),
             detail: "challenge page".into(),
+            retry_after_secs: None,
         });
     }
     if response.truncated {
@@ -439,22 +496,23 @@ fn get<T: Transport + ?Sized>(
             kind: SourceOutcomeKind::Inconclusive,
             http_status: Some(response.status),
             detail: "truncated body".into(),
+            retry_after_secs: None,
         });
     }
-    Ok(response)
+    Ok(Reply {
+        response,
+        final_url: fetched.final_url,
+        retry_after_secs: fetched.outcome.retry_after_secs,
+    })
 }
 
-fn status_failure(response: &Response) -> Failure {
-    let kind = match response.status {
-        429 => SourceOutcomeKind::RateLimited,
-        300..=399 => SourceOutcomeKind::RedirectChanged,
-        500.. => SourceOutcomeKind::Upstream5xx,
-        _ => SourceOutcomeKind::Upstream4xx,
-    };
+fn status_failure(reply: &Reply) -> Failure {
+    let status = reply.response.status;
     Failure {
-        kind,
-        http_status: Some(response.status),
-        detail: format!("HTTP {}", response.status),
+        kind: classify_http_status(status),
+        http_status: Some(status),
+        detail: format!("HTTP {status}"),
+        retry_after_secs: reply.retry_after_secs,
     }
 }
 

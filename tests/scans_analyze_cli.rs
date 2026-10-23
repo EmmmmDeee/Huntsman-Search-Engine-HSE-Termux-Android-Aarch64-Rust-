@@ -44,6 +44,7 @@ fn fixture() -> (PathBuf, String, Vec<u8>) {
             errors: 0,
             modules_run: vec!["dns".into()],
             owner: None,
+            owner_started: None,
         })
         .unwrap();
     let evidence = Evidence::new(EvidenceProvenance::for_scan("dns", id.as_str()), "A record")

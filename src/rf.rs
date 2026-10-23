@@ -9,17 +9,6 @@ use serde::{Deserialize, Serialize};
 use super::oui;
 use crate::timefmt::days_from_civil;
 
-pub const GENERIC_SSID_BRANDS: &[&str] = &[
-    "android", "dlink", "eduroam", "galaxy", "hidden", "iphone", "linksys", "netgear", "optimum",
-    "optus", "spectrum", "telstra", "tp-link", "tplink", "unnamed", "unknown", "vodafone",
-    "xfinity",
-];
-
-pub const GENERIC_SSID_WORDS: &[&str] = &[
-    "admin", "asus", "att", "config", "cox", "default", "free", "guest", "nbn", "open", "pixel",
-    "public", "setup", "test",
-];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RadioKind {
     Wifi,
@@ -194,18 +183,6 @@ pub fn band(freq_mhz: Option<i64>) -> Option<&'static str> {
 }
 
 #[must_use]
-pub fn is_generic_ssid(ssid: &str) -> bool {
-    let lower = ssid.to_ascii_lowercase();
-    if GENERIC_SSID_BRANDS
-        .iter()
-        .any(|brand| lower.contains(brand))
-    {
-        return true;
-    }
-    ssid_tokens(&lower).any(|token| GENERIC_SSID_WORDS.contains(&token))
-}
-
-#[must_use]
 pub fn tower_id(
     mcc: impl Display,
     mnc: impl Display,
@@ -328,62 +305,12 @@ pub fn parse_iso8601_epoch(value: &str) -> Option<i64> {
     Some(epoch)
 }
 
-fn ssid_tokens(lower: &str) -> impl Iterator<Item = &str> {
-    lower
-        .split(|c: char| !c.is_alphanumeric())
-        .flat_map(|part| {
-            let mut tokens = Vec::new();
-            let mut start = 0usize;
-            let mut prev: Option<char> = None;
-            for (index, ch) in part.char_indices() {
-                if let Some(prev_char) = prev {
-                    if prev_char.is_ascii_digit() != ch.is_ascii_digit() {
-                        tokens.push(&part[start..index]);
-                        start = index;
-                    }
-                }
-                prev = Some(ch);
-            }
-            if start < part.len() {
-                tokens.push(&part[start..]);
-            }
-            tokens
-        })
-        .filter(|token| !token.is_empty())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const HW1: &str = "3C:5A:B4:11:22:33";
     const RND: &str = "36:32:62:36:31:33";
-
-    #[test]
-    fn generic_ssid_detection_uses_substrings_for_brands_and_tokens_for_words() {
-        for ssid in [
-            "linksys",
-            "xfinitywifi",
-            "NETGEAR-Guest",
-            "Telstra-Home-123",
-            "Free Public WiFi",
-        ] {
-            assert!(is_generic_ssid(ssid), "{ssid}");
-        }
-        for ssid in [
-            "Freeman-Family",
-            "Seattle-Cafe",
-            "Testa-Household",
-            "Openshaw-House",
-            "Hancox-Home",
-            "Attwood-Residence",
-            "Nbnalla-House",
-            "Smith-WiFi",
-            "Johnson WLAN",
-        ] {
-            assert!(!is_generic_ssid(ssid), "{ssid}");
-        }
-    }
 
     #[test]
     fn band_and_cell_helpers_are_single_sourced() {

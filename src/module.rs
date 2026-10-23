@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::dependency::{ModuleCategory, ModuleCost, ModuleMeta};
+pub use crate::dependency::{ModuleCategory, ModuleCost};
 use crate::environment;
 pub use crate::environment::PROVIDER_COST_ENV_PREFIX;
 use crate::module_selection::Selection;
@@ -432,6 +432,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         category: ModuleCategory::Social,
         attack_techniques: &["T1593.001"],
         description: "public Bluesky profile lookup",
+    },
+    ReachableModule {
+        name: "mastodon_user",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.001"],
+        description: "public Mastodon account lookup on mastodon.social",
     },
     ReachableModule {
         name: "keybase",
@@ -1022,21 +1031,12 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
     },
     ReachableModule {
         name: "opencellid",
-        command: "cell MCC:MNC:LAC:CELLID",
+        command: "network cell:MCC:MNC:AREA:CELL",
         access: "keyed",
         network: true,
         category: ModuleCategory::Infrastructure,
         attack_techniques: &["T1590.005"],
         description: "OpenCelliD cell tower position (keyed)",
-    },
-    ReachableModule {
-        name: "mozilla_location",
-        command: "network BSSID",
-        access: "keyed",
-        network: true,
-        category: ModuleCategory::Infrastructure,
-        attack_techniques: &["T1590.005"],
-        description: "Mozilla Location Service WiFi BSSID geolocation (keyed)",
     },
     ReachableModule {
         name: "stopforumspam",
@@ -1054,7 +1054,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::Threat,
         attack_techniques: &["T1596.005"],
-        description: "Internet Storm Center (DShield) reports, threat feeds and SSH and web honeypot activity of an address",
+        description: "Internet Storm Center (DShield) reports, threat feeds and SSH and web honeypot activity of an IPv4 address",
     },
     ReachableModule {
         name: "maltiverse",
@@ -1439,6 +1439,7 @@ mod tests {
             crate::openpgp_keys::SRC,
             crate::github_user::SRC,
             crate::bluesky_user::SRC,
+            crate::mastodon_user::SRC,
             crate::keybase::SRC,
             crate::blockchain::SOURCE,
             crate::itunes::SOURCE,
@@ -1469,12 +1470,17 @@ mod tests {
     }
 
     #[test]
-    fn string_forms_match_serde() {
-        for cost in [ModuleCost::Free, ModuleCost::KeyGated, ModuleCost::Paid] {
+    fn serde_forms_are_the_pinned_wire_names() {
+        for (cost, name) in [
+            (ModuleCost::Free, "free"),
+            (ModuleCost::KeyGated, "key_gated"),
+            (ModuleCost::Paid, "paid"),
+        ] {
             let json = serde_json::to_string(&cost).expect("json");
-            assert_eq!(json.trim_matches('"'), cost.as_str());
+            assert_eq!(json.trim_matches('"'), name);
         }
-        assert_eq!(ModuleCategory::DnsRecon.as_str(), "dns_recon");
+        let json = serde_json::to_string(&ModuleCategory::DnsRecon).expect("json");
+        assert_eq!(json.trim_matches('"'), "dns_recon");
     }
 
     #[test]

@@ -178,11 +178,23 @@ fn find_header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a st
         .map(|(_, v)| v.as_str())
 }
 
-/// Append one URL-encoded query parameter to `url`.
+/// Append one URL-encoded query parameter to `url`'s query, before any fragment: a parameter
+/// after the `#` would never be sent.
 #[must_use]
 pub fn append_query_param(url: &str, name: &str, value: &str) -> String {
-    let separator = if url.contains('?') { '&' } else { '?' };
-    format!("{url}{separator}{name}={}", percent_encode_component(value))
+    let (base, fragment) = url
+        .split_once('#')
+        .map_or((url, None), |(base, fragment)| (base, Some(fragment)));
+    let separator = if base.contains('?') { '&' } else { '?' };
+    let mut out = format!(
+        "{base}{separator}{name}={}",
+        percent_encode_component(value)
+    );
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
 }
 
 /// One query component, form-encoded: unreserved bytes are kept, a space is `+`, and every other
@@ -289,6 +301,13 @@ pub trait Transport {
     /// another passes the question on.
     fn runs_module(&self, _module: &str) -> bool {
         true
+    }
+
+    /// This transport as one several threads may share, when it is one. A lookup with several
+    /// independent sources to ask asks them all at once through it, and one after another
+    /// through a transport that cannot be shared; the answers fold the same either way.
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        None
     }
 }
 
@@ -407,7 +426,20 @@ pub fn redact_url(url: &str) -> String {
                 None => format!("{scheme}://{host}"),
             }
         }
-        None => base.to_owned(),
+        // `scheme:user:pass@host/...` without the slashes: the userinfo is still dropped.
+        None => match base.split_once(':') {
+            Some((scheme, rest)) => {
+                let (authority, path) = rest
+                    .split_once('/')
+                    .map_or((rest, None), |(a, p)| (a, Some(p)));
+                match (authority.rsplit_once('@'), path) {
+                    (Some((_, host)), Some(p)) => format!("{scheme}:{host}/{p}"),
+                    (Some((_, host)), None) => format!("{scheme}:{host}"),
+                    (None, _) => base.to_owned(),
+                }
+            }
+            None => base.to_owned(),
+        },
     };
     if query {
         format!("{base}?{REDACTED}")
@@ -674,6 +706,10 @@ impl Default for UreqTransport {
 }
 
 impl Transport for UreqTransport {
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        Some(self)
+    }
+
     fn resolve(&self, name: &str) -> Result<Vec<IpAddr>, TransportFailure> {
         if let Some(failure) = self.misconfigured() {
             return Err(failure);
@@ -816,7 +852,8 @@ fn map_ureq_error(err: &ureq::Error) -> TransportFailure {
 pub fn retry_after_secs(value: &str, now_unix: u64) -> Option<u64> {
     let value = value.trim();
     if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
-        return value.parse().ok();
+        // All digits but past u64 is a very long wait, which each caller caps, not no wait.
+        return Some(value.parse().unwrap_or(u64::MAX));
     }
     let at = crate::timefmt::parse_http_date(value, now_unix)?;
     let now = i64::try_from(now_unix).unwrap_or(i64::MAX);
@@ -1007,6 +1044,19 @@ mod tests {
         );
         assert_eq!(redact_url("https://host.example"), "https://host.example");
         assert_eq!(redact_url("not a url"), "not a url");
+        assert_eq!(
+            redact_url("http:user:secret@host.example/a?k=v"),
+            "http:host.example/a?[redacted]"
+        );
+        assert_eq!(redact_url("http:user:secret@host"), "http:host");
+        assert_eq!(redact_url("host.example:8080/a"), "host.example:8080/a");
+    }
+
+    #[test]
+    fn an_overlong_retry_after_is_a_long_wait_not_none() {
+        assert_eq!(retry_after_secs("7200", 0), Some(7200));
+        assert_eq!(retry_after_secs("18446744073709551616", 0), Some(u64::MAX));
+        assert_eq!(retry_after_secs("-1", 0), None);
     }
 
     #[test]
@@ -1051,6 +1101,14 @@ mod tests {
         assert_eq!(
             append_query_param("https://example.com?x=1", "q", "a&b"),
             "https://example.com?x=1&q=a%26b"
+        );
+        assert_eq!(
+            append_query_param("https://example.com/x#frag", "key", "s"),
+            "https://example.com/x?key=s#frag"
+        );
+        assert_eq!(
+            append_query_param("https://example.com/x?a=1#f?g", "key", "s"),
+            "https://example.com/x?a=1&key=s#f?g"
         );
     }
 

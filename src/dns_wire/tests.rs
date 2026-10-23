@@ -180,8 +180,9 @@ fn real_answers_read_with_their_compressed_names_and_records() {
     assert_eq!(filtered.extended_errors[0].describe(), "17 Filtered");
 }
 
-#[test]
-fn every_record_type_reads_in_presentation_form() {
+/// An answer carrying one record of each type the reader writes a presentation form for, an
+/// unknown type with data and one without, and an extended DNS error.
+fn every_record_type() -> Vec<u8> {
     let asked = query(7, "example.com", 255).expect("query");
     let mut caa = vec![0, 5];
     caa.extend_from_slice(b"issueletsencrypt.org");
@@ -193,7 +194,7 @@ fn every_record_type_reads_in_presentation_form() {
     for number in [2024_u32, 7200, 3600, 1_209_600, 300] {
         soa.extend_from_slice(&number.to_be_bytes());
     }
-    let body = answer(
+    answer(
         &asked,
         NOERROR,
         &[
@@ -214,8 +215,12 @@ fn every_record_type_reads_in_presentation_form() {
             (100, Rdata::Raw(Vec::new())),
         ],
         Some((0, "")),
-    );
-    let message = parse(&body).expect("answer");
+    )
+}
+
+#[test]
+fn every_record_type_reads_in_presentation_form() {
+    let message = parse(&every_record_type()).expect("answer");
     let forms: Vec<String> = message
         .answers
         .iter()
@@ -282,4 +287,113 @@ fn a_hostile_body_is_an_error() {
             && label.contains("ABC")
             && label.contains("xyz")
     );
+}
+
+/// A name longer than 255 octets is refused however it is reached, and the longest legal one
+/// still reads: one oversized name pointed at by every record would otherwise be copied, escaped,
+/// into each of them.
+#[test]
+fn a_name_past_255_octets_is_refused() {
+    // Four 62-octet labels and a 1-octet one, each with its length octet, and the root make 255
+    // octets: the longest name RFC 1035 allows.
+    let label = |byte: u8| {
+        let mut out = vec![62];
+        out.extend(std::iter::repeat_n(byte, 62));
+        out
+    };
+    let header = [0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+    let longest: Vec<u8> = (b'a'..=b'd').flat_map(label).chain([1, b'e', 0]).collect();
+    assert_eq!(longest.len(), 255);
+    let record = [0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 0, 0, 4, 192, 0, 2, 1];
+    let message = |name: &[u8]| {
+        let mut out = header.to_vec();
+        out.extend_from_slice(name);
+        out.extend_from_slice(&[0, 1, 0, 1]);
+        out.extend_from_slice(&record);
+        out
+    };
+    let read = parse(&message(&longest)).expect("the longest legal name");
+    assert_eq!(read.question.expect("question").name.len(), 4 * 62 + 1 + 4);
+    assert_eq!(read.answers.len(), 1);
+    // One octet more: a 2-octet last label.
+    let over: Vec<u8> = (b'a'..=b'd')
+        .flat_map(label)
+        .chain([2, b'e', b'f', 0])
+        .collect();
+    assert_eq!(over.len(), 256);
+    assert_eq!(parse(&message(&over)), Err(WireError::BadName));
+    assert_eq!(question(&message(&over)), Err(WireError::BadName));
+    // The same length reached through a pointer: a record owner of one label pointing on into
+    // the longest name.
+    let mut pointed = message(&longest);
+    let answer = 12 + longest.len() + 4;
+    pointed.splice(answer..answer + 2, [1, b'x', 0xc0, 0x0c]);
+    assert_eq!(parse(&pointed), Err(WireError::BadName));
+}
+
+/// A name in a record's data must end inside that record: one that runs on into the bytes after
+/// it is not what the record holds.
+#[test]
+fn a_name_in_record_data_cannot_run_past_the_record() {
+    let query = query(0x1234, "a", 5).expect("query");
+    let mut empty = answer(&query, NOERROR, &[(5, Rdata::Raw(Vec::new()))], None);
+    empty.extend_from_slice(&[4, b'e', b'v', b'i', b'l', 0]);
+    assert_eq!(parse(&empty), Err(WireError::Truncated));
+    let mut mx = answer(&query, NOERROR, &[(15, Rdata::Raw(vec![0, 10]))], None);
+    mx.extend_from_slice(&[4, b'e', b'v', b'i', b'l', 0]);
+    assert_eq!(parse(&mx), Err(WireError::Truncated));
+    let mut srv = answer(
+        &query,
+        NOERROR,
+        &[(33, Rdata::Raw(vec![0, 1, 0, 2, 0, 3, 4]))],
+        None,
+    );
+    srv.extend_from_slice(&[b'e', b'v', b'i', b'l', 0]);
+    assert_eq!(parse(&srv), Err(WireError::Truncated));
+    // A name that ends inside its record, compressed or not, still reads.
+    let whole = answer(&query, NOERROR, &[(5, Rdata::Name("b.example"))], None);
+    assert_eq!(
+        parse(&whole).expect("answer").answers[0].data,
+        Data::Name("b.example".into())
+    );
+    let mut mx = vec![0, 10];
+    mx.extend_from_slice(&[0xc0, 0x0c]);
+    let pointer = answer(&query, NOERROR, &[(15, Rdata::Raw(mx))], None);
+    assert_eq!(
+        parse(&pointer).expect("answer").answers[0].data,
+        Data::Mx {
+            preference: 10,
+            exchange: "a".into()
+        }
+    );
+}
+
+/// Every corruption of real and built answers (a byte, an extreme count or pointer, a cut, a
+/// repeated stretch) is read or refused: none panics, however its names and counts point.
+#[test]
+fn a_corrupted_answer_is_read_or_refused_never_a_panic() {
+    for (name, body) in [
+        ("github", hex(GITHUB_A)),
+        ("txt", hex(EXAMPLE_TXT)),
+        ("filtered", hex(QUAD9_FILTERED)),
+        ("every type", every_record_type()),
+    ] {
+        for (case, bytes) in crate::test_support::mutations(&body, 0xD45_3E1F, 5_000)
+            .into_iter()
+            .enumerate()
+        {
+            let outcome = std::panic::catch_unwind(|| {
+                if let Ok(message) = parse(&bytes) {
+                    for record in &message.answers {
+                        let _ = record.data.presentation();
+                    }
+                    for error in &message.extended_errors {
+                        let _ = error.describe();
+                    }
+                }
+                let _ = question(&bytes);
+            });
+            assert!(outcome.is_ok(), "{name} case {case} panicked");
+        }
+    }
 }

@@ -97,6 +97,68 @@ fn malformed_and_empty_seeds_are_explicit_rejections() {
 }
 
 #[test]
+fn a_bsb_shaped_seed_is_unsupported_and_abn_spellings_are_one_seed() {
+    let result = normalize_seeds(&input(&["123456", "062-000"]), &PipelineLimits::default());
+    assert_eq!(result.accepted, Vec::<NormalizedSeed>::new());
+    assert!(
+        result
+            .rejected
+            .iter()
+            .all(|(_, why)| matches!(why, SeedRejection::Unsupported)),
+        "{:?}",
+        result.rejected
+    );
+
+    let result = normalize_seeds(
+        &input(&["51 824 753 556", "51824753556"]),
+        &PipelineLimits::default(),
+    );
+    assert_eq!(result.accepted.len(), 1, "{:?}", result.accepted);
+    assert_eq!(result.accepted[0].kind, EntityKind::AbnAcn);
+    assert_eq!(result.accepted[0].value, "51824753556");
+}
+
+#[test]
+fn a_bare_ipv6_seed_is_an_ip_address() {
+    let result = normalize_seeds(
+        &input(&["2606:4700:4700::1111", "2606:4700:4700:0:0:0:0:1111"]),
+        &PipelineLimits::default(),
+    );
+    assert_eq!(result.rejected.len(), 0, "{:?}", result.rejected);
+    assert_eq!(result.accepted.len(), 1, "{:?}", result.accepted);
+    assert_eq!(result.accepted[0].kind, EntityKind::IpAddress);
+    assert_eq!(result.accepted[0].value, "2606:4700:4700::1111");
+}
+
+#[test]
+fn asn_seeds_with_leading_zeros_are_one_seed_and_stay_within_32_bits() {
+    let result = normalize_seeds(
+        &input(&["AS013335", "AS13335", "AS4294967296"]),
+        &PipelineLimits::default(),
+    );
+    assert_eq!(result.accepted.len(), 1, "{:?}", result.accepted);
+    assert_eq!(result.accepted[0].kind, EntityKind::Asn);
+    assert_eq!(result.rejected.len(), 1, "{:?}", result.rejected);
+    assert_eq!(result.rejected[0].0, "AS4294967296");
+    assert!(matches!(&result.rejected[0].1, SeedRejection::Unsupported));
+}
+
+#[test]
+fn an_at_sign_seed_that_is_not_a_handle_is_unsupported() {
+    let result = normalize_seeds(&input(&["@", "@Ada Lovelace"]), &PipelineLimits::default());
+    assert_eq!(result.accepted, Vec::<NormalizedSeed>::new());
+    assert_eq!(result.rejected.len(), 2);
+    assert!(
+        result
+            .rejected
+            .iter()
+            .all(|(_, why)| matches!(why, SeedRejection::Unsupported)),
+        "{:?}",
+        result.rejected
+    );
+}
+
+#[test]
 fn unicode_confusable_or_whitespace_only_seed_never_panics() {
     let result = normalize_seeds(
         &input(&["\u{2003}\u{2003}", "ｅxample.com", "@аda"]),

@@ -7,12 +7,6 @@ use crate::graph::Graph;
 
 const BRANCH_BYTES: usize = "└─ ".len();
 
-/// Preserve the original unlimited public interface and tree text format.
-#[must_use]
-pub fn render_snake_graph(graph: &Graph, root_uid: &str) -> Option<String> {
-    render_snake_graph_bounded(graph, root_uid, usize::MAX)?.ok()
-}
-
 /// Return the complete tree or its required UTF-8 byte count when it exceeds
 /// the supplied byte limit. A missing root is None; no output is ever truncated.
 #[must_use]
@@ -92,6 +86,11 @@ pub fn render_snake_graph_bounded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole tree, with no byte budget; `None` for a missing root.
+    fn full_tree(graph: &Graph, root_uid: &str) -> Option<String> {
+        render_snake_graph_bounded(graph, root_uid, usize::MAX)?.ok()
+    }
     use crate::entity::{Entity, EntityKind};
     use crate::graph::{EntityRelation, RelationKind};
 
@@ -112,7 +111,7 @@ mod tests {
             ],
         );
         assert_eq!(
-            render_snake_graph(&graph, &a.uid).unwrap(),
+            full_tree(&graph, &a.uid).unwrap(),
             format!("{}\n└─ {}\n└─ └─ {}\n", a.uid, b.uid, c.uid)
         );
     }
@@ -137,7 +136,7 @@ mod tests {
             graph.uid(neighbours[0]),
             graph.uid(neighbours[1]),
         );
-        assert_eq!(render_snake_graph(&graph, &a.uid).unwrap(), want);
+        assert_eq!(full_tree(&graph, &a.uid).unwrap(), want);
         assert_eq!(
             render_snake_graph_bounded(&graph, &a.uid, want.len()),
             Some(Ok(want.clone())),

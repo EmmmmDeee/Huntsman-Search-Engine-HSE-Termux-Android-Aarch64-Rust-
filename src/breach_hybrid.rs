@@ -13,7 +13,8 @@ pub enum BreachLeg {
     HibpAccount,
     /// `recon stolen-tax`. Operator key required. Cleartext is not a field.
     StolenTax,
-    /// `OathNet` breach search. Operator key required. Only field names leave a record.
+    /// `OathNet` breach search. Operator key required. Non-credential record values leave a
+    /// record; a password, hash or salt only as exposed.
     OathNet,
     /// `DeHashed` exact-match search. Operator key required. Only database names and the
     /// presence of a password or hash leave a record.
@@ -33,23 +34,10 @@ pub fn exposure_order(has_operator_key: bool) -> Vec<BreachLeg> {
     order
 }
 
-/// Hudson Rock v3 requires a key and can carry credential fields.
-/// The only allowed path is the keyed `stolen.tax` cascade, which does not declare those fields.
-#[must_use]
-pub const fn keyless_hudson_rock() -> Option<BreachLeg> {
-    None
-}
-
 /// `recon stolen-tax` is a keyed leg. No key means it is not in the order.
 #[must_use]
 pub fn stolen_tax_allowed(has_operator_key: bool) -> bool {
     exposure_order(has_operator_key).contains(&BreachLeg::StolenTax)
-}
-
-/// A password count is a lead. Do not admit it as verified.
-#[must_use]
-pub const fn count_is_lead(count: u64) -> bool {
-    count > 0
 }
 
 #[cfg(test)]
@@ -78,18 +66,6 @@ mod tests {
                 BreachLeg::DeHashed
             ]
         );
-    }
-
-    #[test]
-    fn zero_count_is_not_a_lead() {
-        assert!(!count_is_lead(0));
-        assert!(count_is_lead(1));
-    }
-
-    #[test]
-    fn hudson_rock_is_not_a_free_leg() {
-        assert_eq!(keyless_hudson_rock(), None);
-        assert!(!exposure_order(false).contains(&BreachLeg::StolenTax));
     }
 
     #[test]

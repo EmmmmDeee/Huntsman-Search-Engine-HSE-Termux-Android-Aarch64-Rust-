@@ -82,29 +82,11 @@ impl SourceOutcomeKind {
         matches!(self, Self::Success | Self::ValidZero)
     }
 
-    #[must_use]
-    pub const fn is_auth(self) -> bool {
-        matches!(self, Self::AuthRequired | Self::AuthRejected)
-    }
-
     /// Whether the source made no request because no key is configured: an expected skip, not a
     /// failure, so a scan does not count it as an error.
     #[must_use]
     pub const fn is_not_configured(self) -> bool {
         matches!(self, Self::NotConfigured)
-    }
-
-    #[must_use]
-    pub const fn is_contract_drift(self) -> bool {
-        matches!(
-            self,
-            Self::RedirectChanged
-                | Self::ProtocolDrift
-                | Self::InteractionDrift
-                | Self::SchemaDrift
-                | Self::ParserDrift
-                | Self::SemanticDrift
-        )
     }
 
     #[must_use]
@@ -116,21 +98,6 @@ impl SourceOutcomeKind {
                 | Self::TlsFailure
                 | Self::TtfbTimeout
                 | Self::BodyTimeout
-        )
-    }
-
-    #[must_use]
-    pub const fn normally_retryable(self) -> bool {
-        matches!(
-            self,
-            Self::RateLimited
-                | Self::DnsFailure
-                | Self::ConnectFailure
-                | Self::TtfbTimeout
-                | Self::BodyTimeout
-                | Self::Upstream5xx
-                | Self::BotWaf
-                | Self::Inconclusive
         )
     }
 }
@@ -264,6 +231,21 @@ pub enum SourceRun<R> {
     Printed { text: String, report: R },
     Network(String),
     Failed(String),
+}
+
+/// Why one page of `records` breach records is not the whole answer, or `None` when it is: the
+/// source says it holds more (`has_more`), or its `total` is more than the page read.
+#[must_use]
+pub fn partial_page_note(records: usize, total: Option<u64>, has_more: bool) -> Option<String> {
+    let more_than_read = total.is_some_and(|total| total > records as u64);
+    if !(has_more || more_than_read) {
+        return None;
+    }
+    let total = total.map_or_else(|| "an unreported number".to_owned(), |t| t.to_string());
+    Some(format!(
+        "partial: read the first {records} of {total} matching records; absence of a breach here \
+         is not evidence of absence"
+    ))
 }
 
 /// Dispatch action derived from a causal source outcome.
@@ -429,7 +411,6 @@ mod tests {
             SourceOutcomeKind::ParserDrift,
             SourceOutcomeKind::SemanticDrift,
         ] {
-            assert!(kind.is_contract_drift());
             assert_eq!(
                 recommended_action(kind),
                 SourceHealthAction::RequireContractVerification
@@ -472,7 +453,6 @@ mod tests {
         let skipped = SourceOutcomeKind::NotConfigured;
         assert!(skipped.is_not_configured());
         assert!(!SourceOutcomeKind::AuthRequired.is_not_configured());
-        assert!(!skipped.is_auth());
         assert!(!skipped.is_accepted());
         assert_eq!(
             recommended_action(skipped),
@@ -624,5 +604,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_page_is_partial_when_the_source_holds_more_than_it_read() {
+        assert_eq!(partial_page_note(3, Some(3), false), None);
+        assert_eq!(partial_page_note(3, None, false), None);
+        assert_eq!(
+            partial_page_note(3, Some(7), false).as_deref(),
+            Some(
+                "partial: read the first 3 of 7 matching records; absence of a breach here is \
+                 not evidence of absence"
+            )
+        );
+        assert!(
+            partial_page_note(200, None, true)
+                .is_some_and(|note| note.contains("first 200 of an unreported number"))
+        );
     }
 }

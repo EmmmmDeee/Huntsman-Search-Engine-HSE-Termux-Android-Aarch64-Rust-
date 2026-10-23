@@ -100,6 +100,7 @@ json	exporter	canonical JSON support
 key_import	adapter	Spiderfoot SpiderFoot.cfg and keys-file key import reached through serve's POST /api/settings/keys (Settings, Import API keys)
 keybase	adapter	public Keybase identity source client reached through username_cli from the username command and scan
 keys	leaf	credential file handling
+mastodon_user	adapter	public Mastodon account source client reached through username_cli from username, scan and /api/lookup
 wikipedia	adapter	public Wikipedia user-contributions source client reached through username_cli from the username command and scan
 kickbox	adapter	Kickbox disposable-domain leg reached through indicator_legs from email, scan -k email and /api/lookup
 leads	runtime	lead ranking through intelligence report
@@ -144,7 +145,7 @@ profiles	runtime	entity profiles through intelligence report
 proof	leaf	bounded proof-environment bookkeeping
 provider_credentials	leaf	provider credential completeness manifest
 pulsedive	adapter	Pulsedive leg reached through indicator_legs from ip, domain, scan and /api/lookup
-radar	leaf	radar model utility
+radar	leaf	cross-sweep recurrence and follower detection over the private sweep log, reached through cli/radar.rs from radar track; its Bluetooth live tracker (BtRadarState) has no rootless Termux source and no caller yet
 recon	leaf	seed kinds the crtsh lookup and the domain recon front-ends share
 recursion	runtime	bounded fetch-expand-fetch crawl orchestration and termination
 rdap	adapter	keyless RDAP registration client reached through rdap_legs from domain, ip, scan and /api/lookup
@@ -222,7 +223,6 @@ xlsx	exporter	dependency-free Excel workbook writer behind scan_export's xlsx ex
 xposedornot	adapter	XposedOrNot breach-name leg reached through indicator_legs from email, scan and /api/lookup
 yaml_lite	leaf	dependency-free YAML subset reader for Spiderfoot correlation rules
 submd	adapter	sub.md passive subdomain leg reached through indicator_legs from domain, scan and /api/lookup
-opencellid	adapter	OpenCelliD cell position leg reached through indicator_legs when its key is set
-mozilla_location	adapter	Mozilla Location Service BSSID leg reached through indicator_legs when its key is set
+opencellid	adapter	OpenCelliD cell position leg reached through indicator_legs from network cell:MCC:MNC:AREA:CELL, and its cells-in-area search from network LAT,LON, scan and /api/lookup when its key is set
 exif	adapter	image EXIF metadata and GPS source reached from the exif command
 docmeta	adapter	document XMP packet and PDF /Info metadata and embedded GPS source reached from the docmeta command

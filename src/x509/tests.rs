@@ -261,3 +261,25 @@ fn identifiers_times_and_addresses_decode_by_their_rules() {
     assert!(is_ca(&[0x30, 0x03, 0x01, 0x01, 0xff]));
     assert!(!is_ca(&[0x30, 0x00]));
 }
+
+/// Every corruption of the two logged certificates (a byte, an extreme length, a cut, a repeated
+/// stretch) is read or refused, and what is read is written out: none panics.
+#[test]
+fn a_corrupted_certificate_is_read_or_refused_never_a_panic() {
+    for (name, certificate) in [("ev", der(EV_RSA)), ("dv", der(DV_EC))] {
+        for (case, bytes) in crate::test_support::mutations(&certificate, 0xCE27_5EED, 5_000)
+            .into_iter()
+            .enumerate()
+        {
+            let outcome = std::panic::catch_unwind(|| {
+                if let Ok(cert) = parse(&bytes) {
+                    let _ = one_line(&cert.subject);
+                    let _ = one_line(&cert.issuer);
+                    let _ = attribute(&cert.subject, "CN");
+                }
+                let _ = pem(&bytes);
+            });
+            assert!(outcome.is_ok(), "{name} case {case} panicked");
+        }
+    }
+}

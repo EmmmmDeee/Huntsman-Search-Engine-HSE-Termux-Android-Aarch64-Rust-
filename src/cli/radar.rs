@@ -12,9 +12,10 @@ use super::{fail, terminal_json_pretty};
 use huntsman_recon::cell_radar;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
+use huntsman_recon::radar::{self, LoggedDevice, LoggedSweep, MAX_TRACK_LOG_BYTES};
 use huntsman_recon::wifi_radar::{self, MAX_SCAN_BYTES};
 
-const USAGE: &str = "usage: huntsman-recon radar wifi|cells [--json] [--file TERMUX_SCAN_JSON]";
+const USAGE: &str = "usage: huntsman-recon radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE]";
 
 /// A misbehaving descendant can keep a sensor stdout pipe open after the
 /// direct child exits. Bound detached drainers to avoid exhausting a server.
@@ -225,6 +226,9 @@ pub(super) fn radar_cmd(args: &[String]) -> ExitCode {
     if args.first().map(String::as_str) == Some("cells") {
         return cells_cmd(&args[1..]);
     }
+    if args.first().map(String::as_str) == Some("track") {
+        return track_cmd(&args[1..]);
+    }
     if args.first().map(String::as_str) != Some("wifi") {
         return fail(EX_USAGE, USAGE);
     }
@@ -287,4 +291,225 @@ fn cells_cmd(args: &[String]) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// `radar track`'s options: `--json`, replays of a Wi-Fi and a cell scan in place of this
+/// device's, and the log to keep the sweeps in.
+#[derive(Default)]
+struct TrackOptions<'a> {
+    json: bool,
+    wifi_file: Option<&'a str>,
+    cells_file: Option<&'a str>,
+    log: Option<&'a str>,
+}
+
+fn track_options(args: &[String]) -> Option<TrackOptions<'_>> {
+    let mut options = TrackOptions::default();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let slot = match arg.as_str() {
+            "--json" if !options.json => {
+                options.json = true;
+                continue;
+            }
+            "--wifi-file" => &mut options.wifi_file,
+            "--cells-file" => &mut options.cells_file,
+            "--log" => &mut options.log,
+            _ => return None,
+        };
+        if slot.is_some() {
+            return None;
+        }
+        *slot = Some(
+            rest.next()
+                .filter(|value| !value.starts_with("--"))?
+                .as_str(),
+        );
+    }
+    Some(options)
+}
+
+/// The place a cell scan says the phone is: its registered serving cell, as an opaque bucket.
+/// `None` when the phone is registered to none, so the sweep is kept but not placed.
+fn serving_cell(scan: &cell_radar::CellScan) -> Option<String> {
+    scan.observations
+        .iter()
+        .find(|cell| cell.registered == Some(true))
+        .map(|cell| {
+            format!(
+                "{}:{}-{}-{}-{}",
+                cell.technology,
+                cell.mcc.as_deref().unwrap_or("?"),
+                cell.mnc.as_deref().unwrap_or("?"),
+                cell.area_code,
+                cell.cell_id
+            )
+        })
+}
+
+/// Take one Wi-Fi sweep, place it at the serving cell, add it to the track log and report what
+/// the log shows: devices that keep recurring, and devices seen across several of the
+/// operator's places (a personal-safety signal that something moved with them). The log is
+/// private to the user and keeps the newest [`radar::MAX_TRACK_SWEEPS`] sweeps.
+fn track_cmd(args: &[String]) -> ExitCode {
+    let Some(options) = track_options(args) else {
+        return fail(EX_USAGE, USAGE);
+    };
+    let Some(log) = options
+        .log
+        .map(std::path::PathBuf::from)
+        .or_else(super::scans::default_radar_log)
+    else {
+        return fail(
+            EX_USAGE,
+            "radar track: no log; set HUNTSMAN_HOME or HOME, or pass --log FILE",
+        );
+    };
+    let (raw, replay) = match scan_input(options.wifi_file, MAX_SCAN_BYTES, collect_termux_wifi) {
+        Ok(input) => input,
+        Err(code) => return code,
+    };
+    let wifi = if replay {
+        wifi_radar::parse_replay(&raw)
+    } else {
+        wifi_radar::parse_scan(&raw, uptime_secs())
+    };
+    let wifi = match wifi {
+        Ok(wifi) => wifi,
+        Err(error) => return fail(EX_DATAERR, &error.to_string()),
+    };
+    // An empty or wholly stale cache says nothing about what is here now, and a sweep logged
+    // from it would read as the operator having heard nothing.
+    if matches!(wifi.status, "inconclusive" | "stale_only") {
+        return fail(
+            EX_UNAVAILABLE,
+            &format!(
+                "radar track: the Wi-Fi scan is {}; nothing was logged",
+                wifi.status
+            ),
+        );
+    }
+    // A sweep without its place still counts towards recurrence, so a cell scan Android
+    // withholds is noted and the sweep kept; a replay that cannot be read is an error.
+    let cell = match options.cells_file {
+        Some(path) => {
+            let parsed = read_bounded(Path::new(path), cell_radar::MAX_CELL_SCAN_BYTES)
+                .map_err(|error| (EX_NOINPUT, error.to_string()))
+                .and_then(|raw| {
+                    cell_radar::parse_replay(&raw).map_err(|error| (EX_DATAERR, error.to_string()))
+                });
+            match parsed {
+                Ok(scan) => serving_cell(&scan),
+                Err((code, error)) => return fail(code, &error),
+            }
+        }
+        None => match collect_termux_cells()
+            .and_then(|raw| cell_radar::parse_cells(&raw).map_err(|error| error.to_string()))
+        {
+            Ok(scan) => serving_cell(&scan),
+            Err(error) => {
+                eprintln!("radar track: no serving cell, so this sweep is not placed: {error}");
+                None
+            }
+        },
+    };
+    let sweep = LoggedSweep::new(
+        huntsman_recon::clock::unix_now(),
+        cell,
+        wifi.observations
+            .iter()
+            .filter(|observation| observation.freshness != "stale")
+            .map(|observation| LoggedDevice {
+                mac: observation.sighting.network_id.clone(),
+                name: observation.sighting.name.clone(),
+            }),
+    );
+    let existing = match std::fs::symlink_metadata(&log) {
+        Ok(_) => match read_bounded(&log, MAX_TRACK_LOG_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error) => return fail(EX_DATAERR, &format!("radar track: {error}")),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return fail(EX_NOINPUT, &format!("{}: {error}", log.display())),
+    };
+    let (mut sweeps, skipped) = radar::parse_track_log(&existing);
+    let bytes = radar::append_track_log(sweeps.clone(), sweep.clone());
+    if let Err(error) = private_parent(&log).and_then(|()| {
+        huntsman_recon::fsio::write_atomic_private(&log, &bytes, MAX_TRACK_LOG_BYTES)
+            .map_err(|error| error.to_string())
+    }) {
+        return fail(EX_UNAVAILABLE, &format!("radar track: {error}"));
+    }
+    sweeps.push(sweep);
+    let report = radar::track(
+        &sweeps[sweeps.len().saturating_sub(radar::MAX_TRACK_SWEEPS)..],
+        skipped,
+    );
+    match print_report(&report, options.json, render_track) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(code) => code,
+    }
+}
+
+/// Create the log's directory when it is missing, private to the user.
+fn private_parent(log: &Path) -> Result<(), String> {
+    let Some(parent) = log.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    if parent.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    Ok(())
+}
+
+/// A track report as tab-separated text: a summary line, then each follower and each recurring
+/// device. Names are a third party's text, so control characters in them are escaped.
+fn render_track(report: &radar::TrackReport) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!(
+        "track\tsweeps={}\tlocated={}\tcells={}\tfollowers={}\trecurring={}\tskipped_lines={}\n",
+        report.sweeps,
+        report.located_sweeps,
+        report.distinct_cells,
+        report.followers.len(),
+        report.recurring.len(),
+        report.skipped_lines
+    );
+    for follower in &report.followers {
+        let _ = writeln!(
+            out,
+            "follower\tbssid={}\tvendor={}\tcells={}\tcoverage={:.2}\tsightings={}\tspan_secs={}",
+            follower.mac,
+            follower.vendor.as_deref().unwrap_or("unknown"),
+            follower.distinct_cells,
+            follower.coverage,
+            follower.sightings,
+            follower.span_secs
+        );
+    }
+    for device in &report.recurring {
+        let name = device
+            .name
+            .as_deref()
+            .map(huntsman_recon::textnorm::escape_controls)
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "recurring\tbssid={}\tssid={}\tvendor={}\tsweeps={}\tfirst_ts={}\tlast_ts={}",
+            device.mac,
+            name,
+            device.vendor.as_deref().unwrap_or("unknown"),
+            device.sweeps_seen,
+            device.first_ts,
+            device.last_ts
+        );
+    }
+    out
 }

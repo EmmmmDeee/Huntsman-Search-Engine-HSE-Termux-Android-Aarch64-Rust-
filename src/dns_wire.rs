@@ -12,6 +12,10 @@ use crate::base64::base16_lower;
 pub const UDP_PAYLOAD: u16 = 4096;
 /// Pointers followed in one name before the name is refused as a loop.
 const MAX_POINTERS: usize = 32;
+/// The longest name in wire form, its labels and their length octets and the root's zero octet
+/// (RFC 1035 section 3.1). A longer one is refused, so a record pointing at a hostile name
+/// cannot make every record a copy of tens of kilobytes of escaped text.
+const MAX_NAME_OCTETS: usize = 255;
 
 /// Record types by their code.
 pub const A: u16 = 1;
@@ -413,10 +417,10 @@ fn read_data(body: &[u8], kind: u16, start: usize, end: usize) -> Result<Data, W
         AAAA => Data::Aaaa(Ipv6Addr::from(
             <[u8; 16]>::try_from(rdata).map_err(|_| WireError::Truncated)?,
         )),
-        2 | 5 | 12 | 39 => Data::Name(read_name(body, start)?.0),
+        2 | 5 | 12 | 39 => Data::Name(name_within(body, start, end)?),
         15 => Data::Mx {
             preference: short(0)?,
-            exchange: read_name(body, start + 2)?.0,
+            exchange: name_within(body, start + 2, end)?,
         },
         16 => Data::Txt(character_strings(rdata)?),
         6 => read_soa(body, start, end)?,
@@ -424,7 +428,7 @@ fn read_data(body: &[u8], kind: u16, start: usize, end: usize) -> Result<Data, W
             priority: short(0)?,
             weight: short(2)?,
             port: short(4)?,
-            target: read_name(body, start + 6)?.0,
+            target: name_within(body, start + 6, end)?,
         },
         257 => {
             let (&flags, rest) = rdata.split_first().ok_or(WireError::Truncated)?;
@@ -440,6 +444,19 @@ fn read_data(body: &[u8], kind: u16, start: usize, end: usize) -> Result<Data, W
         }
         _ => Data::Other(rdata.to_vec()),
     })
+}
+
+/// The name a record's data holds at `start`, which must end by the data's `end`: one that runs
+/// on past it reads bytes outside the record. **Pure.**
+fn name_within(body: &[u8], start: usize, end: usize) -> Result<String, WireError> {
+    if start >= end {
+        return Err(WireError::Truncated);
+    }
+    let (name, next) = read_name(body, start)?;
+    if next > end {
+        return Err(WireError::Truncated);
+    }
+    Ok(name)
 }
 
 fn read_soa(body: &[u8], start: usize, end: usize) -> Result<Data, WireError> {
@@ -481,6 +498,8 @@ fn read_name(body: &[u8], mut at: usize) -> Result<(String, usize), WireError> {
     let mut labels: Vec<String> = Vec::new();
     let mut resume = None;
     let mut pointers = 0;
+    // The root's zero octet, then each label and its length octet.
+    let mut octets = 1;
     loop {
         let &length = body.get(at).ok_or(WireError::Truncated)?;
         match length {
@@ -493,6 +512,10 @@ fn read_name(body: &[u8], mut at: usize) -> Result<(String, usize), WireError> {
                 return Ok((name, resume.unwrap_or(at + 1)));
             }
             1..=63 => {
+                octets += 1 + usize::from(length);
+                if octets > MAX_NAME_OCTETS {
+                    return Err(WireError::BadName);
+                }
                 let label = body
                     .get(at + 1..at + 1 + usize::from(length))
                     .ok_or(WireError::Truncated)?;

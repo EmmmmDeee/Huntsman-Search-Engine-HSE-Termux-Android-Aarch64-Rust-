@@ -1,0 +1,1 @@
+- Termux runtime acceptance now creates its report and server log with private permissions, tightens existing diagnostic outputs to mode 0600, and refuses symlink or non-file destinations before truncating them. The host acceptance regression starts with world-readable legacy files and a permissive shell umask.

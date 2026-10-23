@@ -180,6 +180,15 @@ fn expansion_kind(kind: &EntityKind) -> Option<ScanKind> {
     }
 }
 
+/// Whether an address can stand for whoever holds it. A role mailbox (`abuse@`, `hostmaster@`,
+/// `info@`), a mail or hosting provider's own address, or a no-reply address names a function or
+/// a service, so looking it up, or its breach exposure, finds that service rather than a person:
+/// such an address stays in the graph and the report but is not dispatched. **Pure.**
+fn names_a_mailbox_holder(email: &str) -> bool {
+    !crate::domains::is_infrastructure_email(email)
+        && !crate::domains::is_noreply_email_domain(email)
+}
+
 /// The new targets an entity contributes to the next generation.
 fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
     if entity.confidence < policy.expand_confidence_floor {
@@ -188,6 +197,9 @@ fn expansions(entity: &Entity, policy: &RecursionPolicy) -> Vec<Target> {
     let Some(kind) = expansion_kind(&entity.kind) else {
         return Vec::new();
     };
+    if entity.kind == EntityKind::Email && !names_a_mailbox_holder(&entity.value) {
+        return Vec::new();
+    }
     let Some(selector) = canonical_selector(kind, &entity.value) else {
         return Vec::new();
     };
@@ -1112,6 +1124,43 @@ mod tests {
         // The incidental entities are retained and reported, never dropped.
         assert_eq!(report.entities.len(), 5);
         assert_eq!(report.termination, TerminationReason::FixedPoint);
+    }
+
+    #[test]
+    fn a_role_provider_or_no_reply_address_is_kept_but_not_dispatched() {
+        // A registrar's abuse mailbox, a zone's hostmaster, a provider's address and a no-reply
+        // address name a function, not a person: the crawl keeps them and looks none of them up,
+        // nor their breach exposure. A personal address found beside them is still followed.
+        let mut collector = Scripted::new()
+            .on(
+                ScanKind::Domain,
+                "example.com",
+                vec![
+                    ent(EntityKind::Email, "abuse@registrar.example", 0.95),
+                    ent(EntityKind::Email, "hostmaster@example.com", 0.95),
+                    ent(EntityKind::Email, "noc@amazon.com", 0.95),
+                    ent(EntityKind::Email, "ada@users.noreply.github.com", 0.95),
+                    ent(EntityKind::Email, "ada.lovelace@example.com", 0.95),
+                ],
+            )
+            .on(ScanKind::Email, "ada.lovelace@example.com", vec![])
+            .on(ScanKind::Exposure, "ada.lovelace@example.com", vec![]);
+
+        let report = run(&["example.com".to_owned()], &policy(), &mut collector);
+
+        let looked_up: Vec<&str> = collector
+            .calls
+            .iter()
+            .filter(|(kind, _)| kind.as_str() != "domain")
+            .map(|(_, selector)| selector.as_str())
+            .collect();
+        assert_eq!(
+            looked_up,
+            ["ada.lovelace@example.com", "ada.lovelace@example.com"],
+            "{:?}",
+            collector.calls
+        );
+        assert_eq!(report.entities.len(), 5, "every address is kept");
     }
 
     #[test]
