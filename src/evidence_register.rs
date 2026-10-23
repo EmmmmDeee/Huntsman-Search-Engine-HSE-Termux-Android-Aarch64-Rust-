@@ -342,7 +342,10 @@ mod tests {
     fn per_run_timestamps_cannot_hide_material_change() {
         let mut old = json!({"value":"same","observed_at_unix":2,"detail":{"scan_id":"old"}});
         let mut next = json!({"value":"same","observed_at_unix":4,"detail":{"scan_id":"new"}});
-        assert_ne!(signature(&old, false).unwrap(), signature(&next, false).unwrap());
+        assert_ne!(
+            signature(&old, false).unwrap(),
+            signature(&next, false).unwrap()
+        );
         semantic(&mut old);
         semantic(&mut next);
         assert_eq!(old, next);
@@ -353,15 +356,20 @@ mod tests {
     #[test]
     fn change_classification_preserves_raw_observations() {
         let row = |raw| Row {
-            id:"a".into(), kind:"entity", identifier:"x".into(),
-            source:None, observed_at_unix:None, raw,
-            links:BTreeSet::new(), false_positive:false
+            id: "a".into(),
+            kind: "entity",
+            identifier: "x".into(),
+            source: None,
+            observed_at_unix: None,
+            raw,
+            links: BTreeSet::new(),
+            false_positive: false,
         };
         let a = row(json!({"value":"v","observed_at_unix":1}));
         let b = row(json!({"value":"v","observed_at_unix":2}));
         let c = row(json!({"value":"other","observed_at_unix":2}));
-        assert_eq!(change(&a,&a).unwrap(),"unchanged");
-        assert_eq!(change(&b,&a).unwrap(),"reobserved");
-        assert_eq!(change(&c,&a).unwrap(),"changed");
+        assert_eq!(change(&a, &a).unwrap(), "unchanged");
+        assert_eq!(change(&b, &a).unwrap(), "reobserved");
+        assert_eq!(change(&c, &a).unwrap(), "changed");
     }
 }
