@@ -3,7 +3,7 @@
   the key goes nowhere else. The probe used to follow up to five redirects and judge the key on
   whatever the last one returned, so a probe answered with a 302 to a page that answered 200
   printed `probe=valid`. A redirect with a usable `Location` is now the answer and prints
-  `probe=indeterminate`; one whose `Location` is not an http(s) URL prints `probe=unavailable`,
-  as it did before. Answers that are not redirects print as before.
+  `probe=indeterminate`; one whose `Location` does not resolve to an http(s) URL with a host
+  prints `probe=unavailable`, as it did before. Answers that are not redirects print as before.
 - The Hunter.io probe sends the key in the `X-API-KEY` header, where the Hunter lookup sends
   it, instead of in the probe URL's `api_key` query parameter.

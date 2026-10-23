@@ -117,7 +117,8 @@ fn a_block_is_its_registration_routing_and_the_names_of_its_addresses() {
 }
 
 /// An origin AS that is not a public AS number stays on the block's `RIPEstat` record but is no
-/// AS entity, and neither is its holder an organisation, as `asn AS23456` refuses the number.
+/// AS entity, and neither is its holder an organisation, as `asn AS23456` refuses the number. Nor
+/// is it, in a saved scan, a `BGP_AS_MEMBER` of the block.
 #[test]
 fn a_reserved_origin_as_stays_on_the_block_and_is_no_entity() {
     let mut transport = registry(UNNAMED);
@@ -147,6 +148,20 @@ fn a_reserved_origin_as_stays_on_the_block_and_is_no_entity() {
             .iter()
             .flat_map(|evidence| evidence.attr_values("origin_asns"))
             .any(|asns| asns == "AS13335,AS23456")
+    );
+    let target = Target {
+        value: "1.1.1.0/30",
+        kind: "NETBLOCK_OWNER",
+    };
+    let found = elements(target, &report.entities, 1);
+    let members: Vec<&str> = found
+        .iter()
+        .filter(|element| element.kind == "BGP_AS_MEMBER")
+        .map(|element| element.data.as_str())
+        .collect();
+    assert!(
+        !members.is_empty() && members.iter().all(|asn| *asn == "AS13335"),
+        "{members:?}"
     );
 }
 

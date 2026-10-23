@@ -301,9 +301,9 @@ pub fn extract_probe_evidence(service: &str, response: &Response) -> Vec<(String
 ///
 /// # Errors
 ///
-/// Returns [`crate::http::TransportFailure`] when the request could not obtain an
-/// HTTP response, and [`crate::Error::Network`] when a 3xx names a `Location` that is not an
-/// http(s) URL; `credential-status --probe` prints either as `probe=unavailable`. Returns
+/// Returns [`crate::Error::Network`] when the request obtains no HTTP response, is refused by
+/// the egress policy, or gets a 3xx whose `Location` does not resolve to an http(s) URL with a
+/// host; `credential-status --probe` prints each as `probe=unavailable`. Returns
 /// [`crate::Error::Invalid`] when the named service is not present in the registry.
 pub fn probe_service<T: Transport + ?Sized>(
     transport: &T,
@@ -649,7 +649,8 @@ mod tests {
     #[test]
     fn a_redirect_to_an_unusable_location_is_no_answer() {
         // `fetch` reads the `Location` before it stops at the redirect limit, so a 3xx whose
-        // `Location` is not an http(s) URL is an error, not an indeterminate answer.
+        // `Location` does not resolve to an http(s) URL with a host is an error, not an
+        // indeterminate answer.
         let fake = FakeTransport {
             response: Response {
                 status: 302,
@@ -659,7 +660,10 @@ mod tests {
             },
             seen: RefCell::new(Vec::new()),
         };
-        assert!(probe_service(&fake, "shodan", &test_key()).is_err());
+        assert!(matches!(
+            probe_service(&fake, "shodan", &test_key()),
+            Err(Error::Network(_))
+        ));
         assert_eq!(fake.seen.borrow().len(), 1);
     }
 

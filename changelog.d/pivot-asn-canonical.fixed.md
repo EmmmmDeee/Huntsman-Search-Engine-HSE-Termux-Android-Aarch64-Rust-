@@ -9,3 +9,9 @@
   origin that is not a public AS number, for example `AS64512` or `AS23456`, is no longer an ASN
   entity, and its holder no longer an organisation entity. The address's or block's RIPEstat
   record keeps every origin in its `origin_asns` attribute and its summary either way.
+- The `BGP_AS_MEMBER` elements a scan saves from a record's `asn` and `origin_asns` attributes,
+  which `scans elements`, `/api/scans/{id}/elements` and the exports list, follow the same rule:
+  only a public AS number becomes one, written as the ASN entity is (`AS13335`). An `ip` or
+  `netblock` scan whose RIPEstat answer named `AS23456` or `AS64512` beside `AS13335` saved
+  `AS23456` or `AS64512` as an AS the address or block belongs to; it now saves `AS13335` only.
+  A scan saved earlier keeps the elements it was saved with.

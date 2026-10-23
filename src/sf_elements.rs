@@ -415,13 +415,17 @@ fn host_descriptors(
     if let Some(os) = attr("os") {
         out.push(("OPERATING_SYSTEM", os.to_owned()));
     }
+    // The AS a host belongs to, as Spiderfoot's BGP_AS_MEMBER. A record keeps every AS its
+    // provider named, RIPEstat's reserved origins too, so only a public AS number counts, read
+    // and written as an ASN entity is.
     if entity.kind != EntityKind::Asn {
         for key in ["asn", "origin_asns"] {
-            for asn in attr(key).into_iter().flat_map(items) {
-                let digits = asn.trim_start_matches(['A', 'S', 'a', 's']);
-                if digits.parse::<u32>().is_ok() {
-                    out.push(("BGP_AS_MEMBER", format!("AS{digits}")));
-                }
+            for asn in attr(key)
+                .into_iter()
+                .flat_map(items)
+                .filter_map(crate::canonical::canonical_asn)
+            {
+                out.push(("BGP_AS_MEMBER", asn));
             }
         }
     }
@@ -1388,7 +1392,7 @@ mod tests {
                 ("ports", "22,443"),
                 ("vulns", "CVE-2021-44228"),
                 ("cpes", "cpe:/a:nginx:nginx:1.18.0"),
-                ("asn", "AS64500"),
+                ("asn", "AS13335"),
                 ("prefix", "198.51.100.0/24"),
                 ("city", "Sydney"),
                 ("country", "AU"),
@@ -1426,7 +1430,7 @@ mod tests {
             of_type(&found, "SOFTWARE_USED")[0].data,
             "cpe:/a:nginx:nginx:1.18.0"
         );
-        assert_eq!(of_type(&found, "BGP_AS_MEMBER")[0].data, "AS64500");
+        assert_eq!(of_type(&found, "BGP_AS_MEMBER")[0].data, "AS13335");
         assert_eq!(
             of_type(&found, "NETBLOCK_MEMBER")[0].data,
             "198.51.100.0/24"
@@ -1437,6 +1441,37 @@ mod tests {
             raw.contains("unmapped_detail") && raw.contains("kept in raw"),
             "{raw}"
         );
+    }
+
+    #[test]
+    fn only_a_public_as_number_is_an_as_the_host_belongs_to() {
+        // RIPEstat's `origin_asns` keeps a reserved origin on the record; it is no member AS,
+        // and a bare number is written as an ASN entity is.
+        let ripestat = entity(
+            EntityKind::IpAddress,
+            "198.51.100.7",
+            "ripestat",
+            &[("origin_asns", "AS64512,AS13335,AS0,AS23456")],
+        );
+        let shodan = entity(
+            EntityKind::IpAddress,
+            "198.51.100.8",
+            "shodan",
+            &[("asn", "15169")],
+        );
+        let found = elements(
+            Target {
+                value: "198.51.100.7",
+                kind: "IP_ADDRESS",
+            },
+            &[ripestat, shodan],
+            1_700_000_000,
+        );
+        let members: Vec<&str> = of_type(&found, "BGP_AS_MEMBER")
+            .iter()
+            .map(|element| element.data.as_str())
+            .collect();
+        assert_eq!(members, ["AS13335", "AS15169"]);
     }
 
     #[test]
