@@ -386,6 +386,7 @@ pub fn json_rows(scans: &[(&ScanRecord, &ScanResults)], kind: Option<&str>) -> V
                 "source_data": source,
                 "false_positive": u8::from(element.fp),
                 "last_seen": timestamp(element.created),
+                "scan_id": scan.id,
                 "scan_name": scan.name,
                 "scan_target": scan.target,
                 "id": element.id,
@@ -609,6 +610,33 @@ mod tests {
         assert_eq!(www["scan_target"], "example.com");
         assert_eq!(www["last_seen"], "2023-11-14 22:13:20");
         assert_eq!(www["raw"]["evidence"]["attributes"]["ports"], "443");
+    }
+
+    #[test]
+    fn json_multi_scan_rows_preserve_scan_identity_even_when_names_and_elements_repeat() {
+        let (first, results) = scan();
+        let mut second = first.clone();
+        second.id = "fedcba9876543210".into();
+        // Equivalent element IDs and matching scan names must not erase scan provenance.
+        let single = json_rows(&[(&first, &results)], None);
+        let both = json_rows(&[(&first, &results), (&second, &results)], None);
+        let count = single.as_array().expect("single rows").len();
+        let rows = both.as_array().expect("multi rows");
+        assert!(count > 0);
+        assert_eq!(rows.len(), 2 * count);
+        for index in 0..count {
+            assert_eq!(rows[index]["scan_id"].as_str(), Some(first.id.as_str()));
+            assert_eq!(
+                rows[index + count]["scan_id"].as_str(),
+                Some(second.id.as_str())
+            );
+            assert_eq!(rows[index]["id"], rows[index + count]["id"]);
+            assert_eq!(rows[index]["scan_name"], rows[index + count]["scan_name"]);
+            assert_eq!(
+                rows[index]["scan_target"],
+                rows[index + count]["scan_target"]
+            );
+        }
     }
 
     #[test]
