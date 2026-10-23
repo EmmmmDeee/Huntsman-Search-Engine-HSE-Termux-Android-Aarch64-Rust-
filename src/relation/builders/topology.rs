@@ -1,6 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 
-use crate::canonical::{canonical_domain, canonical_domain_host, canonical_url};
+use crate::canonical::{
+    canonical_coordinates, canonical_domain, canonical_domain_host, canonical_url,
+};
 use crate::domains::is_proxy_registrant;
 use crate::entity::{Entity, EntityKind, normalise};
 use crate::geohash::{haversine_km, parse_coords};
@@ -112,8 +114,14 @@ pub fn derive_colocation(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     let coords = entities
         .iter()
         .filter_map(|entity| {
+            // Rounded to the canonical six places first, so a stored value written more
+            // precisely is measured as its entity would be.
             (entity.kind == EntityKind::Coordinates)
-                .then(|| parse_coords(&entity.value).map(|point| (entity, point)))
+                .then(|| {
+                    canonical_coordinates(&entity.value)
+                        .and_then(|canonical| parse_coords(&canonical))
+                        .map(|point| (entity, point))
+                })
                 .flatten()
         })
         .collect::<Vec<_>>();

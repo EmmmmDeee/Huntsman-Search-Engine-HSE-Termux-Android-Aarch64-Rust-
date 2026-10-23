@@ -1,4 +1,5 @@
-//! MD4 (RFC 1320), for NTLM password hashes only.
+//! MD4 (RFC 1320), for NTLM password hashes only, and the one padded-buffer builder that MD4 and
+//! the SHA-1 password path share.
 //!
 //! An NTLM hash is MD4 over the UTF-16LE password. Pwned Passwords serves NTLM
 //! ranges (`?mode=ntlm`), so checking a password locally against one needs

@@ -39,6 +39,15 @@ pub struct NormalizedSeed {
     pub raw: String,
     pub kind: EntityKind,
     pub value: String,
+    /// Later spellings of this same canonical handle that route elsewhere (`@octo-cat` after
+    /// `@octocat`): one target, but each spelling is routed as written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_spellings: Vec<String>,
+}
+
+/// How a handle is routed: as written, without its leading `@`s, ignoring ASCII case.
+fn route_spelling(raw: &str) -> String {
+    raw.trim().trim_start_matches('@').to_ascii_lowercase()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,10 +132,23 @@ pub fn normalize_seeds(input: &InvestigationInput, limits: &PipelineLimits) -> S
             raw: raw.clone(),
             kind: entity.kind,
             value: entity.value,
+            other_spellings: Vec::new(),
         };
-        accepted
-            .entry((seed_rank(&seed.kind), seed.value.clone()))
-            .or_insert(seed);
+        match accepted.entry((seed_rank(&seed.kind), seed.value.clone())) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(seed);
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                let kept = slot.get_mut();
+                let spelling = route_spelling(&seed.raw);
+                let known = std::iter::once(&kept.raw)
+                    .chain(&kept.other_spellings)
+                    .any(|written| route_spelling(written) == spelling);
+                if kept.kind == EntityKind::Username && !known {
+                    kept.other_spellings.push(seed.raw);
+                }
+            }
+        }
     }
 
     let unique_count = accepted.len();
@@ -436,8 +458,39 @@ pub fn snapshot_from_entities(
 
 #[cfg(test)]
 mod tests {
-    use super::{PipelineLimits, snapshot_from_entities};
+    use super::{
+        InvestigationInput, InvestigationMode, PipelineLimits, normalize_seeds,
+        snapshot_from_entities,
+    };
     use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+
+    #[test]
+    fn every_spelling_of_one_canonical_handle_is_kept_in_either_order() {
+        for seeds in [["@octocat", "@octo-cat"], ["@octo-cat", "@octocat"]] {
+            let input = InvestigationInput {
+                scan_id: "scan-1".into(),
+                seeds: seeds.iter().map(|seed| (*seed).to_owned()).collect(),
+                mode: InvestigationMode::Offline,
+            };
+            let normalized = normalize_seeds(&input, &PipelineLimits::default());
+            assert_eq!(normalized.accepted.len(), 1, "{seeds:?}");
+            let seed = &normalized.accepted[0];
+            assert_eq!(seed.value, "octocat");
+            let mut written = std::iter::once(seed.raw.as_str())
+                .chain(seed.other_spellings.iter().map(String::as_str))
+                .collect::<Vec<_>>();
+            written.sort_unstable();
+            assert_eq!(written, ["@octo-cat", "@octocat"], "{seeds:?}");
+            assert!(normalized.rejected.is_empty());
+        }
+        let input = InvestigationInput {
+            scan_id: "scan-1".into(),
+            seeds: vec!["@octocat".into(), "OctoCat".into()],
+            mode: InvestigationMode::Offline,
+        };
+        let normalized = normalize_seeds(&input, &PipelineLimits::default());
+        assert!(normalized.accepted[0].other_spellings.is_empty());
+    }
 
     #[test]
     fn reconstructed_snapshot_enforces_entity_budget_before_relation_derivation() {

@@ -26,30 +26,32 @@ pub(super) fn lookup_keys() -> Keys {
 /// `HUNTSMAN_HIBP_KEY` slot from `keys` (the default file, then the environment), then a
 /// `HIBP_API_KEY` line in the default file, then `~/.config/hibp/api_key`.
 pub(super) fn hibp_key_loader(keys: &Keys) -> KeyLoader {
-    let slot = hibp_slot(keys);
-    KeyLoader::default_chain(slot.as_ref().map(Secret::expose))
+    hibp_key_loader_with(keys, KeyLoader::default_chain)
 }
 
-/// The slot value the HIBP loader gets, by the rule `credential-status` reports with.
-fn hibp_slot(keys: &Keys) -> Option<Secret> {
-    secret_for_slot(keys, HUNTSMAN_HIBP_KEY_ENV)
+/// [`hibp_key_loader`] with the rest of the chain supplied, so a test can leave out the
+/// environment and `~/.config/hibp/api_key`. The slot is read by the rule `credential-status`
+/// reports with.
+fn hibp_key_loader_with(keys: &Keys, chain: impl FnOnce(Option<&str>) -> KeyLoader) -> KeyLoader {
+    let slot = secret_for_slot(keys, HUNTSMAN_HIBP_KEY_ENV);
+    chain(slot.as_ref().map(Secret::expose))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::hibp_slot;
+    use super::hibp_key_loader_with;
     use huntsman_recon::hibp::key::{KeyLoader, KeyOrigin};
-    use huntsman_recon::keys::{Keys, Secret};
+    use huntsman_recon::keys::Keys;
 
     #[test]
     fn a_file_held_hibp_api_key_reaches_the_loader_as_the_slot() {
         let value = "0123456789abcdef0123456789abcdef";
         let keys = Keys::parse(&format!("HIBP_API_KEY={value}\n")).expect("keys");
         // The environment and `~/.config/hibp/api_key` are left out, so the slot alone decides.
-        let slot = hibp_slot(&keys);
-        let (key, origin) = KeyLoader::from_parts(None, slot.as_ref().map(Secret::expose), None)
-            .load()
-            .expect("a key credential-status reports as set is used");
+        let (key, origin) =
+            hibp_key_loader_with(&keys, |slot| KeyLoader::from_parts(None, slot, None))
+                .load()
+                .expect("a key credential-status reports as set is used");
         assert_eq!(key.expose(), value);
         assert_eq!(origin, KeyOrigin::HuntsmanSlot);
     }

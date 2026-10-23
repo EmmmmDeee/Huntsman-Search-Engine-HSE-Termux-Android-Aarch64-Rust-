@@ -360,22 +360,26 @@ pub fn build_dispatch_plan(
                 ));
             }
         }
-        // A handle is routed as the operator wrote it; its canonical value drops the
-        // separators that tell `octo-cat` from `octocat`.
-        let route_value = if kind == TargetKind::Username {
-            seed.raw.as_str()
+        // A handle is routed as the operator wrote it, each spelling of it; its canonical
+        // value drops the separators that tell `octo-cat` from `octocat`.
+        let route_values: Vec<&str> = if kind == TargetKind::Username {
+            std::iter::once(seed.raw.as_str())
+                .chain(seed.other_spellings.iter().map(String::as_str))
+                .collect()
         } else {
-            seed.value.as_str()
+            vec![seed.value.as_str()]
         };
-        for route in source_registry::routes_for(&seed.kind, route_value) {
-            selected.push(PlannedDispatch {
-                target: target.clone(),
-                action: DispatchAction::Route {
-                    source_id: route.source_id,
-                    url: route.url,
-                },
-                utility: None,
-            });
+        for route_value in route_values {
+            for route in source_registry::routes_for(&seed.kind, route_value) {
+                selected.push(PlannedDispatch {
+                    target: target.clone(),
+                    action: DispatchAction::Route {
+                        source_id: route.source_id,
+                        url: route.url,
+                    },
+                    utility: None,
+                });
+            }
         }
     }
 
