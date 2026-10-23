@@ -76,6 +76,46 @@ pub(super) fn email_request(purpose: Purpose) -> SearchRequest {
     )
 }
 
+/// A standard output that refuses every write, as a closed pipe does.
+struct ClosedPipe;
+
+impl std::io::Write for ClosedPipe {
+    fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("the reader has gone"))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A query whose result cannot reach standard output must not report success: the caller would
+/// believe the answer was delivered when it was lost.
+#[test]
+fn a_result_that_cannot_be_written_is_an_io_failure_not_success() {
+    let keys = Secret::new(KEY).unwrap();
+    let fake = Fake::with(200, r#"{"entries": [], "total": 0}"#, &[]);
+    let args = [
+        "search",
+        "--email",
+        "a@example.com",
+        "--purpose",
+        "own-account",
+    ]
+    .iter()
+    .map(|value| (*value).to_owned())
+    .collect::<Vec<_>>();
+    let mut err = Vec::new();
+    let code = cli::run(&args, || Ok(keys), fake.clone(), &mut ClosedPipe, &mut err);
+    assert_eq!(
+        code,
+        crate::exit::EX_IOERR,
+        "{}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(fake.calls(), 1);
+}
+
 #[test]
 fn dehashed_uses_configured_shared_key_without_leaking_it() {
     let keys = crate::keys::Keys::parse(&format!("{}={KEY}", super::client::API_KEY_ENV)).unwrap();
