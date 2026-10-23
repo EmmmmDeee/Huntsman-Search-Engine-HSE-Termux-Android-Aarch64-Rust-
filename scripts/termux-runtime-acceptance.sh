@@ -46,6 +46,14 @@ for output in "$REPORT" "$SERVER_LOG"; do
     printf 'FAIL  refusing non-regular diagnostic output: %s\n' "$output" >&2
     exit 1
   fi
+  # A previous run may have left a world-readable inode. Tighten it *before*
+  # truncating so no newly written bytes land on an accessible old file.
+  if [ -e "$output" ]; then
+    chmod 600 "$output" || {
+      printf 'FAIL  cannot restrict diagnostic file permissions: %s\n' "$output" >&2
+      exit 1
+    }
+  fi
 done
 : > "$REPORT"
 : > "$SERVER_LOG"
