@@ -19,7 +19,7 @@ use serde_json::Value;
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport};
 use crate::netblock::{Ipv4Cidr, Ipv6Cidr, Netblock};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_http_status};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 /// The module name on outcome rows and evidence; Spiderfoot's `sfp_whois` does its work.
 pub const SOURCE: &str = "rdap";
@@ -62,8 +62,9 @@ impl Failure {
 pub enum Answer {
     /// The registry's record.
     Registered(Box<Record>),
-    /// RDAP 404: not registered with that registry.
-    NotFound,
+    /// RDAP 404: not registered with the registry at this URL, the hop that answered after any
+    /// referral, redacted as fetch reports it.
+    NotFound(String),
     /// The bootstrap names no RDAP service for the TLD or block, so there is no registry to ask.
     NoService(String),
 }
@@ -427,7 +428,7 @@ fn object<T: Transport + ?Sized>(
     )?;
     let response = &reply.response;
     if response.status == 404 {
-        return Ok(Answer::NotFound);
+        return Ok(Answer::NotFound(reply.final_url));
     }
     if !(200..300).contains(&response.status) {
         return Err(status_failure(&reply));
@@ -451,6 +452,8 @@ struct Reply {
     response: Response,
     /// The URL of the hop that answered, redacted as fetch reports it.
     final_url: String,
+    /// How fetch typed the status and body.
+    kind: SourceOutcomeKind,
     /// The delay a 429 or 503 asked for, counted from the scan's clock.
     retry_after_secs: Option<u64>,
 }
@@ -483,7 +486,8 @@ fn get<T: Transport + ?Sized>(
             retry_after_secs: None,
         });
     };
-    if crate::classify::is_challenge(&response.text_view()) {
+    // A 429 is a rate limit whatever its body says, as fetch types it.
+    if response.status != 429 && crate::classify::is_challenge(&response.text_view()) {
         return Err(Failure {
             kind: SourceOutcomeKind::BotWaf,
             http_status: Some(response.status),
@@ -502,14 +506,17 @@ fn get<T: Transport + ?Sized>(
     Ok(Reply {
         response,
         final_url: fetched.final_url,
+        kind: fetched.outcome.kind,
         retry_after_secs: fetched.outcome.retry_after_secs,
     })
 }
 
+/// A status that is no answer, typed as fetch typed it, so a 403 without a challenge page is
+/// `AuthRejected` as for every source that reads its response through fetch.
 fn status_failure(reply: &Reply) -> Failure {
     let status = reply.response.status;
     Failure {
-        kind: classify_http_status(status),
+        kind: reply.kind,
         http_status: Some(status),
         detail: format!("HTTP {status}"),
         retry_after_secs: reply.retry_after_secs,
