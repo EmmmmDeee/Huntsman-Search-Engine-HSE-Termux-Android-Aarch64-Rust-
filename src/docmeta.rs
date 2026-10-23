@@ -40,6 +40,7 @@ use crate::exif::{
     png_chunks,
 };
 use crate::lookup_report;
+use crate::sha256::{hex32, sha256};
 use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 use crate::textnorm::decode_xml_references;
 
@@ -180,7 +181,7 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> DocmetaRun {
     let parsed = parse(data);
     let sid = scan_id(SOURCE, label);
     let mut entities = Vec::new();
-    document_entity(&mut entities, &parsed, label, &sid);
+    document_entity(&mut entities, &parsed, label, &sid, data);
     gps_entity(&mut entities, parsed.gps, label, &sid);
     merge_by_uid(&mut entities);
 
@@ -196,13 +197,23 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> DocmetaRun {
 }
 
 /// The document entity for the file, carrying its format and every field as evidence.
-fn document_entity(entities: &mut Vec<Entity>, parsed: &Parsed, label: &str, sid: &str) {
+fn document_entity(
+    entities: &mut Vec<Entity>,
+    parsed: &Parsed,
+    label: &str,
+    sid: &str,
+    data: &[u8],
+) {
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(SOURCE, sid),
         summary(parsed, label),
     )
     .with_attr("format", parsed.format.as_str())
-    .with_attr("metadata_field_count", parsed.fields.len().to_string());
+    .with_attr("metadata_field_count", parsed.fields.len().to_string())
+    // Local observation over the exact bytes, independent of editable embedded metadata.
+    .with_attr("file_sha256", hex32(&sha256(data)))
+    .with_attr("file_size_bytes", data.len().to_string())
+    .with_attr("file_hash_scope", "exact_input_bytes");
     for (name, value) in &parsed.fields {
         evidence = evidence.with_attr(name.as_str(), value.as_str());
     }
