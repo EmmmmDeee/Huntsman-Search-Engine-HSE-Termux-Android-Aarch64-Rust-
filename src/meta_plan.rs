@@ -10,14 +10,18 @@ use serde::{Deserialize, Serialize};
 use crate::canonical::{canonical_whitespace, canonicalise_selector, canonicalise_token};
 
 /// Why a plan is refused. Refusal is the success path when inheritance is attempted.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlanReject {
+    #[error("empty seed")]
     EmptySeed,
+    #[error("missing {0}")]
     MissingField(&'static str),
+    #[error("inherited fallback")]
     InheritedFallback,
+    #[error("verification claim")]
     VerificationClaim,
+    #[error("empty dispatch")]
     EmptyDispatch,
-    NoReversalObservation,
 }
 
 /// One ordered action. A route stays a lead until a body is admitted elsewhere.

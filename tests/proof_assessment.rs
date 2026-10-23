@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use huntsman_recon::claim_policy::{ClaimAssessment, VerificationBlocker};
+use huntsman_recon::evidence_ancestry::EvidenceNodeId;
 use huntsman_recon::intelligence::{ClaimState, EvidenceId};
 use huntsman_recon::proof::{MinimalProofEnvironment, ProofEnvironmentSet};
 
@@ -20,7 +21,7 @@ fn verified() -> ClaimAssessment {
 fn one_environment() -> MinimalProofEnvironment {
     MinimalProofEnvironment {
         assertions: BTreeSet::from([EvidenceId::from("evidence-a")]),
-        roots: BTreeSet::from(["root-a".to_owned()]),
+        roots: BTreeSet::from([EvidenceNodeId::from("root-a")]),
         ..MinimalProofEnvironment::default()
     }
 }

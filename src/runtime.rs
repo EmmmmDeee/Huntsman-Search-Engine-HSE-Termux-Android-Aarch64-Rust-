@@ -16,7 +16,7 @@ use crate::error::Error;
 use crate::gap::GapReport;
 use crate::graph::EntityRelation;
 use crate::ledger::LedgerEntry;
-use crate::meta_plan::{MetaPlan, PlanReject};
+use crate::meta_plan::MetaPlan;
 use crate::pipeline::{
     AnalysisSnapshot, InvestigationInput, InvestigationMode, NormalizedSeed, PipelineLimits,
     SeedNormalization, SeedRejection, normalize_observations, normalize_seeds,
@@ -89,23 +89,11 @@ fn seed_batch(normalization: &SeedNormalization, scan_id: &str) -> ObservationBa
 /// Admit one round plan. Refusal is the result when the plan is inherited or incomplete.
 ///
 /// # Errors
-/// Returns [`Error::Invalid`] for every [`PlanReject`]. Does not fall back to `planner`.
+/// Returns [`Error::Invalid`] for every [`crate::meta_plan::PlanReject`]. Does not fall back
+/// to `planner`.
 pub fn admit_round(plan: MetaPlan) -> Result<MetaPlan, Error> {
     plan.admit()
-        .map_err(|reject| Error::Invalid(reject_message(&reject)))
-}
-
-fn reject_message(reject: &PlanReject) -> String {
-    match reject {
-        PlanReject::EmptySeed => "meta-plan refused: empty seed".to_string(),
-        PlanReject::MissingField(field) => format!("meta-plan refused: missing {field}"),
-        PlanReject::InheritedFallback => "meta-plan refused: inherited fallback".to_string(),
-        PlanReject::VerificationClaim => "meta-plan refused: verification claim".to_string(),
-        PlanReject::EmptyDispatch => "meta-plan refused: empty dispatch".to_string(),
-        PlanReject::NoReversalObservation => {
-            "meta-plan refused: no reversal observation".to_string()
-        }
-    }
+        .map_err(|reject| Error::Invalid(format!("meta-plan refused: {reject}")))
 }
 
 /// One admitted round. `planner` is not called.
@@ -582,6 +570,59 @@ mod tests {
         assert!(error.to_string().contains("inherited fallback"));
         let gated = investigate_gated(plan).expect_err("gated path must refuse");
         assert!(gated.to_string().contains("inherited fallback"));
+    }
+
+    #[test]
+    fn admit_round_names_each_refusal() {
+        let admissible = MetaPlan {
+            seed: "example.com".into(),
+            hypotheses: vec!["domain".into()],
+            determination_method: "reversal-tested case construction".into(),
+            method_reversal: "a fetched body contradicts the method".into(),
+            actions: vec![crate::meta_plan::PlanAction {
+                source_id: "crtsh".into(),
+                query: "example.com".into(),
+                why: "structured names before html".into(),
+                reversal_observation: "quarantine or valid zero".into(),
+                requires_key: false,
+                lead_only: true,
+            }],
+            stop_rule: "stop on two independent admitted origins".into(),
+            next_pivot: "none until a body is admitted".into(),
+        };
+        assert!(admit_round(admissible.clone()).is_ok());
+        type Refuse = fn(&mut MetaPlan);
+        let cases: [(Refuse, &str); 5] = [
+            (|plan| plan.seed = " ".into(), "empty seed"),
+            (
+                |plan| {
+                    plan.stop_rule.clear();
+                },
+                "missing stop_rule",
+            ),
+            (
+                |plan| {
+                    plan.actions.clear();
+                },
+                "empty dispatch",
+            ),
+            (
+                |plan| plan.determination_method = "fallback to static source table".into(),
+                "inherited fallback",
+            ),
+            (
+                |plan| plan.actions[0].why = "this source is verified".into(),
+                "verification claim",
+            ),
+        ];
+        for (refuse, reason) in cases {
+            let mut plan = admissible.clone();
+            refuse(&mut plan);
+            assert_eq!(
+                admit_round(plan).unwrap_err().to_string(),
+                format!("invalid input: meta-plan refused: {reason}")
+            );
+        }
     }
 
     #[test]

@@ -21,6 +21,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
+use crate::deadline::{Clock, SystemClock};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Transport, TransportConfig, append_query_param};
@@ -171,15 +172,15 @@ pub fn lookup<T: Transport + ?Sized>(
     seed: &str,
     scan_id: &str,
 ) -> Result<CrtShReport, CrtShError> {
-    lookup_with_pause(transport, kind, seed, scan_id, &std::thread::sleep)
+    lookup_with_clock(transport, kind, seed, scan_id, &SystemClock)
 }
 
-fn lookup_with_pause<T: Transport + ?Sized>(
+fn lookup_with_clock<T: Transport + ?Sized>(
     transport: &T,
     kind: ReconTargetKind,
     seed: &str,
     scan_id: &str,
-    pause: &dyn Fn(Duration),
+    clock: &dyn Clock,
 ) -> Result<CrtShReport, CrtShError> {
     let Some(query) = build_query(kind, seed) else {
         return Ok(CrtShReport {
@@ -190,7 +191,7 @@ fn lookup_with_pause<T: Transport + ?Sized>(
     };
     let url = append_query_param(&append_query_param(ENDPOINT, "q", &query), "output", "json");
     let (entries, attempts): (Vec<CrtEntry>, u32) =
-        fetch_crt_json_with_transient_retry(transport, &url, pause)?;
+        fetch_crt_json_with_transient_retry(transport, &url, clock)?;
     let base = apex_base(kind, seed);
     Ok(CrtShReport {
         query: Some(query),
@@ -221,7 +222,7 @@ const fn is_transient_crt_transport(kind: SourceOutcomeKind) -> bool {
 fn fetch_crt_json_with_transient_retry<T, D>(
     transport: &T,
     url: &str,
-    pause: &dyn Fn(Duration),
+    clock: &dyn Clock,
 ) -> Result<(D, u32), CrtShError>
 where
     T: Transport + ?Sized,
@@ -245,7 +246,7 @@ where
             let kind = fetched.outcome.kind;
             if transport_retries < TRANSIENT_TRANSPORT_RETRIES && is_transient_crt_transport(kind) {
                 transport_retries += 1;
-                pause(TRANSIENT_PAUSE);
+                clock.sleep(TRANSIENT_PAUSE);
                 continue;
             }
             return Err(CrtShError::NoResponse(kind));
@@ -259,7 +260,7 @@ where
         if !(200..300).contains(&response.status) {
             if status_retries + 1 < TRANSIENT_ATTEMPTS && is_transient_crt_status(response.status) {
                 status_retries += 1;
-                pause(TRANSIENT_PAUSE);
+                clock.sleep(TRANSIENT_PAUSE);
                 continue;
             }
             return Err(CrtShError::Status {
@@ -638,5 +639,3 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
 mod differential;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod transport_retry_tests;

@@ -41,12 +41,20 @@ impl UnionFind {
         true
     }
 
+    /// Every set in ascending index order, the sets ordered by their smallest index, so the
+    /// result depends only on which indices were joined, not on the order of the unions.
     pub fn groups(&mut self) -> Vec<Vec<usize>> {
-        let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        let mut position: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut groups: Vec<Vec<usize>> = Vec::new();
         for index in 0..self.parent.len() {
-            groups.entry(self.find(index)).or_default().push(index);
+            let root = self.find(index);
+            let at = *position.entry(root).or_insert_with(|| {
+                groups.push(Vec::new());
+                groups.len() - 1
+            });
+            groups[at].push(index);
         }
-        groups.into_values().collect()
+        groups
     }
 }
 
@@ -62,5 +70,17 @@ mod tests {
         assert!(uf.union(1, 2));
         assert!(!uf.union(0, 3));
         assert_eq!(uf.groups(), vec![vec![0, 1, 2, 3], vec![4]]);
+    }
+
+    #[test]
+    fn group_order_does_not_depend_on_union_order() {
+        let mut forward = UnionFind::new(4);
+        forward.union(0, 3);
+        forward.union(1, 2);
+        let mut reversed = UnionFind::new(4);
+        reversed.union(3, 0);
+        reversed.union(2, 1);
+        assert_eq!(forward.groups(), vec![vec![0, 3], vec![1, 2]]);
+        assert_eq!(reversed.groups(), forward.groups());
     }
 }

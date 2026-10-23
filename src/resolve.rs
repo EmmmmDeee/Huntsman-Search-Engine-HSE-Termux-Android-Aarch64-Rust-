@@ -100,11 +100,10 @@ mod tests {
         graph
     }
 
-    #[test]
-    fn automatic_matches_cluster() {
-        let decision = IdentityResolutionDecision {
-            left_entity_uid: "a".into(),
-            right_entity_uid: "b".into(),
+    fn decision(left: &str, right: &str) -> IdentityResolutionDecision {
+        IdentityResolutionDecision {
+            left_entity_uid: left.into(),
+            right_entity_uid: right.into(),
             state: ResolutionState::Match,
             probability: Some(0.99),
             supporting: vec![
@@ -115,9 +114,27 @@ mod tests {
             temporal_conflict: false,
             geographic_conflict: false,
             decided_at_unix: 1,
-        };
-        let clusters = automatic_clusters(&[decision], &graph(), AutoMergePolicy::default());
+        }
+    }
+
+    #[test]
+    fn automatic_matches_cluster() {
+        let clusters =
+            automatic_clusters(&[decision("a", "b")], &graph(), AutoMergePolicy::default());
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].members, ["a", "b"]);
+    }
+
+    #[test]
+    fn cluster_order_does_not_depend_on_which_side_a_uid_is_on() {
+        for decisions in [
+            [decision("d", "a"), decision("b", "c")],
+            [decision("a", "d"), decision("b", "c")],
+        ] {
+            let clusters = automatic_clusters(&decisions, &graph(), AutoMergePolicy::default());
+            let members: Vec<_> = clusters.iter().map(|c| c.members.clone()).collect();
+            assert_eq!(members, [["a", "d"], ["b", "c"]]);
+            assert!(clusters.iter().all(|c| c.decision_count == 1));
+        }
     }
 }

@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
 use super::*;
+use crate::deadline::FakeClock;
 use crate::http::{Response, TransportFailure};
 
 type Reply = Result<Response, TransportFailure>;
@@ -46,10 +47,10 @@ fn status(code: u16, body: &str) -> Reply {
     })
 }
 
-fn timeout() -> Reply {
+fn failure(kind: SourceOutcomeKind) -> Reply {
     Err(TransportFailure {
-        kind: SourceOutcomeKind::TtfbTimeout,
-        detail: "timed out".into(),
+        kind,
+        detail: "scripted failure".into(),
         blocked: false,
     })
 }
@@ -61,16 +62,44 @@ fn entry(name_value: &str) -> CrtEntry {
     }
 }
 
-fn run(script: &Script, kind: ReconTargetKind, seed: &str) -> Result<CrtShReport, CrtShError> {
-    let pauses = Cell::new(0u32);
-    let out = lookup_with_pause(script, kind, seed, "scan", &|d| {
-        assert_eq!(d, TRANSIENT_PAUSE);
-        pauses.set(pauses.get() + 1);
-    });
-    if let Ok(report) = &out {
-        assert_eq!(pauses.get() + 1, report.attempts.max(1));
+/// A fake clock that checks every pause is [`TRANSIENT_PAUSE`] and counts them.
+struct Pauses {
+    clock: FakeClock,
+    count: Cell<u32>,
+}
+
+impl Clock for Pauses {
+    fn now(&self) -> std::time::Instant {
+        self.clock.now()
     }
-    out
+
+    fn sleep(&self, duration: Duration) {
+        assert_eq!(duration, TRANSIENT_PAUSE);
+        self.count.set(self.count.get() + 1);
+        self.clock.sleep(duration);
+    }
+}
+
+/// The lookup's result and how many pauses it took.
+fn run_counting(
+    script: &Script,
+    kind: ReconTargetKind,
+    seed: &str,
+) -> (Result<CrtShReport, CrtShError>, u32) {
+    let clock = Pauses {
+        clock: FakeClock::new(),
+        count: Cell::new(0),
+    };
+    let out = lookup_with_clock(script, kind, seed, "scan", &clock);
+    let pauses = clock.count.get();
+    if let Ok(report) = &out {
+        assert_eq!(pauses + 1, report.attempts.max(1));
+    }
+    (out, pauses)
+}
+
+fn run(script: &Script, kind: ReconTargetKind, seed: &str) -> Result<CrtShReport, CrtShError> {
+    run_counting(script, kind, seed).0
 }
 
 fn values(entities: &[Entity]) -> Vec<&str> {
@@ -417,7 +446,10 @@ fn the_retry_budget_is_bounded() {
 
 #[test]
 fn transient_transport_retries_once_but_other_failures_do_not() {
-    let script = Script::new(vec![timeout(), status(200, "[]")]);
+    let script = Script::new(vec![
+        failure(SourceOutcomeKind::TtfbTimeout),
+        status(200, "[]"),
+    ]);
     let report = run(&script, ReconTargetKind::Domain, "example.com").unwrap();
     assert_eq!(report.attempts, 2);
     assert_eq!(script.sent(), 2);
@@ -633,4 +665,90 @@ fn an_enterprise_issuer_keeps_every_certificate_and_name_it_signed() {
         Some("vpn.example.com,intranet.example.com,*.intranet.example.com")
     );
     assert_eq!(attr("issuer_dn"), Some("O=Acme Issuing CA"));
+}
+
+#[test]
+fn transient_transport_classes_pause_once_retry_once_and_succeed() {
+    for kind in [
+        SourceOutcomeKind::ConnectFailure,
+        SourceOutcomeKind::TtfbTimeout,
+        SourceOutcomeKind::BodyTimeout,
+    ] {
+        let script = Script::new(vec![
+            failure(kind),
+            status(200, r#"[{"name_value":"api.example.com"}]"#),
+        ]);
+        let (out, pauses) = run_counting(&script, ReconTargetKind::Domain, "example.com");
+        let report = out.unwrap();
+        assert_eq!(
+            (script.sent(), pauses, report.attempts),
+            (2, 1, 2),
+            "{kind:?}"
+        );
+        assert_eq!(values(&report.entities), ["api.example.com"], "{kind:?}");
+    }
+}
+
+#[test]
+fn a_second_transient_transport_failure_is_terminal() {
+    let script = Script::new(vec![
+        failure(SourceOutcomeKind::TtfbTimeout),
+        failure(SourceOutcomeKind::TtfbTimeout),
+    ]);
+    let (out, pauses) = run_counting(&script, ReconTargetKind::Domain, "example.com");
+    assert_eq!(
+        out.unwrap_err(),
+        CrtShError::NoResponse(SourceOutcomeKind::TtfbTimeout)
+    );
+    assert_eq!((script.sent(), pauses), (2, 1));
+}
+
+#[test]
+fn dns_and_tls_failures_are_not_retried() {
+    for kind in [SourceOutcomeKind::DnsFailure, SourceOutcomeKind::TlsFailure] {
+        let script = Script::new(vec![failure(kind)]);
+        let (out, pauses) = run_counting(&script, ReconTargetKind::Domain, "example.com");
+        assert_eq!(out.unwrap_err(), CrtShError::NoResponse(kind));
+        assert_eq!((script.sent(), pauses), (1, 0), "{kind:?}");
+    }
+}
+
+#[test]
+fn the_status_budget_and_the_transport_retry_are_separate() {
+    let ok = r#"[{"name_value":"api.example.com"}]"#;
+    for replies in [
+        vec![
+            failure(SourceOutcomeKind::TtfbTimeout),
+            status(503, ""),
+            status(503, ""),
+            status(200, ok),
+        ],
+        vec![
+            status(503, ""),
+            status(503, ""),
+            failure(SourceOutcomeKind::TtfbTimeout),
+            status(200, ok),
+        ],
+    ] {
+        let script = Script::new(replies);
+        let (out, pauses) = run_counting(&script, ReconTargetKind::Domain, "example.com");
+        let report = out.unwrap();
+        assert_eq!((script.sent(), pauses, report.attempts), (4, 3, 4));
+    }
+
+    let script = Script::new(vec![
+        failure(SourceOutcomeKind::TtfbTimeout),
+        status(503, ""),
+        status(503, ""),
+        status(503, ""),
+    ]);
+    let (out, pauses) = run_counting(&script, ReconTargetKind::Domain, "example.com");
+    assert_eq!(
+        out.unwrap_err(),
+        CrtShError::Status {
+            status: 503,
+            attempts: 4
+        }
+    );
+    assert_eq!((script.sent(), pauses), (4, 3));
 }

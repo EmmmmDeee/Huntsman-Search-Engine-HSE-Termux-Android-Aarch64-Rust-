@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use super::{fail, terminal_json_pretty};
-use huntsman_recon::attack_cli::{ATTACK_USAGE, render as render_attack};
+use huntsman_recon::attack_cli::{ATTACK_USAGE, Usage, render as render_attack};
 use huntsman_recon::clock;
 use huntsman_recon::diagnostics::{self, CredentialResolution, TermuxState};
 use huntsman_recon::directive_lock;
@@ -275,8 +275,7 @@ pub(super) fn attack_cmd(args: &[String]) -> ExitCode {
             print!("{body}");
             ExitCode::SUCCESS
         }
-        Err(message) if message == ATTACK_USAGE => fail(EX_USAGE, &message),
-        Err(message) => fail(EX_DATAERR, &message),
+        Err(Usage) => fail(EX_USAGE, ATTACK_USAGE),
     }
 }
 

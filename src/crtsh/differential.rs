@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::*;
+use crate::deadline::FakeClock;
 use crate::entity::normalise;
 use crate::http::{Response, TransportFailure};
 
@@ -139,10 +140,9 @@ fn port_reproduces_the_legacy_crtsh_output() {
             200,
             serde_json::to_vec(&Value::Array(entries)).unwrap(),
         )]);
-        let report = lookup_with_pause(&transport, kind, seed, "fixture-scan", &|_| {
-            panic!("{name}: no retry on a 200")
-        })
-        .unwrap();
+        let clock = FakeClock::new();
+        let report = lookup_with_clock(&transport, kind, seed, "fixture-scan", &clock).unwrap();
+        assert_eq!(clock.elapsed(), Duration::ZERO, "{name}: no retry on a 200");
 
         // Deliberate divergence: the port queries the canonical apex (lowercase,
         // no `www.`, no root dot) that entities are classified against; the
@@ -244,12 +244,12 @@ fn port_keeps_the_legacy_timeout_and_retry_contract() {
                 .map(|_| reply(status, Vec::new()))
                 .collect(),
         );
-        let err = lookup_with_pause(
+        let err = lookup_with_clock(
             &transport,
             ReconTargetKind::Domain,
             "example.com",
             "s",
-            &|_| {},
+            &FakeClock::new(),
         )
         .unwrap_err();
         let attempts = if retry { TRANSIENT_ATTEMPTS } else { 1 };

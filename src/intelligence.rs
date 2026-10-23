@@ -33,6 +33,7 @@ macro_rules! string_id {
         }
     };
 }
+pub(crate) use string_id;
 
 string_id!(ClaimId);
 string_id!(EvidenceId);

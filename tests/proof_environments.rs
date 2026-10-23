@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use huntsman_recon::evidence_ancestry::EvidenceNodeId;
 use huntsman_recon::intelligence::EvidenceId;
 use huntsman_recon::proof::{
     AssumptionId, DependencyDomainId, DerivationId, MinimalProofEnvironment, derive_environment,
@@ -13,7 +14,7 @@ fn set<T: Ord>(values: impl IntoIterator<Item = T>) -> BTreeSet<T> {
 fn env(assertions: &[&str], roots: &[&str]) -> MinimalProofEnvironment {
     MinimalProofEnvironment {
         assertions: set(assertions.iter().copied().map(EvidenceId::from)),
-        roots: set(roots.iter().map(|value| (*value).to_owned())),
+        roots: set(roots.iter().copied().map(EvidenceNodeId::from)),
         dependencies: BTreeSet::new(),
         derivations: BTreeSet::new(),
         assumptions: BTreeSet::new(),
@@ -61,7 +62,10 @@ fn derived_environment_inherits_roots_and_cannot_manufacture_new_witnesses() {
 
     assert_eq!(
         derived.roots,
-        set(["root-a".to_owned(), "root-b".to_owned()])
+        set([
+            EvidenceNodeId::from("root-a"),
+            EvidenceNodeId::from("root-b")
+        ])
     );
     assert_eq!(derived.assertions.len(), 2);
     assert!(

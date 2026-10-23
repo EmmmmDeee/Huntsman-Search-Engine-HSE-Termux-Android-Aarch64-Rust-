@@ -294,6 +294,117 @@ mod tests {
         assert_eq!(validate_benchmarks(&benchmarks, &capabilities), Ok(()));
     }
 
+    /// One way to break a valid manifest.
+    type Break<T> = fn(&mut T);
+
+    fn receipt(capabilities: &CapabilityManifest) -> BenchmarkReceipt {
+        BenchmarkReceipt {
+            id: "receipt-1".into(),
+            capability: capabilities.capabilities[0].id.clone(),
+            workload: "workload".into(),
+            platform: "aarch64-linux-android".into(),
+            build_profile: "release".into(),
+            repetitions: 1,
+            metric: "p50".into(),
+            value: 1.0,
+            unit: "ms".into(),
+        }
+    }
+
+    #[test]
+    fn every_capability_rejection_names_its_rule() {
+        let cases: &[(&str, Break<CapabilityManifest>)] = &[
+            ("unsupported schema_version", |m| m.schema_version = 2),
+            ("unexpected product", |m| m.product = "other".into()),
+            ("capability id must not be empty", |m| {
+                m.capabilities[0].id = " ".into();
+            }),
+            ("capability name must not be empty", |m| {
+                m.capabilities[0].name.clear();
+            }),
+            ("duplicate capability id", |m| {
+                let first = m.capabilities[0].clone();
+                m.capabilities.push(first);
+            }),
+            ("has no implementation paths", |m| {
+                m.capabilities[0].implementation.clear();
+            }),
+            ("has no proof paths", |m| {
+                m.capabilities[0].proof.clear();
+            }),
+            ("has no interfaces", |m| {
+                m.capabilities[0].interfaces.clear();
+            }),
+            ("has no platforms", |m| {
+                m.capabilities[0].platforms.clear();
+            }),
+            ("must state limitations", |m| {
+                m.capabilities[0].status = CapabilityStatus::Demonstrated;
+                m.capabilities[0].limitations.clear();
+            }),
+        ];
+        for (want, break_it) in cases {
+            let (_, mut capabilities) = shipped();
+            assert_eq!(validate_capabilities(&capabilities), Ok(()));
+            break_it(&mut capabilities);
+            let error = validate_capabilities(&capabilities).unwrap_err();
+            assert!(error.contains(want), "{want}: {error}");
+        }
+    }
+
+    #[test]
+    fn every_receipt_rejection_names_its_rule() {
+        let cases: &[(&str, Break<BenchmarkManifest>)] = &[
+            ("unsupported schema_version", |m| m.schema_version = 0),
+            ("benchmark claim_rule must not be empty", |m| {
+                m.policy.claim_rule.clear();
+            }),
+            ("benchmark regression_gate must not be empty", |m| {
+                m.policy.regression_gate = " ".into();
+            }),
+            ("benchmark id must not be empty", |m| {
+                m.benchmarks[0].id.clear();
+            }),
+            ("benchmark capability must not be empty", |m| {
+                m.benchmarks[0].capability.clear();
+            }),
+            ("benchmark workload must not be empty", |m| {
+                m.benchmarks[0].workload.clear();
+            }),
+            ("benchmark platform must not be empty", |m| {
+                m.benchmarks[0].platform.clear();
+            }),
+            ("benchmark build_profile must not be empty", |m| {
+                m.benchmarks[0].build_profile.clear();
+            }),
+            ("benchmark metric must not be empty", |m| {
+                m.benchmarks[0].metric.clear();
+            }),
+            ("benchmark unit must not be empty", |m| {
+                m.benchmarks[0].unit.clear();
+            }),
+            ("duplicate receipt id", |m| {
+                let first = m.benchmarks[0].clone();
+                m.benchmarks.push(first);
+            }),
+            ("references unknown capability", |m| {
+                m.benchmarks[0].capability = "no-such-capability".into();
+            }),
+            ("must have at least one repetition", |m| {
+                m.benchmarks[0].repetitions = 0;
+            }),
+            ("has non-finite value", |m| m.benchmarks[0].value = f64::NAN),
+        ];
+        for (want, break_it) in cases {
+            let (mut benchmarks, capabilities) = shipped();
+            benchmarks.benchmarks.push(receipt(&capabilities));
+            assert_eq!(validate_benchmarks(&benchmarks, &capabilities), Ok(()));
+            break_it(&mut benchmarks);
+            let error = validate_benchmarks(&benchmarks, &capabilities).unwrap_err();
+            assert!(error.contains(want), "{want}: {error}");
+        }
+    }
+
     #[test]
     fn a_benchmark_a_capability_names_needs_its_receipt() {
         let (benchmarks, mut capabilities) = shipped();

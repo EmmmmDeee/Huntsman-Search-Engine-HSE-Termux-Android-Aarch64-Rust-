@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use huntsman_recon::commercial_readiness::{benchmarks, manifest, readiness_markdown};
@@ -24,26 +23,6 @@ fn declared_implementation_and_proof_paths_exist() {
                 path
             );
         }
-    }
-}
-
-#[test]
-fn benchmark_receipts_reference_known_capabilities() {
-    let manifest = manifest().expect("capability manifest must validate");
-    let benchmarks = benchmarks().expect("benchmark manifest must validate");
-    let ids: BTreeSet<_> = manifest
-        .capabilities
-        .iter()
-        .map(|capability| capability.id.as_str())
-        .collect();
-
-    for receipt in benchmarks.benchmarks {
-        assert!(
-            ids.contains(receipt.capability.as_str()),
-            "benchmark {} references unknown capability {}",
-            receipt.id,
-            receipt.capability
-        );
     }
 }
 
