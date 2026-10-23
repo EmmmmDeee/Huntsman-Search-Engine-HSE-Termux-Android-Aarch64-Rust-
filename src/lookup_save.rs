@@ -38,6 +38,7 @@ fn username_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "github_user" => ("github_user", "src/github_user.rs"),
         "bluesky_user" => ("bluesky_user", "src/bluesky_user.rs"),
+        "mastodon_user" => ("mastodon_user", "src/mastodon_user.rs"),
         _ => (source, "src/username_cli.rs"),
     }
 }

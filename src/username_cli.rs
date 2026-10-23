@@ -12,6 +12,7 @@ use crate::keybase;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
+use crate::mastodon_user;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
@@ -80,6 +81,9 @@ pub fn run<T: Transport + ?Sized>(
     }
     if transport.runs_module(wikipedia::SRC) {
         collect_wikipedia(transport, &username, &scan_id, now_unix, &mut report);
+    }
+    if transport.runs_module(mastodon_user::SRC) {
+        collect_mastodon(transport, &username, &scan_id, now_unix, &mut report);
     }
     merge_by_uid(&mut report.entities);
 
@@ -183,6 +187,26 @@ fn collect_bluesky<T: Transport + ?Sized>(
         }
         Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
             bluesky_user::SRC,
+            now_unix,
+            error.to_string(),
+        )),
+    }
+}
+
+fn collect_mastodon<T: Transport + ?Sized>(
+    transport: &T,
+    username: &str,
+    scan_id: &str,
+    now_unix: u64,
+    report: &mut Report,
+) {
+    match mastodon_user::lookup(transport, username, scan_id, now_unix) {
+        Ok(found) => {
+            report.entities.extend(found.entities);
+            report.outcomes.push(found.outcome);
+        }
+        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
+            mastodon_user::SRC,
             now_unix,
             error.to_string(),
         )),

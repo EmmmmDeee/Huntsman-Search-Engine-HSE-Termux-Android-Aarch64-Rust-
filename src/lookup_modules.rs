@@ -83,6 +83,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             bluesky_user::SRC,
             keybase::SRC,
             wikipedia::SRC,
+            crate::mastodon_user::SRC,
             seeknow_collector::COLLECTOR_ID,
             exposure_cli::STOLEN_TAX_SOURCE,
             oathnet::SOURCE,

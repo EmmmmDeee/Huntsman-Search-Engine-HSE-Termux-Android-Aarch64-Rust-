@@ -123,6 +123,7 @@ pub mod lookup_modules;
 pub mod lookup_report;
 pub mod lookup_save;
 pub mod maltiverse;
+pub mod mastodon_user;
 pub mod md5;
 pub mod meta_plan;
 pub mod metrics;
