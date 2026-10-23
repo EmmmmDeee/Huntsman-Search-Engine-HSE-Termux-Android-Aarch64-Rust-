@@ -54,6 +54,13 @@ fn a_forward_match_yields_a_coordinates_point_and_an_address() {
         .expect("a coordinates entity");
     assert_eq!(coordinates.value, "37.422486,-122.085585");
     assert!((coordinates.confidence - GEOCODE_CONFIDENCE).abs() < f64::EPSILON);
+    assert_eq!(
+        coordinates.evidence[0]
+            .attributes
+            .get("nominatim_endpoint_origin")
+            .map(String::as_str),
+        Some(PUBLIC_BASE)
+    );
 
     let address = report
         .entities
