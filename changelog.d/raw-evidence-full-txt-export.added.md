@@ -1,0 +1,1 @@
+- Add a fenced plain-text export of all saved-scan metadata, source outcomes, uncertainty entries, data elements, correlations and relationship graph responses. Preserve full JSON values without UI pagination, label non-atomic endpoint snapshots and unknown external discovery completeness, and cover the download with an end-to-end mobile browser regression.
