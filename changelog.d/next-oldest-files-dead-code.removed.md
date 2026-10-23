@@ -1,0 +1,6 @@
+- Unused library items from the next-oldest files are gone, and no output changes:
+  - the `collector::Collector` trait, which nothing implemented or called;
+  - `CollectorPivot::parent_observation`, which was always `None`, never read and never serialised;
+  - the `attack::TACTICS` table, the `Tactic` type and `attack::tactic`, which only their own tests read (the catalogue test keeps the 14 tactic shortnames it checks every technique against).
+- The differential's dataset fields are `lineage::LINEAGE_FIELDS`, the authority they copied.
+- `tests/crtsh_transport_retry.rs` is removed. It repeated the crt.sh transport-retry unit tests through the public lookup and slept 2 s for real on each of its three retry cases. The unit tests, which count their pauses through an injected sleep instead of sleeping, keep the contract.

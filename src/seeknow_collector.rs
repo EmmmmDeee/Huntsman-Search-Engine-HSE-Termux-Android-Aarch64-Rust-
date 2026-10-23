@@ -368,11 +368,7 @@ fn append_row(
         if batch.pivots.len() < limits.max_pivots
             && entity_differs_from_selector(&kind, &value, selector)
         {
-            batch.pivots.push(CollectorPivot {
-                kind,
-                value,
-                parent_observation: None,
-            });
+            batch.pivots.push(CollectorPivot { kind, value });
         }
     }
 }

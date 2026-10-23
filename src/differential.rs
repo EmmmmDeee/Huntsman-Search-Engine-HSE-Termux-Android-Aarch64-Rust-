@@ -12,15 +12,6 @@ use serde::{Deserialize, Serialize};
 use crate::entity::{Entity, EntityKind, Evidence, normalise};
 use crate::sha256::{hex32, sha256};
 
-const DATASET_KEYS: [&str; 6] = [
-    "dbname",
-    "breach",
-    "source_db",
-    "database_name",
-    "dataset",
-    "registry",
-];
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DifferentialEntity {
     pub kind: EntityKind,
@@ -336,12 +327,12 @@ fn truncated_match(expected: &DifferentialEntity, observed: &DifferentialEntity)
         && expected.value.starts_with(&observed.value)
 }
 
+/// The upstream datasets an evidence record names, by the lineage authority's fields.
+/// `attr_values` already trims and drops empty values.
 fn dataset_names(evidence: &Evidence) -> BTreeSet<String> {
-    DATASET_KEYS
+    crate::lineage::LINEAGE_FIELDS
         .iter()
-        .flat_map(|key| evidence.attr_values(key))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .flat_map(|(key, _)| evidence.attr_values(key))
         .map(str::to_owned)
         .collect()
 }

@@ -6,6 +6,11 @@ use serde_json::{Value, json};
 use crate::attack::{Coverage, attack_spec_major, reconnaissance_spec_major};
 use crate::ledger::{LedgerEntry, admitted_with, bindings};
 
+/// The ATT&CK Navigator release whose layer format both layers write.
+const NAVIGATOR_APP_VERSION: &str = "5.1.0";
+/// The Navigator layer format, current since Navigator 4.9.
+const LAYER_FORMAT_VERSION: &str = "4.5";
+
 #[must_use]
 pub fn layer(entries: &[LedgerEntry]) -> Value {
     layer_with(entries, bindings())
@@ -28,7 +33,11 @@ pub fn layer_with(entries: &[LedgerEntry], bindings: &[(&str, &str)]) -> Value {
     }
     json!({
         "name": "huntsman-ledger",
-        "versions": {"attack": attack_spec_major(), "navigator": "4.9", "layer": "4.5"},
+        "versions": {
+            "attack": attack_spec_major(),
+            "navigator": NAVIGATOR_APP_VERSION,
+            "layer": LAYER_FORMAT_VERSION,
+        },
         "domain": "enterprise-attack",
         "description": "Generated only from admitted ledger entries. Absence is not a zero score.",
         "techniques": techniques
@@ -69,7 +78,11 @@ pub fn coverage_layer(coverage: &Coverage, scan_label: &str) -> Value {
     }
     json!({
         "name": format!("huntsman-recon — {scan_label} (Reconnaissance coverage)"),
-        "versions": { "attack": reconnaissance_spec_major(), "navigator": "5.1.0", "layer": "4.5" },
+        "versions": {
+            "attack": reconnaissance_spec_major(),
+            "navigator": NAVIGATOR_APP_VERSION,
+            "layer": LAYER_FORMAT_VERSION,
+        },
         "domain": "enterprise-attack",
         "description": "Reconnaissance-only coverage view. Disabled techniques are honest gaps.",
         "sorting": 3,

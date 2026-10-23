@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-pub use crate::attack_catalog::{ENTERPRISE, TACTICS, Tactic, Technique};
+pub use crate::attack_catalog::{ENTERPRISE, Technique};
 use crate::dependency::ModuleCategory;
 use crate::entity::{Entity, EntityKind};
 use crate::graph::{EntityRelation, RelationKind};
@@ -65,13 +65,6 @@ pub fn technique(id: &str) -> Option<&'static Technique> {
             .iter()
             .find(|item| item.id == id)
     })
-}
-
-#[must_use]
-pub fn tactic(id_or_shortname: &str) -> Option<&'static Tactic> {
-    TACTICS
-        .iter()
-        .find(|item| item.id == id_or_shortname || item.shortname == id_or_shortname)
 }
 
 #[must_use]
@@ -324,6 +317,24 @@ pub fn techniques_from_entities(entities: &[&Entity]) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// The 14 Enterprise tactics every catalogue technique must name (MITRE ATT&CK v17.1).
+    const SHORTNAMES: [&str; 14] = [
+        "initial-access",
+        "execution",
+        "persistence",
+        "privilege-escalation",
+        "defense-evasion",
+        "credential-access",
+        "discovery",
+        "lateral-movement",
+        "collection",
+        "exfiltration",
+        "command-and-control",
+        "impact",
+        "resource-development",
+        "reconnaissance",
+    ];
+
     fn parse_id(id: &str) -> (u32, i64) {
         let core = id.trim_start_matches('T');
         match core.split_once('.') {
@@ -354,7 +365,7 @@ mod tests {
             assert!(!item.name.is_empty(), "{} has no name", item.id);
             assert!(!item.tactics.is_empty(), "{} has no tactic", item.id);
             for shortname in item.tactics {
-                assert!(TACTICS.iter().any(|tac| tac.shortname == *shortname));
+                assert!(SHORTNAMES.contains(shortname), "{}: {shortname}", item.id);
             }
         }
         let ids: Vec<&str> = ENTERPRISE.iter().map(|item| item.id).collect();
@@ -396,15 +407,9 @@ mod tests {
     }
 
     #[test]
-    fn tactics_are_complete() {
-        assert_eq!(TACTICS.len(), 14);
+    fn the_reconnaissance_tactic_is_ta0043() {
         assert_eq!(TACTIC_ID, "TA0043");
         assert_eq!(TACTIC_NAME, "Reconnaissance");
-        assert_eq!(tactic(TACTIC_ID).map(|item| item.name), Some(TACTIC_NAME));
-        for item in TACTICS {
-            assert_eq!(tactic(item.id).map(|value| value.id), Some(item.id));
-            assert_eq!(tactic(item.shortname).map(|value| value.id), Some(item.id));
-        }
     }
 
     #[test]

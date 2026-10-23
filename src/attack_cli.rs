@@ -154,13 +154,29 @@ fn coverage(json_output: bool) -> Result<String, String> {
                 })
             })
             .collect::<Vec<_>>();
+        // A collector mapped to a parent technique (one with sub-techniques) names no leaf, so the
+        // roll-up names it, as `attack status` counts it among the mapped collectors.
+        let parent_rollups = hierarchy
+            .parent_rollups
+            .iter()
+            .map(|rollup| {
+                json!({
+                    "id": rollup.id,
+                    "name": rollup.name,
+                    "directly_covered": rollup.directly_covered,
+                    "covered_children": rollup.covered_children,
+                    "total_children": rollup.total_children,
+                    "modules": modules_for(&index, rollup.id),
+                })
+            })
+            .collect::<Vec<_>>();
         return json_line(&json!({
             "tactic_id": attack::TACTIC_ID,
             "tactic_name": attack::TACTIC_NAME,
             "coverage_basis": hierarchy.coverage_basis,
             "coverage_fraction": hierarchy.coverage_fraction,
             "covered": covered,
-            "parent_rollups": hierarchy.parent_rollups,
+            "parent_rollups": parent_rollups,
         }));
     }
 
@@ -190,6 +206,29 @@ fn coverage(json_output: bool) -> Result<String, String> {
         hierarchy.coverage_fraction * 100.0
     )
     .map_err(|error| error.to_string())?;
+    writeln!(
+        &mut output,
+        "\nParent roll-ups (not scored)\n{:<12}  {:<36}  {:<8}  MODULES (mapped to the parent)",
+        "TECHNIQUE", "NAME", "CHILDREN"
+    )
+    .map_err(|error| error.to_string())?;
+    writeln!(&mut output, "{}", "─".repeat(96)).map_err(|error| error.to_string())?;
+    for rollup in &hierarchy.parent_rollups {
+        let modules = modules_for(&index, rollup.id);
+        writeln!(
+            &mut output,
+            "{:<12}  {:<36}  {:<8}  {}",
+            rollup.id,
+            rollup.name,
+            format!("{}/{}", rollup.covered_children, rollup.total_children),
+            if modules.is_empty() {
+                "-".to_owned()
+            } else {
+                modules.join(", ")
+            }
+        )
+        .map_err(|error| error.to_string())?;
+    }
     Ok(output)
 }
 
@@ -309,6 +348,27 @@ mod tests {
             value["leaf_techniques_covered"].as_u64().unwrap()
                 <= value["leaf_techniques_total"].as_u64().unwrap()
         );
+    }
+
+    #[test]
+    fn every_mapped_collector_is_named_by_a_coverage_row() {
+        // `attack status` counts every network module with a mapping; `attack coverage` must
+        // name each one somewhere, a leaf row or the roll-up of the parent it maps to.
+        let value: serde_json::Value =
+            serde_json::from_str(&render(&args(&["coverage", "--json"])).unwrap()).unwrap();
+        let named = ["covered", "parent_rollups"]
+            .iter()
+            .flat_map(|key| value[*key].as_array().unwrap())
+            .flat_map(|row| row["modules"].as_array().unwrap())
+            .filter_map(serde_json::Value::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mapped = module_index()
+            .into_values()
+            .flatten()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(named, mapped);
+        let text = render(&args(&["coverage"])).unwrap();
+        assert!(text.contains("Parent roll-ups (not scored)"), "{text}");
     }
 
     #[test]

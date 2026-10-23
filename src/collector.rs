@@ -8,9 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::entity::{Entity, EntityKind};
-use crate::evidence_ancestry::EvidenceNodeId;
 use crate::graph::EntityRelation;
-use crate::http::Transport;
 use crate::source_outcome::SourceExecutionOutcome;
 
 /// Hard work limits supplied to one collector invocation.
@@ -52,8 +50,6 @@ pub struct ObservationReceipt {
 pub struct CollectorPivot {
     pub kind: EntityKind,
     pub value: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_observation: Option<EvidenceNodeId>,
 }
 
 /// Aggregate state of a collection attempt; per-request causality remains on receipts.
@@ -111,20 +107,4 @@ pub enum CollectorError {
     Execution(String),
     #[error("collector invariant failed: {0}")]
     Invariant(String),
-}
-
-/// Minimal synchronous boundary shared by keyless collectors. Keyed collectors may expose
-/// an explicit credential-bearing entry point while returning the same `CollectionBatch`.
-pub trait Collector {
-    fn id(&self) -> &'static str;
-
-    fn accepts(&self, kind: &EntityKind) -> bool;
-
-    fn collect(
-        &self,
-        selector: &Entity,
-        transport: &dyn Transport,
-        limits: &CollectionLimits,
-        now_unix: u64,
-    ) -> Result<CollectionBatch, CollectorError>;
 }
