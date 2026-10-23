@@ -228,12 +228,14 @@ pub fn forward<T: Transport + ?Sized>(
             "Nominatim query must be non-empty, at most 512 bytes and contain no controls".into(),
         ));
     }
-    let url = search_url_at(&configured_base()?, query);
+    let origin = configured_base()?;
+    let url = search_url_at(&origin, query);
     let (response, outcome, cached) = get(transport, &url, now_unix)?;
     let Some(response) = response else {
         return Ok(miss(outcome));
     };
     let mut report = interpret_forward(&response, query, scan_id, outcome.observed_at_unix);
+    annotate_origin(&mut report, &origin);
     if cached {
         report.outcome = report
             .outcome
@@ -262,18 +264,32 @@ pub fn reverse<T: Transport + ?Sized>(
             "invalid Nominatim latitude or longitude".into(),
         ));
     }
-    let url = reverse_url_at(&configured_base()?, lat, lon);
+    let origin = configured_base()?;
+    let url = reverse_url_at(&origin, lat, lon);
     let (response, outcome, cached) = get(transport, &url, now_unix)?;
     let Some(response) = response else {
         return Ok(miss(outcome));
     };
     let mut report = interpret_reverse(&response, lat, lon, scan_id, outcome.observed_at_unix);
+    annotate_origin(&mut report, &origin);
     if cached {
         report.outcome = report
             .outcome
             .with_detail("in-process cached Nominatim response");
     }
     Ok(report)
+}
+
+/// Preserve which HTTPS Nominatim origin actually supplied this observation. The
+/// source module name alone cannot distinguish operator-selected endpoints.
+fn annotate_origin(report: &mut Report, origin: &str) {
+    for entity in &mut report.entities {
+        for evidence in &mut entity.evidence {
+            evidence
+                .attributes
+                .insert("nominatim_endpoint_origin".into(), origin.to_owned());
+        }
+    }
 }
 
 /// Cache only a complete, successful document of the shape this endpoint expects.
