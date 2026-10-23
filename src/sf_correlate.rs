@@ -23,6 +23,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::correlator::Severity;
+use crate::netblock::{Ipv4Cidr, Ipv6Cidr};
 use crate::pattern::Pattern;
 use crate::sf_elements::DataElement;
 use crate::sf_types::{self, Category};
@@ -254,7 +255,10 @@ fn matcher(value: &Value, rule: &str, first: bool) -> Result<Matcher, RuleError>
         };
         let test = match method {
             "exact" => {
-                if first && field.attr == Attr::Type && sf_types::find(&pattern).is_none() {
+                if first
+                    && field.attr == Attr::Type
+                    && sf_types::find(&pattern).is_none_or(|kind| kind.code != pattern)
+                {
                     return Err(error(rule, format!("unknown type {pattern}")));
                 }
                 Test::Exact(pattern)
@@ -485,7 +489,8 @@ pub const MAX_RULE_FILES: usize = 500;
 
 /// The shipped rules plus every `*.yaml` rule in `dir`, a rule there replacing a shipped one of
 /// the same id and `enabled: false` turning one off; with the rules that could not be read.
-/// A missing directory adds nothing.
+/// A missing directory adds nothing; a path that cannot be listed, or one holding more than
+/// [`MAX_RULE_FILES`] rule files, is named among the errors.
 #[must_use]
 pub fn with_dir(dir: &Path) -> (Vec<Rule>, Vec<RuleError>) {
     let mut rules: BTreeMap<String, Rule> = shipped()
@@ -493,8 +498,15 @@ pub fn with_dir(dir: &Path) -> (Vec<Rule>, Vec<RuleError>) {
         .map(|rule| (rule.id.clone(), rule.clone()))
         .collect();
     let mut errors = Vec::new();
-    let Ok(listing) = std::fs::read_dir(dir) else {
-        return (rules.into_values().collect(), errors);
+    let listing = match std::fs::read_dir(dir) {
+        Ok(listing) => listing,
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+            return (rules.into_values().collect(), errors);
+        }
+        Err(failure) => {
+            errors.push(error(&dir.display().to_string(), failure.to_string()));
+            return (rules.into_values().collect(), errors);
+        }
     };
     let mut paths: Vec<_> = listing
         .filter_map(Result::ok)
@@ -505,6 +517,15 @@ pub fn with_dir(dir: &Path) -> (Vec<Rule>, Vec<RuleError>) {
         })
         .collect();
     paths.sort();
+    if paths.len() > MAX_RULE_FILES {
+        errors.push(error(
+            &dir.display().to_string(),
+            format!(
+                "{} rule files; only the first {MAX_RULE_FILES} are read",
+                paths.len()
+            ),
+        ));
+    }
     for path in paths.into_iter().take(MAX_RULE_FILES) {
         let id = path
             .file_stem()
@@ -662,31 +683,14 @@ type Buckets = Vec<(String, Vec<Hit>)>;
 /// Whether `value` is an address inside `network`; a bare address is a network of one, as
 /// Spiderfoot's `netaddr.IPNetwork` reads it.
 fn in_subnet(value: &str, network: &str) -> bool {
-    let (base, bits) = network.split_once('/').unwrap_or((network, ""));
-    let (Ok(address), Ok(base)) = (
-        value.trim().parse::<IpAddr>(),
-        base.trim().parse::<IpAddr>(),
-    ) else {
-        return false;
-    };
-    let bits = match (bits.trim(), base) {
-        ("", IpAddr::V4(_)) => 32,
-        ("", IpAddr::V6(_)) => 128,
-        (bits, _) => match bits.parse::<u32>() {
-            Ok(bits) => bits,
-            Err(_) => return false,
-        },
-    };
-    match (address, base) {
-        (IpAddr::V4(address), IpAddr::V4(base)) if bits <= 32 => {
-            let mask = u32::MAX.checked_shl(32 - bits).unwrap_or(0);
-            u32::from(address) & mask == u32::from(base) & mask
+    match value.trim().parse::<IpAddr>() {
+        Ok(IpAddr::V4(address)) => {
+            Ipv4Cidr::parse(network).is_some_and(|block| block.contains(address))
         }
-        (IpAddr::V6(address), IpAddr::V6(base)) if bits <= 128 => {
-            let mask = u128::MAX.checked_shl(128 - bits).unwrap_or(0);
-            u128::from(address) & mask == u128::from(base) & mask
+        Ok(IpAddr::V6(address)) => {
+            Ipv6Cidr::parse(network).is_some_and(|block| block.contains(address))
         }
-        _ => false,
+        Err(_) => false,
     }
 }
 

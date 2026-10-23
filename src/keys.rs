@@ -13,16 +13,19 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{File, Metadata};
-use std::io::{ErrorKind, Read};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use crate::credential_origin::CredentialFingerprint;
 use crate::environment;
 use crate::error::Error;
-use crate::fsio::{read_bounded, same_inode, write_atomic_private};
+use crate::fsio::{
+    CHANGED_WHILE_OPENING, NOT_REGULAR_FILE, read_bounded, read_to_bound, same_inode, store_err,
+    write_atomic_private,
+};
 
-const MAX_KEYS_FILE_BYTES: u64 = 64 * 1024;
+pub(crate) const MAX_KEYS_FILE_BYTES: u64 = 64 * 1024;
 
 /// The longest key [`store_slot`] writes. Provider keys and tokens are far shorter.
 pub const MAX_KEY_BYTES: usize = 4096;
@@ -339,23 +342,22 @@ impl DefaultFileRefusal {
     fn reason(self) -> String {
         match self {
             Self::Symlink => "it is a symlink; remove the symlink and create a regular file \
-                 owned by you with mode 600, or pass --keys"
+                 owned by you with mode 600"
                 .to_owned(),
-            Self::NotRegularFile => "it is not a regular file".to_owned(),
+            Self::NotRegularFile => format!("it is {NOT_REGULAR_FILE}"),
             Self::ForeignOwner {
                 file_uid,
                 current_uid,
             } => format!(
                 "it is owned by uid {file_uid}, not the current uid {current_uid}; recreate it as the current user"
             ),
-            Self::UnknownCurrentUser => {
-                "the current uid cannot be determined, so ownership cannot be checked; pass --keys"
-                    .to_owned()
-            }
+            Self::UnknownCurrentUser => "the current uid cannot be determined, so ownership \
+                 cannot be checked; set the keys in the environment instead"
+                .to_owned(),
             Self::LoosePermissions { mode } => format!(
                 "mode {mode:o} is accessible by group/others; fix with `chmod 600 ~/{DEFAULT_KEYS_FILE}`"
             ),
-            Self::ChangedWhileOpening => "it changed between the check and the open".to_owned(),
+            Self::ChangedWhileOpening => format!("it {CHANGED_WHILE_OPENING}"),
         }
     }
 }
@@ -458,7 +460,7 @@ pub(crate) fn read_private_file(
     path: &Path,
     max: u64,
 ) -> Result<Option<Result<Vec<u8>, DefaultFileRefusal>>, Error> {
-    let store = |e: std::io::Error| Error::Store(format!("{}: {e}", path.display()));
+    let store = |e: std::io::Error| store_err(path, &e);
     let linked = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
@@ -484,17 +486,7 @@ pub(crate) fn read_private_file(
     if let Some(refusal) = default_file_refusal(&FileFacts::of(&opened), uid) {
         return Ok(Some(Err(refusal)));
     }
-    let mut bytes = Vec::new();
-    file.take(max.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(store)?;
-    if bytes.len() as u64 > max {
-        return Err(Error::Store(format!(
-            "{}: exceeds {max} bytes",
-            path.display()
-        )));
-    }
-    Ok(Some(Ok(bytes)))
+    read_to_bound(path, file, max).map(|bytes| Some(Ok(bytes)))
 }
 
 /// A keys-file line as [`Keys::parse`] reads it: `None` for a blank or `#` comment line, otherwise
@@ -1025,6 +1017,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_refusal_never_advises_a_flag_the_printing_command_lacks() {
+        // `keys set`, the Settings page and lookups print these and take no `--keys`.
+        for refusal in [
+            DefaultFileRefusal::Symlink,
+            DefaultFileRefusal::NotRegularFile,
+            DefaultFileRefusal::UnknownCurrentUser,
+            DefaultFileRefusal::ChangedWhileOpening,
+        ] {
+            assert!(!refusal.reason().contains("--keys"), "{refusal:?}");
+        }
+        assert!(
+            DefaultFileRefusal::UnknownCurrentUser
+                .reason()
+                .ends_with("; set the keys in the environment instead")
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn current_uid_matches_the_owner_of_a_new_file() {
@@ -1055,7 +1065,10 @@ mod tests {
             warning.contains("regular file owned by you with mode 600"),
             "{warning}"
         );
-        assert!(warning.contains("--keys"), "{warning}");
+        assert!(
+            !warning.contains("--keys"),
+            "`keys set` and lookups take no --keys: {warning}"
+        );
         assert!(
             !warning.contains("chmod"),
             "chmod follows the link: {warning}"

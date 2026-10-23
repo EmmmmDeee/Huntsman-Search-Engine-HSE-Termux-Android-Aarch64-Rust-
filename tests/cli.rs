@@ -741,6 +741,15 @@ fn scans_search_finds_values_in_every_scan_or_the_ones_named() {
     );
     assert_eq!(run(&["scans", "search"]).status.code(), Some(64));
     assert_eq!(run(&["scans", "search", "/(a/"]).status.code(), Some(64));
+    // Groups nested past the limit are a bad pattern too, not a stack overflow.
+    let hostile = run(&["scans", "search", &format!("/{}/", "(".repeat(100_000))]);
+    assert_eq!(
+        hostile.status.code(),
+        Some(64),
+        "{}",
+        String::from_utf8_lossy(&hostile.stderr)
+    );
+    assert!(String::from_utf8_lossy(&hostile.stderr).contains("nested too deeply"));
     assert_eq!(
         run(&["scans", "search", "x", "0000000000000000"])
             .status
@@ -974,6 +983,24 @@ fn investigate_reports_digit_groups_as_whole_identifiers_and_addresses() {
     assert!(stdout.contains("phone\t+61412345678"), "{stdout:?}");
     assert!(stdout.contains("abn_acn\t51824753556"), "{stdout:?}");
     assert!(stdout.contains("address\t12 Queen Street"), "{stdout:?}");
+}
+
+#[test]
+fn investigate_reads_addresses_in_angle_brackets_and_bare_ipv6() {
+    let out = bin()
+        .arg("investigate")
+        .arg("From: Ada Lovelace <ada@example.com> via 2606:4700:4700::1111, order 123456")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("entities=2"), "{stdout:?}");
+    assert!(stdout.contains("email\tada@example.com"), "{stdout:?}");
+    assert!(
+        stdout.contains("ip_address\t2606:4700:4700::1111"),
+        "{stdout:?}"
+    );
+    assert!(!stdout.contains("abn_acn"), "{stdout:?}");
 }
 
 #[test]

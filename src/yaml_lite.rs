@@ -303,7 +303,12 @@ impl Reader {
             out = content.join("\n");
         }
         match chomp {
-            Chomp::Strip => {}
+            Chomp::Strip => {
+                // A folded scalar's more-indented last line ends in its line break.
+                if out.ends_with('\n') {
+                    out.pop();
+                }
+            }
             Chomp::Clip => {
                 if !out.is_empty() && !out.ends_with('\n') {
                     out.push('\n');
@@ -605,6 +610,9 @@ literal: |
 stripped: >-
   folded
   text
+stripped_indented: >-
+  folded
+    more indented
 ";
         assert_eq!(
             parse(doc).unwrap(),
@@ -620,6 +628,7 @@ stripped: >-
                 "list": ["one", {"two": 2, "three": 3}, ["nested"]],
                 "literal": "line one\n  indented\nline three\n",
                 "stripped": "folded text",
+                "stripped_indented": "folded\n  more indented",
             })
         );
     }

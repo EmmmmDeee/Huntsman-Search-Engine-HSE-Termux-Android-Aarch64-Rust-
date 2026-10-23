@@ -47,7 +47,7 @@ pub fn domain<T: Transport + ?Sized>(
         return Leg::default();
     }
     let registered = crate::domains::registrable_domain(domain).unwrap_or_else(|| domain.into());
-    let answer = rdap::lookup_domain(transport, &registered);
+    let answer = rdap::lookup_domain(transport, &registered, now_unix);
     leg(answer, now_unix, |record| {
         let subject = Subject {
             kind: EntityKind::Domain,
@@ -68,7 +68,8 @@ pub fn ip<T: Transport + ?Sized>(transport: &T, ip: &str, scan_id: &str, now_uni
     let Ok(address) = ip.parse::<IpAddr>() else {
         return Leg::default();
     };
-    leg(rdap::lookup_ip(transport, address), now_unix, |record| {
+    let answer = rdap::lookup_ip(transport, address, now_unix);
+    leg(answer, now_unix, |record| {
         let subject = Subject {
             kind: EntityKind::IpAddress,
             value: ip,
@@ -92,7 +93,7 @@ pub fn netblock<T: Transport + ?Sized>(
     }
     let value = block.to_string();
     leg(
-        rdap::lookup_netblock(transport, block),
+        rdap::lookup_netblock(transport, block, now_unix),
         now_unix,
         |record| {
             let subject = Subject {
@@ -113,7 +114,8 @@ pub fn asn<T: Transport + ?Sized>(transport: &T, asn: u32, scan_id: &str, now_un
         return Leg::default();
     }
     let value = format!("AS{asn}");
-    leg(rdap::lookup_asn(transport, asn), now_unix, |record| {
+    let answer = rdap::lookup_asn(transport, asn, now_unix);
+    leg(answer, now_unix, |record| {
         let subject = Subject {
             kind: EntityKind::Asn,
             value: &value,
@@ -335,7 +337,9 @@ impl Subject<'_> {
             }
         }
         for phone in &contact.phones {
-            if let Some(phone) = canonical_phone(&phone.replace('.', "")) {
+            // A tel URI's number ends at its first parameter (RFC 3966): `;ext=102` is not
+            // digits of it.
+            if let Some(phone) = canonical_phone(phone.split(';').next().unwrap_or(phone)) {
                 push_entity(
                     out,
                     EntityKind::Phone,

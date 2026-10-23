@@ -12,15 +12,16 @@
 //!   decoding. Missing optional fields are reported as absent, never invented.
 //!
 //! Passwords and hashes are decoded as presence flags only (see `present_flag`):
-//! the cleartext value is parsed with `IgnoredAny` and discarded during
-//! decoding, so an `Entry` can never hold or expose it. This makes the
+//! the cleartext value is read only for whether it holds something and is
+//! discarded during decoding, so an `Entry` can never hold or expose it. A
+//! blank, empty or `false` value holds nothing and is not exposed. This makes the
 //! "exposed / not exposed" redaction rule a property of the type rather than a
 //! discipline every caller must keep. `Debug` is still written by hand so a
 //! future field cannot leak into the derived output by accident.
 
 use std::fmt;
 
-use serde::de::IgnoredAny;
+use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -54,6 +55,23 @@ impl Entry {
     pub const fn has_hashed_password(&self) -> bool {
         self.hashed_password
     }
+
+    /// The record's addresses as pivots: each trimmed, a blank one dropped.
+    pub fn emails(&self) -> impl Iterator<Item = &str> {
+        pivots(&self.email)
+    }
+
+    /// The record's usernames as pivots: each trimmed, a blank one dropped.
+    pub fn usernames(&self) -> impl Iterator<Item = &str> {
+        pivots(&self.username)
+    }
+}
+
+fn pivots(values: &[String]) -> impl Iterator<Item = &str> {
+    values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
 }
 
 impl fmt::Debug for Entry {
@@ -86,14 +104,88 @@ fn one_or_many<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>
 
 /// Decode a possibly-secret field as presence only.
 ///
-/// A present, non-null value of any shape becomes `true`; `null` or an absent
-/// field becomes `false`. The value is parsed with [`IgnoredAny`] and dropped
-/// immediately, so a cleartext password or hash is never retained on an
-/// [`Entry`]. This matches the previous `Option::is_some` behaviour while
-/// keeping the secret out of memory, and it tolerates a vendor schema change to
-/// the field's JSON type without failing to decode.
+/// The field is exposed when its value holds something: a non-blank string, a
+/// number, `true`, a non-empty object, or an array with at least one element
+/// that holds something by this same rule. `null`, `false`, a blank string, an
+/// empty object, an array of nothing but such values, and an absent field are
+/// not exposed. This is the rule `oathnet::present` applies to a breach record's
+/// fields, except that each element of an array is judged on its own, since
+/// `DeHashed` sends one value or a list of them (see `one_or_many`). The value
+/// is read and dropped during decoding, so a cleartext password or hash is
+/// never retained on an [`Entry`], and a vendor change to the field's JSON type
+/// does not fail decoding.
 fn present_flag<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
-    Ok(Option::<IgnoredAny>::deserialize(deserializer)?.is_some())
+    Ok(Option::<Presence>::deserialize(deserializer)?.is_some_and(|presence| presence.0))
+}
+
+/// Whether one decoded value holds something, by [`present_flag`]'s rule. Only
+/// the answer is kept, never the value.
+struct Presence(bool);
+
+impl<'de> Deserialize<'de> for Presence {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(PresenceVisitor)
+    }
+}
+
+struct PresenceVisitor;
+
+impl<'de> Visitor<'de> for PresenceVisitor {
+    type Value = Presence;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("any JSON value")
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Presence, E> {
+        Ok(Presence(false))
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Presence, E> {
+        Ok(Presence(false))
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Presence, D::Error> {
+        Presence::deserialize(deserializer)
+    }
+
+    fn visit_bool<E: de::Error>(self, value: bool) -> Result<Presence, E> {
+        Ok(Presence(value))
+    }
+
+    fn visit_i64<E: de::Error>(self, _: i64) -> Result<Presence, E> {
+        Ok(Presence(true))
+    }
+
+    fn visit_u64<E: de::Error>(self, _: u64) -> Result<Presence, E> {
+        Ok(Presence(true))
+    }
+
+    fn visit_f64<E: de::Error>(self, _: f64) -> Result<Presence, E> {
+        Ok(Presence(true))
+    }
+
+    /// Borrowed, never copied: the text is only looked at.
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Presence, E> {
+        Ok(Presence(!value.trim().is_empty()))
+    }
+
+    /// Every element is read, so the decoder stays in step, and judged on its own.
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Presence, A::Error> {
+        let mut present = false;
+        while let Some(Presence(element)) = seq.next_element()? {
+            present |= element;
+        }
+        Ok(Presence(present))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Presence, A::Error> {
+        let mut present = false;
+        while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {
+            present = true;
+        }
+        Ok(Presence(present))
+    }
 }
 
 #[cfg(test)]
@@ -163,5 +255,38 @@ mod tests {
         let rendered = format!("{present:?}");
         assert!(!rendered.contains("hunter2-cleartext"), "{rendered}");
         assert!(!rendered.contains("live-hash"), "{rendered}");
+    }
+
+    #[test]
+    fn a_blank_empty_or_false_secret_is_not_exposed() {
+        for body in [
+            r#"{"password": "", "hashed_password": []}"#,
+            r#"{"password": "  ", "hashed_password": {}}"#,
+            r#"{"password": [""], "hashed_password": false}"#,
+            r#"{"password": [null, " "], "hashed_password": [[], {}]}"#,
+        ] {
+            let entry: Entry = serde_json::from_str(body).unwrap();
+            assert!(!entry.has_password(), "{body}");
+            assert!(!entry.has_hashed_password(), "{body}");
+        }
+        for body in [
+            r#"{"password": ["x"], "hashed_password": true}"#,
+            r#"{"password": ["", "x"], "hashed_password": {"bcrypt": ""}}"#,
+            r#"{"password": 0, "hashed_password": [1.5]}"#,
+        ] {
+            let entry: Entry = serde_json::from_str(body).unwrap();
+            assert!(entry.has_password(), "{body}");
+            assert!(entry.has_hashed_password(), "{body}");
+        }
+    }
+
+    #[test]
+    fn pivot_values_are_trimmed_and_blank_free() {
+        let entry: Entry = serde_json::from_str(
+            r#"{"email": [" ada@example.com ", "", "  "], "username": ["ada", " "]}"#,
+        )
+        .unwrap();
+        assert_eq!(entry.emails().collect::<Vec<_>>(), ["ada@example.com"]);
+        assert_eq!(entry.usernames().collect::<Vec<_>>(), ["ada"]);
     }
 }

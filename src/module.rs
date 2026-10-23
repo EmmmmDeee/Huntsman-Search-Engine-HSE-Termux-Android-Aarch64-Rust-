@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::dependency::{ModuleCategory, ModuleCost, ModuleMeta};
+pub use crate::dependency::{ModuleCategory, ModuleCost};
 use crate::environment;
 pub use crate::environment::PROVIDER_COST_ENV_PREFIX;
 use crate::module_selection::Selection;
@@ -1054,7 +1054,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::Threat,
         attack_techniques: &["T1596.005"],
-        description: "Internet Storm Center (DShield) reports, threat feeds and SSH and web honeypot activity of an address",
+        description: "Internet Storm Center (DShield) reports, threat feeds and SSH and web honeypot activity of an IPv4 address",
     },
     ReachableModule {
         name: "maltiverse",
@@ -1469,12 +1469,17 @@ mod tests {
     }
 
     #[test]
-    fn string_forms_match_serde() {
-        for cost in [ModuleCost::Free, ModuleCost::KeyGated, ModuleCost::Paid] {
+    fn serde_forms_are_the_pinned_wire_names() {
+        for (cost, name) in [
+            (ModuleCost::Free, "free"),
+            (ModuleCost::KeyGated, "key_gated"),
+            (ModuleCost::Paid, "paid"),
+        ] {
             let json = serde_json::to_string(&cost).expect("json");
-            assert_eq!(json.trim_matches('"'), cost.as_str());
+            assert_eq!(json.trim_matches('"'), name);
         }
-        assert_eq!(ModuleCategory::DnsRecon.as_str(), "dns_recon");
+        let json = serde_json::to_string(&ModuleCategory::DnsRecon).expect("json");
+        assert_eq!(json.trim_matches('"'), "dns_recon");
     }
 
     #[test]

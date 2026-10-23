@@ -5,13 +5,10 @@
 //! Spiderfoot has no name for start with `HSE_`. This is the one list of type names: `sf -T`, the
 //! `-t` filter, the saved-scan elements and `/api/eventtypes` all read it.
 
-use serde::Serialize;
-
 use crate::entity::EntityKind;
 
 /// Spiderfoot's grouping of a type: what kind of thing an element of it is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
     /// The scan's root.
     Internal,
@@ -39,9 +36,8 @@ impl Category {
 }
 
 /// One data-element type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SfType {
-    #[serde(rename = "type")]
     pub code: &'static str,
     pub description: &'static str,
     /// Raw data (a page, a record) rather than a parsed value.

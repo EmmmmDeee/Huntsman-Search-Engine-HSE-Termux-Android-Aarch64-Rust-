@@ -142,8 +142,9 @@ fn service_error(failure: &ServiceError) -> ApiResponse {
 /// The keyed sources' slots, from each source's own [`Api`] constant, plus the sources that
 /// read their key elsewhere.
 fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
-    let apis: [&Api; 27] = [
+    let apis: [&Api; 28] = [
         &crate::abuseipdb::API,
+        &crate::certspotter::API,
         &crate::greynoise::API,
         &crate::hackertarget::API,
         &crate::hunter::API,
@@ -2192,6 +2193,18 @@ mod tests {
             .unwrap();
         assert_eq!(robtex["key_env"], json!([]));
         assert_eq!(robtex["configured"], Value::Null);
+        // A keyless source's optional key slot is listed and checked too.
+        let certspotter = settings["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|module| module["name"] == "certspotter")
+            .unwrap();
+        assert_eq!(
+            certspotter["key_env"],
+            json!([crate::environment::CERTSPOTTER_KEY_ENV])
+        );
+        assert_eq!(certspotter["configured"], false);
         assert!(settings["global"].as_array().unwrap().len() >= 3);
         // Each module names the lookups that ask it, as New Scan's By Module list shows.
         let modules = settings["modules"].as_array().unwrap();

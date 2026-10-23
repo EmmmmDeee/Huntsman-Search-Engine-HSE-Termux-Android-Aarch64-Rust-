@@ -17,6 +17,7 @@ use std::path::PathBuf;
 
 use crate::api_leg::LegError;
 use crate::canonical::canonical_asn;
+use crate::concurrent;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
 use crate::http::Transport;
@@ -85,22 +86,27 @@ pub fn run<T: Transport + ?Sized + Sync>(transport: &T, asn: &str, now_unix: u64
         return AsnRun::Failed("not a public AS number".into());
     };
     let scan_id = crate::entity::scan_id("asn", &value);
-    let (registration, routing) = std::thread::scope(|scope| {
-        let calls = transport.runs_module(ripestat::SOURCE).then(|| {
-            (
-                scope.spawn(|| ripestat::as_overview(transport, number, now_unix)),
-                scope.spawn(|| ripestat::announced_prefixes(transport, number, now_unix)),
-                scope.spawn(|| ripestat::neighbours(transport, number, now_unix)),
-            )
-        });
-        let registration = rdap_legs::asn(transport, number, &scan_id, now_unix);
-        let routing = calls.map(|(overview, prefixes, neighbours)| Routing {
-            overview: joined(overview),
-            prefixes: joined(prefixes),
-            neighbours: joined(neighbours),
-        });
-        (registration, routing)
-    });
+    let (routing, registration) = concurrent::pair(
+        || {
+            transport.runs_module(ripestat::SOURCE).then(|| {
+                let (overview, (prefixes, neighbours)) = concurrent::pair(
+                    || caught(|| ripestat::as_overview(transport, number, now_unix)),
+                    || {
+                        concurrent::pair(
+                            || caught(|| ripestat::announced_prefixes(transport, number, now_unix)),
+                            || caught(|| ripestat::neighbours(transport, number, now_unix)),
+                        )
+                    },
+                );
+                Routing {
+                    overview,
+                    prefixes,
+                    neighbours,
+                }
+            })
+        },
+        || rdap_legs::asn(transport, number, &scan_id, now_unix),
+    );
 
     let mut report = Report::default();
     report.entities.extend(registration.entities);
@@ -121,11 +127,8 @@ pub fn run<T: Transport + ?Sized + Sync>(transport: &T, asn: &str, now_unix: u64
 }
 
 /// A call's answer; a call that panicked is an answer that could not be read.
-fn joined<R>(
-    handle: std::thread::ScopedJoinHandle<'_, Result<R, LegError>>,
-) -> Result<R, LegError> {
-    handle
-        .join()
+fn caught<R>(call: impl FnOnce() -> Result<R, LegError>) -> Result<R, LegError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(call))
         .unwrap_or_else(|_| Err(LegError::Decode("the call panicked".into())))
 }
 

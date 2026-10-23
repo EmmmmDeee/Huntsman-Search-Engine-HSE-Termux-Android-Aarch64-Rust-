@@ -185,6 +185,31 @@ fn an_address_registration_is_its_networks_record() {
     }
 }
 
+/// A telephone published as a tel URI with an extension (RFC 9083 section 5.1's own example) is
+/// the number before the extension; the record keeps it as published.
+#[test]
+fn a_telephone_extension_is_not_digits_of_the_number() {
+    const EXTENSION: &str = r#"{"objectClassName":"domain","ldhName":"example.com","entities":[{"roles":["abuse"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Abuse"],["tel",{"type":["work","voice"]},"uri","tel:+1-555-555-1234;ext=102"]]]}]}"#;
+    let registry = RoutedTransport::new(&[
+        ("https://data.iana.org/rdap/dns.json", 200, DNS_BOOTSTRAP),
+        (
+            "https://rdap.verisign.com/com/v1/domain/example.com",
+            200,
+            EXTENSION,
+        ),
+    ]);
+    let leg = domain(&registry, "example.com", "scan", 1);
+    let phones: Vec<&str> = leg
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::Phone)
+        .map(|entity| entity.raw_value.as_str())
+        .collect();
+    assert_eq!(phones, ["+15555551234"], "{:#?}", leg.entities);
+    let record = &find(&leg.entities, &EntityKind::Domain, "example.com").evidence[0];
+    assert_eq!(values(record, "abuse_phone"), ["+1-555-555-1234;ext=102"]);
+}
+
 /// Not registered is a validated zero; a TLD with no RDAP service is no answer, and says why.
 #[test]
 fn not_registered_is_a_zero_and_no_registry_is_not() {

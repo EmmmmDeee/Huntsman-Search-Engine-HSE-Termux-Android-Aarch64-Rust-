@@ -92,7 +92,7 @@ const MAX_RADAR_REQUESTS: usize = 1;
 const RADAR_WAIT: Duration = Duration::from_secs(18);
 /// A lookup does TLS and JSON decoding, which the small connection stack is not sized for, so it
 /// runs on its own thread with this stack.
-const LOOKUP_STACK_BYTES: usize = 4 * 1024 * 1024;
+const LOOKUP_STACK_BYTES: usize = crate::concurrent::JOB_STACK_BYTES;
 /// The longest `/api/lookup` waits for its lookup: the two minutes a lookup may hold its
 /// providers, and time to wait for a place behind the scans already running. A lookup still
 /// running then is answered `504` with the saved scan it runs as, which goes on and keeps what it
@@ -1954,7 +1954,7 @@ static PAGE_POLICY: LazyLock<String> = LazyLock::new(|| {
 const OTHER_POLICY: &str = "default-src 'none'; frame-ancestors 'none'";
 
 /// The text between `<tag>` and `</tag>`, the part a browser hashes for a CSP hash source.
-fn inline_block<'a>(page: &'a str, tag: &str) -> &'a str {
+pub(crate) fn inline_block<'a>(page: &'a str, tag: &str) -> &'a str {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     match (page.find(&open), page.find(&close)) {
@@ -1963,7 +1963,7 @@ fn inline_block<'a>(page: &'a str, tag: &str) -> &'a str {
     }
 }
 
-fn hash_source(content: &str) -> String {
+pub(crate) fn hash_source(content: &str) -> String {
     format!("sha256-{}", base64::standard(&sha256(content.as_bytes())))
 }
 

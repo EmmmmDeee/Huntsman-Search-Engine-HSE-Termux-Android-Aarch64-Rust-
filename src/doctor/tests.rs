@@ -506,6 +506,22 @@ fn a_symlinked_keys_file_fails() {
 }
 
 #[test]
+fn an_unknown_uid_is_fixed_from_the_environment_not_a_flag_lookups_lack() {
+    let path = Path::new("/home/u/.huntsman.env");
+    let check = refusal_check(
+        "env_file",
+        path,
+        "~/.huntsman.env",
+        DefaultFileRefusal::UnknownCurrentUser,
+    );
+    assert_eq!(check.status, Status::Fail);
+    assert_eq!(
+        check.fix.as_deref(),
+        Some("set the keys in the environment instead")
+    );
+}
+
+#[test]
 fn an_installer_env_file_elsewhere_is_reported() {
     let scratch = Scratch::new("envoverride");
     let report = scratch.with_ctx(SHA, |ctx| {

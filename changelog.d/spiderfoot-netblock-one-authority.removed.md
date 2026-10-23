@@ -1,0 +1,1 @@
+- Unused items are gone: `Netblock::is_ipv6` (the threat-feed reader now asks `Netblock::host_bits` whether a listed block is one address), and the `Serialize` impls and serde renames on `sf_types::SfType` and `sf_types::Category`, which nothing serialized. `GET /api/eventtypes` still writes `type`, `description`, `category` (from `Category::as_str`) and `raw`, unchanged.

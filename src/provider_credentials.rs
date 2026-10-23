@@ -376,14 +376,24 @@ pub const PROVIDERS: &[Provider] = &[
     },
 ];
 
+/// The slots that read a second name, as `(slot, alias)`: `HUNTSMAN_HIBP_KEY` falls back to a
+/// `HIBP_API_KEY` entry, HIBP's own name for the same key. A slot reads its alias only when the
+/// slot itself is unset.
+pub(crate) const SLOT_FALLBACKS: &[(&str, &str)] = &[(
+    crate::environment::HUNTSMAN_HIBP_KEY_ENV,
+    crate::environment::HIBP_API_KEY_ENV,
+)];
+
 /// The secret `keys` holds for `slot`: the one rule from a slot to its key, which
 /// `credential-status` reports with and a lookup must use. `HUNTSMAN_HIBP_KEY` falls back to a
 /// `HIBP_API_KEY` entry, HIBP's own name for the same key.
 #[must_use]
 pub fn secret_for_slot(keys: &Keys, slot: &str) -> Option<Secret> {
-    keys.get(slot).or_else(|| match slot {
-        crate::environment::HUNTSMAN_HIBP_KEY_ENV => keys.get(crate::environment::HIBP_API_KEY_ENV),
-        _ => None,
+    keys.get(slot).or_else(|| {
+        SLOT_FALLBACKS
+            .iter()
+            .find(|(fallback, _)| *fallback == slot)
+            .and_then(|(_, alias)| keys.get(alias))
     })
 }
 
@@ -491,7 +501,7 @@ pub fn probe<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> Vec<ProviderP
                     evidence: Vec::new(),
                 };
             };
-            match probe_service(transport, service.name, secret.expose()) {
+            match probe_service(transport, service.name, &secret) {
                 Ok(result) => {
                     let probe = match result.verdict {
                         ProbeVerdict::Valid => ProbeState::Valid,
@@ -805,6 +815,30 @@ mod tests {
         assert!(rendered.contains("provider=HIBP\tstate=configured\tprobe=valid"));
         assert!(rendered.contains("probe.subscription_name=Core 1"));
         assert!(rendered.contains("probe.rpm=10"));
+    }
+
+    #[test]
+    fn a_challenge_page_leaves_the_hibp_key_unchecked() {
+        // HIBP is behind Cloudflare. Its interstitial, served with 403 or with 200, never reached
+        // HIBP, so the key is neither rejected nor valid.
+        let keys = Keys::parse("HUNTSMAN_HIBP_KEY=fake-hibp-key-never-render\n").expect("keys");
+        let page = "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>cloudflare <script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/jsch/v1\"></script></body></html>";
+        for status in [403, 200] {
+            let transport = FakeTransport {
+                response: Response {
+                    status,
+                    headers: Vec::new(),
+                    body: page.as_bytes().to_vec(),
+                    truncated: false,
+                },
+                seen: RefCell::new(Vec::new()),
+            };
+            let rendered = render_probed(&keys, &transport);
+            assert!(
+                rendered.contains("provider=HIBP\tstate=configured\tprobe=indeterminate"),
+                "HTTP {status}: {rendered}"
+            );
+        }
     }
 
     #[test]
