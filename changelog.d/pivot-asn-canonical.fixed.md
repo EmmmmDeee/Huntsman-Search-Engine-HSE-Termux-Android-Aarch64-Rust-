@@ -5,3 +5,7 @@
   now dropped, as a non-public pivot address is. A pivot written `ASN13335` or `AS 13335` was
   dropped and is now the entity `AS13335`. The `asn` attribute on the queried address keeps the
   provider's value either way.
+- The same holds for the origin AS numbers RIPEstat names in an `ip` or `netblock` lookup: an
+  origin that is not a public AS number, for example `AS64512` or `AS23456`, is no longer an ASN
+  entity, and its holder no longer an organisation entity. The address's or block's RIPEstat
+  record keeps every origin in its `origin_asns` attribute and its summary either way.

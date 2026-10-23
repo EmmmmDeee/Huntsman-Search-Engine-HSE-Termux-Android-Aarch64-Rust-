@@ -77,6 +77,14 @@ impl Routing {
             .collect()
     }
 
+    /// Every origin AS of the covering prefix that is a public AS number, the ones a lookup ties
+    /// to the address or block as AS entities, as `asn` reads an AS number. **Pure.**
+    pub fn public_origins(&self) -> impl Iterator<Item = &Origin> {
+        self.origins
+            .iter()
+            .filter(|origin| crate::canonical::is_public_asn(origin.asn))
+    }
+
     /// The summary of the record on the address or block: the AS numbers that announce the
     /// covering prefix, or the registry block when none does. **Pure.**
     #[must_use]

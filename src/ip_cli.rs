@@ -404,7 +404,7 @@ fn ripestat_leg(lookup: &mut Lookup<'_>, routing: &ripestat::Routing) {
         |evidence, (key, value)| evidence.with_attr(key, value),
     );
     lookup.on_address(evidence, &[]);
-    for origin in &routing.origins {
+    for origin in routing.public_origins() {
         let asn = format!("AS{}", origin.asn);
         let evidence = lookup
             .evidence(api, "Origin AS of the prefix covering the address")

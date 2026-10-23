@@ -139,47 +139,22 @@ fn service_error(failure: &ServiceError) -> ApiResponse {
     error(failure.status(), &failure.to_string())
 }
 
-/// The keyed sources' slots, from each source's own [`Api`] constant, plus the sources that
-/// read their key elsewhere.
+/// The keyed sources' slots, from each source's own [`Api`] constant: every indicator source's,
+/// then the keyed legs the `ip`, `domain` and `phone` lookups run beside them, plus the sources
+/// that read their key elsewhere.
 fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
-    let apis: [&Api; 28] = [
+    let legs: [&Api; 5] = [
         &crate::abuseipdb::API,
         &crate::certspotter::API,
         &crate::greynoise::API,
-        &crate::hackertarget::API,
-        &crate::hunter::API,
-        &crate::internetdb::API,
-        &crate::ipinfo::API,
-        &crate::ipqs::API,
-        &crate::isc::API,
-        &crate::kickbox::API,
-        &crate::leakix::API,
-        &crate::maltiverse::API,
-        &crate::netlas::API,
         &crate::numverify::API,
-        &crate::otx::API,
-        &crate::phishstats::API,
-        &crate::pulsedive::API,
-        &crate::ripestat::API,
-        &crate::robtex::API,
-        &crate::securitytrails::API,
-        &crate::shodan::API,
-        &crate::stopforumspam::API,
-        &crate::threatfox::API,
-        &crate::urlhaus::API,
-        &crate::urlscan::API,
         &crate::virustotal::API,
-        &crate::whoxy::API,
-        &crate::xposedornot::API,
     ];
-    let mut slots: Vec<(&'static str, Vec<&'static str>)> = apis
+    let mut slots: Vec<(&'static str, Vec<&'static str>)> = crate::indicator_legs::SOURCES
         .iter()
-        .map(|api| {
-            (
-                api.source,
-                api.key.map(|key| key.slot).into_iter().collect(),
-            )
-        })
+        .map(|source| source.api)
+        .chain(legs)
+        .filter_map(|api| api.key.map(|key| (api.source, vec![key.slot])))
         .collect();
     slots.extend([
         (
@@ -314,9 +289,11 @@ impl ScanApi {
         let modules: Vec<Value> = reachable_modules()
             .iter()
             .map(|module| {
+                // HIBP's account search reads HIBP's key, WiGLE's Bluetooth search WiGLE's.
+                let keyed_as = crate::module::module_of(module.name);
                 let key_env: Vec<&str> = slots
                     .iter()
-                    .find(|(source, _)| *source == module.name)
+                    .find(|(source, _)| *source == keyed_as)
                     .map(|(_, slots)| slots.clone())
                     .unwrap_or_default();
                 let configured = match &self.slots {
@@ -2250,6 +2227,72 @@ mod tests {
             .map(|module| &module["name"])
             .collect();
         assert_eq!(whois, [&json!("whoxy"), &json!("rdap")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The source label of every provider whose `API` constant in `src/` names a key slot, read
+    /// from the source text, so a keyed provider that [`key_slots`] leaves out is still found.
+    fn keyed_api_sources() -> Vec<String> {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sources = Vec::new();
+        for entry in std::fs::read_dir(&src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let Some(start) = text.find("\npub const API: Api = Api {") else {
+                continue;
+            };
+            let constant = &text[start..];
+            let constant = &constant[..constant.find("\n};").unwrap()];
+            if !constant.contains("key: Some(") {
+                continue;
+            }
+            // Each one is labelled with its module's `SOURCE`.
+            assert!(constant.contains("source: SOURCE,"), "{}", path.display());
+            let label = text
+                .split("pub const SOURCE: &str = \"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .unwrap();
+            sources.push(label.to_owned());
+        }
+        sources
+    }
+
+    /// Every module that takes a key shows its slots and whether one is set: each one the module
+    /// list marks as needing a key, and each whose provider's `API` constant names a key, required
+    /// or optional.
+    #[test]
+    fn every_module_that_takes_a_key_shows_its_slots_and_whether_one_is_set() {
+        let (api, dir) = api("keyed");
+        let settings = body(&api.handle("GET", "/api/settings", ""));
+        let modules = settings["modules"].as_array().unwrap();
+        let from_source = keyed_api_sources();
+        assert!(
+            from_source.iter().any(|source| source == "certspotter") && from_source.len() > 15,
+            "the source text names the keyed providers: {from_source:?}"
+        );
+        let keyed: BTreeSet<String> = reachable_modules()
+            .iter()
+            .filter(|module| matches!(module.access, "keyed" | "operator_key"))
+            .map(|module| module.name.to_owned())
+            .chain(from_source)
+            .collect();
+        for name in &keyed {
+            let module = modules
+                .iter()
+                .find(|module| module["name"] == name.as_str())
+                .unwrap_or_else(|| panic!("{name} is not on the Settings page"));
+            assert!(
+                module["key_env"]
+                    .as_array()
+                    .is_some_and(|slots| !slots.is_empty()),
+                "{name} lists no key slot"
+            );
+            assert!(module["configured"].is_boolean(), "{name}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

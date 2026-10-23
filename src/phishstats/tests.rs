@@ -147,3 +147,24 @@ fn a_later_page_that_fails_keeps_the_reports_read_and_says_where_it_stopped() {
         Err(LegError::RateLimited { .. })
     ));
 }
+
+#[test]
+fn a_later_page_that_fails_after_pages_with_no_report_fails_the_lookup() {
+    // A full page of rows with no `url` holds no report, so there is nothing to keep.
+    let unreported: Vec<String> = (0..PAGE)
+        .map(|n| format!(r#"{{"id":{n},"ip":"23.54.189.18","host":"phish.example"}}"#))
+        .collect();
+    let transport = Pages(vec![
+        (page_url(0), 200, format!("[{}]", unreported.join(","))),
+        (page_url(1), 429, String::new()),
+    ]);
+    assert!(matches!(
+        lookup(
+            &transport,
+            &Keys::default(),
+            Indicator::Ip("23.54.189.18"),
+            1
+        ),
+        Err(LegError::RateLimited { .. })
+    ));
+}

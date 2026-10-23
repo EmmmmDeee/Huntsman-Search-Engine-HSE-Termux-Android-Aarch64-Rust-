@@ -366,6 +366,12 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::IPINFO_KEY_ENV],
     },
     Provider {
+        name: "OpenCelliD",
+        get_key_url: "https://opencellid.org",
+        free_tier: "free account key: 1,000 credits/day",
+        slots: &[crate::environment::OPENCELLID_KEY_ENV],
+    },
+    Provider {
         name: "Censys",
         get_key_url: "https://platform.censys.io/account/api",
         free_tier: "free: 250 req/month",
