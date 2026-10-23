@@ -863,3 +863,58 @@ fn the_text_report_prints_a_repeated_fix_once() {
     assert_eq!(text.matches(REINSTALL).count(), 1, "{text}");
     assert!(text.contains("fix: the same command as above"), "{text}");
 }
+
+/// A cache tag that is a pipe, kept open after the signature, is recognised from the signature
+/// alone. The check must not wait for end of file: that wait is what a `/dev/zero` symlink never
+/// ends. The reader runs on its own thread with a deadline, so the old code fails here instead of
+/// blocking the test run.
+#[cfg(unix)]
+#[test]
+fn a_cache_tag_is_read_only_as_far_as_its_signature() {
+    use std::io::Write as _;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let scratch = Scratch::new("tag-pipe");
+    let cache = scratch.home.join("cache");
+    fs::create_dir_all(&cache).expect("cache");
+    let tag = cache.join("CACHEDIR.TAG");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&tag)
+        .status()
+        .expect("mkfifo");
+    assert!(made.success(), "mkfifo {}", tag.display());
+
+    let (written, is_written) = mpsc::channel();
+    let (release, is_released) = mpsc::channel::<()>();
+    let writer_tag = tag.clone();
+    let writer = std::thread::spawn(move || {
+        let mut pipe = fs::OpenOptions::new()
+            .write(true)
+            .open(&writer_tag)
+            .expect("open pipe for writing");
+        pipe.write_all(CACHEDIR_SIGNATURE.as_bytes())
+            .expect("write signature");
+        written.send(()).expect("signal written");
+        let _ = is_released.recv();
+        drop(pipe);
+    });
+
+    let (answer, answered) = mpsc::channel();
+    let reader_dir = cache.clone();
+    let reader = std::thread::spawn(move || {
+        answer.send(tagged_cache(&reader_dir)).expect("send answer");
+    });
+    is_written
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the signature was written");
+    let verdict = answered.recv_timeout(Duration::from_secs(10));
+    let _ = release.send(());
+    writer.join().expect("writer");
+    reader.join().expect("reader");
+    assert_eq!(
+        verdict,
+        Ok(true),
+        "tagged_cache waited past the signature for end of file"
+    );
+}
