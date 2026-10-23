@@ -1007,6 +1007,57 @@ mod tests {
         assert!(disjoint_pathways("a", "b", &relations) >= 1);
     }
 
+    /// Prove that an exact path count and an incomplete fallback never share a status.
+    #[test]
+    fn pathway_precision_distinguishes_exact_from_lower_bound() {
+        let relations = vec![
+            Relation::new("S", "A", RelationKind::AliasOf, 0.95, "s"),
+            Relation::new("A", "B", RelationKind::AliasOf, 0.95, "s"),
+            Relation::new("B", "T", RelationKind::AliasOf, 0.95, "s"),
+            Relation::new("A", "T", RelationKind::AliasOf, 0.80, "s"),
+            Relation::new("S", "B", RelationKind::AliasOf, 0.80, "s"),
+        ];
+        let exact = assess_disjoint_pathways("S", "T", &relations);
+        assert_eq!(
+            exact,
+            PathwayAssessment {
+                count: 2,
+                precision: PathwayPrecision::Exact,
+            }
+        );
+        assert_eq!(exact.count, disjoint_pathways("S", "T", &relations));
+        assert_eq!(
+            serde_json::to_value(exact).unwrap(),
+            serde_json::json!({"count": 2, "precision": "exact"})
+        );
+        assert_eq!(
+            assess_disjoint_pathways("S", "missing", &relations),
+            PathwayAssessment {
+                count: 0,
+                precision: PathwayPrecision::Exact,
+            }
+        );
+        assert_eq!(
+            assess_disjoint_pathways("S", "S", &relations).precision,
+            PathwayPrecision::Exact
+        );
+
+        let nodes = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        let mut dense = Vec::new();
+        for (i, &from) in nodes.iter().enumerate() {
+            for &to in &nodes[i + 1..] {
+                dense.push(Relation::new(from, to, RelationKind::AliasOf, 0.8, "s"));
+            }
+        }
+        let lower = assess_disjoint_pathways("a", "b", &dense);
+        assert_eq!(lower.precision, PathwayPrecision::ConservativeLowerBound);
+        assert!(lower.count >= 1);
+        assert_eq!(lower.count, disjoint_pathways("a", "b", &dense));
+        assert_eq!(
+            serde_json::to_value(lower).unwrap()["precision"],
+            "conservative_lower_bound"
+        );
+    }
     /// A wide path of seven relations reaches `X` at depth seven, and would expand `X` before the
     /// narrow `S`-`X` relation is popped. The narrow path `S`, `X`, `Y`, `T` is three relations
     /// long, inside the bound, so it counts once; the wide path reaches `T` only at depth nine.
