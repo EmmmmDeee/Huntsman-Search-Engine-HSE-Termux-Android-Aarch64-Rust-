@@ -14,7 +14,7 @@ use huntsman_recon::clock;
 use huntsman_recon::fsio::{read_bounded, write_atomic_private};
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_service::{ScanRequest, plan};
-use huntsman_recon::scan_store::{ScanOptions, ScanRecord, ScanStore};
+use huntsman_recon::scan_store::{MAX_RESULTS_BYTES, ScanOptions, ScanRecord, ScanStore};
 use huntsman_recon::sha256::{hex32, sha256};
 use serde_json::{Value, json};
 
@@ -176,6 +176,15 @@ fn source_revision(store: &ScanStore, record: &ScanRecord) -> Result<String, Str
     Ok(hex32(&sha256(stamp.as_bytes())))
 }
 
+// Hash saved bytes only when analysing a changed scan, not on each 60-second tick.
+// A same-size, restored-mtime edit during analysis must not yield a current report.
+fn results_digest(store: &ScanStore, record: &ScanRecord) -> Result<String, String> {
+    let path = store.dir().join(&record.id).join("results.json");
+    let bytes = read_bounded(&path, MAX_RESULTS_BYTES)
+        .map_err(|error| format!("cannot hash saved results: {error}"))?;
+    Ok(hex32(&sha256(&bytes)))
+}
+
 fn normalised_path(record: &ScanRecord, directory: &Path) -> PathBuf {
     let key = format!("{}\0{}", record.kind, record.target);
     directory.join(format!("{}.json", &hex32(&sha256(key.as_bytes()))[..32]))
@@ -241,6 +250,42 @@ fn invalidate_saved(
         .map_err(|error| format!("cannot invalidate stale report: {error}"))
 }
 
+fn persist_normalised_report(
+    record: &ScanRecord,
+    directory: &Path,
+    revision: &str,
+    before_digest: &str,
+    mut report: Value,
+) -> Result<bool, String> {
+    let Some(root) = report.as_object_mut() else {
+        invalidate_saved(record, directory, revision, "unexpected_analysis_shape")?;
+        return Err(format!("scan {} analysis is not an object", record.id));
+    };
+    root.insert(
+        "normalisation".to_owned(),
+        json!({
+            "state": "current",
+            "source_revision_hint": revision,
+            "results_sha256": before_digest,
+            "scan_id": record.id,
+            "checked_at_ms": clock::unix_now_millis(),
+        }),
+    );
+    let body = serde_json::to_vec(&report).map_err(|error| error.to_string())?;
+    if body.len() as u64 > MAX_ANALYSIS_BYTES {
+        invalidate_saved(record, directory, revision, "normalised_output_too_large")?;
+        return Err(format!(
+            "scan {} normalised output exceeds limit",
+            record.id
+        ));
+    }
+    let output = normalised_path(record, directory);
+    archive_previous(&output)?;
+    write_atomic_private(&output, &body, MAX_ANALYSIS_BYTES)
+        .map_err(|error| format!("normalisation write failed: {error}"))?;
+    Ok(true)
+}
+
 fn normalise_saved(
     api: &ScanApi,
     record: &ScanRecord,
@@ -250,6 +295,18 @@ fn normalise_saved(
     if record.status.is_active() {
         return Ok(false);
     }
+    let before_digest = match results_digest(api.service().store(), record) {
+        Ok(digest) => digest,
+        Err(error) => {
+            invalidate_saved(
+                record,
+                directory,
+                revision,
+                "results_unreadable_before_analysis",
+            )?;
+            return Err(error);
+        }
+    };
     let response = api.handle("GET", &format!("/api/scans/{}/analyze", record.id), "");
     if response.status != 200 {
         invalidate_saved(
@@ -294,38 +351,38 @@ fn normalise_saved(
             record.id
         ));
     }
-    let mut report: Value = match serde_json::from_slice(&response.body) {
+    match results_digest(api.service().store(), record) {
+        Ok(after_digest) if after_digest == before_digest => {}
+        Ok(_) => {
+            invalidate_saved(
+                record,
+                directory,
+                revision,
+                "results_changed_during_analysis",
+            )?;
+            return Err(format!(
+                "scan {} saved results changed during analysis",
+                record.id
+            ));
+        }
+        Err(error) => {
+            invalidate_saved(
+                record,
+                directory,
+                revision,
+                "results_unreadable_after_analysis",
+            )?;
+            return Err(error);
+        }
+    }
+    let report: Value = match serde_json::from_slice(&response.body) {
         Ok(report) => report,
         Err(error) => {
             invalidate_saved(record, directory, revision, "malformed_analysis")?;
             return Err(format!("scan {} malformed analysis: {error}", record.id));
         }
     };
-    let Some(root) = report.as_object_mut() else {
-        invalidate_saved(record, directory, revision, "unexpected_analysis_shape")?;
-        return Err(format!("scan {} analysis is not an object", record.id));
-    };
-    root.insert(
-        "normalisation".to_owned(),
-        json!({
-            "state": "current",
-            "source_revision_hint": revision,
-            "checked_at_ms": clock::unix_now_millis(),
-        }),
-    );
-    let body = serde_json::to_vec(&report).map_err(|error| error.to_string())?;
-    if body.len() as u64 > MAX_ANALYSIS_BYTES {
-        invalidate_saved(record, directory, revision, "normalised_output_too_large")?;
-        return Err(format!(
-            "scan {} normalised output exceeds limit",
-            record.id
-        ));
-    }
-    let output = normalised_path(record, directory);
-    archive_previous(&output)?;
-    write_atomic_private(&output, &body, MAX_ANALYSIS_BYTES)
-        .map_err(|error| format!("normalisation write failed: {error}"))?;
-    Ok(true)
+    persist_normalised_report(record, directory, revision, &before_digest, report)
 }
 
 fn prune_tracking_state(
@@ -483,7 +540,7 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 mod tests {
     use super::{
         RetryKey, archive_previous, config, cycle, due, file_stamp, invalidate_saved,
-        normalised_path, prune_tracking_state, source_revision,
+        normalised_path, prune_tracking_state, results_digest, source_revision,
     };
     use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
     use huntsman_recon::scan_api::ScanApi;
@@ -683,6 +740,27 @@ mod tests {
     }
 
     #[test]
+    fn saved_results_digest_detects_same_size_in_place_changes() {
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-results-digest-{}-{}",
+            std::process::id(),
+            huntsman_recon::clock::unix_now_millis()
+        ));
+        let (api, record) = offline_scan_fixture(&directory);
+        let source = directory.join(&record.id).join("results.json");
+        let original = std::fs::read(&source).expect("saved scan results");
+        assert_ne!(original, Vec::<u8>::new());
+        let before = results_digest(api.service().store(), &record).expect("first digest");
+        let mut altered = original.clone();
+        altered[0] ^= 1;
+        std::fs::write(&source, &altered).expect("same-size in-place edit");
+        assert_eq!(original.len(), altered.len());
+        let after = results_digest(api.service().store(), &record).expect("second digest");
+        assert_ne!(before, after);
+        std::fs::remove_dir_all(&directory).expect("remove fixture");
+    }
+
+    #[test]
     fn wildcard_cycle_reconciles_false_positive_edits_without_network_collection() {
         let directory = std::env::temp_dir().join(format!(
             "huntsman-offline-fp-cycle-{}-{}",
@@ -705,7 +783,11 @@ mod tests {
         let first: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
         assert_eq!(first["normalisation"]["state"], "current");
-        assert_eq!(first["scan"]["id"], record.id);
+        assert_eq!(first["normalisation"]["scan_id"], record.id);
+        assert_eq!(
+            first["normalisation"]["results_sha256"],
+            results_digest(service.store(), &record).expect("saved results digest")
+        );
         assert_eq!(std::fs::read(&source_path).unwrap(), saved_evidence);
         assert_eq!(observed.len(), 1);
 
