@@ -6,7 +6,7 @@
 
 use crate::canonical::{
     canonical_asn, canonical_coordinates, canonical_domain, canonical_email, canonical_handle,
-    canonical_ip, canonical_mac, canonical_name, canonical_netblock, canonical_phone,
+    canonical_ip, canonical_mac, canonical_name, canonical_netblock,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,7 +172,8 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
         ScanKind::Email => canonical_email(raw),
         ScanKind::Exposure => crate::exposure_cli::canonical_selector(raw),
         ScanKind::Username => canonical_handle(raw),
-        ScanKind::Phone => canonical_phone(raw),
+        // The rule `infer_kind` routes a phone by, so every selector routed here is accepted.
+        ScanKind::Phone => crate::phone_intl::canonicalize(raw),
         ScanKind::Domain => canonical_domain(raw),
         ScanKind::Ip => canonical_ip(raw),
         ScanKind::Netblock => canonical_netblock(raw),
@@ -267,6 +268,24 @@ pub fn explicit_people_is_name(positionals: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_phone_routed_by_its_international_prefix_is_a_canonical_selector() {
+        // `scan "0044 20 7183 8750"` routed to phone and then refused the selector it routed.
+        for (raw, canonical) in [
+            ("0044 20 7183 8750", "+442071838750"),
+            ("+44 20 7183 8750", "+442071838750"),
+            ("+61 (0)412 345 678", "+61412345678"),
+            ("0412 345 678", "+61412345678"),
+        ] {
+            assert_eq!(infer_kind(raw), ScanKind::Phone, "{raw}");
+            assert_eq!(
+                canonical_selector(ScanKind::Phone, raw).as_deref(),
+                Some(canonical),
+                "{raw}"
+            );
+        }
+    }
 
     #[test]
     fn explicit_people_route_needs_a_joined_name() {

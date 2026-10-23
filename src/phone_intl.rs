@@ -33,9 +33,15 @@ pub const COUNTRIES: &[(&str, &str, &str)] = &[
     ("1849", "DO", "Dominican Republic"),
     ("1868", "TT", "Trinidad and Tobago"),
     ("1869", "KN", "Saint Kitts and Nevis"),
+    ("1658", "JM", "Jamaica"),
     ("1876", "JM", "Jamaica"),
     ("1939", "PR", "Puerto Rico"),
+    // The Caribbean Netherlands share +599 with Curaçao (+599 9).
+    ("5993", "BQ", "Sint Eustatius"),
+    ("5994", "BQ", "Saba"),
+    ("5997", "BQ", "Bonaire"),
     // Three-digit codes
+    ("211", "SS", "South Sudan"),
     ("212", "MA", "Morocco"),
     ("213", "DZ", "Algeria"),
     ("216", "TN", "Tunisia"),
@@ -66,6 +72,7 @@ pub const COUNTRIES: &[(&str, &str, &str)] = &[
     ("243", "CD", "Democratic Republic of the Congo"),
     ("244", "AO", "Angola"),
     ("245", "GW", "Guinea-Bissau"),
+    ("246", "IO", "Diego Garcia"),
     ("248", "SC", "Seychelles"),
     ("249", "SD", "Sudan"),
     ("250", "RW", "Rwanda"),
@@ -238,25 +245,13 @@ pub const COUNTRIES: &[(&str, &str, &str)] = &[
     ("94", "LK", "Sri Lanka"),
     ("95", "MM", "Myanmar"),
     ("98", "IR", "Iran"),
+    // Kazakhstan shares +7 with Russia: its numbers are +7 6 and +7 7.
+    ("76", "KZ", "Kazakhstan"),
+    ("77", "KZ", "Kazakhstan"),
     // Single-digit
-    ("7", "RU", "Russia / Kazakhstan (NANP)"),
+    ("7", "RU", "Russia"),
     ("1", "US", "NANP (US / Canada)"),
 ];
-
-/// Reduce explicit international syntax to country-code-leading digits.
-///
-/// A leading `+` or ITU `00` marker is required. Bare national numbers are
-/// intentionally not guessed.
-#[must_use]
-pub fn international_digits(raw: &str) -> Option<String> {
-    let raw = raw.trim();
-    let digits = textnorm::ascii_digits(raw);
-    if raw.starts_with('+') {
-        Some(digits)
-    } else {
-        digits.strip_prefix("00").map(str::to_owned)
-    }
-}
 
 /// Longest-prefix country match.
 #[must_use]
@@ -271,20 +266,50 @@ pub fn match_country(digits: &str) -> Option<(&'static str, &'static str, &'stat
 /// national number to E.164.
 ///
 /// This follows the current repository validation contract (10..=15 total
-/// digits) and never guesses the country of a bare non-Australian number.
+/// digits) and never guesses the country of a bare non-Australian number. A
+/// number with digits after an extension marker (`x12`, `;ext=12`, `#12`) is
+/// refused: dropping the marker would join the extension onto the number.
+/// An Australian number keeps no trunk zero (`+61 (0)4…` is `+614…`).
 #[must_use]
 pub fn canonicalize(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
-    if trimmed.starts_with('+') {
-        let candidate = textnorm::ascii_digits_and_plus(trimmed);
-        return validate_phone_e164(&candidate).valid.then_some(candidate);
+    if has_digits_after_a_marker(trimmed) {
+        return None;
     }
-    if trimmed.starts_with("00") {
+    let candidate = if trimmed.starts_with('+') {
+        textnorm::ascii_digits_and_plus(trimmed)
+    } else if trimmed.starts_with("00") {
         let digits = textnorm::ascii_digits(trimmed);
-        let candidate = format!("+{}", digits.strip_prefix("00")?);
-        return validate_phone_e164(&candidate).valid.then_some(candidate);
+        format!("+{}", digits.strip_prefix("00")?)
+    } else {
+        return address_au::normalise_phone(trimmed);
+    };
+    if candidate.starts_with("+61") {
+        if let Some(australian) = address_au::normalise_phone(&candidate) {
+            return Some(australian);
+        }
     }
-    address_au::normalise_phone(trimmed)
+    validate_phone_e164(&candidate).valid.then_some(candidate)
+}
+
+/// Whether a letter, `#`, `;` or `,` stands between two of `raw`'s digits: an extension, a
+/// dialling pause or a vanity word, after which the remaining digits are not the number's own.
+/// A marker before the first digit (`tel:`) or words after the last (`(office)`) are not.
+fn has_digits_after_a_marker(raw: &str) -> bool {
+    let mut seen_digit = false;
+    let mut marker = false;
+    for character in raw.chars() {
+        if character.is_ascii_digit() {
+            if marker {
+                return true;
+            }
+            seen_digit = true;
+        } else if seen_digit && (character.is_alphabetic() || matches!(character, '#' | ';' | ','))
+        {
+            marker = true;
+        }
+    }
+    false
 }
 
 /// Resolve a canonical E.164 number to country metadata.
@@ -299,17 +324,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn explicit_marker_gate_matches_legacy() {
+    fn a_bare_number_is_australian_or_nothing_never_a_guessed_country() {
+        // Without a `+` or `00` marker only the Australian national rule applies.
+        assert_eq!(canonicalize("202-555-0100"), None);
         assert_eq!(
-            international_digits("+1 876 456 7890").as_deref(),
-            Some("18764567890")
+            canonicalize("0400 000 000").as_deref(),
+            Some("+61400000000")
         );
+    }
+
+    #[test]
+    fn an_australian_number_keeps_no_trunk_zero() {
+        for raw in [
+            "+61 (0)412 345 678",
+            "0061 (0)412 345 678",
+            "+61 412 345 678",
+        ] {
+            assert_eq!(canonicalize(raw).as_deref(), Some("+61412345678"), "{raw}");
+        }
+    }
+
+    #[test]
+    fn an_extension_is_refused_not_joined_onto_the_number() {
+        for raw in [
+            "+1 415 555 2671 x12",
+            "+1 415 555 2671 ext. 12",
+            "+1-415-555-2671;ext=12",
+            "+1 415 555 2671 #12",
+            "+1 415 555 2671,,12",
+            "0044 20 7183 8750 x3",
+            "+1 800 FLOWERS 1",
+        ] {
+            assert_eq!(canonicalize(raw), None, "{raw}");
+        }
         assert_eq!(
-            international_digits("0061 400 000 000").as_deref(),
-            Some("61400000000")
+            canonicalize("+44 20 7183 8750 (office)").as_deref(),
+            Some("+442071838750")
         );
-        assert_eq!(international_digits("202-555-0100"), None);
-        assert_eq!(international_digits("0400 000 000"), None);
+    }
+
+    #[test]
+    fn current_itu_assignments_resolve_to_their_country() {
+        for (digits, country) in [
+            ("211912345678", "SS"),
+            ("16581234567", "JM"),
+            ("77011234567", "KZ"),
+            ("76151234567", "KZ"),
+            ("74951234567", "RU"),
+            ("5997171234", "BQ"),
+            ("5993181234", "BQ"),
+            ("5999461234", "CW"),
+            ("2463801234", "IO"),
+        ] {
+            assert_eq!(
+                match_country(digits).map(|row| row.1),
+                Some(country),
+                "{digits}"
+            );
+        }
+        assert_eq!(match_country("74951234567").unwrap().2, "Russia");
     }
 
     #[test]
