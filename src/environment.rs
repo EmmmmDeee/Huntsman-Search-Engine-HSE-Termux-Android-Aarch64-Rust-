@@ -65,7 +65,9 @@ pub const HACKERTARGET_KEY_ENV: &str = "HUNTSMAN_HACKERTARGET_KEY";
 pub const IPINFO_KEY_ENV: &str = "HUNTSMAN_IPINFO_KEY";
 pub const IPQS_KEY_ENV: &str = "HUNTSMAN_IPQS_KEY";
 pub const OPENCELLID_KEY_ENV: &str = "HUNTSMAN_OPENCELLID_KEY";
-pub const MOZILLA_LOCATION_KEY_ENV: &str = "HUNTSMAN_MOZILLA_LOCATION_KEY";
+/// The key the Mozilla Location Service lookup read. Mozilla removed third-party API access on
+/// 2024-06-12, so nothing reads it; `credential-status` and `doctor` name it as retired.
+pub const RETIRED_MOZILLA_LOCATION_KEY_ENV: &str = "HUNTSMAN_MOZILLA_LOCATION_KEY";
 pub const LEAKIX_KEY_ENV: &str = "HUNTSMAN_LEAKIX_KEY";
 pub const NETLAS_KEY_ENV: &str = "HUNTSMAN_NETLAS_KEY";
 pub const NIAMONX_KEY_ENV: &str = "HUNTSMAN_NIAMONX_KEY";
@@ -130,7 +132,6 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     IPINFO_KEY_ENV,
     IPQS_KEY_ENV,
     OPENCELLID_KEY_ENV,
-    MOZILLA_LOCATION_KEY_ENV,
     LEAKIX_KEY_ENV,
     NETLAS_KEY_ENV,
     NIAMONX_KEY_ENV,

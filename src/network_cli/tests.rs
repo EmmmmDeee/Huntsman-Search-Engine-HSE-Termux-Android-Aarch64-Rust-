@@ -382,3 +382,102 @@ fn a_mac_found_as_a_bluetooth_device_is_reported_with_its_class() {
         "{text}"
     );
 }
+
+/// A cell site, as `radar cells` reports one, is a network selector of its own: written
+/// `cell:MCC:MNC:AREA:CELL`, inferred by `scan`, and never taken for an SSID unless written as one.
+#[test]
+fn a_cell_site_selector_parses_canonically_and_is_inferred() {
+    for (raw, canonical) in [
+        ("cell:505:01:17:91", "cell:505:01:17:91"),
+        (" CELL:505:010:17:91 ", "cell:505:010:17:91"),
+        (
+            "cell:310:410:65535:68719476735",
+            "cell:310:410:65535:68719476735",
+        ),
+    ] {
+        let selector = NetworkSelector::parse(raw).expect(raw);
+        assert!(matches!(selector, NetworkSelector::Cell { .. }), "{raw}");
+        assert_eq!(selector.canonical(), canonical);
+        assert_eq!(NetworkSelector::parse(canonical), Some(selector));
+        assert_eq!(
+            crate::scan_route::infer_kind(raw),
+            crate::scan_route::ScanKind::Network
+        );
+    }
+    for bad in [
+        "cell:000:01:17:91",
+        "cell:505:1:17:91",
+        "cell:505:01:17",
+        "cell:505:01:17:91:2",
+        "cell:505:01:+17:91",
+        "cell:505:01:17:68719476736",
+        "cell:5050:01:17:91",
+    ] {
+        assert_eq!(NetworkSelector::parse_identifier(bad), None, "{bad}");
+        // A mistyped cell site is refused, not searched for as a network named after it.
+        assert_eq!(NetworkSelector::parse(bad), None, "{bad}");
+    }
+    // An SSID that reads as a cell site is written with its prefix, and reads back as an SSID.
+    let ssid = NetworkSelector::parse("ssid:cell:505:01:17:91").expect("an SSID");
+    assert_eq!(ssid, NetworkSelector::Ssid("cell:505:01:17:91".into()));
+    assert_eq!(ssid.canonical(), "ssid:cell:505:01:17:91");
+}
+
+/// Without the `OpenCelliD` key a cell lookup makes no request and says so; it does not print
+/// `WiGLE` rows, since `WiGLE` is not searched for a cell.
+#[test]
+fn without_its_key_a_cell_lookup_reports_opencellid_not_configured() {
+    let transport = Canned::json(&serde_json::json!({}));
+    for wigle in [None, Some((&transport as &dyn Transport, &keys()))] {
+        let (text, report) = printed(run(wigle, "cell:505:01:17:91", 7));
+        let legs: Vec<_> = report
+            .outcomes
+            .iter()
+            .map(|o| (o.module.as_str(), o.kind))
+            .collect();
+        assert_eq!(
+            legs,
+            [(opencellid::SOURCE, SourceOutcomeKind::NotConfigured)]
+        );
+        assert!(text.contains(opencellid::KEY_SLOT), "{text}");
+        assert!(!text.contains("wigle_"), "{text}");
+    }
+    assert!(transport.urls().is_empty(), "no request was made");
+}
+
+/// With the key, `OpenCelliD` is asked for the cell, a 5G cell's 36-bit identity whole, and the
+/// position it gives is evidence on the lookup.
+#[test]
+fn a_cell_site_is_looked_up_in_opencellid() {
+    let keys = Keys::parse(&format!(
+        "{}=ocid-test-key-0123456789\n",
+        opencellid::KEY_SLOT
+    ))
+    .expect("fixture keys");
+    let transport = Canned::json(&serde_json::json!({
+        "lat": -27.4698, "lon": 153.0251, "range": 1200, "samples": 40
+    }));
+    let (text, report) = printed(run(
+        Some((&transport, &keys)),
+        "cell:505:01:20:68719476735",
+        7,
+    ));
+    let urls = transport.urls();
+    assert_eq!(urls.len(), 1, "{urls:?}");
+    assert!(
+        urls[0].starts_with(
+            "https://opencellid.org/cell/get?mcc=505&mnc=1&lac=20&cellid=68719476735&format=json"
+        ),
+        "{}",
+        urls[0]
+    );
+    assert_eq!(report.outcomes.len(), 1, "{:?}", report.outcomes);
+    assert_eq!(report.outcomes[0].module, opencellid::SOURCE);
+    assert!(
+        report.outcomes[0].kind.is_accepted(),
+        "{:?}",
+        report.outcomes
+    );
+    assert!(text.contains("-27.4698"), "{text}");
+    assert!(!text.contains("wigle_"), "{text}");
+}

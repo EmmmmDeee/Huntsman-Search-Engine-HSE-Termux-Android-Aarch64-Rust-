@@ -61,10 +61,11 @@ pub enum Database {
 impl Database {
     /// The databases a selector is searched in, in order. A MAC address can be a `WiFi` BSSID or
     /// a Bluetooth device, and a place holds both, so each is searched in both. An SSID names
-    /// only `WiFi` networks.
+    /// only `WiFi` networks. A cell site is in neither: `OpenCelliD` looks it up.
     #[must_use]
     pub const fn for_selector(selector: &NetworkSelector) -> &'static [Self] {
         match selector {
+            NetworkSelector::Cell { .. } => &[],
             NetworkSelector::Ssid(_) => &[Self::Wifi],
             NetworkSelector::Bssid(_) | NetworkSelector::Area { .. } => {
                 &[Self::Wifi, Self::Bluetooth]
@@ -290,10 +291,12 @@ pub fn configured(keys: &Keys) -> bool {
     keys.get(USER_SLOT).is_some() && keys.get(TOKEN_SLOT).is_some()
 }
 
-/// The request URL for `selector` in `database`. **Pure.**
+/// The request URL for `selector` in `database`, or `None` for a cell site, which neither
+/// database holds. **Pure.**
 #[must_use]
-pub fn search_url(database: Database, selector: &NetworkSelector) -> String {
+pub fn search_url(database: Database, selector: &NetworkSelector) -> Option<String> {
     let query = match selector {
+        NetworkSelector::Cell { .. } => return None,
         NetworkSelector::Bssid(bssid) => {
             format!(
                 "netid={}",
@@ -319,7 +322,10 @@ pub fn search_url(database: Database, selector: &NetworkSelector) -> String {
             )
         }
     };
-    format!("{}?{query}&resultsPerPage={PAGE_SIZE}", database.url())
+    Some(format!(
+        "{}?{query}&resultsPerPage={PAGE_SIZE}",
+        database.url()
+    ))
 }
 
 /// Search `database` for what `selector` names, with the credentials in `keys`.
@@ -339,7 +345,10 @@ pub fn search<T: Transport + ?Sized>(
         WigleCredentialError::Refused(why) => WigleError::Refused(why),
     })?;
     let secrets = wigle.secrets();
-    let request = Request::get(search_url(database, selector))
+    let url = search_url(database, selector).ok_or_else(|| {
+        WigleError::Refused("WiGLE searches no cell sites; OpenCelliD looks them up".into())
+    })?;
+    let request = Request::get(url)
         .header("Accept", "application/json")
         .with_timeout(TIMEOUT);
     let fetched = fetch(

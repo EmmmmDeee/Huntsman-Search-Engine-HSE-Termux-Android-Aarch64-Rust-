@@ -450,6 +450,11 @@ fn write_unrecognised(out: &mut String, keys: &Keys) {
             out.push_str(" (installer uses ");
             out.push_str(crate::environment::INSTALL_ROOT_ENV);
             out.push_str(" only when invoked)");
+        } else if slot == crate::environment::RETIRED_MOZILLA_LOCATION_KEY_ENV {
+            out.push_str(
+                "Mozilla retired the Location Service API on 2024-06-12 and nothing reads this key; remove with huntsman-recon keys remove ",
+            );
+            out.push_str(crate::environment::RETIRED_MOZILLA_LOCATION_KEY_ENV);
         } else {
             out.push_str("matches no provider; rename it to the exact slot or remove it");
         }
@@ -910,6 +915,26 @@ mod tests {
                 "{name} should be unrecognised"
             );
         }
+    }
+
+    /// A key for the retired Mozilla Location Service is read by nothing; it is named as retired,
+    /// with the command that removes it, and its value is never shown.
+    #[test]
+    fn a_retired_mozilla_location_key_is_named_as_retired() {
+        let slot = crate::environment::RETIRED_MOZILLA_LOCATION_KEY_ENV;
+        let keys = Keys::parse(&format!("{slot}=mls-private-value\n")).expect("keys");
+        assert_eq!(unrecognised_slots(&keys), vec![slot]);
+        let rendered = render(&keys);
+        assert!(
+            rendered.contains(&format!("unrecognised_slot={slot}")),
+            "{rendered}"
+        );
+        assert!(rendered.contains("retired"), "{rendered}");
+        assert!(
+            rendered.contains(&format!("huntsman-recon keys remove {slot}")),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("mls-private-value"), "{rendered}");
     }
 
     #[test]

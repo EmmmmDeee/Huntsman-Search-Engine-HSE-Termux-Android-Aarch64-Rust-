@@ -584,12 +584,13 @@ fn env_file(ctx: &Context<'_>) -> Check {
                                 unrecognised.join(", ")
                             ),
                             if unrecognised.len() == 1
-                                && unrecognised[0] == crate::environment::LEGACY_INSTALL_DIR_ENV
+                                && [
+                                    crate::environment::LEGACY_INSTALL_DIR_ENV,
+                                    crate::environment::RETIRED_MOZILLA_LOCATION_KEY_ENV,
+                                ]
+                                .contains(&unrecognised[0])
                             {
-                                format!(
-                                    "huntsman-recon keys remove {}",
-                                    crate::environment::LEGACY_INSTALL_DIR_ENV
-                                )
+                                format!("huntsman-recon keys remove {}", unrecognised[0])
                             } else {
                                 "huntsman-recon credential-status".to_owned()
                             },

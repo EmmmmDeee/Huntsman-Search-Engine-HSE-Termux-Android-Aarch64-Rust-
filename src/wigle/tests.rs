@@ -155,14 +155,15 @@ fn provider_text_is_bounded_and_control_free() {
 #[test]
 fn each_selector_is_one_query_on_the_search_endpoint() {
     assert_eq!(
-        search_url(Database::Wifi, &bssid()),
+        search_url(Database::Wifi, &bssid()).unwrap(),
         "https://api.wigle.net/api/v2/network/search?netid=3C%3A5A%3AB4%3A01%3A02%3A03&resultsPerPage=100"
     );
     assert_eq!(
         search_url(
             Database::Wifi,
             &NetworkSelector::Ssid("Cafe Guest&x=1".into())
-        ),
+        )
+        .unwrap(),
         "https://api.wigle.net/api/v2/network/search?ssid=Cafe+Guest%26x%3D1&resultsPerPage=100"
     );
     assert_eq!(
@@ -172,7 +173,8 @@ fn each_selector_is_one_query_on_the_search_endpoint() {
                 lat: -27.4698,
                 lon: 153.0251
             }
-        ),
+        )
+        .unwrap(),
         "https://api.wigle.net/api/v2/network/search?latrange1=-27.471800&latrange2=-27.467800\
          &longrange1=153.023100&longrange2=153.027100&closestLat=-27.469800&closestLong=153.025100\
          &resultsPerPage=100"
@@ -184,7 +186,8 @@ fn each_selector_is_one_query_on_the_search_endpoint() {
             lat: 89.9995,
             lon: -179.9995,
         },
-    );
+    )
+    .unwrap();
     assert!(edge.contains("latrange2=90.000000"), "{edge}");
     assert!(edge.contains("longrange1=-180.000000"), "{edge}");
 }
@@ -249,7 +252,10 @@ fn the_search_sends_one_get_with_basic_credentials_to_the_fixed_origin() {
     assert_eq!(sent.len(), 1);
     let request = &sent[0];
     assert_eq!(request.method, Method::Get);
-    assert_eq!(request.url, search_url(Database::Wifi, &bssid()));
+    assert_eq!(
+        Some(request.url.clone()),
+        search_url(Database::Wifi, &bssid())
+    );
     let expected = format!(
         "Basic {}",
         crate::base64::standard(format!("{USER}:{TOKEN}").as_bytes())
@@ -408,17 +414,20 @@ fn a_mac_or_a_place_is_searched_in_both_databases_and_an_ssid_only_in_wifi() {
         [Database::Wifi]
     );
     assert_eq!(
-        search_url(Database::Bluetooth, &bssid()),
+        search_url(Database::Bluetooth, &bssid()).unwrap(),
         "https://api.wigle.net/api/v2/bluetooth/search?netid=3C%3A5A%3AB4%3A01%3A02%3A03&resultsPerPage=100"
     );
     assert!(
-        search_url(Database::Bluetooth, &area).starts_with(&format!("{BLUETOOTH_URL}?latrange1="))
+        search_url(Database::Bluetooth, &area)
+            .unwrap()
+            .starts_with(&format!("{BLUETOOTH_URL}?latrange1="))
     );
     assert!(
         search_url(
             Database::Bluetooth,
             &NetworkSelector::Ssid("Ada Buds".into())
         )
+        .unwrap()
         .contains("?name=Ada+Buds&")
     );
 }
@@ -470,4 +479,13 @@ fn a_bluetooth_search_uses_the_same_pinned_credentials() {
             .header_value("authorization")
             .is_some_and(|v| v.starts_with("Basic "))
     );
+}
+
+/// A cell site is not a `WiGLE` network: no URL is built for one, so no search can go out.
+#[test]
+fn a_cell_site_has_no_wigle_search() {
+    let cell = NetworkSelector::parse("cell:505:01:17:91").expect("a cell site");
+    assert_eq!(Database::for_selector(&cell), &[] as &[Database]);
+    assert_eq!(search_url(Database::Wifi, &cell), None);
+    assert_eq!(search_url(Database::Bluetooth, &cell), None);
 }

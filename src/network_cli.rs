@@ -1,7 +1,8 @@
 //! End-to-end front-end for `huntsman-recon network` and the network arm of `scan`.
 //!
 //! A network selector is a BSSID (`aa:bb:cc:dd:ee:ff`), a coordinate pair (`LAT,LON`) or an
-//! SSID (`ssid:NAME`, or any other text when the kind is named). A BSSID is first classified
+//! SSID (`ssid:NAME`, or any other text when the kind is named), or a cell site
+//! (`cell:MCC:MNC:AREA:CELL`), which the `OpenCelliD` indicator leg looks up. A BSSID is first classified
 //! offline: its OUI vendor and whether it is a randomised (locally administered) address. Then
 //! the keyed `WiGLE` legs ([`crate::wigle`]) search for what the selector names: `WiFi` always,
 //! and Bluetooth too for a MAC address or a place. Without
@@ -23,21 +24,24 @@ use std::path::PathBuf;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::http::Transport;
+use crate::indicator_legs;
+use crate::indicator_sources::Indicator;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
+use crate::opencellid;
 use crate::oui;
-use crate::scan_route::{NetworkSelector, network_selector};
+use crate::scan_route::{CELL_PREFIX, NetworkSelector, network_selector};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
 use crate::tags;
 use crate::textnorm::escape_controls;
 use crate::wigle::{self, Database, WigleError};
 
 pub const NETWORK_USAGE: &str =
-    "usage: huntsman-recon network BSSID|LAT,LON|ssid:NAME [--save FILE]";
+    "usage: huntsman-recon network BSSID|LAT,LON|ssid:NAME|cell:MCC:MNC:AREA:CELL [--save FILE]";
 pub const NETWORK_HELP: &str = "\
-network BSSID|LAT,LON|ssid:NAME [--save FILE]
-Look up a WiFi network. A BSSID (aa:bb:cc:dd:ee:ff) is classified offline first: its OUI vendor and whether it is a randomised address. Then WiGLE search runs: a BSSID searches WiGLE's WiFi and Bluetooth databases for that address, ssid:NAME searches WiFi networks with exactly that name, and LAT,LON searches both databases in a box of about 220 m around the point, nearest first. WiGLE needs HUNTSMAN_WIGLE_USER (the API Name) and HUNTSMAN_WIGLE_TOKEN (the API Token) from https://wigle.net/account in the environment; without them it makes no request and reports not_configured. Each search spends one of the account's daily WiGLE queries, so a BSSID or LAT,LON spends two. credential-status --probe checks the credentials without spending one. Results are lineage-rendered entities, then wigle_networks=N (none when WiGLE gave no answer) and one wigle_network row per network: SSID, encryption, channel, position, first and last seen, and the street address WiGLE gives the position; for a BSSID or LAT,LON, then wigle_bluetooth_devices=N and one wigle_bluetooth row per device: name, radio (bt or ble), device class, position, first and last seen, address. --save FILE writes an unverified ledger that verify can reload.";
+network BSSID|LAT,LON|ssid:NAME|cell:MCC:MNC:AREA:CELL [--save FILE]
+Look up a WiFi network, or a cell site. A cell site (cell:505:01:17:91, the country, network, area and cell numbers radar cells reports) is looked up in OpenCelliD, which gives the tower's position, range and sample count; it needs HUNTSMAN_OPENCELLID_KEY, and without it makes no request and reports not_configured. WiGLE is not searched for a cell site. A BSSID (aa:bb:cc:dd:ee:ff) is classified offline first: its OUI vendor and whether it is a randomised address. Then WiGLE search runs: a BSSID searches WiGLE's WiFi and Bluetooth databases for that address, ssid:NAME searches WiFi networks with exactly that name, and LAT,LON searches both databases in a box of about 220 m around the point, nearest first. WiGLE needs HUNTSMAN_WIGLE_USER (the API Name) and HUNTSMAN_WIGLE_TOKEN (the API Token) from https://wigle.net/account in the environment; without them it makes no request and reports not_configured. Each search spends one of the account's daily WiGLE queries, so a BSSID or LAT,LON spends two. credential-status --probe checks the credentials without spending one. Results are lineage-rendered entities, then wigle_networks=N (none when WiGLE gave no answer) and one wigle_network row per network: SSID, encryption, channel, position, first and last seen, and the street address WiGLE gives the position; for a BSSID or LAT,LON, then wigle_bluetooth_devices=N and one wigle_bluetooth row per device: name, radio (bt or ble), device class, position, first and last seen, address. --save FILE writes an unverified ledger that verify can reload.";
 
 /// Source label for the offline OUI classification of a BSSID selector.
 pub const OUI_SOURCE: &str = "oui";
@@ -65,7 +69,7 @@ impl NetworkArgs {
     pub fn parse(args: &[String]) -> Result<Self, Error> {
         let (raw, save) = LookupTokens::single(
             args,
-            "network needs exactly one BSSID, LAT,LON or ssid:NAME",
+            "network needs exactly one BSSID, LAT,LON, ssid:NAME or cell:MCC:MNC:AREA:CELL",
         )?;
         let selector = network_selector(&raw)
             .ok_or_else(|| Error::invalid_value("invalid network selector"))?;
@@ -129,6 +133,36 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
         };
         report.outcomes.push(outcome);
     }
+    // A cell site is looked up by the indicator legs that take one (OpenCelliD, when its key is
+    // set), as the ip, domain, email and phone lookups run theirs. Without the key it makes no
+    // request and records `NotConfigured`, never a zero.
+    if matches!(selector, NetworkSelector::Cell { .. }) {
+        let indicator = canonical.strip_prefix(CELL_PREFIX).unwrap_or(&canonical);
+        match wigle {
+            Some((transport, _)) if !transport.runs_module(opencellid::SOURCE) => {}
+            Some((transport, keys)) if keys.get(opencellid::KEY_SLOT).is_some() => {
+                let legs = indicator_legs::run(
+                    transport,
+                    keys,
+                    Indicator::Cell(indicator),
+                    &scan_id,
+                    now_unix,
+                );
+                report.entities.extend(legs.entities);
+                report.outcomes.extend(legs.outcomes);
+            }
+            _ => report.outcomes.push(SourceExecutionOutcome::failed(
+                opencellid::SOURCE,
+                now_unix,
+                SourceOutcomeKind::NotConfigured,
+                None,
+                format!(
+                    "no OpenCelliD key configured ({}); no request made",
+                    opencellid::KEY_SLOT
+                ),
+            )),
+        }
+    }
     merge_by_uid(&mut report.entities);
 
     if !report.outcomes.iter().any(|o| o.kind.is_accepted()) {
@@ -141,7 +175,9 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(mut text) => {
-            text.push_str(&render_wigle(Database::Wifi, report.wigle.as_deref()));
+            if Database::for_selector(&selector).contains(&Database::Wifi) {
+                text.push_str(&render_wigle(Database::Wifi, report.wigle.as_deref()));
+            }
             if Database::for_selector(&selector).contains(&Database::Bluetooth) {
                 text.push_str(&render_wigle(
                     Database::Bluetooth,
@@ -162,6 +198,7 @@ fn seed_entity(selector: &NetworkSelector, scan_id: &str) -> Entity {
             EntityKind::Coordinates,
             "operator-supplied coordinate selector",
         ),
+        NetworkSelector::Cell { .. } => (EntityKind::Other, "operator-supplied cell site selector"),
     };
     let value = match selector {
         NetworkSelector::Ssid(name) => name.clone(),
