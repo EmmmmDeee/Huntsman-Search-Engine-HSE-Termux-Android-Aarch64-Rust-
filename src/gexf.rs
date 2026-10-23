@@ -70,13 +70,6 @@ pub fn escape_xml(raw: &str) -> String {
     text
 }
 
-/// Original unrestricted interface, retained for external callers.
-#[must_use]
-pub fn to_gexf(entities: &[Entity], relations: &[EntityRelation]) -> String {
-    to_gexf_bounded(entities, relations, usize::MAX)
-        .expect("GEXF content must fit in addressable memory")
-}
-
 /// Serialize the whole graph without retaining XML beyond the supplied limit.
 /// Oversize output reports the complete, byte-exact size; never partial XML.
 pub fn to_gexf_bounded(
@@ -132,6 +125,11 @@ pub fn to_gexf_bounded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole document, with no byte budget.
+    fn full_gexf(entities: &[Entity], relations: &[EntityRelation]) -> String {
+        to_gexf_bounded(entities, relations, usize::MAX).expect("unbounded")
+    }
     use crate::entity::{Entity, EntityKind};
     use crate::graph::RelationKind;
 
@@ -139,7 +137,7 @@ mod tests {
     fn exports_xml_safe_gexf() {
         let left = Entity::new(EntityKind::Organisation, "A&B <Org>", 0.6, "scan");
         let right = Entity::new(EntityKind::Domain, "example.com", 0.6, "scan");
-        let xml = to_gexf(
+        let xml = full_gexf(
             &[left.clone(), right.clone()],
             &[EntityRelation::new(
                 left.uid.clone(),
@@ -163,7 +161,7 @@ mod tests {
         let mut right = Entity::new(EntityKind::Email, "right@example.com", 0.6, "scan");
         left.uid = String::from("a\"&<'");
         right.uid = String::from("b>&\"");
-        let xml = to_gexf(
+        let xml = full_gexf(
             &[left.clone(), right.clone()],
             &[EntityRelation::new(
                 left.uid.clone(),
@@ -189,7 +187,7 @@ mod tests {
             0.7,
         )];
         let entities = vec![left, right];
-        let full = to_gexf(&entities, &relations);
+        let full = full_gexf(&entities, &relations);
         assert_eq!(
             to_gexf_bounded(&entities, &relations, full.len()),
             Ok(full.clone())

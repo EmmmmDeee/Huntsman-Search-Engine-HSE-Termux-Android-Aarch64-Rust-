@@ -808,4 +808,37 @@ mod tests {
         assert!(!pattern.is_match(&text));
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
+
+    /// Any pattern built from the syntax's own pieces, valid or not, either compiles and then
+    /// matches any text without a panic, or is refused with an error: never a panic either way.
+    #[test]
+    fn every_generated_pattern_compiles_and_matches_or_is_refused_never_a_panic() {
+        const PIECES: &[&str] = &[
+            "a", "b", ".", "^", "$", "|", "(", ")", "(?:", "(?P<n>", "(?=", "[", "]", "[^", "-",
+            "a-z", "\\", "\\d", "\\W", "\\s", "\\b", "\\B", "\\Z", "\\1", "*", "+", "?", "*?", "{",
+            "}", "{2}", "{2,}", "{,3}", "{1,2}", "{9999}", ",", "é", "😀", "\\x41", "\\.",
+        ];
+        const TEXTS: &[&str] = &["", "a", "ab ba", "aaaaaaaa!", "é😀 a-b_c 9", "\n\t x"];
+        let mut state: u64 = 0x5EED_4E6E_CAFE_F00D;
+        let mut draw = |bound: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            usize::try_from(state % u64::try_from(bound).unwrap_or(1)).unwrap_or(0)
+        };
+        for case in 0..20_000 {
+            let pattern: String = (0..draw(10)).map(|_| PIECES[draw(PIECES.len())]).collect();
+            let outcome = std::panic::catch_unwind(|| {
+                for compiled in [Pattern::new(&pattern), Pattern::new_ignore_case(&pattern)]
+                    .into_iter()
+                    .flatten()
+                {
+                    for text in TEXTS {
+                        let _ = compiled.is_match(text);
+                    }
+                }
+            });
+            assert!(outcome.is_ok(), "case {case} panicked on {pattern:?}");
+        }
+    }
 }
