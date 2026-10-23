@@ -9,7 +9,6 @@
 //! and location, and every indicator source for a number whose key is set (`IPQualityScore` with
 //! `HUNTSMAN_IPQS_KEY`); without a key it makes no request and is exactly [`run`].
 
-use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use crate::address_au::{self, AuLineType};
@@ -20,7 +19,7 @@ use crate::indicator_legs;
 use crate::indicator_sources::Indicator;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
-use crate::lookup_report::{entity_row, evidence_row, outcome_row};
+use crate::lookup_report;
 use crate::numverify;
 use crate::phone_intl;
 use crate::source_outcome::SourceExecutionOutcome;
@@ -300,19 +299,10 @@ fn enrich_nanp(nanp: &phone_intl::Nanp, scan_id: &str, entity: &mut Entity) {
     entity.add_evidence(evidence);
 }
 
+/// The report as every lookup prints it ([`lookup_report::render`]): each entity, every evidence
+/// row with its attributes (so the national and international forms show), then the outcomes.
 fn render(report: &Report) -> Result<String, String> {
-    let mut out = format!("entities={}\n", report.entities.len());
-    for entity in &report.entities {
-        writeln!(out, "{}", entity_row(entity, &entity.raw_value))
-            .map_err(|error| error.to_string())?;
-        for evidence in &entity.evidence {
-            writeln!(out, "{}", evidence_row(evidence)).map_err(|error| error.to_string())?;
-        }
-    }
-    for outcome in &report.outcomes {
-        writeln!(out, "{}", outcome_row(outcome)).map_err(|error| error.to_string())?;
-    }
-    Ok(out)
+    lookup_report::render(&report.entities, &report.outcomes)
 }
 
 #[cfg(test)]
@@ -487,7 +477,14 @@ mod tests {
                 .eq(["+1 416 555 0199"])
         );
         assert!(plan.attr_values("area_code_country").eq(["Canada"]));
-        assert!(text.contains(NANP_SOURCE), "{text}");
+        // The report prints the plan's attributes, so the forms are on screen, not only saved.
+        for row in [
+            "attribute\tlocal_format\t(416) 555-0199",
+            "attribute\tinternational_format\t+1 416 555 0199",
+            "attribute\tarea_code_country\tCanada",
+        ] {
+            assert!(text.contains(row), "{row} missing from {text}");
+        }
 
         let PhoneRun::Printed { report, .. } = run("+1 800 555 0100", 1) else {
             panic!("a toll-free number prints");
