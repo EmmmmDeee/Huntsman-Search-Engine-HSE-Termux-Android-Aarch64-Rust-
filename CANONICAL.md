@@ -15,7 +15,7 @@ One command from a clone of `main`:
 bash scripts/lifecycle.sh
 ```
 
-That builds the locked binary, runs `huntsman-recon check`, runs lib tests, commits non-secret worktree changes, and pushes `main`. No `HUNTSMAN_SYNC` flag. A SIGKILL during tests (low memory) is recorded as degraded and does not block a build that already checked. A real test failure stops the push.
+That builds the locked binary, runs `huntsman-recon check`, runs lib tests, commits non-secret worktree changes, and pushes `main`. No `HUNTSMAN_SYNC` flag. An interrupted test run (including exit 137 from SIGKILL or low memory) records a failed state and blocks commit/push; retry after restoring sufficient memory. A failed test must never publish unverified changes.
 
 State is `~/.huntsman/lifecycle-state` (mode 600). The log is `~/.huntsman/lifecycle.log`. Secret-looking paths (`*.env`, `*.pem`, `*.key`, `credentials`, `secret`) are refused. Non-main branches and force-push are refused. A failed push leaves the local commit and a failed state file.
 
