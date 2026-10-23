@@ -86,8 +86,8 @@ pub fn clusters_from_lineage(resolution: &crate::lineage::Resolution) -> Vec<Res
         if !matches!(candidate.outcome, crate::lineage::MergeOutcome::AutoMerge) {
             continue;
         }
-        let left = index[&candidate.decision.left_entity_uid];
-        let right = index[&candidate.decision.right_entity_uid];
+        let left = index[candidate.decision.left_entity_uid.as_str()];
+        let right = index[candidate.decision.right_entity_uid.as_str()];
         uf.union(left, right);
         approved.push(left);
     }
