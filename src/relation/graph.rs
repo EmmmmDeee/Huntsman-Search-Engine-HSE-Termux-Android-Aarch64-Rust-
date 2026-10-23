@@ -591,6 +591,17 @@ impl<'i, 'a> PathwayCounter<'i, 'a> {
         if let Some(exact) = self.index.exact_pathway_count(start, end, cap) {
             return exact;
         }
+        self.greedy_count(start, end, first, cap)
+    }
+
+    /// Use selected disjoint paths when the exact search exceeds its resource budget.
+    fn greedy_count(
+        &mut self,
+        start: usize,
+        end: usize,
+        first: Option<(&Search, usize)>,
+        cap: usize,
+    ) -> usize {
         let mut count = 0;
         if let Some((search, step)) = first {
             count = 1;
@@ -633,6 +644,58 @@ pub fn disjoint_pathways(start_uid: &str, end_uid: &str, relations: &[Relation])
     }
 }
 
+/// Whether the reported evidence-basis-disjoint pathway count is established exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathwayPrecision {
+    /// Exhaustive bounded search completed, or a missing/identical selector proves zero.
+    Exact,
+    /// Exact enumeration hit a resource cap, leaving only a verified lower bound.
+    ConservativeLowerBound,
+}
+
+/// A corroboration-pathway count accompanied by its epistemic scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct PathwayAssessment {
+    /// Count of basis-disjoint paths within the eight-edge search limit.
+    pub count: usize,
+    /// Exact count or conservative lower bound; never infer precision from count alone.
+    pub precision: PathwayPrecision,
+}
+
+/// Report both the number of disjoint corroboration pathways and its exactness.
+/// The conservative lower bound may underestimate independent corroboration.
+/// No provider requests, database writes or other I/O are performed.
+#[must_use]
+pub fn assess_disjoint_pathways(
+    start_uid: &str,
+    end_uid: &str,
+    relations: &[Relation],
+) -> PathwayAssessment {
+    let index = IdentityIndex::new(relations);
+    let (Some(start), Some(end)) = (index.node(start_uid), index.node(end_uid)) else {
+        return PathwayAssessment {
+            count: 0,
+            precision: PathwayPrecision::Exact,
+        };
+    };
+    if start == end {
+        return PathwayAssessment {
+            count: 0,
+            precision: PathwayPrecision::Exact,
+        };
+    }
+    match index.exact_pathway_count(start, end, usize::MAX) {
+        Some(count) => PathwayAssessment {
+            count,
+            precision: PathwayPrecision::Exact,
+        },
+        None => PathwayAssessment {
+            count: PathwayCounter::new(&index).greedy_count(start, end, None, usize::MAX),
+            precision: PathwayPrecision::ConservativeLowerBound,
+        },
+    }
+}
 /// The pathways [`pairwise_disjoint_pathways`] finds between one pair of uids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PairPathways<'r> {
@@ -944,6 +1007,57 @@ mod tests {
         assert!(disjoint_pathways("a", "b", &relations) >= 1);
     }
 
+    /// Prove that an exact path count and an incomplete fallback never share a status.
+    #[test]
+    fn pathway_precision_distinguishes_exact_from_lower_bound() {
+        let relations = vec![
+            Relation::new("S", "A", RelationKind::AliasOf, 0.95, "s"),
+            Relation::new("A", "B", RelationKind::AliasOf, 0.95, "s"),
+            Relation::new("B", "T", RelationKind::AliasOf, 0.95, "s"),
+            Relation::new("A", "T", RelationKind::AliasOf, 0.80, "s"),
+            Relation::new("S", "B", RelationKind::AliasOf, 0.80, "s"),
+        ];
+        let exact = assess_disjoint_pathways("S", "T", &relations);
+        assert_eq!(
+            exact,
+            PathwayAssessment {
+                count: 2,
+                precision: PathwayPrecision::Exact,
+            }
+        );
+        assert_eq!(exact.count, disjoint_pathways("S", "T", &relations));
+        assert_eq!(
+            serde_json::to_value(exact).unwrap(),
+            serde_json::json!({"count": 2, "precision": "exact"})
+        );
+        assert_eq!(
+            assess_disjoint_pathways("S", "missing", &relations),
+            PathwayAssessment {
+                count: 0,
+                precision: PathwayPrecision::Exact,
+            }
+        );
+        assert_eq!(
+            assess_disjoint_pathways("S", "S", &relations).precision,
+            PathwayPrecision::Exact
+        );
+
+        let nodes = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        let mut dense = Vec::new();
+        for (i, &from) in nodes.iter().enumerate() {
+            for &to in &nodes[i + 1..] {
+                dense.push(Relation::new(from, to, RelationKind::AliasOf, 0.8, "s"));
+            }
+        }
+        let lower = assess_disjoint_pathways("a", "b", &dense);
+        assert_eq!(lower.precision, PathwayPrecision::ConservativeLowerBound);
+        assert!(lower.count >= 1);
+        assert_eq!(lower.count, disjoint_pathways("a", "b", &dense));
+        assert_eq!(
+            serde_json::to_value(lower).unwrap()["precision"],
+            "conservative_lower_bound"
+        );
+    }
     /// A wide path of seven relations reaches `X` at depth seven, and would expand `X` before the
     /// narrow `S`-`X` relation is popped. The narrow path `S`, `X`, `Y`, `T` is three relations
     /// long, inside the bound, so it counts once; the wide path reaches `T` only at depth nine.
