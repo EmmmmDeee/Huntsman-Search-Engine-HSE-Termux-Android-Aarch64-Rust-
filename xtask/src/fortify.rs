@@ -47,7 +47,7 @@ struct Phase {
 }
 
 // This mirrors the repository's canonical functional council. Names identify responsibility,
-//! not separate agents, endorsements, or evidence that any person performed work.
+// not separate agents, endorsements, or evidence that any person performed work.
 const ROLES: &[Role] = &[
     Role { id: "strategy", owner: "JEFF DEAN", parent: None, responsibility: "objectives and acceptance criteria" },
     Role { id: "systems", owner: "JAMES HAMILTON", parent: Some("strategy"), responsibility: "architecture and execution coordination" },
