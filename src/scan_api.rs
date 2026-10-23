@@ -482,7 +482,7 @@ impl ScanApi {
         let (body, content_type, extension) = if format == "json" {
             match serde_json::to_vec_pretty(&report) {
                 Ok(body) => (body, JSON, "json"),
-                Err(error) => return error(500, &error.to_string()),
+                Err(failure) => return error(500, &failure.to_string()),
             }
         } else {
             match evidence_register::raw_text(&report) {
