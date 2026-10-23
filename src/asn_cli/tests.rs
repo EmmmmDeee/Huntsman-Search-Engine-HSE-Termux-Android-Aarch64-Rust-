@@ -1,4 +1,5 @@
 use super::*;
+use crate::http::{Request, Response, TransportFailure};
 use crate::rdap::tests::{ASN_BOOTSTRAP, CLOUDFLARE_AS};
 use crate::ripestat::tests::{NEIGHBOURS, OVERVIEW, PREFIXES};
 use crate::sf_elements::{DataElement, Target, elements};
@@ -183,6 +184,47 @@ fn a_failed_call_is_named_and_the_rest_still_reported() {
         3,
         "{routing:?}"
     );
+}
+
+/// Answers as [`registry`] does, except that the `announced-prefixes` call panics.
+struct PanicsOnPrefixes(RoutedTransport);
+
+impl Transport for PanicsOnPrefixes {
+    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        assert!(
+            !request.url.contains("/announced-prefixes/"),
+            "the transport broke"
+        );
+        self.0.send(request)
+    }
+}
+
+/// A call that panics is an answer that could not be read: it is named on the row, and the other
+/// calls and the registration are still reported.
+#[test]
+fn a_call_that_panics_is_named_and_the_rest_still_reported() {
+    let transport = PanicsOnPrefixes(registry((200, NEIGHBOURS)));
+    let report = printed(run(&transport, "AS13335", 1));
+    let routing = outcome(&report, "ripestat");
+    assert_eq!(routing.kind, SourceOutcomeKind::Success);
+    assert_eq!(
+        routing.detail.as_deref(),
+        Some(
+            "as-overview: held by CLOUDFLARENET - Cloudflare, Inc.; asn-neighbours: 1 left, 1 \
+             right, 1 uncertain on 2026-10-15T00:00:00; announced-prefixes failed: the call \
+             panicked"
+        )
+    );
+    assert!(
+        !report
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Netblock),
+        "{:#?}",
+        report.entities
+    );
+    find(&report, &EntityKind::Asn, "AS13414");
+    assert_eq!(outcome(&report, "rdap").kind, SourceOutcomeKind::Success);
 }
 
 /// A reserved, private-use or documentation AS number is refused before any request.

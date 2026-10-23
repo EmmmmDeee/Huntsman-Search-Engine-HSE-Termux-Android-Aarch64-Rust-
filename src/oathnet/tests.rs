@@ -155,6 +155,54 @@ fn record_values_survive_decoding_except_cleartext_credentials() {
 }
 
 #[test]
+fn a_credential_by_any_name_or_inside_a_list_or_object_keeps_no_value() {
+    // A key holding pass, pwd, hash or salt in any case, at the top level or in `extra`, is a
+    // credential; a list or object with such a key at any depth is never serialised.
+    let body = serde_json::json!({"success": true, "data": {"items": [
+        {"dbname": "db", "email": "user@example.com", "User_PWD": "pwd-secret",
+         "extra": {"hashed_password": "$2b$12$extra-hash", "twitter": "@ada"},
+         "credentials": {"login": "ada", "Password": "nested-secret"},
+         "history": [{"old": [{"salt": "deep-salt"}]}],
+         "tags": ["a", {"b": 1}]}
+    ]}});
+    let search = decoded(&body);
+    let rendered = format!("{search:?}");
+    for secret in ["pwd-secret", "extra-hash", "nested-secret", "deep-salt"] {
+        assert!(!rendered.contains(secret), "{secret:?} emitted: {rendered}");
+    }
+    let breach = &search.breaches[0];
+    assert!(breach.password_exposed);
+    let fields: Vec<&str> = breach.fields.iter().map(String::as_str).collect();
+    assert_eq!(
+        fields,
+        [
+            "credentials",
+            "email",
+            "hashed_password",
+            "history",
+            "tags",
+            "twitter",
+            "user_pwd"
+        ],
+        "a credential field is still reported as exposed"
+    );
+    let kept: Vec<(&str, Vec<&str>)> = breach
+        .values
+        .iter()
+        .map(|(field, values)| (field.as_str(), values.iter().map(String::as_str).collect()))
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            ("email", vec!["user@example.com"]),
+            ("tags", vec![r#"["a",{"b":1}]"#]),
+            ("twitter", vec!["@ada"])
+        ],
+        "a list or object without a credential inside is still kept"
+    );
+}
+
+#[test]
 fn a_field_name_that_could_carry_a_value_is_dropped() {
     let body = serde_json::json!({"success": true, "data": {"items": [
         {"dbname": "db", "hunter2 secret": "x", "Pass=word": "x", "UserName": "ada",

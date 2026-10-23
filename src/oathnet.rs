@@ -11,9 +11,10 @@
 //! types those records expose, the distinct values each non-credential field holds (bounded by
 //! [`MAX_VALUES_PER_FIELD`] and [`MAX_VALUE_BYTES`]), whether a password or hash is among them,
 //! the breach's public date, title, domain and size from `dbname_info`, and when `OathNet`
-//! indexed the records. Usernames and other addresses in the records become pivots. A password,
-//! hash or salt is reduced to its field name and the fact that it was exposed before decoding
-//! returns, so its value cannot reach an entity, a report or a saved ledger.
+//! indexed the records. Usernames and other addresses in the records become pivots. A field whose
+//! name holds one of the [`CREDENTIAL_MARKERS`] is reduced to its field name and the fact that it
+//! was exposed before decoding returns, and a list or object holding such a key at any depth is
+//! never serialised, so neither value can reach an entity, a report or a saved ledger.
 //!
 //! The lookup reads one page of [`PAGE_SIZE`] records. When `OathNet` says there are more, the
 //! answer is marked partial, never complete. A key, plan or quota refusal, a `success: false`
@@ -62,8 +63,10 @@ const PROVIDER_WORDS_MAX_CHARS: usize = 120;
 
 /// Record keys that describe the record, not the person, so they are not exposed fields.
 const RECORD_METADATA: [&str; 5] = ["id", "dbname", "indexed_at", "email_domain", "extra"];
-/// Record keys that carry a password or something derived from one.
-const PASSWORD_FIELDS: [&str; 3] = ["password", "password_hash", "salt"];
+/// What a record key holds, in any case, when it carries a password or something derived from
+/// one: `password`, `password_hash`, `hashed_password`, `passwd`, `pwd`, `salt` and the like. The
+/// match fails closed, so a key that only looks like one (`passport`) is a credential too.
+pub const CREDENTIAL_MARKERS: [&str; 4] = ["pass", "pwd", "hash", "salt"];
 
 /// Why a lookup gave no answer. No variant carries the key, the address or a response body.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -144,13 +147,15 @@ pub struct Breach {
     /// The distinct values each exposed field holds across the records, keyed by field name and
     /// sorted. This is the de-redacted payload: the actual names, emails, phone numbers, usernames
     /// and anything else the records carry, bounded by [`MAX_VALUES_PER_FIELD`] and
-    /// [`MAX_VALUE_BYTES`] so one record cannot flood the report. Cleartext credentials (the
-    /// [`PASSWORD_FIELDS`]: password, hash, salt) are deliberately **not** here — their presence is
-    /// recorded by [`Self::password_exposed`] and the field name, but the secret value an attacker
-    /// would need is never emitted.
+    /// [`MAX_VALUE_BYTES`] so one record cannot flood the report. Cleartext credentials (a field
+    /// named with one of the [`CREDENTIAL_MARKERS`], or a list or object holding one) are
+    /// deliberately **not** here — a credential field's presence is recorded by
+    /// [`Self::password_exposed`] and the field name, but the secret value an attacker would need
+    /// is never emitted.
     pub values: BTreeMap<String, BTreeSet<String>>,
-    /// A record holds a password, a password hash or a salt. The field name is in [`Self::fields`];
-    /// the cleartext value is held back and never appears in [`Self::values`].
+    /// A record holds a field named with one of the [`CREDENTIAL_MARKERS`]: a password, a password
+    /// hash or a salt. The field name is in [`Self::fields`]; the cleartext value is held back and
+    /// never appears in [`Self::values`].
     pub password_exposed: bool,
     pub title: Option<String>,
     pub domain: Option<String>,
@@ -398,8 +403,9 @@ pub fn decode(body: &[u8], secrets: &[&str]) -> Result<Search, OathnetError> {
 
 /// Adds the exposed fields of one record, those of its `extra` object included, and the value each
 /// non-credential one holds. The value is kept, not just the field name, so the report is
-/// unredacted; a cleartext credential (a [`PASSWORD_FIELDS`] entry) records only that it was
-/// exposed, never the secret itself. **Pure.**
+/// unredacted; a cleartext credential (a field [`is_credential`] names) records only that it was
+/// exposed, never the secret itself, and a list or object that [`holds_credential`] is never
+/// serialised. **Pure.**
 fn record_fields(item: &Map<String, Value>, breach: &mut Breach) {
     let extra = item.get("extra").and_then(Value::as_object);
     let named = item
@@ -413,8 +419,8 @@ fn record_fields(item: &Map<String, Value>, breach: &mut Breach) {
         let Some(field) = field_name(key) else {
             continue;
         };
-        let is_credential = PASSWORD_FIELDS.contains(&field.as_str());
-        if is_credential {
+        let credential = is_credential(&field);
+        if credential {
             breach.password_exposed = true;
         }
         if breach.fields.len() < MAX_FIELDS || breach.fields.contains(&field) {
@@ -422,8 +428,9 @@ fn record_fields(item: &Map<String, Value>, breach: &mut Breach) {
             // credential (password, hash or salt) is never emitted: that is the value an attacker
             // needs for account takeover. The fact that such a field was exposed, its type and the
             // breach it came from are kept (the field name and `password_exposed`); only the secret
-            // value is held back. Every other field's value is surfaced as the record held it.
-            if !is_credential {
+            // value is held back, and so is a list or object with a credential inside it. Every
+            // other field's value is surfaced as the record held it.
+            if !credential && !holds_credential(value) {
                 if let Some(text) = record_value(value) {
                     let seen = breach.values.entry(field.clone()).or_default();
                     if seen.len() < MAX_VALUES_PER_FIELD {
@@ -449,6 +456,26 @@ fn record_value(value: &Value) -> Option<String> {
         Value::Array(_) | Value::Object(_) => serde_json::to_string(value).ok()?,
     };
     (!text.is_empty() && text.len() <= MAX_VALUE_BYTES).then_some(text)
+}
+
+/// `key` names a password or something derived from one: it holds one of the
+/// [`CREDENTIAL_MARKERS`], in any case. **Pure.**
+fn is_credential(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    CREDENTIAL_MARKERS.iter().any(|marker| key.contains(marker))
+}
+
+/// `value` is a list or object with a credential key ([`is_credential`]) at some depth, so its
+/// compact JSON would carry the credential out. `serde_json`'s nesting limit on the body bounds
+/// the walk. **Pure.**
+fn holds_credential(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(holds_credential),
+        Value::Object(map) => map
+            .iter()
+            .any(|(key, value)| is_credential(key) || holds_credential(value)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
 }
 
 /// `key` as a field name: lower-case ASCII letters, digits and `_`, at most [`MAX_FIELD_BYTES`].

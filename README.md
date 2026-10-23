@@ -170,8 +170,8 @@ cargo run -- seeknow --help              # SeekNow subcommands; offline
 cargo run -- people Madonna              # skip path: fewer than two alphabetic tokens of at least two letters, no network
 cargo run -- people Madonna --save skip.json  # skip still writes nothing; --save needs a lookup
 cargo run -- email nobody@example.com     # deterministic pivots + public Gravatar lookup, plus every configured keyed breach leg
-cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax + OathNet evidence, then each breach's summary, flags and source links (keyed; no key = no request)
-cargo run -- exposure @some_handle  # the same for a username: stolen.tax + OathNet (HIBP searches addresses only)
+cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax + OathNet + DeHashed evidence, then each breach's summary, flags and source links (keyed; no key = no request)
+cargo run -- exposure @some_handle  # the same for a username: stolen.tax + OathNet (HIBP and DeHashed search addresses only)
 cargo run -- username octocat             # variants + public GitHub/Bluesky/Mastodon lookups, plus stolen.tax/OathNet when keyed
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
 cargo run -- domain example.com             # crt.sh names, Cert Spotter certificates, DNS records over DoH, each subdomain resolved; network

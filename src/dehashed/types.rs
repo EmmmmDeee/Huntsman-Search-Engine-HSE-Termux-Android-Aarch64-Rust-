@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn secrets_decode_as_presence_only_and_are_never_retained() {
-        // Present and non-null -> exposed.
+        // A non-blank value -> exposed.
         let present: Entry = serde_json::from_str(
             r#"{"password": "hunter2-cleartext", "hashed_password": "$2b$12$live-hash"}"#,
         )
@@ -241,7 +241,7 @@ mod tests {
         assert!(present.has_password());
         assert!(present.has_hashed_password());
 
-        // null or absent -> not exposed (matches the previous Option::is_some rule).
+        // null or absent -> not exposed.
         let null: Entry =
             serde_json::from_str(r#"{"password": null, "hashed_password": null}"#).unwrap();
         assert!(!null.has_password());
@@ -273,6 +273,10 @@ mod tests {
             r#"{"password": ["x"], "hashed_password": true}"#,
             r#"{"password": ["", "x"], "hashed_password": {"bcrypt": ""}}"#,
             r#"{"password": 0, "hashed_password": [1.5]}"#,
+            // Any element that holds something counts, wherever it sits in the list.
+            r#"{"password": ["x", "y", ""], "hashed_password": ["h", null, []]}"#,
+            // A negative number is a number too.
+            r#"{"password": -1, "hashed_password": [-1]}"#,
         ] {
             let entry: Entry = serde_json::from_str(body).unwrap();
             assert!(entry.has_password(), "{body}");
