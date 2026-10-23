@@ -285,15 +285,17 @@ fn bounded_git_stdout(root: &Path, args: &[&str], limit: usize) -> Result<Vec<u8
         .ok_or_else(|| Error::Refused("git stdout is not available".to_owned()))?
         .take(limit as u64 + 1)
         .read_to_end(&mut out);
-    if out.len() > limit || read.is_err() {
+    if out.len() > limit {
         let _ = child.kill();
         let _ = child.wait();
-        if out.len() > limit {
-            return Err(Error::Refused(SNAPSHOT_TOO_LARGE.to_owned()));
-        }
+        return Err(Error::Refused(SNAPSHOT_TOO_LARGE.to_owned()));
+    }
+    if let Err(source) = read {
+        let _ = child.kill();
+        let _ = child.wait();
         return Err(Error::Command {
             shown,
-            reason: format!("could not read output: {}", read.expect_err("read failed")),
+            reason: format!("could not read output: {source}"),
         });
     }
     let status = child.wait().map_err(|source| Error::Command {
@@ -322,7 +324,11 @@ fn append_snapshot(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
 /// then every untracked file (by path, in byte order) with its bytes, or its link target.
 /// Reject oversized baselines and non-regular files rather than hanging or exhausting RAM.
 fn snapshot(root: &Path) -> Result<Vec<u8>> {
-    let mut out = bounded_git_stdout(root, &["diff", "--binary", "--no-ext-diff", "HEAD", "--"], MAX_SNAPSHOT_BYTES)?;
+    let mut out = bounded_git_stdout(
+        root,
+        &["diff", "--binary", "--no-ext-diff", "HEAD", "--"],
+        MAX_SNAPSHOT_BYTES,
+    )?;
     let listing = bounded_git_stdout(
         root,
         &["ls-files", "--others", "--exclude-standard", "-z"],
