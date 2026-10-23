@@ -2,12 +2,14 @@
 //!
 //! The syntax is the part of Python's `re` that Spiderfoot's correlation rules use, and most
 //! hand-written rules: literals, `.`, classes (`[a-z0-9\.\-]`, `[^...]`), `\d \w \s` and their
-//! negations, `\b \B`, `^ $`, groups (`(...)`, `(?:...)`, `(?P<name>...)`), alternation, and the
-//! quantifiers `* + ? {n} {n,} {n,m} {,m} {,}` (an omitted lower bound is 0; a trailing `?` for
-//! laziness is accepted; it cannot change whether a pattern matches). [`Pattern::is_match`]
-//! searches anywhere in the text, as `re.search` does. Matching runs a Pike VM over the compiled
-//! program, so its time is bounded by the text length times the program size and a rule cannot
-//! stall a scan however it is written.
+//! negations, `\b \B`, `^ $` (`$` also before a final newline), `\A \Z` (`\Z` the very end only),
+//! groups (`(...)`, `(?:...)`, `(?P<name>...)`), alternation, and the quantifiers
+//! `* + ? {n} {n,} {n,m} {,m} {,}` (an omitted lower bound is 0; a trailing `?` for laziness is
+//! accepted; it cannot change whether a pattern matches). [`Pattern::is_match`] searches anywhere
+//! in the text, as `re.search` does. A pattern compiles to at most [`MAX_PROGRAM`] instructions,
+//! in time bounded by its length plus that, and groups nest at most 64 deep; a larger one is
+//! refused. Matching runs a Pike VM over the compiled program, so its time is bounded by the text
+//! length times the program size and a rule cannot stall a scan however it is written.
 //! Backreferences and lookaround are refused rather than approximated.
 
 use thiserror::Error;
@@ -481,13 +483,21 @@ impl Compiler {
                 }
             }
             Node::Repeat { node, min, max } => {
+                let mut body = None;
                 for _ in 0..*min {
-                    self.node(node)?;
+                    let before = self.prog.len();
+                    self.copy(node, &mut body)?;
+                    // A body that compiles to nothing, such as `a{0}`, matches only the empty
+                    // text, so one copy stands for them all: the rest would cost no instructions,
+                    // only time, and `(?:(?:a{0}){4294967295}){4294967295}` would never finish.
+                    if self.prog.len() == before {
+                        break;
+                    }
                 }
                 match max {
                     None => {
                         let split = self.emit(Inst::Split(0, 0))?;
-                        self.node(node)?;
+                        self.copy(node, &mut body)?;
                         self.emit(Inst::Jmp(split))?;
                         let end = self.prog.len();
                         self.prog[split] = Inst::Split(split + 1, end);
@@ -496,7 +506,7 @@ impl Compiler {
                         let mut splits = Vec::new();
                         for _ in *min..*max {
                             splits.push(self.emit(Inst::Split(0, 0))?);
-                            self.node(node)?;
+                            self.copy(node, &mut body)?;
                         }
                         let end = self.prog.len();
                         for split in splits {
@@ -505,6 +515,30 @@ impl Compiler {
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// One more copy of a repeat's `node`. The first is compiled and its span kept in `body`;
+    /// each later one moves that code, jumps and all, to the end of the program, so a copy
+    /// costs its instructions and never the body's own work again: `(?:a{0}...a{0}b){19999}`
+    /// compiles its thousands of `a{0}` once, not once a copy.
+    fn copy(&mut self, node: &Node, body: &mut Option<(usize, usize)>) -> Result<(), String> {
+        let Some((start, end)) = *body else {
+            let start = self.prog.len();
+            self.node(node)?;
+            *body = Some((start, self.prog.len()));
+            return Ok(());
+        };
+        // Every jump in the body lands inside it or just past its end, so one shift moves them.
+        let shift = self.prog.len() - start;
+        for index in start..end {
+            let inst = match &self.prog[index] {
+                Inst::Split(first, second) => Inst::Split(first + shift, second + shift),
+                Inst::Jmp(target) => Inst::Jmp(target + shift),
+                inst => inst.clone(),
+            };
+            self.emit(inst)?;
         }
         Ok(())
     }
@@ -758,6 +792,53 @@ mod tests {
         assert!(deep.reason.contains("nested too deeply"), "{deep}");
         let hostile = Pattern::new(&"(".repeat(100_000)).unwrap_err();
         assert!(hostile.reason.contains("nested too deeply"), "{hostile}");
+        // The limit is on groups open at once, not on groups in all.
+        assert!(Pattern::new(&"(a)".repeat(MAX_DEPTH + 1)).is_ok());
+        assert!(search(&nested(MAX_DEPTH).repeat(2), "aa"));
+    }
+
+    #[test]
+    fn compiling_a_repeat_takes_time_for_what_it_emits_only() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        // On its own thread, so a regression fails here instead of hanging the suite.
+        std::thread::spawn(move || {
+            let compiled = [
+                "(?:(?:a{0}){4294967295}){4294967295}".to_owned(),
+                "^(?:a{0}b{0}){4294967295}c$".to_owned(),
+                "^(?:(?i)(?i)){4294967295}c$".to_owned(),
+                // About the most a rule file holds: 16,000 `a{0}` in a body copied 19,998 times
+                // took seconds when each copy compiled them again.
+                format!("^(?:{}b){{19998}}", "a{0}".repeat(16_000)),
+            ]
+            .map(|source| Pattern::new(&source));
+            let _ = sender.send(compiled);
+        });
+        let [nested, concat, flags, wide] = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("compiling a repeat stalled");
+        let nested = nested.unwrap();
+        assert!(nested.is_match(""));
+        assert!(nested.is_match("x"));
+        let concat = concat.unwrap();
+        assert!(concat.is_match("c"));
+        assert!(!concat.is_match("abc"));
+        assert!(flags.unwrap().is_match("C"));
+        let wide = wide.unwrap();
+        assert!(wide.is_match(&"b".repeat(19_998)));
+        assert!(!wide.is_match(&"b".repeat(19_997)));
+    }
+
+    #[test]
+    fn a_repeat_compiles_to_its_body_written_out_that_many_times() {
+        let body = "(?:x|y(?:z|[0-9])*\\b|w{2,3})";
+        assert_eq!(
+            Pattern::new(&format!("{body}{{3}}")).unwrap(),
+            Pattern::new(&body.repeat(3)).unwrap()
+        );
+        assert_eq!(
+            Pattern::new(&format!("{body}{{2,}}")).unwrap(),
+            Pattern::new(&format!("{body}{body}{body}*")).unwrap()
+        );
     }
 
     #[test]
