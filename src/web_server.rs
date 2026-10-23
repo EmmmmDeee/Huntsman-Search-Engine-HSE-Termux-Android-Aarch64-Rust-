@@ -129,6 +129,10 @@ const MAX_INSPECT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_INSPECTIONS: usize = 1;
 /// Time to receive one inspection upload: 64 MiB over a slow phone Wi-Fi link (about 1 MB/s).
 const INSPECT_DEADLINE: Duration = Duration::from_secs(90);
+/// The slowest a reader may take a response, past the time it is given to start. A reader that
+/// takes a little at a time, each within [`IO_TIMEOUT`], would otherwise hold its connection, and
+/// its place among [`MAX_CONNECTIONS`], for as long as it liked.
+const MIN_WRITE_BYTES_PER_SEC: usize = 16 * 1024;
 /// The file parsers build field tables and the report encodes them, so, like an analysis, an
 /// inspection runs on its own thread with this stack.
 const INSPECT_STACK_BYTES: usize = 4 * 1024 * 1024;
@@ -707,7 +711,7 @@ fn handle_stream_with(
         drop(body);
         place
     });
-    let deadline = place.as_ref().map(|_| Instant::now() + INSPECT_DEADLINE);
+    let deadline = write_deadline(response.len(), place.is_some());
     write_within(&mut stream, &response, deadline)?;
     drop(place);
     stream
@@ -715,25 +719,32 @@ fn handle_stream_with(
         .map_err(|error| Error::Store(format!("serve flush: {error}")))
 }
 
-/// Write all of `bytes`, each write within [`IO_TIMEOUT`] and, when there is one, all of them before
-/// `deadline`, so a reader that takes a little at a time cannot hold the connection for ever.
-fn write_within(
-    stream: &mut TcpStream,
-    mut bytes: &[u8],
-    deadline: Option<Instant>,
-) -> Result<(), Error> {
+/// When a response of `len` bytes must be written by: [`REQUEST_DEADLINE`] to start, or
+/// [`INSPECT_DEADLINE`] for an inspection's answer, as long as its upload had, and a second for
+/// every [`MIN_WRITE_BYTES_PER_SEC`] it holds.
+fn write_deadline(len: usize, inspection: bool) -> Instant {
+    let start = if inspection {
+        INSPECT_DEADLINE
+    } else {
+        REQUEST_DEADLINE
+    };
+    let paced = u64::try_from(len / MIN_WRITE_BYTES_PER_SEC).unwrap_or(u64::MAX);
+    Instant::now() + start + Duration::from_secs(paced)
+}
+
+/// Write all of `bytes`, each write within [`IO_TIMEOUT`] and all of them before `deadline`, so a
+/// reader that takes a little at a time cannot hold the connection for ever.
+fn write_within(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> Result<(), Error> {
     while !bytes.is_empty() {
-        if let Some(deadline) = deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(Error::Store(
-                    "serve write: the reader ran out of time".into(),
-                ));
-            }
-            stream
-                .set_write_timeout(Some(remaining.min(IO_TIMEOUT)))
-                .map_err(|error| Error::Store(format!("serve write timeout: {error}")))?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::Store(
+                "serve write: the reader ran out of time".into(),
+            ));
         }
+        stream
+            .set_write_timeout(Some(remaining.min(IO_TIMEOUT)))
+            .map_err(|error| Error::Store(format!("serve write timeout: {error}")))?;
         match stream.write(bytes) {
             Ok(0) => return Err(Error::Store("serve write: the connection closed".into())),
             Ok(written) => bytes = &bytes[written..],
@@ -2658,6 +2669,34 @@ mod tests {
             }
         }
         Ok(response)
+    }
+
+    /// Every response has a deadline paced by its size, not only an inspection's: a reader that
+    /// took a byte every few seconds held its connection's place for as long as it liked, and 32
+    /// of them answered every other request `503`.
+    #[test]
+    fn every_response_is_written_by_a_deadline_paced_by_its_size() {
+        let now = Instant::now();
+        let page = write_deadline(120 * 1024, false);
+        assert!(page >= now + REQUEST_DEADLINE + Duration::from_secs(7));
+        assert!(page <= Instant::now() + REQUEST_DEADLINE + Duration::from_secs(8));
+        let large = write_deadline(64 * 1024 * 1024, false);
+        assert!(large >= now + REQUEST_DEADLINE + Duration::from_secs(4096));
+        let inspection = write_deadline(0, true);
+        assert!(inspection >= now + INSPECT_DEADLINE);
+    }
+
+    #[test]
+    fn a_reader_that_never_reads_is_cut_off_at_the_write_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        // More than the socket buffers on both sides hold, so the writer blocks on the reader.
+        let response = vec![b'x'; 64 * 1024 * 1024];
+        let started = Instant::now();
+        let error = write_within(&mut server, &response, started + Duration::from_millis(300))
+            .expect_err("the reader never read");
+        assert!(started.elapsed() < Duration::from_secs(3), "{error}");
     }
 
     #[test]
