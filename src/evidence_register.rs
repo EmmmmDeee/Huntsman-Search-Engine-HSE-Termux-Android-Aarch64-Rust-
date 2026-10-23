@@ -334,11 +334,12 @@ pub fn compile(
 /// JSON encoding errors or a raw report above the output bound.
 pub fn raw_text(report: &Value) -> Result<String, String> {
     let mut text = format!(
-        "[HUNTSMAN_EVIDENCE]\nSTATUS: {}\nSCAN: {}\nBASELINE: {}\nCOUNTS: {}\n",
+        "[HUNTSMAN_EVIDENCE]\nSTATUS: {}\nSCAN: {}\nBASELINE: {}\nCOUNTS: {}\nUNCERTAINTY_REGISTER: {}\n",
         report["status"].as_str().unwrap_or("UNKNOWN"),
         report["scan"]["id"].as_str().unwrap_or("UNKNOWN"),
         report["baseline"].as_str().unwrap_or("NONE"),
         report["counts"],
+        report["uncertainty_register"],
     );
     for record in report["records"].as_array().into_iter().flatten() {
         let id = record["RECORD_ID"].as_str().unwrap_or("UNKNOWN");
