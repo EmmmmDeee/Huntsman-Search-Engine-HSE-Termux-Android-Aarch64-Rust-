@@ -448,6 +448,65 @@ mod tests {
         }
     }
 
+    /// Answers every request with one fixed response.
+    struct Fixed(u16, &'static str);
+
+    impl Transport for Fixed {
+        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
+            Ok(Response {
+                status: self.0,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: self.1.as_bytes().to_vec(),
+                truncated: false,
+            })
+        }
+    }
+
+    /// One contract for every leg, so each provider client is held to the same reading of a
+    /// refusal: a rejected key, a rate limit, a server error or a body that is not the provider's
+    /// document is never an answer and never an entity, and a rate limit is named as one.
+    #[test]
+    fn every_leg_reads_a_refusal_as_a_failure_never_an_answer() {
+        let keys = all_keys();
+        let mut broken = Vec::new();
+        for source in SOURCES {
+            for &kind in source.kinds {
+                let indicator = sample(kind);
+                for (status, body) in [
+                    (401, r#"{"error":"unauthorized"}"#),
+                    (403, r#"{"error":"forbidden"}"#),
+                    (429, r#"{"error":"slow down"}"#),
+                    (500, r#"{"error":"boom"}"#),
+                    (200, "<html>not the provider's document</html>"),
+                ] {
+                    let legs = run(&Fixed(status, body), &keys, indicator, "s", 1);
+                    let name = source.api.source;
+                    let Some(outcome) = legs.outcomes.iter().find(|o| o.module == name) else {
+                        broken.push(format!("{name}: no outcome for HTTP {status}"));
+                        continue;
+                    };
+                    if outcome.kind.is_accepted() {
+                        broken.push(format!(
+                            "{name}: HTTP {status} {body:?} read as {:?}",
+                            outcome.kind
+                        ));
+                    }
+                    if legs
+                        .entities
+                        .iter()
+                        .any(|e| e.evidence.iter().any(|ev| ev.provenance.source == name))
+                    {
+                        broken.push(format!("{name}: entities from HTTP {status}"));
+                    }
+                    if status == 429 && outcome.kind != SourceOutcomeKind::RateLimited {
+                        broken.push(format!("{name}: HTTP 429 read as {:?}", outcome.kind));
+                    }
+                }
+            }
+        }
+        assert!(broken.is_empty(), "{}", broken.join("\n"));
+    }
+
     #[test]
     fn pivots_are_kept_only_in_canonical_form() {
         let finding = [

@@ -72,9 +72,14 @@ pub fn decode(body: &[u8], domain: &str) -> Result<Option<Finding>, LegError> {
     let mut hosts: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for line in text.lines() {
-        let host = line.trim();
+        let host = line.trim().trim_end_matches('.');
         if host.is_empty() {
             continue;
+        }
+        if !host_shaped(host) {
+            return Err(LegError::Decode(
+                "answer is not a list of host names".into(),
+            ));
         }
         let lower = host.to_ascii_lowercase();
         if !lower.ends_with(&suffix) || seen.contains(&lower) {
@@ -107,6 +112,20 @@ pub fn decode(body: &[u8], domain: &str) -> Result<Option<Finding>, LegError> {
     }
     finding = finding.attr("raw_answer", text);
     Ok(Some(finding))
+}
+
+/// Whether a line reads as a host name sub.md would list: a dotted name of
+/// letters, digits, hyphens and underscores, perhaps a certificate's `*.`
+/// wildcard. An error page or a sentence is not one.
+fn host_shaped(line: &str) -> bool {
+    let name = line.strip_prefix("*.").unwrap_or(line);
+    name.contains('.')
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        })
 }
 
 #[cfg(test)]
@@ -142,5 +161,27 @@ mod tests {
     fn empty_or_unrelated_is_none() {
         assert!(decode(b"", "example.com").unwrap().is_none());
         assert!(decode(b"other.com\n", "example.com").unwrap().is_none());
+    }
+
+    #[test]
+    fn wildcards_and_service_labels_are_host_names() {
+        let body = b"*.example.com\n_dmarc.example.com\nwww.example.com.\n";
+        assert!(decode(body, "example.com").unwrap().is_some());
+    }
+
+    #[test]
+    fn an_error_page_or_sentence_is_a_decode_failure_not_zero_hosts() {
+        for body in [
+            &b"<html><body>Too many requests</body></html>"[..],
+            b"rate limit exceeded",
+            b"{\"error\":\"bad domain\"}",
+            b"www.example.com\n<!-- cached -->\n",
+        ] {
+            assert!(
+                matches!(decode(body, "example.com"), Err(LegError::Decode(_))),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
     }
 }
