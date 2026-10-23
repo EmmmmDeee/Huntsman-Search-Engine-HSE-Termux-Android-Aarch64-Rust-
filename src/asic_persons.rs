@@ -1100,6 +1100,31 @@ mod tests {
     }
 
     #[test]
+    fn page_cut_short_of_the_total_keeps_its_note_on_a_match() {
+        let mut script = empty_script();
+        let partial = json_ok(&format!(
+            r#"{{"success":true,"result":{{"total":340,"records":[{ADVISER}]}}}}"#
+        ));
+        script.insert(ADVISER_RES.into(), Ok(partial));
+        let fake = Fake::new(script);
+        let report = lookup(&fake, "Jane Citizen", "scan", 1).expect("lookup");
+        let advisers = report
+            .outcomes
+            .iter()
+            .find(|o| o.module == "asic_persons.advisers")
+            .expect("advisers outcome");
+        assert_eq!(advisers.kind, SourceOutcomeKind::Success);
+        assert_eq!(advisers.found, Some(1));
+        assert!(
+            advisers
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.starts_with("partial: read the first 1 of 340")),
+            "{advisers:?}"
+        );
+    }
+
+    #[test]
     fn ckan_success_false_is_not_empty_absence() {
         let fail = json_ok(r#"{"success":false}"#);
         let fake = Fake::new(HashMap::from([

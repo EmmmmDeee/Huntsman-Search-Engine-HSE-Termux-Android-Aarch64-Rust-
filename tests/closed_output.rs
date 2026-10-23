@@ -117,6 +117,30 @@ fn a_keys_file_warning_on_a_closed_stderr_does_not_cost_the_ledger() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// `scan` names its route on stderr before it hands over to the lookup that saves.
+#[test]
+fn a_scan_route_line_on_a_closed_stderr_does_not_cost_the_ledger() {
+    let dir = scratch("scan-route");
+    let ledger = dir.join("phone.json");
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let out = command(
+        env!("CARGO_BIN_EXE_huntsman-recon"),
+        &dir,
+        &["scan", "+61412345678", "--save", ledger.to_str().unwrap()],
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::from(writer))
+    .output()
+    .unwrap();
+    assert!(
+        ledger.exists(),
+        "the ledger was not saved: status {:?}",
+        out.status
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn plan_saves_its_session_and_exits_141_when_the_reader_has_gone() {
     let dir = scratch("plan");

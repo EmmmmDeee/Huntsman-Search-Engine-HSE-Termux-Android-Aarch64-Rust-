@@ -687,14 +687,18 @@ fn upstream_values(value: Option<&Value>) -> (Vec<String>, bool) {
             let mut kept = Vec::new();
             let mut truncated = false;
             for value in values {
-                let Some(text) = scalar_string(value) else {
-                    continue;
-                };
-                if text.chars().count() > MAX_FIELD_CHARS || kept.len() >= MAX_FIELDS_PER_ROW {
-                    truncated = true;
+                if kept.len() >= MAX_FIELDS_PER_ROW {
+                    // Full: any scalar still to come is cut, and nothing more can be kept.
+                    if scalar_string(value).is_some() {
+                        truncated = true;
+                        break;
+                    }
                     continue;
                 }
-                kept.push(text);
+                match bounded_scalar_string(value) {
+                    Some(text) => kept.push(text),
+                    None => truncated |= scalar_string(value).is_some(),
+                }
             }
             (kept, truncated)
         }

@@ -8,4 +8,4 @@
     nothing ever wrote it. `lineage::upstream_kind_label` is private, and `lineage_tsv_line`
     prints the same labels.
 - Coordinate co-location reads `lat,lon` values with `geohash::parse_coords`, the parser it
-  copied.
+  copied, after the same rounding to six places as before.

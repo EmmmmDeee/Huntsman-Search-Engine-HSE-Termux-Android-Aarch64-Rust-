@@ -455,6 +455,7 @@ mod tests {
                 raw: format!("0,{index}"),
                 kind: EntityKind::Coordinates,
                 value: format!("0,{index}"),
+                other_spellings: Vec::new(),
             })
             .collect();
         let (distances, truncated) = geo_distances(&seeds);
