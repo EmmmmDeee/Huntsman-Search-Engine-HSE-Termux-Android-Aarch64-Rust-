@@ -483,7 +483,10 @@ fn obsolete_install_dir_setting_has_a_precise_manual_fix() {
     assert!(!check.auto_fix, "removing a slot is operator-controlled");
     assert!(check.repair.is_none());
     let text = render(&report);
-    assert!(!text.contains("/private/install/path-not-to-print"), "{text}");
+    assert!(
+        !text.contains("/private/install/path-not-to-print"),
+        "{text}"
+    );
 }
 
 #[test]
