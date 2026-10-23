@@ -264,44 +264,45 @@ fn tracked_shell_scripts(root: &Path) -> Result<Vec<String>> {
     Ok(scripts)
 }
 
-/// Collect a tracked diff with a hard byte limit. `Command::output` would buffer the
-/// entire diff before checking its size, defeating the mobile memory budget.
-fn tracked_diff(root: &Path) -> Result<Vec<u8>> {
+/// Stream Git output with a hard byte limit. `Command::output` would buffer arbitrary
+/// diffs or untracked path listings before checking their size.
+fn bounded_git_stdout(root: &Path, args: &[&str], limit: usize) -> Result<Vec<u8>> {
+    let shown = format!("git {}", args.join(" "));
     let mut child = Command::new("git")
-        .args(["diff", "--binary", "--no-ext-diff", "HEAD", "--"])
+        .args(args)
         .current_dir(root)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|source| Error::Command {
-            shown: "git diff --binary --no-ext-diff HEAD --".to_owned(),
+            shown: shown.clone(),
             reason: format!("could not start: {source}"),
         })?;
     let mut out = Vec::new();
     let read = child
         .stdout
         .take()
-        .ok_or_else(|| Error::Refused("git diff stdout is not available".to_owned()))?
-        .take(MAX_SNAPSHOT_BYTES as u64 + 1)
+        .ok_or_else(|| Error::Refused("git stdout is not available".to_owned()))?
+        .take(limit as u64 + 1)
         .read_to_end(&mut out);
-    if read.is_err() || out.len() > MAX_SNAPSHOT_BYTES {
+    if out.len() > limit || read.is_err() {
         let _ = child.kill();
         let _ = child.wait();
-        if out.len() > MAX_SNAPSHOT_BYTES {
+        if out.len() > limit {
             return Err(Error::Refused(SNAPSHOT_TOO_LARGE.to_owned()));
         }
         return Err(Error::Command {
-            shown: "git diff".to_owned(),
-            reason: format!("could not read output: {}", read.expect_err("checked above")),
+            shown,
+            reason: format!("could not read output: {}", read.expect_err("read failed")),
         });
     }
     let status = child.wait().map_err(|source| Error::Command {
-        shown: "git diff".to_owned(),
+        shown: shown.clone(),
         reason: format!("could not wait for git: {source}"),
     })?;
     if !status.success() {
         return Err(Error::Command {
-            shown: "git diff".to_owned(),
+            shown,
             reason: format!("exited with {status}"),
         });
     }
@@ -321,8 +322,12 @@ fn append_snapshot(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
 /// then every untracked file (by path, in byte order) with its bytes, or its link target.
 /// Reject oversized baselines and non-regular files rather than hanging or exhausting RAM.
 fn snapshot(root: &Path) -> Result<Vec<u8>> {
-    let mut out = tracked_diff(root)?;
-    let listing = git_stdout(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    let mut out = bounded_git_stdout(root, &["diff", "--binary", "--no-ext-diff", "HEAD", "--"], MAX_SNAPSHOT_BYTES)?;
+    let listing = bounded_git_stdout(
+        root,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+        MAX_SNAPSHOT_BYTES.saturating_sub(out.len()),
+    )?;
     let mut paths: Vec<&[u8]> = listing
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
