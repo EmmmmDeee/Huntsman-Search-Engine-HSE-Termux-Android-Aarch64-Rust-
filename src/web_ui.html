@@ -317,7 +317,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="toolbar">
 <button class="btn" id="screfresh" type="button">Refresh</button>
 <details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="xlsx">Excel</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button></div></details>
-<details class="menu" id="scevidence"><summary class="btn">Evidence</summary><div class="menu-list"><button type="button" data-eformat="raw">Raw TXT</button><button type="button" data-eformat="json">JSON</button><button type="button" data-eformat="delta">Delta TXT</button></div></details>
+<details class="menu" id="scevidence"><summary class="btn">Evidence</summary><div class="menu-list"><button type="button" data-eformat="raw">Raw TXT</button><button type="button" data-eformat="json">JSON</button><button type="button" data-eformat="delta">Delta TXT</button><button type="button" data-eformat="matrix-json">Matrix JSON</button><button type="button" data-eformat="matrix-raw">Matrix TXT</button></div></details>
 <button class="btn" id="scstop" type="button" hidden>Stop</button>
 <button class="btn" id="screrun" type="button">Re-run</button>
 <button class="btn" id="sccompare" type="button">Compare</button>
@@ -1359,14 +1359,14 @@ $('scexport').addEventListener('click',async e=>{
   $('scexport').open=false;
   try{await exportFile(b.dataset.format)}catch(err){fail('scerror',err.message)}
 });
-// Evidence exports use the same offline scan record model as the CLI and API.
-// A delta compares against the newest prior scan of the same target and kind.
+// Saved-scan evidence, matrix and delta exports share the offline API.
 $('scevidence').addEventListener('click',async e=>{
   const button=e.target.closest('button[data-eformat]');if(!button)return;
   $('scevidence').open=false;
   try{
     const mode=button.dataset.eformat;
-    const params=new URLSearchParams({format:mode==='json'?'json':'raw'});
+    const isMatrix=mode.startsWith('matrix-');
+    const params=new URLSearchParams({format:mode.endsWith('json')?'json':'raw'});
     if(mode==='delta'){
       if(!scan)throw new Failure('Open a completed scan before requesting its evidence delta.');
       const all=await api('/api/scans');
@@ -1374,8 +1374,8 @@ $('scevidence').addEventListener('click',async e=>{
       if(!previous)throw new Failure('No earlier scan of this target and type to compare. Re-run the scan first.');
       params.set('baseline',previous.id);
     }
-    const suffix=mode==='json'?'json':'txt';
-    await fetchFile(base()+'/evidence?'+params,'huntsman-'+sid+'-evidence-'+mode+'.'+suffix);
+    const suffix=mode.endsWith('json')?'json':'txt';
+    await fetchFile(base()+(isMatrix?'/matrix?':'/evidence?')+params,'huntsman-'+sid+'-'+mode+'.'+suffix);
   }catch(err){fail('scerror',err.message)}
 });
 // Keep dropdown menus on-screen on narrow phone viewports.
