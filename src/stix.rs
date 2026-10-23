@@ -115,14 +115,27 @@ mod tests {
         let first = bundle_with(&[a.clone()], &[("src/first.rs", "T1595")]);
         let again = bundle_with(&[a], &[("src/first.rs", "T1595")]);
         let other = bundle_with(&[b], &[("src/second.rs", "T1595")]);
-        assert_eq!(first, again, "same admitted evidence must export identically");
-        assert_ne!(first["id"], other["id"], "different bundles need distinct identifiers");
+        assert_eq!(
+            first, again,
+            "same admitted evidence must export identically"
+        );
+        assert_ne!(
+            first["id"], other["id"],
+            "different bundles need distinct identifiers"
+        );
 
         for id in [first["id"].as_str().unwrap(), other["id"].as_str().unwrap()] {
             let value = id.strip_prefix("bundle--").expect("STIX bundle id");
             let parts: Vec<&str> = value.split('-').collect();
-            assert_eq!(parts.iter().map(|part| part.len()).collect::<Vec<_>>(), [8, 4, 4, 4, 12]);
-            assert!(value.bytes().all(|byte| byte == b'-' || byte.is_ascii_hexdigit()));
+            assert_eq!(
+                parts.iter().map(|part| part.len()).collect::<Vec<_>>(),
+                [8, 4, 4, 4, 12]
+            );
+            assert!(
+                value
+                    .bytes()
+                    .all(|byte| byte == b'-' || byte.is_ascii_hexdigit())
+            );
             assert!(parts[2].starts_with('4'));
             assert!(parts[3].starts_with('8'));
         }
