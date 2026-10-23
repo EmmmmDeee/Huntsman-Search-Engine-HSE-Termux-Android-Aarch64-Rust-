@@ -13,6 +13,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::error::Error;
+use crate::lookup_args::is_option;
 use crate::module::reachable_modules;
 use crate::scan_route::{NetworkSelector, ScanKind};
 use crate::sf_elements::DataElement;
@@ -154,7 +155,7 @@ impl SfArgs {
             "-M" | "--list-modules" | "--modules" => self.set_mode(SfMode::ListModules)?,
             "-T" | "--list-types" => self.set_mode(SfMode::ListTypes)?,
             "-V" | "--sf-version" | "--version" => self.set_mode(SfMode::Version)?,
-            flag if flag.starts_with('-') => {
+            flag if is_option(flag) => {
                 return Err(Error::Invalid(format!(
                     "unsupported sf option {flag}; {SF_USAGE}"
                 )));
@@ -237,7 +238,7 @@ impl SfArgs {
 fn value<'a>(args: &'a [String], index: usize, flag: &str) -> Result<&'a str, Error> {
     args.get(index + 1)
         .map(String::as_str)
-        .filter(|value| !value.starts_with('-') || *value == "-")
+        .filter(|value| !is_option(value))
         .ok_or_else(|| Error::Invalid(format!("{flag} needs a value")))
 }
 
@@ -869,6 +870,12 @@ mod tests {
         );
         assert!(args(&["-C"]).is_err());
         assert!(args(&["-C", "scan-1", "-s", "example.org"]).is_err());
+        // A value that starts with a dash and a digit is read as the flag's value, so a target
+        // sf cannot take is refused for what it is, not as a missing value.
+        assert_eq!(
+            args(&["-s", "-33.86,151.21"]).unwrap().target.as_deref(),
+            Some("-33.86,151.21")
+        );
         assert!(args(&["-C", "scan-1", "-M"]).is_err());
     }
 
