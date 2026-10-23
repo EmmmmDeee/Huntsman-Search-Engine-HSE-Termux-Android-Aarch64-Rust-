@@ -40,6 +40,7 @@ use crate::analysis::analyze_snapshot;
 use crate::api_leg::Api;
 use crate::correlator::rule_catalog;
 use crate::entity_reality;
+use crate::evidence_register;
 use crate::module::reachable_modules;
 use crate::pipeline::{PipelineLimits, snapshot_from_entities};
 use crate::scan_compare;
@@ -273,6 +274,7 @@ impl ScanApi {
             (["scans", id], false) => self.status(id),
             (["scans", id, "summary"], false) => self.summary(id),
             (["scans", id, "analyze"], false) => self.analyze(id),
+            (["scans", id, "evidence"], false) => self.evidence(id, &param),
             (["scans", id, "reality"], false) => self.reality(id, param.get("uid")),
             (["scans", _, "reality"], true) => error(405, "entity reality is read-only"),
             (["scans", id, "elements"], false) => self.elements(id, &param),
@@ -429,6 +431,71 @@ impl ScanApi {
             .results(id)
             .map_err(|failure| service_error(&failure.into()))?;
         Ok((record, results))
+    }
+
+    /// Derive a raw or JSON evidence register from an existing completed scan.
+    /// A baseline yields a delta, including observation-only updates and removals.
+    fn evidence(&self, id: &str, params: &Params) -> ApiResponse {
+        let format = params.get("format").unwrap_or("raw");
+        if !matches!(format, "raw" | "json") {
+            return error(400, "evidence format must be raw or json");
+        }
+        let (record, results) = match self.results(id) {
+            Ok(found) => found,
+            Err(response) => return response,
+        };
+        if record.status.is_active() {
+            return error(409, "evidence register requires a stopped scan");
+        }
+        let Some(saved) = results else {
+            return error(409, "scan has no saved results");
+        };
+        let previous = if let Some(baseline) = params.get("baseline") {
+            let (old_record, old_results) = match self.results(baseline) {
+                Ok(found) => found,
+                Err(response) => return response,
+            };
+            if old_record.status.is_active() {
+                return error(409, "baseline scan is active");
+            }
+            if record.target != old_record.target || record.kind != old_record.kind {
+                return error(409, "baseline and current scans must have the same target and kind");
+            }
+            let Some(old_saved) = old_results else {
+                return error(409, "baseline scan has no saved results");
+            };
+            Some((old_record, old_saved))
+        } else {
+            None
+        };
+        let report = match evidence_register::compile(
+            &record,
+            &saved,
+            previous.as_ref().map(|(prior, results)| (prior, results)),
+        ) {
+            Ok(report) => report,
+            Err(reason) => return error(413, &reason),
+        };
+        let (body, content_type, extension) = if format == "json" {
+            match serde_json::to_vec_pretty(&report) {
+                Ok(body) => (body, JSON, "json"),
+                Err(error) => return error(500, &error.to_string()),
+            }
+        } else {
+            match evidence_register::raw_text(&report) {
+                Ok(body) => (body.into_bytes(), "text/plain; charset=utf-8", "txt"),
+                Err(reason) => return error(413, &reason),
+            }
+        };
+        if body.len() > evidence_register::MAX_RENDER_BYTES {
+            return error(413, "evidence output exceeds bounded export size; no output truncated");
+        }
+        ApiResponse {
+            status: 200,
+            content_type,
+            body,
+            filename: Some(format!("{}-evidence.{extension}", record.id)),
+        }
     }
 
     /// Run the shared deterministic analysis over saved entities, without network requests or
@@ -1056,6 +1123,7 @@ fn route_exists(segments: &[&str], write: bool) -> bool {
                     _,
                     "summary"
                         | "analyze"
+                        | "evidence"
                         | "elements"
                         | "correlations"
                         | "log"
