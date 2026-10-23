@@ -1,0 +1,1 @@
+- Count basis-disjoint corroboration paths exactly on bounded identity graphs, including a five-edge greedy undercount counterexample; retain the documented conservative greedy lower bound when graph size or enumeration budgets are exceeded. Preserve the eight-edge path-depth limit, shared-basis deduplication, and pairwise cap semantics.
