@@ -20,7 +20,7 @@ use crate::textnorm::{decode_html_entities, escape_controls};
 use crate::value_syntax::find_ascii_ci_bytes;
 
 const MAX_RESULTS_PER_ENGINE: usize = 20;
-const MAX_ADAPTIVE_QUERY_BYTES: usize = 512;
+const MAX_SEARCH_QUERY_BYTES: usize = 512;
 const CACHE_TTL_SECS: u64 = 300;
 const CACHE_CAPACITY: usize = 256;
 const RETRY_POLICY: BackoffPolicy = BackoffPolicy::new(2, 100, 500, true);
@@ -107,13 +107,23 @@ pub fn search<T: Transport + ?Sized>(
     query: &str,
     now_unix: u64,
 ) -> Result<SearchReport, Error> {
-    let query = canonical_whitespace(query);
-    if query.is_empty() {
-        return Err(Error::Invalid("query must not be empty".into()));
-    }
-
+    let query = checked_query(query, "query")?;
     let (report, _) = search_with_observations(transport, &query, now_unix)?;
     Ok(report)
+}
+
+/// Validate before allocating provider URLs or sending any network request.
+fn checked_query(input: &str, label: &str) -> Result<String, Error> {
+    if input.len() > MAX_SEARCH_QUERY_BYTES || input.chars().any(char::is_control) {
+        return Err(Error::Invalid(format!(
+            "{label} is too long or contains control characters"
+        )));
+    }
+    let normalized = canonical_whitespace(input);
+    if normalized.is_empty() {
+        return Err(Error::Invalid(format!("{label} must not be empty")));
+    }
+    Ok(normalized)
 }
 
 /// Keep every engine's URL observation before compatibility-preserving deduplication.
@@ -223,15 +233,7 @@ pub fn adaptive_search<T: Transport + ?Sized>(
     input: &str,
     now_unix: u64,
 ) -> Result<AdaptiveSearchReport, Error> {
-    if input.len() > MAX_ADAPTIVE_QUERY_BYTES || input.chars().any(char::is_control) {
-        return Err(Error::Invalid(
-            "adaptive query is too long or contains control characters".into(),
-        ));
-    }
-    let normalized_query = canonical_whitespace(input);
-    if normalized_query.is_empty() {
-        return Err(Error::Invalid("adaptive query must not be empty".into()));
-    }
+    let normalized_query = checked_query(input, "adaptive query")?;
     let mut rounds = Vec::new();
     let mut discovery_index = BTreeMap::new();
     let baseline_gain = append_round(
@@ -244,6 +246,7 @@ pub fn adaptive_search<T: Transport + ?Sized>(
     )?;
 
     let stop_reason = if has_viable_provider(&rounds[0]) {
+        let mut variant_exceeds_budget = false;
         let second = if normalized_query.starts_with('"')
             && normalized_query.ends_with('"')
             && normalized_query.len() > 2
@@ -251,7 +254,13 @@ pub fn adaptive_search<T: Transport + ?Sized>(
             let bare = normalized_query.trim_matches('"').trim();
             (bare != normalized_query).then(|| (bare.to_owned(), "unquoted_recall"))
         } else if normalized_query.split_whitespace().count() > 1 {
-            Some((format!("\"{normalized_query}\""), "exact_phrase"))
+            let quoted = format!("\"{normalized_query}\"");
+            if quoted.len() > MAX_SEARCH_QUERY_BYTES {
+                variant_exceeds_budget = true;
+                None
+            } else {
+                Some((quoted, "exact_phrase"))
+            }
         } else {
             None
         };
@@ -283,6 +292,8 @@ pub fn adaptive_search<T: Transport + ?Sized>(
             } else {
                 "no_safe_additional_query_variant"
             }
+        } else if variant_exceeds_budget {
+            "query_variant_budget_exhausted"
         } else {
             "no_safe_additional_query_variant"
         }
@@ -1023,6 +1034,36 @@ mod tests {
                 .iter()
                 .all(|outcome| outcome.kind == SourceOutcomeKind::ZeroYieldAnomaly)
         );
+    }
+
+    #[test]
+    fn plain_search_rejects_oversized_and_control_queries_before_any_request() {
+        let fake = Fake::new(vec![]);
+        for query in ["", "   ", "line\nfeed", "nul\0byte", "carriage\rreturn"] {
+            assert!(search(&fake, query, 100).is_err(), "accepted {query:?}");
+        }
+        assert!(search(&fake, &"a".repeat(MAX_SEARCH_QUERY_BYTES + 1), 100).is_err());
+        assert!(search(&fake, &"🙂".repeat(MAX_SEARCH_QUERY_BYTES / 4 + 1), 100).is_err());
+        assert_eq!(
+            checked_query(&"a".repeat(MAX_SEARCH_QUERY_BYTES), "query").unwrap().len(),
+            MAX_SEARCH_QUERY_BYTES
+        );
+    }
+
+    #[test]
+    fn adaptive_search_skips_quoted_variant_over_budget_and_keeps_baseline_hits() {
+        let fake = Fake::new(vec![
+            Ok(response(200, r#"<a href="https://unique-variant-limit.example/hit">x</a>"#)),
+            Ok(response(200, "<html>no links</html>")),
+            Ok(response(200, "<html>no links</html>")),
+        ]);
+        let query = format!("{} b", "a".repeat(MAX_SEARCH_QUERY_BYTES - 2));
+        assert_eq!(query.len(), MAX_SEARCH_QUERY_BYTES);
+        let report = adaptive_search(&fake, &query, 42).unwrap();
+        assert_eq!(report.rounds.len(), 1);
+        assert_eq!(report.stop_reason, "query_variant_budget_exhausted");
+        assert_eq!(report.hits.len(), 1);
+        assert_eq!(report.hits[0].url, "https://unique-variant-limit.example/hit");
     }
 
     #[test]
