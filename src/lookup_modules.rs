@@ -97,7 +97,11 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             "asic_director",
             seeknow_collector::COLLECTOR_ID,
         ],
-        ScanKind::Network => vec![wigle::SOURCE],
+        ScanKind::Network => {
+            let mut network = vec![wigle::SOURCE];
+            network.extend(indicators(IndicatorKind::Cell));
+            network
+        }
         ScanKind::Exposure => BREACH.to_vec(),
         ScanKind::CryptoAddress => vec![blockchain::SOURCE],
     };

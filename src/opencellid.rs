@@ -33,7 +33,8 @@ pub struct CellId {
     pub mcc: u16,
     pub mnc: u16,
     pub lac: u32,
-    pub cellid: u32,
+    /// Up to 36 bits: a 5G NR cell's identity does not fit 32.
+    pub cellid: u64,
 }
 
 impl CellId {

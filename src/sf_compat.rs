@@ -411,6 +411,7 @@ pub fn target_type(kind: ScanKind, canonical: &str) -> &'static str {
         ScanKind::Network => match NetworkSelector::parse(canonical) {
             Some(NetworkSelector::Bssid(_)) => "HSE_MAC_ADDRESS",
             Some(NetworkSelector::Area { .. }) => "PHYSICAL_COORDINATES",
+            Some(NetworkSelector::Cell { .. }) => "HSE_OTHER",
             _ => "HSE_WIFI_SSID",
         },
         ScanKind::CryptoAddress => "BITCOIN_ADDRESS",
