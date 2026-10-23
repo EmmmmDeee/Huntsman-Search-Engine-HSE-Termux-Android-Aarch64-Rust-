@@ -320,6 +320,61 @@ fn append_snapshot(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Snapshot a single candidate file after its type has been checked, with bounded I/O.
+fn append_untracked(root: &Path, out: &mut Vec<u8>, path: &[u8]) -> Result<()> {
+    append_snapshot(out, b"\0untracked\0")?;
+    append_snapshot(out, path)?;
+    append_snapshot(out, &[0])?;
+    let full = root.join(std::ffi::OsStr::from_bytes(path));
+    let metadata = fs::symlink_metadata(&full).map_err(|source| Error::Io {
+        path: full.clone(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(&full).map_err(|source| Error::Io {
+            path: full.clone(),
+            source,
+        })?;
+        append_snapshot(out, target.as_os_str().as_bytes())?;
+    } else if metadata.file_type().is_file() {
+        let available = MAX_SNAPSHOT_BYTES.saturating_sub(out.len());
+        if metadata.len() > available as u64 {
+            return Err(Error::Refused(SNAPSHOT_TOO_LARGE.to_owned()));
+        }
+        let file = fs::File::open(&full).map_err(|source| Error::Io {
+            path: full.clone(),
+            source,
+        })?;
+        // Recheck the opened handle in case the path was replaced since lstat.
+        let opened = file.metadata().map_err(|source| Error::Io {
+            path: full.clone(),
+            source,
+        })?;
+        if !opened.is_file() {
+            return Err(Error::Refused(format!(
+                "verification cannot snapshot non-regular file: {}",
+                full.display()
+            )));
+        }
+        file.take(available as u64 + 1)
+            .read_to_end(out)
+            .map_err(|source| Error::Io {
+                path: full.clone(),
+                source,
+            })?;
+        if out.len() > MAX_SNAPSHOT_BYTES {
+            return Err(Error::Refused(SNAPSHOT_TOO_LARGE.to_owned()));
+        }
+    } else {
+        return Err(Error::Refused(format!(
+            "verification cannot snapshot non-regular file: {}",
+            full.display()
+        )));
+    }
+
+    Ok(())
+}
+
 /// The repository content verification must leave unchanged: the tracked diff against HEAD,
 /// then every untracked file (by path, in byte order) with its bytes, or its link target.
 /// Reject oversized baselines and non-regular files rather than hanging or exhausting RAM.
@@ -340,55 +395,7 @@ fn snapshot(root: &Path) -> Result<Vec<u8>> {
         .collect();
     paths.sort_unstable();
     for path in paths {
-        append_snapshot(&mut out, b"\0untracked\0")?;
-        append_snapshot(&mut out, path)?;
-        append_snapshot(&mut out, &[0])?;
-        let full = root.join(std::ffi::OsStr::from_bytes(path));
-        let metadata = fs::symlink_metadata(&full).map_err(|source| Error::Io {
-            path: full.clone(),
-            source,
-        })?;
-        if metadata.file_type().is_symlink() {
-            let target = fs::read_link(&full).map_err(|source| Error::Io {
-                path: full.clone(),
-                source,
-            })?;
-            append_snapshot(&mut out, target.as_os_str().as_bytes())?;
-        } else if metadata.file_type().is_file() {
-            let available = MAX_SNAPSHOT_BYTES.saturating_sub(out.len());
-            if metadata.len() > available as u64 {
-                return Err(Error::Refused(SNAPSHOT_TOO_LARGE.to_owned()));
-            }
-            let file = fs::File::open(&full).map_err(|source| Error::Io {
-                path: full.clone(),
-                source,
-            })?;
-            // Recheck the opened handle in case the path was replaced since lstat.
-            let opened = file.metadata().map_err(|source| Error::Io {
-                path: full.clone(),
-                source,
-            })?;
-            if !opened.is_file() {
-                return Err(Error::Refused(format!(
-                    "verification cannot snapshot non-regular file: {}",
-                    full.display()
-                )));
-            }
-            file.take(available as u64 + 1)
-                .read_to_end(&mut out)
-                .map_err(|source| Error::Io {
-                    path: full.clone(),
-                    source,
-                })?;
-            if out.len() > MAX_SNAPSHOT_BYTES {
-                return Err(Error::Refused(SNAPSHOT_TOO_LARGE.to_owned()));
-            }
-        } else {
-            return Err(Error::Refused(format!(
-                "verification cannot snapshot non-regular file: {}",
-                full.display()
-            )));
-        }
+        append_untracked(root, &mut out, path)?;
     }
     Ok(out)
 }
@@ -514,7 +521,9 @@ mod tests {
             .status()
             .expect("mkfifo is available on Unix");
         assert!(result.success(), "mkfifo failed");
-        let problem = snapshot(&dir).expect_err("a named pipe must not block verification");
+        let mut out = Vec::new();
+        let problem = append_untracked(&dir, &mut out, b"pipe")
+            .expect_err("a named pipe must not be opened for reading");
         assert!(
             problem.to_string().contains("non-regular file"),
             "{problem}"
