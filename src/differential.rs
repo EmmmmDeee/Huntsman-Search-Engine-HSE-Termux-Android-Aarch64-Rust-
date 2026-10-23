@@ -253,6 +253,16 @@ pub fn compare_legacy(
         {
             continue;
         }
+        let missing = Difference {
+            kind: DifferenceKind::Missing,
+            expected: item.clone(),
+            observed: None,
+        };
+        // A reviewed "not restored here" stays accepted whatever else the port now produces: a
+        // partial value or another source's copy is extra output, which never makes a regression.
+        if allowed.iter().any(|entry| entry.matches(&missing)) {
+            continue;
+        }
 
         let same_identity: Vec<Difference> = observed
             .iter()
@@ -302,14 +312,7 @@ pub fn compare_legacy(
             continue;
         }
 
-        let difference = Difference {
-            kind: DifferenceKind::Missing,
-            expected: item,
-            observed: None,
-        };
-        if !allowed.iter().any(|entry| entry.matches(&difference)) {
-            differences.push(difference);
-        }
+        differences.push(missing);
     }
 
     differences.sort();
@@ -427,6 +430,40 @@ mod tests {
             "ada@example.org",
         )];
         assert_eq!(compare_legacy(&expected, &observed, &[]), Vec::new());
+    }
+
+    #[test]
+    fn a_reviewed_missing_record_stays_accepted_when_extra_output_appears() {
+        let allowed_missing = |expected: &DifferentialEntity| AllowedDifference {
+            kind: DifferenceKind::Missing,
+            expected: expected.clone(),
+            observed: None,
+            reason: "legacy record intentionally not restored here".into(),
+        };
+        let username = DifferentialEntity::new(EntityKind::Username, "adalovelace");
+        let allowed = [allowed_missing(&username)];
+        for observed in [
+            vec![],
+            vec![DifferentialEntity::new(EntityKind::Username, "ada")],
+        ] {
+            assert_eq!(
+                compare_legacy(std::slice::from_ref(&username), &observed, &allowed),
+                Vec::new(),
+                "{observed:?}"
+            );
+        }
+        let domain =
+            DifferentialEntity::new(EntityKind::Domain, "example.org").with_source("legacy");
+        let other_source =
+            [DifferentialEntity::new(EntityKind::Domain, "example.org").with_source("other")];
+        assert_eq!(
+            compare_legacy(
+                std::slice::from_ref(&domain),
+                &other_source,
+                &[allowed_missing(&domain)]
+            ),
+            Vec::new()
+        );
     }
 
     #[test]

@@ -250,6 +250,22 @@ fn validate_benchmarks(
         }
     }
 
+    // A capability's benchmark is a claim like any other: it stands only on its receipt.
+    for capability in &capabilities.capabilities {
+        if let Some(benchmark) = capability.benchmark.as_deref() {
+            let receipted = manifest
+                .benchmarks
+                .iter()
+                .any(|receipt| receipt.id == benchmark && receipt.capability == capability.id);
+            if !receipted {
+                return Err(format!(
+                    "capability {} names benchmark {benchmark} with no receipt",
+                    capability.id
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -258,5 +274,31 @@ fn require_nonempty(field: &str, value: &str) -> Result<(), String> {
         Err(format!("{field} must not be empty"))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shipped() -> (BenchmarkManifest, CapabilityManifest) {
+        (
+            serde_json::from_str(BENCHMARKS_JSON).unwrap(),
+            serde_json::from_str(CAPABILITIES_JSON).unwrap(),
+        )
+    }
+
+    #[test]
+    fn the_shipped_manifests_pass() {
+        let (benchmarks, capabilities) = shipped();
+        assert_eq!(validate_benchmarks(&benchmarks, &capabilities), Ok(()));
+    }
+
+    #[test]
+    fn a_benchmark_a_capability_names_needs_its_receipt() {
+        let (benchmarks, mut capabilities) = shipped();
+        capabilities.capabilities[0].benchmark = Some("p50 3 ms".into());
+        let error = validate_benchmarks(&benchmarks, &capabilities).unwrap_err();
+        assert!(error.contains("with no receipt"), "{error}");
     }
 }

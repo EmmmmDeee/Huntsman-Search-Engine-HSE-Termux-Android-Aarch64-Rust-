@@ -123,10 +123,17 @@ fn derived_entities(username: &str, scan_id: &str) -> Vec<Entity> {
         EvidenceProvenance::for_scan("seed", scan_id),
         "operator-supplied username selector",
     ));
+    let seed_uid = seed.uid.clone();
     entities.push(seed);
 
     for variant in variants(username) {
         let mut entity = Entity::new(EntityKind::Username, &variant, VARIANT_CONFIDENCE, scan_id);
+        // A variant that differs from the seed only by separators (john.doe, john_doe, johndoe)
+        // is the seed's own identity: merged into it, it would tag the operator's seed as a
+        // derived candidate.
+        if entity.uid == seed_uid {
+            continue;
+        }
         entity.tag("derived");
         entity.tag("variant");
         entity.tag("candidate");
@@ -229,6 +236,25 @@ fn collect_wikipedia<T: Transport + ?Sized>(
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn the_seed_stays_the_operators_seed_after_its_variants_are_merged() {
+        let mut entities = derived_entities("john.doe", "scan");
+        merge_by_uid(&mut entities);
+        let seed = entities
+            .iter()
+            .find(|entity| entity.has_tag("seed"))
+            .expect("seed");
+        assert_eq!(seed.tags, ["seed"], "the seed absorbed a variant");
+        assert!(
+            entities
+                .iter()
+                .filter(|entity| entity.uid == seed.uid)
+                .count()
+                == 1,
+            "{entities:?}"
+        );
+    }
     use std::collections::VecDeque;
 
     use crate::http::{Request, Response, TransportFailure};

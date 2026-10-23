@@ -18,7 +18,11 @@ const VANITY_TOKENS: &[&str] = &[
 ];
 
 fn add_variant(out: &mut BTreeSet<String>, seed: &str, candidate: String) {
-    if candidate.len() >= MIN_HANDLE_LEN && candidate != seed {
+    // A placeholder ("username", "example", "redacted") names nobody, whatever seed it came from.
+    if candidate.len() >= MIN_HANDLE_LEN
+        && candidate != seed
+        && !is_placeholder_entity(&ValueKind::Username, &candidate)
+    {
         out.insert(candidate);
     }
 }
@@ -94,6 +98,20 @@ pub fn variants(seed: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_variant_that_is_a_placeholder_is_not_offered() {
+        for (seed, placeholder) in [
+            ("username1990", "username"),
+            ("the_real_example", "example"),
+            ("redacted_99", "redacted"),
+        ] {
+            assert!(
+                !variants(seed).iter().any(|variant| variant == placeholder),
+                "{seed} gave {placeholder}"
+            );
+        }
+    }
 
     #[test]
     fn separator_swaps_match_legacy_shapes() {
