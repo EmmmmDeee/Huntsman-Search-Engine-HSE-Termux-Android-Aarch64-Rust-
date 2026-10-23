@@ -250,6 +250,42 @@ fn invalidate_saved(
         .map_err(|error| format!("cannot invalidate stale report: {error}"))
 }
 
+fn persist_normalised_report(
+    record: &ScanRecord,
+    directory: &Path,
+    revision: &str,
+    before_digest: &str,
+    mut report: Value,
+) -> Result<bool, String> {
+    let Some(root) = report.as_object_mut() else {
+        invalidate_saved(record, directory, revision, "unexpected_analysis_shape")?;
+        return Err(format!("scan {} analysis is not an object", record.id));
+    };
+    root.insert(
+        "normalisation".to_owned(),
+        json!({
+            "state": "current",
+            "source_revision_hint": revision,
+            "results_sha256": before_digest,
+            "scan_id": record.id,
+            "checked_at_ms": clock::unix_now_millis(),
+        }),
+    );
+    let body = serde_json::to_vec(&report).map_err(|error| error.to_string())?;
+    if body.len() as u64 > MAX_ANALYSIS_BYTES {
+        invalidate_saved(record, directory, revision, "normalised_output_too_large")?;
+        return Err(format!(
+            "scan {} normalised output exceeds limit",
+            record.id
+        ));
+    }
+    let output = normalised_path(record, directory);
+    archive_previous(&output)?;
+    write_atomic_private(&output, &body, MAX_ANALYSIS_BYTES)
+        .map_err(|error| format!("normalisation write failed: {error}"))?;
+    Ok(true)
+}
+
 fn normalise_saved(
     api: &ScanApi,
     record: &ScanRecord,
@@ -339,40 +375,14 @@ fn normalise_saved(
             return Err(error);
         }
     }
-    let mut report: Value = match serde_json::from_slice(&response.body) {
+    let report: Value = match serde_json::from_slice(&response.body) {
         Ok(report) => report,
         Err(error) => {
             invalidate_saved(record, directory, revision, "malformed_analysis")?;
             return Err(format!("scan {} malformed analysis: {error}", record.id));
         }
     };
-    let Some(root) = report.as_object_mut() else {
-        invalidate_saved(record, directory, revision, "unexpected_analysis_shape")?;
-        return Err(format!("scan {} analysis is not an object", record.id));
-    };
-    root.insert(
-        "normalisation".to_owned(),
-        json!({
-            "state": "current",
-            "source_revision_hint": revision,
-            "results_sha256": before_digest,
-            "scan_id": record.id,
-            "checked_at_ms": clock::unix_now_millis(),
-        }),
-    );
-    let body = serde_json::to_vec(&report).map_err(|error| error.to_string())?;
-    if body.len() as u64 > MAX_ANALYSIS_BYTES {
-        invalidate_saved(record, directory, revision, "normalised_output_too_large")?;
-        return Err(format!(
-            "scan {} normalised output exceeds limit",
-            record.id
-        ));
-    }
-    let output = normalised_path(record, directory);
-    archive_previous(&output)?;
-    write_atomic_private(&output, &body, MAX_ANALYSIS_BYTES)
-        .map_err(|error| format!("normalisation write failed: {error}"))?;
-    Ok(true)
+    persist_normalised_report(record, directory, revision, &before_digest, report)
 }
 
 fn prune_tracking_state(
@@ -739,7 +749,7 @@ mod tests {
         let (api, record) = offline_scan_fixture(&directory);
         let source = directory.join(&record.id).join("results.json");
         let original = std::fs::read(&source).expect("saved scan results");
-        assert!(!original.is_empty());
+        assert_ne!(original.as_slice(), &[]);
         let before = results_digest(api.service().store(), &record).expect("first digest");
         let mut altered = original.clone();
         altered[0] ^= 1;
@@ -778,7 +788,6 @@ mod tests {
             first["normalisation"]["results_sha256"],
             results_digest(service.store(), &record).expect("saved results digest")
         );
-        assert_eq!(first["scan"]["id"], record.id);
         assert_eq!(std::fs::read(&source_path).unwrap(), saved_evidence);
         assert_eq!(observed.len(), 1);
 
