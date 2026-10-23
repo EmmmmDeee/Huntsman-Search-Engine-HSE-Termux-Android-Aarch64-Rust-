@@ -810,7 +810,11 @@ fn read_request_with(
     // Once an upload is admitted: where its body starts, and the place it holds.
     let mut upload: Option<(usize, Slot)> = None;
 
-    while bytes.len() < MAX_REQUEST_BYTES || upload.is_some() {
+    // Until the head is in, it is read up to MAX_REQUEST_BYTES; then up to the end of the form
+    // body it announces, which form_body_len bounds by MAX_FORM_BYTES however long the head was.
+    while whole.map_or(bytes.len() < MAX_REQUEST_BYTES, |whole| bytes.len() < whole)
+        || upload.is_some()
+    {
         if let (Some((_, _)), Some(whole)) = (&upload, whole) {
             // An admitted upload is read straight into its buffer, as much as one read gives.
             let start = bytes.len();
@@ -2799,6 +2803,31 @@ mod tests {
             response_for_request("REQUEST_TIMEOUT", None, loopback_bind())
                 .starts_with("HTTP/1.1 408 Request Timeout")
         );
+    }
+
+    /// A form body within `MAX_FORM_BYTES` is read whole behind a long head: the request used to be
+    /// cut at `MAX_REQUEST_BYTES` in all, so a large key import behind a 9 KiB cookie header lost
+    /// its end and was refused as too large.
+    #[test]
+    fn a_whole_form_body_is_read_behind_a_long_head() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let body = "v".repeat(MAX_FORM_BYTES);
+        let head = format!(
+            "POST /api/settings/keys HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: c={}\r\nContent-Length: {}\r\n\r\n",
+            "x".repeat(HEADER_ALLOWANCE + 1024),
+            body.len()
+        );
+        let writer = thread::spawn(move || {
+            client.write_all(head.as_bytes()).unwrap();
+            client.write_all(body.as_bytes()).unwrap();
+            client
+        });
+        let request = read_request(&mut server, Instant::now() + Duration::from_secs(5)).unwrap();
+        let _client = writer.join().unwrap();
+        let (_, read_body) = request.split_once("\r\n\r\n").expect("a head");
+        assert_eq!(read_body.len(), MAX_FORM_BYTES);
     }
 
     #[test]
