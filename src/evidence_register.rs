@@ -153,13 +153,21 @@ fn rows(saved: &ScanResults) -> Result<BTreeMap<String, Row>, String> {
         )?;
     }
 
-    // Retain only explicit references that resolve inside this scan.
+    add_reciprocal_links(&mut output);
+    Ok(output)
+}
+
+/// Keep every explicit outbound reference, including unresolved targets. Create
+/// reverse links only for targets actually present in the saved scan. Dropping
+/// dangling links would silently erase material missing-evidence leads.
+fn add_reciprocal_links(output: &mut BTreeMap<String, Row>) {
     let existing: BTreeSet<String> = output.keys().cloned().collect();
     let mut reverse: Vec<(String, String)> = Vec::new();
-    for row in output.values_mut() {
-        row.links.retain(|linked| existing.contains(linked));
+    for row in output.values() {
         for linked in &row.links {
-            reverse.push((linked.clone(), row.id.clone()));
+            if existing.contains(linked) {
+                reverse.push((linked.clone(), row.id.clone()));
+            }
         }
     }
     for (target, from) in reverse {
@@ -167,7 +175,6 @@ fn rows(saved: &ScanResults) -> Result<BTreeMap<String, Row>, String> {
             row.links.insert(from);
         }
     }
-    Ok(output)
 }
 
 /// Drop only per-run bookkeeping for semantic comparison. Exact raw bytes and
@@ -220,10 +227,19 @@ fn change(now: &Row, previous: &Row) -> Result<&'static str, String> {
     }
 }
 
-fn to_json(row: &Row, change_status: &str) -> Result<Value, String> {
+fn to_json(
+    row: &Row,
+    change_status: &str,
+    known: &BTreeMap<String, Row>,
+) -> Result<Value, String> {
     let mut missing = Vec::new();
     if row.observed_at_unix.is_none() {
-        missing.push("observation_timestamp_not_recorded");
+        missing.push("observation_timestamp_not_recorded".to_owned());
+    }
+    for linked in &row.links {
+        if !known.contains_key(linked) {
+            missing.push(format!("cross_reference_target_not_recorded:{linked}"));
+        }
     }
     let status = if row.false_positive {
         "operator_flagged_false_positive"
@@ -288,14 +304,14 @@ pub fn compile(
         };
         *counts.entry(kind).or_default() += 1;
         if kind != "unchanged" {
-            records.push(to_json(row, kind)?);
+            records.push(to_json(row, kind, &current)?);
         }
     }
     if let Some(old) = &earlier {
         for (id, row) in old {
             if !current.contains_key(id) {
                 *counts.entry("removed").or_default() += 1;
-                records.push(to_json(row, "removed")?);
+                records.push(to_json(row, "removed", old)?);
             }
         }
     }
@@ -391,6 +407,43 @@ mod tests {
         let mut saved = BTreeMap::new();
         insert(&mut saved, Row::new("element", "x".into(), json!({"x":1}))).unwrap();
         assert!(insert(&mut saved, Row::new("element", "x".into(), json!({"x":2}))).is_err());
+    }
+
+    #[test]
+    fn unresolved_cross_references_survive_and_are_explicitly_flagged() {
+        let parent_id = stable_id("element", "parent");
+        let child_id = stable_id("element", "child");
+        let missing_id = stable_id("element", "missing-parent");
+        let mut records = BTreeMap::new();
+        insert(
+            &mut records,
+            Row::new("element", "parent".into(), json!({"value":"parent"})),
+        )
+        .unwrap();
+        insert(
+            &mut records,
+            Row::new("element", "child".into(), json!({"value":"child"}))
+                .linked(BTreeSet::from([parent_id.clone(), missing_id.clone()])),
+        )
+        .unwrap();
+
+        add_reciprocal_links(&mut records);
+
+        // The absent parent is not fabricated as a row or silently removed.
+        assert_eq!(records.len(), 2);
+        let child = &records[&child_id];
+        assert!(child.links.contains(&parent_id));
+        assert!(child.links.contains(&missing_id));
+        assert!(records[&parent_id].links.contains(&child_id));
+
+        let report = to_json(child, "full", &records).unwrap();
+        let links = report["CROSS_REFERENCES"].as_array().unwrap();
+        assert!(links.iter().any(|value| value == &json!(missing_id)));
+        let missing = report["MISSING_INFORMATION"].as_array().unwrap();
+        assert!(missing.iter().any(|value| {
+            value == &json!(format!("cross_reference_target_not_recorded:{missing_id}"))
+        }));
+        assert_eq!(report["RAW_DATA"]["value"], "child");
     }
 
     #[test]
