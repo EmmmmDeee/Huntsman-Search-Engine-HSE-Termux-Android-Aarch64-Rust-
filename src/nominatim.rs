@@ -32,7 +32,7 @@ pub const SOURCE: &str = "nominatim";
 const PUBLIC_BASE: &str = "https://nominatim.openstreetmap.org";
 /// HTTPS origin for an operator-managed Nominatim-compatible service.
 /// When absent, the public OSMF endpoint is used subject to its usage policy.
-pub const BASE_URL_ENV: &str = "HUNTSMAN_NOMINATIM_BASE_URL";
+pub const BASE_URL_ENV: &str = crate::environment::NOMINATIM_BASE_URL_ENV;
 
 /// Reject userinfo, query, fragments, paths, non-HTTPS schemes and unqualified
 /// hostnames before the guarded transport sees a replacement endpoint.
@@ -73,12 +73,12 @@ fn valid_base(base: &str) -> bool {
 }
 
 fn configured_base() -> Result<String, Error> {
-    match std::env::var(BASE_URL_ENV) {
-        Ok(base) if valid_base(&base) => Ok(base),
-        Ok(_) | Err(std::env::VarError::NotUnicode(_)) => Err(Error::Invalid(format!(
+    match crate::environment::nominatim_base_url() {
+        Ok(Some(base)) if valid_base(&base) => Ok(base),
+        Ok(None) => Ok(PUBLIC_BASE.to_owned()),
+        Ok(Some(_)) | Err(_) => Err(Error::Invalid(format!(
             "{BASE_URL_ENV} must be an HTTPS origin with a qualified hostname and no path, userinfo, query or fragment"
         ))),
-        Err(std::env::VarError::NotPresent) => Ok(PUBLIC_BASE.to_owned()),
     }
 }
 
