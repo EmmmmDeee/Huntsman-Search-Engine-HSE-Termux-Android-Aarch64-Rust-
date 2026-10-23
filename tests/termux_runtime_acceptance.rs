@@ -74,7 +74,7 @@ fn scratch(tag: &str) -> PathBuf {
 /// Whether every command the harness needs is on PATH. CI must have them all.
 fn harness_tools_present() -> bool {
     let present = [
-        "bash", "timeout", "curl", "date", "grep", "mktemp", "rm", "tee", "tail", "sleep", "uname",
+        "bash", "timeout", "curl", "date", "grep", "chmod", "mktemp", "rm", "tee", "tail", "sleep", "uname",
     ]
     .iter()
     .all(|tool| {
@@ -150,6 +150,39 @@ fn run_harness(tag: &str, extra: &[(&str, &str)]) -> (Output, String) {
     }
     let _ = fs::remove_dir_all(&home);
     (out, report)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_diagnostic_report_is_refused_without_truncating_its_target() {
+    use std::os::unix::fs::symlink;
+
+    let home = scratch("symlink-report");
+    let state = home.join(".huntsman");
+    fs::create_dir_all(&state).unwrap();
+    let target = home.join("must-remain-unchanged.txt");
+    fs::write(&target, b"private original bytes").unwrap();
+    symlink(&target, state.join("termux-acceptance.txt")).unwrap();
+
+    let out = Command::new("bash")
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(HARNESS))
+        .current_dir(&home)
+        .env("HOME", &home)
+        .env("HSE_BIN", env!("CARGO_BIN_EXE_huntsman-recon"))
+        .env_remove("HUNTSMAN_HOME")
+        .env_remove("HSE_ACCEPTANCE_REPORT")
+        .env_remove("HSE_ACCEPTANCE_SERVER_LOG")
+        .output()
+        .expect("the harness can be executed");
+
+    assert!(!out.status.success(), "a symlink destination must be refused");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("refusing non-regular diagnostic output"),
+        "unexpected refusal: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::read(&target).unwrap(), b"private original bytes");
+    let _ = fs::remove_dir_all(&home);
 }
 
 /// The harness run as CI runs it: every check against the binary this build produced, with only
