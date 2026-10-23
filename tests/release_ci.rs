@@ -1423,6 +1423,7 @@ fn installer_runtime_acceptance_failure_preserves_existing_binary() {
     }
     let bad_runtime = br#"#!/bin/sh
 case "$1" in
+  build-sha) printf '%s\n' "${HUNTSMAN_TEST_BUILD_SHA:?}" ;;
   check) exit 9 ;;
   *) exit 64 ;;
 esac
@@ -2760,7 +2761,8 @@ fn installer_refuses_a_directory_at_the_destination() {
     let asset = "huntsman-recon-aarch64-linux-android";
     // The installer runs the staged recon binary offline (`check`, then
     // `verify`) before moving it; this stand-in passes both.
-    let new_build = b"#!/bin/sh\nexit 0\n";
+    let new_build =
+        b"#!/bin/sh\nif [ \"$1\" = build-sha ]; then printf '%s\\n' \"${HUNTSMAN_TEST_BUILD_SHA:?}\"; fi\nexit 0\n";
     let probe = scratch("install-dir-probe");
     fs::write(probe.join("b"), new_build).unwrap();
     let good = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
