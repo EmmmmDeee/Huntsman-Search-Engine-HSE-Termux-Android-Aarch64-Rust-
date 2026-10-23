@@ -282,8 +282,16 @@ esac
         stderr.contains("tests interrupted (exit 137); refusing sync"),
         "unexpected failure: {stderr}"
     );
-    assert_eq!(sandbox.head(), previous_head, "local changes were committed");
-    assert_eq!(sandbox.pushed(), previous_remote, "remote main was modified");
+    assert_eq!(
+        sandbox.head(),
+        previous_head,
+        "local changes were committed"
+    );
+    assert_eq!(
+        sandbox.pushed(),
+        previous_remote,
+        "remote main was modified"
+    );
 
     let state = fs::read_to_string(sandbox.root.join("state/lifecycle-state")).unwrap();
     assert!(
