@@ -106,8 +106,14 @@ fn rows(saved: &ScanResults) -> Result<BTreeMap<String, Row>, String> {
     }
     if let Some(reason) = &saved.termination {
         insert(
-            &mut output, "termination", "scan".to_owned(), None, None,
-            json!(reason), BTreeSet::new(), false,
+            &mut output,
+            "termination",
+            "scan".to_owned(),
+            None,
+            None,
+            json!(reason),
+            BTreeSet::new(),
+            false,
         )?;
     }
 
@@ -278,7 +284,9 @@ pub fn compile(
         "scan_complete":scan.status == ScanStatus::Finished,
         "truncated":false
     });
-    let len = serde_json::to_vec(&report).map_err(|error| error.to_string())?.len();
+    let len = serde_json::to_vec(&report)
+        .map_err(|error| error.to_string())?
+        .len();
     if len > MAX_RENDER_BYTES {
         return Err(format!(
             "evidence report needs {len} bytes, exceeds {MAX_RENDER_BYTES}; no output truncated"
@@ -316,7 +324,9 @@ pub fn raw_text(report: &Value) -> Result<String, String> {
         }
         text.push_str("[END_RECORD]\n");
         if text.len() > MAX_RENDER_BYTES {
-            return Err(format!("raw evidence exceeds {MAX_RENDER_BYTES} bytes; nothing truncated"));
+            return Err(format!(
+                "raw evidence exceeds {MAX_RENDER_BYTES} bytes; nothing truncated"
+            ));
         }
     }
     text.push_str("\n[END_HUNTSMAN_EVIDENCE]\n");
@@ -332,10 +342,30 @@ mod tests {
         assert_eq!(stable_id("element", "x"), stable_id("element", "x"));
         assert_ne!(stable_id("element", "x"), stable_id("entity", "x"));
         let mut saved = BTreeMap::new();
-        insert(&mut saved, "element", "x".into(), None, None, json!({"x":1}),
-            BTreeSet::new(), false).unwrap();
-        assert!(insert(&mut saved, "element", "x".into(), None, None, json!({"x":2}),
-            BTreeSet::new(), false).is_err());
+        insert(
+            &mut saved,
+            "element",
+            "x".into(),
+            None,
+            None,
+            json!({"x":1}),
+            BTreeSet::new(),
+            false,
+        )
+        .unwrap();
+        assert!(
+            insert(
+                &mut saved,
+                "element",
+                "x".into(),
+                None,
+                None,
+                json!({"x":2}),
+                BTreeSet::new(),
+                false
+            )
+            .is_err()
+        );
     }
 
     #[test]
