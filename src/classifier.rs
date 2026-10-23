@@ -69,7 +69,7 @@ pub fn classify(raw: &str) -> Classified {
         return classified(EntityKind::IpAddress, value, 0.92, "parsed");
     }
     // Stored compressed and lower-case, the form `canonical_ip` emits.
-    if let Ok(v6) = value.parse::<std::net::Ipv6Addr>() {
+    if let Some(v6) = parse_ipv6(value) {
         return classified(EntityKind::IpAddress, &v6.to_string(), 0.92, "parsed");
     }
     if let Some(block) = crate::netblock::Netblock::parse(value) {
@@ -138,6 +138,16 @@ fn abn_acn(value: &str) -> Option<String> {
     }
 }
 
+/// An IPv6 address, unless every group is two hex digits. Such an address has eight groups
+/// and no `::`, which is how an EUI-64, Fibre Channel WWN or IEEE 802.15.4 identifier is
+/// written, not an address.
+fn parse_ipv6(value: &str) -> Option<std::net::Ipv6Addr> {
+    if value.split(':').all(|group| group.len() == 2) {
+        return None;
+    }
+    value.parse().ok()
+}
+
 /// Recognises an autonomous-system number written `AS` or `ASN` followed by digits, such
 /// as `AS13335`. Returned as `AS` plus the bare number, so the case of the prefix does not
 /// split one network into two entities.
@@ -146,12 +156,12 @@ fn parse_asn(value: &str) -> Option<String> {
     let digits = upper
         .strip_prefix("ASN")
         .or_else(|| upper.strip_prefix("AS"))?;
-    let well_formed =
-        (1..=10).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit());
-    if !well_formed {
+    // `u32` parsing takes a leading `+`, which an AS number never has.
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    // AS numbers are 32-bit. Parsing also drops leading zeros, so AS013335 is AS13335.
+    // AS numbers are 32-bit. Parsing also drops leading zeros, however many, so AS013335
+    // is AS13335, as `canonical_asn` reads it.
     let number: u32 = digits.parse().ok()?;
     Some(format!("AS{number}"))
 }
@@ -284,7 +294,17 @@ fn tokenize(text: &str) -> Vec<&str> {
                 )
             })
         })
-        .map(|token| token.trim_end_matches(['.', ':', '?']))
+        .map(|token| {
+            let trimmed = token.trim_end_matches(['.', ':', '?']);
+            // The colons that end `fe80::` are part of the address, so only a full stop or
+            // question mark after it comes off. A bare `::`, as in `f :: Int`, is not one.
+            let address = token.trim_end_matches(['.', '?']);
+            if !trimmed.is_empty() && parse_ipv6(address).is_some() {
+                address
+            } else {
+                trimmed
+            }
+        })
         .filter(|token| !token.is_empty())
         .collect()
 }
@@ -566,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bsb_shape_is_not_an_abn_and_an_abn_is_stored_bare() {
+    fn a_bsb_shape_is_not_an_abn_and_an_abn_or_acn_is_stored_bare() {
         // A BSB has no checksum, so any six digits would pass as one.
         for raw in ["123456", "062-000", "062 000"] {
             assert_eq!(classify(raw).kind, EntityKind::Other, "{raw}");
@@ -575,6 +595,13 @@ mod tests {
         let abn = classify("51 824 753 556");
         assert_eq!(abn.kind, EntityKind::AbnAcn);
         assert_eq!(abn.value, "51824753556");
+        let acn = classify("004 085 616");
+        assert_eq!(acn.kind, EntityKind::AbnAcn);
+        assert_eq!(acn.value, "004085616");
+        let found = extract("ACN 004 085 616 on file");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].kind, EntityKind::AbnAcn);
+        assert_eq!(found[0].value, "004085616");
     }
 
     #[test]
@@ -594,6 +621,30 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].kind, EntityKind::IpAddress);
         assert_eq!(found[0].value, "2606:4700:4700::1111");
+    }
+
+    #[test]
+    fn eight_two_digit_groups_are_an_identifier_not_an_ipv6_address() {
+        // A Fibre Channel WWN parses as IPv6, but no one writes an address that way.
+        assert_eq!(classify("50:06:01:60:3b:20:19:88").kind, EntityKind::Other);
+        assert!(extract("port 50:06:01:60:3b:20:19:88 is up").is_empty());
+        let nat64 = classify("64:ff9b::808:808");
+        assert_eq!(nat64.kind, EntityKind::IpAddress);
+        assert_eq!(nat64.value, "64:ff9b::808:808");
+    }
+
+    #[test]
+    fn extraction_keeps_an_ipv6_address_that_ends_in_a_double_colon() {
+        for (text, value) in [
+            ("prefix 2400:cb00:: announced", "2400:cb00::"),
+            ("the link-local block is fe80::.", "fe80::"),
+        ] {
+            let found = extract(text);
+            assert_eq!(found.len(), 1, "{text}: {found:?}");
+            assert_eq!(found[0].kind, EntityKind::IpAddress, "{text}");
+            assert_eq!(found[0].value, value, "{text}");
+        }
+        assert!(extract("f :: Int").is_empty());
     }
 
     #[test]
@@ -773,14 +824,18 @@ mod tests {
             assert_eq!(found.kind, EntityKind::Asn, "{raw}");
             assert_eq!(found.value, value, "{raw}");
         }
-        for raw in ["ASIA", "AS", "AS12x", "ASN12345678901"] {
+        for raw in ["ASIA", "AS", "AS12x", "AS+13335", "ASN12345678901"] {
             assert_ne!(classify(raw).kind, EntityKind::Asn, "{raw}");
         }
     }
 
     #[test]
     fn asn_numbers_drop_leading_zeros_and_stay_within_32_bits() {
-        for (raw, value) in [("AS013335", "AS13335"), ("AS4294967295", "AS4294967295")] {
+        for (raw, value) in [
+            ("AS013335", "AS13335"),
+            ("AS00000013335", "AS13335"),
+            ("AS4294967295", "AS4294967295"),
+        ] {
             let found = classify(raw);
             assert_eq!(found.kind, EntityKind::Asn, "{raw}");
             assert_eq!(found.value, value, "{raw}");
