@@ -80,3 +80,26 @@ corroboration cannot be inferred from mere record counts.
 Inputs are bounded to 4,096 evidence elements; exported outputs are bounded
 to 8 MiB and fail rather than silently truncate. This is an offline analysis
 over stopped, saved scans; fresh findings still require a normal scan.
+
+### Lossless normalization and terminal-safe raw exports
+
+The primary matrix axis is **still exact** (type, original value). For ASCII
+`DOMAIN_NAME` and `INTERNET_NAME` only, an additional comparison candidate
+lowercases ASCII letters and removes one optional terminal DNS root dot.
+Entries with the same comparison candidate are cross-referenced under
+`normalization_candidates` with their original exact values and stable record
+IDs. Candidates are not merged, authenticated, or asserted to be equivalent.
+Other types (including personal names, email local parts, Unicode domain
+strings, IP addresses and free text) remain entirely untouched.
+
+`ROOT` repeats the scan target and is not a source finding. Such entries
+remain in the original evidence register and saved scan, but are explicitly
+counted as `root_elements_excluded_from_matrix`; `matrix_elements` counts the
+non-root elements. `recorded_elements = matrix_elements +
+root_elements_excluded_from_matrix`.
+
+The raw TXT export includes normalization cross-references and retains
+machine-readable JSON for each exact observation. Unsafe Unicode controls
+(including bidi overrides) are escaped without changing the decoded JSON
+values, preventing a provider-supplied value from misleading terminal display.
+No new network calls, data migrations, credentials or dependencies are needed.
