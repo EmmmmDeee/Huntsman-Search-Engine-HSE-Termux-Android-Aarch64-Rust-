@@ -1,5 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -Eeuo pipefail
+# Diagnostics and lookup evidence must never inherit a permissive caller umask.
+umask 077
 IFS=$'\n\t'
 
 # Real-device acceptance for the current Huntsman Recon binary.
@@ -37,8 +39,20 @@ WORK_DIR=""
 PERSISTED_SCAN=""
 
 mkdir -p "$STATE_DIR"
+# Refuse links before truncating outputs. A previous run may have created these files
+# under a permissive umask; restrict their modes before recording any diagnostic data.
+for output in "$REPORT" "$SERVER_LOG"; do
+  if [ -L "$output" ] || { [ -e "$output" ] && [ ! -f "$output" ]; }; then
+    printf 'FAIL  refusing non-regular diagnostic output: %s\n' "$output" >&2
+    exit 1
+  fi
+done
 : > "$REPORT"
 : > "$SERVER_LOG"
+chmod 600 "$REPORT" "$SERVER_LOG" || {
+  printf 'FAIL  cannot restrict diagnostic file permissions\n' >&2
+  exit 1
+}
 
 pass() { printf 'PASS  %s\n' "$*" | tee -a "$REPORT"; }
 fail() { printf 'FAIL  %s\n' "$*" | tee -a "$REPORT" >&2; exit 1; }
@@ -55,7 +69,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-for cmd in timeout curl date grep cmp mktemp rm tee tail sleep uname; do
+for cmd in timeout curl date grep cmp chmod mktemp rm tee tail sleep uname; do
   command -v "$cmd" >/dev/null 2>&1 || fail "required Termux command not found: $cmd"
 done
 
