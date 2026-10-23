@@ -544,8 +544,7 @@ mod tests {
         assert!(status.success(), "mkfifo failed");
 
         let error = open_regular_candidate(&candidate)
-            .err()
-            .expect("nonblocking open must reject a substituted FIFO");
+            .expect_err("nonblocking open must reject a substituted FIFO");
         assert!(error.to_string().contains("non-regular file"), "{error}");
         let _ = fs::remove_dir_all(&dir);
     }
