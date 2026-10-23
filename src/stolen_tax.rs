@@ -831,7 +831,9 @@ fn breach_evidence_text(name: &str, marker: &str, breach: &BreachRecord) -> Stri
 }
 
 /// Merged rows → entities. The queried identity is never re-emitted as its own
-/// pivot (case-insensitive), and a restated spelling of one value mints once.
+/// pivot (compared case-insensitively and in the entity kind's canonical form, so
+/// `@ada_99`, `ada.99` and a padded query all match row `ada_99`), and a restated
+/// spelling of one value mints once.
 /// **Pure.**
 fn build_entities(data: &StolenTaxData, query: &str, scan_id: &str) -> Vec<Entity> {
     let mut entities = Vec::new();
@@ -843,9 +845,12 @@ fn build_entities(data: &StolenTaxData, query: &str, scan_id: &str) -> Vec<Entit
         (EntityKind::Email, &data.emails),
         (EntityKind::Username, &data.usernames),
     ] {
+        let query_key = normalise(&kind, query);
         for value in values {
+            let key = normalise(&kind, value);
             if value.to_lowercase() == query_lower
-                || !seen.insert((kind.clone(), normalise(&kind, value)))
+                || key == query_key
+                || !seen.insert((kind.clone(), key))
             {
                 continue;
             }

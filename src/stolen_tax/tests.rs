@@ -171,7 +171,8 @@ fn the_key_is_not_sent_to_another_origin_on_redirect() {
     let transport = Redirect(RefCell::new(Vec::new()));
     let err = lookup(&transport, &keys(), "a@example.com", "s", 0).unwrap_err();
     assert!(matches!(err, StolenTaxError::Failed(_)));
-    // max_redirects is 0: the redirect is reported, never followed.
+    // The off-site hop is refused by the same-site redirect rule
+    // (`RedirectPolicy::SameSite`), so the key never leaves stolen.tax.
     assert!(
         transport
             .0
@@ -485,6 +486,30 @@ fn build_entities_excludes_the_query_value_regardless_of_casing() {
         ..StolenTaxData::default()
     };
     assert_eq!(build_entities(&data, "User@Example.com", "s").len(), 0);
+}
+
+#[test]
+fn build_entities_excludes_a_canonically_equal_spelling_of_the_query() {
+    for (query, username) in [("@jordan_m", "jordan_m"), ("jordan.m", "jordan_m")] {
+        let data = StolenTaxData {
+            usernames: vec![username.into()],
+            ..StolenTaxData::default()
+        };
+        assert_eq!(build_entities(&data, query, "s").len(), 0, "{query}");
+    }
+    let data = StolenTaxData {
+        emails: vec!["user@example.com".into()],
+        ..StolenTaxData::default()
+    };
+    assert_eq!(build_entities(&data, "user@example.com ", "s").len(), 0);
+}
+
+#[test]
+fn a_lookup_for_a_prefixed_handle_does_not_echo_it_back_as_a_pivot() {
+    let body = r#"{"success":true,"data":{"results":{"DB":[{"username":"ada_99"}]}}}"#;
+    let report = go(&Paths::ok(&[("snusbase", body)]), "@ada_99").unwrap();
+    assert_eq!(report.entities.len(), 1, "{:?}", report.entities);
+    assert!(has(&report, &EntityKind::Credential, "breach:DB"));
 }
 
 #[test]
@@ -958,104 +983,39 @@ fn a_transport_failure_is_not_retried() {
     assert_eq!(paths, ["snusbase", "osintcat", "hudsonrock"]);
 }
 
-/// Real sockets, loopback only. Points the stolen.tax URLs at a local server; the
-/// request (credential included) is built for `https://stolen.tax` as in production.
-struct Loopback {
-    inner: crate::http::UreqTransport,
-    base: String,
-}
-
-impl Transport for Loopback {
-    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-        let mut local = request.clone();
-        local.url = request.url.replacen("https://stolen.tax", &self.base, 1);
-        assert_ne!(local.url, request.url, "only stolen.tax is rerouted");
-        self.inner.send(&local)
-    }
-}
-
 /// Chief's test for the redirect-hop fix, at the stolen.tax level: osintcat is a
 /// slow redirect chain (every hop slower than the budget). The path stops at the
 /// deadline with a timeout, hudsonrock is listed as not sent, snusbase's evidence
 /// is kept, and the whole lookup ends within the budget plus a small tolerance.
-/// stolen.tax sends with `max_redirects: 0`, so the chain's first hop is all it
-/// ever requests.
+/// stolen.tax follows up to `MAX_REDIRECTS` same-site hops, but the osintcat
+/// hop's 302 arrives after the budget, so the request times out and the redirect
+/// is never reached.
 #[test]
 fn a_slow_redirect_chain_on_a_real_socket_stops_at_the_lookup_deadline() {
-    use std::io::{Read as _, Write as _};
-    use std::sync::{Arc, Mutex};
-
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
-    let log = seen.clone();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut sock) = stream else { continue };
-            let log = log.clone();
-            std::thread::spawn(move || {
-                sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 1024];
-                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    match sock.read(&mut chunk) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                    }
-                }
-                let head = String::from_utf8_lossy(&buf).into_owned();
-                let line = head.lines().next().unwrap_or_default().to_owned();
-                let path = line
-                    .split_once("path=")
-                    .and_then(|(_, rest)| rest.split(['&', ' ']).next())
-                    .unwrap_or_default()
-                    .to_owned();
-                log.lock().unwrap().push(path.clone());
-                let reply = if path == "osintcat" {
-                    std::thread::sleep(Duration::from_millis(2500));
-                    "HTTP/1.1 302 Found\r\nLocation: /api/v2/index.php?path=osintcat&hop=1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
-                } else {
-                    std::thread::sleep(Duration::from_millis(100));
-                    let body = if path == "snusbase" {
-                        SNUS_HIT
-                    } else {
-                        HUDSON_HIT
-                    };
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                };
-                let _ = sock.write_all(reply.as_bytes());
-            });
-        }
-    });
-
-    let transport = Loopback {
-        inner: crate::http::UreqTransport::new(&TransportConfig {
-            egress: crate::egress::EgressPolicy::Unrestricted,
-            ..transport_config()
-        }),
-        base: format!("http://127.0.0.1:{port}"),
-    };
+    let st = Origin::serve(Box::new(|t: &str| match v2_path(t) {
+        "osintcat" => (
+            2500,
+            redirect_reply("/api/v2/index.php?path=osintcat&hop=1"),
+        ),
+        "snusbase" => (100, json_reply(SNUS_HIT)),
+        _ => (100, json_reply(HUDSON_HIT)),
+    }));
+    let t = Mapped::new(vec![("https://stolen.tax:443", &st)]);
     let budget = Duration::from_millis(1200);
     let started = std::time::Instant::now();
-    let report = lookup_within(
-        &transport,
-        &SystemClock,
-        budget,
-        &keys(),
-        "user@example.com",
-        "scan",
-        0,
-    )
-    .unwrap();
+    let report = mapped_lookup(&t, budget).unwrap();
     let elapsed = started.elapsed();
     assert!(
         elapsed <= budget + Duration::from_millis(500),
         "{elapsed:?}"
     );
-    assert_eq!(*seen.lock().unwrap(), ["snusbase", "osintcat"]);
+    assert_eq!(
+        st.heads()
+            .iter()
+            .map(|h| v2_path(h.split(' ').nth(1).unwrap_or_default()))
+            .collect::<Vec<_>>(),
+        ["snusbase", "osintcat"]
+    );
     assert!(has(&report, &EntityKind::Email, "alt@example.com"));
     assert_eq!(report.failed_paths.len(), 1);
     assert_eq!(report.failed_paths[0].path, "osintcat");
