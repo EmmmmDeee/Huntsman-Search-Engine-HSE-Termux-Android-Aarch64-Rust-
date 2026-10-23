@@ -89,7 +89,7 @@ pub(crate) fn same_inode(_linked: &fs::Metadata, _opened: &fs::Metadata) -> bool
 
 /// Open a read candidate without blocking on a FIFO swapped in after `lstat`.
 ///
-/// Linux and Android expose O_NONBLOCK (0o4000) and O_NOFOLLOW (0o400000);
+/// Linux and Android expose `O_NONBLOCK` (0o4000) and `O_NOFOLLOW` (0o400000);
 /// the opened descriptor must still pass the existing regular-file and inode
 /// checks. Keep the ordinary portable open on other targets.
 fn open_read_candidate(path: &Path) -> Result<File, Error> {
