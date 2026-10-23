@@ -424,6 +424,13 @@ enum Escaped {
     Assert(Assertion),
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times [`Compiler::node`] has run on this thread, so a test can check that a
+    /// repeat compiles its body once whatever its bounds.
+    static NODE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 struct Compiler {
     prog: Vec<Inst>,
     /// The program's size against [`MAX_PROGRAM`]: one per instruction, a class one per item.
@@ -445,6 +452,8 @@ impl Compiler {
     }
 
     fn node(&mut self, node: &Node) -> Result<(), String> {
+        #[cfg(test)]
+        NODE_CALLS.with(|calls| calls.set(calls.get() + 1));
         match node {
             Node::Empty => {}
             Node::Char(c) => {
@@ -809,11 +818,13 @@ mod tests {
                 // About the most a rule file holds: 16,000 `a{0}` in a body copied 19,998 times
                 // took seconds when each copy compiled them again.
                 format!("^(?:{}b){{19998}}", "a{0}".repeat(16_000)),
+                // The same body under an upper bound: each optional copy recompiled it too.
+                format!("^(?:{}b){{1,9999}}$", "a{0}".repeat(16_000)),
             ]
             .map(|source| Pattern::new(&source));
             let _ = sender.send(compiled);
         });
-        let [nested, concat, flags, wide] = receiver
+        let [nested, concat, flags, wide, optional] = receiver
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("compiling a repeat stalled");
         let nested = nested.unwrap();
@@ -826,6 +837,29 @@ mod tests {
         let wide = wide.unwrap();
         assert!(wide.is_match(&"b".repeat(19_998)));
         assert!(!wide.is_match(&"b".repeat(19_997)));
+        let optional = optional.unwrap();
+        assert!(optional.is_match("b"));
+        assert!(optional.is_match(&"b".repeat(9_999)));
+        assert!(!optional.is_match(&"b".repeat(10_000)));
+        assert!(!optional.is_match(""));
+    }
+
+    /// How many times compiling `source` runs [`Compiler::node`].
+    fn node_calls(source: &str) -> usize {
+        NODE_CALLS.with(|calls| calls.set(0));
+        assert!(Pattern::new(source).is_ok(), "{source}");
+        NODE_CALLS.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn a_repeat_compiles_its_body_once_whatever_its_bounds() {
+        let body = "(?:x|y(?:z|[0-9])*\\b|w{2,3})";
+        let once = node_calls(body);
+        // The repeat and one compile of its body: every other copy, required, optional or the
+        // loop of `{n,}`, moves that code, so the count does not depend on timing.
+        for bounds in ["{3}", "{1,3}", "{0,3}", "{2,}", "+", "*", "?"] {
+            assert_eq!(node_calls(&format!("{body}{bounds}")), once + 1, "{bounds}");
+        }
     }
 
     #[test]

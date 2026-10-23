@@ -11,7 +11,9 @@
   form, so `2606:4700:4700:0:0:0:0:1111` is the same seed, and `sources` lists its IP routes.
   `investigate` reads one that ends in `::`, such as `fe80::`, whole, even before a full stop.
   Eight groups of two hex digits, such as the Fibre Channel WWN
-  `50:06:01:60:3b:20:19:88`, are an identifier, not an address, and stay unsupported. In free
+  `50:06:01:60:3b:20:19:88`, are an identifier, not an address, and stay unsupported, as does
+  an address that compresses to that shape, such as `0010:0020:0030:0040:0050:0060:0070:0080`
+  (`10:20:30:40:50:60:70:80`), so a stored address always reads back as one. In free
   text, a token of hex digits joined by or ending in `::`, such as `add::bad` or `cafe::`, is now
   also read as an address.
 - `investigate` finds an email address or URL written in angle brackets.

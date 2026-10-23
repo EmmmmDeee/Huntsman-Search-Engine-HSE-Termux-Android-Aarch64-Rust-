@@ -140,12 +140,16 @@ fn abn_acn(value: &str) -> Option<String> {
 
 /// An IPv6 address, unless every group is two hex digits. Such an address has eight groups
 /// and no `::`, which is how an EUI-64, Fibre Channel WWN or IEEE 802.15.4 identifier is
-/// written, not an address.
+/// written, not an address. The compressed form [`classify`] stores is checked as well as the
+/// input, so `0010:0020:...` and `10:20:...` are refused alike and a stored value classifies
+/// as it did.
 fn parse_ipv6(value: &str) -> Option<std::net::Ipv6Addr> {
-    if value.split(':').all(|group| group.len() == 2) {
+    let two_digit_groups = |text: &str| text.split(':').all(|group| group.len() == 2);
+    if two_digit_groups(value) {
         return None;
     }
-    value.parse().ok()
+    let address: std::net::Ipv6Addr = value.parse().ok()?;
+    (!two_digit_groups(&address.to_string())).then_some(address)
 }
 
 /// Recognises an autonomous-system number written `AS` or `ASN` followed by digits, such
@@ -631,6 +635,24 @@ mod tests {
         let nat64 = classify("64:ff9b::808:808");
         assert_eq!(nat64.kind, EntityKind::IpAddress);
         assert_eq!(nat64.value, "64:ff9b::808:808");
+        for raw in ["::1", "1::"] {
+            assert_eq!(classify(raw).kind, EntityKind::IpAddress, "{raw}");
+        }
+        // Compressed, this is `10:20:30:40:50:60:70:80`, so it is refused too, and every value
+        // classify stores classifies as the same kind again.
+        assert_eq!(
+            classify("0010:0020:0030:0040:0050:0060:0070:0080").kind,
+            EntityKind::Other
+        );
+        for raw in [
+            "0010:0020:0030:0040:0050:0060:0070:0080",
+            "2606:4700:4700:0000:0000:0000:0000:1111",
+            "64:ff9b::808:808",
+            "::1",
+        ] {
+            let first = classify(raw);
+            assert_eq!(classify(&first.value).kind, first.kind, "{raw}");
+        }
     }
 
     #[test]
@@ -638,6 +660,7 @@ mod tests {
         for (text, value) in [
             ("prefix 2400:cb00:: announced", "2400:cb00::"),
             ("the link-local block is fe80::.", "fe80::"),
+            ("is the block fe80::?", "fe80::"),
         ] {
             let found = extract(text);
             assert_eq!(found.len(), 1, "{text}: {found:?}");

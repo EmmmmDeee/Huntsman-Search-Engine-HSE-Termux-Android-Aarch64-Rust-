@@ -24,6 +24,8 @@
   `/^ab{,2}c$/` now finds `abc`, where it used to look for the literal text `ab{,2}c`. `{}` and a
   bound too large for 32 bits are still literal text. After `^`, `$`, `\b`, `\B`, `\A`, `\Z` or
   `(?i)` they are refused with `nothing to repeat`, as in Python, where `/^{,2}/` used to look for
-  the start and the literal text `{,2}`.
+  the start and the literal text `{,2}`. After an empty group such as `()` or `(?:)` they are
+  also refused with `nothing to repeat`, as `*`, `+`, `?` and `{n}` already were there, although
+  Python accepts all of them; `/(){,2}/` used to look for the literal text `{,2}`.
 - `\Z` matches only at the very end of a value, as in Python: `/OpenSSH\Z/` no longer finds a
   value ending in `OpenSSH` and a newline. `$` still matches just before a final newline.
