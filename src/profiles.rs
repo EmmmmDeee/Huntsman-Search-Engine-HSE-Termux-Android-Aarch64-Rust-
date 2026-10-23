@@ -1,11 +1,13 @@
 //! Per-entity profile summaries.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
-use crate::confidence::Classification;
+use crate::confidence::{Classification, effective};
 use crate::entity::Entity;
-use crate::exposure::compute_exposure;
-use crate::timeline::reconstruct;
+use crate::exposure::ExposureFinding;
+use crate::timeline::TimelineEvent;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EntityProfile {
@@ -22,37 +24,44 @@ pub struct EntityProfile {
     pub last_event_iso: Option<String>,
 }
 
+/// One profile per entity, most trusted first, then most exposed, then by uid. `exposures` and
+/// `timeline` are what `compute_exposure` and `timeline::reconstruct` gave for `entities`; a
+/// profile's first and last events are the first and last of its entity's in timeline order.
 #[must_use]
-pub fn build_profiles(entities: &[Entity]) -> Vec<EntityProfile> {
-    let exposure = compute_exposure(entities)
-        .findings
-        .into_iter()
-        .map(|finding| (finding.uid, finding.score))
-        .collect::<std::collections::HashMap<_, _>>();
-    let timeline = reconstruct(entities);
-    let mut by_uid = std::collections::HashMap::<String, Vec<&str>>::new();
-    for event in &timeline {
-        by_uid
-            .entry(event.entity_uid.clone())
-            .or_default()
-            .push(event.iso.as_str());
+pub fn build_profiles(
+    entities: &[Entity],
+    exposures: &[ExposureFinding],
+    timeline: &[TimelineEvent],
+) -> Vec<EntityProfile> {
+    let exposure = exposures
+        .iter()
+        .map(|finding| (finding.uid.as_str(), finding.score))
+        .collect::<HashMap<_, _>>();
+    let mut spans = HashMap::<&str, (&str, &str)>::new();
+    for event in timeline {
+        spans
+            .entry(event.entity_uid.as_str())
+            .and_modify(|(_, last)| *last = event.iso.as_str())
+            .or_insert((event.iso.as_str(), event.iso.as_str()));
     }
     let mut profiles = entities
         .iter()
         .map(|entity| {
-            let span = by_uid.get(&entity.uid);
+            let sources = entity.source_count();
+            let effective_confidence = effective(entity.confidence, sources);
+            let span = spans.get(entity.uid.as_str());
             EntityProfile {
                 uid: entity.uid.clone(),
                 value: entity.value.clone(),
                 kind: entity.kind.to_string(),
-                classification: entity.classify(),
+                classification: Classification::from_effective(effective_confidence),
                 confidence: entity.confidence,
-                effective_confidence: entity.c_effective(),
+                effective_confidence,
                 evidence_count: entity.evidence.len(),
-                source_count: entity.source_count(),
-                exposure_score: exposure.get(&entity.uid).copied().unwrap_or(0),
-                first_event_iso: span.and_then(|events| events.first().map(ToString::to_string)),
-                last_event_iso: span.and_then(|events| events.last().map(ToString::to_string)),
+                source_count: sources,
+                exposure_score: exposure.get(entity.uid.as_str()).copied().unwrap_or(0),
+                first_event_iso: span.map(|(first, _)| (*first).to_owned()),
+                last_event_iso: span.map(|(_, last)| (*last).to_owned()),
             }
         })
         .collect::<Vec<_>>();
@@ -71,6 +80,8 @@ pub fn build_profiles(entities: &[Entity]) -> Vec<EntityProfile> {
 mod tests {
     use super::*;
     use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+    use crate::exposure::compute_exposure;
+    use crate::timeline::reconstruct;
 
     #[test]
     fn profile_carries_timeline_span_and_exposure() {
@@ -81,7 +92,12 @@ mod tests {
                     .with_attr("breach_date", "2019-01-02"),
             )
             .build();
-        let profiles = build_profiles(&[entity]);
+        let entities = [entity];
+        let profiles = build_profiles(
+            &entities,
+            &compute_exposure(&entities),
+            &reconstruct(&entities),
+        );
         assert_eq!(profiles[0].exposure_score, 30);
         assert_eq!(profiles[0].first_event_iso.as_deref(), Some("2019-01-02"));
     }
