@@ -171,7 +171,11 @@ pub fn compile_matrix(scan: &ScanRecord, saved: &ScanResults) -> Result<Value, S
         .map(String::as_str)
         .collect();
     let flagged = saved.elements.iter().filter(|element| element.fp).count();
-    let root_elements = saved.elements.iter().filter(|element| element.kind == "ROOT").count();
+    let root_elements = saved
+        .elements
+        .iter()
+        .filter(|element| element.kind == "ROOT")
+        .count();
     let matrix_elements = saved.elements.len() - root_elements;
     let report = json!({
         "format": "huntsman_sparse_evidence_matrix",
@@ -315,7 +319,10 @@ mod tests {
             Some("example.org".to_owned())
         );
         assert_eq!(normalization_candidate("EMAILADDR", "A@B.COM"), None);
-        assert_eq!(normalization_candidate("INTERNET_NAME", "éxample.org"), None);
+        assert_eq!(
+            normalization_candidate("INTERNET_NAME", "éxample.org"),
+            None
+        );
         let mut upper = element("a", "dns", false);
         upper.kind = "DOMAIN_NAME".to_owned();
         upper.data = "Example.ORG.".to_owned();
