@@ -46,11 +46,17 @@ fn provider_issue(
     use SourceOutcomeKind as K;
     let item = match kind {
         K::Success | K::ValidZero => return None,
-        K::NotConfigured | K::AuthRequired => (
+        K::NotConfigured => (
             2,
             "credential_gap",
-            "The source was not queried using the required credential.",
+            "The source was skipped because no required credential was configured.",
             "Configure an operator-owned credential, then rerun this source.",
+        ),
+        K::AuthRequired => (
+            2,
+            "authentication_required",
+            "The provider required authentication; a confirmed negative was not observed.",
+            "Check the provider authentication requirements before retrying.",
         ),
         K::AuthRejected | K::EntitlementDenied => (
             2,
