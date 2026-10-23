@@ -56,7 +56,6 @@ pub fn automatic_clusters(
         .collect()
 }
 
-
 /** Project adjudicated lineage outcomes into deterministic identity clusters.
  *
  * This read-only projection does not re-evaluate or relax the lineage
@@ -220,5 +219,4 @@ mod tests {
         assert_eq!(clusters[1].members, ["c"]);
         assert_eq!(clusters[1].decision_count, 0);
     }
-
 }
