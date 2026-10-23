@@ -1,4 +1,6 @@
-//! OUI parsing and lookup rebuilt from the monolith's `util::oui`.
+//! OUI parsing and lookup. The manufacturer is always the IEEE MA-L registry's assignee
+//! (`oui_ieee`); the curated table below adds only a device class, and only for prefixes the
+//! registry assigns to the brand the row expects, which a test checks against the registry.
 
 use crate::oui_ieee as ieee;
 
@@ -48,190 +50,151 @@ impl DeviceClass {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OuiInfo {
+    /// The IEEE MA-L assignee, or a placeholder where there is none: see [`Self::manufacturer`].
     pub vendor: &'static str,
     pub class: DeviceClass,
 }
 
-#[must_use]
-pub fn is_locally_administered(mac: &str) -> Option<bool> {
-    let hex: String = mac
-        .chars()
-        .filter(char::is_ascii_hexdigit)
-        .take(2)
-        .collect();
-    if hex.len() != 2 {
-        return None;
+/// The assignee the MA-L registry gives a block the IEEE Registration Authority sub-assigns
+/// (MA-M, MA-S, IAB): its real holder is not in the MA-L registry.
+const IEEE_RA: &str = "IEEE Registration Authority";
+
+impl OuiInfo {
+    /// The manufacturer the IEEE MA-L registry names for the address: `None` for a randomised
+    /// address, an unregistered prefix, or a block the IEEE Registration Authority sub-assigns.
+    #[must_use]
+    pub fn manufacturer(&self) -> Option<&'static str> {
+        match self.class {
+            DeviceClass::Randomized | DeviceClass::Unregistered => None,
+            _ => (self.vendor != IEEE_RA).then_some(self.vendor),
+        }
     }
-    let first = u8::from_str_radix(&hex, 16).ok()?;
-    Some(first & 0x02 != 0)
 }
 
-#[must_use]
-pub fn is_multicast(mac: &str) -> Option<bool> {
-    let hex: String = mac
-        .chars()
-        .filter(char::is_ascii_hexdigit)
-        .take(2)
-        .collect();
-    if hex.len() != 2 {
+/// The six octets of a MAC address written as 12 hex digits, bare or separated by `:`, `-` or
+/// `.`. Anything else, such as text that merely contains hex letters, is not an address.
+fn octets(mac: &str) -> Option<[u8; 6]> {
+    let digits = mac
+        .bytes()
+        .filter(|byte| !matches!(byte, b':' | b'-' | b'.'))
+        .collect::<Vec<u8>>();
+    if digits.len() != 12 || !digits.iter().all(u8::is_ascii_hexdigit) {
         return None;
     }
-    let first = u8::from_str_radix(&hex, 16).ok()?;
-    Some(first & 0x01 != 0)
+    let mut out = [0u8; 6];
+    for (octet, pair) in out.iter_mut().zip(digits.chunks(2)) {
+        *octet = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Whether the address is locally administered (randomised): the U/L bit of its first octet.
+#[must_use]
+pub fn is_locally_administered(mac: &str) -> Option<bool> {
+    octets(mac).map(|octets| octets[0] & 0x02 != 0)
+}
+
+/// Whether the address is a group (multicast or broadcast) address: the I/G bit of its first
+/// octet.
+#[must_use]
+pub fn is_multicast(mac: &str) -> Option<bool> {
+    octets(mac).map(|octets| octets[0] & 0x01 != 0)
 }
 
 #[must_use]
 pub fn classify_mac(mac: &str) -> Option<OuiInfo> {
-    let hex: String = mac
-        .chars()
-        .filter(char::is_ascii_hexdigit)
-        .take(6)
-        .collect();
-    if hex.len() != 6 {
-        return None;
-    }
-    let first = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    if first & 0x02 != 0 {
+    let octets = octets(mac)?;
+    if octets[0] & 0x02 != 0 {
         return Some(OuiInfo {
             vendor: "Randomized (private)",
             class: DeviceClass::Randomized,
         });
     }
-    Some(lookup_prefix(&hex.to_ascii_uppercase()))
+    Some(lookup_oui([octets[0], octets[1], octets[2]]))
 }
 
-pub(crate) fn lookup_prefix(prefix: &str) -> OuiInfo {
-    for &(table_prefix, vendor, class) in OUI_TABLE {
-        if table_prefix == prefix {
-            return OuiInfo { vendor, class };
-        }
-    }
-    if let Ok(parsed) = u32::from_str_radix(prefix, 16) {
-        if let Some(vendor) = ieee::vendor_for(parsed) {
-            return OuiInfo {
-                vendor,
-                class: DeviceClass::Unknown,
-            };
-        }
-    }
-    OuiInfo {
-        vendor: "Unknown",
-        class: DeviceClass::Unregistered,
+/// An OUI as the registry keys it.
+fn registry_key(oui: [u8; 3]) -> u32 {
+    u32::from_be_bytes([0, oui[0], oui[1], oui[2]])
+}
+
+fn lookup_oui(oui: [u8; 3]) -> OuiInfo {
+    match ieee::vendor_for(registry_key(oui)) {
+        Some(vendor) => OuiInfo {
+            vendor,
+            class: OUI_TABLE
+                .iter()
+                .find(|row| row.0 == oui)
+                .map_or(DeviceClass::Unknown, |row| row.2),
+        },
+        None => OuiInfo {
+            vendor: "Unknown",
+            class: DeviceClass::Unregistered,
+        },
     }
 }
 
+/// Device classes for prefixes the registry assigns to the brand named, which is the assignee the
+/// row expects: `every_curated_row_is_assigned_to_its_brand` holds each row to the registry.
 #[rustfmt::skip]
-const OUI_TABLE: &[(&str, &str, DeviceClass)] = &[
-    ("3C0754", "Apple", DeviceClass::Phone),
-    ("ACBC32", "Apple", DeviceClass::Phone),
-    ("DCA904", "Apple", DeviceClass::Phone),
-    ("F0DBE2", "Apple", DeviceClass::Phone),
-    ("88665A", "Apple", DeviceClass::Phone),
-    ("A4C361", "Apple", DeviceClass::Phone),
-    ("DC2B61", "Apple", DeviceClass::Phone),
-    ("E0AC8B", "Apple", DeviceClass::Phone),
-    ("F0DCE2", "Apple", DeviceClass::Phone),
-    ("F40F24", "Apple", DeviceClass::Phone),
-    ("F49F54", "Apple", DeviceClass::Phone),
-    ("E0CB1D", "Apple AirPods", DeviceClass::Headphones),
-    ("64B0A6", "Apple AirPods", DeviceClass::Headphones),
-    ("B8C75D", "Apple Beats", DeviceClass::Headphones),
-    ("70DEE2", "Apple Watch", DeviceClass::Wearable),
-    ("A4D1D2", "Apple Watch", DeviceClass::Wearable),
-    ("0C74C2", "Apple TV", DeviceClass::Tv),
-    ("60FACD", "Apple TV", DeviceClass::Tv),
-    ("A8667F", "Apple MacBook", DeviceClass::Laptop),
-    ("F0B479", "Apple MacBook", DeviceClass::Laptop),
-    ("002566", "Samsung", DeviceClass::Phone),
-    ("002738", "Samsung", DeviceClass::Phone),
-    ("0CB319", "Samsung", DeviceClass::Phone),
-    ("28987B", "Samsung", DeviceClass::Phone),
-    ("382DD1", "Samsung", DeviceClass::Phone),
-    ("5C0A5B", "Samsung", DeviceClass::Phone),
-    ("90F1AA", "Samsung", DeviceClass::Phone),
-    ("D052A8", "Samsung", DeviceClass::Phone),
-    ("E89F80", "Samsung", DeviceClass::Phone),
-    ("F87B7A", "Samsung", DeviceClass::Phone),
-    ("002491", "Samsung TV", DeviceClass::Tv),
-    ("089DF4", "Samsung TV", DeviceClass::Tv),
-    ("88366C", "Samsung TV", DeviceClass::Tv),
-    ("48137B", "Samsung Galaxy Watch", DeviceClass::Wearable),
-    ("5439DF", "Samsung Galaxy Buds", DeviceClass::Headphones),
-    ("3C5AB4", "Google Pixel", DeviceClass::Phone),
-    ("D461DA", "Google Pixel", DeviceClass::Phone),
-    ("F4F5D8", "Google", DeviceClass::IotHub),
-    ("40A36B", "Google Nest", DeviceClass::IotHub),
-    ("64166C", "Google Chromecast", DeviceClass::Tv),
-    ("F4F5E8", "Google Chromecast", DeviceClass::Tv),
-    ("D8E1CC", "Google Home", DeviceClass::IotHub),
-    ("18B430", "Google Home", DeviceClass::IotHub),
-    ("4CFCAA", "Tesla", DeviceClass::Vehicle),
-    ("984FEE", "Tesla", DeviceClass::Vehicle),
-    ("CC51B3", "Tesla", DeviceClass::Vehicle),
-    ("DC4427", "Tesla", DeviceClass::Vehicle),
-    ("4C71DD", "Hikvision", DeviceClass::Camera),
-    ("584C19", "Hikvision", DeviceClass::Camera),
-    ("BC9B5E", "Hikvision", DeviceClass::Camera),
-    ("C0511C", "Hikvision", DeviceClass::Camera),
-    ("3CEF8C", "Hikvision", DeviceClass::Camera),
-    ("000B7C", "Dahua", DeviceClass::Camera),
-    ("3C1B20", "Dahua", DeviceClass::Camera),
-    ("00408C", "Axis Comms", DeviceClass::Camera),
-    ("00408D", "Axis Comms", DeviceClass::Camera),
-    ("ACCC8E", "Axis Comms", DeviceClass::Camera),
-    ("B8A44F", "Axis Comms", DeviceClass::Camera),
-    ("000E58", "Sonos", DeviceClass::IotHub),
-    ("5CAAFD", "Sonos", DeviceClass::IotHub),
-    ("B8E937", "Sonos", DeviceClass::IotHub),
-    ("78282A", "Bose", DeviceClass::Headphones),
-    ("E40B09", "Bose", DeviceClass::Headphones),
-    ("00C04F", "Sony", DeviceClass::Tv),
-    ("18594D", "Xiaomi", DeviceClass::Phone),
-    ("286C07", "Xiaomi", DeviceClass::Phone),
-    ("8CBEBE", "Xiaomi", DeviceClass::Phone),
-    ("AC2DA9", "Xiaomi", DeviceClass::Phone),
-    ("00E0FC", "Huawei", DeviceClass::Phone),
-    ("80FB06", "Huawei", DeviceClass::Phone),
-    ("0C37DC", "Huawei", DeviceClass::Phone),
-    ("2C5BB8", "OnePlus", DeviceClass::Phone),
-    ("48D343", "OnePlus", DeviceClass::Phone),
-    ("001E45", "Nintendo", DeviceClass::GameConsole),
-    ("E84ECE", "Nintendo Switch", DeviceClass::GameConsole),
-    ("0050C2", "Sony PlayStation", DeviceClass::GameConsole),
-    ("FCDBB3", "Sony PlayStation", DeviceClass::GameConsole),
-    ("000D3A", "Microsoft Xbox", DeviceClass::GameConsole),
-    ("7C1E52", "Microsoft Xbox", DeviceClass::GameConsole),
-    ("00FC8B", "Amazon Echo", DeviceClass::IotHub),
-    ("44650D", "Amazon Echo", DeviceClass::IotHub),
-    ("F0D2F1", "Amazon Echo", DeviceClass::IotHub),
-    ("AC63BE", "Amazon Echo", DeviceClass::IotHub),
-    ("38F73D", "Amazon Echo", DeviceClass::IotHub),
-    ("FCA667", "Amazon Ring", DeviceClass::Camera),
-    ("000F4A", "Amazon Kindle", DeviceClass::Tablet),
-    ("2C300A", "Wyze", DeviceClass::Camera),
-    ("0C5101", "ASUS", DeviceClass::Router),
-    ("2C56DC", "ASUS", DeviceClass::Router),
-    ("FC8FC4", "ASUS", DeviceClass::Router),
-    ("00904C", "Netgear", DeviceClass::Router),
-    ("204E7F", "Netgear", DeviceClass::Router),
-    ("9C3DCF", "Netgear", DeviceClass::Router),
-    ("AC9E17", "Netgear", DeviceClass::Router),
-    ("002584", "TP-Link", DeviceClass::Router),
-    ("0C808A", "TP-Link", DeviceClass::Router),
-    ("344293", "TP-Link", DeviceClass::Router),
-    ("D8074D", "TP-Link", DeviceClass::Router),
-    ("18A6F7", "TP-Link", DeviceClass::Router),
-    ("D03972", "Estimote Beacon", DeviceClass::Beacon),
-    ("E1F4B8", "Estimote Beacon", DeviceClass::Beacon),
-    ("DC0C5C", "Kontakt Beacon", DeviceClass::Beacon),
-    ("D8BC38", "Radius Networks", DeviceClass::Beacon),
-    ("3CD92B", "HP", DeviceClass::Printer),
-    ("9C8E99", "HP", DeviceClass::Printer),
-    ("001E33", "Brother", DeviceClass::Printer),
-    ("003C6E", "Canon", DeviceClass::Printer),
-    ("EC2EB8", "Tile", DeviceClass::Beacon),
-    ("DCEFCA", "Tile", DeviceClass::Beacon),
-    ("F8B6E9", "Apple AirTag", DeviceClass::Beacon),
+const OUI_TABLE: &[([u8; 3], &str, DeviceClass)] = &[
+    ([0x3C, 0x07, 0x54], "Apple", DeviceClass::Phone),
+    ([0xAC, 0xBC, 0x32], "Apple", DeviceClass::Phone),
+    ([0xDC, 0xA9, 0x04], "Apple", DeviceClass::Phone),
+    ([0xF0, 0xDB, 0xE2], "Apple", DeviceClass::Phone),
+    ([0x88, 0x66, 0x5A], "Apple", DeviceClass::Phone),
+    ([0xA4, 0xC3, 0x61], "Apple", DeviceClass::Phone),
+    ([0xDC, 0x2B, 0x61], "Apple", DeviceClass::Phone),
+    ([0xF0, 0xDC, 0xE2], "Apple", DeviceClass::Phone),
+    ([0xF4, 0x0F, 0x24], "Apple", DeviceClass::Phone),
+    ([0x64, 0xB0, 0xA6], "Apple AirPods", DeviceClass::Headphones),
+    ([0xB8, 0xC7, 0x5D], "Apple Beats", DeviceClass::Headphones),
+    ([0x70, 0xDE, 0xE2], "Apple Watch", DeviceClass::Wearable),
+    ([0xA4, 0xD1, 0xD2], "Apple Watch", DeviceClass::Wearable),
+    ([0x0C, 0x74, 0xC2], "Apple TV", DeviceClass::Tv),
+    ([0x60, 0xFA, 0xCD], "Apple TV", DeviceClass::Tv),
+    ([0xA8, 0x66, 0x7F], "Apple MacBook", DeviceClass::Laptop),
+    ([0xF0, 0xB4, 0x79], "Apple MacBook", DeviceClass::Laptop),
+    ([0x00, 0x25, 0x66], "Samsung", DeviceClass::Phone),
+    ([0x0C, 0xB3, 0x19], "Samsung", DeviceClass::Phone),
+    ([0x28, 0x98, 0x7B], "Samsung", DeviceClass::Phone),
+    ([0x38, 0x2D, 0xD1], "Samsung", DeviceClass::Phone),
+    ([0x5C, 0x0A, 0x5B], "Samsung", DeviceClass::Phone),
+    ([0x90, 0xF1, 0xAA], "Samsung", DeviceClass::Phone),
+    ([0x00, 0x24, 0x91], "Samsung TV", DeviceClass::Tv),
+    ([0x3C, 0x5A, 0xB4], "Google Pixel", DeviceClass::Phone),
+    ([0xF4, 0xF5, 0xD8], "Google", DeviceClass::IotHub),
+    ([0xF4, 0xF5, 0xE8], "Google Chromecast", DeviceClass::Tv),
+    ([0x18, 0xB4, 0x30], "Nest Labs", DeviceClass::IotHub),
+    ([0x4C, 0xFC, 0xAA], "Tesla", DeviceClass::Vehicle),
+    ([0xBC, 0x9B, 0x5E], "Hikvision", DeviceClass::Camera),
+    ([0x00, 0x40, 0x8C], "Axis Comms", DeviceClass::Camera),
+    ([0xAC, 0xCC, 0x8E], "Axis Comms", DeviceClass::Camera),
+    ([0xB8, 0xA4, 0x4F], "Axis Comms", DeviceClass::Camera),
+    ([0x00, 0x0E, 0x58], "Sonos", DeviceClass::IotHub),
+    ([0x5C, 0xAA, 0xFD], "Sonos", DeviceClass::IotHub),
+    ([0xB8, 0xE9, 0x37], "Sonos", DeviceClass::IotHub),
+    ([0x28, 0x6C, 0x07], "Xiaomi", DeviceClass::Phone),
+    ([0x8C, 0xBE, 0xBE], "Xiaomi", DeviceClass::Phone),
+    ([0x00, 0xE0, 0xFC], "Huawei", DeviceClass::Phone),
+    ([0x80, 0xFB, 0x06], "Huawei", DeviceClass::Phone),
+    ([0x0C, 0x37, 0xDC], "Huawei", DeviceClass::Phone),
+    ([0x2C, 0x5B, 0xB8], "OPPO", DeviceClass::Phone),
+    ([0xE8, 0x4E, 0xCE], "Nintendo Switch", DeviceClass::GameConsole),
+    ([0x00, 0x0D, 0x3A], "Microsoft Xbox", DeviceClass::GameConsole),
+    ([0x7C, 0x1E, 0x52], "Microsoft Xbox", DeviceClass::GameConsole),
+    ([0x00, 0xFC, 0x8B], "Amazon Echo", DeviceClass::IotHub),
+    ([0x44, 0x65, 0x0D], "Amazon Echo", DeviceClass::IotHub),
+    ([0xF0, 0xD2, 0xF1], "Amazon Echo", DeviceClass::IotHub),
+    ([0xAC, 0x63, 0xBE], "Amazon Echo", DeviceClass::IotHub),
+    ([0x38, 0xF7, 0x3D], "Amazon Echo", DeviceClass::IotHub),
+    ([0xFC, 0xA6, 0x67], "Amazon Ring", DeviceClass::Camera),
+    ([0x2C, 0x56, 0xDC], "ASUS", DeviceClass::Router),
+    ([0x20, 0x4E, 0x7F], "Netgear", DeviceClass::Router),
+    ([0x9C, 0x3D, 0xCF], "Netgear", DeviceClass::Router),
+    ([0x18, 0xA6, 0xF7], "TP-Link", DeviceClass::Router),
+    ([0x3C, 0xD9, 0x2B], "Hewlett Packard", DeviceClass::Printer),
+    ([0x9C, 0x8E, 0x99], "Hewlett Packard", DeviceClass::Printer),
 ];
 
 #[cfg(test)]
@@ -239,29 +202,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classifies_curated_examples() {
-        assert_eq!(classify_mac("3C:07:54:AB:CD:EF").unwrap().vendor, "Apple");
-        assert_eq!(
-            classify_mac("F8:B6:E9:00:11:22").unwrap().class,
-            DeviceClass::Beacon
-        );
+    fn the_manufacturer_is_the_registry_assignee_and_the_table_adds_a_class() {
+        let apple = classify_mac("3C:07:54:AB:CD:EF").unwrap();
+        assert_eq!(apple.vendor, "Apple, Inc.");
+        assert_eq!(apple.class, DeviceClass::Phone);
         assert_eq!(
             classify_mac("4C:FC:AA:11:22:33").unwrap().class,
             DeviceClass::Vehicle
         );
-        assert_eq!(classify_mac("DC:44:27:AA:BB:CC").unwrap().vendor, "Tesla");
-        assert_eq!(
-            classify_mac("4C-71-DD-AB-CD-EF").unwrap().vendor,
-            "Hikvision"
+        let hikvision = classify_mac("BC-9B-5E-AB-CD-EF").unwrap();
+        assert!(
+            hikvision.vendor.contains("Hikvision"),
+            "{}",
+            hikvision.vendor
         );
+        assert_eq!(hikvision.class, DeviceClass::Camera);
         assert_eq!(
-            classify_mac("e0cb1dabcdef").unwrap().class,
+            classify_mac("64b0a6abcdef").unwrap().class,
             DeviceClass::Headphones
         );
         assert_eq!(
             classify_mac("3c:5a:b4:00:11:22").unwrap().vendor,
-            "Google Pixel"
+            "Google, Inc."
         );
+        // A prefix the old table gave to Apple belongs to Samsung in the registry.
+        assert!(
+            classify_mac("F4:9F:54:00:11:22")
+                .unwrap()
+                .vendor
+                .starts_with("Samsung"),
+        );
+    }
+
+    #[test]
+    fn every_curated_row_is_assigned_to_its_brand() {
+        let token = |text: &str| {
+            text.chars()
+                .filter(char::is_ascii_alphanumeric)
+                .collect::<String>()
+                .to_ascii_lowercase()
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for &(oui, brand, _) in OUI_TABLE {
+            let prefix = registry_key(oui);
+            assert!(seen.insert(oui), "{prefix:06X} is listed twice");
+            assert_eq!(
+                oui[0] & 0x03,
+                0,
+                "{prefix:06X} is not a universal unicast OUI"
+            );
+            let assignee = ieee::vendor_for(prefix)
+                .unwrap_or_else(|| panic!("{prefix:06X} is not an IEEE MA-L assignment"));
+            assert_ne!(assignee, IEEE_RA, "{prefix:06X}");
+            let first = token(brand.split_whitespace().next().unwrap_or_default());
+            assert!(
+                !first.is_empty() && token(assignee).contains(&first),
+                "{prefix:06X}: the table expects {brand:?}, the registry names {assignee:?}"
+            );
+        }
     }
 
     #[test]
@@ -269,6 +267,7 @@ mod tests {
         let info = classify_mac("00:11:22:33:44:55").unwrap();
         assert_ne!(info.vendor, "Unknown");
         assert_eq!(info.class, DeviceClass::Unknown);
+        assert_eq!(info.manufacturer(), Some(info.vendor));
     }
 
     #[test]
@@ -276,8 +275,26 @@ mod tests {
         let info = classify_mac("10:10:10:33:44:55").unwrap();
         assert_eq!(info.vendor, "Unknown");
         assert_eq!(info.class, DeviceClass::Unregistered);
-        assert!(classify_mac("AA:BB").is_none());
-        assert!(classify_mac("not-a-mac").is_none());
+        assert_eq!(info.manufacturer(), None);
+        for malformed in [
+            "AA:BB",
+            "not-a-mac",
+            "Cafe Babe",
+            "deadbeef",
+            "3C",
+            "3C:07:54:AB:CD:EF:01",
+        ] {
+            assert!(classify_mac(malformed).is_none(), "{malformed}");
+            assert!(is_locally_administered(malformed).is_none(), "{malformed}");
+            assert!(is_multicast(malformed).is_none(), "{malformed}");
+        }
+    }
+
+    #[test]
+    fn a_registration_authority_block_names_no_manufacturer() {
+        let info = classify_mac("00:50:C2:00:11:22").unwrap();
+        assert_eq!(info.vendor, IEEE_RA);
+        assert_eq!(info.manufacturer(), None);
     }
 
     #[test]
@@ -290,22 +307,11 @@ mod tests {
             let info = classify_mac(mac).unwrap();
             assert_eq!(info.class, DeviceClass::Randomized);
             assert_eq!(info.vendor, "Randomized (private)");
+            assert_eq!(info.manufacturer(), None);
         }
         assert_eq!(is_locally_administered("3C:07:54:AB:CD:EF"), Some(false));
         assert_eq!(is_multicast("01:00:5e:00:00:fb"), Some(true));
         assert_eq!(is_multicast("3c:5a:b4:11:22:33"), Some(false));
         assert_eq!(is_multicast("zz"), None);
-    }
-
-    #[test]
-    fn table_prefixes_are_well_formed() {
-        for &(prefix, _, _) in OUI_TABLE {
-            assert_eq!(prefix.len(), 6);
-            assert!(
-                prefix
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
-            );
-        }
     }
 }

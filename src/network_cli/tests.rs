@@ -138,12 +138,37 @@ fn without_credentials_a_bssid_is_still_classified_and_wigle_reports_not_configu
         .iter()
         .find_map(|e| e.attributes.get("vendor"))
         .cloned();
-    assert!(vendor.is_some_and(|v| !v.is_empty()), "{text}");
+    assert_eq!(
+        vendor.as_deref(),
+        Some("Google, Inc."),
+        "the IEEE assignee: {text}"
+    );
     assert!(
         text.ends_with("wigle_networks=none\nwigle_bluetooth_devices=none\n"),
         "{text}"
     );
     assert!(text.contains(wigle::USER_SLOT), "{text}");
+}
+
+#[test]
+fn a_prefix_no_manufacturer_is_registered_for_reports_none() {
+    // 10:10:10 has no IEEE MA-L assignment: the registry names no manufacturer, so the OUI row
+    // is a validated zero and no "Unknown" manufacturer is recorded as found.
+    let (text, report) = printed(run(None, "10:10:10:01:02:03", 7));
+    assert_eq!(report.outcomes[0].module, OUI_SOURCE);
+    assert_eq!(
+        report.outcomes[0].kind,
+        SourceOutcomeKind::ValidZero,
+        "{text}"
+    );
+    assert!(
+        report
+            .entities
+            .iter()
+            .flat_map(|entity| &entity.evidence)
+            .all(|evidence| !evidence.attributes.contains_key("vendor")),
+        "{text}"
+    );
 }
 
 #[test]
