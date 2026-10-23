@@ -44,7 +44,7 @@ fn offline_cli_executes_shared_runtime() {
     let text = stdout(&out);
     assert!(text.contains("accepted=2"));
     assert!(text.contains("entities=2"));
-    assert!(text.contains("termination=FixedPoint"));
+    assert!(text.contains("termination=fixed_point"));
     assert!(text.contains("truncated=false"));
 }
 

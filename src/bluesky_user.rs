@@ -2,7 +2,9 @@
 
 use serde::Deserialize;
 
-use crate::atproto::{bare_handle, handle_domain_confidence, platform_handle_suffix};
+use crate::atproto::{
+    bare_handle, handle_domain_confidence, is_plc_did, platform_handle_suffix, web_did_host,
+};
 use crate::canonical::{canonical_domain, is_domain_label};
 use crate::classifier;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
@@ -230,11 +232,13 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
         );
     }
 
+    // Only a DID in one of the two methods Bluesky uses becomes an entity: a malformed or
+    // hostile value stays on the profile's evidence as `did`, never a pivot of its own.
     if let Some(did) = profile
         .did
         .as_deref()
         .map(str::trim)
-        .filter(|did| !did.is_empty())
+        .filter(|did| is_plc_did(did) || web_did_host(did).is_some())
     {
         push_entity(
             &mut entities,
@@ -379,6 +383,47 @@ mod tests {
         assert!(!got.entities.iter().any(|entity| {
             entity.kind == EntityKind::Domain && entity.value == "alice.bsky.social"
         }));
+    }
+
+    #[test]
+    fn a_did_bluesky_does_not_issue_stays_evidence_and_is_no_entity() {
+        for did in [
+            "did:plc:../../etc/passwd/xxxxxxx",
+            "not-a-did",
+            "did:web:example.com%3A8443",
+        ] {
+            let body = format!(r#"{{"handle":"alice.bsky.social","did":"{did}"}}"#);
+            let got = lookup(&OneResponse::json(200, &body), "alice", "scan", 1).unwrap();
+            assert!(
+                !got.entities
+                    .iter()
+                    .any(|entity| entity.kind == EntityKind::Other),
+                "{did} became an entity"
+            );
+            let username = got
+                .entities
+                .iter()
+                .find(|entity| entity.kind == EntityKind::Username)
+                .expect("username");
+            assert!(
+                username.evidence.iter().any(|evidence| evidence
+                    .attributes
+                    .get("did")
+                    .map(String::as_str)
+                    == Some(did)),
+                "{did} left the evidence"
+            );
+        }
+        for did in ["did:plc:oky5czdrnfjpqslsw2a5iclo", "did:web:example.com"] {
+            let body = format!(r#"{{"handle":"alice.bsky.social","did":"{did}"}}"#);
+            let got = lookup(&OneResponse::json(200, &body), "alice", "scan", 1).unwrap();
+            assert!(
+                got.entities
+                    .iter()
+                    .any(|entity| entity.kind == EntityKind::Other && entity.value == did),
+                "{did}"
+            );
+        }
     }
 
     #[test]

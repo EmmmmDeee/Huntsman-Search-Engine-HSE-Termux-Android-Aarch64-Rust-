@@ -55,6 +55,16 @@ pub struct Credential {
     origin: Option<&'static str>,
 }
 
+/// Whether `name` may name a credential's header or query parameter: a non-empty token of ASCII
+/// letters, digits, `-` and `_`, so it can carry no separator, space or line break.
+#[must_use]
+pub fn valid_param_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 impl Credential {
     /// # Errors
     /// `Error::Invalid` when a custom header name is not a plain token.
@@ -64,11 +74,7 @@ impl Credential {
         style: AuthStyle,
     ) -> Result<Self, Error> {
         if let AuthStyle::Header(name) | AuthStyle::Query(name) = &style {
-            let ok = !name.is_empty()
-                && name
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-            if !ok {
+            if !valid_param_name(name) {
                 return Err(Error::Invalid(
                     "credential header or parameter name must be a token".into(),
                 ));

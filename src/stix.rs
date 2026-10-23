@@ -15,7 +15,9 @@ pub fn bundle(entries: &[LedgerEntry]) -> Value {
 pub fn bundle_with(entries: &[LedgerEntry], bindings: &[(&str, &str)]) -> Value {
     let mut objects = Vec::new();
     for entry in admitted_with(entries, bindings) {
-        let id = stix_id(&entry.hash);
+        let Some(id) = stix_id(&entry.hash) else {
+            continue;
+        };
         objects.push(json!({
             "type": "indicator",
             "spec_version": "2.1",
@@ -47,16 +49,21 @@ fn escape_literal(raw: &str) -> String {
     raw.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
-fn stix_id(hash: &str) -> String {
-    let h = format!("{hash:0<32}");
-    format!(
+/// The indicator id for a ledger hash: its first 32 hex digits shaped as a version-4 UUID. `None`
+/// for a hash that is not at least 32 hex digits (every sealed hash is 64): such an entry is left
+/// out rather than given an id that is padded, shared with another short hash, or not a UUID.
+fn stix_id(hash: &str) -> Option<String> {
+    let h = hash
+        .get(..32)
+        .filter(|h| h.bytes().all(|byte| byte.is_ascii_hexdigit()))?;
+    Some(format!(
         "indicator--{}-{}-4{}-8{}-{}",
         &h[0..8],
         &h[8..12],
         &h[13..16],
         &h[17..20],
         &h[20..32]
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -75,6 +82,22 @@ mod tests {
             evidence_level: EvidenceLevel::DirectObservation,
             does_not_show: "not a live scan".into(),
         })
+    }
+
+    #[test]
+    fn an_entry_whose_hash_is_not_hex_is_left_out_not_a_panic_or_a_shared_id() {
+        let binding = [("src/geoint.rs", "T1595")];
+        for hash in [
+            "é".repeat(20),
+            "abc".to_owned(),
+            String::new(),
+            "z".repeat(64),
+        ] {
+            let mut entry = bound_entry("src/geoint.rs");
+            entry.hash = hash;
+            let value = bundle_with(&[entry], &binding);
+            assert!(value["objects"].as_array().unwrap().is_empty());
+        }
     }
 
     #[test]

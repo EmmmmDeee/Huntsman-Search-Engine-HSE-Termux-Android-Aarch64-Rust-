@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::Error;
-use crate::fetch::{AuthStyle, DEFAULT_MAX_REDIRECTS};
+use crate::fetch::{AuthStyle, DEFAULT_MAX_REDIRECTS, valid_param_name};
 use crate::keys::valid_slot;
 
 pub const FETCH_USAGE: &str = "usage: huntsman-recon fetch URL [--body] [--allow-private] [--keys FILE] \
@@ -47,7 +47,14 @@ impl FetchArgs {
             match arg.as_str() {
                 "--body" => out.print_body = true,
                 "--allow-private" => out.allow_private = true,
-                "--keys" => out.keys_file = Some(PathBuf::from(value("--keys")?)),
+                "--keys" => {
+                    let path = value("--keys")?;
+                    // A flag in its place means the path was left out; never swallow the option.
+                    if path.is_empty() || path.starts_with("--") {
+                        return Err(Error::Invalid("--keys needs a file path".into()));
+                    }
+                    out.keys_file = Some(PathBuf::from(path));
+                }
                 "--bearer" => {
                     let slot = checked_slot(&value("--bearer")?)?;
                     set_auth(&mut out, slot, AuthStyle::Bearer)?;
@@ -57,6 +64,11 @@ impl FetchArgs {
                     let (name, slot) = spec
                         .split_once('=')
                         .ok_or_else(|| Error::Invalid("--header wants NAME=SLOT".into()))?;
+                    if !valid_param_name(name) {
+                        return Err(Error::Invalid(
+                            "--header NAME must be a token (A-Z a-z 0-9 - _)".into(),
+                        ));
+                    }
                     set_auth(
                         &mut out,
                         checked_slot(slot)?,
@@ -151,6 +163,10 @@ mod tests {
             "https://a.example/ --bearer",
             "https://a.example/ --bearer lowercase",
             "https://a.example/ --header NOEQUALS",
+            "https://a.example/ --header =PROVIDER_KEY",
+            "https://a.example/ --header X:Y=PROVIDER_KEY",
+            "https://a.example/ --keys --body",
+            "https://a.example/ --bearer A_KEY --keys --allow-private",
             "https://a.example/ --bearer A_KEY --header X=B_KEY",
             "https://a.example/ --timeout 0",
             "https://a.example/ --timeout 601",

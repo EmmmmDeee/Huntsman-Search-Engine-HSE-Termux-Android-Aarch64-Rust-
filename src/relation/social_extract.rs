@@ -24,7 +24,9 @@ fn extract_username_from_profile_url(url: &str) -> Option<String> {
         "reddit.com" => (segments.first() == Some(&"user")).then_some(*segments.get(1)?),
         "bsky.app" => {
             if segments.first() == Some(&"profile") {
-                Some(segments.get(1)?.trim_end_matches(".bsky.social"))
+                // The suffixes `username`'s Bluesky lookup strips, so a profile's own URL and its
+                // username name the same handle.
+                Some(crate::atproto::bare_handle(segments.get(1)?))
             } else {
                 None
             }
@@ -91,6 +93,18 @@ mod tests {
             extract_username_from_profile_url("https://bsky.app/profile/haigen.bsky.social"),
             Some("haigen".into())
         );
+        for (url, handle) in [
+            ("https://bsky.app/profile/alice.bsky.team", "alice"),
+            ("https://bsky.app/profile/Alice.BSKY.Social", "alice"),
+            ("https://bsky.app/profile/bob.brid.gy", "bob"),
+            ("https://bsky.app/profile/pfrazee.com", "pfrazeecom"),
+        ] {
+            assert_eq!(
+                extract_username_from_profile_url(url),
+                Some(handle.into()),
+                "{url}"
+            );
+        }
         assert_eq!(
             extract_username_from_profile_url("https://news.ycombinator.com/user?id=pg"),
             Some("pg".into())

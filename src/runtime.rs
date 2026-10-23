@@ -198,8 +198,9 @@ pub fn session_for_outcome(
         attack: "force bounded or incomplete input".into(),
         test: "inspect report/artifact truncation and termination reason".into(),
         result: format!(
-            "truncated={} termination={:?}",
-            outcome.report.truncated, outcome.report.termination
+            "truncated={} termination={}",
+            outcome.report.truncated,
+            outcome.report.termination.as_str()
         ),
     })?;
     session.add_execute(ExecuteRecord {

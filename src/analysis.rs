@@ -49,7 +49,7 @@ fn termination_for(snapshot: &AnalysisSnapshot) -> TerminationReason {
     decide_termination(frontier, signals).unwrap_or(TerminationReason::FixedPoint)
 }
 
-fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
+fn base_report(snapshot: &AnalysisSnapshot, expand_floor: f64) -> InvestigationReport {
     let graph = Graph::build(&snapshot.entities, &snapshot.relations);
     let scan_id = snapshot
         .entities
@@ -62,7 +62,7 @@ fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
             &snapshot.relations,
         ),
         metrics: metrics::compute(&snapshot.entities, &snapshot.relations),
-        gaps: gap::analyze(&snapshot.entities, &snapshot.relations),
+        gaps: gap::analyze_on(&graph, &snapshot.entities, expand_floor),
         pivots: pivot::rank_pivots(&graph),
         coreference: coref::cluster_entities(&snapshot.entities),
         // The rules read domain relations, which they derive from the entities. The snapshot's
@@ -78,7 +78,17 @@ fn base_report(snapshot: &AnalysisSnapshot) -> InvestigationReport {
 
 #[must_use]
 pub fn analyze_snapshot(snapshot: &AnalysisSnapshot) -> InvestigationReport {
-    base_report(snapshot)
+    base_report(snapshot, gap::EXPAND_FLOOR)
+}
+
+/// [`analyze_snapshot`] for a crawl that expanded by `expand_floor`, so the gap report names as
+/// below the floor exactly the orphans the crawl would not follow.
+#[must_use]
+pub fn analyze_snapshot_with_expand_floor(
+    snapshot: &AnalysisSnapshot,
+    expand_floor: f64,
+) -> InvestigationReport {
+    base_report(snapshot, expand_floor)
 }
 
 /// Analyze the same immutable snapshot with injected historical scan storage.
@@ -91,7 +101,7 @@ pub fn analyze_snapshot_with_cross_scan<S: CrossScanStore>(
     store: &S,
     limits: &PipelineLimits,
 ) -> Result<InvestigationReport, Error> {
-    let mut report = base_report(snapshot);
+    let mut report = base_report(snapshot, gap::EXPAND_FLOOR);
     report.cross_scan = Some(category_from_entities(
         store,
         scan_id,
