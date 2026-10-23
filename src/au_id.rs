@@ -141,54 +141,6 @@ pub fn looks_like_company(name: &str) -> bool {
         .any(|suffix| padded.contains(suffix))
 }
 
-/// Split a register owner string into individually ABN-resolvable company names.
-#[must_use]
-pub fn company_names(owner: &str) -> Vec<String> {
-    let normalised = owner.replace(" AND ", " & ").replace(" and ", " & ");
-    let mut segments: Vec<String> = Vec::new();
-    for segment in normalised.split('&') {
-        let trimmed = segment.trim();
-        let first = trimmed
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .trim_end_matches('.')
-            .to_uppercase();
-        if matches!(first.as_str(), "CO" | "COMPANY") && !segments.is_empty() {
-            if let Some(previous) = segments.last_mut() {
-                previous.push_str(" & ");
-                previous.push_str(trimmed);
-            }
-        } else {
-            segments.push(trimmed.to_string());
-        }
-    }
-    let parts: Vec<String> = segments
-        .into_iter()
-        .map(|part| match part.find("- SEE") {
-            Some(index) => part[..index].trim().to_string(),
-            None => part.trim().to_string(),
-        })
-        .filter(|part| part.len() >= 4 && looks_like_company(part))
-        .collect();
-    if parts.len() >= 2 {
-        let mut out = Vec::new();
-        for part in parts {
-            if !out.contains(&part) {
-                out.push(part);
-                if out.len() >= 5 {
-                    break;
-                }
-            }
-        }
-        out
-    } else if looks_like_company(owner) {
-        vec![owner.trim().to_string()]
-    } else {
-        Vec::new()
-    }
-}
-
 /// Bare six-digit BSB from `NNNNNN`, `NNN-NNN`, or `NNN NNN`. Any other grouping
 /// is refused, so a number split across prose never normalises.
 #[must_use]
@@ -556,15 +508,5 @@ mod tests {
         assert!(looks_like_company("Acme Holdings Pty Ltd"));
         assert!(looks_like_company("Smith & Co"));
         assert!(!looks_like_company("Incandescent Bay"));
-        assert_eq!(
-            company_names("Alpha Pty Ltd & Beta Pty Ltd"),
-            vec!["Alpha Pty Ltd", "Beta Pty Ltd"]
-        );
-        assert_eq!(
-            company_names("Ashton & Co Pty Ltd & Berg Pty Ltd"),
-            vec!["Ashton & Co Pty Ltd", "Berg Pty Ltd"]
-        );
-        let names = company_names("Jane Citizen");
-        assert!(names.is_empty(), "{names:?}");
     }
 }

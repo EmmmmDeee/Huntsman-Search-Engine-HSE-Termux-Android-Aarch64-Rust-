@@ -82,29 +82,11 @@ impl SourceOutcomeKind {
         matches!(self, Self::Success | Self::ValidZero)
     }
 
-    #[must_use]
-    pub const fn is_auth(self) -> bool {
-        matches!(self, Self::AuthRequired | Self::AuthRejected)
-    }
-
     /// Whether the source made no request because no key is configured: an expected skip, not a
     /// failure, so a scan does not count it as an error.
     #[must_use]
     pub const fn is_not_configured(self) -> bool {
         matches!(self, Self::NotConfigured)
-    }
-
-    #[must_use]
-    pub const fn is_contract_drift(self) -> bool {
-        matches!(
-            self,
-            Self::RedirectChanged
-                | Self::ProtocolDrift
-                | Self::InteractionDrift
-                | Self::SchemaDrift
-                | Self::ParserDrift
-                | Self::SemanticDrift
-        )
     }
 
     #[must_use]
@@ -116,21 +98,6 @@ impl SourceOutcomeKind {
                 | Self::TlsFailure
                 | Self::TtfbTimeout
                 | Self::BodyTimeout
-        )
-    }
-
-    #[must_use]
-    pub const fn normally_retryable(self) -> bool {
-        matches!(
-            self,
-            Self::RateLimited
-                | Self::DnsFailure
-                | Self::ConnectFailure
-                | Self::TtfbTimeout
-                | Self::BodyTimeout
-                | Self::Upstream5xx
-                | Self::BotWaf
-                | Self::Inconclusive
         )
     }
 }
@@ -444,7 +411,6 @@ mod tests {
             SourceOutcomeKind::ParserDrift,
             SourceOutcomeKind::SemanticDrift,
         ] {
-            assert!(kind.is_contract_drift());
             assert_eq!(
                 recommended_action(kind),
                 SourceHealthAction::RequireContractVerification
@@ -487,7 +453,6 @@ mod tests {
         let skipped = SourceOutcomeKind::NotConfigured;
         assert!(skipped.is_not_configured());
         assert!(!SourceOutcomeKind::AuthRequired.is_not_configured());
-        assert!(!skipped.is_auth());
         assert!(!skipped.is_accepted());
         assert_eq!(
             recommended_action(skipped),

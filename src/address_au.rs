@@ -379,11 +379,6 @@ impl AuLineType {
             Self::Premium => "premium-rate",
         }
     }
-
-    #[must_use]
-    pub fn is_business_service(self) -> bool {
-        matches!(self, Self::Freephone | Self::LocalRate | Self::Premium)
-    }
 }
 
 #[must_use]

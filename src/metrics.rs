@@ -415,7 +415,7 @@ mod tests {
         let b = ent(EntityKind::Email, "jane@example.com", 0.80);
         let c = ent(EntityKind::Domain, "example.com", 0.50);
         let mut d = ent(EntityKind::Domain, "cdn.example.com", 0.20);
-        d.tag(tags::SEARCH_DISCOVERED);
+        d.tag(tags::DERIVED);
         d.tag("cross-scan");
         let relations = vec![
             EntityRelation::new(

@@ -1,7 +1,5 @@
 //! Pure validation helpers rebuilt from `core/validation` and related utility code.
 
-use std::borrow::Cow;
-
 use crate::textnorm::ascii_digits_and_plus;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -328,29 +326,6 @@ pub fn is_fragment_value(kind: &ValueKind, value: &str) -> bool {
     }
 }
 
-fn is_invisible_format(c: char) -> bool {
-    matches!(
-        c,
-        '\u{200B}'
-            | '\u{200C}'
-            | '\u{200D}'
-            | '\u{FEFF}'
-            | '\u{00AD}'
-            | '\u{2060}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2066}'..='\u{2069}'
-    )
-}
-
-#[must_use]
-pub fn strip_invisible(s: &str) -> Cow<'_, str> {
-    if s.chars().any(is_invisible_format) {
-        Cow::Owned(s.chars().filter(|c| !is_invisible_format(*c)).collect())
-    } else {
-        Cow::Borrowed(s)
-    }
-}
-
 #[allow(clippy::match_same_arms)]
 fn skeleton_char(c: char) -> char {
     if ('\u{FF01}'..='\u{FF5E}').contains(&c) {
@@ -574,8 +549,6 @@ mod tests {
 
     #[test]
     fn confusable_and_xml_adjacent_guards_work() {
-        assert_eq!(strip_invisible("jo\u{200D}hn"), "john");
-        assert!(matches!(strip_invisible("john"), Cow::Borrowed("john")));
         assert_eq!(skeleton("pаypal.com"), "paypal.com");
         assert_eq!(homoglyph_skeleton("paypa1"), homoglyph_skeleton("paypal"));
         assert_eq!(levenshtein("kitten", "sitting"), 3);

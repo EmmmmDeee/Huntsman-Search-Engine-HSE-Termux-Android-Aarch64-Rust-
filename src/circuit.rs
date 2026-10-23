@@ -319,14 +319,6 @@ impl<T: Clone + Send + 'static> ResponseCache<T> {
         self.cap
     }
 
-    pub fn clear_prefix(&self, prefix: &str) {
-        self.lock()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entries
-            .retain(|key, _| !key.starts_with(prefix));
-    }
-
     pub fn clear(&self) {
         self.lock()
             .lock()
@@ -432,9 +424,6 @@ mod tests {
         assert_eq!(cache.get("a"), Some(9));
         assert_eq!(cache.get("d"), Some(4));
 
-        cache.clear_prefix("a");
-        assert_eq!(cache.get("a"), None);
-        assert_eq!(cache.len(), 1);
         cache.clear();
         assert!(cache.is_empty());
 
