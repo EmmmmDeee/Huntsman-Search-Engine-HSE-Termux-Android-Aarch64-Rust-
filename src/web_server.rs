@@ -2029,6 +2029,7 @@ fn response_head(status: u16, content_type: &str, content_length: usize, extra: 
         500 => "Internal Server Error",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
+        504 => "Gateway Timeout",
         _ => "Error",
     };
     let status_header = match status {
@@ -2792,7 +2793,11 @@ mod tests {
 
     #[test]
     fn statuses_carry_their_reason_phrases() {
-        for (status, phrase) in [(408, "Request Timeout"), (503, "Service Unavailable")] {
+        for (status, phrase) in [
+            (408, "Request Timeout"),
+            (503, "Service Unavailable"),
+            (504, "Gateway Timeout"),
+        ] {
             let rendered = response(status, "text/plain; charset=utf-8", "x\n", false);
             assert!(
                 rendered.starts_with(&format!("HTTP/1.1 {status} {phrase}\r\n")),

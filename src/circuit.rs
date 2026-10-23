@@ -205,7 +205,9 @@ pub fn host_of(url: &str) -> Option<String> {
         let end = authority.find(']')?;
         &authority[..=end]
     } else {
-        authority.split(':').next().unwrap_or(authority)
+        // `host.` names the same host as `host`: one breaker paces both spellings.
+        let name = authority.split(':').next().unwrap_or(authority);
+        name.strip_suffix('.').unwrap_or(name)
     };
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
@@ -401,6 +403,11 @@ mod tests {
             Some("[2001:db8::1]".to_string())
         );
         assert_eq!(host_of("not a url"), None);
+        assert_eq!(
+            host_of("https://Example.COM.:8443/x").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(host_of("https://./x"), None);
     }
 
     /// Before this test, a full cache refused every new key, so once a long-running process had
