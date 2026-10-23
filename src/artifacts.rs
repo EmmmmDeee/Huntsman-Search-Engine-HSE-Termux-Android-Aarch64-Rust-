@@ -1,7 +1,5 @@
 //! Deterministic bounded artifacts rendered from one final analysis state.
 
-use serde::{Deserialize, Serialize};
-
 use crate::analysis::InvestigationReport;
 use crate::error::Error;
 use crate::gexf;
@@ -14,15 +12,14 @@ use crate::pipeline::{AnalysisSnapshot, PipelineLimits};
 use crate::snake_graph;
 use crate::stix;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArtifactPayload {
     Ready(Vec<u8>),
     OmittedTooLarge { required_bytes: usize, limit: usize },
     NotApplicable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineArtifacts {
     pub report_json: ArtifactPayload,
     pub gexf: ArtifactPayload,

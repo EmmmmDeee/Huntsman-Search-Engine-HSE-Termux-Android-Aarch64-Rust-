@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crate::error::Error;
-use crate::fsio::{read_bounded_replacing, write_atomic_private};
+use crate::fsio::{read_bounded_replacing, write_json_private};
 use crate::session::{Session, valid_session_id};
 
 /// A saved session's ceiling is the saved-artifact ceiling, as a saved ledger's is: a long
@@ -33,18 +33,7 @@ impl Store {
             .root
             .join("sessions")
             .join(format!("{}.json", session.id));
-        let limit = usize::try_from(MAX_SESSION_BYTES).unwrap_or(usize::MAX);
-        let body = match crate::json::to_bounded_json(session, limit, true) {
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(required_bytes)) => {
-                return Err(Error::Store(format!(
-                    "{}: exceeds {MAX_SESSION_BYTES} bytes (needs {required_bytes})",
-                    path.display()
-                )));
-            }
-            Err(error) => return Err(Error::Store(error.to_string())),
-        };
-        write_atomic_private(&path, &body, MAX_SESSION_BYTES)?;
+        write_json_private(&path, session, MAX_SESSION_BYTES)?;
         Ok(path)
     }
 

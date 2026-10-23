@@ -269,6 +269,31 @@ pub fn write_atomic_private(path: &Path, body: &[u8], max: u64) -> Result<(), Er
     write_atomic_mode(path, body, max, true)
 }
 
+/// [`write_atomic_private`] of `value` as pretty JSON, serialised within `max` bytes: a value
+/// over the ceiling is refused with the size it needs, and never written in part.
+///
+/// # Errors
+/// `Error::Store` for a value over `max` bytes, a serialisation failure, or as
+/// [`write_atomic_private`].
+pub(crate) fn write_json_private<T: serde::Serialize + ?Sized>(
+    path: &Path,
+    value: &T,
+    max: u64,
+) -> Result<(), Error> {
+    let limit = usize::try_from(max).unwrap_or(usize::MAX);
+    let body = match crate::json::to_bounded_json(&value, limit, true) {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(required_bytes)) => {
+            return Err(Error::Store(format!(
+                "{}: exceeds {max} bytes (needs {required_bytes})",
+                path.display()
+            )));
+        }
+        Err(error) => return Err(Error::Store(error.to_string())),
+    };
+    write_atomic_private(path, &body, max)
+}
+
 fn write_atomic_mode(path: &Path, body: &[u8], max: u64, private: bool) -> Result<(), Error> {
     if body.len() as u64 > max {
         return Err(Error::Store(format!(

@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::{canonical_email, canonical_handle};
+use crate::union_find::UnionFind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonRecord {
@@ -35,14 +36,6 @@ pub struct Cluster {
 /// Canonical emails take precedence over handles as the recorded link reason.
 #[must_use]
 pub fn resolve(records: &[PersonRecord]) -> Vec<Cluster> {
-    fn find(parent: &mut [usize], mut i: usize) -> usize {
-        while parent[i] != i {
-            parent[i] = parent[parent[i]];
-            i = parent[i];
-        }
-        i
-    }
-
     fn indexed_keys(
         records: &[PersonRecord],
         select: fn(&PersonRecord) -> &[String],
@@ -69,7 +62,7 @@ pub fn resolve(records: &[PersonRecord]) -> Vec<Cluster> {
     let (emails, email_index) = indexed_keys(records, |record| &record.emails, canonical_email);
     let (handles, handle_index) = indexed_keys(records, |record| &record.handles, canonical_handle);
 
-    let mut parent: Vec<usize> = (0..count).collect();
+    let mut sets = UnionFind::new(count);
     let mut links = Vec::new();
     for left in 0..count {
         // Allocate only matches for one record at a time, not a second
@@ -94,35 +87,33 @@ pub fn resolve(records: &[PersonRecord]) -> Vec<Cluster> {
                 }
             }
         }
-        // Iterating in ascending right-index order reproduces the original
-        // pairwise union order and preserves the original cluster/link order.
+        // Iterating in ascending right-index order keeps the links in the
+        // pairwise (left, right) order. Clusters come in order of their
+        // smallest member, as `UnionFind::groups` orders its sets.
         for (right, reason) in matches {
-            let (a, b) = (find(&mut parent, left), find(&mut parent, right));
-            if a != b {
-                parent[b] = a;
-            }
+            sets.union(left, right);
             links.push((left, right, reason));
         }
     }
 
-    let mut buckets = vec![Vec::new(); count];
-    for position in 0..count {
-        let root = find(&mut parent, position);
-        buckets[root].push(position);
+    let groups = sets.groups();
+    let mut cluster_of = vec![0; count];
+    for (cluster, members) in groups.iter().enumerate() {
+        for &position in members {
+            cluster_of[position] = cluster;
+        }
     }
-    let mut cluster_links = vec![Vec::new(); count];
+    let mut cluster_links = vec![Vec::new(); groups.len()];
     for (left, right, reason) in links {
-        let root = find(&mut parent, left);
-        cluster_links[root].push(Link {
+        cluster_links[cluster_of[left]].push(Link {
             left: records[left].id.clone(),
             right: records[right].id.clone(),
             reason: reason.to_owned(),
         });
     }
-    buckets
+    groups
         .into_iter()
         .zip(cluster_links)
-        .filter(|(indices, _)| !indices.is_empty())
         .map(|(indices, links)| Cluster {
             members: indices
                 .iter()
@@ -309,14 +300,6 @@ mod tests {
     #[test]
     fn indexed_resolution_matches_pairwise_oracle_on_mixed_records() {
         fn oracle(records: &[PersonRecord]) -> Vec<Cluster> {
-            fn find(parent: &mut [usize], mut position: usize) -> usize {
-                while parent[position] != position {
-                    parent[position] = parent[parent[position]];
-                    position = parent[position];
-                }
-                position
-            }
-
             let emails: Vec<BTreeSet<String>> = records
                 .iter()
                 .map(|record| {
@@ -338,7 +321,7 @@ mod tests {
                 })
                 .collect();
             let count = records.len();
-            let mut parent: Vec<usize> = (0..count).collect();
+            let mut sets = UnionFind::new(count);
             let mut links = Vec::new();
             for left in 0..count {
                 for right in left + 1..count {
@@ -349,31 +332,28 @@ mod tests {
                     } else {
                         continue;
                     };
-                    let (a, b) = (find(&mut parent, left), find(&mut parent, right));
-                    if a != b {
-                        parent[b] = a;
-                    }
+                    sets.union(left, right);
                     links.push((left, right, reason));
                 }
             }
-            let mut buckets = vec![Vec::new(); count];
-            for position in 0..count {
-                let root = find(&mut parent, position);
-                buckets[root].push(position);
+            let groups = sets.groups();
+            let mut cluster_of = vec![0; count];
+            for (cluster, positions) in groups.iter().enumerate() {
+                for &position in positions {
+                    cluster_of[position] = cluster;
+                }
             }
-            let mut cluster_links = vec![Vec::new(); count];
+            let mut cluster_links = vec![Vec::new(); groups.len()];
             for (left, right, reason) in links {
-                let root = find(&mut parent, left);
-                cluster_links[root].push(Link {
+                cluster_links[cluster_of[left]].push(Link {
                     left: records[left].id.clone(),
                     right: records[right].id.clone(),
                     reason: reason.to_owned(),
                 });
             }
-            buckets
+            groups
                 .into_iter()
                 .zip(cluster_links)
-                .filter(|(positions, _)| !positions.is_empty())
                 .map(|(positions, links)| Cluster {
                     members: positions
                         .iter()

@@ -12,6 +12,7 @@ use huntsman_recon::planner::PlannerPolicy;
 use huntsman_recon::runtime::{investigate_offline, persist_session, session_for_outcome};
 use huntsman_recon::session::Session;
 use huntsman_recon::store::Store;
+use huntsman_recon::textnorm::escape_controls;
 
 const PLAN_USAGE: &str =
     "usage: huntsman-recon plan [--session-dir DIR] SEED [SEED ...] | plan --load-session DIR ID";
@@ -121,11 +122,14 @@ fn load_session(rest: &[String]) -> ExitCode {
     }
 }
 
+/// The title is printed escaped: a session file can be edited or come from someone else, and a
+/// raw control character in it would drive the terminal or start a second `session=` line. The
+/// id needs no escaping, since `Store::load` accepts only a safe stem that matches the request.
 fn print_session_summary(session: &Session) {
     println!(
         "session={} title={} candidates={} falsifications={} executions={} verifications={} terminated={}",
         session.id,
-        session.title,
+        escape_controls(&session.title),
         session.candidates.len(),
         session.falsifications.len(),
         session.executions.len(),
