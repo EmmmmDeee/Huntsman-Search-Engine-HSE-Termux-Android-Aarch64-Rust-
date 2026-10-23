@@ -42,6 +42,15 @@ pub fn unix_secs_of(time: SystemTime) -> Option<u64> {
         .map(|elapsed| elapsed.as_secs())
 }
 
+/// Seconds and nanoseconds since the Unix epoch for a supplied timestamp.
+/// Returns None for pre-epoch timestamps rather than silently losing revision information.
+#[must_use]
+pub fn unix_parts_of(time: SystemTime) -> Option<(u64, u32)> {
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| (elapsed.as_secs(), elapsed.subsec_nanos()))
+}
+
 fn since_epoch() -> Result<Duration, SystemTimeError> {
     SystemTime::now().duration_since(UNIX_EPOCH)
 }
@@ -65,6 +74,15 @@ mod tests {
     #[test]
     fn the_subsecond_part_is_below_one_second() {
         assert!(unix_subsec_nanos() < 1_000_000_000);
+    }
+
+    #[test]
+    fn file_time_parts_preserve_subsecond_precision_and_reject_pre_epoch() {
+        assert_eq!(
+            unix_parts_of(UNIX_EPOCH + Duration::new(7, 123_456_789)),
+            Some((7, 123_456_789))
+        );
+        assert_eq!(unix_parts_of(UNIX_EPOCH - Duration::from_nanos(1)), None);
     }
 
     #[test]
