@@ -67,6 +67,15 @@ impl LookupTokens {
     }
 }
 
+/// Whether `word` names an option: a dash followed by anything but a digit. A dash before a digit
+/// starts a value, such as the negative latitude of a southern-hemisphere `LAT,LON`
+/// (`-33.86,151.21`), so a parser that reads options by their leading dash does not refuse it.
+#[must_use]
+pub fn is_option(word: &str) -> bool {
+    let mut chars = word.chars();
+    chars.next() == Some('-') && chars.next().is_some_and(|next| !next.is_ascii_digit())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -138,5 +147,23 @@ mod tests {
             LookupTokens::split(&owned(&["--json", "--save", "a.json", "--save"])),
             Err(Error::Invalid("unknown option --json".into()))
         );
+    }
+
+    #[test]
+    fn a_dash_before_a_digit_starts_a_value_not_an_option() {
+        for option in ["-k", "--depth", "-m", "--", "-x1"] {
+            assert!(is_option(option), "{option}");
+        }
+        for value in [
+            "-33.86,151.21",
+            "-1",
+            "-0.5",
+            "-",
+            "",
+            "example.com",
+            "151.2,-33.8",
+        ] {
+            assert!(!is_option(value), "{value}");
+        }
     }
 }

@@ -184,7 +184,7 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
             }
         } else if let Some(switch) = SWITCHES.iter().find(|switch| *switch == word) {
             parsed.switches.insert(switch);
-        } else if word.starts_with('-') && word.len() > 1 {
+        } else if huntsman_recon::lookup_args::is_option(word) {
             return Err(format!("scans: unknown option {}", one_line(word)));
         } else {
             parsed.words.push(word.clone());
