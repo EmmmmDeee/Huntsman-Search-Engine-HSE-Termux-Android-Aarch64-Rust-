@@ -34,6 +34,7 @@ SERVER_PORT="${HSE_ACCEPTANCE_PORT:-}"
 HOST_RUN="${HSE_ACCEPTANCE_HOST:-}"
 SERVER_PID=""
 WORK_DIR=""
+PERSISTED_SCAN=""
 
 mkdir -p "$STATE_DIR"
 : > "$REPORT"
@@ -54,7 +55,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-for cmd in timeout curl date grep mktemp rm tee tail sleep uname; do
+for cmd in timeout curl date grep cmp mktemp rm tee tail sleep uname; do
   command -v "$cmd" >/dev/null 2>&1 || fail "required Termux command not found: $cmd"
 done
 
@@ -179,6 +180,19 @@ verify_api() {
   local modules="$WORK_DIR/modules.json"
   local command="$WORK_DIR/command.json"
 
+  if [ -n "$PERSISTED_SCAN" ]; then
+    local persisted="$WORK_DIR/persisted-scan.json"
+    curl --fail --silent --show-error --max-time 5 -H 'X-Huntsman-Lookup: 1' \
+      "$base/api/scans/$PERSISTED_SCAN" -o "$persisted" || return 1
+    grep -Fq "\"id\":\"$PERSISTED_SCAN\"" "$persisted" || return 1
+    grep -Fq '"status":"FINISHED"' "$persisted" || return 1
+    # Compare the entire stored scan response, not only its identity and status.
+    # Both requests use the same endpoint and the synthetic scan is immutable.
+    [ -s "$WORK_DIR/lookup-scan.json" ] || return 1
+    [ -s "$persisted" ] || return 1
+    cmp -s "$WORK_DIR/lookup-scan.json" "$persisted" || return 1
+    pass 'saved scan survives server restart'
+  fi
   curl --fail --silent --show-error --max-time 5 "$base/api/modules" -o "$modules" || return 1
   curl --fail --silent --show-error --max-time 5 "$base/api/command" -o "$command" || return 1
   kill -0 "$SERVER_PID" 2>/dev/null || return 1
@@ -202,6 +216,8 @@ verify_api() {
   grep -q '"status":"FINISHED"' "$WORK_DIR/lookup-scan.json" || return 1
   # Without the header the lookup must be refused, so a page on another site cannot run one.
   [ "$(curl --silent --max-time 5 -o /dev/null -w '%{http_code}' "$base/api/lookup?kind=phone&q=%2B61412345678")" = 403 ] || return 1
+  if [ -z "$PERSISTED_SCAN" ]; then PERSISTED_SCAN="$scan"; fi
+  return 0
 }
 
 # The page the phone's browser opens. It must arrive whole with the policy that lets its own
@@ -228,8 +244,8 @@ verify_idle_connections() {
   host="${bind%:*}"
   port="${bind##*:}"
   if ! ( exec 7<>"/dev/tcp/$host/$port" ) 2>/dev/null; then
-    note 'bash has no /dev/tcp here; the idle-connection check was skipped'
-    return 0
+    note 'cannot establish Bash /dev/tcp probe connection; idle-connection acceptance cannot be verified'
+    return 1
   fi
   { exec 8<>"/dev/tcp/$host/$port" 9<>"/dev/tcp/$host/$port"; } 2>/dev/null || return 1
   curl --fail --silent --show-error --max-time 3 "http://$bind/api/health" -o /dev/null || rc=1
@@ -262,7 +278,7 @@ start_and_verify_server() {
   pass 'web UI page loads under its policy and its offline analysis answers'
 
   verify_idle_connections "$bind" ||
-    fail 'a request waited for idle connections, as a browser with speculative sockets would'
+    fail 'idle-connection probe failed, was unavailable, or requests stalled'
   pass 'idle connections do not delay a request'
 
   stop_server
