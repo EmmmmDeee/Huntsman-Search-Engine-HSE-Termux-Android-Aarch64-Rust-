@@ -1248,6 +1248,7 @@ fn run_installer_with(
         std::env::var("PATH").unwrap_or_default()
     );
     let out = Command::new(tool("bash").expect("bash must be available"))
+        .arg("-x") // Temporary fixture-only shell trace for failing installer acceptance.
         .arg(INSTALL)
         .env("PATH", path)
         .env("PREFIX", &prefix)
