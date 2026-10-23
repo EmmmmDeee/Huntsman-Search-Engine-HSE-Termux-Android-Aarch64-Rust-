@@ -150,15 +150,22 @@ pub fn admitted(entries: &[LedgerEntry]) -> Vec<&LedgerEntry> {
     admitted_with(entries, BINDINGS).collect()
 }
 
-/// The entries whose claims pass the interop gate under `bindings`: the one admission rule every
-/// interop export (STIX, ATT&CK Navigator) applies.
+/// The entries whose claims pass the interop gate under `bindings`. An invalid,
+/// reordered, missing-prefix or spliced chain admits no claims, even when individual
+/// entries have plausible hashes and verified-looking statuses. A valid prefix can
+/// still be truncated at the tail: the chain is not a signature or anti-rollback proof. Both STIX and
+/// ATT&CK Navigator use this gate, including their explicit-binding test seams.
+///
+/// Verify the complete chain once before iterating, rather than rehashing it
+/// for every admitted entry. Skip hashing when no technique can be bound.
 pub fn admitted_with<'a>(
     entries: &'a [LedgerEntry],
     bindings: &'a [(&'a str, &'a str)],
 ) -> impl Iterator<Item = &'a LedgerEntry> {
+    let chain_verified = !bindings.is_empty() && chain_intact(entries);
     entries
         .iter()
-        .filter(move |e| e.claim.admits_interop_with(bindings))
+        .filter(move |entry| chain_verified && entry.claim.admits_interop_with(bindings))
 }
 
 /// The ceiling on a saved ledger, for writing and for reading alike. It is the ceiling on a saved
