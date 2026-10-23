@@ -850,10 +850,7 @@ mod tests {
 
         let failure = open_read_candidate(&link)
             .expect_err("O_NOFOLLOW must refuse a final symlink at open");
-        assert!(
-            failure.to_string().contains(REFUSED_SYMLINK),
-            "{failure}"
-        );
+        assert!(failure.to_string().contains(REFUSED_SYMLINK), "{failure}");
         assert_eq!(fs::read(&target).unwrap(), b"private");
         fs::remove_dir_all(dir).unwrap();
     }
