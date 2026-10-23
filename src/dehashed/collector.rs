@@ -223,11 +223,7 @@ fn append_entries(
             // Only a genuinely new, selector-distinct value is a candidate pivot.
             if (kind != selector.kind || value != selector.value) && pivoted.insert(uid) {
                 if batch.pivots.len() < limits.max_pivots {
-                    batch.pivots.push(CollectorPivot {
-                        kind,
-                        value,
-                        parent_observation: None,
-                    });
+                    batch.pivots.push(CollectorPivot { kind, value });
                 } else {
                     // A distinct pivot that the budget cannot hold is lost.
                     dropped = true;

@@ -1,92 +1,12 @@
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Tactic {
-    pub id: &'static str,
-    pub shortname: &'static str,
-    pub name: &'static str,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Technique {
     pub id: &'static str,
     pub name: &'static str,
     pub is_subtechnique: bool,
     pub tactics: &'static [&'static str],
 }
-
-pub const TACTICS: &[Tactic] = &[
-    Tactic {
-        id: "TA0001",
-        shortname: "initial-access",
-        name: "Initial Access",
-    },
-    Tactic {
-        id: "TA0002",
-        shortname: "execution",
-        name: "Execution",
-    },
-    Tactic {
-        id: "TA0003",
-        shortname: "persistence",
-        name: "Persistence",
-    },
-    Tactic {
-        id: "TA0004",
-        shortname: "privilege-escalation",
-        name: "Privilege Escalation",
-    },
-    Tactic {
-        id: "TA0005",
-        shortname: "defense-evasion",
-        name: "Defense Evasion",
-    },
-    Tactic {
-        id: "TA0006",
-        shortname: "credential-access",
-        name: "Credential Access",
-    },
-    Tactic {
-        id: "TA0007",
-        shortname: "discovery",
-        name: "Discovery",
-    },
-    Tactic {
-        id: "TA0008",
-        shortname: "lateral-movement",
-        name: "Lateral Movement",
-    },
-    Tactic {
-        id: "TA0009",
-        shortname: "collection",
-        name: "Collection",
-    },
-    Tactic {
-        id: "TA0010",
-        shortname: "exfiltration",
-        name: "Exfiltration",
-    },
-    Tactic {
-        id: "TA0011",
-        shortname: "command-and-control",
-        name: "Command and Control",
-    },
-    Tactic {
-        id: "TA0040",
-        shortname: "impact",
-        name: "Impact",
-    },
-    Tactic {
-        id: "TA0042",
-        shortname: "resource-development",
-        name: "Resource Development",
-    },
-    Tactic {
-        id: "TA0043",
-        shortname: "reconnaissance",
-        name: "Reconnaissance",
-    },
-];
 
 pub const ENTERPRISE: &[Technique] = &[
     Technique {
