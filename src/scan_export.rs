@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use crate::gexf::escape_xml;
 use crate::scan_store::{ScanRecord, ScanResults};
 use crate::sf_elements::DataElement;
+use crate::textnorm::{escape_controls, escape_controls_keep_lines};
 use crate::timefmt::civil_from_days;
 use crate::xlsx::{self, Sheet};
 
@@ -93,8 +94,11 @@ fn guard(cell: &str) -> String {
     }
 }
 
+/// A CSV cell is quoted when it holds a comma, quote or line break. A control character or a
+/// bidirectional control is written as an escape, so a remote value cannot drive the terminal
+/// that `scans export` writes to. A line feed and a tab stay, since quoting carries them.
 fn csv_cell(cell: &str) -> String {
-    let cell = guard(cell);
+    let cell = escape_controls_keep_lines(&guard(cell));
     if cell.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", cell.replace('"', "\"\""))
     } else {
@@ -102,13 +106,16 @@ fn csv_cell(cell: &str) -> String {
     }
 }
 
-/// A TSV cell keeps its text: a tab, newline or backslash is written as `\t`, `\n`, `\\`.
+/// A TSV cell keeps its text: a tab, newline or backslash is written as `\t`, `\n`, `\\`, and any
+/// other control or bidirectional control as an escape, as in a CSV cell.
 fn tsv_cell(cell: &str) -> String {
-    guard(cell)
-        .replace('\\', "\\\\")
-        .replace('\t', "\\t")
-        .replace('\r', "\\r")
-        .replace('\n', "\\n")
+    escape_controls(
+        &guard(cell)
+            .replace('\\', "\\\\")
+            .replace('\t', "\\t")
+            .replace('\r', "\\r")
+            .replace('\n', "\\n"),
+    )
 }
 
 /// Each element with the data of the element it was found from, root left out.
@@ -689,5 +696,20 @@ mod tests {
         assert_eq!(tsv_cell("a\tb\nc"), "a\\tb\\nc");
         assert_eq!(csv_cell("a,\"b\""), "\"a,\"\"b\"\"\"");
         assert_eq!(timestamp(0), "1970-01-01 00:00:00");
+    }
+
+    #[test]
+    fn a_cell_cannot_drive_the_terminal_in_csv_or_tsv() {
+        // ESC, a C1 CSI, a right-to-left override, a carriage return and BEL, as a remote record
+        // could send them.
+        let hostile = "x\u{1b}[2J\u{9b}31m\u{202e}ab\rc\u{7}";
+        let written = "x\\u{1b}[2J\\u{9b}31m\\u{202e}ab\\rc\\u{7}";
+        assert_eq!(csv_cell(hostile), written);
+        assert_eq!(tsv_cell(hostile), written);
+        assert!(!csv_cell(hostile).chars().any(crate::textnorm::is_escaped));
+        assert!(!tsv_cell(hostile).chars().any(crate::textnorm::is_escaped));
+        // Ordinary multi-line text keeps its line feed inside quotes, and a tab in TSV stays `\t`.
+        assert_eq!(csv_cell("line 1\nline 2"), "\"line 1\nline 2\"");
+        assert_eq!(tsv_cell("a\tb"), "a\\tb");
     }
 }
