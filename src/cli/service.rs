@@ -20,6 +20,7 @@ use huntsman_recon::scan_route::{
     parse_kind,
 };
 use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceRun};
+use huntsman_recon::textnorm::one_line;
 use huntsman_recon::web_server::{
     LookupError, LookupQuery, LookupReport, ServeConfig, Server, resolve_serve_bind,
 };
@@ -172,7 +173,7 @@ fn scan_api() -> Option<std::sync::Arc<ScanApi>> {
     match open_api(&dir, default_rules_dir().as_deref()) {
         Ok(api) => {
             for failure in api.service().rule_errors() {
-                eprintln!("serve: {failure}");
+                eprintln!("{}", rule_error_line(failure));
             }
             Some(std::sync::Arc::new(api))
         }
@@ -181,6 +182,12 @@ fn scan_api() -> Option<std::sync::Arc<ScanApi>> {
             None
         }
     }
+}
+
+/// A rule error as serve prints it: the line `scans rules` prints, on one line with control
+/// characters escaped, since a rule file's name and text are the operator's but not trusted.
+fn rule_error_line(failure: &huntsman_recon::sf_correlate::RuleError) -> String {
+    format!("serve: {}", one_line(&failure.to_string()))
 }
 
 /// What `serve` says about `HSE_AUTH_TOKEN` when it starts. On a public bind the page and every
@@ -334,9 +341,21 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::web_inspect;
+    use super::{rule_error_line, web_inspect};
     use huntsman_recon::entity::{Entity, EntityKind};
     use huntsman_recon::source_outcome::SourceOutcomeKind;
+
+    #[test]
+    fn a_rule_error_prints_on_one_line_without_driving_the_terminal() {
+        let failure = huntsman_recon::sf_correlate::RuleError {
+            rule: "r".into(),
+            reason: "unknown type \u{1b}]0;x\u{7}\nnext".into(),
+        };
+        assert_eq!(
+            rule_error_line(&failure),
+            "serve: correlation rule r: unknown type \\u{1b}]0;x\\u{7} next"
+        );
+    }
 
     /// The value of `key` on any evidence of `entity`.
     fn attribute<'a>(entity: &'a Entity, key: &str) -> Option<&'a str> {

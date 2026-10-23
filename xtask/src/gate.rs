@@ -322,16 +322,23 @@ fn append_snapshot(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
 }
 
 /// `O_NONBLOCK | O_NOFOLLOW` on the Linux and Android architectures whose values are known, as
-/// in the product crate's `fsio`: `O_NOFOLLOW` is 0o100000 on Arm, where 0o400000 is
-/// `O_LARGEFILE`, and 0o400000 on x86 and RISC-V. `None` elsewhere.
+/// in the product crate's `fsio`: `O_NOFOLLOW` is 0o100000 on Arm and PowerPC, where 0o400000 is
+/// `O_LARGEFILE`, and 0o400000 on x86, RISC-V, s390x and LoongArch. `None` elsewhere.
 const NONBLOCK_NOFOLLOW: Option<i32> = if !cfg!(any(target_os = "linux", target_os = "android")) {
     None
-} else if cfg!(any(target_arch = "aarch64", target_arch = "arm")) {
+} else if cfg!(any(
+    target_arch = "aarch64",
+    target_arch = "arm",
+    target_arch = "powerpc",
+    target_arch = "powerpc64"
+)) {
     Some(0o4_000 | 0o100_000)
 } else if cfg!(any(
     target_arch = "x86",
     target_arch = "x86_64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "s390x",
+    target_arch = "loongarch64"
 )) {
     Some(0o4_000 | 0o400_000)
 } else {

@@ -231,7 +231,7 @@ fn not_found_no_service_and_failures_are_told_apart() {
             vec![boot, ("https://rdap.verisign.com/", 429, "{}")],
             SourceOutcomeKind::RateLimited,
         ),
-        // A status is typed as every other source types it.
+        // A status is typed as fetch types it.
         (
             vec![boot, ("https://rdap.verisign.com/", 401, "{}")],
             SourceOutcomeKind::AuthRequired,
@@ -431,8 +431,19 @@ fn a_registry_status_is_typed_as_fetch_types_it() {
     );
     assert_eq!(challenged.kind, SourceOutcomeKind::RateLimited);
     assert_eq!(challenged.retry_after_secs, Some(30));
-    let walled = refused(403, &[], r#"<html><div id="px-captcha"></div></html>"#);
-    assert_eq!(walled.kind, SourceOutcomeKind::BotWaf);
+    // A challenge page is a wall whatever its status: never "not registered" for a 404 and never a
+    // record that does not parse for a 200. A 503 one keeps its delay.
+    for status in [403, 404, 200, 503] {
+        let walled = refused(
+            status,
+            &[("Retry-After", "45")],
+            r#"<html><div id="px-captcha"></div></html>"#,
+        );
+        assert_eq!(walled.kind, SourceOutcomeKind::BotWaf, "{status}");
+        assert_eq!(walled.detail, "challenge page", "{status}");
+        let delay = (status == 503).then_some(45);
+        assert_eq!(walled.retry_after_secs, delay, "{status}");
+    }
 }
 
 #[test]

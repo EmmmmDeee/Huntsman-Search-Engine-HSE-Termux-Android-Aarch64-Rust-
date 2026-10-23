@@ -434,9 +434,10 @@ fn current_uid() -> Option<u32> {
 
 /// `None` when `path` does not exist; otherwise the parsed file or the refusal.
 ///
-/// The open is [`fsio::open_unfollowed`](crate::fsio::open_unfollowed): on Linux and Android it
-/// neither follows a symlink nor blocks on a FIFO swapped in after `lstat`, and the opened
-/// descriptor must still be the inode `lstat` saw and pass the gate again.
+/// The open is [`fsio::open_unfollowed`](crate::fsio::open_unfollowed): on Linux and Android, on
+/// the architectures whose flag values it knows, it neither follows a symlink nor blocks on a FIFO
+/// swapped in after `lstat`. The opened descriptor must still be the inode `lstat` saw and pass
+/// the gate again.
 fn load_default_file(path: &Path) -> Result<Option<Result<Keys, DefaultFileRefusal>>, Error> {
     match read_private_file(path, MAX_KEYS_FILE_BYTES)? {
         None => Ok(None),

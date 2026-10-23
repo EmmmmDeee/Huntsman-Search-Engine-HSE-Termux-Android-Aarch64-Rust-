@@ -141,6 +141,36 @@ jobs:
           HSE_AUTH_TOKEN=ci-huntsman-token \
             bash scripts/container-live-acceptance.sh
 
+  # Termux runs on aarch64, where open flags differ from x86_64 (there O_NOFOLLOW has
+  # O_LARGEFILE's value), so a host-only test run cannot see a wrong flag. qemu-user runs the
+  # aarch64 test binaries here and hands their system calls to the kernel. The skipped tests run
+  # in `test`: two time a computation against a wall-clock bound, which emulation makes
+  # meaningless, and one runs its own binary again, which qemu-user cannot start without binfmt.
+  aarch64-tests:
+    name: Library tests on aarch64 under qemu
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: "1.99"
+          targets: aarch64-unknown-linux-gnu
+      - name: Install the aarch64 linker and qemu-user
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+      - name: Run the library and xtask unit tests on aarch64
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+        run: |
+          set -euo pipefail
+          cargo test --locked --target aarch64-unknown-linux-gnu --lib -- \
+            --skip quadratic_time --skip http::tests::public_only_ignores_environment_proxy
+          cargo test --locked --target aarch64-unknown-linux-gnu -p xtask --bins
+
   android-aarch64:
     name: Android aarch64 cross-build
     runs-on: ubuntu-24.04

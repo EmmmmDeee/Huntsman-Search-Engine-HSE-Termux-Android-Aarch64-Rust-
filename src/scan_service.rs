@@ -814,7 +814,8 @@ impl ScanService {
         &self.rules
     }
 
-    /// The rule files that could not be read.
+    /// What [`sf_correlate::with_dir`] reported: a rule file that could not be read or loaded, a
+    /// rules path that could not be listed, or files past its limit.
     #[must_use]
     pub fn rule_errors(&self) -> &[RuleError] {
         &self.rule_errors

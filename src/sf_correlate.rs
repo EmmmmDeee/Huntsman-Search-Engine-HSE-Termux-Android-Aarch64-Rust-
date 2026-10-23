@@ -330,7 +330,8 @@ impl Rule {
     ///
     /// # Errors
     /// [`RuleError`] for YAML outside the supported subset, a missing or unknown component, an
-    /// unknown first-collection type, or a regular expression that does not compile.
+    /// exact type match naming a type that is not catalogued or is written in another case, or a
+    /// regular expression that does not compile.
     pub fn parse(id: &str, yaml: &str, origin: &str) -> Result<Self, RuleError> {
         let doc = yaml_lite::parse(yaml).map_err(|failure| error(id, failure.to_string()))?;
         let Some(object) = doc.as_object() else {

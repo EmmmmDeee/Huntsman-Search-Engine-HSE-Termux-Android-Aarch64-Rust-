@@ -492,7 +492,7 @@ fn get<T: Transport + ?Sized>(
             kind: SourceOutcomeKind::BotWaf,
             http_status: Some(response.status),
             detail: "challenge page".into(),
-            retry_after_secs: None,
+            retry_after_secs: fetched.outcome.retry_after_secs,
         });
     }
     if response.truncated {
@@ -512,7 +512,7 @@ fn get<T: Transport + ?Sized>(
 }
 
 /// A status that is no answer, typed as fetch typed it, so a 403 without a challenge page is
-/// `AuthRejected` as for every source that reads its response through fetch.
+/// `AuthRejected` as [`crate::fetch::answer`] types it.
 fn status_failure(reply: &Reply) -> Failure {
     let status = reply.response.status;
     Failure {

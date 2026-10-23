@@ -87,18 +87,26 @@ pub(crate) fn same_inode(_linked: &fs::Metadata, _opened: &fs::Metadata) -> bool
     true
 }
 
-/// `O_NONBLOCK | O_NOFOLLOW` on the Linux and Android architectures whose values are known.
-/// `O_NONBLOCK` is 0o4000 on all of them. `O_NOFOLLOW` is 0o100000 on Arm, where 0o400000 is
-/// `O_LARGEFILE` and would follow the link, and 0o400000 on x86 and RISC-V. `None` on any other
-/// target, where the checks after the open are the only guard.
+/// `O_NONBLOCK | O_NOFOLLOW` on the Linux and Android architectures whose values are known, each
+/// with `ELOOP` 40. `O_NONBLOCK` is 0o4000 on all of them. `O_NOFOLLOW` is 0o100000 on Arm and
+/// PowerPC, where 0o400000 is `O_LARGEFILE` and would follow the link, and 0o400000 on x86,
+/// RISC-V, s390x and LoongArch. `None` on any other target (MIPS and SPARC use other values),
+/// where the checks after the open are the only guard.
 const NONBLOCK_NOFOLLOW: Option<i32> = if !cfg!(any(target_os = "linux", target_os = "android")) {
     None
-} else if cfg!(any(target_arch = "aarch64", target_arch = "arm")) {
+} else if cfg!(any(
+    target_arch = "aarch64",
+    target_arch = "arm",
+    target_arch = "powerpc",
+    target_arch = "powerpc64"
+)) {
     Some(0o4_000 | 0o100_000)
 } else if cfg!(any(
     target_arch = "x86",
     target_arch = "x86_64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "s390x",
+    target_arch = "loongarch64"
 )) {
     Some(0o4_000 | 0o400_000)
 } else {
@@ -145,9 +153,9 @@ fn open_read_candidate(path: &Path) -> Result<File, Error> {
 /// potentially blocking or triggering device behavior. The opened handle is
 /// checked again before reading: it must be the inode `lstat` saw and a regular
 /// file, so a link or a replacement planted between the check and the open is
-/// refused rather than followed. On Linux/Android, [`open_unfollowed`] also
-/// prevents FIFO blocking and symlink traversal before the descriptor is
-/// validated; inode comparison remains mandatory after opening.
+/// refused rather than followed. On Linux/Android, on the architectures whose
+/// flag values [`open_unfollowed`] knows, the open itself also prevents FIFO
+/// blocking and symlink traversal; inode comparison remains mandatory after it.
 ///
 /// # Errors
 /// `Error::Store` on a symlink, non-file, IO failure, a file over `max` bytes, or
@@ -696,6 +704,13 @@ mod tests {
         );
         let error = open_unfollowed(&link).expect_err("a final symlink must not be opened");
         assert!(is_refused_link(&error), "{error:?}");
+        // Any other failure is not a refused link, so callers keep it as the error it is.
+        let absent = open_unfollowed(&dir.join("absent")).expect_err("no such file");
+        assert!(!is_refused_link(&absent), "{absent:?}");
+        assert!(!is_refused_link(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
+        assert!(!is_refused_link(&std::io::Error::from_raw_os_error(20)));
         let refused = open_read_candidate(&link).expect_err("a final symlink must not be opened");
         assert!(refused.to_string().contains(REFUSED_SYMLINK), "{refused}");
         let mut opened = open_unfollowed(&target).expect("a regular file opens");

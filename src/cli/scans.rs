@@ -23,7 +23,7 @@ use huntsman_recon::scan_store::{ScanOptions, ScanRecord, ScanStatus, ScanStore}
 use huntsman_recon::sf_compat::{self, SfScan};
 use huntsman_recon::sf_correlate;
 use huntsman_recon::sf_types;
-use huntsman_recon::textnorm::escape_controls;
+use huntsman_recon::textnorm::one_line;
 use serde_json::Value;
 
 pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [-m MODULE[,MODULE...]] [--depth N] [--json] | scans list [--json] | scans show ID | scans summary ID | scans analyze ID [--json] | scans reality ID ENTITY_UID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans evidence ID [--delta BASELINE_ID] [-f raw|json] [-o FILE] | scans matrix ID [-f raw|json] [-o FILE] | scans export ID|ID,ID... [-f csv|tsv|xlsx|json|gexf] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans compare EARLIER LATER [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans search VALUE [ID...] [-t TYPE] [--hide-fp] [--json] | scans rules [--json] | scans types
@@ -230,10 +230,6 @@ fn emit(response: &ApiResponse) -> ExitCode {
         pretty.unwrap_or_else(|| response.text().trim_end().to_owned())
     );
     ExitCode::SUCCESS
-}
-
-fn one_line(text: &str) -> String {
-    escape_controls(&text.replace(['\r', '\n', '\t'], " "))
 }
 
 fn millis(value: &Value) -> String {
@@ -489,8 +485,9 @@ fn rules_dir(parsed: &Parsed) -> Option<PathBuf> {
         .or_else(default_rules_dir)
 }
 
-/// Every correlation rule a scan runs, then each rule file that could not be read; exit 65 when
-/// one could not.
+/// Every correlation rule a scan runs, then each rule error: a rule file that could not be read
+/// or loaded, a rules path that could not be listed, or files past the limit; exit 65 when there
+/// is any.
 fn rules_listing(parsed: &Parsed) -> ExitCode {
     let (rules, errors) = match rules_dir(parsed) {
         Some(dir) => sf_correlate::with_dir(&dir),

@@ -407,26 +407,32 @@ fn a_rule_path_that_cannot_be_listed_is_named() {
 fn rule_files_past_the_limit_are_named_and_not_read() {
     let dir = std::env::temp_dir().join(format!("hse-sf-rules-many-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    for index in 0..MAX_RULE_FILES {
+    for index in 0..MAX_RULE_FILES - 1 {
         std::fs::write(dir.join(format!("off{index:04}.yaml")), "enabled: false\n").unwrap();
     }
+    // The 500th file in name order turns a shipped rule off, so it must be read.
+    std::fs::write(dir.join("outlier_cloud.yaml"), "enabled: false\n").unwrap();
+    let has = |rules: &[Rule], id: &str| rules.iter().any(|rule| rule.id == id);
     let (rules, errors) = with_dir(&dir);
-    assert_eq!(rules.len(), 37);
+    assert!(!has(&rules, "outlier_cloud"), "the 500th file is read");
+    assert_eq!(rules.len(), 36);
     assert!(
         errors.is_empty(),
         "{MAX_RULE_FILES} files are read whole: {errors:?}"
     );
-    // The 501st file in name order would turn a shipped rule off.
+    // The 501st file in name order would turn another shipped rule off.
     std::fs::write(dir.join("vulnerability_mediumlow.yaml"), "enabled: false\n").unwrap();
     let (rules, errors) = with_dir(&dir);
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
-        rules
-            .iter()
-            .any(|rule| rule.id == "vulnerability_mediumlow"),
+        has(&rules, "vulnerability_mediumlow"),
         "a file past the limit is not read"
     );
-    assert_eq!(rules.len(), 37);
+    assert!(
+        !has(&rules, "outlier_cloud"),
+        "the 500th file is still read"
+    );
+    assert_eq!(rules.len(), 36);
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert_eq!(errors[0].rule, dir.display().to_string());
     assert_eq!(

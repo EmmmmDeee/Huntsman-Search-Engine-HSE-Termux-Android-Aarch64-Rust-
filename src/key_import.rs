@@ -371,6 +371,25 @@ mod tests {
         assert_eq!(plan.refused.len(), 2, "{:?}", plan.refused);
         assert!(plan.refused[0].starts_with("line 2: neither"));
         assert!(plan.refused[1].starts_with("line 4: sfp_hunter:api_key is longer"));
+        // A key of exactly the bound is saved in every form.
+        let longest = "k".repeat(MAX_KEY_BYTES);
+        let encoded = base64::standard(format!("{longest}:{longest}").as_bytes());
+        let at_bound = super::plan(&format!(
+            "sfp_hunter:api_key={longest}\n{SHODAN_KEY_ENV}={longest}\n{HIBP_API_KEY_ENV}={longest}\n\
+             {SPIDERFOOT_WIGLE_OPTION}={encoded}\n"
+        ));
+        assert!(at_bound.refused.is_empty(), "{:?}", at_bound.refused);
+        assert_eq!(
+            at_bound.saves.len(),
+            5,
+            "hunter, shodan, hibp and both wigle slots"
+        );
+        assert!(
+            at_bound
+                .saves
+                .iter()
+                .all(|(_, secret)| secret.expose().len() == MAX_KEY_BYTES)
+        );
         // A keys-file line, a catalogue slot or the HIBP alias, is held to the same bound.
         for (line, name) in [
             (format!("{SHODAN_KEY_ENV}={long}"), SHODAN_KEY_ENV),
