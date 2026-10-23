@@ -167,7 +167,6 @@ impl<'a> IdentityIndex<'a> {
         }
     }
 
-
     /// Count independent evidence bases exactly when the graph is small enough to enumerate.
     /// All simple routes up to PATHWAY_MAX_DEPTH are considered; a shared named basis occupies
     /// just one bit even if several edges of a path use it. No relation confidence threshold
@@ -185,10 +184,7 @@ impl<'a> IdentityIndex<'a> {
         if start == end || cap == 0 {
             return Some(0);
         }
-        if self.edges.len() > MAX_EDGES
-            || self.bases.len() > MAX_BASES
-            || self.len() > MAX_NODES
-        {
+        if self.edges.len() > MAX_EDGES || self.bases.len() > MAX_BASES || self.len() > MAX_NODES {
             return None;
         }
 
@@ -895,12 +891,11 @@ mod tests {
         assert_eq!(pairwise_disjoint_pathways(&["a", "d"], &relations, 0), []);
     }
 
-
     /// The widest greedy S-A-B-T route consumes both branches, although S-A-T and S-B-T
     /// provide two independent, basis-disjoint corroboration routes. Reversed input order
     /// must not change the exact count.
     #[test]
-    fn strongest_path_cannot_destroy_independent_corrobation() {
+    fn strongest_path_cannot_destroy_independent_corroboration() {
         let relations = vec![
             Relation::new("S", "A", RelationKind::AliasOf, 0.95, "s"),
             Relation::new("A", "B", RelationKind::AliasOf, 0.95, "s"),
@@ -934,7 +929,15 @@ mod tests {
             }
         }
         let index = IdentityIndex::new(&relations);
-        assert!(index.exact_pathway_count(index.node("a").unwrap(), index.node("b").unwrap(), usize::MAX).is_none());
+        assert!(
+            index
+                .exact_pathway_count(
+                    index.node("a").unwrap(),
+                    index.node("b").unwrap(),
+                    usize::MAX
+                )
+                .is_none()
+        );
         assert!(disjoint_pathways("a", "b", &relations) >= 1);
     }
 
@@ -1519,7 +1522,6 @@ mod tests {
 
     /// How many visits one tie check may spend (see [`reference::Budget`]).
     const TIE_BUDGET: usize = 20_000;
-
 
     /// Exact oracle for instances inside the production enumeration budget.
     fn exact_expected(start: &str, end: &str, relations: &[Relation], cap: usize) -> Option<usize> {
