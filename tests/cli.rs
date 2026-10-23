@@ -986,6 +986,24 @@ fn investigate_reports_digit_groups_as_whole_identifiers_and_addresses() {
 }
 
 #[test]
+fn investigate_reads_addresses_in_angle_brackets_and_bare_ipv6() {
+    let out = bin()
+        .arg("investigate")
+        .arg("From: Ada Lovelace <ada@example.com> via 2606:4700:4700::1111, order 123456")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("entities=2"), "{stdout:?}");
+    assert!(stdout.contains("email\tada@example.com"), "{stdout:?}");
+    assert!(
+        stdout.contains("ip_address\t2606:4700:4700::1111"),
+        "{stdout:?}"
+    );
+    assert!(!stdout.contains("abn_acn"), "{stdout:?}");
+}
+
+#[test]
 fn investigate_reads_one_bounded_local_file() {
     let dir = scratch("investigate-file");
     let path = dir.join("input.txt");
