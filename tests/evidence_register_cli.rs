@@ -40,8 +40,7 @@ fn scan(home: &std::path::Path) -> String {
         "scan failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let parsed: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("scan JSON");
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).expect("scan JSON");
     parsed["id"].as_str().expect("scan id").to_owned()
 }
 
@@ -68,28 +67,30 @@ fn evidence_export_preserves_raw_and_supports_delta() {
         "JSON evidence: {}",
         String::from_utf8_lossy(&report.stderr)
     );
-    let parsed: serde_json::Value =
-        serde_json::from_slice(&report.stdout).expect("evidence JSON");
+    let parsed: serde_json::Value = serde_json::from_slice(&report.stdout).expect("evidence JSON");
     assert_eq!(parsed["status"], "FULL_REGISTER");
     assert_eq!(parsed["truncated"], false);
     assert!(parsed["current_record_count"].as_u64().unwrap_or(0) > 0);
-    assert!(parsed["records"]
-        .as_array()
-        .expect("records")
-        .iter()
-        .all(|r| r.get("RAW_SHA256").is_some()));
+    assert!(
+        parsed["records"]
+            .as_array()
+            .expect("records")
+            .iter()
+            .all(|r| r.get("RAW_SHA256").is_some())
+    );
 
     let delta = run(
         &home,
-        &["scans", "evidence", &second, "--delta", &first, "-f", "json"],
+        &[
+            "scans", "evidence", &second, "--delta", &first, "-f", "json",
+        ],
     );
     assert!(
         delta.status.success(),
         "delta failed: {}",
         String::from_utf8_lossy(&delta.stderr)
     );
-    let parsed: serde_json::Value =
-        serde_json::from_slice(&delta.stdout).expect("delta JSON");
+    let parsed: serde_json::Value = serde_json::from_slice(&delta.stdout).expect("delta JSON");
     assert_eq!(parsed["baseline"], first);
     assert!(matches!(
         parsed["status"].as_str(),
