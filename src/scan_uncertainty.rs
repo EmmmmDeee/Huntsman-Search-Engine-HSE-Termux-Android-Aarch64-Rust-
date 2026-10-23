@@ -138,9 +138,7 @@ fn general(
     }
 }
 
-fn termination_issue(
-    reason: TerminationReason,
-) -> Option<(&'static str, &'static str)> {
+fn termination_issue(reason: TerminationReason) -> Option<(&'static str, &'static str)> {
     use TerminationReason as T;
     match reason {
         T::FixedPoint => None,
@@ -196,8 +194,7 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Uncertainty
         recorded_executions = saved.outcomes.len();
         let mut groups: BTreeMap<(String, String), UncertaintyItem> = BTreeMap::new();
         for outcome in &saved.outcomes {
-            let Some((priority, category, uncertainty, next_action)) =
-                provider_issue(outcome.kind)
+            let Some((priority, category, uncertainty, next_action)) = provider_issue(outcome.kind)
             else {
                 continue;
             };
@@ -221,10 +218,12 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Uncertainty
             item.observations += 1;
             let time = outcome.observed_at_unix;
             item.first_observed_unix = Some(
-                item.first_observed_unix.map_or(time, |prior| prior.min(time)),
+                item.first_observed_unix
+                    .map_or(time, |prior| prior.min(time)),
             );
             item.last_observed_unix = Some(
-                item.last_observed_unix.map_or(time, |prior| prior.max(time)),
+                item.last_observed_unix
+                    .map_or(time, |prior| prior.max(time)),
             );
         }
         distinct_provider_issues = groups.len();
@@ -288,7 +287,7 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Uncertainty
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan_store::{RiskCounts, ScanOptions, ScanStatus, FORMAT_VERSION};
+    use crate::scan_store::{FORMAT_VERSION, RiskCounts, ScanOptions, ScanStatus};
     use crate::source_outcome::SourceExecutionOutcome;
 
     fn record(status: ScanStatus) -> ScanRecord {
@@ -331,10 +330,18 @@ mod tests {
     fn groups_repeated_failures_without_erasing_observation_times_or_confirmed_zero() {
         let mut results = saved(vec![
             SourceExecutionOutcome::failed(
-                "provider_a", 11, SourceOutcomeKind::NotConfigured, None, "no key"
+                "provider_a",
+                11,
+                SourceOutcomeKind::NotConfigured,
+                None,
+                "no key",
             ),
             SourceExecutionOutcome::failed(
-                "provider_a", 15, SourceOutcomeKind::NotConfigured, None, "still no key"
+                "provider_a",
+                15,
+                SourceOutcomeKind::NotConfigured,
+                None,
+                "still no key",
             ),
             SourceExecutionOutcome::valid_zero("provider_b", 12),
             SourceExecutionOutcome::success("provider_c", 14, 2),
