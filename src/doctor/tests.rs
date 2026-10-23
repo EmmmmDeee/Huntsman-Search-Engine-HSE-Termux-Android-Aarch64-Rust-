@@ -463,6 +463,33 @@ fn a_keys_file_slot_that_matches_no_provider_warns_and_names_it_but_never_the_va
 }
 
 #[test]
+fn obsolete_install_dir_setting_has_a_precise_manual_fix() {
+    let scratch = Scratch::new("legacyinstallslot");
+    fs::write(
+        scratch.path(".huntsman.env"),
+        format!(
+            "{}=/private/install/path-not-to-print\n",
+            crate::environment::LEGACY_INSTALL_DIR_ENV
+        ),
+    )
+    .expect("write");
+    let report = scratch.examine(&FakeHost::default());
+    let check = report.get("env_file").expect("check");
+    assert_eq!(check.status, Status::Warn, "{check:?}");
+    assert_eq!(
+        check.fix.as_deref(),
+        Some("huntsman-recon keys remove HUNTSMAN_INSTALL_DIR")
+    );
+    assert!(!check.auto_fix, "removing a slot is operator-controlled");
+    assert!(check.repair.is_none());
+    let text = render(&report);
+    assert!(
+        !text.contains("/private/install/path-not-to-print"),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_symlinked_keys_file_fails() {
     let scratch = Scratch::new("linkkeys");
     let keys = scratch.path(".huntsman.env");
