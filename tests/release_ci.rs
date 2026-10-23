@@ -1255,6 +1255,7 @@ fn run_installer_with(
         .env("FAKE_ASSETS", &assets)
         .env("HUNTSMAN_CHANNEL", "recon")
         .env("HUNTSMAN_RELEASE_TAG", "main-0a1b2c3")
+        .env("HUNTSMAN_TEST_BUILD_SHA", "0a1b2c300000000000000000000000000000000")
         .output()
         .expect("bash must run");
     let text =
@@ -1278,6 +1279,7 @@ fn bin_entries(root: &Path) -> Vec<String> {
 
 const GOOD_RECON_FIXTURE: &[u8] = br#"#!/bin/sh
 case "$1" in
+  build-sha) printf '%s\n' "${HUNTSMAN_TEST_BUILD_SHA:?}" ;;
   check) mkdir -p var; printf 'fixture-ledger\n' > var/ledger.json ;;
   verify) [ "$2" = var/ledger.json ] && [ -f "$2" ] ;;
   *) exit 64 ;;
@@ -1359,6 +1361,56 @@ fn installer_checksum_failure_preserves_existing_binary() {
 }
 
 #[test]
+fn installer_rejects_an_older_binary_even_with_a_matching_download_checksum() {
+    if !installer_tools_present() {
+        return;
+    }
+    // This fixture still implements check + verify, and the checksum matches.
+    // Its embedded provenance is deliberately from a different revision.
+    let wrong = String::from_utf8(GOOD_RECON_FIXTURE.to_vec())
+        .expect("ASCII fixture")
+        .replace(
+            "${HUNTSMAN_TEST_BUILD_SHA:?}",
+            "ffffffffffffffffffffffffffffffffffffffff",
+        );
+    let binary = wrong.as_bytes();
+    let sha = installer_sha_line("wrong-embedded-revision", binary);
+    let (code, text, root) = run_installer("wrong-revision", binary, &sha);
+    assert_ne!(code, Some(0), "mismatched revision was accepted: {text}");
+    assert!(
+        text.contains("staged binary revision does not match release main-0a1b2c3"),
+        "{text}"
+    );
+    assert_eq!(
+        fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
+        b"old build\n",
+        "a mismatch must never replace the installed executable"
+    );
+    assert_live_binary_only(&root);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn installer_rejects_missing_or_invalid_embedded_revision() {
+    if !installer_tools_present() {
+        return;
+    }
+    let invalid = String::from_utf8(GOOD_RECON_FIXTURE.to_vec())
+        .expect("ASCII fixture")
+        .replace("${HUNTSMAN_TEST_BUILD_SHA:?}", "not-a-commit");
+    let sha = installer_sha_line("invalid-embedded-revision", invalid.as_bytes());
+    let (code, text, root) = run_installer("invalid-revision", invalid.as_bytes(), &sha);
+    assert_ne!(code, Some(0), "invalid revision was accepted: {text}");
+    assert!(text.contains("staged binary has invalid build-sha"), "{text}");
+    assert_eq!(
+        fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
+        b"old build\n"
+    );
+    assert_live_binary_only(&root);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn installer_runtime_acceptance_failure_preserves_existing_binary() {
     if !installer_tools_present() {
         return;
@@ -1395,6 +1447,7 @@ fn installer_source_contract_uses_private_stage_runtime_gate_and_atomic_activati
         "stage_dir=\"\"",
         "mktemp -d \"$PREFIX/bin/.${DEST_NAME}.install.XXXXXX\"",
         "install -m 0755 \"$tmp/$ASSET\" \"$stage\"",
+        "timeout 30 \"$stage\" build-sha",
         "timeout 30 \"$stage\" check",
         "timeout 30 \"$stage\" verify var/ledger.json",
         "cmp -s \"$stage\" \"$dest\"",
@@ -1464,6 +1517,7 @@ fn run_tag_resolving_installer(
     script: &Path,
     refs: &[String],
     released: &[&str],
+    expected_sha: &str,
 ) -> (Option<i32>, String, String, PathBuf) {
     let root = scratch(&format!("resolve-{name}"));
     let (assets, fakes, prefix) = (root.join("assets"), root.join("fakes"), root.join("prefix"));
@@ -1508,6 +1562,7 @@ fn run_tag_resolving_installer(
         .env("FAKE_ASSETS", &assets)
         .env("FAKE_LOG", &log)
         .env("HUNTSMAN_CHANNEL", "recon")
+        .env("HUNTSMAN_TEST_BUILD_SHA", expected_sha)
         .env_remove("HUNTSMAN_RELEASE_TAG")
         .output()
         .expect("bash must run");
@@ -1533,7 +1588,13 @@ fn the_repository_installer_installs_the_newest_published_recon_build() {
     // main~0 has no build yet (a docs-only change, or one still building); main~1 has one.
     let refs = [commit_id('a'), commit_id('b'), commit_id('c')];
     let (code, text, urls, root) =
-        run_tag_resolving_installer("newest", Path::new(INSTALL), &refs, &[&refs[1], &refs[2]]);
+        run_tag_resolving_installer(
+            "newest",
+            Path::new(INSTALL),
+            &refs,
+            &[&refs[1], &refs[2]],
+            &refs[1],
+        );
     assert_eq!(code, Some(0), "{text}");
     assert_eq!(
         fs::read(root.join("prefix/bin/huntsman-recon")).unwrap(),
@@ -1568,7 +1629,7 @@ fn the_repository_installer_stops_when_no_recent_commit_has_a_build() {
         .map(|n| format!("{n:040x}").replace('0', "d"))
         .collect();
     let (code, text, urls, root) =
-        run_tag_resolving_installer("none", Path::new(INSTALL), &refs, &[]);
+        run_tag_resolving_installer("none", Path::new(INSTALL), &refs, &[], &refs[0]);
     assert_eq!(code, Some(1), "{text}");
     assert!(
         text.contains(
@@ -1598,7 +1659,13 @@ fn a_release_stamped_installer_never_asks_the_api_for_a_tag() {
     fs::write(&stamped, source.replace("@RECON_TAG@", "main-eeeeeee")).unwrap();
     let refs = [commit_id('a'), commit_id('e')];
     let (code, text, urls, root) =
-        run_tag_resolving_installer("stamped", &stamped, &refs, &[&refs[0], &refs[1]]);
+        run_tag_resolving_installer(
+            "stamped",
+            &stamped,
+            &refs,
+            &[&refs[0], &refs[1]],
+            &refs[1],
+        );
     assert_eq!(code, Some(0), "{text}");
     assert!(text.contains("(main-eeeeeee)"), "{text}");
     assert!(!urls.contains("api.github.com"), "{urls}");
