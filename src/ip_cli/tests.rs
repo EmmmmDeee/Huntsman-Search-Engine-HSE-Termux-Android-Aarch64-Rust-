@@ -273,6 +273,39 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     assert!(text.contains("internetdb\tsuccess"), "{text}");
 }
 
+/// An origin AS that is not a public AS number stays on the address's `RIPEstat` record but is
+/// no AS entity, and neither is its holder an organisation, as `asn AS64512` refuses the number.
+#[test]
+fn a_reserved_origin_as_stays_on_the_address_and_is_no_entity() {
+    let mut transport = keyless();
+    for route in &mut transport.routes {
+        if route.0 == "https://stat.ripe.net/" {
+            route.2 = r#"{"status":"ok","data":{"announced":true,"asns":[{"asn":64512,"holder":"PRIVATE-USE"},{"asn":13335,"holder":"CLOUDFLARENET - Cloudflare, Inc."}],"resource":"1.1.1.0/24"}}"#;
+        }
+    }
+    let (_, report) = printed(run(&transport, &Keys::default(), "1.1.1.1", 1));
+    let asns: Vec<&str> = report
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Asn)
+        .map(|e| e.raw_value.as_str())
+        .collect();
+    assert_eq!(asns, ["AS13335"]);
+    assert!(
+        !report
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Organisation && e.raw_value == "PRIVATE-USE")
+    );
+    let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
+    assert!(
+        ip.evidence
+            .iter()
+            .flat_map(|evidence| evidence.attr_values("origin_asns"))
+            .any(|asns| asns == "AS13335,AS64512")
+    );
+}
+
 #[test]
 fn keyed_legs_run_with_their_keys_in_their_own_headers() {
     let transport = keyless();

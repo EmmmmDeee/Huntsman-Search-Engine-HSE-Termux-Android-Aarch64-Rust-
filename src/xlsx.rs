@@ -490,10 +490,11 @@ pub(crate) mod tests {
         assert_eq!(first, "HSE_A_VERY_LONG_DATA_ELEMENT_TY");
         let second = sheet_name(long, &mut taken);
         assert_eq!(second, "HSE_A_VERY_LONG_DATA_ELEMEN (2)");
-        // Nothing left once apostrophes and spaces go, a cut that ends in an apostrophe, and a
-        // noncharacter XML 1.0 cannot carry.
+        // Nothing left once apostrophes and spaces go, a leading apostrophe, a cut that ends in an
+        // apostrophe, and a noncharacter XML 1.0 cannot carry.
         let mut fresh = BTreeSet::new();
         assert_eq!(sheet_name("' '", &mut fresh), "Sheet");
+        assert_eq!(sheet_name("'Leaked creds", &mut fresh), "Leaked creds");
         assert_eq!(
             sheet_name("Exposed services on the vendor's network", &mut fresh),
             "Exposed services on the vendor"

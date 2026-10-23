@@ -44,6 +44,42 @@ fn ci_cross_builds_the_actual_termux_target() {
     }
 }
 
+/// The open flags that differ between `x86_64` and aarch64 are tested where Termux runs: the
+/// library's tests, the no-follow and non-blocking opens among them, run as aarch64 code.
+#[test]
+fn ci_runs_the_library_tests_as_aarch64_code() {
+    let ci = fs::read_to_string(CI).expect("active CI workflow must be readable");
+    for required in [
+        "aarch64-tests:",
+        "targets: aarch64-unknown-linux-gnu",
+        "qemu-user",
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu",
+        "cargo test --locked --target aarch64-unknown-linux-gnu --lib",
+        "cargo test --locked --target aarch64-unknown-linux-gnu -p xtask --bins",
+    ] {
+        assert!(ci.contains(required), "{CI} must contain {required:?}");
+    }
+    let job = ci
+        .split("  aarch64-tests:")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  android-aarch64:").next())
+        .expect("the aarch64 test job");
+    // Only the tests emulation cannot judge are skipped; the open-flag tests never are.
+    let skipped: Vec<&str> = job
+        .split("--skip ")
+        .skip(1)
+        .filter_map(|rest| rest.split_whitespace().next())
+        .collect();
+    assert_eq!(
+        skipped,
+        [
+            "quadratic_time",
+            "http::tests::public_only_ignores_environment_proxy"
+        ],
+        "{job}"
+    );
+}
+
 /// Devices with 16 KiB pages (Android 15 and later on recent hardware) refuse an ELF whose LOAD
 /// segments are aligned to less. The action asks the linker for 16 KiB by name, and both
 /// cross-builds refuse a binary that did not get it, so the published binary cannot silently

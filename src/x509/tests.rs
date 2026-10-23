@@ -163,6 +163,20 @@ fn an_ec_wildcard_certificate_reads_its_curve_and_signature() {
 }
 
 #[test]
+fn an_attribute_is_its_first_value_that_is_not_empty() {
+    let name = pairs(&[
+        ("O", ""),
+        ("CN", "x"),
+        ("O", "Example Ltd"),
+        ("O", "Second"),
+    ]);
+    assert_eq!(attribute(&name, "O"), Some("Example Ltd"));
+    assert_eq!(attribute(&name, "CN"), Some("x"));
+    assert_eq!(attribute(&name, "L"), None);
+    assert_eq!(attribute(&pairs(&[("O", "")]), "O"), None);
+}
+
+#[test]
 fn pem_writes_the_der_back_as_openssl_does() {
     for fixture in [EV_RSA, DV_EC] {
         assert_eq!(pem(&der(fixture)), fixture);

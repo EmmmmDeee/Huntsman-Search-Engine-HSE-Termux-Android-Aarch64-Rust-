@@ -255,11 +255,19 @@ fn matcher(value: &Value, rule: &str, first: bool) -> Result<Matcher, RuleError>
         };
         let test = match method {
             "exact" => {
-                if first
-                    && field.attr == Attr::Type
-                    && sf_types::find(&pattern).is_none_or(|kind| kind.code != pattern)
-                {
-                    return Err(error(rule, format!("unknown type {pattern}")));
+                // Types match exactly, as in Spiderfoot, so a type that is not catalogued, or is
+                // written in another case, would never match in any scope.
+                if field.attr == Attr::Type {
+                    match sf_types::find(&pattern) {
+                        None => return Err(error(rule, format!("unknown type {pattern}"))),
+                        Some(kind) if kind.code != pattern => {
+                            return Err(error(
+                                rule,
+                                format!("type {pattern} is written {}", kind.code),
+                            ));
+                        }
+                        Some(_) => {}
+                    }
                 }
                 Test::Exact(pattern)
             }
@@ -322,7 +330,8 @@ impl Rule {
     ///
     /// # Errors
     /// [`RuleError`] for YAML outside the supported subset, a missing or unknown component, an
-    /// unknown first-collection type, or a regular expression that does not compile.
+    /// exact type match naming a type that is not catalogued or is written in another case, or a
+    /// regular expression that does not compile.
     pub fn parse(id: &str, yaml: &str, origin: &str) -> Result<Self, RuleError> {
         let doc = yaml_lite::parse(yaml).map_err(|failure| error(id, failure.to_string()))?;
         let Some(object) = doc.as_object() else {

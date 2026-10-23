@@ -170,7 +170,7 @@ fn place_leg(report: &mut Report, block: &str, scan_id: &str, place: &ripestat::
 }
 
 /// Everything `RIPEstat` says about the block on it ([`ripestat::Routing::attributes`]), and each
-/// origin AS and its holder as a pivot tied to the block.
+/// public origin AS and its holder as a pivot tied to the block.
 fn routing_leg(
     report: &mut Report,
     block: &str,
@@ -184,7 +184,6 @@ fn routing_leg(
             summary,
         )
     };
-    let asns = routing.origin_asns();
     let announced = routing
         .attributes()
         .into_iter()
@@ -200,7 +199,8 @@ fn routing_leg(
         announced,
         &[],
     );
-    for (origin, asn) in routing.origins.iter().zip(&asns) {
+    for origin in routing.public_origins() {
+        let asn = format!("AS{}", origin.asn);
         let found = evidence("Origin AS of the prefix covering the block".into())
             .with_attr("netblock", block)
             .with_optional_attrs([
@@ -210,7 +210,7 @@ fn routing_leg(
         push_entity(
             &mut report.entities,
             EntityKind::Asn,
-            asn,
+            &asn,
             PIVOT_CONFIDENCE,
             scan_id,
             found,

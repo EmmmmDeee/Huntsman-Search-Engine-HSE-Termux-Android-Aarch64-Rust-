@@ -11,7 +11,9 @@
 //! stolen.tax entities are taken as that module builds them. Each `OathNet` breach
 //! database becomes evidence on the seed email entity carrying its exposure metadata
 //! (dataset, record count, exposed field types, dates) and every non-credential value
-//! its records hold, a password, hash or salt only as exposed; the usernames and
+//! its records hold, a field whose name holds one of [`oathnet::CREDENTIAL_MARKERS`]
+//! (an [`oathnet::NOT_A_CREDENTIAL`] aside), or a list or object with such a field
+//! inside, only as exposed; the usernames and
 //! other addresses in its records become pivots. Each `DeHashed` breach database
 //! becomes evidence on the seed email entity carrying exposure metadata only
 //! (dataset, record count, whether a password or hash is exposed), with the same
@@ -56,7 +58,7 @@ use crate::textnorm::{decode_html_entities, escape_controls, is_escaped};
 pub const EXPOSURE_USAGE: &str = "usage: huntsman-recon exposure ADDR|HANDLE [--save FILE]";
 pub const EXPOSURE_HELP: &str = "\
 exposure ADDR|HANDLE [--save FILE]
-Canonicalise the email address ADDR or the username HANDLE and run the keyed breach legs at once, reported in this order: HIBP breached-account (addresses only), then the stolen.tax cascade, then OathNet breach search, then DeHashed exact-match search (addresses only). The lookup takes as long as its slowest leg. A leg without its key makes no request and reports not_configured. Results are lineage-rendered entities. Then incidents=N (none when HIBP gave no answer) and, per HIBP breach sorted by name (a name the source repeats is shown once, keeping every flag any of its records sets): an incident row (title, breach and added dates, domain, account count, verified, flags), a caution row for a fabricated or spam-list breach, its summary, data classes, attribution, and the reference links its own description gives. This is public context about each breach, not a finding about the person. Then oathnet_breaches=N (none when OathNet gave no answer) and one oathnet_breach row per breach database: records, title, breach date, indexed range, whether a password or hash is exposed, and the exposed field types, followed by one oathnet_value row (field=value) per distinct non-credential value its records hold. Then dehashed_breaches=N (none when DeHashed gave no answer) and one dehashed_breach row per breach database: records and whether a password or hash is exposed. No password, hash or salt value is shown or kept; DeHashed rows carry no record value beyond usernames and addresses as pivots. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise the email address ADDR or the username HANDLE and run the keyed breach legs at once, reported in this order: HIBP breached-account (addresses only), then the stolen.tax cascade, then OathNet breach search, then DeHashed exact-match search (addresses only). The lookup takes as long as its slowest leg. A leg without its key makes no request and reports not_configured. Results are lineage-rendered entities. Then incidents=N (none when HIBP gave no answer) and, per HIBP breach sorted by name (a name the source repeats is shown once, keeping every flag any of its records sets): an incident row (title, breach and added dates, domain, account count, verified, flags), a caution row for a fabricated or spam-list breach, its summary, data classes, attribution, and the reference links its own description gives. This is public context about each breach, not a finding about the person. Then oathnet_breaches=N (none when OathNet gave no answer) and one oathnet_breach row per breach database: records, title, breach date, indexed range, whether a password or hash is exposed, and the exposed field types (at most 64, each named in ASCII letters, digits and _ within 48 bytes and shown in lower case; a field named otherwise is left out), followed by one oathnet_value row (field=value) per distinct non-credential value its records hold (at most 64 per field; a value over 1024 bytes is left out, never cut). A field whose name holds pass, pwd, hash or salt in any case is a credential, except that a pass beginning passport does not count: neither its value nor a list or object holding such a field at any depth is shown or kept. The row says a password or hash is exposed when such a field whose words name one holds a value, as a field or inside a list or object, even if the field's name is left out: a word beginning password, passwd, passwort, passphrase or passcode, a word pwd, pwdhash, passhash, userpass or salt, or pass or hash alone or beside another such word or one such as user, old or md5, but never a field that describes one (pwdLastSet, password_changed_at). Then dehashed_breaches=N (none when DeHashed gave no answer) and one dehashed_breach row per breach database: records and whether a password or hash is exposed; DeHashed rows carry no record value beyond usernames and addresses as pivots. --save FILE writes an unverified ledger that verify can reload.";
 
 /// Source label for the HIBP breached-account leg.
 pub const SOURCE: &str = "hibp_account";
@@ -917,8 +919,8 @@ fn oathnet_leg(
 
 /// One seed entity per `OathNet` breach database, carrying that breach's exposure metadata and the
 /// non-credential values its records hold, then one pivot per distinct username and address in the
-/// records other than the seed. A password, hash or salt value never reaches an entity:
-/// [`oathnet::decode`] keeps only that one was exposed.
+/// records other than the seed. A credential field's value never reaches an entity:
+/// [`oathnet::decode`] keeps only that one was exposed (see [`oathnet::CREDENTIAL_MARKERS`]).
 fn oathnet_entities(
     (seed_kind, seed): (&EntityKind, &str),
     scan_id: &str,
@@ -1526,12 +1528,33 @@ mod tests {
             rows.contains("\ttitle=") && rows.contains("oathnet_value\t"),
             "{rows}"
         );
+        // What the decoder holds back and how far it reads, as `oathnet` defines them.
+        let [pass, pwd, hash, salt] = oathnet::CREDENTIAL_MARKERS;
         for named in [
-            "oathnet_breach row per breach database: records, title,",
-            "one oathnet_value row (field=value) per distinct non-credential value",
-            "No password, hash or salt value is shown or kept",
+            "oathnet_breach row per breach database: records, title,".to_owned(),
+            "one oathnet_value row (field=value) per distinct non-credential value".to_owned(),
+            format!("(at most {}, each named", oathnet::MAX_FIELDS),
+            format!("within {} bytes", oathnet::MAX_FIELD_BYTES),
+            format!("(at most {} per field;", oathnet::MAX_VALUES_PER_FIELD),
+            format!("a value over {} bytes", oathnet::MAX_VALUE_BYTES),
+            format!("A field whose name holds {pass}, {pwd}, {hash} or {salt} in any case"),
+            format!(
+                "a {pass} beginning {} does not count",
+                oathnet::NOT_A_CREDENTIAL
+            ),
+            "neither its value nor a list or object holding such a field".to_owned(),
+            "such a field whose words name one holds a value, as a field or inside a list or \
+             object, even if the field's name is left out"
+                .to_owned(),
+            match oathnet::PASSWORD_WORDS {
+                [first @ .., last] => format!("a word beginning {} or {last}", first.join(", ")),
+            },
+            match oathnet::PASSWORD_NAMES {
+                [first @ .., last] => format!("a word {} or {last}", first.join(", ")),
+            },
+            "never a field that describes one (pwdLastSet, password_changed_at)".to_owned(),
         ] {
-            assert!(EXPOSURE_HELP.contains(named), "{named:?}: {EXPOSURE_HELP}");
+            assert!(EXPOSURE_HELP.contains(&named), "{named:?}: {EXPOSURE_HELP}");
         }
         assert!(
             !EXPOSURE_HELP.contains("No record value other than"),

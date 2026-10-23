@@ -69,7 +69,7 @@ pub fn lookup(
             });
         let page_rows = match read {
             Ok(page_rows) => page_rows,
-            Err(err) if page == 0 => return Err(err),
+            // On the first page nothing is read yet, so its failure fails the lookup here too.
             Err(err) => {
                 return match finding(&rows, true) {
                     Some(found) => Ok(Some(found.attr(

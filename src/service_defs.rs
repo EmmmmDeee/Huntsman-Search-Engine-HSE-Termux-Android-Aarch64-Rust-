@@ -296,13 +296,15 @@ pub fn extract_probe_evidence(service: &str, response: &Response) -> Vec<(String
 }
 
 /// Send `secret` to the service's `test_url` as its `key_placement` says, through a
-/// [`Credential`] bound to that URL's origin, with redirects not followed: a 3xx is the answer.
+/// [`Credential`] bound to that URL's origin, with redirects not followed: a 3xx with a usable
+/// `Location` is the answer, which [`classify_probe_response`] reads as indeterminate.
 ///
 /// # Errors
 ///
-/// Returns [`crate::http::TransportFailure`] when the request could not obtain an
-/// HTTP response. Returns [`crate::Error::Invalid`] when the named service is not
-/// present in the registry.
+/// Returns [`crate::Error::Network`] when the request obtains no HTTP response, is refused by
+/// the egress policy, or gets a 3xx whose `Location` does not resolve to an http(s) URL with a
+/// host; `credential-status --probe` prints each as `probe=unavailable`. Returns
+/// [`crate::Error::Invalid`] when the named service is not present in the registry.
 pub fn probe_service<T: Transport + ?Sized>(
     transport: &T,
     service_name: &str,
@@ -549,6 +551,35 @@ mod tests {
     }
 
     #[test]
+    fn a_key_the_provider_refuses_is_rejected() {
+        // Only a challenge page keeps a 401, a 403 or a 400 that names an auth failure from
+        // counting as a rejection; a 400 about anything else says nothing about the key.
+        let hibp = find_service("hibp").expect("hibp");
+        for (status, body, verdict) in [
+            (
+                401,
+                r#"{"statusCode":401,"message":"Access denied due to invalid hibp-api-key."}"#,
+                ProbeVerdict::Rejected,
+            ),
+            (403, "forbidden: key revoked", ProbeVerdict::Rejected),
+            (400, "Invalid API key", ProbeVerdict::Rejected),
+            (400, "query is malformed", ProbeVerdict::Indeterminate),
+        ] {
+            let response = Response {
+                status,
+                headers: Vec::new(),
+                body: body.as_bytes().to_vec(),
+                truncated: false,
+            };
+            assert_eq!(
+                classify_probe_response(hibp, &response),
+                verdict,
+                "HTTP {status} {body}"
+            );
+        }
+    }
+
+    #[test]
     fn a_challenge_page_is_indeterminate_at_any_status() {
         // An edge's interstitial never reached the provider, so it says nothing about the key:
         // served with 403 it is not a rejection, served with 200 it is not a valid key.
@@ -613,6 +644,27 @@ mod tests {
         assert_eq!(result.verdict, ProbeVerdict::Indeterminate);
         assert!(result.evidence.is_empty(), "{:?}", result.evidence);
         assert_eq!(fake.seen.borrow().len(), 1, "the redirect is not followed");
+    }
+
+    #[test]
+    fn a_redirect_to_an_unusable_location_is_no_answer() {
+        // `fetch` reads the `Location` before it stops at the redirect limit, so a 3xx whose
+        // `Location` does not resolve to an http(s) URL with a host is an error, not an
+        // indeterminate answer.
+        let fake = FakeTransport {
+            response: Response {
+                status: 302,
+                headers: vec![("Location".into(), "mailto:ops@example.com".into())],
+                body: Vec::new(),
+                truncated: false,
+            },
+            seen: RefCell::new(Vec::new()),
+        };
+        assert!(matches!(
+            probe_service(&fake, "shodan", &test_key()),
+            Err(Error::Network(_))
+        ));
+        assert_eq!(fake.seen.borrow().len(), 1);
     }
 
     #[test]

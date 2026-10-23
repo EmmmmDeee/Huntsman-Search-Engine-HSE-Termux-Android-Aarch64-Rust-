@@ -366,6 +366,12 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::IPINFO_KEY_ENV],
     },
     Provider {
+        name: "OpenCelliD",
+        get_key_url: "https://opencellid.org",
+        free_tier: "free account key: 1,000 credits/day",
+        slots: &[crate::environment::OPENCELLID_KEY_ENV],
+    },
+    Provider {
         name: "Censys",
         get_key_url: "https://platform.censys.io/account/api",
         free_tier: "free: 250 req/month",
@@ -844,6 +850,26 @@ mod tests {
                 "HTTP {status}: {rendered}"
             );
         }
+    }
+
+    #[test]
+    fn a_plain_401_renders_the_hibp_key_rejected() {
+        // Without a challenge page a 401 is a rejected key, which `doctor --probe` fails on.
+        let keys = Keys::parse("HUNTSMAN_HIBP_KEY=fake-hibp-key-never-render\n").expect("keys");
+        let transport = FakeTransport {
+            response: Response {
+                status: 401,
+                headers: Vec::new(),
+                body: Vec::new(),
+                truncated: false,
+            },
+            seen: RefCell::new(Vec::new()),
+        };
+        let rendered = render_probed(&keys, &transport);
+        assert!(
+            rendered.contains("provider=HIBP\tstate=configured\tprobe=rejected"),
+            "{rendered}"
+        );
     }
 
     #[test]

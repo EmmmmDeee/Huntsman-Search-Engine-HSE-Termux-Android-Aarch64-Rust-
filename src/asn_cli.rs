@@ -7,7 +7,8 @@
 //! `announced-prefixes` lists every prefix the AS announces, each a netblock entity (Spiderfoot's
 //! `NETBLOCK_OWNER` or `NETBLOCKV6_OWNER` under an AS target) with every window the collectors
 //! saw it in. `asn-neighbours` lists every AS adjacent to it in the collected BGP paths, its side
-//! and how widely it was seen, each an AS entity: `sfp_ripe` fetches these and drops them.
+//! and how widely it was seen, each public one an AS entity: `sfp_ripe` fetches these and drops
+//! them.
 //! Nothing is capped: an AS that announces thousands of prefixes is reported with all of them.
 //!
 //! A reserved, private-use or documentation AS number is refused before any request.
@@ -30,7 +31,7 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 pub const ASN_USAGE: &str = "usage: huntsman-recon asn AS-NUMBER [--save FILE]";
 pub const ASN_HELP: &str = "\
 asn AS-NUMBER [--save FILE]
-Look up one public autonomous system, written AS13335, ASN13335 or 13335: its RDAP registration (the record as published, its holder and contacts), its holder and registry block, every prefix it announces with the windows it was seen (each an address block), and every AS adjacent to it in BGP paths with its side, all keyless from RDAP and RIPEstat. A reserved, private-use or documentation AS number is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
+Look up one public autonomous system, written AS13335, ASN13335 or 13335: its RDAP registration (the record as published, its holder and contacts), its holder and registry block, every prefix it announces with the windows it was seen (each an address block), and every public AS adjacent to it in BGP paths with its side, all keyless from RDAP and RIPEstat. A reserved, private-use or documentation AS number is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
 
 /// The largest answer read for one call: the announced prefixes of the largest networks run to
 /// several megabytes, and every one is kept.
@@ -293,7 +294,9 @@ fn overview_entities(
     1
 }
 
-/// Each neighbour as an AS, with its side and how widely the adjacency was seen.
+/// Each neighbour that is a public AS number as an AS, with its side and how widely the adjacency
+/// was seen. A reserved number in an AS path, such as `AS23456` (`AS_TRANS`) or a private AS, is
+/// no AS of its own, as for an origin.
 fn neighbour_entities(
     report: &mut Report,
     asn: &str,
@@ -303,7 +306,7 @@ fn neighbour_entities(
     let mut found = 0;
     for neighbour in &neighbours.neighbours {
         let value = format!("AS{}", neighbour.asn);
-        if value == asn {
+        if value == asn || !crate::canonical::is_public_asn(neighbour.asn) {
             continue;
         }
         let seen = Evidence::new(

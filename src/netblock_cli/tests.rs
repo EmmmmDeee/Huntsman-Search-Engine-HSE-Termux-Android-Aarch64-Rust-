@@ -116,6 +116,55 @@ fn a_block_is_its_registration_routing_and_the_names_of_its_addresses() {
     assert_eq!(asked, 4, "{:?}", transport.urls());
 }
 
+/// An origin AS that is not a public AS number stays on the block's `RIPEstat` record but is no
+/// AS entity, and neither is its holder an organisation, as `asn AS23456` refuses the number. Nor
+/// is it, in a saved scan, a `BGP_AS_MEMBER` of the block.
+#[test]
+fn a_reserved_origin_as_stays_on_the_block_and_is_no_entity() {
+    let mut transport = registry(UNNAMED);
+    for route in &mut transport.routes {
+        if route.0 == "https://stat.ripe.net/" {
+            route.2 = r#"{"status":"ok","data":{"announced":true,"asns":[{"asn":23456,"holder":"AS-TRANS"},{"asn":13335,"holder":"CLOUDFLARENET - Cloudflare, Inc."}],"resource":"1.1.1.0/24"}}"#;
+        }
+    }
+    let report = printed(run(&transport, "1.1.1.2/30", 1));
+    let asns: Vec<&str> = report
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::Asn)
+        .map(|entity| entity.raw_value.as_str())
+        .collect();
+    assert_eq!(asns, ["AS13335"]);
+    assert!(
+        !report
+            .entities
+            .iter()
+            .any(|entity| entity.kind == EntityKind::Organisation && entity.raw_value == "AS-TRANS")
+    );
+    let block = find(&report, &EntityKind::Netblock, "1.1.1.0/30");
+    assert!(
+        block
+            .evidence
+            .iter()
+            .flat_map(|evidence| evidence.attr_values("origin_asns"))
+            .any(|asns| asns == "AS13335,AS23456")
+    );
+    let target = Target {
+        value: "1.1.1.0/30",
+        kind: "NETBLOCK_OWNER",
+    };
+    let found = elements(target, &report.entities, 1);
+    let members: Vec<&str> = found
+        .iter()
+        .filter(|element| element.kind == "BGP_AS_MEMBER")
+        .map(|element| element.data.as_str())
+        .collect();
+    assert!(
+        !members.is_empty() && members.iter().all(|asn| *asn == "AS13335"),
+        "{members:?}"
+    );
+}
+
 /// In a saved scan the block is the `NETBLOCK_OWNER` target: its record is its `NETBLOCK_WHOIS`,
 /// each named address an `IP_ADDRESS` found from it, and each name that address's
 /// `INTERNET_NAME`.

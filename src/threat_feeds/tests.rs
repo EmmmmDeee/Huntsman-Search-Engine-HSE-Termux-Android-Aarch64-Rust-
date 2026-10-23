@@ -241,6 +241,14 @@ fn every_published_form_reads_as_its_entries() {
     assert_eq!(voipbl.lookup(&address("192.0.2.77")), ["192.0.2.77/32"]);
     assert_eq!(voipbl.lookup(&address("203.0.113.9")), ["203.0.113.0/28"]);
     assert!(voipbl.lookup(&address("203.0.113.16")).is_empty());
+    assert_eq!(voipbl.lookup(&address("0.0.0.1")), ["0.0.0.0/31"]);
+    assert!(
+        voipbl
+            .addresses
+            .contains_key(&"192.0.2.77".parse::<IpAddr>().unwrap()),
+        "a /32 is kept as its address"
+    );
+    assert_eq!(voipbl.blocks.len(), 2, "the /31 and the /28 stay blocks");
     // A hosts file's names, never its own loopback names or addresses.
     let hosts = read("stevenblack_hosts");
     assert_eq!(

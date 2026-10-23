@@ -139,47 +139,22 @@ fn service_error(failure: &ServiceError) -> ApiResponse {
     error(failure.status(), &failure.to_string())
 }
 
-/// The keyed sources' slots, from each source's own [`Api`] constant, plus the sources that
-/// read their key elsewhere.
+/// The keyed sources' slots, from each source's own [`Api`] constant: every indicator source's,
+/// then the keyed legs the `ip`, `domain` and `phone` lookups run beside them, plus the sources
+/// that read their key elsewhere.
 fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
-    let apis: [&Api; 28] = [
+    let legs: [&Api; 5] = [
         &crate::abuseipdb::API,
         &crate::certspotter::API,
         &crate::greynoise::API,
-        &crate::hackertarget::API,
-        &crate::hunter::API,
-        &crate::internetdb::API,
-        &crate::ipinfo::API,
-        &crate::ipqs::API,
-        &crate::isc::API,
-        &crate::kickbox::API,
-        &crate::leakix::API,
-        &crate::maltiverse::API,
-        &crate::netlas::API,
         &crate::numverify::API,
-        &crate::otx::API,
-        &crate::phishstats::API,
-        &crate::pulsedive::API,
-        &crate::ripestat::API,
-        &crate::robtex::API,
-        &crate::securitytrails::API,
-        &crate::shodan::API,
-        &crate::stopforumspam::API,
-        &crate::threatfox::API,
-        &crate::urlhaus::API,
-        &crate::urlscan::API,
         &crate::virustotal::API,
-        &crate::whoxy::API,
-        &crate::xposedornot::API,
     ];
-    let mut slots: Vec<(&'static str, Vec<&'static str>)> = apis
+    let mut slots: Vec<(&'static str, Vec<&'static str>)> = crate::indicator_legs::SOURCES
         .iter()
-        .map(|api| {
-            (
-                api.source,
-                api.key.map(|key| key.slot).into_iter().collect(),
-            )
-        })
+        .map(|source| source.api)
+        .chain(legs)
+        .filter_map(|api| api.key.map(|key| (api.source, vec![key.slot])))
         .collect();
     slots.extend([
         (
@@ -203,6 +178,22 @@ fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
         ),
     ]);
     slots
+}
+
+/// Whether a module whose key slots are `slots` is set up: every slot it needs holds a key, an
+/// alias standing in for its slot (`WiGLE` needs both of its slots; HIBP's one slot may be set
+/// through `HIBP_API_KEY`, which is not needed beside it). **Pure.**
+fn slots_set(slots: &[&str], set: impl Fn(&str) -> bool) -> bool {
+    let fallbacks = crate::provider_credentials::SLOT_FALLBACKS;
+    slots
+        .iter()
+        .filter(|slot| !fallbacks.iter().any(|(_, alias)| alias == *slot))
+        .all(|slot| {
+            set(slot)
+                || fallbacks
+                    .iter()
+                    .any(|(fallback, alias)| fallback == slot && set(alias))
+        })
 }
 
 /// A request's query parameters; the last of a repeated name wins.
@@ -314,14 +305,16 @@ impl ScanApi {
         let modules: Vec<Value> = reachable_modules()
             .iter()
             .map(|module| {
+                // HIBP's account search reads HIBP's key, WiGLE's Bluetooth search WiGLE's.
+                let keyed_as = crate::module::module_of(module.name);
                 let key_env: Vec<&str> = slots
                     .iter()
-                    .find(|(source, _)| *source == module.name)
+                    .find(|(source, _)| *source == keyed_as)
                     .map(|(_, slots)| slots.clone())
                     .unwrap_or_default();
                 let configured = match &self.slots {
                     Some(check) if !key_env.is_empty() => {
-                        Value::Bool(key_env.iter().any(|slot| check(slot)))
+                        Value::Bool(slots_set(&key_env, |slot| check(slot)))
                     }
                     _ => Value::Null,
                 };
@@ -1254,6 +1247,11 @@ mod tests {
     }
 
     fn api(tag: &str) -> (ScanApi, PathBuf) {
+        api_holding(tag, &[crate::environment::SHODAN_KEY_ENV])
+    }
+
+    /// A scan API whose Settings read only the slots in `held` as holding a key.
+    fn api_holding(tag: &str, held: &'static [&'static str]) -> (ScanApi, PathBuf) {
         let dir = scratch(tag);
         let lookup = Arc::new(|_kind: ScanKind, selector: &str, _: &Selection| {
             let evidence = Evidence::new(EvidenceProvenance::for_scan("internetdb", "s"), "ports")
@@ -1270,12 +1268,60 @@ mod tests {
             })
         });
         let service = ScanService::new(ScanStore::open(&dir).unwrap(), lookup);
-        let slots: SlotCheck = Arc::new(|slot: &str| slot == crate::environment::SHODAN_KEY_ENV);
+        let slots: SlotCheck = Arc::new(move |slot: &str| held.contains(&slot));
         (ScanApi::new(service, Some(slots)), dir)
     }
 
     fn body(response: &ApiResponse) -> Value {
         serde_json::from_slice(&response.body).unwrap()
+    }
+
+    /// The Settings page reads a module as set by [`slots_set`]: `WiGLE`'s two modules need both
+    /// of its slots, HIBP's two may be set through `HIBP_API_KEY` alone.
+    #[test]
+    fn settings_read_a_module_as_set_only_with_every_slot_it_needs() {
+        use crate::environment::{HIBP_API_KEY_ENV, WIGLE_USER_ENV};
+        let (api, dir) = api_holding("settings-slots", &[WIGLE_USER_ENV, HIBP_API_KEY_ENV]);
+        let settings = body(&api.handle("GET", "/api/settings", ""));
+        let configured = |name: &str| {
+            settings["modules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|module| module["name"] == name)
+                .unwrap_or_else(|| panic!("no module {name}"))["configured"]
+                .clone()
+        };
+        for (name, set) in [
+            ("wigle", false),
+            ("wigle_bluetooth", false),
+            ("hibp", true),
+            ("hibp_account", true),
+            ("shodan", false),
+        ] {
+            assert_eq!(configured(name), set, "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `WiGLE` is set up only with both of its slots; HIBP's one slot may be set through its alias.
+    #[test]
+    fn a_module_is_set_only_when_every_slot_it_needs_holds_a_key() {
+        use crate::environment::{
+            HIBP_API_KEY_ENV, HUNTSMAN_HIBP_KEY_ENV, SHODAN_KEY_ENV, WIGLE_TOKEN_ENV,
+            WIGLE_USER_ENV,
+        };
+        let wigle = [WIGLE_USER_ENV, WIGLE_TOKEN_ENV];
+        let hibp = [HUNTSMAN_HIBP_KEY_ENV, HIBP_API_KEY_ENV];
+        let with = |held: &'static [&'static str]| move |slot: &str| held.contains(&slot);
+        assert!(!slots_set(&wigle, with(&[WIGLE_USER_ENV])));
+        assert!(!slots_set(&wigle, with(&[WIGLE_TOKEN_ENV])));
+        assert!(slots_set(&wigle, with(&[WIGLE_USER_ENV, WIGLE_TOKEN_ENV])));
+        assert!(slots_set(&hibp, with(&[HUNTSMAN_HIBP_KEY_ENV])));
+        assert!(slots_set(&hibp, with(&[HIBP_API_KEY_ENV])));
+        assert!(!slots_set(&hibp, with(&[SHODAN_KEY_ENV])));
+        assert!(slots_set(&[SHODAN_KEY_ENV], with(&[SHODAN_KEY_ENV])));
+        assert!(!slots_set(&[SHODAN_KEY_ENV], with(&[])));
     }
 
     fn finished(api: &ScanApi) -> String {
@@ -2250,6 +2296,72 @@ mod tests {
             .map(|module| &module["name"])
             .collect();
         assert_eq!(whois, [&json!("whoxy"), &json!("rdap")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The source label of every provider whose `API` constant in `src/` names a key slot, read
+    /// from the source text, so a keyed provider that [`key_slots`] leaves out is still found.
+    fn keyed_api_sources() -> Vec<String> {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sources = Vec::new();
+        for entry in std::fs::read_dir(&src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let Some(start) = text.find("\npub const API: Api = Api {") else {
+                continue;
+            };
+            let constant = &text[start..];
+            let constant = &constant[..constant.find("\n};").unwrap()];
+            if !constant.contains("key: Some(") {
+                continue;
+            }
+            // Each one is labelled with its module's `SOURCE`.
+            assert!(constant.contains("source: SOURCE,"), "{}", path.display());
+            let label = text
+                .split("pub const SOURCE: &str = \"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .unwrap();
+            sources.push(label.to_owned());
+        }
+        sources
+    }
+
+    /// Every module that takes a key shows its slots and whether one is set: each one the module
+    /// list marks as needing a key, and each whose provider's `API` constant names a key, required
+    /// or optional.
+    #[test]
+    fn every_module_that_takes_a_key_shows_its_slots_and_whether_one_is_set() {
+        let (api, dir) = api("keyed");
+        let settings = body(&api.handle("GET", "/api/settings", ""));
+        let modules = settings["modules"].as_array().unwrap();
+        let from_source = keyed_api_sources();
+        assert!(
+            from_source.iter().any(|source| source == "certspotter") && from_source.len() > 15,
+            "the source text names the keyed providers: {from_source:?}"
+        );
+        let keyed: BTreeSet<String> = reachable_modules()
+            .iter()
+            .filter(|module| matches!(module.access, "keyed" | "operator_key"))
+            .map(|module| module.name.to_owned())
+            .chain(from_source)
+            .collect();
+        for name in &keyed {
+            let module = modules
+                .iter()
+                .find(|module| module["name"] == name.as_str())
+                .unwrap_or_else(|| panic!("{name} is not on the Settings page"));
+            assert!(
+                module["key_env"]
+                    .as_array()
+                    .is_some_and(|slots| !slots.is_empty()),
+                "{name} lists no key slot"
+            );
+            assert!(module["configured"].is_boolean(), "{name}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

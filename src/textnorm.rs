@@ -37,6 +37,14 @@ pub fn escape_controls(s: &str) -> String {
     escape_where(s, is_escaped)
 }
 
+/// `s` on one line, as a terminal row or a table cell prints it: a carriage return, line feed or
+/// tab becomes a space, so it cannot start another row or column, and every other character
+/// [`escape_controls`] names is written escaped, so it cannot drive the terminal.
+#[must_use]
+pub fn one_line(s: &str) -> String {
+    escape_controls(&s.replace(['\r', '\n', '\t'], " "))
+}
+
 /// [`escape_controls`] for text that already has lines, such as an error message: a line feed and a
 /// tab stay as they are.
 #[must_use]
@@ -670,6 +678,15 @@ pub fn shares_whole_word_token(haystack: &str, needle: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_line_keeps_text_on_its_line_and_escapes_the_terminal() {
+        assert_eq!(
+            one_line("rule r: unknown type \u{1b}]0;x\u{7}\nnext\tcell\r"),
+            "rule r: unknown type \\u{1b}]0;x\\u{7} next cell "
+        );
+        assert_eq!(one_line("plain text"), "plain text");
+    }
 
     #[test]
     fn escape_unsafe_text_writes_terminal_controls_and_decodes_to_the_same_value() {

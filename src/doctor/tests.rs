@@ -949,6 +949,76 @@ fn a_cache_tag_symlink_is_rejected_even_if_target_has_signature() {
     assert!(!tagged_cache(&cache));
 }
 
+/// A tag swapped after the check is refused, each by the guard meant for it: a symlink to the
+/// checked inode itself by the no-follow open, another regular file by the inode check, and a FIFO
+/// with no writer by the non-blocking open, promptly.
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "powerpc",
+        target_arch = "powerpc64",
+        target_arch = "x86",
+        target_arch = "x86_64",
+        target_arch = "riscv64",
+        target_arch = "s390x",
+        target_arch = "loongarch64"
+    )
+))]
+#[test]
+fn a_cache_tag_swapped_after_the_check_is_rejected() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let scratch = Scratch::new("tag-swapped");
+    let cache = scratch.home.join("cache");
+    fs::create_dir_all(&cache).expect("cache");
+    let tag = cache.join("CACHEDIR.TAG");
+    // Each replacement is made beside the tag and renamed over it, so its inode differs, except
+    // the symlink, which leads back to the checked inode, moved aside (Android refuses an app a
+    // hard link): following it would pass the inode check and the signature.
+    let swaps: [fn(&Path, &Path); 3] = [
+        |tag, alias| {
+            fs::rename(tag, alias).expect("move the checked tag aside");
+            std::os::unix::fs::symlink(alias, tag).expect("symlink to the checked tag");
+        },
+        |tag, _| {
+            let replacement = tag.with_file_name("replacement");
+            fs::write(&replacement, CACHEDIR_SIGNATURE).expect("replacement");
+            fs::rename(&replacement, tag).expect("rename over the tag");
+        },
+        |tag, _| {
+            let fifo = tag.with_file_name("fifo");
+            let made = std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .expect("mkfifo");
+            assert!(made.success(), "mkfifo {}", fifo.display());
+            fs::rename(&fifo, tag).expect("rename over the tag");
+        },
+    ];
+    for swap in swaps {
+        fs::write(&tag, CACHEDIR_SIGNATURE).expect("tag");
+        let alias = scratch.home.join("tag-alias");
+        let _ = fs::remove_file(&alias);
+        assert!(tagged_cache(&cache), "the checked tag itself is accepted");
+        let (answer, answered) = mpsc::channel();
+        let (worker_cache, worker_tag) = (cache.clone(), tag.clone());
+        let worker = std::thread::spawn(move || {
+            let accepted = tagged_cache_with(&worker_cache, || swap(&worker_tag, &alias));
+            let _ = answer.send(accepted);
+        });
+        assert_eq!(
+            answered.recv_timeout(Duration::from_secs(3)),
+            Ok(false),
+            "a tag swapped after the check must be refused without blocking"
+        );
+        worker.join().expect("tag worker");
+        fs::remove_file(&tag).expect("remove swapped tag");
+    }
+}
+
 #[test]
 fn a_regular_cache_tag_with_signature_is_accepted() {
     let scratch = Scratch::new("tag-regular");

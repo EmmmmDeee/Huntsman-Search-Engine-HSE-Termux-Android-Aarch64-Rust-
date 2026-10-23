@@ -9,7 +9,6 @@
 use std::fs;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
-#[cfg(any(target_os = "android", target_os = "linux"))]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -322,14 +321,39 @@ fn append_snapshot(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Open a candidate without hanging if the path changed to a FIFO after lstat.
-/// Linux and Android share these O_NONBLOCK/O_NOFOLLOW values. The latter also
-/// refuses a symlink substituted after the initial type check.
+/// `O_NONBLOCK | O_NOFOLLOW` on the Linux and Android architectures whose values are known, as
+/// in the product crate's `fsio`: `O_NOFOLLOW` is 0o100000 on Arm and PowerPC, where 0o400000 is
+/// another flag (`O_LARGEFILE` on Arm, `O_DIRECT` on PowerPC), and 0o400000 on x86, RISC-V, s390x
+/// and `LoongArch`. `None` elsewhere.
+const NONBLOCK_NOFOLLOW: Option<i32> = if !cfg!(any(target_os = "linux", target_os = "android")) {
+    None
+} else if cfg!(any(
+    target_arch = "aarch64",
+    target_arch = "arm",
+    target_arch = "powerpc",
+    target_arch = "powerpc64"
+)) {
+    Some(0o4_000 | 0o100_000)
+} else if cfg!(any(
+    target_arch = "x86",
+    target_arch = "x86_64",
+    target_arch = "riscv64",
+    target_arch = "s390x",
+    target_arch = "loongarch64"
+)) {
+    Some(0o4_000 | 0o400_000)
+} else {
+    None
+};
+
+/// Open a candidate without hanging if the path changed to a FIFO after lstat, and without
+/// following a symlink substituted after the initial type check.
 fn open_regular_candidate(path: &Path) -> Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
-    #[cfg(any(target_os = "android", target_os = "linux"))]
-    options.custom_flags(0o404000);
+    if let Some(flags) = NONBLOCK_NOFOLLOW {
+        options.custom_flags(flags);
+    }
     let file = options.open(path).map_err(|source| Error::Io {
         path: path.to_path_buf(),
         source,

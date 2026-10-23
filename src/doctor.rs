@@ -902,6 +902,11 @@ fn cache_dir(ctx: &Context<'_>, provenance: &ProvenanceRead) -> Option<PathBuf> 
 /// Accept only a regular Cargo cache tag, never a symlink, FIFO or device. Read only the
 /// signature prefix; a large regular file must not cause unbounded memory use.
 fn tagged_cache(dir: &Path) -> bool {
+    tagged_cache_with(dir, || {})
+}
+
+/// [`tagged_cache`], running `after_check` between the `lstat` and the open.
+fn tagged_cache_with(dir: &Path, after_check: impl FnOnce()) -> bool {
     let tag = dir.join("CACHEDIR.TAG");
     let Ok(metadata) = fs::symlink_metadata(&tag) else {
         return false;
@@ -909,27 +914,18 @@ fn tagged_cache(dir: &Path) -> bool {
     if !metadata.file_type().is_file() {
         return false;
     }
+    after_check();
 
-    // A filesystem entry can change after symlink_metadata. On Linux/Android, open with
-    // O_NONBLOCK to avoid hanging on a swapped-in FIFO and O_NOFOLLOW to reject a swapped-in
-    // symlink. These are the Linux/Android octal flag values; no unsafe code or new dependency.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let opened = {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        const O_NONBLOCK: i32 = 0o0_004_000;
-        const O_NOFOLLOW: i32 = 0o00_400_000;
-        fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(O_NONBLOCK | O_NOFOLLOW)
-            .open(&tag)
-    };
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    let opened = fs::File::open(&tag);
-
-    let Ok(file) = opened else {
+    // A filesystem entry can change after symlink_metadata: the open neither blocks on a
+    // swapped-in FIFO nor follows a swapped-in symlink, and the descriptor must be the inode
+    // checked above.
+    let Ok(file) = crate::fsio::open_unfollowed(&tag) else {
         return false;
     };
-    if !file.metadata().is_ok_and(|opened| opened.is_file()) {
+    if !file
+        .metadata()
+        .is_ok_and(|opened| opened.is_file() && crate::fsio::same_inode(&metadata, &opened))
+    {
         return false;
     }
     let mut prefix = Vec::with_capacity(CACHEDIR_SIGNATURE.len());

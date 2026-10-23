@@ -210,6 +210,84 @@ fn a_telephone_extension_is_not_digits_of_the_number() {
     assert_eq!(values(record, "abuse_phone"), ["+1-555-555-1234;ext=102"]);
 }
 
+/// Each leg's row carries a registry's `Retry-After`, an HTTP date counted from the scan's clock.
+#[test]
+fn every_leg_row_carries_a_dated_retry_after() {
+    // Ninety seconds before Fri, 23 Oct 2026 12:00:00 GMT.
+    const NOW: u64 = 1_792_756_710;
+    let limited = || {
+        crate::test_support::ScriptedTransport::new(vec![Ok(crate::http::Response {
+            status: 429,
+            headers: vec![("Retry-After".into(), "Fri, 23 Oct 2026 12:00:00 GMT".into())],
+            body: b"{}".to_vec(),
+            truncated: false,
+        })])
+    };
+    let legs = [
+        domain(&limited(), "github.com", "scan", NOW),
+        ip(&limited(), "1.1.1.1", "scan", NOW),
+        netblock(
+            &limited(),
+            crate::netblock::Netblock::parse("1.1.1.0/24").expect("block"),
+            "scan",
+            NOW,
+        ),
+        asn(&limited(), 13335, "scan", NOW),
+    ];
+    for leg in legs {
+        let outcome = leg.outcome.expect("an rdap row");
+        assert_eq!(outcome.kind, SourceOutcomeKind::RateLimited);
+        assert_eq!(outcome.retry_after_secs, Some(90), "{outcome:?}");
+    }
+}
+
+/// A local number is a number only in its `phone-context`, so a New Zealand mobile in local form
+/// is not read as an Australian number; the record still keeps it as published.
+#[test]
+fn a_local_telephone_in_another_context_is_no_phone() {
+    const LOCAL: &str = r#"{"objectClassName":"domain","ldhName":"example.com","entities":[{"roles":["abuse"],"vcardArray":["vcard",[["version",{},"text","4.0"],["fn",{},"text","Abuse"],["tel",{"type":["work","voice"]},"uri","tel:021-234-5678;phone-context=+64"],["tel",{},"uri","tel:021-234-5679;PHONE-CONTEXT=example.nz"]]]}]}"#;
+    let registry = RoutedTransport::new(&[
+        ("https://data.iana.org/rdap/dns.json", 200, DNS_BOOTSTRAP),
+        (
+            "https://rdap.verisign.com/com/v1/domain/example.com",
+            200,
+            LOCAL,
+        ),
+    ]);
+    let leg = domain(&registry, "example.com", "scan", 1);
+    assert!(
+        leg.entities
+            .iter()
+            .all(|entity| entity.kind != EntityKind::Phone),
+        "{:#?}",
+        leg.entities
+    );
+    let record = &find(&leg.entities, &EntityKind::Domain, "example.com").evidence[0];
+    assert_eq!(
+        values(record, "abuse_phone"),
+        [
+            "021-234-5678;phone-context=+64",
+            "021-234-5679;PHONE-CONTEXT=example.nz"
+        ]
+    );
+}
+
+#[test]
+fn a_tel_number_drops_parameters_only_where_the_number_stands_alone() {
+    assert_eq!(
+        tel_number("+1-555-555-1234;ext=102"),
+        Some("+1-555-555-1234")
+    );
+    assert_eq!(
+        tel_number("+64-21-234-5678;phone-context=+64"),
+        Some("+64-21-234-5678")
+    );
+    assert_eq!(tel_number("(02) 9999 0000"), Some("(02) 9999 0000"));
+    assert_eq!(tel_number("02 9999 0000;ext=5"), Some("02 9999 0000"));
+    assert_eq!(tel_number("021-234-5678;phone-context=+64"), None);
+    assert_eq!(tel_number("021-234-5678;ext=5;phone-context=+64"), None);
+}
+
 /// Not registered is a validated zero; a TLD with no RDAP service is no answer, and says why.
 #[test]
 fn not_registered_is_a_zero_and_no_registry_is_not() {
@@ -219,9 +297,11 @@ fn not_registered_is_a_zero_and_no_registry_is_not() {
     ]);
     let leg = domain(&registry, "no-such-name-zz.com", "scan", 1);
     assert!(leg.entities.is_empty(), "{:?}", leg.entities);
+    let outcome = leg.outcome.expect("an rdap row");
+    assert_eq!(outcome.kind, SourceOutcomeKind::ValidZero);
     assert_eq!(
-        leg.outcome.map(|outcome| outcome.kind),
-        Some(SourceOutcomeKind::ValidZero)
+        outcome.detail.as_deref(),
+        Some("not registered at https://rdap.verisign.com/com/v1/domain/no-such-name-zz.com")
     );
 
     let leg = domain(&registry, "example.org", "scan", 1);

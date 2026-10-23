@@ -138,6 +138,7 @@ fn asn_seeds_with_leading_zeros_are_one_seed_and_stay_within_32_bits() {
     );
     assert_eq!(result.accepted.len(), 1, "{:?}", result.accepted);
     assert_eq!(result.accepted[0].kind, EntityKind::Asn);
+    assert_eq!(result.accepted[0].value, "as13335");
     assert_eq!(result.rejected.len(), 1, "{:?}", result.rejected);
     assert_eq!(result.rejected[0].0, "AS4294967296");
     assert!(matches!(&result.rejected[0].1, SeedRejection::Unsupported));

@@ -774,8 +774,9 @@ impl ScanService {
     }
 
     /// A service whose scans run `rules` (see [`sf_correlate::with_dir`]) beside Huntsman's own.
-    /// `rule_errors` are the rule files that could not be read: each scan logs them, so a broken
-    /// rule is seen where its results would have been.
+    /// `rule_errors` are what [`sf_correlate::with_dir`] reports: a rule file that could not be
+    /// read or loaded, a rules path that could not be listed, or files past its limit. Each scan
+    /// logs them, so a broken rule is seen where its results would have been.
     #[must_use]
     pub fn with_rules(
         store: ScanStore,
@@ -813,7 +814,8 @@ impl ScanService {
         &self.rules
     }
 
-    /// The rule files that could not be read.
+    /// What [`sf_correlate::with_dir`] reported: a rule file that could not be read or loaded, a
+    /// rules path that could not be listed, or files past its limit.
     #[must_use]
     pub fn rule_errors(&self) -> &[RuleError] {
         &self.rule_errors

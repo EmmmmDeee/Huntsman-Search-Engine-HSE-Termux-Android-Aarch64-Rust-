@@ -74,6 +74,8 @@ impl Plan {
 
     /// A save from an alias line, which a line naming the slot itself outranks wherever it is,
     /// as [`secret_for_slot`](crate::provider_credentials::secret_for_slot) reads a keys file.
+    /// Unlike a keys file, a placeholder line naming the slot is skipped, not read as unsetting
+    /// it, so it does not let an alias line through.
     fn save_fallback(&mut self, slot: &'static str, secret: Secret) {
         if self.saves.iter().any(|(known, _)| *known == slot) && !self.fallback_only.contains(&slot)
         {
@@ -97,6 +99,7 @@ impl Plan {
 /// sets a slot replaces an earlier one, as in a keys file, except that a `HIBP_API_KEY` line fills
 /// `HUNTSMAN_HIBP_KEY` only when no `HUNTSMAN_HIBP_KEY` or `sfp_haveibeenpwned:api_key` line sets
 /// it, as [`secret_for_slot`](crate::provider_credentials::secret_for_slot) reads a keys file.
+/// A placeholder line is skipped there too, where a keys file would read it as unsetting the slot.
 /// **Pure.**
 #[must_use]
 pub fn plan(text: &str) -> Plan {
@@ -323,6 +326,8 @@ mod tests {
             format!("{alias}\n{named}\n"),
             format!("{spiderfoot}\n{alias}\n"),
             format!("{alias}\n{spiderfoot}\n"),
+            format!("{alias}\n{named}\n{alias}\n"),
+            format!("{alias}\n{spiderfoot}\n{alias}\n"),
         ] {
             let plan = super::plan(&text);
             assert!(plan.refused.is_empty(), "{:?}", plan.refused);
@@ -336,7 +341,7 @@ mod tests {
             assert_eq!(
                 read.as_ref().map(Secret::expose),
                 Some("TEST_ONLY_NAMED_HIBP"),
-                "the import saves what the keys file reads as: {text}"
+                "the import saves what the keys file reads as when no line is a placeholder: {text}"
             );
         }
         let plan = super::plan(&format!(
@@ -345,6 +350,14 @@ mod tests {
         assert_eq!(
             saved(&plan),
             [(HUNTSMAN_HIBP_KEY_ENV, "TEST_ONLY_LATER_ALIAS")]
+        );
+        // A placeholder line is skipped, not read as unsetting the slot as a keys file reads it.
+        let plan = super::plan(&format!(
+            "{named}\n{HUNTSMAN_HIBP_KEY_ENV}=changeme\n{alias}\n"
+        ));
+        assert_eq!(
+            saved(&plan),
+            [(HUNTSMAN_HIBP_KEY_ENV, "TEST_ONLY_NAMED_HIBP")]
         );
     }
 
@@ -358,6 +371,40 @@ mod tests {
         assert_eq!(plan.refused.len(), 2, "{:?}", plan.refused);
         assert!(plan.refused[0].starts_with("line 2: neither"));
         assert!(plan.refused[1].starts_with("line 4: sfp_hunter:api_key is longer"));
+        // A key of exactly the bound is saved in every form.
+        let longest = "k".repeat(MAX_KEY_BYTES);
+        let encoded = base64::standard(format!("{longest}:{longest}").as_bytes());
+        let at_bound = super::plan(&format!(
+            "sfp_hunter:api_key={longest}\n{SHODAN_KEY_ENV}={longest}\n{HIBP_API_KEY_ENV}={longest}\n\
+             {SPIDERFOOT_WIGLE_OPTION}={encoded}\n"
+        ));
+        assert!(at_bound.refused.is_empty(), "{:?}", at_bound.refused);
+        assert_eq!(
+            at_bound.saves.len(),
+            5,
+            "hunter, shodan, hibp and both wigle slots"
+        );
+        assert!(
+            at_bound
+                .saves
+                .iter()
+                .all(|(_, secret)| secret.expose().len() == MAX_KEY_BYTES)
+        );
+        // A keys-file line, a catalogue slot or the HIBP alias, is held to the same bound.
+        for (line, name) in [
+            (format!("{SHODAN_KEY_ENV}={long}"), SHODAN_KEY_ENV),
+            (format!("{HIBP_API_KEY_ENV}={long}"), HIBP_API_KEY_ENV),
+        ] {
+            let plan = super::plan(&format!("\n{line}\n"));
+            assert!(plan.saves.is_empty(), "{plan:?}");
+            assert_eq!(plan.refused.len(), 1, "{:?}", plan.refused);
+            assert!(
+                plan.refused[0].starts_with(&format!("line 2: {name} is longer")),
+                "{:?}",
+                plan.refused
+            );
+            assert!(!plan.refused[0].contains(&long));
+        }
         assert_eq!(
             saved(&plan),
             [(SHODAN_KEY_ENV, SHODAN)],
@@ -373,6 +420,7 @@ mod tests {
         for pair in [
             format!("TEST_ONLY_AID:{long}"),
             format!("{long}:TEST_ONLY_TOKEN"),
+            format!("{long}:{long}"),
         ] {
             let encoded = base64::standard(pair.as_bytes());
             let plan = super::plan(&format!("\n{SPIDERFOOT_WIGLE_OPTION}={encoded}\n"));

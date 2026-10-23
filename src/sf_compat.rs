@@ -18,7 +18,7 @@ use crate::module::reachable_modules;
 use crate::scan_route::{NetworkSelector, ScanKind};
 use crate::sf_elements::DataElement;
 use crate::sf_types;
-use crate::textnorm::{escape_controls, escape_unsafe_text};
+use crate::textnorm::{escape_unsafe_text, one_line};
 
 pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -l IP:PORT | -C SCAN_ID | -s TARGET [-u all|footprint|investigate|passive] [-m MODULE[,MODULE...]] [-t TYPE[,TYPE...] [-f] [-x]] [-F TYPE[,TYPE...]] [--depth N] [-o tab|csv|json] [-H] [-n] [-r] [-S LENGTH] [-D DELIMITER] [-d] [-q]";
 
@@ -637,12 +637,6 @@ fn render_csv(rows: &[Row<'_>], output: &SfOutput) -> String {
         out.push('\n');
     }
     out
-}
-
-/// One cell on one line: a line break or tab becomes a space, so the cell cannot start a row or a
-/// column, and any other control character is written escaped, so it cannot drive the terminal.
-fn one_line(value: &str) -> String {
-    escape_controls(&value.replace(['\r', '\n', '\t'], " "))
 }
 
 fn csv_cell(value: &str, delimiter: &str) -> String {

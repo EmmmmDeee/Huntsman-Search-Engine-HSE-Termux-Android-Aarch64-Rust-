@@ -208,7 +208,12 @@ fn not_found_no_service_and_failures_are_told_apart() {
         "no-such-name-zz.com",
         1,
     );
-    assert_eq!(answer, Ok(Answer::NotFound));
+    assert_eq!(
+        answer,
+        Ok(Answer::NotFound(
+            "https://rdap.verisign.com/com/v1/domain/no-such-name-zz.com".into()
+        ))
+    );
     let answer = lookup_domain(&Registry::new(&[boot]), "example.org", 1);
     assert_eq!(
         answer,
@@ -226,7 +231,7 @@ fn not_found_no_service_and_failures_are_told_apart() {
             vec![boot, ("https://rdap.verisign.com/", 429, "{}")],
             SourceOutcomeKind::RateLimited,
         ),
-        // A status is typed as every other source types it.
+        // A status is typed as fetch types it.
         (
             vec![boot, ("https://rdap.verisign.com/", 401, "{}")],
             SourceOutcomeKind::AuthRequired,
@@ -267,6 +272,27 @@ fn reply(status: u16, headers: &[(&str, &str)], body: &str) -> Response {
         body: body.as_bytes().to_vec(),
         truncated: false,
     }
+}
+
+/// A referral that ends in "not registered" names the registry that said so, not the one that
+/// referred.
+#[test]
+fn a_referred_not_found_names_the_registry_that_answered() {
+    let registry = crate::test_support::ScriptedTransport::new(vec![
+        Ok(reply(200, &[], IPV4_BOOTSTRAP)),
+        Ok(reply(
+            301,
+            &[("Location", "https://rdap.db.ripe.net/ip/1.2.3.4")],
+            "",
+        )),
+        Ok(reply(404, &[], "{}")),
+    ]);
+    assert_eq!(
+        lookup_ip(&registry, IpAddr::from([1, 2, 3, 4]), 1),
+        Ok(Answer::NotFound(
+            "https://rdap.db.ripe.net/ip/1.2.3.4".into()
+        ))
+    );
 }
 
 /// A regional registry that refers an address to the one holding it: the record names the
@@ -327,6 +353,97 @@ fn a_rate_limited_registry_keeps_its_retry_after() {
     // A failure with no answer to read has no delay.
     let failure = lookup_domain(&Registry::new(&[]), "github.com", 1).expect_err("no route");
     assert_eq!(failure.outcome(1).retry_after_secs, None);
+}
+
+/// Ninety seconds before Fri, 23 Oct 2026 12:00:00 GMT.
+const NOW: u64 = 1_792_756_710;
+const IN_NINETY: &str = "Fri, 23 Oct 2026 12:00:00 GMT";
+
+/// Every lookup counts an HTTP-date `Retry-After` from the scan's clock, from the IANA bootstrap
+/// and from the registry alike.
+#[test]
+fn every_lookup_counts_a_dated_retry_after_from_the_scan_clock() {
+    let limited = |status: u16| reply(status, &[("Retry-After", IN_NINETY)], "{}");
+    type Lookup = fn(&crate::test_support::ScriptedTransport) -> Result<Answer, Failure>;
+    let lookups: [(&str, Lookup, &str); 4] = [
+        (
+            "domain",
+            |t| lookup_domain(t, "github.com", NOW),
+            DNS_BOOTSTRAP,
+        ),
+        (
+            "ip",
+            |t| lookup_ip(t, IpAddr::from([1, 1, 1, 1]), NOW),
+            IPV4_BOOTSTRAP,
+        ),
+        (
+            "netblock",
+            |t| {
+                lookup_netblock(
+                    t,
+                    crate::netblock::Netblock::parse("1.1.1.0/24").expect("block"),
+                    NOW,
+                )
+            },
+            IPV4_BOOTSTRAP,
+        ),
+        ("asn", |t| lookup_asn(t, 13335, NOW), ASN_BOOTSTRAP),
+    ];
+    for (name, lookup, bootstrap) in lookups {
+        for status in [429, 503] {
+            let at_bootstrap =
+                crate::test_support::ScriptedTransport::new(vec![Ok(limited(status))]);
+            let at_registry = crate::test_support::ScriptedTransport::new(vec![
+                Ok(reply(200, &[], bootstrap)),
+                Ok(limited(status)),
+            ]);
+            for (hop, transport) in [("bootstrap", at_bootstrap), ("registry", at_registry)] {
+                let failure = lookup(&transport).expect_err("a refusal is no answer");
+                assert_eq!(
+                    failure.retry_after_secs,
+                    Some(90),
+                    "{name} {hop} {status}: {failure:?}"
+                );
+            }
+        }
+    }
+}
+
+/// A status is typed as fetch types it: a 403 without a challenge page is a rejection, and a
+/// 429 is a rate limit with its delay even when its body reads as a challenge.
+#[test]
+fn a_registry_status_is_typed_as_fetch_types_it() {
+    let refused = |status: u16, headers: &[(&str, &str)], body: &str| {
+        let registry = crate::test_support::ScriptedTransport::new(vec![
+            Ok(reply(200, &[], DNS_BOOTSTRAP)),
+            Ok(reply(status, headers, body)),
+        ]);
+        lookup_domain(&registry, "github.com", 1).expect_err("a refusal is no answer")
+    };
+    assert_eq!(
+        refused(403, &[], "{}").kind,
+        SourceOutcomeKind::AuthRejected
+    );
+    let challenged = refused(
+        429,
+        &[("Retry-After", "30")],
+        r#"<html><div id="px-captcha"></div></html>"#,
+    );
+    assert_eq!(challenged.kind, SourceOutcomeKind::RateLimited);
+    assert_eq!(challenged.retry_after_secs, Some(30));
+    // A challenge page is a wall whatever its status: never "not registered" for a 404 and never a
+    // record that does not parse for a 200. A 503 one keeps its delay.
+    for status in [403, 404, 200, 503] {
+        let walled = refused(
+            status,
+            &[("Retry-After", "45")],
+            r#"<html><div id="px-captcha"></div></html>"#,
+        );
+        assert_eq!(walled.kind, SourceOutcomeKind::BotWaf, "{status}");
+        assert_eq!(walled.detail, "challenge page", "{status}");
+        let delay = (status == 503).then_some(45);
+        assert_eq!(walled.retry_after_secs, delay, "{status}");
+    }
 }
 
 #[test]

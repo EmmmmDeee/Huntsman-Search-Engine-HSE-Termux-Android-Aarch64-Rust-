@@ -5,5 +5,7 @@
   whichever name it used. Read as a keys file, the same text gives `NEW`, since a `HIBP_API_KEY`
   line counts only when nothing sets `HUNTSMAN_HIBP_KEY`. The import now follows that rule. A
   `HUNTSMAN_HIBP_KEY` or `sfp_haveibeenpwned:api_key` line wins over a `HIBP_API_KEY` line in
-  either order, and a `HIBP_API_KEY` line alone still fills the slot. The answer's `slots`,
-  `unused` and `settings` are unchanged.
+  either order, and a `HIBP_API_KEY` line alone still fills the slot. A placeholder line is
+  still skipped rather than read as unsetting the slot, so `HUNTSMAN_HIBP_KEY=NEW`,
+  `HUNTSMAN_HIBP_KEY=changeme`, `HIBP_API_KEY=OLD` imports `NEW`, where a keys file reads `OLD`.
+  The answer's `slots`, `unused` and `settings` are unchanged.

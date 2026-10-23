@@ -142,12 +142,12 @@ fn leg(
                 outcome: Some(outcome),
             }
         }
-        Ok(Answer::NotFound) => Leg {
+        Ok(Answer::NotFound(url)) => Leg {
             entities: Vec::new(),
             outcome: Some(
                 SourceExecutionOutcome::valid_zero(SOURCE, now_unix)
                     .with_http_status(404)
-                    .with_detail("not registered with the registry the IANA bootstrap names"),
+                    .with_detail(format!("not registered at {url}")),
             ),
         },
         Ok(Answer::NoService(why)) => Leg {
@@ -337,9 +337,7 @@ impl Subject<'_> {
             }
         }
         for phone in &contact.phones {
-            // A tel URI's number ends at its first parameter (RFC 3966): `;ext=102` is not
-            // digits of it.
-            if let Some(phone) = canonical_phone(phone.split(';').next().unwrap_or(phone)) {
+            if let Some(phone) = tel_number(phone).and_then(canonical_phone) {
                 push_entity(
                     out,
                     EntityKind::Phone,
@@ -352,6 +350,22 @@ impl Subject<'_> {
             }
         }
     }
+}
+
+/// A telephone's number without its tel URI parameters (RFC 3966): `;ext=102` is not digits of
+/// it. A local number is only a number in its `phone-context`, which is not applied here, so a
+/// local number with one gives none rather than a number in the default country. **Pure.**
+fn tel_number(phone: &str) -> Option<&str> {
+    let mut parts = phone.split(';');
+    let number = parts.next().unwrap_or(phone);
+    let local_in_context = !number.trim_start().starts_with('+')
+        && parts.any(|parameter| {
+            parameter
+                .trim_start()
+                .get(..14)
+                .is_some_and(|name| name.eq_ignore_ascii_case("phone-context="))
+        });
+    (!local_in_context).then_some(number)
 }
 
 /// `last changed` becomes `last_changed`; `registration` stays. **Pure.**
