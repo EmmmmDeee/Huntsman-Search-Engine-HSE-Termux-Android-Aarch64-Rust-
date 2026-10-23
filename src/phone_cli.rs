@@ -2,12 +2,13 @@
 //!
 //! Canonicalises explicit international numbers and recognised Australian local
 //! numbers, resolves country metadata, and enriches Australian numbers with the
-//! numbering-plan line type and coarse allocation region, all offline ([`run`]). With
+//! numbering-plan line type and coarse allocation region, and holds `+1` numbers to the North
+//! American Numbering Plan (validity, local and international forms, class and the area code's
+//! country), all offline ([`run`]). With
 //! `HUNTSMAN_NUMVERIFY_KEY` set, [`run_keyed`] then asks Numverify for the carrier, line type
 //! and location, and every indicator source for a number whose key is set (`IPQualityScore` with
 //! `HUNTSMAN_IPQS_KEY`); without a key it makes no request and is exactly [`run`].
 
-use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use crate::address_au::{self, AuLineType};
@@ -18,7 +19,7 @@ use crate::indicator_legs;
 use crate::indicator_sources::Indicator;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
-use crate::lookup_report::{entity_row, evidence_row, outcome_row};
+use crate::lookup_report;
 use crate::numverify;
 use crate::phone_intl;
 use crate::source_outcome::SourceExecutionOutcome;
@@ -26,7 +27,7 @@ use crate::source_outcome::SourceExecutionOutcome;
 pub const PHONE_USAGE: &str = "usage: huntsman-recon phone NUMBER [--save FILE]";
 pub const PHONE_HELP: &str = "\
 phone NUMBER [--save FILE]
-Canonicalise a phone number offline, resolve its international dialling prefix, and enrich Australian numbers with numbering-plan line type and coarse region. With HUNTSMAN_NUMVERIFY_KEY set it also asks Numverify (APILayer) for the carrier, line type and location, and with HUNTSMAN_IPQS_KEY set IPQualityScore for line type, carrier and fraud score; without a key no request is made. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise a phone number offline, resolve its international dialling prefix, and enrich Australian numbers with numbering-plan line type and coarse region. A +1 number is held to the North American Numbering Plan: one the plan cannot hold (an area code or exchange beginning 0 or 1, an N11 code, a reserved area code) is refused with the rule it breaks; otherwise it gets its local (NPA) NXX-XXXX and international +1 NPA NXX XXXX forms, whether it is geographic, toll-free, premium or another service code, the country or territory its area code belongs to (Canada, the Caribbean countries and US territories by list, the United States otherwise), and a flag for the 555-0100 to 555-0199 numbers set aside for fiction. With HUNTSMAN_NUMVERIFY_KEY set it also asks Numverify (APILayer) for the carrier, line type and location, and with HUNTSMAN_IPQS_KEY set IPQualityScore for line type, carrier and fraud score; without a key no request is made. --save FILE writes an unverified ledger that verify can reload.";
 
 const PHONE_CONFIDENCE: f64 = 0.90;
 
@@ -70,9 +71,22 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
             "phone must be explicit international form or a recognised Australian number".into(),
         );
     };
-    let Some((prefix, iso, country_name)) = phone_intl::country_of(&canonical) else {
+    let (Some((_, mut iso, mut country_name)), Some(prefix)) = (
+        phone_intl::country_of(&canonical),
+        phone_intl::calling_code(&canonical),
+    ) else {
         return PhoneRun::Failed("unknown international dialling prefix".into());
     };
+    // A +1 number is held to the North American Numbering Plan, and its area code, not the
+    // shared +1, says which of the plan's countries it belongs to.
+    let nanp = match phone_intl::nanp(&canonical) {
+        Some(Ok(nanp)) => Some(nanp),
+        Some(Err(rule)) => return PhoneRun::Failed(format!("not a NANP number: {rule}")),
+        None => None,
+    };
+    if let Some((region_iso, region_name, _)) = nanp.as_ref().and_then(|nanp| nanp.region) {
+        (iso, country_name) = (region_iso, region_name);
+    }
 
     let scan_id = crate::entity::scan_id("phone", &canonical);
     let mut entity = Entity::new(EntityKind::Phone, &canonical, PHONE_CONFIDENCE, &scan_id);
@@ -100,6 +114,10 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
     if iso == "AU" {
         enrich_au(&canonical, &scan_id, &mut entity);
         outcomes.push(SourceExecutionOutcome::success("phone_au", now_unix, 1));
+    }
+    if let Some(nanp) = &nanp {
+        enrich_nanp(nanp, &scan_id, &mut entity);
+        outcomes.push(SourceExecutionOutcome::success(NANP_SOURCE, now_unix, 1));
     }
 
     let report = Report {
@@ -233,19 +251,61 @@ fn enrich_au(canonical: &str, scan_id: &str, entity: &mut Entity) {
     entity.add_evidence(evidence);
 }
 
-fn render(report: &Report) -> Result<String, String> {
-    let mut out = format!("entities={}\n", report.entities.len());
-    for entity in &report.entities {
-        writeln!(out, "{}", entity_row(entity, &entity.raw_value))
-            .map_err(|error| error.to_string())?;
-        for evidence in &entity.evidence {
-            writeln!(out, "{}", evidence_row(evidence)).map_err(|error| error.to_string())?;
+/// Evidence source for the offline North American Numbering Plan reading.
+const NANP_SOURCE: &str = "phone_nanp";
+
+/// What the North American Numbering Plan says about a `+1` number: its national and
+/// international forms, its class, its area code's country, and whether it is one of the
+/// numbers set aside for fiction. Nothing here names a carrier or a subscriber.
+fn enrich_nanp(nanp: &phone_intl::Nanp, scan_id: &str, entity: &mut Entity) {
+    entity.tag("nanp");
+    entity.tag(format!("line:{}", nanp.class.slug()));
+    let summary = match nanp.class {
+        phone_intl::NanpClass::Geographic => format!("NANP area code {}", nanp.npa),
+        phone_intl::NanpClass::TollFree => format!("NANP toll-free code {}", nanp.npa),
+        phone_intl::NanpClass::Premium => format!("NANP premium-rate code {}", nanp.npa),
+        phone_intl::NanpClass::NonGeographic(purpose) => {
+            format!("NANP non-geographic code {}: {purpose}", nanp.npa)
         }
+    };
+    let mut evidence = Evidence::new(EvidenceProvenance::for_scan(NANP_SOURCE, scan_id), summary)
+        .with_attr("numbering_plan", "NANP")
+        .with_attr("area_code", &nanp.npa)
+        .with_attr("exchange", &nanp.nxx)
+        .with_attr("line_number", &nanp.line)
+        .with_attr("local_format", nanp.local())
+        .with_attr("international_format", nanp.international())
+        .with_attr("line_type", nanp.class.slug());
+    if let Some((iso, name, listed)) = nanp.region {
+        evidence = evidence.with_attr("area_code_country", name).with_attr(
+            "area_code_country_basis",
+            if listed {
+                format!("area code {} is assigned to {iso}", nanp.npa)
+            } else {
+                format!(
+                    "area code {} is in no list of Canada's or another plan country's codes",
+                    nanp.npa
+                )
+            },
+        );
     }
-    for outcome in &report.outcomes {
-        writeln!(out, "{}", outcome_row(outcome)).map_err(|error| error.to_string())?;
+    if nanp.fictional {
+        entity.tag("fictional");
+        evidence = evidence.with_attr(
+            "note",
+            "555-0100 to 555-0199 are reserved for fiction and assigned to no one",
+        );
     }
-    Ok(out)
+    if nanp.class != phone_intl::NanpClass::Geographic {
+        entity.tag("non-geographic");
+    }
+    entity.add_evidence(evidence);
+}
+
+/// The report as every lookup prints it ([`lookup_report::render`]): each entity, every evidence
+/// row with its attributes (so the national and international forms show), then the outcomes.
+fn render(report: &Report) -> Result<String, String> {
+    lookup_report::render(&report.entities, &report.outcomes)
 }
 
 #[cfg(test)]
@@ -395,5 +455,59 @@ mod tests {
             PhoneRun::Failed(message) => panic!("{message}"),
         }
         assert!(transport.response.borrow().is_none(), "one request made");
+    }
+
+    /// A +1 number gets `PhoneInfoga`'s fields and more: its national and international forms, its
+    /// class, its area code's country (not just "NANP"), and a fiction flag; a number the plan
+    /// cannot hold is refused with the rule it breaks instead of being taken as valid.
+    #[test]
+    fn a_nanp_number_carries_its_forms_class_and_country_and_a_broken_one_is_refused() {
+        let PhoneRun::Printed { text, report } = run("+1 (416) 555-0199", 1) else {
+            panic!("a Toronto number prints");
+        };
+        let phone = &report.entities[0];
+        assert!(phone.has_tag("country:CA"), "{:?}", phone.tags);
+        assert!(phone.has_tag("nanp") && phone.has_tag("line:geographic"));
+        assert!(phone.has_tag("fictional"));
+        let plan = phone
+            .evidence
+            .iter()
+            .find(|evidence| evidence.provenance.source == NANP_SOURCE)
+            .expect("the plan's reading");
+        assert!(plan.attr_values("local_format").eq(["(416) 555-0199"]));
+        assert!(
+            plan.attr_values("international_format")
+                .eq(["+1 416 555 0199"])
+        );
+        assert!(plan.attr_values("area_code_country").eq(["Canada"]));
+        // The calling code is +1, and the national number is all ten digits after it.
+        let intl = &phone.evidence[0];
+        assert!(
+            intl.attr_values("country_code").eq(["1"]),
+            "{:?}",
+            intl.attributes
+        );
+        assert!(intl.attr_values("national_number").eq(["4165550199"]));
+        // The report prints the plan's attributes, so the forms are on screen, not only saved.
+        for row in [
+            "attribute\tlocal_format\t(416) 555-0199",
+            "attribute\tinternational_format\t+1 416 555 0199",
+            "attribute\tarea_code_country\tCanada",
+        ] {
+            assert!(text.contains(row), "{row} missing from {text}");
+        }
+
+        let PhoneRun::Printed { report, .. } = run("+1 800 555 0100", 1) else {
+            panic!("a toll-free number prints");
+        };
+        assert!(report.entities[0].has_tag("line:toll-free"));
+        assert!(report.entities[0].has_tag("non-geographic"));
+
+        match run("+1 123 555 0100", 1) {
+            PhoneRun::Failed(why) => assert!(why.contains("cannot begin with 0 or 1"), "{why}"),
+            other @ PhoneRun::Printed { .. } => {
+                panic!("a +1 number with area code 123 was accepted: {other:?}")
+            }
+        }
     }
 }

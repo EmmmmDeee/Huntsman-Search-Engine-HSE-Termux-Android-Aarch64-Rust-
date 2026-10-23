@@ -174,6 +174,7 @@ cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax + OathNet 
 cargo run -- exposure @some_handle  # the same for a username: stolen.tax + OathNet (HIBP searches addresses only)
 cargo run -- username octocat             # variants + public GitHub/Bluesky/Mastodon lookups, plus stolen.tax/OathNet when keyed
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
+cargo run -- phone "+1 416 555 0199"        # NANP: plan validity, (416) 555-0199 form, class, Canada
 cargo run -- domain example.com             # crt.sh names, Cert Spotter certificates, DNS records over DoH, each subdomain resolved; network
 cargo run -- ip 1.1.1.1                    # PTR + InternetDB + RIPEstat + GreyNoise, keyed legs when set; network
 cargo run -- netblock 1.1.1.0/24            # RDAP + RIPEstat + the PTR names of every address in the block; network

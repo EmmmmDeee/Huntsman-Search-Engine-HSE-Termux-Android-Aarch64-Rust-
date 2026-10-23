@@ -106,6 +106,7 @@ esac
         r#"#!/bin/sh
 printf 'target=%s cargo %s\n' "${CARGO_TARGET_DIR:-}" "$*" >> "$INSTALL_LOG"
 printf '%s\n' "${HUNTSMAN_BUILD_SHA:-unknown}" > "$INSTALL_LOG.build-sha"
+printf '%s\n' "${CARGO_BUILD_JOBS:-default}" > "$INSTALL_LOG.jobs"
 "#,
     );
     install_fake_github(fake_bin);
@@ -781,6 +782,7 @@ impl Prebuilt {
             .env_remove("HUNTSMAN_REV")
             .env_remove("HUNTSMAN_FROM_SOURCE")
             .env_remove("HUNTSMAN_SERVE_SERVICE")
+            .env_remove("CARGO_BUILD_JOBS")
             .env("SVDIR", self.temp.join("service"))
             .env("FAKE_SCRIPTS_DIR", env!("CARGO_MANIFEST_DIR"))
             .env("HUNTSMAN_START_TIMEOUT", "2")
@@ -1090,6 +1092,49 @@ fn a_source_build_runs_only_without_a_published_build_or_on_request() {
     let calls = t.calls();
     assert!(calls.contains(&format!("--rev {BUILT_REV}")), "{calls}");
     assert!(!calls.contains("releases/download"), "{calls}");
+}
+
+/// A source build runs one compile job per GiB of available memory, at most one per CPU and at
+/// least one, so a phone with a few GiB free is not pushed into Android's low-memory killer; an
+/// operator's `CARGO_BUILD_JOBS` stands, and unreadable memory leaves Cargo's default.
+#[test]
+fn a_source_build_sizes_its_parallel_jobs_to_the_memory_available() {
+    let t = Prebuilt::new();
+    write_executable(&t.fake_bin.join("nproc"), "#!/bin/sh\necho 8\n");
+    let proc_root = t.temp.join("proc");
+    fs::create_dir_all(&proc_root).unwrap();
+    let jobs_with = |available_kib: Option<u64>, env: &[(&str, &str)]| {
+        match available_kib {
+            Some(kib) => fs::write(
+                proc_root.join("meminfo"),
+                format!("MemTotal:  7559000 kB\nMemFree:  300000 kB\nMemAvailable: {kib} kB\n"),
+            )
+            .unwrap(),
+            None => {
+                let _ = fs::remove_file(proc_root.join("meminfo"));
+            }
+        }
+        let proc_root = proc_root.display().to_string();
+        let mut env = env.to_vec();
+        env.push(("HUNTSMAN_PROC_ROOT", &proc_root));
+        env.push(("HUNTSMAN_FROM_SOURCE", "1"));
+        let out = t.run(&env, DEFAULT_MAIN_REV);
+        assert!(out.status.success(), "{}", stderr(&out));
+        fs::read_to_string(t.log.with_extension("log.jobs"))
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    // The phone in the report: 7.2 GiB, about 2.4 GiB available.
+    assert_eq!(jobs_with(Some(2_500_000), &[]), "2");
+    assert_eq!(jobs_with(Some(400_000), &[]), "1", "never below one");
+    assert_eq!(
+        jobs_with(Some(64 * 1_048_576), &[]),
+        "8",
+        "never above the CPUs"
+    );
+    assert_eq!(jobs_with(Some(400_000), &[("CARGO_BUILD_JOBS", "3")]), "3");
+    assert_eq!(jobs_with(None, &[]), "default");
 }
 
 fn stdout(output: &std::process::Output) -> String {
