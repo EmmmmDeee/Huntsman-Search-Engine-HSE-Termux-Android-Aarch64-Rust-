@@ -905,8 +905,8 @@ fn tagged_cache(dir: &Path) -> bool {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     let opened = {
         use std::os::unix::fs::OpenOptionsExt as _;
-        const O_NONBLOCK: i32 = 0o0004000;
-        const O_NOFOLLOW: i32 = 0o00400000;
+        const O_NONBLOCK: i32 = 0o0_004_000;
+        const O_NOFOLLOW: i32 = 0o00_400_000;
         fs::OpenOptions::new()
             .read(true)
             .custom_flags(O_NONBLOCK | O_NOFOLLOW)
