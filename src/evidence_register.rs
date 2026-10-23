@@ -62,8 +62,14 @@ fn rows(saved: &ScanResults) -> Result<BTreeMap<String, Row>, String> {
     let mut output = BTreeMap::new();
     for entity in &saved.entities {
         insert(
-            &mut output, "entity", entity.uid.clone(), None,
-            Some(entity.observed_at_unix), json!(entity), BTreeSet::new(), false,
+            &mut output,
+            "entity",
+            entity.uid.clone(),
+            None,
+            Some(entity.observed_at_unix),
+            json!(entity),
+            BTreeSet::new(),
+            false,
         )?;
     }
     for element in &saved.elements {
@@ -75,8 +81,14 @@ fn rows(saved: &ScanResults) -> Result<BTreeMap<String, Row>, String> {
             links.insert(stable_id("entity", entity));
         }
         insert(
-            &mut output, "element", element.id.clone(), Some(element.module.clone()),
-            Some(element.created / 1_000), json!(element), links, element.fp,
+            &mut output,
+            "element",
+            element.id.clone(),
+            Some(element.module.clone()),
+            Some(element.created / 1_000),
+            json!(element),
+            links,
+            element.fp,
         )?;
     }
     let mut source_sequence: BTreeMap<&str, usize> = BTreeMap::new();
@@ -84,18 +96,31 @@ fn rows(saved: &ScanResults) -> Result<BTreeMap<String, Row>, String> {
         let ordinal = source_sequence.entry(&outcome.module).or_default();
         *ordinal += 1;
         insert(
-            &mut output, "source_outcome", format!("{}:{}", outcome.module, ordinal),
-            Some(outcome.module.clone()), Some(outcome.observed_at_unix),
-            json!(outcome), BTreeSet::new(), false,
+            &mut output,
+            "source_outcome",
+            format!("{}:{}", outcome.module, ordinal),
+            Some(outcome.module.clone()),
+            Some(outcome.observed_at_unix),
+            json!(outcome),
+            BTreeSet::new(),
+            false,
         )?;
     }
     for correlation in &saved.correlations {
-        let links = correlation.elements.iter()
+        let links = correlation
+            .elements
+            .iter()
             .map(|element| stable_id("element", element))
             .collect();
         insert(
-            &mut output, "correlation", correlation.id.clone(),
-            Some(correlation.origin.clone()), None, json!(correlation), links, false,
+            &mut output,
+            "correlation",
+            correlation.id.clone(),
+            Some(correlation.origin.clone()),
+            None,
+            json!(correlation),
+            links,
+            false,
         )?;
     }
     for (position, pivot) in saved.lineage.iter().enumerate() {
