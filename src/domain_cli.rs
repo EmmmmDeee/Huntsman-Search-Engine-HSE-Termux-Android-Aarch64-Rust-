@@ -639,26 +639,11 @@ impl<'a> ZoneFindings<'a> {
         }
     }
 
-    /// The SOA's responsible mailbox, listed as published. It is an e-mail entity only when it
-    /// sits in the looked-up domain or below it: a DNS host's `hostmaster@` mailbox is on every
-    /// zone the host serves, and as an entity it would tie each of them together. A domain above
-    /// is no safer, as it can be a shared suffix such as `github.io`.
+    /// The SOA's responsible mailbox, listed as published and kept as an entity only when it is
+    /// the domain's own (see [`Self::own_mailbox`]).
     fn responsible(&mut self, mailbox: &str) {
-        let Some(email) = canonical_email(mailbox) else {
-            return;
-        };
-        self.listed.push(("soa_mailbox", email.clone()));
-        let mailbox_domain = email.rsplit_once('@').map_or("", |(_, domain)| domain);
-        let domain = self.domain.to_ascii_lowercase();
-        let own = canonical_domain(mailbox_domain).is_some()
-            && (mailbox_domain == domain || mailbox_domain.ends_with(&format!(".{domain}")));
-        if own {
-            let evidence = self.named(
-                "SOA",
-                format!("Mailbox responsible for the {} zone", self.domain),
-            );
-            self.push(EntityKind::Email, &email, evidence, &[]);
-        }
+        let summary = format!("Mailbox responsible for the {} zone", self.domain);
+        self.mailbox_record("SOA", "soa_mailbox", summary, mailbox);
     }
 
     /// The SPF posture as tags, and each domain the policy includes or redirects to.
@@ -710,15 +695,41 @@ impl<'a> ZoneFindings<'a> {
     }
 
     fn mailbox(&mut self, record_type: &str, reports: &str, mailbox: &str) {
-        let Some(email) = canonical_email(mailbox) else {
-            return;
-        };
         let summary = format!(
             "Mailbox that receives {reports} reports for {}",
             self.domain
         );
-        let evidence = self.named(record_type, summary);
-        self.push(EntityKind::Email, &email, evidence, &[]);
+        self.mailbox_record(record_type, "report_mailbox", summary, mailbox);
+    }
+
+    /// A mailbox a record names, listed under `attr` as published, and an e-mail entity only
+    /// when it is the domain's own.
+    fn mailbox_record(
+        &mut self,
+        record_type: &str,
+        attr: &'static str,
+        summary: String,
+        raw: &str,
+    ) {
+        let Some(email) = canonical_email(raw) else {
+            return;
+        };
+        self.listed.push((attr, email.clone()));
+        if self.own_mailbox(&email) {
+            let evidence = self.named(record_type, summary);
+            self.push(EntityKind::Email, &email, evidence, &[]);
+        }
+    }
+
+    /// Whether a mailbox sits in the looked-up domain or below it. A DNS host's `hostmaster@`
+    /// or a DMARC vendor's report mailbox is named by every zone that uses the service, and as
+    /// an entity it would bridge each of those lookups to the others; a domain above is no
+    /// safer, as it can be a shared suffix such as `github.io`.
+    fn own_mailbox(&self, email: &str) -> bool {
+        let mailbox_domain = email.rsplit_once('@').map_or("", |(_, domain)| domain);
+        let domain = self.domain.to_ascii_lowercase();
+        canonical_domain(mailbox_domain).is_some()
+            && (mailbox_domain == domain || mailbox_domain.ends_with(&format!(".{domain}")))
     }
 
     fn finish(self) -> Vec<Entity> {
@@ -1056,7 +1067,7 @@ mod tests {
                 (
                     &dmarc,
                     "TXT",
-                    r#""v=DMARC1; p=reject; rua=mailto:dmarc@reports.example.net""#,
+                    r#""v=DMARC1; p=reject; rua=mailto:dmarc@reports.example.net,mailto:dmarc@example.com""#,
                 ),
                 (
                     &tls,
@@ -1202,13 +1213,17 @@ mod tests {
         }
         // A service name is listed as published, but it is not a domain pivot.
         assert!(entity(&report, &EntityKind::Domain, "_spf.mail-host.net").is_none());
-        for mailbox in [
-            "dmarc@reports.example.net",
-            "tlsrpt@reports.example.net",
-            "hostmaster@example.com",
-        ] {
+        // The zone's own mailboxes are entities; a report vendor's, named by every zone that
+        // uses the vendor, is kept as published but never becomes one.
+        for mailbox in ["dmarc@example.com", "hostmaster@example.com"] {
             assert!(
                 entity(&report, &EntityKind::Email, mailbox).is_some(),
+                "{mailbox}"
+            );
+        }
+        for mailbox in ["dmarc@reports.example.net", "tlsrpt@reports.example.net"] {
+            assert!(
+                entity(&report, &EntityKind::Email, mailbox).is_none(),
                 "{mailbox}"
             );
         }
@@ -1237,6 +1252,14 @@ mod tests {
         assert_eq!(
             records.attr_values("soa_serial").collect::<Vec<_>>(),
             ["2026102301"]
+        );
+        assert_eq!(
+            records.attr_values("report_mailbox").collect::<Vec<_>>(),
+            [
+                "dmarc@reports.example.net",
+                "dmarc@example.com",
+                "tlsrpt@reports.example.net"
+            ]
         );
         assert_eq!(
             records.attr_values("spf_include").collect::<Vec<_>>(),
