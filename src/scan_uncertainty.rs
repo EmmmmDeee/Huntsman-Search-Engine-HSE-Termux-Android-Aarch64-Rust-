@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::scan_store::{ScanRecord, ScanResults, ScanStatus};
-use crate::source_outcome::SourceOutcomeKind;
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::termination::TerminationReason;
 
 /// Each item is a question or limitation, not a finding about the scan target.
@@ -167,6 +167,45 @@ fn termination_issue(reason: TerminationReason) -> Option<(&'static str, &'stati
     }
 }
 
+fn grouped_provider_issues(outcomes: &[SourceExecutionOutcome]) -> (usize, Vec<UncertaintyItem>) {
+    let mut unresolved_executions = 0;
+    let mut groups: BTreeMap<(String, String), UncertaintyItem> = BTreeMap::new();
+    for outcome in outcomes {
+        let Some((priority, category, uncertainty, next_action)) = provider_issue(outcome.kind)
+        else {
+            continue;
+        };
+        unresolved_executions += 1;
+        // The debug label is internal to the grouping key; the serialized outcome
+        // retains the stable snake_case name supplied by SourceOutcomeKind.
+        let key = (outcome.module.clone(), format!("{:?}", outcome.kind));
+        let item = groups.entry(key).or_insert_with(|| UncertaintyItem {
+            id: format!("provider:{}:{:?}", outcome.module, outcome.kind),
+            priority,
+            category,
+            module: Some(outcome.module.clone()),
+            outcome: Some(outcome.kind),
+            observations: 0,
+            first_observed_unix: None,
+            last_observed_unix: None,
+            evidence_path: "results.json#outcomes",
+            uncertainty,
+            next_action,
+        });
+        item.observations += 1;
+        let time = outcome.observed_at_unix;
+        item.first_observed_unix = Some(
+            item.first_observed_unix
+                .map_or(time, |prior| prior.min(time)),
+        );
+        item.last_observed_unix = Some(
+            item.last_observed_unix
+                .map_or(time, |prior| prior.max(time)),
+        );
+    }
+    (unresolved_executions, groups.into_values().collect())
+}
+
 /// Derive the register solely from saved scan evidence. Never infer an unrecorded
 /// source failure, an unobserved target, or an identity from the absence of findings.
 #[must_use]
@@ -198,42 +237,10 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Uncertainty
 
     if let Some(saved) = results {
         recorded_executions = saved.outcomes.len();
-        let mut groups: BTreeMap<(String, String), UncertaintyItem> = BTreeMap::new();
-        for outcome in &saved.outcomes {
-            let Some((priority, category, uncertainty, next_action)) = provider_issue(outcome.kind)
-            else {
-                continue;
-            };
-            unresolved_executions += 1;
-            // The debug label is internal to the grouping key; the serialized outcome
-            // retains the stable snake_case name supplied by SourceOutcomeKind.
-            let key = (outcome.module.clone(), format!("{:?}", outcome.kind));
-            let item = groups.entry(key).or_insert_with(|| UncertaintyItem {
-                id: format!("provider:{}:{:?}", outcome.module, outcome.kind),
-                priority,
-                category,
-                module: Some(outcome.module.clone()),
-                outcome: Some(outcome.kind),
-                observations: 0,
-                first_observed_unix: None,
-                last_observed_unix: None,
-                evidence_path: "results.json#outcomes",
-                uncertainty,
-                next_action,
-            });
-            item.observations += 1;
-            let time = outcome.observed_at_unix;
-            item.first_observed_unix = Some(
-                item.first_observed_unix
-                    .map_or(time, |prior| prior.min(time)),
-            );
-            item.last_observed_unix = Some(
-                item.last_observed_unix
-                    .map_or(time, |prior| prior.max(time)),
-            );
-        }
-        distinct_provider_issues = groups.len();
-        items.extend(groups.into_values());
+        let (unresolved_count, grouped) = grouped_provider_issues(&saved.outcomes);
+        unresolved_executions = unresolved_count;
+        distinct_provider_issues = grouped.len();
+        items.extend(grouped);
         if saved.outcomes.is_empty() {
             items.push(general(
                 "sources:no_recorded_executions",
