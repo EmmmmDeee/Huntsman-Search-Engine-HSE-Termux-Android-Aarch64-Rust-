@@ -459,7 +459,10 @@ impl ScanApi {
                 return error(409, "baseline scan is active");
             }
             if record.target != old_record.target || record.kind != old_record.kind {
-                return error(409, "baseline and current scans must have the same target and kind");
+                return error(
+                    409,
+                    "baseline and current scans must have the same target and kind",
+                );
             }
             let Some(old_saved) = old_results else {
                 return error(409, "baseline scan has no saved results");
@@ -488,7 +491,10 @@ impl ScanApi {
             }
         };
         if body.len() > evidence_register::MAX_RENDER_BYTES {
-            return error(413, "evidence output exceeds bounded export size; no output truncated");
+            return error(
+                413,
+                "evidence output exceeds bounded export size; no output truncated",
+            );
         }
         ApiResponse {
             status: 200,
