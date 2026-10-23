@@ -106,6 +106,37 @@ fn render_row(kind: &str, value: &str, providers: BTreeMap<String, Cell>) -> Val
     })
 }
 
+/// Report potential DNS presentation variants without equating their source records.
+fn normalized_candidate_groups(rows: &[Value]) -> Vec<Value> {
+    let mut candidate_groups: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
+    for row in rows {
+        let (Some(kind), Some(candidate), Some(value), Some(id)) = (
+            row["FINDING_TYPE"].as_str(),
+            row["NORMALIZED_MATCH_CANDIDATE"].as_str(),
+            row["EXACT_VALUE"].as_str(),
+            row["RECORD_ID"].as_str(),
+        ) else {
+            continue;
+        };
+        candidate_groups
+            .entry((kind.to_owned(), candidate.to_owned()))
+            .or_default()
+            .push((value.to_owned(), id.to_owned()));
+    }
+    candidate_groups
+        .into_iter()
+        .filter(|(_, variants)| variants.len() > 1)
+        .map(|((kind, candidate), variants)| {
+            json!({
+                "FINDING_TYPE": kind,
+                "CANDIDATE_VALUE": candidate,
+                "EXACT_VARIANTS": variants,
+                "VERIFICATION_STATUS": "unverified_candidate",
+            })
+        })
+        .collect()
+}
+
 /// Build a bounded sparse evidence matrix offline. Rows are exact type/value
 /// pairs, while columns are recorded source-module labels.
 ///
@@ -131,35 +162,7 @@ pub fn compile_matrix(scan: &ScanRecord, saved: &ScanResults) -> Result<Value, S
             row
         })
         .collect();
-    // Candidate collisions are diagnostic only. Exact keys and original variants
-    // remain separate rows, so the matrix cannot create a false identity match.
-    let mut candidate_groups: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
-    for row in &rows {
-        let (Some(kind), Some(candidate), Some(value), Some(id)) = (
-            row["FINDING_TYPE"].as_str(),
-            row["NORMALIZED_MATCH_CANDIDATE"].as_str(),
-            row["EXACT_VALUE"].as_str(),
-            row["RECORD_ID"].as_str(),
-        ) else {
-            continue;
-        };
-        candidate_groups
-            .entry((kind.to_owned(), candidate.to_owned()))
-            .or_default()
-            .push((value.to_owned(), id.to_owned()));
-    }
-    let normalization_candidates: Vec<Value> = candidate_groups
-        .into_iter()
-        .filter(|(_, variants)| variants.len() > 1)
-        .map(|((kind, candidate), variants)| {
-            json!({
-                "FINDING_TYPE": kind,
-                "CANDIDATE_VALUE": candidate,
-                "EXACT_VARIANTS": variants,
-                "VERIFICATION_STATUS": "unverified_candidate",
-            })
-        })
-        .collect();
+    let normalization_candidates = normalized_candidate_groups(&rows);
     let observed_modules: BTreeSet<&str> = sources.iter().map(String::as_str).collect();
     let mut executions = BTreeMap::new();
     for outcome in &saved.outcomes {
@@ -340,6 +343,10 @@ mod tests {
             values[1]["NORMALIZED_MATCH_CANDIDATE"]
         );
         assert_ne!(values[0]["RECORD_ID"], values[1]["RECORD_ID"]);
+        let groups = normalized_candidate_groups(&values);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["CANDIDATE_VALUE"], "example.org");
+        assert_eq!(groups[0]["EXACT_VARIANTS"].as_array().unwrap().len(), 2);
     }
 
     #[test]
