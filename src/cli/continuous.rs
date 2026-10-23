@@ -262,7 +262,12 @@ fn normalise_saved(
     let before_digest = match results_digest(api.service().store(), record) {
         Ok(digest) => digest,
         Err(error) => {
-            invalidate_saved(record, directory, revision, "results_unreadable_before_analysis")?;
+            invalidate_saved(
+                record,
+                directory,
+                revision,
+                "results_unreadable_before_analysis",
+            )?;
             return Err(error);
         }
     };
@@ -313,11 +318,24 @@ fn normalise_saved(
     match results_digest(api.service().store(), record) {
         Ok(after_digest) if after_digest == before_digest => {}
         Ok(_) => {
-            invalidate_saved(record, directory, revision, "results_changed_during_analysis")?;
-            return Err(format!("scan {} saved results changed during analysis", record.id));
+            invalidate_saved(
+                record,
+                directory,
+                revision,
+                "results_changed_during_analysis",
+            )?;
+            return Err(format!(
+                "scan {} saved results changed during analysis",
+                record.id
+            ));
         }
         Err(error) => {
-            invalidate_saved(record, directory, revision, "results_unreadable_after_analysis")?;
+            invalidate_saved(
+                record,
+                directory,
+                revision,
+                "results_unreadable_after_analysis",
+            )?;
             return Err(error);
         }
     }
