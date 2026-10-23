@@ -319,6 +319,217 @@ pub fn country_of(e164: &str) -> Option<(&'static str, &'static str, &'static st
     match_country(digits)
 }
 
+/// Canada's geographic area codes, in service or assigned, sorted for binary search.
+/// Source: the NANP area-code list, Canada sections (2026-10).
+const NANP_CANADA: &[&str] = &[
+    "204", "226", "236", "249", "250", "257", "263", "289", "306", "343", "354", "365", "367",
+    "368", "382", "403", "416", "418", "428", "431", "437", "438", "450", "468", "474", "506",
+    "514", "519", "548", "579", "581", "584", "587", "604", "613", "639", "647", "672", "683",
+    "705", "709", "742", "753", "778", "780", "782", "807", "819", "825", "867", "873", "879",
+    "902", "905", "942",
+];
+
+/// The area codes of the plan's other countries and of the US territories outside the 50
+/// states, with ISO 3166-1 alpha-2 code and name. `808` is not here: Hawaii, a state, holds it.
+const NANP_OTHER: &[(&str, &str, &str)] = &[
+    ("242", "BS", "The Bahamas"),
+    ("246", "BB", "Barbados"),
+    ("264", "AI", "Anguilla"),
+    ("268", "AG", "Antigua and Barbuda"),
+    ("284", "VG", "British Virgin Islands"),
+    ("340", "VI", "U.S. Virgin Islands"),
+    ("345", "KY", "Cayman Islands"),
+    ("441", "BM", "Bermuda"),
+    ("473", "GD", "Grenada"),
+    ("649", "TC", "Turks and Caicos Islands"),
+    ("658", "JM", "Jamaica"),
+    ("664", "MS", "Montserrat"),
+    ("670", "MP", "Northern Mariana Islands"),
+    ("671", "GU", "Guam"),
+    ("684", "AS", "American Samoa"),
+    ("721", "SX", "Sint Maarten"),
+    ("758", "LC", "Saint Lucia"),
+    ("767", "DM", "Dominica"),
+    ("784", "VC", "Saint Vincent and the Grenadines"),
+    ("787", "PR", "Puerto Rico"),
+    ("809", "DO", "Dominican Republic"),
+    ("829", "DO", "Dominican Republic"),
+    ("849", "DO", "Dominican Republic"),
+    ("868", "TT", "Trinidad and Tobago"),
+    ("869", "KN", "Saint Kitts and Nevis"),
+    ("876", "JM", "Jamaica"),
+    ("939", "PR", "Puerto Rico"),
+];
+
+/// Toll-free codes: those in service and those set aside for toll-free use, never geographic.
+const NANP_TOLL_FREE: &[&str] = &[
+    "800", "822", "833", "844", "855", "866", "877", "880", "881", "882", "883", "884", "885",
+    "886", "887", "888", "889",
+];
+
+/// Other non-geographic service codes and what each carries. `900` is premium-rate, kept apart.
+const NANP_SERVICE: &[(&str, &str)] = &[
+    ("500", "personal communications service"),
+    ("521", "personal communications service"),
+    ("522", "personal communications service"),
+    ("523", "personal communications service"),
+    ("524", "personal communications service"),
+    ("525", "personal communications service"),
+    ("526", "personal communications service"),
+    ("527", "personal communications service"),
+    ("528", "personal communications service"),
+    ("529", "personal communications service"),
+    ("532", "personal communications service"),
+    ("533", "personal communications service"),
+    ("544", "personal communications service"),
+    ("566", "personal communications service"),
+    ("577", "personal communications service"),
+    ("588", "personal communications service"),
+    ("600", "Canadian non-geographic service"),
+    ("622", "Canadian non-geographic service"),
+    ("633", "Canadian non-geographic service"),
+    ("700", "interexchange carrier service"),
+    ("710", "US government special service"),
+];
+
+/// What the North American Numbering Plan says about a `+1` number, offline: its area code (NPA),
+/// central office code (NXX) and line number, its class, and the country or territory its area
+/// code is assigned to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Nanp {
+    pub npa: String,
+    pub nxx: String,
+    pub line: String,
+    pub class: NanpClass,
+    /// The country or territory a geographic area code belongs to, as ISO 3166-1 alpha-2 and
+    /// name, and whether a list named it (`true`) or it is the United States because no list of
+    /// another country's codes holds it (`false`).
+    pub region: Option<(&'static str, &'static str, bool)>,
+    /// `555-0100` to `555-0199`: set aside for fiction, never assigned to a subscriber.
+    pub fictional: bool,
+}
+
+/// The kind of service an area code carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NanpClass {
+    Geographic,
+    TollFree,
+    Premium,
+    /// Another non-geographic service code, with its purpose.
+    NonGeographic(&'static str),
+}
+
+impl NanpClass {
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Geographic => "geographic",
+            Self::TollFree => "toll-free",
+            Self::Premium => "premium",
+            Self::NonGeographic(_) => "non-geographic",
+        }
+    }
+}
+
+/// Why a `+1` number cannot be a NANP number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum NanpError {
+    #[error("a NANP number has ten digits after +1")]
+    Length,
+    #[error("a NANP area code cannot begin with 0 or 1")]
+    AreaCodeStart,
+    #[error("an N11 code such as 411 or 911 is a service code, not an area code")]
+    AreaCodeN11,
+    #[error("area codes with a middle 9, and 37X and 96X, are reserved and never assigned")]
+    AreaCodeReserved,
+    #[error("a NANP exchange (central office code) cannot begin with 0 or 1")]
+    ExchangeStart,
+    #[error("an N11 code such as 411 or 911 is a service code, not an exchange")]
+    ExchangeN11,
+}
+
+impl Nanp {
+    /// The national form, as dialled within the plan: `(706) 828-5611`.
+    #[must_use]
+    pub fn local(&self) -> String {
+        format!("({}) {}-{}", self.npa, self.nxx, self.line)
+    }
+
+    /// The ITU-T E.123 international form: `+1 706 828 5611`.
+    #[must_use]
+    pub fn international(&self) -> String {
+        format!("+1 {} {} {}", self.npa, self.nxx, self.line)
+    }
+}
+
+fn is_n11(code: &str) -> bool {
+    code.as_bytes()[1..] == *b"11"
+}
+
+/// The NANP reading of a canonical E.164 number: `None` when it is not a `+1` number, else the
+/// number's parts or the plan rule it breaks. **Pure.**
+///
+/// # Errors
+/// The [`NanpError`] for a `+1` number the plan cannot hold.
+#[must_use]
+pub fn nanp(e164: &str) -> Option<Result<Nanp, NanpError>> {
+    let national = e164.strip_prefix("+1")?;
+    Some(nanp_national(national))
+}
+
+fn nanp_national(national: &str) -> Result<Nanp, NanpError> {
+    if national.len() != 10 || !national.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(NanpError::Length);
+    }
+    let (npa, rest) = national.split_at(3);
+    let (nxx, line) = rest.split_at(3);
+    if matches!(npa.as_bytes()[0], b'0' | b'1') {
+        return Err(NanpError::AreaCodeStart);
+    }
+    if is_n11(npa) {
+        return Err(NanpError::AreaCodeN11);
+    }
+    if npa.as_bytes()[1] == b'9' || npa.starts_with("37") || npa.starts_with("96") {
+        return Err(NanpError::AreaCodeReserved);
+    }
+    if matches!(nxx.as_bytes()[0], b'0' | b'1') {
+        return Err(NanpError::ExchangeStart);
+    }
+    if is_n11(nxx) {
+        return Err(NanpError::ExchangeN11);
+    }
+    let class = if NANP_TOLL_FREE.contains(&npa) {
+        NanpClass::TollFree
+    } else if npa == "900" {
+        NanpClass::Premium
+    } else if let Some(&(_, purpose)) = NANP_SERVICE.iter().find(|(code, _)| *code == npa) {
+        NanpClass::NonGeographic(purpose)
+    } else {
+        NanpClass::Geographic
+    };
+    let region = (class == NanpClass::Geographic).then(|| {
+        NANP_CANADA
+            .binary_search(&npa)
+            .ok()
+            .map(|_| ("CA", "Canada", true))
+            .or_else(|| {
+                NANP_OTHER
+                    .iter()
+                    .find(|(code, ..)| *code == npa)
+                    .map(|&(_, iso, name)| (iso, name, true))
+            })
+            .unwrap_or(("US", "United States", false))
+    });
+    Ok(Nanp {
+        npa: npa.to_owned(),
+        nxx: nxx.to_owned(),
+        line: line.to_owned(),
+        class,
+        region,
+        fictional: nxx == "555" && line.starts_with("01"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,6 +630,81 @@ mod tests {
                     "{later} is shadowed by earlier {earlier}"
                 );
             }
+        }
+    }
+
+    fn plan(e164: &str) -> Nanp {
+        nanp(e164).expect("a +1 number").expect("a NANP number")
+    }
+
+    #[test]
+    fn a_nanp_number_has_its_local_and_international_forms_and_area_code_country() {
+        let us = plan("+12025550123");
+        assert_eq!(us.local(), "(202) 555-0123");
+        assert_eq!(us.international(), "+1 202 555 0123");
+        assert_eq!(us.class, NanpClass::Geographic);
+        assert_eq!(us.region, Some(("US", "United States", false)));
+        assert!(us.fictional, "555-0100..0199 is set aside for fiction");
+
+        assert_eq!(plan("+14165550199").region, Some(("CA", "Canada", true)));
+        assert_eq!(plan("+18765550100").region, Some(("JM", "Jamaica", true)));
+        assert_eq!(
+            plan("+17875550100").region,
+            Some(("PR", "Puerto Rico", true))
+        );
+        assert!(
+            !plan("+12025550200").fictional,
+            "555-0200 is outside the fictional block"
+        );
+        assert_eq!(
+            nanp("+61412345678"),
+            None,
+            "only +1 numbers are read by the plan"
+        );
+    }
+
+    #[test]
+    fn toll_free_premium_and_service_codes_are_not_geographic() {
+        for code in ["800", "833", "888", "822"] {
+            let number = plan(&format!("+1{code}5550100"));
+            assert_eq!(number.class, NanpClass::TollFree, "{code}");
+            assert_eq!(number.region, None, "{code}");
+        }
+        assert_eq!(plan("+19005550100").class, NanpClass::Premium);
+        assert_eq!(
+            plan("+16005550100").class,
+            NanpClass::NonGeographic("Canadian non-geographic service")
+        );
+    }
+
+    #[test]
+    fn a_number_the_plan_cannot_hold_is_refused_with_its_rule() {
+        for (number, rule) in [
+            ("+11235550100", NanpError::AreaCodeStart),
+            ("+19115550100", NanpError::AreaCodeN11),
+            ("+12905550100", NanpError::AreaCodeReserved),
+            ("+13725550100", NanpError::AreaCodeReserved),
+            ("+19655550100", NanpError::AreaCodeReserved),
+            ("+12021550100", NanpError::ExchangeStart),
+            ("+12024110100", NanpError::ExchangeN11),
+            ("+1202555010", NanpError::Length),
+        ] {
+            assert_eq!(nanp(number), Some(Err(rule)), "{number}");
+        }
+    }
+
+    #[test]
+    fn the_canadian_table_is_sorted_and_the_tables_do_not_overlap() {
+        assert!(NANP_CANADA.windows(2).all(|pair| pair[0] < pair[1]));
+        for (code, ..) in NANP_OTHER {
+            assert!(NANP_CANADA.binary_search(code).is_err(), "{code}");
+            assert!(!NANP_TOLL_FREE.contains(code), "{code}");
+        }
+        for code in NANP_CANADA.iter().chain(NANP_TOLL_FREE) {
+            assert!(
+                nanp_national(&format!("{code}5550100")).is_ok(),
+                "{code} is valid"
+            );
         }
     }
 }
