@@ -71,7 +71,10 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
             "phone must be explicit international form or a recognised Australian number".into(),
         );
     };
-    let Some((prefix, mut iso, mut country_name)) = phone_intl::country_of(&canonical) else {
+    let (Some((_, mut iso, mut country_name)), Some(prefix)) = (
+        phone_intl::country_of(&canonical),
+        phone_intl::calling_code(&canonical),
+    ) else {
         return PhoneRun::Failed("unknown international dialling prefix".into());
     };
     // A +1 number is held to the North American Numbering Plan, and its area code, not the
@@ -477,6 +480,14 @@ mod tests {
                 .eq(["+1 416 555 0199"])
         );
         assert!(plan.attr_values("area_code_country").eq(["Canada"]));
+        // The calling code is +1, and the national number is all ten digits after it.
+        let intl = &phone.evidence[0];
+        assert!(
+            intl.attr_values("country_code").eq(["1"]),
+            "{:?}",
+            intl.attributes
+        );
+        assert!(intl.attr_values("national_number").eq(["4165550199"]));
         // The report prints the plan's attributes, so the forms are on screen, not only saved.
         for row in [
             "attribute\tlocal_format\t(416) 555-0199",

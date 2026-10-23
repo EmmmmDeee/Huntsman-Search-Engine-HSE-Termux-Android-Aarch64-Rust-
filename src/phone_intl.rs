@@ -369,6 +369,20 @@ fn has_digits_after_a_marker(raw: &str) -> bool {
     false
 }
 
+/// The ITU calling code of a canonical E.164 number: the shortest prefix in [`COUNTRIES`] it
+/// starts with. Calling codes are prefix-free, so a longer entry that starts with a shorter one is
+/// a share of that code (a NANP area code under `1`, Kazakhstan's `77` under `7`), not a code of
+/// its own. **Pure.**
+#[must_use]
+pub fn calling_code(e164: &str) -> Option<&'static str> {
+    let digits = e164.strip_prefix('+')?;
+    COUNTRIES
+        .iter()
+        .map(|&(prefix, ..)| prefix)
+        .filter(|prefix| digits.starts_with(prefix))
+        .min_by_key(|prefix| prefix.len())
+}
+
 /// Resolve a canonical E.164 number to country metadata.
 #[must_use]
 pub fn country_of(e164: &str) -> Option<(&'static str, &'static str, &'static str)> {
@@ -717,5 +731,15 @@ mod tests {
             prefixes.windows(2).all(|pair| pair[0] != pair[1]),
             "a prefix is listed twice"
         );
+    }
+
+    #[test]
+    fn the_calling_code_is_the_shared_code_not_an_area_code_or_a_share_of_one() {
+        assert_eq!(calling_code("+14165550199"), Some("1"));
+        assert_eq!(calling_code("+18765550100"), Some("1"));
+        assert_eq!(calling_code("+77012345678"), Some("7"));
+        assert_eq!(calling_code("+61412345678"), Some("61"));
+        assert_eq!(calling_code("+442071838750"), Some("44"));
+        assert_eq!(calling_code("61412345678"), None);
     }
 }
