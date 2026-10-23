@@ -112,7 +112,7 @@ mod tests {
     fn bundle_id_changes_with_admitted_content_but_is_stable_on_repeat() {
         let a = bound_entry("src/first.rs");
         let b = bound_entry("src/second.rs");
-        let first = bundle_with(&[a.clone()], &[("src/first.rs", "T1595")]);
+        let first = bundle_with(std::slice::from_ref(&a), &[("src/first.rs", "T1595")]);
         let again = bundle_with(&[a], &[("src/first.rs", "T1595")]);
         let other = bundle_with(&[b], &[("src/second.rs", "T1595")]);
         assert_eq!(
