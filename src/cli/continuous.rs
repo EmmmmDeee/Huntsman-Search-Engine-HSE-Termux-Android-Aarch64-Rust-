@@ -134,7 +134,7 @@ fn results_path(api: &ScanApi, record: &ScanRecord) -> PathBuf {
 }
 
 fn normalised_path(record: &ScanRecord, directory: &Path) -> PathBuf {
-    let key = format!("{}\\0{}", record.kind, record.target);
+    let key = format!("{}\0{}", record.kind, record.target);
     directory.join(format!("{}.json", &hex32(&sha256(key.as_bytes()))[..32]))
 }
 
