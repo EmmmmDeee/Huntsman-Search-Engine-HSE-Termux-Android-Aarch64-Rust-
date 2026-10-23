@@ -455,9 +455,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <script>
 const $=id=>document.getElementById(id);
 const root=document.documentElement;
-// Per-viewer conveniences only. Storage can be missing or refuse a write (private tabs, a full
-// quota), so every access is guarded and the page works without it; a write that fails removes
-// the old value rather than leave it standing for the new one.
+// Guard storage I/O; on failed writes invalidate cached values.
 const keep=area=>({get(k){try{return area().getItem(k)||''}catch(_){return ''}},set(k,v){try{if(v)area().setItem(k,v);else area().removeItem(k)}catch(_){try{area().removeItem(k)}catch(_){}}}});
 const store=keep(()=>localStorage),sess=keep(()=>sessionStorage);
 // The theme follows the phone's light or dark setting until the toggle picks one, and the
@@ -539,8 +537,7 @@ const stTone=s=>s==='FINISHED'?'ok':/FAIL/.test(s)?'bad':/ABORT/.test(s)?'warn':
 const RISK=[['high','High','bad'],['medium','Medium','warn'],['low','Low','info'],['info','Info','ok']];
 const riskTone=r=>(RISK.find(x=>x[0]===String(r||'').toLowerCase())||[0,0,''])[2];
 function risks(c){const w=el('span','risks');for(const [k,name,t] of RISK){const b=el('span','label '+t,(c&&c[k])||0);b.append(el('span','sr',' '+name));w.append(b)}return w}
-// One view at a time. A view's loads carry the generation they started in, so an answer that
-// arrives after the operator moved on is dropped, and its follow-up poll never starts.
+// Drop stale async view responses by generation.
 const VIEWS=['scans','newscan','scan','compare','analyze','radar','inspect','settings','about'];
 let view='',gen=0,timer=0,resume=null,detailed=false;
 function later(fn,ms=5000){clearTimeout(timer);const g=gen;resume=fn;timer=setTimeout(()=>{if(g===gen&&!document.hidden)fn()},ms)}
@@ -562,14 +559,10 @@ function route(){
 addEventListener('hashchange',route);
 function pill(text,tone){$('state').textContent=text;$('state').className='pill '+tone;$('sstate').textContent=text;$('sstate').className='val '+tone}
 let retry=0;
-// The page this server serves, which every health answer names. One that names another page
-// means the server was upgraded while this tab was open, so the tab runs the old page against
-// the new server until it reloads.
+// Reject stale UI versions after server upgrades.
 const PAGE_ID=(document.querySelector('meta[name=huntsman-page]')||{}).content||'';
 $('reload').onclick=()=>location.reload();
-// Health is all a page that comes back into view asks for, besides a scan list or scan that is
-// still running. The module list and the command contract do not change while a server runs,
-// so they load when About first opens and on Refresh, not on every return to the tab.
+// Refresh liveness on resume; load static contracts only on demand.
 async function health(){
   clearTimeout(retry);
   let open=true;
@@ -1048,9 +1041,7 @@ async function setFp(on){
   catch(e){fail('scerror',e.message)}
 }
 $('bsetfp').onclick=()=>setFp(true);$('bunsetfp').onclick=()=>setFp(false);
-// Search, as Spiderfoot's box reads it: /regex/, a *wild*card, or a plain value anywhere in the
-// element, over the type being browsed or the whole scan. The server's matcher decides, the one
-// `scans search` and every-scan search use too.
+// Shared scan search supports plain text, wildcard and regex.
 const search=(value,more)=>api('/api/scans/search?'+new URLSearchParams({value,...more}));
 $('scsearch').onsubmit=async ev=>{
   ev.preventDefault();
@@ -1083,11 +1074,7 @@ $('allsearch').onsubmit=async ev=>{
 };
 $('allclose').onclick=()=>{$('allhits').hidden=true;$('allresults').replaceChildren()};
 $('sback').onclick=ev=>{if(location.hash===$('sback').getAttribute('href')){ev.preventDefault();route()}};
-// Graph: the elements and the elements they came from, laid out by a small force simulation
-// that runs a few milliseconds a frame, panned and zoomed by touch, mouse or wheel. However many
-// elements a scan has, no frame spends more than SLICE_MS arranging them, so the page answers a
-// tap while the layout settles; a layout stops after LAYOUT_MS of work, keeping the place it
-// reached, and stops as soon as the page leaves the graph.
+// Bounded cancelable force layout: SLICE_MS per frame, LAYOUT_MS per graph.
 const NS='http://www.w3.org/2000/svg',svg=$('gsvg'),SLICE_MS=12,LAYOUT_MS=20000,BIG=600;
 let G=null,raf=0;
 function stopLayout(){cancelAnimationFrame(raf);raf=0}
@@ -1232,8 +1219,7 @@ $('gsave').onclick=()=>{
   [...copy.querySelectorAll('path')].forEach((c,i)=>{const k=was[i].getAttribute('class')||'';if(!fills.has(k)){const s=getComputedStyle(was[i]);fills.set(k,drawn.map(p=>s.getPropertyValue(p)))}fills.get(k).forEach((v,j)=>c.setAttribute(drawn[j],v));c.removeAttribute('class')});
   download(new Blob([new XMLSerializer().serializeToString(copy)],{type:'image/svg+xml'}),'huntsman-'+sid+'-graph.svg');
 };
-// Two saved scans side by side, which Spiderfoot cannot do: what the later scan found that the
-// earlier did not, what it no longer finds, and the correlations each has that the other lacks.
+// Compare per-element additions, removals and correlations between scans.
 let cmp=[];
 const compareScans=(a,b)=>{location.hash='#/compare/'+enc(a)+'/'+enc(b)};
 async function openCompare(ids){
@@ -1291,9 +1277,7 @@ async function prefill(f){
   $('nerror').hidden=true;location.hash='#/newscan';
 }
 const clone=s=>s&&prefill({...s.options,name:s.name||s.target,target:s.target,kind:s.kind});
-// Spiderfoot types whose value is itself a scan target. An element of one starts New Scan on that
-// value, with the use case and depth of the scan that found it, as Spiderfoot hands each event to
-// the modules that take it.
+// Launch a follow-up scan from a typed pivot, preserving depth/use case.
 const PIVOT=new Set(['INTERNET_NAME','DOMAIN_NAME','DOMAIN_NAME_PARENT','AFFILIATE_INTERNET_NAME','AFFILIATE_DOMAIN_NAME','CO_HOSTED_SITE','CO_HOSTED_SITE_DOMAIN','SIMILARDOMAIN','IP_ADDRESS','IPV6_ADDRESS','AFFILIATE_IPADDR','AFFILIATE_IPV6_ADDRESS','NETBLOCK_OWNER','NETBLOCKV6_OWNER','NETBLOCK_MEMBER','NETBLOCKV6_MEMBER','BGP_AS_OWNER','BGP_AS_MEMBER','EMAILADDR','EMAILADDR_GENERIC','AFFILIATE_EMAILADDR','PHONE_NUMBER','USERNAME','HUMAN_NAME','HSE_MAC_ADDRESS','BITCOIN_ADDRESS']);
 const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:'auto',usecase:o.usecase,depth:o.depth})};
 function scanSettings(){
@@ -1353,8 +1337,7 @@ $('scevidence').addEventListener('click',async e=>{
     await fetchFile(base()+'/evidence?'+params,'huntsman-'+sid+'-evidence-'+mode+'.'+suffix);
   }catch(err){fail('scerror',err.message)}
 });
-// A menu near the right edge opens leftward, so it never runs off a phone's screen: placed from
-// its button before it opens, so it never paints off the edge, then checked once it has opened.
+// Keep dropdown menus on-screen on narrow phone viewports.
 const edge=()=>document.documentElement.clientWidth-8;
 document.addEventListener('click',e=>{
   const s=e.target.closest&&e.target.closest('details.menu>summary');if(!s||s.parentNode.open)return;
@@ -1409,9 +1392,7 @@ function showMods(){
     tr.cells[3].replaceChildren(k);
   });
 }
-// Spiderfoot takes each module's API key in its settings. Here Save writes the key into the keys
-// file every lookup reads, so the next lookup uses it. The key goes in the request body, and the
-// page never gets it back: it learns only whether each slot is set.
+// Keys are write-only in settings; only slot status returns to the UI.
 function keyEditor(m){
   const rows=keyslots?(m.key_env||[]).map(s=>keyslots.slots.find(k=>k.slot===s)).filter(Boolean):[];
   if(!rows.length)return null;
@@ -1444,8 +1425,7 @@ async function saveKey(m,slot,value){
   try{settings=await api('/api/settings')}catch(_){}
   keyWarning();showMods();return true;
 }
-// Spiderfoot's Import API Keys: its SpiderFoot.cfg export, or a keys file, saved in one go. The
-// server reads which slot each key belongs to and answers with the slots, never a value.
+// Import credential slots without returning their values.
 $('kimp-f').onsubmit=async e=>{
   e.preventDefault();
   const m=$('kimp-m'),t=$('kimp-text'),f=$('kimp-file').files[0],text=t.value.trim()?t.value:f?await f.text():'';
@@ -1509,8 +1489,7 @@ $('analyze').onsubmit=async ev=>{
   }catch(e){fail('aerror',unreachable(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
 };
 $('adownload').onclick=()=>{if(alast)save(alast,'huntsman-analysis')};
-// Android discards a background tab and reloads it when it is opened again. Scans live on the
-// server; this tab's last analysis comes back with it instead of having to be run again.
+// Recover last analysis after Android discards a background tab.
 {
   const raw=sess.get('hse-analysis');
   if(raw)try{const s=JSON.parse(raw);$('seeds').value=s.seeds;showAnalysis(s)}catch(_){sess.set('hse-analysis','');$('aresult').hidden=true}
