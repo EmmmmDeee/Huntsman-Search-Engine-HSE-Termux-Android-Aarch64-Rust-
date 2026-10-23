@@ -412,6 +412,8 @@ struct RecursionJson<'a> {
     metrics: &'a huntsman_recon::metrics::ScanMetrics,
     gaps: &'a huntsman_recon::gap::GapReport,
     pivots: &'a [huntsman_recon::pivot::PivotScore],
+    /// Every entity's exposure score and the tags behind it, highest first.
+    exposures: &'a [huntsman_recon::exposure::ExposureFinding],
     outcomes: &'a [SourceExecutionOutcome],
     dispatches: usize,
     visited: usize,
@@ -450,6 +452,7 @@ fn recursion_json<'a>(
         metrics: &analysis.metrics,
         gaps: &analysis.gaps,
         pivots: &analysis.pivots,
+        exposures: &analysis.intelligence.exposures,
         outcomes: &report.outcomes,
         dispatches: report.dispatches,
         visited: report.visited,
@@ -645,6 +648,28 @@ fn print_recursion_analysis(
             pivot.articulation
         );
     }
+    // Breach, stealer-log, password and threat exposure the crawl's lookups tagged, scored.
+    let exposed = analysis
+        .intelligence
+        .exposures
+        .iter()
+        .filter(|finding| finding.score > 0)
+        .collect::<Vec<_>>();
+    println!("exposures={}", exposed.len());
+    for finding in exposed {
+        let reasons = finding
+            .reasons
+            .iter()
+            .map(|reason| format!("{}:{}", escape_controls(&reason.tag), reason.weight))
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "exposure\t{}\tscore={}\t{}\t{reasons}",
+            label(&finding.uid),
+            finding.score,
+            finding.classification.as_str()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -780,6 +805,35 @@ mod tests {
                 .correlations
                 .is_empty(),
             "a lone entity should produce no correlation"
+        );
+    }
+
+    #[test]
+    fn the_json_view_carries_the_exposure_the_lookups_tagged() {
+        // A crawl's breach and stealer-log tags were scored by the analysis and then dropped from
+        // every output; the JSON view must carry each entity's score and the tags behind it.
+        let leaked = Entity::builder(EntityKind::Email, "leaked@example.com", 0.9, "recurse")
+            .tag(huntsman_recon::tags::STEALER_LOG)
+            .tag(huntsman_recon::tags::BREACH)
+            .build();
+        let report = report_of(vec![
+            leaked,
+            Entity::new(EntityKind::Username, "quiet", 0.9, "recurse"),
+        ]);
+        let analysis = recursion_analysis(&report, EXPAND_FLOOR);
+        let value = serde_json::to_value(recursion_json(1, &report, &analysis)).unwrap();
+        let exposures = value["exposures"].as_array().expect("exposures array");
+        assert_eq!(exposures.len(), 2, "one exposure per entity: {value}");
+        assert!(exposures[0]["score"].as_u64().unwrap() >= 55, "{value}");
+        let tags: Vec<&str> = exposures[0]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|reason| reason["tag"].as_str())
+            .collect();
+        assert!(
+            tags.contains(&"stealer-log") && tags.contains(&"breach"),
+            "{tags:?}"
         );
     }
 
