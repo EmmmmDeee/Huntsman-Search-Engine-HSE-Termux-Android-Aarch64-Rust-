@@ -11,7 +11,7 @@
 //! Public Nominatim allows at most one HTTP request per second across an application.
 //! A bounded in-process cache avoids repeat queries, a shared lock serialises live
 //! requests with a full second after each attempt, and the circuit breaker handles failures.
-//! The HTTPS origin is switchable via HUNTSMAN_NOMINATIM_BASE_URL without recompiling.
+//! The HTTPS origin is switchable via `HUNTSMAN_NOMINATIM_BASE_URL` without recompiling.
 //! Multi-process and multi-device traffic is NOT coordinated: aggregate use of OSMF's
 //! public endpoint requires a single gateway or a separately operated service.
 
