@@ -26,7 +26,8 @@ const PAGE: &str = include_str!("../src/web_ui.html");
 /// measured its content loaded in 59 ms and painted in 64 ms, so the budget leaves room for the
 /// views Spiderfoot lacks without letting the page grow unchecked. It was raised from 112 KiB for
 /// the Inspect view (file metadata): at 114 KiB the check measured 46 ms loaded, 56 ms painted.
-const PAGE_BUDGET: usize = 116 * 1024;
+/// A 2-KiB bounded increment covers on-demand raw evidence export; browser timing is gated.
+const PAGE_BUDGET: usize = 118 * 1024;
 /// WCAG 2.2 AA for text under 18.66 px bold or 24 px: the page has none larger.
 const AA: f64 = 4.5;
 /// WCAG 2.2 AA for a graphical object a reader must see (1.4.11), such as a graph node.
