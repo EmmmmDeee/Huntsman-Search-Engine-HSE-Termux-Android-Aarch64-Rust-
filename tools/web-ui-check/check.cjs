@@ -394,6 +394,30 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         check('Uncertainty JSON export reproduces the saved-scan API register',
           JSON.stringify(exportedUncertainties) === JSON.stringify(uncertainty),
           { exportedUncertainties, uncertainty });
+
+        const [txtDownload] = await Promise.all([
+          page.waitForEvent('download', { timeout: 15000 }),
+          page.click('#rawdownload')
+        ]);
+        const rawText = fs.readFileSync(await txtDownload.path(), 'utf8');
+        const rawSection = label => {
+          const startTag = '[START_' + label + ']\n';
+          const endTag = '\n[END_' + label + ']';
+          const start = rawText.indexOf(startTag);
+          const end = rawText.indexOf(endTag, start + startTag.length);
+          if (start < 0 || end < 0) throw Error('Incomplete raw evidence section: ' + label);
+          return JSON.parse(rawText.slice(start + startTag.length, end));
+        };
+        check('Complete fenced TXT export retains all saved evidence and correlations',
+          rawText.startsWith(String.fromCharCode(96).repeat(3) + 'text\n') &&
+          rawText.includes('COVERAGE: UNKNOWN_BEYOND_RECORDED_SOURCES') &&
+          rawText.includes('CONSISTENCY: NON_ATOMIC_ENDPOINT_SNAPSHOT') &&
+          JSON.stringify(rawSection('SCAN_METADATA')) === JSON.stringify(row) &&
+          JSON.stringify(rawSection('UNCERTAINTY_REGISTER')) === JSON.stringify(uncertainty) &&
+          JSON.stringify(rawSection('DATA_ELEMENTS')) === JSON.stringify(elements) &&
+          JSON.stringify(rawSection('CORRELATIONS')) === JSON.stringify(correlations) &&
+          JSON.stringify(rawSection('RELATIONSHIP_GRAPH')) === JSON.stringify(graph),
+          { characters: rawText.length, elements: elements.length, correlations: correlations.length });
       }
       await audit(page, `${scheme} summary`);
 
