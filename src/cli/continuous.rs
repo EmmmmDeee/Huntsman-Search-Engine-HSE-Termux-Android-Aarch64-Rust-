@@ -365,7 +365,9 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RevisionStamp, archive_current, config, due, needs_reconciliation, revision_stamp};
+    use super::{
+        RevisionStamp, archive_current, config, due, needs_reconciliation, revision_stamp,
+    };
     use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus};
     use std::path::PathBuf;
 
@@ -454,8 +456,14 @@ mod tests {
     }
     #[test]
     fn changed_evidence_and_restart_invalidate_cached_analysis() {
-        let old = RevisionStamp { bytes: 10, modified_ns: 100 };
-        let new = RevisionStamp { bytes: 11, modified_ns: 101 };
+        let old = RevisionStamp {
+            bytes: 10,
+            modified_ns: 100,
+        };
+        let new = RevisionStamp {
+            bytes: 11,
+            modified_ns: 101,
+        };
         assert!(!needs_reconciliation(Some(&old), old, true));
         assert!(needs_reconciliation(Some(&old), new, true));
         assert!(needs_reconciliation(Some(&old), old, false));
@@ -465,15 +473,19 @@ mod tests {
     #[test]
     fn stale_report_is_preserved_and_removed_from_current_slot() {
         let dir = std::env::temp_dir().join(format!(
-            "hse-continuous-{}-{}", std::process::id(), huntsman_recon::clock::unix_now_millis()
+            "hse-continuous-{}-{}",
+            std::process::id(),
+            huntsman_recon::clock::unix_now_millis()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let report = dir.join("canonical.json");
         std::fs::write(&report, b"historical").unwrap();
         assert!(archive_current(&report).unwrap());
         assert!(!report.exists());
-        let files = std::fs::read_dir(&dir).unwrap()
-            .map(|entry| entry.unwrap().path()).collect::<Vec<_>>();
+        let files = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
         assert_eq!(files.len(), 1);
         assert!(files[0].to_string_lossy().contains(".stale-"));
         assert_eq!(std::fs::read(&files[0]).unwrap(), b"historical");
@@ -484,7 +496,9 @@ mod tests {
     #[test]
     fn revision_stamp_detects_saved_results_replacement() {
         let dir = std::env::temp_dir().join(format!(
-            "hse-continuous-revision-{}-{}", std::process::id(), huntsman_recon::clock::unix_now_millis()
+            "hse-continuous-revision-{}-{}",
+            std::process::id(),
+            huntsman_recon::clock::unix_now_millis()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("results.json");
@@ -494,5 +508,4 @@ mod tests {
         assert_ne!(revision_stamp(&path).unwrap(), old);
         std::fs::remove_dir_all(&dir).unwrap();
     }
-
 }
