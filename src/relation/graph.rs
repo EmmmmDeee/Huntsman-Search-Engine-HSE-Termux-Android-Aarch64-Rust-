@@ -505,16 +505,7 @@ fn bounded_exact_pathways(
     let mut seen = vec![false; index.len()];
     seen[start] = true;
     let mut visits = 0;
-    if !enumerate(
-        index,
-        start,
-        end,
-        0,
-        0,
-        &mut seen,
-        &mut visits,
-        &mut paths,
-    ) {
+    if !enumerate(index, start, end, 0, 0, &mut seen, &mut visits, &mut paths) {
         return None;
     }
     // A path using a strict superset of another path's bases can never increase
