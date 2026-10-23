@@ -46,15 +46,29 @@ fn insert(
     false_positive: bool,
 ) -> Result<(), String> {
     if target.len() >= MAX_RECORDS {
-        return Err(format!("evidence register exceeds {MAX_RECORDS} records; no records omitted"));
+        return Err(format!(
+            "evidence register exceeds {MAX_RECORDS} records; no records omitted"
+        ));
     }
     let id = stable_id(kind, &identifier);
     if target.contains_key(&id) {
-        return Err(format!("duplicate evidence record {id}; no observation discarded"));
+        return Err(format!(
+            "duplicate evidence record {id}; no observation discarded"
+        ));
     }
-    target.insert(id.clone(), Row {
-        id, kind, identifier, source, observed_at_unix, raw, links, false_positive,
-    });
+    target.insert(
+        id.clone(),
+        Row {
+            id,
+            kind,
+            identifier,
+            source,
+            observed_at_unix,
+            raw,
+            links,
+            false_positive,
+        },
+    );
     Ok(())
 }
 
