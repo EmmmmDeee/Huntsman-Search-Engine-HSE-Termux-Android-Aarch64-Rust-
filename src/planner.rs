@@ -150,10 +150,19 @@ fn descriptor(module: &dyn Module) -> ProviderDescriptor {
     derive_default_provider_descriptor(&ModuleSpecAdapter { module })
 }
 
+/// An invalid or negative explicit budget is zero, not an unlimited spend.
 fn exceeds_budget(budget_usd: Option<f64>, cost_per_request: Option<f64>) -> bool {
-    match (budget_usd, cost_per_request) {
-        (Some(budget), Some(cost)) => cost > budget,
-        _ => false,
+    let Some(budget) = budget_usd else {
+        return false; // No cap was configured.
+    };
+    let budget = if budget.is_finite() {
+        budget.max(0.0)
+    } else {
+        0.0
+    };
+    match cost_per_request {
+        Some(cost) => !cost.is_finite() || cost < 0.0 || cost > budget,
+        None => false, // Unknown paid costs are gated separately.
     }
 }
 
@@ -410,5 +419,24 @@ pub fn build_dispatch_plan(
         selected,
         excluded,
         truncated,
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::exceeds_budget;
+
+    #[test]
+    fn malformed_budget_does_not_block_free_work_or_authorize_spend() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -20.0] {
+            assert!(!exceeds_budget(Some(invalid), Some(0.0)));
+            assert!(exceeds_budget(Some(invalid), Some(0.01)));
+        }
+        assert!(!exceeds_budget(None, Some(100.0)));
+        assert!(!exceeds_budget(Some(1.0), Some(1.0)));
+        assert!(exceeds_budget(Some(1.0), Some(1.01)));
+        assert!(exceeds_budget(Some(1.0), Some(f64::NAN)));
+        assert!(exceeds_budget(Some(1.0), Some(f64::INFINITY)));
+        assert!(exceeds_budget(Some(1.0), Some(-1.0)));
     }
 }
