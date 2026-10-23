@@ -75,6 +75,24 @@ pub fn lookup<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
+    lookup_with_options(
+        transport,
+        username,
+        scan_id,
+        now_unix,
+        &FetchOptions::no_redirects().paced(),
+    )
+}
+
+/// Internal transport adapter. Scripted unit tests opt out of process-global
+/// pacing, which belongs to the separately tested fetch/circuit layer.
+fn lookup_with_options<T: Transport + ?Sized>(
+    transport: &T,
+    username: &str,
+    scan_id: &str,
+    now_unix: u64,
+    options: &FetchOptions,
+) -> Result<Report, Error> {
     let name = username.trim().trim_start_matches('@');
     if !valid_username(name) {
         return Ok(miss(SourceExecutionOutcome::inconclusive(
@@ -89,7 +107,7 @@ pub fn lookup<T: Transport + ?Sized>(
             .header("accept", "application/json")
             .header("user-agent", crate::http::DEFAULT_USER_AGENT),
         None,
-        &FetchOptions::no_redirects().paced(),
+        options,
         SRC,
         now_unix,
     )?;
@@ -268,6 +286,21 @@ mod tests {
     use crate::http::Response;
     use crate::test_support::ScriptedTransport;
 
+    fn lookup_fixture<T: Transport + ?Sized>(
+        transport: &T,
+        username: &str,
+        scan_id: &str,
+        now_unix: u64,
+    ) -> Result<Report, Error> {
+        lookup_with_options(
+            transport,
+            username,
+            scan_id,
+            now_unix,
+            &FetchOptions::no_redirects(),
+        )
+    }
+
     fn urls(transport: &ScriptedTransport) -> Vec<String> {
         transport
             .seen
@@ -295,7 +328,7 @@ mod tests {
     #[test]
     fn an_account_becomes_a_username_its_profile_and_its_name() {
         let transport = ScriptedTransport::new(vec![Ok(reply(200, FOUND))]);
-        let report = lookup(&transport, "@Gargron", "scan", 1).unwrap();
+        let report = lookup_fixture(&transport, "@Gargron", "scan", 1).unwrap();
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
         assert_eq!(
             urls(&transport),
@@ -329,13 +362,13 @@ mod tests {
     #[test]
     fn only_the_servers_not_found_answer_is_a_zero() {
         let missing = ScriptedTransport::new(vec![Ok(reply(404, MISSING))]);
-        let report = lookup(&missing, "nobody_here", "scan", 1).unwrap();
+        let report = lookup_fixture(&missing, "nobody_here", "scan", 1).unwrap();
         assert_eq!(report.outcome.kind, SourceOutcomeKind::ValidZero);
         assert!(report.entities.is_empty());
         // A block page, a bare 404 or a rate limit names no account and is not absence.
         for (status, body) in [(403, "<html>blocked</html>"), (404, "{}"), (429, "{}")] {
             let refused = ScriptedTransport::new(vec![Ok(reply(status, body))]);
-            let report = lookup(&refused, "nobody_here", "scan", 1).unwrap();
+            let report = lookup_fixture(&refused, "nobody_here", "scan", 1).unwrap();
             assert_ne!(
                 report.outcome.kind,
                 SourceOutcomeKind::ValidZero,
@@ -350,7 +383,7 @@ mod tests {
     fn a_handle_mastodon_cannot_hold_sends_nothing() {
         for name in ["jane.doe", "jane-doe", "a234567890123456789012345678901"] {
             let transport = ScriptedTransport::new(Vec::new());
-            let report = lookup(&transport, name, "scan", 1).unwrap();
+            let report = lookup_fixture(&transport, name, "scan", 1).unwrap();
             assert_eq!(
                 report.outcome.kind,
                 SourceOutcomeKind::Inconclusive,
@@ -383,7 +416,7 @@ mod tests {
             "https://evil.example/@Gargron\"}",
         );
         let transport = ScriptedTransport::new(vec![Ok(reply(200, &hostile))]);
-        let report = lookup(&transport, "Gargron", "scan", 1).unwrap();
+        let report = lookup_fixture(&transport, "Gargron", "scan", 1).unwrap();
         assert!(
             !report
                 .entities
