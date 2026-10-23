@@ -1,0 +1,1 @@
+- Expose an additive Rust corroboration assessment API with explicit exact versus conservative-lower-bound precision, JSON serialization and regression coverage; retain numeric pathway semantics, eight-edge depth, and bounded resource usage.
