@@ -188,7 +188,16 @@ fn oui_leg(
     let Some(info) = oui::classify_mac(bssid) else {
         return SourceExecutionOutcome::valid_zero(OUI_SOURCE, now_unix);
     };
-    let randomised = oui::is_locally_administered(bssid) == Some(true);
+    let randomised = info.class == oui::DeviceClass::Randomized;
+    let vendor = if randomised {
+        info.vendor
+    } else if let Some(manufacturer) = info.manufacturer() {
+        manufacturer
+    } else {
+        // No MA-L assignment names the prefix (unregistered, or a block the IEEE Registration
+        // Authority sub-assigns): the registry has no manufacturer to report.
+        return SourceExecutionOutcome::valid_zero(OUI_SOURCE, now_unix);
+    };
     let mut entity = Entity::new(EntityKind::MacAddress, bssid, 0.95, scan_id);
     entity.add_evidence(
         Evidence::new(
@@ -200,7 +209,7 @@ fn oui_leg(
                 "Manufacturer from the IEEE OUI registry"
             },
         )
-        .with_attr("vendor", info.vendor)
+        .with_attr("vendor", vendor)
         .with_attr("randomised", randomised.to_string()),
     );
     entities.push(entity);

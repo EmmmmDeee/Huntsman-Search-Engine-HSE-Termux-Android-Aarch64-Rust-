@@ -158,19 +158,15 @@ pub fn compute(entities: &[Entity], relations: &[EntityRelation]) -> ScanMetrics
     let mean_confidence = mean(&confidences);
     let median_confidence = median(&confidences);
 
-    let mut endpoints = BTreeSet::new();
-    for relation in relations {
-        endpoints.insert(relation.from_uid.as_str());
-        endpoints.insert(relation.to_uid.as_str());
-    }
-    let linked = entities
-        .iter()
-        .filter(|entity| endpoints.contains(entity.uid.as_str()))
+    let graph = Graph::build(entities, relations);
+    // Linked as the gap report counts it: a distinct entity with an edge to another entity, so a
+    // self-loop or an edge to an entity outside the snapshot links nothing.
+    let linked = (0..graph.node_count())
+        .filter(|&index| graph.degree(index) > 0)
         .count();
-    let linked_entity_fraction = fraction(linked, total_entities);
+    let linked_entity_fraction = fraction(linked, graph.node_count());
     let graph_density = density(total_relations, total_entities);
 
-    let graph = Graph::build(entities, relations);
     let coreness = graph.coreness();
     let graph_degeneracy = coreness.iter().copied().max().unwrap_or(0);
     let main_core_size = if graph_degeneracy == 0 {
@@ -256,6 +252,23 @@ mod tests {
     use crate::entity::{EntityKind, Evidence, EvidenceProvenance};
     use crate::graph::{EntityRelation, RelationKind};
     use crate::tags;
+
+    #[test]
+    fn a_self_loop_or_an_edge_out_of_the_snapshot_links_nothing_as_the_gap_report_counts() {
+        let solo = ent(EntityKind::Username, "solo", 0.8);
+        let relations = vec![
+            EntityRelation::new(
+                solo.uid.as_str(),
+                solo.uid.as_str(),
+                RelationKind::AliasOf,
+                0.6,
+            ),
+            EntityRelation::new(solo.uid.as_str(), "uid:absent", RelationKind::AliasOf, 0.6),
+        ];
+        // The same uid twice is one entity; gap::tests pins 0.0 for this fixture too.
+        let metrics = compute(&[solo.clone(), solo], &relations);
+        assert!(metrics.linked_entity_fraction.abs() < f64::EPSILON);
+    }
 
     fn ent(kind: EntityKind, value: &str, confidence: f64) -> Entity {
         Entity::new(kind, value, confidence, "scan")
