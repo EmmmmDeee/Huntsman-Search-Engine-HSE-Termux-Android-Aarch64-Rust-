@@ -238,6 +238,40 @@ fn reads_a_utf16be_hex_pdf_string() {
     assert_eq!(field(&parsed, "info:Title"), Some("HI"));
 }
 
+/// A text string without a byte-order mark is `PDFDocEncoding`: Latin-1 accents and the encoding's
+/// own punctuation, not the replacement characters UTF-8 made of them. Valid UTF-8 written
+/// without a mark, and UTF-8 after PDF 2.0's mark, still read as UTF-8.
+#[test]
+fn a_pdf_doc_encoded_string_keeps_its_accents() {
+    let pdf = pdf(
+        "<< /Author (Jos\\351 Mu\\361oz) /Title (\\223quoted\\224 \\205 \\240 5) /Subject <EFBBBF4AC3B6> /Keywords (Zürich) >>",
+        "",
+        "1 0 R",
+    );
+    let parsed = parse(&pdf);
+    assert_eq!(field(&parsed, "info:Author"), Some("José Muñoz"));
+    assert_eq!(field(&parsed, "info:Title"), Some("ﬁquotedﬂ – € 5"));
+    assert_eq!(field(&parsed, "info:Subject"), Some("Jö"));
+    assert_eq!(field(&parsed, "info:Keywords"), Some("Zürich"));
+    assert_eq!(super::pdf_doc_char(0x18), '˘');
+    assert_eq!(super::pdf_doc_char(0x9F), char::REPLACEMENT_CHARACTER);
+    assert_eq!(super::pdf_doc_char(0xE9), 'é');
+}
+
+/// A backslash before an end of line continues the string on the next line.
+#[test]
+fn a_backslash_before_an_end_of_line_joins_the_lines() {
+    let pdf = pdf(
+        "<< /Title (Line\\\none) /Author (Ada\\\r\nLovelace) /Subject (cr\\\ronly) >>",
+        "",
+        "1 0 R",
+    );
+    let parsed = parse(&pdf);
+    assert_eq!(field(&parsed, "info:Title"), Some("Lineone"));
+    assert_eq!(field(&parsed, "info:Author"), Some("AdaLovelace"));
+    assert_eq!(field(&parsed, "info:Subject"), Some("cronly"));
+}
+
 #[test]
 fn an_octal_and_paren_literal_decodes() {
     // `\050` is `(`, `\051` is `)`, and a balanced inner pair survives.
