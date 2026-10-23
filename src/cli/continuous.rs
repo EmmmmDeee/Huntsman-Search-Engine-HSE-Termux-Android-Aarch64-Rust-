@@ -167,8 +167,13 @@ fn source_hash(path: &Path) -> Result<String, String> {
     Ok(hex32(&sha256(&bytes)))
 }
 
-fn needs_reconciliation(previous: Option<&RevisionStamp>, current: RevisionStamp, exists: bool) -> bool {
-    !exists || previous != Some(&current)
+fn needs_reconciliation(
+    previous: Option<&(String, RevisionStamp)>,
+    scan_id: &str,
+    current: RevisionStamp,
+    exists: bool,
+) -> bool {
+    !exists || previous.is_none_or(|(id, stamp)| id != scan_id || *stamp != current)
 }
 
 fn normalise_saved(
@@ -218,7 +223,7 @@ fn normalise_saved(
 fn cycle(
     api: &ScanApi,
     config: &Config,
-    observed: &mut BTreeMap<String, RevisionStamp>,
+    observed: &mut BTreeMap<PathBuf, (String, RevisionStamp)>,
     retry_after: &mut BTreeMap<String, u64>,
 ) -> Result<(), String> {
     let now = clock::unix_now_millis();
@@ -267,6 +272,7 @@ fn cycle(
         let analysis_key = format!("analysis:{}", record.id);
         let output = normalised_path(record, &config.normalised_dir);
         if record.status.is_active() {
+            observed.remove(&output);
             if let Err(error) = archive_current(&output) {
                 eprintln!("continuous: {error}");
             }
@@ -279,19 +285,21 @@ fn cycle(
                 if let Err(archive_error) = archive_current(&output) {
                     eprintln!("continuous: {archive_error}");
                 }
-                observed.remove(&record.id);
+                observed.remove(&output);
                 eprintln!("continuous: {error}");
                 continue;
             }
         };
-        if !needs_reconciliation(observed.get(&record.id), stamp, output.is_file()) {
+        let current_is_regular = fs::symlink_metadata(&output)
+            .is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink());
+        if !needs_reconciliation(observed.get(&output), &record.id, stamp, current_is_regular) {
             continue;
         }
         if let Err(error) = archive_current(&output) {
             eprintln!("continuous: {error}");
             continue;
         }
-        observed.remove(&record.id);
+        observed.remove(&output);
         if retry_after.get(&analysis_key).is_some_and(|until| now < *until) {
             continue;
         }
@@ -300,7 +308,7 @@ fn cycle(
                 // Never mark a revision observed if it changed during analysis.
                 match revision_stamp(&source) {
                     Ok(after) if after == stamp => {
-                        observed.insert(record.id.clone(), stamp);
+                        observed.insert(output.clone(), (record.id.clone(), stamp));
                         retry_after.remove(&analysis_key);
                         eprintln!("continuous: normalised saved scan {}", record.id);
                     }
@@ -464,10 +472,12 @@ mod tests {
             bytes: 11,
             modified_ns: 101,
         };
-        assert!(!needs_reconciliation(Some(&old), old, true));
-        assert!(needs_reconciliation(Some(&old), new, true));
-        assert!(needs_reconciliation(Some(&old), old, false));
-        assert!(needs_reconciliation(None, old, true));
+        let previous = ("scan-a".to_owned(), old);
+        assert!(!needs_reconciliation(Some(&previous), "scan-a", old, true));
+        assert!(needs_reconciliation(Some(&previous), "scan-a", new, true));
+        assert!(needs_reconciliation(Some(&previous), "scan-a", old, false));
+        assert!(needs_reconciliation(Some(&previous), "scan-b", old, true));
+        assert!(needs_reconciliation(None, "scan-a", old, true));
     }
 
     #[test]
