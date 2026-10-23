@@ -509,6 +509,34 @@ pub fn unescape_dns_label(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The start-of-authority fields a lookup keeps: the zone's primary name server, the mailbox
+/// of the person responsible for it (RFC 1035's RNAME, read as an address) and the zone serial.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SoaRecord {
+    pub primary_ns: String,
+    pub responsible: String,
+    pub serial: u32,
+}
+
+/// An SOA record in presentation form, `mname rname serial refresh retry expire minimum`, as
+/// `DoH` JSON resolvers send it. `None` unless all seven fields are there and the serial and
+/// timers are numbers. **Pure.**
+#[must_use]
+pub fn parse_soa(record: &str) -> Option<SoaRecord> {
+    let fields: Vec<&str> = record.split_whitespace().collect();
+    let [mname, rname, serial, timers @ ..] = fields.as_slice() else {
+        return None;
+    };
+    if timers.len() != 4 || timers.iter().any(|timer| timer.parse::<u32>().is_err()) {
+        return None;
+    }
+    Some(SoaRecord {
+        primary_ns: mname.trim_end_matches('.').to_ascii_lowercase(),
+        responsible: soa_rname_to_email(rname),
+        serial: serial.parse().ok()?,
+    })
+}
+
 #[must_use]
 pub fn soa_rname_to_email(rname: &str) -> String {
     if rname.is_empty() || !rname.contains('.') {
@@ -613,12 +641,13 @@ pub fn transport_config() -> TransportConfig {
     }
 }
 
-fn planned_queries(domain: &str) -> [(String, RecordType); 7] {
+fn planned_queries(domain: &str) -> [(String, RecordType); 8] {
     [
         (domain.to_string(), RecordType::A),
         (domain.to_string(), RecordType::Aaaa),
         (domain.to_string(), RecordType::Mx),
         (domain.to_string(), RecordType::Ns),
+        (domain.to_string(), RecordType::Soa),
         (domain.to_string(), RecordType::Txt),
         (format!("_dmarc.{domain}"), RecordType::Txt),
         (format!("_smtp._tls.{domain}"), RecordType::Txt),
@@ -1165,6 +1194,29 @@ mod tests {
     }
 
     #[test]
+    fn an_soa_record_gives_its_primary_server_mailbox_and_serial() {
+        assert_eq!(
+            parse_soa(
+                "dns1.p08.nsone.net. hostmaster.nsone.net. 1656468023 43200 7200 1209600 3600"
+            ),
+            Some(SoaRecord {
+                primary_ns: "dns1.p08.nsone.net".into(),
+                responsible: "hostmaster@nsone.net".into(),
+                serial: 1_656_468_023,
+            })
+        );
+        for broken in [
+            "",
+            "ns.example.com. hostmaster.example.com.",
+            "ns.example.com. hostmaster.example.com. 1 2 3 4",
+            "ns.example.com. hostmaster.example.com. x 2 3 4 5",
+            "ns.example.com. hostmaster.example.com. 1 2 3 4 five",
+        ] {
+            assert_eq!(parse_soa(broken), None, "{broken:?}");
+        }
+    }
+
+    #[test]
     fn label_and_soa_helpers_preserve_legacy_behavior() {
         assert_eq!(unescape_dns_label(r"hostmaster\.ops"), "hostmaster.ops");
         assert_eq!(unescape_dns_label(r"\038"), "&");
@@ -1374,6 +1426,10 @@ mod tests {
             Ok(json_empty()),
             Ok(json_ok(RecordType::Mx, &["10 mail.example.com."])),
             Ok(json_ok(RecordType::Ns, &["a.iana-servers.net."])),
+            Ok(json_ok(
+                RecordType::Soa,
+                &["ns.icann.org. noc.dns.icann.org. 2024081448 7200 3600 1209600 3600"],
+            )),
             Ok(json_ok(RecordType::Txt, &[r#""v=spf1 -all""#])),
             Ok(json_ok(RecordType::Txt, &[r#""v=DMARC1; p=reject""#])),
             Ok(json_ok(
@@ -1384,7 +1440,7 @@ mod tests {
         let report = lookup_domain_with_config(&transport, "example.com", &one_server())
             .expect("valid domain");
         assert_eq!(report.domain, "example.com");
-        assert_eq!(report.answers.len(), 6);
+        assert_eq!(report.answers.len(), 7);
         assert_eq!(report.failures.len(), 1);
         assert_eq!(report.failures[0].record_type, RecordType::Aaaa);
         assert_eq!(
@@ -1413,12 +1469,17 @@ mod tests {
             rendered.contains("failed\tAAAA\texample.com\tempty"),
             "{rendered}"
         );
-        assert!(rendered.contains("answers=6 failed=1"), "{rendered}");
+        assert!(
+            rendered.contains("SOA\texample.com\tns.icann.org. noc.dns.icann.org. 2024081448"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("answers=7 failed=1"), "{rendered}");
         let seen = transport.seen.borrow();
-        assert_eq!(seen.len(), 7);
-        assert!(seen[4].url.contains("name=example.com") && seen[4].url.contains("type=TXT"));
-        assert!(seen[5].url.contains("name=_dmarc.example.com"));
-        assert!(seen[6].url.contains("name=_smtp._tls.example.com"));
+        assert_eq!(seen.len(), 8);
+        assert!(seen[4].url.contains("name=example.com") && seen[4].url.contains("type=SOA"));
+        assert!(seen[5].url.contains("name=example.com") && seen[5].url.contains("type=TXT"));
+        assert!(seen[6].url.contains("name=_dmarc.example.com"));
+        assert!(seen[7].url.contains("name=_smtp._tls.example.com"));
     }
 
     #[test]
@@ -1431,15 +1492,16 @@ mod tests {
             Ok(json_empty()),
             Ok(json_empty()),
             Ok(json_empty()),
+            Ok(json_empty()),
         ]);
         let report = lookup_domain_with_config(&transport, "missing.example", &one_server())
             .expect("valid domain");
         let answers_empty = report.answers.is_empty();
         assert!(answers_empty, "{:?}", report.answers);
-        assert_eq!(report.failures.len(), 7);
+        assert_eq!(report.failures.len(), 8);
         assert!(report.spf.is_none());
         assert!(report.dmarc.is_none());
         assert!(report.tlsrpt.is_none());
-        assert!(report.render().contains("answers=0 failed=7"));
+        assert!(report.render().contains("answers=0 failed=8"));
     }
 }
