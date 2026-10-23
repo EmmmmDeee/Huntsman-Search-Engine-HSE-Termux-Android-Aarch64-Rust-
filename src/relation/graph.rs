@@ -435,6 +435,132 @@ impl Search {
     }
 }
 
+/// An exact basis-disjoint path packing for small graphs. The bounded depth makes general
+/// shared-basis packing combinatorial; exceeding any budget returns None, so callers retain
+/// the existing greedy count as a conservative lower bound instead of guessing a maximum.
+const EXACT_MAX_EDGES: usize = 16;
+const EXACT_MAX_PATH_VISITS: usize = 4_096;
+const EXACT_MAX_PATHS: usize = 512;
+const EXACT_MAX_STATES: usize = 8_192;
+
+fn bounded_exact_pathways(
+    index: &IdentityIndex<'_>,
+    start: usize,
+    end: usize,
+    cap: usize,
+) -> Option<usize> {
+    if start == end || cap == 0 {
+        return Some(0);
+    }
+    if index.edges.len() > EXACT_MAX_EDGES || index.bases.len() > EXACT_MAX_EDGES {
+        return None;
+    }
+
+    fn enumerate(
+        index: &IdentityIndex<'_>,
+        at: usize,
+        end: usize,
+        depth: usize,
+        mask: u64,
+        seen: &mut [bool],
+        visits: &mut usize,
+        paths: &mut Vec<u64>,
+    ) -> bool {
+        *visits += 1;
+        if *visits > EXACT_MAX_PATH_VISITS {
+            return false;
+        }
+        if at == end {
+            paths.push(mask);
+            return paths.len() <= EXACT_MAX_PATHS;
+        }
+        if depth == PATHWAY_MAX_DEPTH {
+            return true;
+        }
+        for &edge in &index.incident[at] {
+            let next = index.across(edge, at);
+            if seen[next] {
+                continue;
+            }
+            seen[next] = true;
+            let ok = enumerate(
+                index,
+                next,
+                end,
+                depth + 1,
+                mask | (1_u64 << index.basis[edge]),
+                seen,
+                visits,
+                paths,
+            );
+            seen[next] = false;
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
+
+    let mut paths = Vec::new();
+    let mut seen = vec![false; index.len()];
+    seen[start] = true;
+    let mut visits = 0;
+    if !enumerate(
+        index,
+        start,
+        end,
+        0,
+        0,
+        &mut seen,
+        &mut visits,
+        &mut paths,
+    ) {
+        return None;
+    }
+    // A path using a strict superset of another path's bases can never increase
+    // the number of disjoint paths; retain only inclusion-minimal basis sets.
+    paths.sort_unstable_by_key(|mask| (mask.count_ones(), *mask));
+    paths.dedup();
+    let mut minimal = Vec::new();
+    for mask in paths {
+        if !minimal.iter().any(|&subset| subset & mask == subset) {
+            minimal.push(mask);
+        }
+    }
+
+    fn pack(
+        paths: &[u64],
+        used: u64,
+        need_at_most: usize,
+        memo: &mut HashMap<(u64, usize), usize>,
+    ) -> Option<usize> {
+        if need_at_most == 0 {
+            return Some(0);
+        }
+        if let Some(&answer) = memo.get(&(used, need_at_most)) {
+            return Some(answer);
+        }
+        if memo.len() >= EXACT_MAX_STATES {
+            return None;
+        }
+        let mut best = 0;
+        for &path in paths {
+            if path & used != 0 {
+                continue;
+            }
+            let next = pack(paths, used | path, need_at_most - 1, memo)?;
+            best = best.max(next + 1);
+            if best == need_at_most {
+                break;
+            }
+        }
+        memo.insert((used, need_at_most), best);
+        Some(best)
+    }
+    let limit = cap.min(minimal.len());
+    pack(&minimal, 0, limit, &mut HashMap::new())
+}
+
 /// Counts pathways between pairs of one index as `disjoint_pathways` counts them, keeping its
 /// scratch space from pair to pair.
 struct PathwayCounter<'i, 'a> {
@@ -455,10 +581,9 @@ impl<'i, 'a> PathwayCounter<'i, 'a> {
         }
     }
 
-    /// The pathways from `start` to `end`, up to `cap`: take the strongest path within
-    /// `PATHWAY_MAX_DEPTH`, retire what it rests on, and repeat until none is left. `first`, when
-    /// given, is the strongest path over every relation, found already: the search that found it
-    /// and the step it ends at.
+    /// Count basis-disjoint paths up to `cap`. Use bounded exact path packing where
+    /// feasible, otherwise conservatively retire bases from strongest-first paths.
+    /// `first` caches the strongest path for the greedy fallback.
     fn count(
         &mut self,
         start: usize,
@@ -468,6 +593,11 @@ impl<'i, 'a> PathwayCounter<'i, 'a> {
     ) -> usize {
         if start == end || cap == 0 {
             return 0;
+        }
+        // Prefer the exact maximum for manageable graphs. On resource exhaustion,
+        // the original basis-retirement walk still returns a valid lower bound.
+        if let Some(exact) = bounded_exact_pathways(self.index, start, end, cap) {
+            return exact;
         }
         let mut count = 0;
         if let Some((search, step)) = first {
@@ -496,14 +626,10 @@ impl<'i, 'a> PathwayCounter<'i, 'a> {
     }
 }
 
-/// How many pathways connect `start_uid` to `end_uid` when each pathway counted uses up what it
-/// rests on: the strongest path within eight relations, then the strongest over what is left,
-/// until none is left. Each relation a pathway takes uses up its basis (see `Relation::basis`).
-/// A relation without one rests on the link between its two uids, so the pathway uses up every
-/// such relation joining them. A relation that rests on a handle many addresses share uses up
-/// every relation resting on that handle, so the handle connects them by one pathway, not by
-/// one through each address. The strongest path is taken first and never reconsidered, so this can
-/// count fewer disjoint pathways than the most that exist.
+/// Number of basis-disjoint identity paths within eight edges. An exact maximum is found
+/// for graphs within the explicit enumeration and state budgets. On larger or expensive graphs,
+/// the previous strongest-first greedy walk yields a conservative lower bound, never an
+/// unproven maximum. Relations sharing a basis count as the same evidence even across edges.
 #[must_use]
 pub fn disjoint_pathways(start_uid: &str, end_uid: &str, relations: &[Relation]) -> usize {
     let index = IdentityIndex::new(relations);
@@ -737,6 +863,52 @@ mod tests {
             ]
         );
         assert_eq!(connection_brokers(&relations), [("ann".to_owned(), 1)]);
+    }
+
+    /// A widest-first path uses three independent bases and hides the maximum
+    /// two-path packing. Basis-disjoint S-A-T and S-B-T remain within depth eight.
+    #[test]
+    fn basis_disjoint_count_finds_two_paths_hidden_by_widest_first() {
+        let mut relations = vec![
+            Relation::new("S", "A", RelationKind::AliasOf, 0.95, "s"),
+            Relation::new("A", "B", RelationKind::AliasOf, 0.95, "s"),
+            Relation::new("B", "T", RelationKind::AliasOf, 0.95, "s"),
+            Relation::new("A", "T", RelationKind::AliasOf, 0.80, "s"),
+            Relation::new("S", "B", RelationKind::AliasOf, 0.80, "s"),
+        ];
+        for _ in 0..2 {
+            assert_eq!(disjoint_pathways("S", "T", &relations), 2);
+            assert_eq!(disjoint_pathways("T", "S", &relations), 2);
+            assert_eq!(
+                counts(&pairwise_disjoint_pathways(&["S", "T"], &relations, 2)),
+                [(0, 1, 2)]
+            );
+            relations.reverse();
+        }
+    }
+
+    /// Dense components exceed the bounded exact search threshold. The fallback
+    /// must terminate and return only actual disjoint paths.
+    #[test]
+    fn dense_component_path_count_remains_bounded() {
+        let mut relations = Vec::new();
+        for a in 0..8 {
+            for b in (a + 1)..8 {
+                relations.push(Relation::new(
+                    format!("n{a}"),
+                    format!("n{b}"),
+                    RelationKind::AliasOf,
+                    0.9,
+                    "stress",
+                ));
+            }
+        }
+        let count = disjoint_pathways("n0", "n7", &relations);
+        assert!((1..=7).contains(&count));
+        assert_eq!(
+            pairwise_disjoint_pathways(&["n0", "n7"], &relations, 2)[0].count,
+            count.min(2)
+        );
     }
 
     /// A ring of four identity relations with a pendant `e` on `d`, and one more relation that
@@ -1365,6 +1537,19 @@ mod tests {
         if found == oracle {
             return;
         }
+        // The historic reference counts strongest-first paths. A greater result
+        // can be the exact maximum rather than an invalid greedy tie-break.
+        if found > oracle {
+            let index = IdentityIndex::new(relations);
+            let start_node = index.node(start).expect("reachable start");
+            let end_node = index.node(end).expect("reachable end");
+            assert_eq!(
+                bounded_exact_pathways(&index, start_node, end_node, usize::MAX),
+                Some(found),
+                "{start} to {end}: exact count must justify any increase"
+            );
+            return;
+        }
         let mut budget = reference::Budget {
             left: TIE_BUDGET,
             exhausted: false,
@@ -1420,6 +1605,17 @@ mod tests {
         );
         for (pair, (left, right, count, basis)) in found.iter().zip(&expected) {
             if pair.count == *count && pair.basis == basis.as_deref() {
+                continue;
+            }
+            if pair.count > *count {
+                let index = IdentityIndex::new(relations);
+                let start = index.node(uids[*left]).expect("reachable pair start");
+                let end = index.node(uids[*right]).expect("reachable pair end");
+                assert_eq!(
+                    bounded_exact_pathways(&index, start, end, cap),
+                    Some(pair.count),
+                    "exact count must justify the increased pair result"
+                );
                 continue;
             }
             // A count that the cap holds at the cap is any count from the cap up.
