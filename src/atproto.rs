@@ -55,13 +55,7 @@ pub fn handle_domain_confidence(handle: &str) -> f64 {
 }
 
 pub const DOMAIN_HANDLE_ATTRIBUTION: &str = "AT Protocol verifies a domain handle by DNS TXT at _atproto.<domain> or by HTTPS /.well-known/atproto-did while the handle is in force";
-pub const DOMAIN_HANDLE_CAVEAT: &str = "A domain handle proves DNS or web-root control at the time, not ongoing domain registration ownership; operator-issued subdomain handles should be corroborated separately";
-
-#[must_use]
-pub fn is_bluesky_operated_pds(host: &str) -> bool {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    host == "bsky.social" || host == "bsky.network" || host.ends_with(".bsky.network")
-}
+pub const DOMAIN_HANDLE_CAVEAT: &str = "A domain handle proves DNS or web-root control at the time, not ongoing domain registration ownership. Operator-issued subdomain handles should be corroborated separately";
 
 #[cfg(test)]
 mod tests {
@@ -87,7 +81,5 @@ mod tests {
             handle_domain_confidence("pfrazee.com")
                 > handle_domain_confidence("alice.pds.example.org")
         );
-        assert!(is_bluesky_operated_pds("morel.us-east.host.bsky.network"));
-        assert!(!is_bluesky_operated_pds("pds.robocracy.org"));
     }
 }

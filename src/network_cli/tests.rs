@@ -266,9 +266,21 @@ fn a_coordinate_selector_searches_the_box_around_it() {
     let (text, report) = printed(run(Some((&transport, &keys)), "-27.4698,153.0251", 7));
     let urls = transport.urls();
     assert!(urls[0].contains("latrange1=-27.471800"), "{urls:?}");
+    let row = |source: &str| {
+        report
+            .outcomes
+            .iter()
+            .find(|o| o.module == source)
+            .map(|o| o.kind)
+    };
     assert_eq!(
-        report.outcomes.last().map(|o| o.kind),
+        row(wigle::BLUETOOTH_SOURCE),
         Some(SourceOutcomeKind::ValidZero)
+    );
+    // Without its key OpenCelliD's area search makes no request and says so.
+    assert_eq!(
+        row(opencellid::SOURCE),
+        Some(SourceOutcomeKind::NotConfigured)
     );
     assert_eq!(urls.len(), 2, "WiFi then Bluetooth: {urls:?}");
     assert!(urls[1].starts_with(wigle::BLUETOOTH_URL), "{urls:?}");
@@ -480,4 +492,73 @@ fn a_cell_site_is_looked_up_in_opencellid() {
     );
     assert!(text.contains("-27.4698"), "{text}");
     assert!(!text.contains("wigle_"), "{text}");
+}
+
+/// With the `OpenCelliD` key a point is searched for the cell sites listed in the square around
+/// it: one bounded `getInArea` request, each site a `cell:` entity the lookup can take back
+/// whole (a 36-bit NR identity included), and a note when the area holds more than are listed.
+#[test]
+fn a_point_lists_the_cell_sites_opencellid_places_around_it() {
+    let keys = Keys::parse(&format!(
+        "{}=ocid-test-key-0123456789\n",
+        opencellid::KEY_SLOT
+    ))
+    .expect("fixture keys");
+    let transport = Canned::json(&serde_json::json!({"count": 120, "cells": [
+        {"lat": -27.4701, "lon": 153.0249, "mcc": 505, "mnc": 1, "lac": 20,
+         "cellid": 68_719_476_735_u64, "radio": "NR", "range": 900, "samples": 12},
+        {"lat": -27.4690, "lon": 153.0260, "mcc": 505, "mnc": 2, "lac": 7, "cellid": 17811,
+         "radio": "LTE"}
+    ]}));
+    let (_, report) = printed(run(Some((&transport, &keys)), "-27.4698,153.0251", 7));
+    let urls = transport.urls();
+    assert_eq!(urls.len(), 1, "only OpenCelliD has a key: {urls:?}");
+    assert!(
+        urls[0].starts_with(
+            "https://opencellid.org/cell/getInArea?BBOX=-27.477885,153.015988,-27.461715,153.034212&limit=50&format=json"
+        ),
+        "{}",
+        urls[0]
+    );
+    assert!(urls[0].contains("&limit=50&format=json"), "{}", urls[0]);
+    let row = report
+        .outcomes
+        .iter()
+        .find(|o| o.module == opencellid::SOURCE)
+        .expect("an OpenCelliD row");
+    assert_eq!(row.kind, SourceOutcomeKind::Success);
+    assert_eq!(row.found, Some(2));
+
+    let nr = report
+        .entities
+        .iter()
+        .find(|e| e.value == "cell:505:01:20:68719476735")
+        .expect("the NR site");
+    assert!(nr.has_tag(tags::GEOINT));
+    assert!(
+        nr.evidence[0]
+            .attr_values("position")
+            .eq(["-27.470100,153.024900"])
+    );
+    assert!(nr.evidence[0].attr_values("radio").eq(["NR"]));
+    assert!(matches!(
+        NetworkSelector::parse(&nr.value),
+        Some(NetworkSelector::Cell {
+            cell: 68_719_476_735,
+            ..
+        })
+    ));
+    let point = report
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("the point");
+    assert!(
+        point
+            .evidence
+            .iter()
+            .any(|ev| ev.attr_values("cells_in_area").eq(["120"])),
+        "{:#?}",
+        point.evidence
+    );
 }

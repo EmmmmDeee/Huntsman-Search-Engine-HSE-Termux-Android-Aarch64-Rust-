@@ -179,6 +179,7 @@ cargo run -- netblock 1.1.1.0/24            # RDAP + RIPEstat + the PTR names of
 cargo run -- asn AS13335                    # RDAP + RIPEstat holder, every announced prefix and BGP neighbour; network
 cargo run -- network 3c:5a:b4:01:02:03      # BSSID: offline OUI vendor, then WiGLE WiFi + Bluetooth search (keyed; no key = no request)
 cargo run -- network cell:505:01:17:91      # cell site from radar cells: OpenCelliD tower position, range, samples (keyed; no key = no request)
+cargo run -- network -27.4698,153.0251     # point: WiGLE WiFi + Bluetooth nearby, and the OpenCelliD cell sites in the 1.8 km square (keyed)
 cargo run -- crypto 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa  # keyless blockchain.info: on-chain balance, lifetime totals, tx count; network
 cargo run -- itunes "Example Co"  # keyless App Store search by keyword: matching apps, sellers, bundle identifiers; network
 cargo run -- geocode "1600 Amphitheatre Parkway, Mountain View"  # keyless OpenStreetMap Nominatim: a place or address to coordinates + full address (a LAT,LON argument is reverse-geocoded instead); network

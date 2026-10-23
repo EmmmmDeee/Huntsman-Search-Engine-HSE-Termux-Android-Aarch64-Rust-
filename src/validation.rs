@@ -1,7 +1,5 @@
 //! Pure validation helpers rebuilt from `core/validation` and related utility code.
 
-use std::borrow::Cow;
-
 use crate::textnorm::ascii_digits_and_plus;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -45,19 +43,6 @@ pub enum ValueKind {
 }
 
 const RESERVED_PLACEHOLDER_TLDS: &[&str] = &["example", "invalid", "localhost", "local", "test"];
-
-#[must_use]
-pub fn email_local(s: &str) -> &str {
-    s.split('@').next().unwrap_or(s)
-}
-
-#[must_use]
-pub fn is_role_mailbox(email: &str) -> bool {
-    let Some((local, _)) = email.split_once('@') else {
-        return false;
-    };
-    crate::value_syntax::is_role_localpart(local)
-}
 
 #[must_use]
 pub fn validate_email_syntax(s: &str) -> ValidationReport {
@@ -106,11 +91,6 @@ pub fn validate_phone_e164(s: &str) -> ValidationReport {
             format!("expected 10..=15 digits, got {length}"),
         ),
     }
-}
-
-#[must_use]
-pub fn to_e164_au(s: &str) -> Option<String> {
-    crate::value_syntax::canonical_phone(s)
 }
 
 /// Scan a blob for E.164 numbers. Returns `true` when `cap` was reached.
@@ -328,29 +308,6 @@ pub fn is_fragment_value(kind: &ValueKind, value: &str) -> bool {
     }
 }
 
-fn is_invisible_format(c: char) -> bool {
-    matches!(
-        c,
-        '\u{200B}'
-            | '\u{200C}'
-            | '\u{200D}'
-            | '\u{FEFF}'
-            | '\u{00AD}'
-            | '\u{2060}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2066}'..='\u{2069}'
-    )
-}
-
-#[must_use]
-pub fn strip_invisible(s: &str) -> Cow<'_, str> {
-    if s.chars().any(is_invisible_format) {
-        Cow::Owned(s.chars().filter(|c| !is_invisible_format(*c)).collect())
-    } else {
-        Cow::Borrowed(s)
-    }
-}
-
 #[allow(clippy::match_same_arms)]
 fn skeleton_char(c: char) -> char {
     if ('\u{FF01}'..='\u{FF5E}').contains(&c) {
@@ -533,14 +490,17 @@ mod tests {
             validate_phone_e164("+0123456789").reason,
             "e164.cc_leading_zero"
         );
-        assert_eq!(to_e164_au("0412 345 678").as_deref(), Some("+61412345678"));
         assert_eq!(
-            to_e164_au("+1 555 123 4567").as_deref(),
+            crate::value_syntax::canonical_phone("0412 345 678").as_deref(),
+            Some("+61412345678")
+        );
+        assert_eq!(
+            crate::value_syntax::canonical_phone("+1 555 123 4567").as_deref(),
             Some("+15551234567")
         );
         assert!(validate_email_syntax("a.b+c@example.co.uk").valid);
         assert_eq!(validate_email_syntax("a@b").reason, "email.domain_shape");
-        assert!(is_role_mailbox("No-Reply+ticket@example.com"));
+        assert!(crate::value_syntax::is_role_localpart("No-Reply+ticket"));
     }
 
     #[test]
@@ -574,8 +534,6 @@ mod tests {
 
     #[test]
     fn confusable_and_xml_adjacent_guards_work() {
-        assert_eq!(strip_invisible("jo\u{200D}hn"), "john");
-        assert!(matches!(strip_invisible("john"), Cow::Borrowed("john")));
         assert_eq!(skeleton("pаypal.com"), "paypal.com");
         assert_eq!(homoglyph_skeleton("paypa1"), homoglyph_skeleton("paypal"));
         assert_eq!(levenshtein("kitten", "sitting"), 3);

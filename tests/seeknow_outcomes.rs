@@ -7,8 +7,6 @@ fn entitlement_and_quota_are_distinct_causal_states() {
 
     assert!(!entitlement.is_accepted());
     assert!(!quota.is_accepted());
-    assert!(!entitlement.normally_retryable());
-    assert!(!quota.normally_retryable());
 
     assert_eq!(
         recommended_action(entitlement),

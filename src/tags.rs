@@ -36,7 +36,7 @@ pub const TOR_EXIT: &str = "tor-exit";
 pub const VULNERABLE: &str = "vulnerable";
 pub const SOCIAL_PROFILE: &str = "social-profile";
 pub const CANDIDATE: &str = "candidate";
-pub const SEARCH_DISCOVERED: &str = "search-discovered";
+
 pub const DERIVED: &str = "derived";
 pub const NAME_DERIVED: &str = "name-derived";
 pub const GEOINT: &str = "geoint";
