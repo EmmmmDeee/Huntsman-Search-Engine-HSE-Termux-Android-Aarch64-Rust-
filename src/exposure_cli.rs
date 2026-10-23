@@ -58,7 +58,7 @@ use crate::textnorm::{decode_html_entities, escape_controls, is_escaped};
 pub const EXPOSURE_USAGE: &str = "usage: huntsman-recon exposure ADDR|HANDLE [--save FILE]";
 pub const EXPOSURE_HELP: &str = "\
 exposure ADDR|HANDLE [--save FILE]
-Canonicalise the email address ADDR or the username HANDLE and run the keyed breach legs at once, reported in this order: HIBP breached-account (addresses only), then the stolen.tax cascade, then OathNet breach search, then DeHashed exact-match search (addresses only). The lookup takes as long as its slowest leg. A leg without its key makes no request and reports not_configured. Results are lineage-rendered entities. Then incidents=N (none when HIBP gave no answer) and, per HIBP breach sorted by name (a name the source repeats is shown once, keeping every flag any of its records sets): an incident row (title, breach and added dates, domain, account count, verified, flags), a caution row for a fabricated or spam-list breach, its summary, data classes, attribution, and the reference links its own description gives. This is public context about each breach, not a finding about the person. Then oathnet_breaches=N (none when OathNet gave no answer) and one oathnet_breach row per breach database: records, title, breach date, indexed range, whether a password or hash is exposed, and the exposed field types (at most 64, each named in ASCII letters, digits and _ within 48 bytes and shown in lower case; a field named otherwise is left out), followed by one oathnet_value row (field=value) per distinct non-credential value its records hold (at most 64 per field; a value over 1024 bytes is left out, never cut). A field whose name holds pass, pwd, hash or salt in any case is a credential, except that a pass beginning passport does not count: neither its value nor a list or object holding such a field at any depth is shown or kept. The row says a password or hash is exposed when a field whose words name one (password, passwd, passphrase, passcode, pwd or salt, or pass alone or beside user, login, account, hash or hashed) holds a value, as a field or inside a list or object, even if the field's name is left out. Then dehashed_breaches=N (none when DeHashed gave no answer) and one dehashed_breach row per breach database: records and whether a password or hash is exposed; DeHashed rows carry no record value beyond usernames and addresses as pivots. --save FILE writes an unverified ledger that verify can reload.";
+Canonicalise the email address ADDR or the username HANDLE and run the keyed breach legs at once, reported in this order: HIBP breached-account (addresses only), then the stolen.tax cascade, then OathNet breach search, then DeHashed exact-match search (addresses only). The lookup takes as long as its slowest leg. A leg without its key makes no request and reports not_configured. Results are lineage-rendered entities. Then incidents=N (none when HIBP gave no answer) and, per HIBP breach sorted by name (a name the source repeats is shown once, keeping every flag any of its records sets): an incident row (title, breach and added dates, domain, account count, verified, flags), a caution row for a fabricated or spam-list breach, its summary, data classes, attribution, and the reference links its own description gives. This is public context about each breach, not a finding about the person. Then oathnet_breaches=N (none when OathNet gave no answer) and one oathnet_breach row per breach database: records, title, breach date, indexed range, whether a password or hash is exposed, and the exposed field types (at most 64, each named in ASCII letters, digits and _ within 48 bytes and shown in lower case; a field named otherwise is left out), followed by one oathnet_value row (field=value) per distinct non-credential value its records hold (at most 64 per field; a value over 1024 bytes is left out, never cut). A field whose name holds pass, pwd, hash or salt in any case is a credential, except that a pass beginning passport does not count: neither its value nor a list or object holding such a field at any depth is shown or kept. The row says a password or hash is exposed when such a field whose words name one holds a value, as a field or inside a list or object, even if the field's name is left out: a word beginning password, passwd, passwort, passphrase or passcode, a word pwd, pwdhash, passhash, userpass or salt, or pass or hash alone or beside another such word or one such as user, old or md5, but never a field that describes one (pwdLastSet, password_changed_at). Then dehashed_breaches=N (none when DeHashed gave no answer) and one dehashed_breach row per breach database: records and whether a password or hash is exposed; DeHashed rows carry no record value beyond usernames and addresses as pivots. --save FILE writes an unverified ledger that verify can reload.";
 
 /// Source label for the HIBP breached-account leg.
 pub const SOURCE: &str = "hibp_account";
@@ -1543,16 +1543,16 @@ mod tests {
                 oathnet::NOT_A_CREDENTIAL
             ),
             "neither its value nor a list or object holding such a field".to_owned(),
-            format!(
-                "a field whose words name one ({}, pwd or salt, or pass alone or beside {})",
-                oathnet::PASSWORD_WORDS.join(", "),
-                match oathnet::PASS_COMPANIONS {
-                    [first @ .., last] => format!("{} or {last}", first.join(", ")),
-                }
-            ),
-            "holds a value, as a field or inside a list or object, even if the field's name is \
-             left out"
+            "such a field whose words name one holds a value, as a field or inside a list or \
+             object, even if the field's name is left out"
                 .to_owned(),
+            match oathnet::PASSWORD_WORDS {
+                [first @ .., last] => format!("a word beginning {} or {last}", first.join(", ")),
+            },
+            match oathnet::PASSWORD_NAMES {
+                [first @ .., last] => format!("a word {} or {last}", first.join(", ")),
+            },
+            "never a field that describes one (pwdLastSet, password_changed_at)".to_owned(),
         ] {
             assert!(EXPOSURE_HELP.contains(&named), "{named:?}: {EXPOSURE_HELP}");
         }

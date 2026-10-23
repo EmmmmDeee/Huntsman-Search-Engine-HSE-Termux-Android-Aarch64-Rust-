@@ -9,10 +9,12 @@
   or `pw` holding a string or a list of strings, is printed and saved as before.
 - A record now sets `password_exposed=true`, the `password-at-risk` tag and the
   `PASSWORD_COMPROMISED` element when a key whose words name a password holds a value, as a
-  field or inside a list or object, even under a name `fields=` leaves out: `password`,
-  `passwd`, `passphrase` or `passcode` anywhere in its words (`Passwd`, `hashed_password`,
-  `user-password`, `Pass=word`), a `salt` word, a word beginning `pwd` (`User_PWD`), or `pass`
-  as the whole key or beside `user`, `login`, `account`, `hash` or `hashed` (`user_pass`). A key
-  that only holds a marker, such as `passenger_name`, `boarding_pass`, `compass`, `hashtags` or
-  `file_hash`, has its value held back but says no password was exposed. Before, only `password`,
-  `password_hash` and `salt` fields set it.
+  field or inside a list or object, even under a name `fields=` leaves out. A word counts when,
+  trailing digits dropped, it begins `password`, `passwd`, `passwort`, `passphrase` or `passcode`
+  (`Passwd`, `hashed_password`), is `pwd`, `pwdhash`, `passhash`, `userpass` or `salt`
+  (`User_PWD`, `salt1`), or is `pass` or `hash` alone or beside another such word or one such as
+  `user`, `old` or `md5` (`user_pass`, `pass_md5`, `salted_hash`). Words split at camel case and
+  capital runs (`USERPass`). A key that describes a password (`pwdLastSet`,
+  `password_changed_at`, `password_hint`) and one that only holds a marker (`passenger_name`,
+  `boarding_pass`, `compass`, `hashtags`, `file_hash`) are held back but say no password was
+  exposed. Before, only `password`, `password_hash` and `salt` fields set it.

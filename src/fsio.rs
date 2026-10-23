@@ -90,8 +90,9 @@ pub(crate) fn same_inode(_linked: &fs::Metadata, _opened: &fs::Metadata) -> bool
 /// `O_NONBLOCK | O_NOFOLLOW` on the Linux and Android architectures whose values are known, each
 /// with `ELOOP` 40. `O_NONBLOCK` is 0o4000 on all of them. `O_NOFOLLOW` is 0o100000 on Arm and
 /// PowerPC, where 0o400000 is another flag (`O_LARGEFILE` on Arm, `O_DIRECT` on PowerPC) and the
-/// open would follow the link, and 0o400000 on x86, RISC-V, s390x and `LoongArch`. `None` on any other target (MIPS and SPARC use other values),
-/// where the checks after the open are the only guard.
+/// open would follow the link, and 0o400000 on x86, RISC-V, s390x and `LoongArch`. `None` on any
+/// other target (MIPS and SPARC use other values), where the checks after the open are the only
+/// guard.
 const NONBLOCK_NOFOLLOW: Option<i32> = if !cfg!(any(target_os = "linux", target_os = "android")) {
     None
 } else if cfg!(any(

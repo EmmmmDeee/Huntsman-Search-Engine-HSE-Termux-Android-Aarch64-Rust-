@@ -1247,6 +1247,11 @@ mod tests {
     }
 
     fn api(tag: &str) -> (ScanApi, PathBuf) {
+        api_holding(tag, &[crate::environment::SHODAN_KEY_ENV])
+    }
+
+    /// A scan API whose Settings read only the slots in `held` as holding a key.
+    fn api_holding(tag: &str, held: &'static [&'static str]) -> (ScanApi, PathBuf) {
         let dir = scratch(tag);
         let lookup = Arc::new(|_kind: ScanKind, selector: &str, _: &Selection| {
             let evidence = Evidence::new(EvidenceProvenance::for_scan("internetdb", "s"), "ports")
@@ -1263,12 +1268,40 @@ mod tests {
             })
         });
         let service = ScanService::new(ScanStore::open(&dir).unwrap(), lookup);
-        let slots: SlotCheck = Arc::new(|slot: &str| slot == crate::environment::SHODAN_KEY_ENV);
+        let slots: SlotCheck = Arc::new(move |slot: &str| held.contains(&slot));
         (ScanApi::new(service, Some(slots)), dir)
     }
 
     fn body(response: &ApiResponse) -> Value {
         serde_json::from_slice(&response.body).unwrap()
+    }
+
+    /// The Settings page reads a module as set by [`slots_set`]: `WiGLE`'s two modules need both
+    /// of its slots, HIBP's two may be set through `HIBP_API_KEY` alone.
+    #[test]
+    fn settings_read_a_module_as_set_only_with_every_slot_it_needs() {
+        use crate::environment::{HIBP_API_KEY_ENV, WIGLE_USER_ENV};
+        let (api, dir) = api_holding("settings-slots", &[WIGLE_USER_ENV, HIBP_API_KEY_ENV]);
+        let settings = body(&api.handle("GET", "/api/settings", ""));
+        let configured = |name: &str| {
+            settings["modules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|module| module["name"] == name)
+                .unwrap_or_else(|| panic!("no module {name}"))["configured"]
+                .clone()
+        };
+        for (name, set) in [
+            ("wigle", false),
+            ("wigle_bluetooth", false),
+            ("hibp", true),
+            ("hibp_account", true),
+            ("shodan", false),
+        ] {
+            assert_eq!(configured(name), set, "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `WiGLE` is set up only with both of its slots; HIBP's one slot may be set through its alias.

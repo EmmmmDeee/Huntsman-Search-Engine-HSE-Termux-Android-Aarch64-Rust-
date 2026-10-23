@@ -276,49 +276,107 @@ fn a_passport_is_not_a_password() {
     }
 }
 
+/// How each key is read: `held` when its value is held back, `exposed` when, holding a value, it
+/// says a password was exposed. Every exposed key is held back.
 #[test]
-fn a_key_that_only_holds_a_marker_is_held_back_but_exposes_no_password() {
-    // Holding a value back fails closed on any marker; saying a password was exposed needs a key
-    // whose words name one.
-    for key in [
+fn every_key_is_held_back_and_flagged_by_its_own_rule() {
+    const EXPOSED: &[&str] = &[
+        "password",
+        "PASSWORD",
+        "Passwd",
+        "passwort",
+        "passphrase",
+        "passcode",
+        "pass",
+        "PASS",
+        "pass1",
+        "pass_2",
+        "user_pass",
+        "USERPass",
+        "userPass",
+        "userPassword",
+        "User_PWD",
+        "pwd",
+        "pwdHash",
+        "pwdhash",
+        "passhash",
+        "PASSHash",
+        "userpass",
+        "salt",
+        "Salt",
+        "salt1",
+        "hash",
+        "Hash",
+        "hashed",
+        "salted_hash",
+        "pass_hash",
+        "pass_md5",
+        "md5_pass",
+        "plain_pass",
+        "old_pass",
+        "admin_pass",
+        "login pass",
+        "account_pass",
+        "hashed_pass",
+        "password_hash",
+        "hashed_password",
+        "passwordhash",
+        "User Pass",
+        "user-password",
+        "Password Hash",
+        "passport_password",
+        "adminPass",
+        "ADMINPass",
+    ];
+    const HELD_ONLY: &[&str] = &[
         "passenger_name",
         "boarding_pass",
+        "boarding_pass_code",
+        "BoardingPassCode",
         "compass",
+        "compass_word",
         "bypass",
+        "bypass_code",
         "hashtags",
         "file_hash",
         "image_hash",
-    ] {
+        "pwdLastSet",
+        "badPwdCount",
+        "maxPwdAge",
+        "reset_password_sent_at",
+        "password_changed_at",
+        "password_hint",
+        "pa_ssword",
+        "Pass=word",
+    ];
+    const NEITHER: &[&str] = &[
+        "passport_number",
+        "Old_Passports",
+        "userPassPort",
+        "username",
+    ];
+    let read = |key: &str| -> (bool, bool) {
         let body = serde_json::json!({"success": true, "data": {"items": [
             {"dbname": "db", key: "a-value", "trip": {key: "nested-value"}}
         ]}});
         let breach = &decoded(&body).breaches[0];
-        assert!(!breach.password_exposed, "{key}: {breach:?}");
-        assert!(breach.values.is_empty(), "{key}: {breach:?}");
+        (breach.values.is_empty(), breach.password_exposed)
+    };
+    for key in EXPOSED {
+        assert_eq!(read(key), (true, true), "{key}");
     }
-    for key in [
-        "userPassword",
-        "userPass",
-        "pass",
-        "pass_hash",
-        "login pass",
-        "pwdHash",
-        "pwdhash",
-        "Salt",
-    ] {
-        let body = serde_json::json!({"success": true, "data": {"items": [
-            {"dbname": "db", "trip": {key: "a-secret"}}
-        ]}});
-        let breach = &decoded(&body).breaches[0];
-        assert!(breach.password_exposed, "{key}: {breach:?}");
-        assert!(breach.values.is_empty(), "{key}: {breach:?}");
+    for key in HELD_ONLY {
+        assert_eq!(read(key), (true, false), "{key}");
+    }
+    for key in NEITHER {
+        assert_eq!(read(key), (false, false), "{key}");
     }
 }
 
 #[test]
 fn a_field_name_that_could_carry_a_value_is_dropped() {
     let body = serde_json::json!({"success": true, "data": {"items": [
-        {"dbname": "db", "hunter2 secret": "x", "Pass=word": "x", "UserName": "ada",
+        {"dbname": "db", "hunter2 secret": "x", "User Pass": "x", "UserName": "ada",
          "flag": false, "count": 0, "list": [], "nested": {"a": 1}}
     ]}});
     let search = decoded(&body);
@@ -330,7 +388,7 @@ fn a_field_name_that_could_carry_a_value_is_dropped() {
     assert_eq!(fields, ["count", "nested", "username"]);
     assert!(
         search.breaches[0].password_exposed,
-        "`Pass=word` is exposed"
+        "`User Pass` is exposed"
     );
     // The credential rule reads the raw key, so a credential is exposed under any name; only the
     // name and the value are dropped.

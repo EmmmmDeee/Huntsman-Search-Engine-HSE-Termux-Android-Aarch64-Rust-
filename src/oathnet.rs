@@ -68,23 +68,55 @@ const PROVIDER_WORDS_MAX_CHARS: usize = 120;
 const RECORD_METADATA: [&str; 5] = ["id", "dbname", "indexed_at", "email_domain", "extra"];
 /// What a record key holds, in any case, when it may carry a password or something derived from
 /// one: `password`, `password_hash`, `hashed_password`, `passwd`, `passphrase`, `pwd`, `salt` and
-/// the like. The value of such a key is held back, and the match fails closed, so a key that only
-/// looks like one (`passenger_name`, `file_hash`) is held back too, with one exception: a `pass`
-/// that begins [`NOT_A_CREDENTIAL`] does not count. Whether a password was exposed is read more
-/// narrowly, from the key's words (see [`PASSWORD_WORDS`]).
+/// the like, read in the key as written and in its letters and digits run together (`pa_ssword`).
+/// The value of such a key is held back, and the match fails closed, so a key that only looks like
+/// one (`passenger_name`, `file_hash`) is held back too, with one exception: a `pass` that begins
+/// [`NOT_A_CREDENTIAL`] does not count. Whether a password was exposed is read more narrowly, from
+/// the key's words (see [`PASSWORD_WORDS`]).
 pub const CREDENTIAL_MARKERS: [&str; 4] = ["pass", "pwd", "hash", "salt"];
 /// A word that holds a marker but names no credential, in any case and anywhere in a key: a
 /// passport number is not a password. Any other marker in the key still counts.
 pub const NOT_A_CREDENTIAL: &str = "passport";
-/// A key names a password, and so sets [`Breach::password_exposed`] when it holds a value, when
-/// its words run together hold one of these (`Passwd`, `user_password`, `hashed_password`,
-/// `Pass=word`), when a word is `salt` or begins `pwd` (`User_PWD`), or when `pass` is the whole
-/// key or stands beside one of [`PASS_COMPANIONS`] (`user_pass`, `pass_hash`). A key that only
-/// holds a marker, such as `passenger_name`, `boarding_pass`, `compass`, `hashtags` or `file_hash`,
-/// is held back but exposes no password.
-pub const PASSWORD_WORDS: [&str; 4] = ["password", "passwd", "passphrase", "passcode"];
-/// The words beside which a bare `pass` names a password.
-pub const PASS_COMPANIONS: [&str; 5] = ["user", "login", "account", "hash", "hashed"];
+/// A key it holds back names a password, and so sets [`Breach::password_exposed`] when it holds a
+/// value, when one of its words, read with trailing digits dropped (`pass1`, `salt2`), begins with
+/// one of these (`Passwd`, `user_password`, `passwordhash`) or is one of [`PASSWORD_NAMES`], or is
+/// one of [`AMBIGUOUS_PASSWORD_WORDS`] standing alone or beside another credential word or one of
+/// [`PASSWORD_COMPANIONS`]. A key with one of [`PASSWORD_METADATA`] describes a password rather
+/// than holding one. Words split at anything but a letter or digit, where a lower-case letter
+/// meets an upper-case one and before the last capital of a run (`PASSHash`). So `passenger_name`,
+/// `boarding_pass`, `compass`, `hashtags`, `file_hash` and `pwdLastSet` are held back but expose no
+/// password.
+pub const PASSWORD_WORDS: [&str; 5] = ["password", "passwd", "passwort", "passphrase", "passcode"];
+/// Words that name a password or its hash or salt whole.
+pub const PASSWORD_NAMES: [&str; 5] = ["pwd", "pwdhash", "passhash", "userpass", "salt"];
+/// Words too common to name a password alone (`boarding_pass`, `file_hash`): they count as the
+/// whole key or beside another credential word or a companion.
+pub const AMBIGUOUS_PASSWORD_WORDS: [&str; 3] = ["pass", "hash", "hashed"];
+/// Words beside which an ambiguous word names a password: whose it is, its age or how it is kept.
+pub const PASSWORD_COMPANIONS: [&str; 17] = [
+    "user",
+    "login",
+    "account",
+    "admin",
+    "old",
+    "new",
+    "plain",
+    "clear",
+    "md5",
+    "sha1",
+    "sha256",
+    "sha512",
+    "bcrypt",
+    "crypt",
+    "enc",
+    "encrypted",
+    "salted",
+];
+/// Words that make a key describe a password, not hold one (`pwdLastSet`, `password_changed_at`).
+pub const PASSWORD_METADATA: [&str; 21] = [
+    "at", "date", "time", "sent", "changed", "updated", "created", "set", "last", "count", "age",
+    "max", "min", "length", "len", "less", "reset", "expires", "expiry", "hint", "policy",
+];
 
 /// Why a lookup gave no answer. No variant carries the key, the address or a response body.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -482,45 +514,80 @@ fn record_value(value: &Value) -> Option<String> {
 /// [`CREDENTIAL_MARKERS`], in any case, other than a `pass` that begins [`NOT_A_CREDENTIAL`].
 /// **Pure.**
 fn is_credential(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
-    CREDENTIAL_MARKERS.iter().any(|marker| {
-        key.match_indices(marker)
-            .any(|(at, _)| !key[at..].starts_with(NOT_A_CREDENTIAL))
+    let written = key.to_ascii_lowercase();
+    let joined: String = written
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect();
+    [written, joined].iter().any(|form| {
+        CREDENTIAL_MARKERS.iter().any(|marker| {
+            form.match_indices(marker)
+                .any(|(at, _)| !form[at..].starts_with(NOT_A_CREDENTIAL))
+        })
     })
 }
 
-/// `key` names a password by its words, as [`PASSWORD_WORDS`] says. Every key it names is also
-/// one [`is_credential`] holds back. **Pure.**
+/// `key` names a password by its words, as [`PASSWORD_WORDS`] says. It is always a key
+/// [`is_credential`] holds back, so a named password's value is never kept. **Pure.**
 fn names_a_password(key: &str) -> bool {
-    let words = key_words(key);
-    let joined = words.concat();
-    PASSWORD_WORDS.iter().any(|word| joined.contains(word))
-        || words
+    let words: Vec<String> = key_words(key)
+        .into_iter()
+        .filter(|word| !word.bytes().all(|byte| byte.is_ascii_digit()))
+        .collect();
+    let base = |word: &str| {
+        word.trim_end_matches(|c: char| c.is_ascii_digit())
+            .to_owned()
+    };
+    let names = |word: &str| {
+        let word = base(word);
+        PASSWORD_WORDS.iter().any(|stem| word.starts_with(stem))
+            || PASSWORD_NAMES.contains(&word.as_str())
+    };
+    let ambiguous = |word: &str| AMBIGUOUS_PASSWORD_WORDS.contains(&base(word).as_str());
+    let counts = |at: usize, word: &String| {
+        names(word)
+            || (ambiguous(word)
+                && (words.len() == 1
+                    || words.iter().enumerate().any(|(other, beside)| {
+                        other != at
+                            && (PASSWORD_COMPANIONS.contains(&beside.as_str())
+                                || ambiguous(beside)
+                                || names(beside))
+                    })))
+    };
+    is_credential(key)
+        && !words
             .iter()
-            .any(|word| word == "salt" || word.starts_with("pwd"))
-        || (words.iter().any(|word| word == "pass")
-            && (words.len() == 1
-                || words
-                    .iter()
-                    .any(|word| PASS_COMPANIONS.contains(&word.as_str()))))
+            .any(|word| PASSWORD_METADATA.contains(&word.as_str()))
+        && words.iter().enumerate().any(|(at, word)| counts(at, word))
 }
 
-/// The words of a key, in lower case: split at anything but a letter or digit and where a lower-case
-/// letter meets an upper-case one, so `userPass`, `user_pass` and `User Pass` read alike. **Pure.**
+/// The words of a key, in lower case: split at anything but an ASCII letter or digit, where a
+/// lower-case letter meets an upper-case one, and before the last capital of a run that a
+/// lower-case letter follows, so `userPass`, `user_pass`, `User Pass` and `USERPass` read alike.
+/// **Pure.**
 fn key_words(key: &str) -> Vec<String> {
+    let chars: Vec<char> = key.chars().collect();
     let mut words = Vec::new();
     let mut word = String::new();
-    let mut previous_lower = false;
-    for c in key.chars() {
-        if (!c.is_ascii_alphanumeric() || (previous_lower && c.is_ascii_uppercase()))
-            && !word.is_empty()
-        {
+    for (at, &c) in chars.iter().enumerate() {
+        if !c.is_ascii_alphanumeric() {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            continue;
+        }
+        let previous = at.checked_sub(1).map(|before| chars[before]);
+        let next = chars.get(at + 1);
+        let starts_word = c.is_ascii_uppercase()
+            && previous.is_some_and(|previous| {
+                previous.is_ascii_lowercase()
+                    || (previous.is_ascii_uppercase() && next.is_some_and(char::is_ascii_lowercase))
+            });
+        if starts_word && !word.is_empty() {
             words.push(std::mem::take(&mut word));
         }
-        if c.is_ascii_alphanumeric() {
-            word.push(c.to_ascii_lowercase());
-        }
-        previous_lower = c.is_ascii_lowercase();
+        word.push(c.to_ascii_lowercase());
     }
     if !word.is_empty() {
         words.push(word);

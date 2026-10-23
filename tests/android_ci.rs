@@ -74,9 +74,7 @@ fn ci_runs_the_library_tests_as_aarch64_code() {
         skipped,
         [
             "quadratic_time",
-            "http::tests::public_only_ignores_environment_proxy",
-            "scan_store::tests::process_start_time_reads_past_a_name_holding_spaces_and_parentheses",
-            "scan_service::tests::same_process_different_service_cannot_acknowledge_foreign_stop"
+            "http::tests::public_only_ignores_environment_proxy"
         ],
         "{job}"
     );
