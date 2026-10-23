@@ -390,9 +390,7 @@ mod tests {
         assert_ne!(stable_id("element", "x"), stable_id("entity", "x"));
         let mut saved = BTreeMap::new();
         insert(&mut saved, Row::new("element", "x".into(), json!({"x":1}))).unwrap();
-        assert!(
-            insert(&mut saved, Row::new("element", "x".into(), json!({"x":2}))).is_err()
-        );
+        assert!(insert(&mut saved, Row::new("element", "x".into(), json!({"x":2}))).is_err());
     }
 
     #[test]
