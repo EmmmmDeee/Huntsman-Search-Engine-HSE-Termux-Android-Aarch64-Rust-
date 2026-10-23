@@ -68,17 +68,17 @@ pub fn clusters_from_lineage(resolution: &crate::lineage::Resolution) -> Vec<Res
         .iter()
         .flat_map(|candidate| {
             [
-                candidate.decision.left_entity_uid.clone(),
-                candidate.decision.right_entity_uid.clone(),
+                candidate.decision.left_entity_uid.as_str(),
+                candidate.decision.right_entity_uid.as_str(),
             ]
         })
         .collect::<Vec<_>>();
-    ids.sort();
+    ids.sort_unstable();
     ids.dedup();
     let index = ids
         .iter()
         .enumerate()
-        .map(|(i, id)| (id.clone(), i))
+        .map(|(i, id)| (*id, i))
         .collect::<std::collections::BTreeMap<_, _>>();
     let mut uf = UnionFind::new(ids.len());
     let mut approved = Vec::new();
@@ -86,8 +86,8 @@ pub fn clusters_from_lineage(resolution: &crate::lineage::Resolution) -> Vec<Res
         if !matches!(candidate.outcome, crate::lineage::MergeOutcome::AutoMerge) {
             continue;
         }
-        let left = index[&candidate.decision.left_entity_uid];
-        let right = index[&candidate.decision.right_entity_uid];
+        let left = index[candidate.decision.left_entity_uid.as_str()];
+        let right = index[candidate.decision.right_entity_uid.as_str()];
         uf.union(left, right);
         approved.push(left);
     }
@@ -101,7 +101,7 @@ pub fn clusters_from_lineage(resolution: &crate::lineage::Resolution) -> Vec<Res
         .map(|group| {
             let root = group[0];
             ResolutionCluster {
-                members: group.into_iter().map(|idx| ids[idx].clone()).collect(),
+                members: group.into_iter().map(|idx| ids[idx].to_owned()).collect(),
                 decision_count: counts.get(&uf.find(root)).copied().unwrap_or(0),
             }
         })
