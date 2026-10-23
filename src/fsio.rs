@@ -102,7 +102,16 @@ fn open_read_candidate(path: &Path) -> Result<File, Error> {
         const O_NOFOLLOW: i32 = 0o400_000;
         options.custom_flags(O_NONBLOCK | O_NOFOLLOW);
     }
-    options.open(path).map_err(|e| store_err(path, &e))
+    options.open(path).map_err(|error| {
+        // O_NOFOLLOW reports ELOOP when the checked file was swapped for a
+        // symlink. Preserve the public refusal contract rather than exposing
+        // an arbitrary platform error or retrying through the link.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if error.raw_os_error() == Some(40) {
+            return Error::Store(format!("{}: {REFUSED_SYMLINK}", path.display()));
+        }
+        store_err(path, &error)
+    })
 }
 
 /// Read at most `max` bytes. Larger files, symlinks, and non-files are refused.
