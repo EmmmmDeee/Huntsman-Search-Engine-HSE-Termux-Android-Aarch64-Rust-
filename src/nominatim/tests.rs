@@ -530,3 +530,123 @@ fn bounded_cache_eviction_keeps_at_most_the_capacity() {
     }
     assert_eq!(state.cache.len(), CACHE_LIMIT);
 }
+
+#[test]
+fn operator_endpoint_is_https_only_and_has_no_userinfo_or_path() {
+    for accepted in [
+        "https://nominatim.openstreetmap.org",
+        "https://geocode.example.org",
+        "https://geo.example.org:8443",
+        "https://xn--bcher-kva.example",
+    ] {
+        assert!(valid_base(accepted), "accepted origin: {accepted}");
+    }
+    for invalid in [
+        "",
+        "http://geocode.example.org",
+        "https://localhost",
+        "https://127.0.0.1",
+        "https://[::1]",
+        "https://user:pass@geocode.example.org",
+        "https://geo.example.org/path",
+        "https://geo.example.org/",
+        "https://geo.example.org?token=x",
+        "https://geo.example.org#fragment",
+        "https://geo.example.org:0",
+        "https://geo.example.org:65536",
+        "https://-geo.example.org",
+        "https://geo..example.org",
+        "https://geo.example.org:443:1",
+        "https://geo.example.org\\\\extra",
+        "https://geo.example.org%2Fsecret",
+        " https://geo.example.org",
+    ] {
+        assert!(!valid_base(invalid), "invalid origin: {invalid}");
+    }
+}
+
+#[test]
+fn operator_endpoint_can_change_without_polluting_url_cache_keys() {
+    let public = search_url("Eiffel Tower");
+    let custom = search_url_at("https://geo.example.org", "Eiffel Tower");
+    assert!(public.starts_with("https://nominatim.openstreetmap.org/search?"));
+    assert!(custom.starts_with("https://geo.example.org/search?"));
+    assert_ne!(public, custom);
+    assert_eq!(
+        reverse_url_at("https://geo.example.org", 0.0, 0.0),
+        "https://geo.example.org/reverse?lat=0&lon=0&format=jsonv2&addressdetails=1"
+    );
+
+    let response = Response {
+        status: 200,
+        headers: Vec::new(),
+        body: b"[]".to_vec(),
+        truncated: false,
+    };
+    assert!(cacheable(&custom, &response));
+    assert!(!cacheable("https://geo.example.org/other?q=foo", &response));
+
+    let mut state = NominatimState {
+        last_attempt_finished: None,
+        cache: BTreeMap::new(),
+    };
+    insert_cache(&mut state, &public, response, 12);
+    assert!(state.cache.contains_key(&public));
+    assert!(!state.cache.contains_key(&custom));
+}
+
+#[test]
+fn direct_api_rejects_invalid_geocoding_input_before_network() {
+    let transport = RecordingTransport::default();
+    for query in ["", "  ", "bad\\nquery"] {
+        assert!(matches!(
+            forward(&transport, query, "input-test", 100),
+            Err(Error::Invalid(_))
+        ));
+    }
+    assert!(matches!(
+        forward(&transport, &"x".repeat(513), "input-test", 100),
+        Err(Error::Invalid(_))
+    ));
+    for (lat, lon) in [
+        (91.0, 0.0),
+        (-91.0, 0.0),
+        (0.0, 181.0),
+        (0.0, -181.0),
+        (f64::NAN, 0.0),
+        (0.0, f64::INFINITY),
+    ] {
+        assert!(matches!(
+            reverse(&transport, lat, lon, "input-test", 100),
+            Err(Error::Invalid(_))
+        ));
+    }
+    assert_eq!(transport.sends.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn geocoding_observation_explicitly_carries_attribution_and_license() {
+    let report = interpret_forward(
+        &Response {
+            status: 200,
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: forward_body().into_bytes(),
+            truncated: false,
+        },
+        "Eiffel Tower",
+        "attribution-test",
+        123,
+    );
+    assert!(!report.entities.is_empty());
+    for entity in report.entities {
+        let attributes = &entity.evidence[0].attributes;
+        assert_eq!(
+            attributes.get("source_attribution").map(String::as_str),
+            Some("© OpenStreetMap contributors")
+        );
+        assert_eq!(
+            attributes.get("source_license").map(String::as_str),
+            Some("ODbL 1.0")
+        );
+    }
+}
