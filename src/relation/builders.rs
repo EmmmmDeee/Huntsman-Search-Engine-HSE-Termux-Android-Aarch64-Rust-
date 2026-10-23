@@ -588,7 +588,11 @@ pub fn derive_shared_selector(entities: &[Entity], scan_id: &str) -> Vec<Relatio
     for entity in entities {
         for (key, values) in selector_values(entity) {
             for value in values {
-                if value.len() < 3 || is_privacy_proxy(&value) {
+                if value.len() < 3
+                    || is_privacy_proxy(&value)
+                    || (key.starts_with("registrant")
+                        && crate::domains::is_proxy_registrant(&value, key == "registrant_email"))
+                {
                     continue;
                 }
                 buckets
@@ -932,6 +936,86 @@ mod tests {
             .map(|correlation| correlation.rule_id)
             .collect::<Vec<_>>();
         assert!(!fired.iter().any(|id| id == "AU-109"), "{fired:?}");
+    }
+
+    /// The other ways a privacy service or a provider's mailbox reaches AU-109: a registrant
+    /// mailbox at a host's own mail domain, an `organisation` attribute naming the proxy (as
+    /// Pulsedive's WHOIS gives it), and a proxy name shared by three domains' `registrant_org`.
+    #[test]
+    fn provider_mailboxes_and_proxy_organisations_link_no_domains() {
+        let fired = |entities: &[Entity]| {
+            crate::correlator::evaluate_rules(entities, &[], "s")
+                .into_iter()
+                .any(|correlation| correlation.rule_id == "AU-109")
+        };
+
+        let mut hosted = vec![ent(EntityKind::Email, "hostmaster@godaddy.com", 0.78)];
+        for name in ["alpha-shop.org", "beta-shop.info"] {
+            let mut domain = ent(EntityKind::Domain, name, 0.92);
+            domain.add_evidence(
+                evidence("rdap", "registration")
+                    .with_attr("registrant_email", "hostmaster@godaddy.com"),
+            );
+            hosted.push(domain);
+        }
+        assert!(
+            derive_all(&hosted, "s")
+                .iter()
+                .all(|relation| relation.kind != RelationKind::RegisteredBy),
+            "a host's own mailbox registers nothing"
+        );
+        assert!(!fired(&hosted));
+
+        let mut fronted = vec![ent(EntityKind::Organisation, "Domains By Proxy, LLC", 0.72)];
+        for name in ["alpha-shop.org", "beta-shop.info"] {
+            let mut domain = ent(EntityKind::Domain, name, 0.92);
+            domain.add_evidence(
+                evidence("pulsedive", "whois").with_attr("organisation", "Domains By Proxy, LLC"),
+            );
+            fronted.push(domain);
+        }
+        assert!(
+            derive_all(&fronted, "s")
+                .iter()
+                .all(|relation| relation.kind != RelationKind::SameOperator),
+            "a privacy service operates nothing"
+        );
+        assert!(!fired(&fronted));
+
+        let shared = ["alpha-shop.org", "beta-shop.info", "gamma-shop.net"]
+            .into_iter()
+            .map(|name| {
+                let mut domain = ent(EntityKind::Domain, name, 0.92);
+                domain.add_evidence(
+                    evidence("rdap", "registration")
+                        .with_attr("registrant_org", "Domain Protection Services, Inc."),
+                );
+                domain
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            derive_all(&shared, "s")
+                .iter()
+                .all(|relation| relation.kind != RelationKind::SameOperator),
+            "a shared privacy name is not a shared operator"
+        );
+        assert!(!fired(&shared));
+    }
+
+    /// A saved scan's coordinates are not re-canonicalised on load; co-location still measures
+    /// them at the canonical six places, so a pair just inside the radius stays co-located.
+    #[test]
+    fn colocation_measures_stored_coordinates_at_canonical_precision() {
+        let near = ent(EntityKind::Coordinates, "0,0", 0.8);
+        let mut stored = ent(EntityKind::Coordinates, "0,0", 0.8);
+        stored.value = "0.0089933,0".to_owned();
+        stored.uid = "stored-coordinates".to_owned();
+        assert!(
+            derive_colocation(&[near, stored], "s")
+                .iter()
+                .any(|relation| relation.kind == RelationKind::CoLocatedWith),
+            "0.0089933 rounds to 0.008993, 0.99998 km from the origin"
+        );
     }
 
     #[test]

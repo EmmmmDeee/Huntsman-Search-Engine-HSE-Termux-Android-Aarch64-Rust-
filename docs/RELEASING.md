@@ -7,6 +7,17 @@
 - **build** (read-only token, no `GH_TOKEN`, no persisted git credentials): runs `cargo build` with `HSE_RELEASE=1`, strips and stages `dist/`, proves that the binary is `huntsman-recon`, and runs the key scanner on `dist/`. Publishing requires `result: PASS (0 findings)`. No build reads a key, so that scan is the proof that none is in the published files.
 - **publish** is the only job with write or OIDC scopes, and it never runs on `pull_request`. It re-checks the downloaded bytes against the build job's digests and re-runs the key scan from the copy inlined in the workflow, which must be byte-identical to `.github/scripts/scan-for-keys.sh`. Then it reconciles orphan main-channel drafts (a draft `main-<sha7>` with no tag), checks for an existing release, checks that this commit is still the `main` head, attests, publishes, and verifies the result through the API. A build whose commit is no longer the `main` head is still built, scanned and attested, but it is not published: it stays a verified Actions artifact.
 
+## Container registry transient failures
+
+The CI and release quality jobs use the same `scripts/container-build-retry.sh`
+wrapper for Docker builds. A transient HTTP 429 or 5xx response from a
+registry can be retried up to **three** times. Permanent build failures stop on
+the first attempt. Exhausting all attempts is a hard failure: the release
+cannot proceed to the binary build or publication. Each attempt preserves
+Docker output and its true exit status. The wrapper deletes temporary logs.
+`tests/container_build_retry.rs` exercises success, recovery, fail-fast and
+exhaustion without requiring a Docker daemon or network access.
+
 ## Key scanner (`.github/scripts/scan-for-keys.sh`)
 
 The scanner reports a file and a rule name only, as `FINDING file=<path as walked> resolved=<path that was read> rule=<rule> (value withheld)`. It never prints a matched value.
@@ -84,4 +95,4 @@ Every step that writes this commit's `main-<sha7>` release, its tag or an attest
 
 ## Termux installer (`.github/scripts/install-termux.sh`)
 
-The installer checks sha256 before installing and stages the binary in a private directory next to its destination. It then re-checks the staged copy, runs the recon binary offline (`check`, then `verify var/ledger.json`), and renames it into place with `mv -fT`. If the destination is a directory, `mv -fT` refuses, instead of moving the binary into that directory and reporting success.
+The installer checks sha256 before installing and stages the binary in a private directory next to its destination. It then re-checks the staged copy, and for `main-<sha7>` recon releases requires the executable's `build-sha` to be a valid 40-character lowercase Git commit hash whose first seven characters match the release tag. A mismatch or missing build revision leaves the existing installed executable unchanged. It then runs the recon binary offline (`check`, then `verify var/ledger.json`), and renames it into place with `mv -fT`. If the destination is a directory, `mv -fT` refuses, instead of moving the binary into that directory and reporting success.

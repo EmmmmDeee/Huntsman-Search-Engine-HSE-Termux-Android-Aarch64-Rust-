@@ -4,6 +4,7 @@
 use serde_json::{Value, json};
 
 use crate::ledger::{LedgerEntry, admitted_with, bindings};
+use crate::sha256::{hex32, sha256};
 
 #[must_use]
 pub fn bundle(entries: &[LedgerEntry]) -> Value {
@@ -37,11 +38,34 @@ pub fn bundle_with(entries: &[LedgerEntry], bindings: &[(&str, &str)]) -> Value 
             }]
         }));
     }
+    let id = bundle_id(&objects);
     json!({
         "type": "bundle",
-        "id": "bundle--00000000-0000-4000-8000-000000000001",
+        "id": id,
         "objects": objects
     })
+}
+
+/// Derive a stable, content-specific identifier from the admitted STIX objects.
+/// The empty-bundle identifier remains unchanged for historical consumers of
+/// the zero-admission fixture. Different nonempty exports must never all claim
+/// the same hard-coded identifier. This is a content fingerprint, not a
+/// signature or a claim of independent verification.
+fn bundle_id(objects: &[Value]) -> String {
+    if objects.is_empty() {
+        return "bundle--00000000-0000-4000-8000-000000000001".to_owned();
+    }
+    // serde_json::Value cannot contain non-serialisable Rust types.
+    let encoded = serde_json::to_vec(objects).expect("STIX JSON objects are serialisable");
+    let hash = hex32(&sha256(&encoded));
+    format!(
+        "bundle--{}-{}-4{}-8{}-{}",
+        &hash[0..8],
+        &hash[8..12],
+        &hash[13..16],
+        &hash[17..20],
+        &hash[20..32]
+    )
 }
 
 /// STIX string literal: backslash and single quote are escaped, never dropped.
@@ -82,6 +106,48 @@ mod tests {
             evidence_level: EvidenceLevel::DirectObservation,
             does_not_show: "not a live scan".into(),
         })
+    }
+
+    #[test]
+    fn bundle_id_changes_with_admitted_content_but_is_stable_on_repeat() {
+        let a = bound_entry("src/first.rs");
+        let b = bound_entry("src/second.rs");
+        let first = bundle_with(std::slice::from_ref(&a), &[("src/first.rs", "T1595")]);
+        let again = bundle_with(&[a], &[("src/first.rs", "T1595")]);
+        let other = bundle_with(&[b], &[("src/second.rs", "T1595")]);
+        assert_eq!(
+            first, again,
+            "same admitted evidence must export identically"
+        );
+        assert_ne!(
+            first["id"], other["id"],
+            "different bundles need distinct identifiers"
+        );
+
+        for id in [first["id"].as_str().unwrap(), other["id"].as_str().unwrap()] {
+            let value = id.strip_prefix("bundle--").expect("STIX bundle id");
+            let parts: Vec<&str> = value.split('-').collect();
+            assert_eq!(
+                parts.iter().map(|part| part.len()).collect::<Vec<_>>(),
+                [8, 4, 4, 4, 12]
+            );
+            assert!(
+                value
+                    .bytes()
+                    .all(|byte| byte == b'-' || byte.is_ascii_hexdigit())
+            );
+            assert!(parts[2].starts_with('4'));
+            assert!(parts[3].starts_with('8'));
+        }
+    }
+
+    #[test]
+    fn zero_admission_preserves_existing_empty_bundle_contract() {
+        let empty = bundle_with(&[], &[("src/first.rs", "T1595")]);
+        let unbound = bundle_with(&[bound_entry("src/first.rs")], &[]);
+        assert_eq!(empty, unbound);
+        assert_eq!(empty["id"], "bundle--00000000-0000-4000-8000-000000000001");
+        assert_eq!(empty["objects"], json!([]));
     }
 
     #[test]

@@ -100,6 +100,33 @@ huntsman-recon fix      # make every repair that can be undone, then check again
 `fix` never deletes a ledger or scan data and never writes a key. When the
 binary itself is missing or stale, it prints the installer command above.
 
+### Existing server and obsolete installer setting
+
+When `huntsman-recon doctor` reports `serve` healthy at `127.0.0.1:8080`,
+running `huntsman-recon serve` again on that port must fail with a bind
+error. This is not evidence of a broken service: use
+`huntsman-recon doctor serve` to check page, policy and offline analysis,
+or `huntsman status` / `huntsman logs` for managed-service operation.
+Some Android userland builds of `ss -ltn` do not expose every socket;
+prefer the application-level health probe.
+
+`HUNTSMAN_INSTALL_DIR` is an obsolete, unsupported variable. It is not
+an API credential and cannot configure the installer by being written to
+`~/.huntsman.env`. If `credential-status` flags it and no other tool
+depends on that legacy entry, remove only that private-file slot:
+
+```sh
+huntsman-recon keys remove HUNTSMAN_INSTALL_DIR
+huntsman-recon doctor
+```
+
+The supported optional install destination override is
+`HUNTSMAN_INSTALL_ROOT`, supplied as an environment variable to
+`install.sh` when the installer is invoked; the default remains `$PREFIX`.
+Provider credentials are independent. Having 0 configured providers
+does not disable keyless lookups, and missing paid keys are not reasons
+to buy subscriptions or reinstall. Neither `doctor --fix` nor the
+diagnostic command above changes any other key or restarts the server.
 ## Prebuilt Termux release (`install-termux.sh`)
 
 `install.sh` above already installs the verified build when one exists. The

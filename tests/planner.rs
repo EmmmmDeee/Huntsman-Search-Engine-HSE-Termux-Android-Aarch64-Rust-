@@ -51,6 +51,7 @@ fn seed() -> NormalizedSeed {
         raw: "Example.COM".to_string(),
         kind: EntityKind::Domain,
         value: "example.com".to_string(),
+        other_spellings: Vec::new(),
     }
 }
 
@@ -122,6 +123,31 @@ fn planner_blocks_unknown_paid_cost_under_budget() {
 }
 
 #[test]
+fn malformed_explicit_budget_preserves_free_discovery_and_paid_controls() {
+    for budget in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+        let policy = PlannerPolicy {
+            budget_usd: Some(budget),
+            configured_providers: BTreeSet::from(["intelx".to_owned()]),
+            ..PlannerPolicy::default()
+        };
+        let plan = build_dispatch_plan(&modules(), &[seed()], &PipelineLimits::default(), &policy);
+        assert!(
+            plan.selected.iter().any(|dispatch| {
+                matches!(dispatch.action, DispatchAction::Module { module_index: 0 })
+            }),
+            "free module must remain eligible under {budget:?}"
+        );
+        assert!(
+            plan.excluded.iter().any(|dispatch| {
+                dispatch.provider_id == "intelx"
+                    && dispatch.reason == DispatchExclusion::UnknownPaidCost
+            }),
+            "unknown paid costs cannot consume a malformed budget"
+        );
+    }
+}
+
+#[test]
 fn lead_routes_are_planned_as_leads_not_evidence() {
     let plan = build_dispatch_plan(
         &[],
@@ -135,6 +161,11 @@ fn lead_routes_are_planned_as_leads_not_evidence() {
             .all(|item| matches!(item.action, DispatchAction::Route { .. }))
     );
     assert!(plan.selected.iter().any(|item| matches!(&item.action, DispatchAction::Route { source_id, .. } if *source_id == "wayback")));
+    // Only a handle is routed as written; a domain routes its canonical value.
+    assert!(
+        plan.selected.iter().any(|item| matches!(&item.action,
+        DispatchAction::Route { url, .. } if url == "https://web.archive.org/web/*/example.com/*"))
+    );
 }
 
 /// The seed's canonical value drops separators, and `octocat` is another account, so a handle's
@@ -145,6 +176,7 @@ fn username_routes_keep_the_handle_as_written() {
         raw: "@octo-cat".to_string(),
         kind: EntityKind::Username,
         value: "octocat".to_string(),
+        other_spellings: Vec::new(),
     };
     let plan = build_dispatch_plan(
         &[],
@@ -169,6 +201,36 @@ fn username_routes_keep_the_handle_as_written() {
         "{urls:?}"
     );
     assert!(urls.iter().all(|url| !url.contains("octocat")), "{urls:?}");
+}
+
+#[test]
+fn every_spelling_of_one_handle_is_routed_as_written() {
+    let handle = NormalizedSeed {
+        raw: "@octocat".to_string(),
+        kind: EntityKind::Username,
+        value: "octocat".to_string(),
+        other_spellings: vec!["@octo-cat".to_string()],
+    };
+    let plan = build_dispatch_plan(
+        &[],
+        &[handle],
+        &PipelineLimits::default(),
+        &PlannerPolicy::default(),
+    );
+    let urls = plan
+        .selected
+        .iter()
+        .filter_map(|item| match &item.action {
+            DispatchAction::Route { url, .. } => Some(url.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for url in [
+        "https://github.com/search?q=octocat&type=users",
+        "https://github.com/search?q=octo-cat&type=users",
+    ] {
+        assert!(urls.contains(&url), "{url} not in {urls:?}");
+    }
 }
 
 #[test]

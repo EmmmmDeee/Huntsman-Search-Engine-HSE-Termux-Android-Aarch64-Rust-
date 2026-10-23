@@ -2,7 +2,8 @@
 //!
 //! Production key precedence is `HIBP_API_KEY`, the caller's
 //! `HUNTSMAN_HIBP_KEY` slot (or that environment variable), then private
-//! `~/.config/hibp/api_key`. Keys are read at run time only; no build reads one.
+//! `~/.config/hibp/api_key`. The binary fills the slot by `credential-status`'s rule, so a
+//! `HIBP_API_KEY` line in `~/.huntsman.env` also reaches it (and reports as the slot). Keys are read at run time only; no build reads one.
 
 use std::fmt;
 use std::path::PathBuf;

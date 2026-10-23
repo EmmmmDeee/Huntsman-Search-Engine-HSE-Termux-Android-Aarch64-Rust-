@@ -150,6 +150,10 @@ pub fn derive_org_identity(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
                 .attr_values("organisation")
                 .chain(evidence.attr_values("org"))
             {
+                // A privacy service is no one's operator; two domains behind it share nothing.
+                if crate::domains::is_proxy_registrant(value, false) {
+                    continue;
+                }
                 let key = normalise(&EntityKind::Organisation, value);
                 if let Some(org) = orgs.get(key.as_str()) {
                     out.push(Relation::new(

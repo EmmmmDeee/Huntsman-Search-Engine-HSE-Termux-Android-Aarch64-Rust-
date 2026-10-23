@@ -156,6 +156,35 @@ fn provider_failures_are_classified_from_top_level_envelope_only() {
         );
     }
 
+    // Without `success: false` a 2xx is read as an answer, `error` string or not, and a 4xx
+    // that is not a key, plan or rate refusal keeps the kind fetch gave it.
+    for (status, body, expected, rows) in [
+        (
+            200,
+            r#"{"error":"note","data":[]}"#,
+            SourceOutcomeKind::ValidZero,
+            0,
+        ),
+        (
+            200,
+            r#"{"error":"note","data":[{"email":"alice@example.com"}]}"#,
+            SourceOutcomeKind::Success,
+            1,
+        ),
+        (
+            404,
+            r#"{"success":false,"error":"not_found"}"#,
+            SourceOutcomeKind::Upstream4xx,
+            0,
+        ),
+    ] {
+        let transport =
+            ScriptedTransport::new(vec![response_with(status, body, Vec::new(), false)]);
+        let result = search_fast(&transport, &credential(), &auto_search(), 9).unwrap();
+        assert_eq!(result.outcome.kind, expected, "{body}");
+        assert_eq!(result.rows.len(), rows, "{body}");
+    }
+
     let leaked_text = r#"{
         "success":true,
         "data":[{

@@ -7,9 +7,12 @@
 //! with content it did not report.
 
 use std::fs;
+use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
+#[cfg(any(target_os = "android", target_os = "linux"))]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
 use crate::changelog;
@@ -29,6 +32,10 @@ A full host pass is necessary but not sufficient for platform-specific changes.
 Container and Android/Termux changes require their platform gates too.";
 
 const DEFAULT_TIMEOUT_SECONDS: u64 = 3600;
+/// Maximum memory used to capture the source baseline on a constrained Android device.
+/// An oversized checkout is refused, never silently truncated or incorrectly marked clean.
+const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+const SNAPSHOT_TOO_LARGE: &str = "verification snapshot exceeds the 16 MiB memory budget";
 
 /// The refusal for repository content that verification changed. `tests/repair_contract.rs`
 /// pins this wording.
@@ -259,38 +266,149 @@ fn tracked_shell_scripts(root: &Path) -> Result<Vec<String>> {
     Ok(scripts)
 }
 
+/// Stream Git output with a hard byte limit. `Command::output` would buffer arbitrary
+/// diffs or untracked path listings before checking their size.
+fn bounded_git_stdout(root: &Path, args: &[&str], limit: usize) -> Result<Vec<u8>> {
+    let shown = format!("git {}", args.join(" "));
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|source| Error::Command {
+            shown: shown.clone(),
+            reason: format!("could not start: {source}"),
+        })?;
+    let mut out = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Refused("git stdout is not available".to_owned()))?
+        .take(limit as u64 + 1)
+        .read_to_end(&mut out);
+    if out.len() > limit {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(Error::Refused(SNAPSHOT_TOO_LARGE.to_owned()));
+    }
+    if let Err(source) = read {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(Error::Command {
+            shown,
+            reason: format!("could not read output: {source}"),
+        });
+    }
+    let status = child.wait().map_err(|source| Error::Command {
+        shown: shown.clone(),
+        reason: format!("could not wait for git: {source}"),
+    })?;
+    if !status.success() {
+        return Err(Error::Command {
+            shown,
+            reason: format!("exited with {status}"),
+        });
+    }
+    Ok(out)
+}
+
+/// Add a single baseline component without ever exceeding the memory budget.
+fn append_snapshot(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
+    if bytes.len() > MAX_SNAPSHOT_BYTES.saturating_sub(out.len()) {
+        return Err(Error::Refused(SNAPSHOT_TOO_LARGE.to_owned()));
+    }
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
+/// Open a candidate without hanging if the path changed to a FIFO after lstat.
+/// Linux and Android share these O_NONBLOCK/O_NOFOLLOW values. The latter also
+/// refuses a symlink substituted after the initial type check.
+fn open_regular_candidate(path: &Path) -> Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    options.custom_flags(0o404000);
+    let file = options.open(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let metadata = file.metadata().map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(Error::Refused(format!(
+            "verification cannot snapshot non-regular file: {}",
+            path.display()
+        )));
+    }
+    Ok(file)
+}
+
+/// Snapshot a single candidate file after its type has been checked, with bounded I/O.
+fn append_untracked(root: &Path, out: &mut Vec<u8>, path: &[u8]) -> Result<()> {
+    append_snapshot(out, b"\0untracked\0")?;
+    append_snapshot(out, path)?;
+    append_snapshot(out, &[0])?;
+    let full = root.join(std::ffi::OsStr::from_bytes(path));
+    let metadata = fs::symlink_metadata(&full).map_err(|source| Error::Io {
+        path: full.clone(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(&full).map_err(|source| Error::Io {
+            path: full.clone(),
+            source,
+        })?;
+        append_snapshot(out, target.as_os_str().as_bytes())?;
+    } else if metadata.file_type().is_file() {
+        let available = MAX_SNAPSHOT_BYTES.saturating_sub(out.len());
+        if metadata.len() > available as u64 {
+            return Err(Error::Refused(SNAPSHOT_TOO_LARGE.to_owned()));
+        }
+        let file = open_regular_candidate(&full)?;
+        file.take(available as u64 + 1)
+            .read_to_end(out)
+            .map_err(|source| Error::Io {
+                path: full.clone(),
+                source,
+            })?;
+        if out.len() > MAX_SNAPSHOT_BYTES {
+            return Err(Error::Refused(SNAPSHOT_TOO_LARGE.to_owned()));
+        }
+    } else {
+        return Err(Error::Refused(format!(
+            "verification cannot snapshot non-regular file: {}",
+            full.display()
+        )));
+    }
+
+    Ok(())
+}
+
 /// The repository content verification must leave unchanged: the tracked diff against HEAD,
 /// then every untracked file (by path, in byte order) with its bytes, or its link target.
+/// Reject oversized baselines and non-regular files rather than hanging or exhausting RAM.
 fn snapshot(root: &Path) -> Result<Vec<u8>> {
-    let mut out = git_stdout(root, &["diff", "--binary", "--no-ext-diff", "HEAD", "--"])?;
-    let listing = git_stdout(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    let mut out = bounded_git_stdout(
+        root,
+        &["diff", "--binary", "--no-ext-diff", "HEAD", "--"],
+        MAX_SNAPSHOT_BYTES,
+    )?;
+    let listing = bounded_git_stdout(
+        root,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+        MAX_SNAPSHOT_BYTES.saturating_sub(out.len()),
+    )?;
     let mut paths: Vec<&[u8]> = listing
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
         .collect();
     paths.sort_unstable();
     for path in paths {
-        out.extend_from_slice(b"\0untracked\0");
-        out.extend_from_slice(path);
-        out.push(0);
-        let full = root.join(std::ffi::OsStr::from_bytes(path));
-        let metadata = fs::symlink_metadata(&full).map_err(|source| Error::Io {
-            path: full.clone(),
-            source,
-        })?;
-        if metadata.file_type().is_symlink() {
-            let target = fs::read_link(&full).map_err(|source| Error::Io {
-                path: full.clone(),
-                source,
-            })?;
-            out.extend_from_slice(target.as_os_str().as_bytes());
-        } else {
-            let bytes = fs::read(&full).map_err(|source| Error::Io {
-                path: full.clone(),
-                source,
-            })?;
-            out.extend_from_slice(&bytes);
-        }
+        append_untracked(root, &mut out, path)?;
     }
     Ok(out)
 }
@@ -391,6 +509,85 @@ mod tests {
             .status()
             .expect("git must run");
         assert!(status.success(), "git commit failed");
+    }
+
+    #[test]
+    fn an_oversized_untracked_file_is_refused_before_allocating_its_contents() {
+        let dir = fixture_repo("oversized-untracked");
+        let file = fs::File::create(dir.join("oversized.bin")).expect("create sparse file");
+        file.set_len(MAX_SNAPSHOT_BYTES as u64 + 1)
+            .expect("set logical size without allocating");
+        let problem = snapshot(&dir).expect_err("large evidence must not exhaust device RAM");
+        assert!(
+            problem.to_string().contains(SNAPSHOT_TOO_LARGE),
+            "{problem}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[test]
+    fn a_fifo_substituted_after_the_type_check_cannot_block_open() {
+        let dir = fixture_repo("fifo-after-stat");
+        let candidate = dir.join("candidate");
+        fs::write(&candidate, b"regular").expect("initial regular file");
+        assert!(
+            fs::symlink_metadata(&candidate)
+                .expect("initial metadata")
+                .is_file()
+        );
+        fs::remove_file(&candidate).expect("replace checked file");
+        let status = Command::new("mkfifo")
+            .arg(&candidate)
+            .status()
+            .expect("mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        let error = open_regular_candidate(&candidate)
+            .expect_err("nonblocking open must reject a substituted FIFO");
+        assert!(error.to_string().contains("non-regular file"), "{error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[test]
+    fn a_symlink_substituted_after_the_type_check_is_not_followed() {
+        use std::os::unix::fs::symlink;
+
+        let dir = fixture_repo("symlink-after-stat");
+        let candidate = dir.join("candidate");
+        fs::write(&candidate, b"regular").expect("initial regular file");
+        assert!(
+            fs::symlink_metadata(&candidate)
+                .expect("initial metadata")
+                .is_file()
+        );
+        fs::remove_file(&candidate).expect("replace checked file");
+        symlink(dir.join("tracked.txt"), &candidate).expect("replace with symlink");
+        assert!(
+            open_regular_candidate(&candidate).is_err(),
+            "post-check symlink must not be followed"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_untracked_fifo_is_refused_without_waiting_for_a_writer() {
+        let dir = fixture_repo("fifo-untracked");
+        let result = Command::new("mkfifo")
+            .arg("pipe")
+            .current_dir(&dir)
+            .status()
+            .expect("mkfifo is available on Unix");
+        assert!(result.success(), "mkfifo failed");
+        let mut out = Vec::new();
+        let problem = append_untracked(&dir, &mut out, b"pipe")
+            .expect_err("a named pipe must not be opened for reading");
+        assert!(
+            problem.to_string().contains("non-regular file"),
+            "{problem}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

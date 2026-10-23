@@ -550,7 +550,7 @@ mod tests {
             A::Investigate,
         ];
         for kind in KINDS {
-            // A new variant fails to compile here until it is listed above.
+            // A new variant fails to compile until this match names it; add it to `KINDS` too.
             match kind {
                 K::Success
                 | K::ValidZero

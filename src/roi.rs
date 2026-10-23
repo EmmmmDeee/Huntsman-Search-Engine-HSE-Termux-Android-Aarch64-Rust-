@@ -55,11 +55,24 @@ pub const QUOTA_COST_NEUTRAL: f64 = 0.2;
 const COST_SOFTNESS: f64 = 5.0;
 const MAX_REASONABLE_TIMEOUT_MS: f64 = 45_000.0;
 
+/// Invalid provider metadata must not poison the entire dispatch ranking with NaN.
+fn bounded_prior(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        fallback
+    }
+}
+
 fn normalised_cost_penalty(cost: Option<f64>) -> f64 {
     match cost {
-        Some(cost) if cost <= 0.0 => 0.0,
-        Some(cost) => (cost / (cost + COST_SOFTNESS)).clamp(0.0, 1.0),
-        None => UNKNOWN_COST_PENALTY,
+        Some(cost) if cost.is_finite() && cost >= 0.0 => {
+            (cost / (cost + COST_SOFTNESS)).clamp(0.0, 1.0)
+        }
+        // An unbounded stated price cannot become a free request.
+        Some(cost) if cost.is_infinite() && cost.is_sign_positive() => 1.0,
+        // Unknown or malformed prices are uncertain, not free.
+        _ => UNKNOWN_COST_PENALTY,
     }
 }
 
@@ -74,11 +87,12 @@ fn quota_penalty(remaining: Option<bool>) -> f64 {
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtility {
-    let expected_information_value = 1.0 - inputs.entity_confidence.unwrap_or(0.0);
-    let expected_novelty = inputs.novelty_prior.clamp(0.0, 1.0);
+    let expected_information_value =
+        1.0 - bounded_prior(inputs.entity_confidence.unwrap_or(0.0), 0.0);
+    let expected_novelty = bounded_prior(inputs.novelty_prior, 0.5);
     let expected_independence = 1.0 - 1.0 / (1.0 + f64::from(inputs.source_count));
-    let expected_optionality = inputs.optionality_prior.clamp(0.0, 1.0);
-    let reliability = inputs.reliability_prior.clamp(0.0, 1.0);
+    let expected_optionality = bounded_prior(inputs.optionality_prior, 0.5);
+    let reliability = bounded_prior(inputs.reliability_prior, 0.5);
     let failure_penalty = 1.0 - reliability;
     let cost_penalty = normalised_cost_penalty(inputs.cost_per_request_usd);
     let quota_penalty_value = quota_penalty(inputs.quota_remaining);
@@ -116,7 +130,9 @@ pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtili
         expected_independence,
         expected_optionality,
         reliability,
-        estimated_cost: inputs.cost_per_request_usd,
+        estimated_cost: inputs
+            .cost_per_request_usd
+            .filter(|cost| cost.is_finite() && *cost >= 0.0),
         quota_cost: inputs.quota_remaining.map(|_| quota_penalty_value),
         latency_penalty,
         failure_penalty,
@@ -215,6 +231,47 @@ mod tests {
             ..baseline_inputs()
         });
         assert!((geo.final_utility - fresh.final_utility - W_GEO).abs() < 1e-9);
+    }
+
+    #[test]
+    fn nonfinite_and_out_of_range_inputs_do_not_block_dispatch_sorting() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let score = compute_dispatch_utility(&DispatchUtilityInputs {
+                entity_confidence: Some(invalid),
+                optionality_prior: invalid,
+                novelty_prior: invalid,
+                reliability_prior: invalid,
+                cost_per_request_usd: Some(invalid),
+                ..baseline_inputs()
+            });
+            assert!(score.final_utility.is_finite(), "{invalid:?}: {score:?}");
+            assert!(score.expected_information_value >= 0.0);
+            assert!(score.expected_information_value <= 1.0);
+            assert!(score.estimated_cost.is_none());
+            assert!(score.expected_novelty >= 0.0 && score.expected_novelty <= 1.0);
+            assert!(score.reliability >= 0.0 && score.reliability <= 1.0);
+        }
+        for confidence in [-8.0, 0.0, 0.8, 9.0] {
+            let score = compute_dispatch_utility(&DispatchUtilityInputs {
+                entity_confidence: Some(confidence),
+                ..baseline_inputs()
+            });
+            assert!((0.0..=1.0).contains(&score.expected_information_value));
+            assert!(score.final_utility.is_finite());
+        }
+    }
+
+    #[test]
+    fn invalid_cost_does_not_become_free_or_overflow_utility() {
+        assert_eq!(
+            normalised_cost_penalty(Some(f64::NAN)),
+            UNKNOWN_COST_PENALTY
+        );
+        assert_eq!(normalised_cost_penalty(Some(-1.0)), UNKNOWN_COST_PENALTY);
+        assert_eq!(normalised_cost_penalty(Some(f64::INFINITY)), 1.0);
+        assert_eq!(normalised_cost_penalty(Some(0.0)), 0.0);
+        assert!(normalised_cost_penalty(Some(f64::MAX)).is_finite());
+        assert!(normalised_cost_penalty(Some(1.0)) > 0.0);
     }
 
     #[test]

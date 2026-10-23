@@ -463,6 +463,33 @@ fn a_keys_file_slot_that_matches_no_provider_warns_and_names_it_but_never_the_va
 }
 
 #[test]
+fn obsolete_install_dir_setting_has_a_precise_manual_fix() {
+    let scratch = Scratch::new("legacyinstallslot");
+    fs::write(
+        scratch.path(".huntsman.env"),
+        format!(
+            "{}=/private/install/path-not-to-print\n",
+            crate::environment::LEGACY_INSTALL_DIR_ENV
+        ),
+    )
+    .expect("write");
+    let report = scratch.examine(&FakeHost::default());
+    let check = report.get("env_file").expect("check");
+    assert_eq!(check.status, Status::Warn, "{check:?}");
+    assert_eq!(
+        check.fix.as_deref(),
+        Some("huntsman-recon keys remove HUNTSMAN_INSTALL_DIR")
+    );
+    assert!(!check.auto_fix, "removing a slot is operator-controlled");
+    assert!(check.repair.is_none());
+    let text = render(&report);
+    assert!(
+        !text.contains("/private/install/path-not-to-print"),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_symlinked_keys_file_fails() {
     let scratch = Scratch::new("linkkeys");
     let keys = scratch.path(".huntsman.env");
@@ -864,18 +891,15 @@ fn the_text_report_prints_a_repeated_fix_once() {
     assert!(text.contains("fix: the same command as above"), "{text}");
 }
 
-/// A cache tag that is a pipe, kept open after the signature, is recognised from the signature
-/// alone. The check must not wait for end of file: that wait is what a `/dev/zero` symlink never
-/// ends. The reader runs on its own thread with a deadline, so the old code fails here instead of
-/// blocking the test run.
+/// A FIFO with no writer must be rejected promptly. The deadline detects a blocking open
+/// without hanging the test runner when testing a regressed implementation.
 #[cfg(unix)]
 #[test]
-fn a_cache_tag_is_read_only_as_far_as_its_signature() {
-    use std::io::Write as _;
+fn a_cache_tag_fifo_without_writer_is_rejected_promptly() {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    let scratch = Scratch::new("tag-pipe");
+    let scratch = Scratch::new("tag-fifo-no-writer");
     let cache = scratch.home.join("cache");
     fs::create_dir_all(&cache).expect("cache");
     let tag = cache.join("CACHEDIR.TAG");
@@ -885,36 +909,35 @@ fn a_cache_tag_is_read_only_as_far_as_its_signature() {
         .expect("mkfifo");
     assert!(made.success(), "mkfifo {}", tag.display());
 
-    let (written, is_written) = mpsc::channel();
-    let (release, is_released) = mpsc::channel::<()>();
-    let writer_tag = tag.clone();
-    let writer = std::thread::spawn(move || {
-        let mut pipe = fs::OpenOptions::new()
-            .write(true)
-            .open(&writer_tag)
-            .expect("open pipe for writing");
-        pipe.write_all(CACHEDIR_SIGNATURE.as_bytes())
-            .expect("write signature");
-        written.send(()).expect("signal written");
-        let _ = is_released.recv();
-        drop(pipe);
-    });
-
     let (answer, answered) = mpsc::channel();
-    let reader_dir = cache.clone();
     let reader = std::thread::spawn(move || {
-        answer.send(tagged_cache(&reader_dir)).expect("send answer");
+        let _ = answer.send(tagged_cache(&cache));
     });
-    is_written
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the signature was written");
-    let verdict = answered.recv_timeout(Duration::from_secs(10));
-    let _ = release.send(());
-    writer.join().expect("writer");
-    reader.join().expect("reader");
     assert_eq!(
-        verdict,
-        Ok(true),
-        "tagged_cache waited past the signature for end of file"
+        answered.recv_timeout(Duration::from_secs(2)),
+        Ok(false),
+        "tagged_cache must not block opening a FIFO without a writer"
     );
+    reader.join().expect("reader");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cache_tag_symlink_is_rejected_even_if_target_has_signature() {
+    let scratch = Scratch::new("tag-symlink");
+    let cache = scratch.home.join("cache");
+    fs::create_dir_all(&cache).expect("cache");
+    let target = scratch.home.join("other-tag");
+    fs::write(&target, CACHEDIR_SIGNATURE).expect("target");
+    std::os::unix::fs::symlink(&target, cache.join("CACHEDIR.TAG")).expect("symlink");
+    assert!(!tagged_cache(&cache));
+}
+
+#[test]
+fn a_regular_cache_tag_with_signature_is_accepted() {
+    let scratch = Scratch::new("tag-regular");
+    let cache = scratch.home.join("cache");
+    fs::create_dir_all(&cache).expect("cache");
+    fs::write(cache.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).expect("tag");
+    assert!(tagged_cache(&cache));
 }

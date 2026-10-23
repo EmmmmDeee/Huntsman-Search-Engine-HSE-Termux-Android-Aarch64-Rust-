@@ -275,6 +275,7 @@ impl ScanApi {
             (["scans", id, "summary"], false) => self.summary(id),
             (["scans", id, "analyze"], false) => self.analyze(id),
             (["scans", id, "evidence"], false) => self.evidence(id, &param),
+            (["scans", id, "matrix"], false) => self.matrix(id, &param),
             (["scans", id, "reality"], false) => self.reality(id, param.get("uid")),
             (["scans", _, "reality"], true) => error(405, "entity reality is read-only"),
             (["scans", id, "elements"], false) => self.elements(id, &param),
@@ -501,6 +502,48 @@ impl ScanApi {
             content_type,
             body,
             filename: Some(format!("{}-evidence.{extension}", record.id)),
+        }
+    }
+
+    /// A read-only source-by-finding matrix over the saved evidence elements.
+    fn matrix(&self, id: &str, params: &Params) -> ApiResponse {
+        let format = params.get("format").unwrap_or("json");
+        if !matches!(format, "raw" | "json") {
+            return error(400, "matrix format must be raw or json");
+        }
+        let (record, results) = match self.results(id) {
+            Ok(found) => found,
+            Err(response) => return response,
+        };
+        if record.status.is_active() {
+            return error(409, "matrix requires a stopped scan");
+        }
+        let Some(saved) = results else {
+            return error(409, "scan has no saved results");
+        };
+        let report = match evidence_register::compile_matrix(&record, &saved) {
+            Ok(report) => report,
+            Err(reason) => return error(413, &reason),
+        };
+        let (body, content_type, extension) = if format == "json" {
+            match serde_json::to_vec_pretty(&report) {
+                Ok(body) => (body, JSON, "json"),
+                Err(failure) => return error(500, &failure.to_string()),
+            }
+        } else {
+            match evidence_register::matrix_raw_text(&report) {
+                Ok(body) => (body.into_bytes(), "text/plain; charset=utf-8", "txt"),
+                Err(reason) => return error(413, &reason),
+            }
+        };
+        if body.len() > evidence_register::MAX_RENDER_BYTES {
+            return error(413, "matrix export exceeds 8 MiB; nothing truncated");
+        }
+        ApiResponse {
+            status: 200,
+            content_type,
+            body,
+            filename: Some(format!("{}-matrix.{extension}", record.id)),
         }
     }
 
@@ -1130,6 +1173,7 @@ fn route_exists(segments: &[&str], write: bool) -> bool {
                     "summary"
                         | "analyze"
                         | "evidence"
+                        | "matrix"
                         | "elements"
                         | "correlations"
                         | "log"
