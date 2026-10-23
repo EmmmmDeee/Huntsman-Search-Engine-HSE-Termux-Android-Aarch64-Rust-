@@ -83,6 +83,9 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "coarsen" => {
             "coarsen LAT,LON\nRound coordinates to one decimal place for approximate location sharing."
         }
+        "case-check" => {
+            "case-check CASE-JSON ORIGINAL-ADVERT-TEXT\nCheck bounded OSINT package JSON against exact source text, SHA-256, source IDs and claim references. This offline structural audit does not validate external claims, licences or advertisement authorship."
+        }
         "id" => {
             "id TOKEN...\nClassify and validate an Australian ABN, ACN, or BSB. The rest of the line is the token, so spaced digits need no quotes."
         }
