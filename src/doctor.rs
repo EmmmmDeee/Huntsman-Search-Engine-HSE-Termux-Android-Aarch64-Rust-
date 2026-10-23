@@ -582,7 +582,16 @@ fn env_file(ctx: &Context<'_>) -> Check {
                                 unrecognised.len(),
                                 unrecognised.join(", ")
                             ),
-                            "huntsman-recon credential-status",
+                            if unrecognised.len() == 1
+                                && unrecognised[0] == crate::environment::LEGACY_INSTALL_DIR_ENV
+                            {
+                                format!(
+                                    "huntsman-recon keys remove {}",
+                                    crate::environment::LEGACY_INSTALL_DIR_ENV
+                                )
+                            } else {
+                                "huntsman-recon credential-status".to_owned()
+                            },
                         )
                     }
                 }
@@ -888,12 +897,39 @@ fn cache_dir(ctx: &Context<'_>, provenance: &ProvenanceRead) -> Option<PathBuf> 
     recorded.or_else(|| ctx.home.as_ref().map(|home| home.join(BUILD_CACHE)))
 }
 
-/// A directory Cargo tagged as its build cache. Only the signature's bytes are read: the tag file
-/// can be any size, or a symlink to a file that never ends, such as `/dev/zero`.
+/// Accept only a regular Cargo cache tag, never a symlink, FIFO or device. Read only the
+/// signature prefix; a large regular file must not cause unbounded memory use.
 fn tagged_cache(dir: &Path) -> bool {
-    let Ok(file) = fs::File::open(dir.join("CACHEDIR.TAG")) else {
+    let tag = dir.join("CACHEDIR.TAG");
+    let Ok(metadata) = fs::symlink_metadata(&tag) else {
         return false;
     };
+    if !metadata.file_type().is_file() {
+        return false;
+    }
+
+    // A filesystem entry can change after symlink_metadata. On Linux/Android, open with
+    // O_NONBLOCK to avoid hanging on a swapped-in FIFO and O_NOFOLLOW to reject a swapped-in
+    // symlink. These are the Linux/Android octal flag values; no unsafe code or new dependency.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let opened = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        const O_NONBLOCK: i32 = 0o0_004_000;
+        const O_NOFOLLOW: i32 = 0o00_400_000;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NONBLOCK | O_NOFOLLOW)
+            .open(&tag)
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let opened = fs::File::open(&tag);
+
+    let Ok(file) = opened else {
+        return false;
+    };
+    if !file.metadata().is_ok_and(|opened| opened.is_file()) {
+        return false;
+    }
     let mut prefix = Vec::with_capacity(CACHEDIR_SIGNATURE.len());
     file.take(CACHEDIR_SIGNATURE.len() as u64)
         .read_to_end(&mut prefix)

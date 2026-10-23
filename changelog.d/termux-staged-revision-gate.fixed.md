@@ -1,0 +1,1 @@
+- Verify a checksum-validated recon binary's embedded 40-character `build-sha` against its `main-<sha7>` release tag before the standalone Termux installer replaces the live executable. Refuse invalid or mismatched revisions while preserving the existing installation; add offline regression tests for matching, wrong and invalid revisions.

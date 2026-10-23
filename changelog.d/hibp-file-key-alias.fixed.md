@@ -8,4 +8,4 @@
   the same rule `credential-status` uses (`provider_credentials::secret_for_slot`, now public): an
   `HIBP_API_KEY` environment variable first, then the `HUNTSMAN_HIBP_KEY` slot (the file, then the
   environment), then a `HIBP_API_KEY` line in the file, then `~/.config/hibp/api_key`. A unit test
-  in `src/cli/credentials.rs` holds it and fails on the previous code.
+  in `src/cli/credentials.rs` holds it and fails on the previous code. With only such a file-held key, `email ADDRESS` (and `scan ADDRESS` for an address) now also runs the HIBP breached-account leg: it sends one keyed request with that key and adds the HIBP rows to the report and its saved ledger, where before it sent nothing to HIBP.

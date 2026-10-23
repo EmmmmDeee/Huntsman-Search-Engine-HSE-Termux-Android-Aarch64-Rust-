@@ -150,10 +150,19 @@ fn descriptor(module: &dyn Module) -> ProviderDescriptor {
     derive_default_provider_descriptor(&ModuleSpecAdapter { module })
 }
 
+/// An invalid or negative explicit budget is zero, not an unlimited spend.
 fn exceeds_budget(budget_usd: Option<f64>, cost_per_request: Option<f64>) -> bool {
-    match (budget_usd, cost_per_request) {
-        (Some(budget), Some(cost)) => cost > budget,
-        _ => false,
+    let Some(budget) = budget_usd else {
+        return false; // No cap was configured.
+    };
+    let budget = if budget.is_finite() {
+        budget.max(0.0)
+    } else {
+        0.0
+    };
+    match cost_per_request {
+        Some(cost) => !cost.is_finite() || cost < 0.0 || cost > budget,
+        None => false, // Unknown paid costs are gated separately.
     }
 }
 
@@ -360,22 +369,26 @@ pub fn build_dispatch_plan(
                 ));
             }
         }
-        // A handle is routed as the operator wrote it; its canonical value drops the
-        // separators that tell `octo-cat` from `octocat`.
-        let route_value = if kind == TargetKind::Username {
-            seed.raw.as_str()
+        // A handle is routed as the operator wrote it, each spelling of it; its canonical
+        // value drops the separators that tell `octo-cat` from `octocat`.
+        let route_values: Vec<&str> = if kind == TargetKind::Username {
+            std::iter::once(seed.raw.as_str())
+                .chain(seed.other_spellings.iter().map(String::as_str))
+                .collect()
         } else {
-            seed.value.as_str()
+            vec![seed.value.as_str()]
         };
-        for route in source_registry::routes_for(&seed.kind, route_value) {
-            selected.push(PlannedDispatch {
-                target: target.clone(),
-                action: DispatchAction::Route {
-                    source_id: route.source_id,
-                    url: route.url,
-                },
-                utility: None,
-            });
+        for route_value in route_values {
+            for route in source_registry::routes_for(&seed.kind, route_value) {
+                selected.push(PlannedDispatch {
+                    target: target.clone(),
+                    action: DispatchAction::Route {
+                        source_id: route.source_id,
+                        url: route.url,
+                    },
+                    utility: None,
+                });
+            }
         }
     }
 
@@ -410,5 +423,24 @@ pub fn build_dispatch_plan(
         selected,
         excluded,
         truncated,
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::exceeds_budget;
+
+    #[test]
+    fn malformed_budget_does_not_block_free_work_or_authorize_spend() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -20.0] {
+            assert!(!exceeds_budget(Some(invalid), Some(0.0)));
+            assert!(exceeds_budget(Some(invalid), Some(0.01)));
+        }
+        assert!(!exceeds_budget(None, Some(100.0)));
+        assert!(!exceeds_budget(Some(1.0), Some(1.0)));
+        assert!(exceeds_budget(Some(1.0), Some(1.01)));
+        assert!(exceeds_budget(Some(1.0), Some(f64::NAN)));
+        assert!(exceeds_budget(Some(1.0), Some(f64::INFINITY)));
+        assert!(exceeds_budget(Some(1.0), Some(-1.0)));
     }
 }

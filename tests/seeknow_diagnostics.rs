@@ -142,11 +142,16 @@ fn upstream_arrays_are_bounded_with_visible_truncation() {
         .map(|i| format!("Dataset {i}"))
         .collect::<Vec<_>>();
     let huge = "x".repeat(MAX_FIELD_CHARS + 1);
+    let edge = "y".repeat(MAX_FIELD_CHARS);
     let body = serde_json::json!({"success": true, "data": [
         {"email": "a@example.com", "dbname": names},
         {"email": "b@example.com", "source": ["mirror-1", huge]},
         // A null element is dropped by type, not by a bound.
         {"email": "c@example.com", "dbname": ["Dataset A", null]},
+        // An element exactly at the bound is kept.
+        {"email": "d@example.com", "dbname": [edge]},
+        // A dropped scalar and a cut array both mark the row; neither unmarks it.
+        {"email": "e@example.com", "bio": huge, "dbname": names},
     ]})
     .to_string();
     let transport = ScriptedTransport::new(vec![response(&body)]);
@@ -162,7 +167,7 @@ fn upstream_arrays_are_bounded_with_visible_truncation() {
     )
     .unwrap();
 
-    assert_eq!(result.rows.len(), 3);
+    assert_eq!(result.rows.len(), 5);
     assert_eq!(
         result.rows[0].upstream.dbname,
         names[..MAX_FIELDS_PER_ROW].to_vec()
@@ -172,4 +177,8 @@ fn upstream_arrays_are_bounded_with_visible_truncation() {
     assert!(result.rows[1].fields_truncated);
     assert_eq!(result.rows[2].upstream.dbname, vec!["Dataset A".to_owned()]);
     assert!(!result.rows[2].fields_truncated);
+    assert_eq!(result.rows[3].upstream.dbname, vec![edge]);
+    assert!(!result.rows[3].fields_truncated);
+    assert_eq!(result.rows[4].upstream.dbname.len(), MAX_FIELDS_PER_ROW);
+    assert!(result.rows[4].fields_truncated);
 }

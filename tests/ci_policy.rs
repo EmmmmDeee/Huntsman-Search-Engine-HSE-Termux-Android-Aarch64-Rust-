@@ -34,6 +34,7 @@ fn self_hosted_container_has_executable_ci_acceptance() {
         "container:",
         "Self-hosted container smoke test",
         "scripts/container-live-acceptance.sh",
+        "scripts/container-build-retry.sh",
         "Dockerfile",
     ] {
         assert!(ci.contains(required), "{CI} must contain {required:?}");

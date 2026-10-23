@@ -1,5 +1,6 @@
 //! Scan routing and bounded batch orchestration.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -134,13 +135,22 @@ fn scan_batch_file(path: &str, kind: Option<&str>, save_dir: Option<&str>) -> Ex
     };
 
     let total = seeds.len();
-    eprintln!("batch: scanning {total} seed(s) from {path}");
+    let _ = writeln!(
+        std::io::stderr(),
+        "batch: scanning {total} seed(s) from {path}"
+    );
     let mut succeeded = 0usize;
     let mut failed = 0usize;
     let mut first_failure = None;
 
     for (offset, seed) in seeds.iter().enumerate() {
-        eprintln!("batch [{}/{}] {}", offset + 1, total, escape_controls(seed));
+        let _ = writeln!(
+            std::io::stderr(),
+            "batch [{}/{}] {}",
+            offset + 1,
+            total,
+            escape_controls(seed)
+        );
         // Each seed gets its own artifact path so concurrent persistence never
         // collides: a zero-padded 1-based index keeps names unique and ordered
         // even when two seeds sanitize to the same stem.
@@ -164,7 +174,10 @@ fn scan_batch_file(path: &str, kind: Option<&str>, save_dir: Option<&str>) -> Ex
         }
     }
 
-    eprintln!("batch complete: {succeeded} succeeded, {failed} failed, {total} total");
+    let _ = writeln!(
+        std::io::stderr(),
+        "batch complete: {succeeded} succeeded, {failed} failed, {total} total"
+    );
     first_failure.unwrap_or(ExitCode::SUCCESS)
 }
 
@@ -240,7 +253,9 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
     };
     let mut forwarded = forwarded.to_vec();
     forwarded[0] = selector;
-    eprintln!("scan_route={}", route.command());
+    // Plain writes, not `eprintln!`: a stderr whose reader has gone must not end the scan
+    // before the lookup it routes to saves.
+    let _ = writeln!(std::io::stderr(), "scan_route={}", route.command());
     match route {
         ScanKind::Email => email_cmd(&forwarded),
         ScanKind::Exposure => exposure_cmd(&forwarded),

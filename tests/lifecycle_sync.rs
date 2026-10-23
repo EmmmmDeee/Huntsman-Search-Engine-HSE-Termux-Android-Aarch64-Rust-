@@ -54,6 +54,9 @@ impl Sandbox {
             .current_dir(dir)
             .env("HOME", self.root.join("home"))
             .env("HUNTSMAN_HOME", self.root.join("state"))
+            // lifecycle.sh builds into an inherited CARGO_TARGET_DIR before its own default, so
+            // a developer's target dir would receive the mock build's stub binary.
+            .env("CARGO_TARGET_DIR", self.root.join("target"))
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_TERMINAL_PROMPT", "0");
@@ -277,6 +280,10 @@ esac
     assert!(
         !output.status.success(),
         "test exit 137 should fail the lifecycle: {stderr}"
+    );
+    assert!(
+        sandbox.root.join("target/debug/huntsman-recon").exists(),
+        "the mock build must write its stub inside the sandbox, never an inherited target dir"
     );
     assert!(
         stderr.contains("tests interrupted (exit 137); refusing sync"),

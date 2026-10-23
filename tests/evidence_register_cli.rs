@@ -100,5 +100,46 @@ fn evidence_export_preserves_raw_and_supports_delta() {
     ));
     assert_eq!(parsed["truncated"], false);
 
+    let matrix = run(&home, &["scans", "matrix", &second, "--json"]);
+    assert!(
+        matrix.status.success(),
+        "matrix JSON: {}",
+        String::from_utf8_lossy(&matrix.stderr)
+    );
+    let matrix: serde_json::Value = serde_json::from_slice(&matrix.stdout).expect("matrix JSON");
+    assert_eq!(matrix["format"], "huntsman_sparse_evidence_matrix");
+    assert_eq!(matrix["truncated"], false);
+    assert!(matrix["rows"].is_array());
+    assert!(matrix["columns"].is_array());
+    assert!(matrix["normalization_candidates"].is_array());
+    assert!(matrix["summary"]["root_elements_excluded_from_matrix"].is_number());
+    assert!(matrix["summary"]["matrix_elements"].is_number());
+    assert_eq!(
+        matrix["summary"]["matrix_elements"].as_u64().unwrap_or(0)
+            + matrix["summary"]["root_elements_excluded_from_matrix"]
+                .as_u64()
+                .unwrap_or(0),
+        matrix["summary"]["recorded_elements"].as_u64().unwrap_or(0)
+    );
+    assert!(matrix["uncertainty_register"]["items"].is_array());
+    assert!(
+        matrix["summary"]["recorded_elements"].as_u64().unwrap_or(0)
+            >= matrix["rows"].as_array().expect("rows").len() as u64
+    );
+
+    let matrix_raw = run(&home, &["scans", "matrix", &second, "-f", "raw"]);
+    assert!(
+        matrix_raw.status.success(),
+        "matrix raw: {}",
+        String::from_utf8_lossy(&matrix_raw.stderr)
+    );
+    let output = String::from_utf8(matrix_raw.stdout).expect("raw matrix utf8");
+    assert!(output.starts_with("[HUNTSMAN_MATRIX]"));
+    assert!(output.contains("[END_HUNTSMAN_MATRIX]"));
+    assert!(output.contains("NORMALIZATION_CANDIDATES:"));
+
+    let invalid = run(&home, &["scans", "matrix", &second, "-f", "bad"]);
+    assert!(!invalid.status.success());
+
     fs::remove_dir_all(home).expect("cleanup");
 }

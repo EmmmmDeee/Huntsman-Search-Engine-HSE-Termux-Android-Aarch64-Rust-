@@ -15,7 +15,7 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 pub const GEOCODE_USAGE: &str = "usage: huntsman-recon geocode PLACE-OR-ADDRESS | geocode LAT,LON";
 pub const GEOCODE_HELP: &str = "\
 geocode QUERY
-Geocode one query through OpenStreetMap's Nominatim, keyless. A `lat,lon` point is reverse-geocoded to the address at that spot; any other text is a place name or street address, forward-geocoded to the coordinates and address of each match (at most ten). Each match becomes a coordinates entity for its point and an address entity for its written address, with every field Nominatim returns -- each separate address component included -- kept as evidence. Makes network requests; Nominatim asks for no more than one a second.";
+Geocode one query through OpenStreetMap's Nominatim, keyless. A `lat,lon` point is reverse-geocoded to the address at that spot; any other text is a place name or street address, forward-geocoded to the coordinates and address of each match (at most ten). Each match becomes a coordinates entity for its point and an address entity for its written address, with every field Nominatim returns -- each separate address component included -- kept as evidence. Makes network requests. Nominatim permits one request per second across the application. Data © OpenStreetMap contributors, ODbL 1.0. Configure HUNTSMAN_NOMINATIM_BASE_URL to select an operator-managed HTTPS service.";
 
 /// The longest query a geocode takes, in bytes. A longer string is not an address a gazetteer
 /// would match.
