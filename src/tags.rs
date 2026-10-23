@@ -18,6 +18,11 @@ pub const UNRESOLVED: &str = "unresolved";
 /// domain's (`githuh.com`, `g00gle.com`); Spiderfoot reports it as `SIMILARDOMAIN`. It says the
 /// names are confusable, not who holds either.
 pub const LOOKALIKE: &str = "lookalike";
+/// The address is announced by an Australian consumer internet provider's AS (Telstra, Optus,
+/// TPG, …): the operator's market, not proof that the address is a home connection.
+pub const AU_CONSUMER_ISP: &str = "au-consumer-isp";
+/// The address is announced by `AARNet`, Australia's research and education network.
+pub const AU_ACADEMIC_NETWORK: &str = "au-academic-network";
 pub const WEB_SCRAPED: &str = "web-scraped";
 pub const CT_LOG: &str = "ct-log";
 pub const PTR: &str = "ptr";
