@@ -9,6 +9,8 @@
 use std::fs;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
+#[cfg(any(target_os = "android", target_os = "linux"))]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
@@ -320,6 +322,31 @@ fn append_snapshot(out: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Open a candidate without hanging if the path changed to a FIFO after lstat.
+/// Linux and Android share these O_NONBLOCK/O_NOFOLLOW values. The latter also
+/// refuses a symlink substituted after the initial type check.
+fn open_regular_candidate(path: &Path) -> Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    options.custom_flags(0o404000);
+    let file = options.open(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let metadata = file.metadata().map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(Error::Refused(format!(
+            "verification cannot snapshot non-regular file: {}",
+            path.display()
+        )));
+    }
+    Ok(file)
+}
+
 /// Snapshot a single candidate file after its type has been checked, with bounded I/O.
 fn append_untracked(root: &Path, out: &mut Vec<u8>, path: &[u8]) -> Result<()> {
     append_snapshot(out, b"\0untracked\0")?;
@@ -341,21 +368,7 @@ fn append_untracked(root: &Path, out: &mut Vec<u8>, path: &[u8]) -> Result<()> {
         if metadata.len() > available as u64 {
             return Err(Error::Refused(SNAPSHOT_TOO_LARGE.to_owned()));
         }
-        let file = fs::File::open(&full).map_err(|source| Error::Io {
-            path: full.clone(),
-            source,
-        })?;
-        // Recheck the opened handle in case the path was replaced since lstat.
-        let opened = file.metadata().map_err(|source| Error::Io {
-            path: full.clone(),
-            source,
-        })?;
-        if !opened.is_file() {
-            return Err(Error::Refused(format!(
-                "verification cannot snapshot non-regular file: {}",
-                full.display()
-            )));
-        }
+        let file = open_regular_candidate(&full)?;
         file.take(available as u64 + 1)
             .read_to_end(out)
             .map_err(|source| Error::Io {
@@ -508,6 +521,52 @@ mod tests {
         assert!(
             problem.to_string().contains(SNAPSHOT_TOO_LARGE),
             "{problem}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[test]
+    fn a_fifo_substituted_after_the_type_check_cannot_block_open() {
+        let dir = fixture_repo("fifo-after-stat");
+        let candidate = dir.join("candidate");
+        fs::write(&candidate, b"regular").expect("initial regular file");
+        assert!(
+            fs::symlink_metadata(&candidate)
+                .expect("initial metadata")
+                .is_file()
+        );
+        fs::remove_file(&candidate).expect("replace checked file");
+        let status = Command::new("mkfifo")
+            .arg(&candidate)
+            .status()
+            .expect("mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        let error = open_regular_candidate(&candidate)
+            .expect_err("nonblocking open must reject a substituted FIFO");
+        assert!(error.to_string().contains("non-regular file"), "{error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[test]
+    fn a_symlink_substituted_after_the_type_check_is_not_followed() {
+        use std::os::unix::fs::symlink;
+
+        let dir = fixture_repo("symlink-after-stat");
+        let candidate = dir.join("candidate");
+        fs::write(&candidate, b"regular").expect("initial regular file");
+        assert!(
+            fs::symlink_metadata(&candidate)
+                .expect("initial metadata")
+                .is_file()
+        );
+        fs::remove_file(&candidate).expect("replace checked file");
+        symlink(dir.join("tracked.txt"), &candidate).expect("replace with symlink");
+        assert!(
+            open_regular_candidate(&candidate).is_err(),
+            "post-check symlink must not be followed"
         );
         let _ = fs::remove_dir_all(&dir);
     }
