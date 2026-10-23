@@ -111,7 +111,9 @@ fn edits_become_tagged_revision_urls_with_a_contributions_anchor() {
     let edits: Vec<_> = got
         .entities
         .iter()
-        .filter(|entity| entity.kind == EntityKind::Url && entity.has_tag("wikipedia-edit"))
+        .filter(|entity| {
+            entity.kind == EntityKind::Url && entity.has_tag(crate::tags::WIKIPEDIA_EDIT)
+        })
         .collect();
     assert_eq!(edits.len(), 2, "{:?}", got.entities);
     assert!(
@@ -131,7 +133,7 @@ fn edits_become_tagged_revision_urls_with_a_contributions_anchor() {
             .iter()
             .any(|entity| entity.kind == EntityKind::Url
                 && entity.has_tag("wikipedia")
-                && !entity.has_tag("wikipedia-edit")
+                && !entity.has_tag(crate::tags::WIKIPEDIA_EDIT)
                 && entity.value.contains("Special"))
     );
 }

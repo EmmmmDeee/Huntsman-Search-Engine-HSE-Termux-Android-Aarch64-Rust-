@@ -857,7 +857,7 @@ mod tests {
     fn builder_matches_hand_rolled_entity() {
         let mut hand = Entity::new(EntityKind::Domain, "Example.COM", 0.83, "scan-1");
         hand.tag("archived");
-        hand.tag("web");
+        hand.tag(crate::tags::WEB);
         hand.add_evidence(
             evidence("wayback", "3 snapshots")
                 .with_attr("snapshot_count", "3")
@@ -865,7 +865,7 @@ mod tests {
         );
         let built = Entity::builder(EntityKind::Domain, "Example.COM", 0.83, "scan-1")
             .tag("archived")
-            .tag("web")
+            .tag(crate::tags::WEB)
             .evidence(
                 evidence("wayback", "3 snapshots")
                     .with_attr("snapshot_count", "3")

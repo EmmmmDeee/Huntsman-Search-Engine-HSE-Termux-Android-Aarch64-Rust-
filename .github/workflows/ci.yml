@@ -107,6 +107,9 @@ jobs:
       - name: Measure sequential versus graph scheduling (offline)
         if: matrix.toolchain == '1.99'
         run: cargo run --locked --example graph_exec_bench
+      - name: Check accented names match as ASCII names do (offline)
+        if: matrix.toolchain == '1.99'
+        run: cargo run --locked --example name_match_bench
 
 
   container:

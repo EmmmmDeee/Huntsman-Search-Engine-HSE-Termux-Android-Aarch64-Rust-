@@ -1,3 +1,9 @@
+//! The MITRE ATT&CK Enterprise techniques Huntsman reports coverage against: each technique's
+//! id, name, whether it is a sub-technique, and the tactics it serves, sorted by id.
+//! `attack` reads it for `attack status|coverage|gaps` and the module catalogue's technique
+//! links. The tests below hold the table to ATT&CK's own structure, so a catalogue refresh that
+//! breaks it fails here rather than skewing a coverage figure.
+
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -4109,3 +4115,90 @@ pub const ENTERPRISE: &[Technique] = &[
         tactics: &["execution"],
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeSet, HashMap};
+
+    /// The fourteen Enterprise tactics, by the short names ATT&CK gives them.
+    const TACTICS: [&str; 14] = [
+        "reconnaissance",
+        "resource-development",
+        "initial-access",
+        "execution",
+        "persistence",
+        "privilege-escalation",
+        "defense-evasion",
+        "credential-access",
+        "discovery",
+        "lateral-movement",
+        "collection",
+        "command-and-control",
+        "exfiltration",
+        "impact",
+    ];
+
+    fn well_formed(id: &str) -> bool {
+        let digits =
+            |part: &str, len: usize| part.len() == len && part.bytes().all(|b| b.is_ascii_digit());
+        match id.strip_prefix('T').map(|rest| rest.split_once('.')) {
+            Some(Some((technique, sub))) => digits(technique, 4) && digits(sub, 3),
+            Some(None) => digits(&id[1..], 4),
+            None => false,
+        }
+    }
+
+    #[test]
+    fn every_technique_is_well_formed_unique_and_sorted() {
+        assert!(ENTERPRISE.len() > 600, "{}", ENTERPRISE.len());
+        for technique in ENTERPRISE {
+            assert!(well_formed(technique.id), "{}", technique.id);
+            assert_eq!(
+                technique.is_subtechnique,
+                technique.id.contains('.'),
+                "{}",
+                technique.id
+            );
+            assert!(!technique.name.trim().is_empty(), "{}", technique.id);
+            assert!(!technique.tactics.is_empty(), "{}", technique.id);
+            for tactic in technique.tactics {
+                assert!(TACTICS.contains(tactic), "{}: {tactic}", technique.id);
+            }
+        }
+        // Sorted and unique, so lookups by id are unambiguous.
+        assert!(ENTERPRISE.windows(2).all(|pair| pair[0].id < pair[1].id));
+    }
+
+    /// A sub-technique belongs to a technique in the table and serves only tactics its parent
+    /// serves, as ATT&CK defines them.
+    #[test]
+    fn every_subtechnique_has_its_parent_and_stays_within_its_tactics() {
+        let by_id: HashMap<&str, &Technique> = ENTERPRISE.iter().map(|t| (t.id, t)).collect();
+        for technique in ENTERPRISE.iter().filter(|t| t.is_subtechnique) {
+            let parent_id = technique.id.split('.').next().unwrap_or_default();
+            let parent = by_id
+                .get(parent_id)
+                .unwrap_or_else(|| panic!("{} has no parent {parent_id}", technique.id));
+            assert!(!parent.is_subtechnique, "{parent_id}");
+            let mine: BTreeSet<_> = technique.tactics.iter().collect();
+            let theirs: BTreeSet<_> = parent.tactics.iter().collect();
+            assert!(
+                mine.is_subset(&theirs),
+                "{} serves {mine:?}, {parent_id} {theirs:?}",
+                technique.id
+            );
+        }
+    }
+
+    /// Every tactic has techniques, so no tactic's coverage is a division by nothing.
+    #[test]
+    fn every_tactic_has_techniques() {
+        for tactic in TACTICS {
+            assert!(
+                ENTERPRISE.iter().any(|t| t.tactics.contains(&tactic)),
+                "{tactic}"
+            );
+        }
+    }
+}

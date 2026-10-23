@@ -257,7 +257,7 @@ fn gps_entity(entities: &mut Vec<Entity>, gps: Option<&GpsFix>, label: &str, sid
         GPS_CONFIDENCE,
         sid,
         evidence,
-        &[SOURCE, "gps", "geoint"],
+        &[SOURCE, "gps", crate::tags::GEOINT],
     );
 }
 

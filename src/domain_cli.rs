@@ -171,6 +171,7 @@ pub fn run<T: Transport + ?Sized + Sync>(
         unanswered,
     } = found;
     merge_by_uid(&mut entities);
+    tag_lookalikes(&domain, &mut entities);
 
     // A source that answered "nothing known" answered: its zero row is the result.
     let answered = outcomes.iter().any(|o| o.kind.is_accepted());
@@ -182,6 +183,11 @@ pub fn run<T: Transport + ?Sized + Sync>(
             }
             (None, None) => DomainRun::Failed(format!("no source answered for domain {domain}")),
         };
+    }
+    // Offline, so it never turns a lookup no source answered into a result.
+    if let Some(policy) = registry_policy(&domain, &scan_id) {
+        entities.push(policy);
+        merge_by_uid(&mut entities);
     }
 
     let mut text = match lookup_report::render(&entities, &outcomes) {
@@ -199,6 +205,56 @@ pub fn run<T: Transport + ?Sized + Sync>(
         text,
         report: Report { entities, outcomes },
     }
+}
+
+/// Tags each other registered domain the lookup found whose name is one edit or one look-alike
+/// character from the domain's own, as `githuh.com` is to `github.com`. Hosts under the domain
+/// and other names in its own registered domain are never look-alikes. **Pure.**
+fn tag_lookalikes(domain: &str, entities: &mut [Entity]) {
+    let Some(own) = crate::domains::registrable_domain(domain) else {
+        return;
+    };
+    let label = |registered: &str| registered.split('.').next().unwrap_or("").to_owned();
+    let own_label = label(&own);
+    for entity in entities
+        .iter_mut()
+        .filter(|entity| entity.kind == EntityKind::Domain)
+    {
+        let Some(registered) = crate::domains::registrable_domain(&entity.value) else {
+            continue;
+        };
+        if registered != own && crate::validation::is_lookalike(&label(&registered), &own_label) {
+            entity.tag(tags::LOOKALIKE);
+        }
+    }
+}
+
+/// Evidence source for what a namespace's registry requires of whoever holds a name in it.
+const REGISTRY_POLICY_SOURCE: &str = "registry_policy";
+
+/// The domain as its registry's eligibility rules describe it: `.gov.au` names are held only by
+/// government bodies (and `nsw.gov.au` by New South Wales's), `.id.au` only by natural persons,
+/// `.edu.vn` only by education institutions. It is what the namespace requires, not who holds
+/// this name, so it says nothing about a person. **Pure.**
+fn registry_policy(domain: &str, scan_id: &str) -> Option<Entity> {
+    let (class, rule) = crate::address_au::au_domain_registrant(domain)
+        .or_else(|| crate::domains::vn_domain_registrant(domain))?;
+    let state = crate::address_au::au_gov_domain_state(domain)
+        .or_else(|| crate::address_au::au_edu_domain_state(domain));
+    let summary = match state {
+        Some(state) => format!("Registry policy: held by {rule}, of {state}"),
+        None => format!("Registry policy: held by {rule}"),
+    };
+    let evidence = Evidence::new(
+        EvidenceProvenance::for_scan(REGISTRY_POLICY_SOURCE, scan_id),
+        summary,
+    )
+    .with_attr("registrant_class", class)
+    .with_optional_attrs([("registrant_state", state)]);
+    let mut entity = Entity::new(EntityKind::Domain, domain, DOMAIN_CONFIDENCE, scan_id);
+    entity.add_evidence(evidence);
+    entity.tag(format!("registrant:{class}"));
+    Some(entity)
 }
 
 /// What the domain's own resolution told the legs after it.
@@ -593,8 +649,24 @@ impl<'a> ZoneFindings<'a> {
                     .with_attr("record_type", label);
                 self.apex.add_evidence(evidence);
             }
-            RecordType::Soa | RecordType::Ptr => {}
+            RecordType::Soa => {
+                let Some(soa) = dns::parse_soa(record) else {
+                    return;
+                };
+                self.listed.push(("soa_serial", soa.serial.to_string()));
+                let evidence = self.named(record_type, format!("Primary name server of {domain}"));
+                self.host("soa_primary_ns", &soa.primary_ns, evidence);
+                self.responsible(&soa.responsible);
+            }
+            RecordType::Ptr => {}
         }
+    }
+
+    /// The SOA's responsible mailbox, listed as published and kept as an entity only when it is
+    /// the domain's own (see [`Self::own_mailbox`]).
+    fn responsible(&mut self, mailbox: &str) {
+        let summary = format!("Mailbox responsible for the {} zone", self.domain);
+        self.mailbox_record("SOA", "soa_mailbox", summary, mailbox);
     }
 
     /// The SPF posture as tags, and each domain the policy includes or redirects to.
@@ -646,15 +718,41 @@ impl<'a> ZoneFindings<'a> {
     }
 
     fn mailbox(&mut self, record_type: &str, reports: &str, mailbox: &str) {
-        let Some(email) = canonical_email(mailbox) else {
-            return;
-        };
         let summary = format!(
             "Mailbox that receives {reports} reports for {}",
             self.domain
         );
-        let evidence = self.named(record_type, summary);
-        self.push(EntityKind::Email, &email, evidence, &[]);
+        self.mailbox_record(record_type, "report_mailbox", summary, mailbox);
+    }
+
+    /// A mailbox a record names, listed under `attr` as published, and an e-mail entity only
+    /// when it is the domain's own.
+    fn mailbox_record(
+        &mut self,
+        record_type: &str,
+        attr: &'static str,
+        summary: String,
+        raw: &str,
+    ) {
+        let Some(email) = canonical_email(raw) else {
+            return;
+        };
+        self.listed.push((attr, email.clone()));
+        if self.own_mailbox(&email) {
+            let evidence = self.named(record_type, summary);
+            self.push(EntityKind::Email, &email, evidence, &[]);
+        }
+    }
+
+    /// Whether a mailbox sits in the looked-up domain or below it. A DNS host's `hostmaster@`
+    /// or a DMARC vendor's report mailbox is named by every zone that uses the service, and as
+    /// an entity it would bridge each of those lookups to the others; a domain above is no
+    /// safer, as it can be a shared suffix such as `github.io`.
+    fn own_mailbox(&self, email: &str) -> bool {
+        let mailbox_domain = email.rsplit_once('@').map_or("", |(_, domain)| domain);
+        let domain = self.domain.to_ascii_lowercase();
+        canonical_domain(mailbox_domain).is_some()
+            && (mailbox_domain == domain || mailbox_domain.ends_with(&format!(".{domain}")))
     }
 
     fn finish(self) -> Vec<Entity> {
@@ -980,6 +1078,11 @@ mod tests {
                 (domain, "NS", "ns1.dns-host.net."),
                 (
                     domain,
+                    "SOA",
+                    "ns1.dns-host.net. hostmaster.example.com. 2026102301 7200 3600 1209600 300",
+                ),
+                (
+                    domain,
                     "TXT",
                     r#""v=spf1 include:_spf.mail-host.net include:spf.mail-host.net -all""#,
                 ),
@@ -987,7 +1090,7 @@ mod tests {
                 (
                     &dmarc,
                     "TXT",
-                    r#""v=DMARC1; p=reject; rua=mailto:dmarc@reports.example.net""#,
+                    r#""v=DMARC1; p=reject; rua=mailto:dmarc@reports.example.net,mailto:dmarc@example.com""#,
                 ),
                 (
                     &tls,
@@ -1019,6 +1122,7 @@ mod tests {
                 "A" => 1,
                 "NS" => 2,
                 "MX" => 15,
+                "SOA" => 6,
                 "TXT" => 16,
                 "AAAA" => 28,
                 _ => 0,
@@ -1103,8 +1207,8 @@ mod tests {
         let zone = Zone::published("example.com");
         let report = printed(&zone, "example.com");
 
-        // Seven queries for the domain's own records, then A and AAAA for its mail exchanger.
-        assert_eq!(zone.requests("https://cloudflare-dns.com/dns-query?"), 9);
+        // Eight queries for the domain's own records, then A and AAAA for its mail exchanger.
+        assert_eq!(zone.requests("https://cloudflare-dns.com/dns-query?"), 10);
         for ip in [IPV4, IPV6] {
             let address = entity(&report, &EntityKind::IpAddress, ip).expect("address entity");
             let evidence = &address.evidence[0];
@@ -1132,9 +1236,17 @@ mod tests {
         }
         // A service name is listed as published, but it is not a domain pivot.
         assert!(entity(&report, &EntityKind::Domain, "_spf.mail-host.net").is_none());
-        for mailbox in ["dmarc@reports.example.net", "tlsrpt@reports.example.net"] {
+        // The zone's own mailboxes are entities; a report vendor's, named by every zone that
+        // uses the vendor, is kept as published but never becomes one.
+        for mailbox in ["dmarc@example.com", "hostmaster@example.com"] {
             assert!(
                 entity(&report, &EntityKind::Email, mailbox).is_some(),
+                "{mailbox}"
+            );
+        }
+        for mailbox in ["dmarc@reports.example.net", "tlsrpt@reports.example.net"] {
+            assert!(
+                entity(&report, &EntityKind::Email, mailbox).is_none(),
                 "{mailbox}"
             );
         }
@@ -1157,6 +1269,22 @@ mod tests {
             ["ns1.dns-host.net"]
         );
         assert_eq!(
+            records.attr_values("soa_primary_ns").collect::<Vec<_>>(),
+            ["ns1.dns-host.net"]
+        );
+        assert_eq!(
+            records.attr_values("soa_serial").collect::<Vec<_>>(),
+            ["2026102301"]
+        );
+        assert_eq!(
+            records.attr_values("report_mailbox").collect::<Vec<_>>(),
+            [
+                "dmarc@reports.example.net",
+                "dmarc@example.com",
+                "tlsrpt@reports.example.net"
+            ]
+        );
+        assert_eq!(
             records.attr_values("spf_include").collect::<Vec<_>>(),
             ["_spf.mail-host.net", "spf.mail-host.net"]
         );
@@ -1170,7 +1298,63 @@ mod tests {
 
         let row = dns_row(&report);
         assert_eq!(row.kind, SourceOutcomeKind::Success);
-        assert_eq!(row.found, Some(8));
+        assert_eq!(row.found, Some(9));
+    }
+
+    /// A DNS host's `hostmaster@` mailbox is on every zone it serves, so it is kept as published
+    /// but never becomes an e-mail entity that would tie those zones together; a mailbox in the
+    /// domain or below it does, and one above it does not (it may be a shared suffix's).
+    #[test]
+    fn an_soa_mailbox_is_an_entity_only_inside_the_looked_up_domain() {
+        let soa = |domain: &str, mailbox: &str| {
+            let zone = Zone::new(&[(
+                domain,
+                "SOA",
+                &format!("ns1.dns-host.net. {mailbox} 7 7200 3600 1209600 300"),
+            )]);
+            printed(&zone, domain)
+        };
+        let report = soa("example.com", "hostmaster.dns-host.net.");
+        assert!(entity(&report, &EntityKind::Email, "hostmaster@dns-host.net").is_none());
+        let apex = entity(&report, &EntityKind::Domain, "example.com").expect("the domain");
+        assert!(apex.evidence.iter().any(|evidence| {
+            evidence
+                .attr_values("soa_mailbox")
+                .eq(["hostmaster@dns-host.net"])
+        }));
+
+        let report = soa("example.com", r"dns\.admin.lists.example.com.");
+        assert!(entity(&report, &EntityKind::Email, "dns.admin@lists.example.com").is_some());
+
+        let report = soa("shop.github.io", "hostmaster.github.io.");
+        assert!(entity(&report, &EntityKind::Email, "hostmaster@github.io").is_none());
+
+        let report = soa("example.com", "hostmaster.notexample.com.");
+        assert!(entity(&report, &EntityKind::Email, "hostmaster@notexample.com").is_none());
+    }
+
+    /// A name the lookup finds in another registered domain one edit or one look-alike
+    /// character from the domain's own is tagged; the domain's own hosts and unrelated names
+    /// are not.
+    #[test]
+    fn a_name_one_edit_from_the_domain_is_a_lookalike() {
+        let domain = "github.com";
+        let zone = Zone::new(&[
+            (domain, "A", IPV4),
+            (domain, "NS", "ns1.githuh.com."),
+            (domain, "NS", "ns2.dns-host.net."),
+            (domain, "MX", "10 mx.github.com."),
+        ]);
+        let report = printed(&zone, domain);
+        let tagged = |host: &str| {
+            entity(&report, &EntityKind::Domain, host)
+                .unwrap_or_else(|| panic!("{host}"))
+                .has_tag(tags::LOOKALIKE)
+        };
+        assert!(tagged("ns1.githuh.com"));
+        assert!(!tagged("ns2.dns-host.net"));
+        assert!(!tagged("mx.github.com"));
+        assert!(!tagged("github.com"));
     }
 
     /// `shop`'s own addresses, beside the domain's.
@@ -1427,6 +1611,49 @@ mod tests {
             DomainRun::Printed { text, .. } => panic!("printed: {text}"),
             DomainRun::Failed(message) => panic!("failed: {message}"),
         }
+    }
+
+    /// A name in a namespace with registrant rules carries them, offline, beside what the
+    /// sources found; a name in an open namespace carries none; and the rules never turn a
+    /// lookup no source answered into a result.
+    #[test]
+    fn a_restricted_namespace_carries_its_registrant_rule() {
+        let domain = "health.nsw.gov.au";
+        let report = printed(&Zone::new(&[(domain, "A", IPV4)]), domain);
+        let apex = entity(&report, &EntityKind::Domain, domain).expect("the domain");
+        assert!(apex.has_tag("registrant:government"));
+        let policy = apex
+            .evidence
+            .iter()
+            .find(|evidence| evidence.provenance.source == REGISTRY_POLICY_SOURCE)
+            .expect("the registry's rule");
+        assert!(policy.attr_values("registrant_state").eq(["NSW"]));
+        assert!(
+            policy.summary.contains("government body"),
+            "{}",
+            policy.summary
+        );
+
+        let domain = "example.edu.vn";
+        let report = printed(&Zone::new(&[(domain, "A", IPV4)]), domain);
+        let apex = entity(&report, &EntityKind::Domain, domain).expect("the domain");
+        assert!(apex.has_tag("registrant:education"));
+
+        let report = printed(&Zone::published("example.com"), "example.com");
+        assert!(report.entities.iter().all(|entity| {
+            entity
+                .evidence
+                .iter()
+                .all(|evidence| evidence.provenance.source != REGISTRY_POLICY_SOURCE)
+        }));
+
+        let mut zone = Zone::published("example.gov.au");
+        zone.crtsh = None;
+        zone.resolvers_down = true;
+        assert!(matches!(
+            run(&zone, &Keys::default(), "example.gov.au", 1),
+            DomainRun::Failed(_)
+        ));
     }
 
     /// Every request refused by the egress policy, as for a host that resolves to 0.0.0.0.

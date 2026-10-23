@@ -259,7 +259,7 @@ fn build_director_entities(
             let mut c = Entity::new(EntityKind::Coordinates, &coord_val, CONF_COORDS, scan_id);
             c.tag(SRC);
             c.tag("addr-derived");
-            c.tag("geoint");
+            c.tag(crate::tags::GEOINT);
             c.tag("country:AU");
             c.add_evidence(ev_base.with_attr("registered_office", addr));
             out.push(c);

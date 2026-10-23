@@ -244,7 +244,7 @@ fn derive_entities(email: &str, scan_id: &str) -> Vec<Entity> {
 
     if domain_is_specific(domain) {
         let mut entity = Entity::new(EntityKind::Domain, domain, CONF_DOMAIN, scan_id);
-        entity.tag("derived");
+        entity.tag(crate::tags::DERIVED);
         entity.tag("email-domain");
         entity.add_evidence(
             derived_evidence(scan_id, email, "domain")
@@ -329,7 +329,7 @@ fn derive_usernames(
     };
     for candidate in candidates.into_iter().filter(|value| !value.is_empty()) {
         let mut entity = Entity::new(EntityKind::Username, &candidate, confidence, scan_id);
-        entity.tag("derived");
+        entity.tag(crate::tags::DERIVED);
         entity.add_evidence(
             derived_evidence(scan_id, email, "local_part")
                 .with_attr("candidate", &candidate)
@@ -389,7 +389,7 @@ fn derive_person(
     };
     let name = format!("{} {}", upper_first(parts[0]), upper_first(parts[1]));
     let mut entity = Entity::new(EntityKind::Person, &name, confidence, scan_id);
-    entity.tag("derived");
+    entity.tag(crate::tags::DERIVED);
     entity.tag("email-inferred");
     if is_freemail(domain) {
         entity.tag("freemail-inferred");

@@ -1,10 +1,12 @@
 //! Name-matching benchmark. Run with `cargo run --release --locked --example name_match_bench`.
 //!
 //! Two seeded corpora of directory-style lines are classified with `whole_word_token_match`,
-//! `shares_whole_word_token` and `name_tokens`. The ASCII corpus must give the same checksum
-//! before and after a change to name matching. The mixed corpus has accented names in capitals,
-//! so its checksum may change where case-insensitive matching now finds them. The median time of
-//! each matcher over the runs is printed with the checksum.
+//! `shares_whole_word_token` and `name_tokens`. The corpora are the same lines word for word, one
+//! in ASCII capitals and one in accented capitals (`ÉMILE`, `BJØRN`, `STRAßE`), each searched for
+//! the lower-case form of its own first two words. Matching that folds case the same way for
+//! accented letters as for ASCII gives the two the same checksum, so the run fails when they
+//! differ. The median time of each matcher over the runs is printed with the checksum. CI runs it
+//! beside `graph_exec_bench`.
 
 use std::time::Instant;
 
@@ -95,7 +97,8 @@ fn run(lines: &[String], needle: &str) -> (u128, u128, u128, u64) {
     )
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
+    let mut checksums = Vec::new();
     for (label, words, needle) in [
         ("ascii", &ASCII_WORDS[..], "ada lovelace"),
         ("mixed", &MIXED_WORDS[..], "émile zola"),
@@ -106,5 +109,12 @@ fn main() {
         println!(
             "{label}\tlines={LINES}\tbytes={bytes}\tmatch_ns={whole}\tshares_ns={shares}\ttokens_ns={tokens}\tchecksum={sum}"
         );
+        checksums.push(sum);
+    }
+    if checksums.windows(2).all(|pair| pair[0] == pair[1]) {
+        std::process::ExitCode::SUCCESS
+    } else {
+        eprintln!("accented and ASCII names matched differently: checksums {checksums:?}");
+        std::process::ExitCode::FAILURE
     }
 }
