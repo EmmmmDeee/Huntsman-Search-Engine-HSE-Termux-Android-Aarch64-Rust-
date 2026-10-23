@@ -393,6 +393,35 @@ fn a_missing_rule_directory_adds_nothing() {
 }
 
 #[test]
+fn a_rule_path_that_cannot_be_listed_is_named() {
+    let file = std::env::temp_dir().join(format!("hse-sf-rules-file-{}.yaml", std::process::id()));
+    std::fs::write(&file, "enabled: false\n").unwrap();
+    let (rules, errors) = with_dir(&file);
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(rules.len(), 37);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].rule, file.display().to_string());
+}
+
+#[test]
+fn rule_files_past_the_limit_are_named() {
+    let dir = std::env::temp_dir().join(format!("hse-sf-rules-many-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for index in 0..=MAX_RULE_FILES {
+        std::fs::write(dir.join(format!("off{index:04}.yaml")), "enabled: false\n").unwrap();
+    }
+    let (rules, errors) = with_dir(&dir);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(rules.len(), 37);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].rule, dir.display().to_string());
+    assert!(
+        errors[0].reason.contains("only the first 500"),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn rules_outside_the_contract_are_refused() {
     let base = "id: r\nversion: 1\nmeta:\n  name: n\n  description: d\n  risk: LOW\n";
     let collect = |field: &str, method: &str, value: &str| {
@@ -407,6 +436,10 @@ fn rules_outside_the_contract_are_refused() {
         ),
         (
             collect("type", "exact", "NOT_A_TYPE") + "headline: h\n",
+            "unknown type",
+        ),
+        (
+            collect("type", "exact", "emailaddr") + "headline: h\n",
             "unknown type",
         ),
         (
@@ -441,6 +474,9 @@ fn subnets_read_like_netaddr() {
     assert!(!in_subnet("203.0.113.77", "2001:db8::/32"));
     assert!(!in_subnet("not an ip", "203.0.113.0/24"));
     assert!(!in_subnet("203.0.113.77", "203.0.113.0/33"));
+    // netaddr refuses a slash with no prefix after it.
+    assert!(!in_subnet("203.0.113.7", "203.0.113.7/"));
+    assert!(!in_subnet("2001:db8::1", "2001:db8::1/ "));
 }
 
 #[test]

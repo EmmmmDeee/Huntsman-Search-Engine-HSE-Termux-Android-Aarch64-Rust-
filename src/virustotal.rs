@@ -301,20 +301,21 @@ impl ReadOut {
                 ("last_analysis_stats", Value::Object(stats)) => {
                     for (verdict, count) in stats {
                         if !matches!(verdict.as_str(), "malicious" | "suspicious") {
-                            self.push(verdict.replace('-', "_"), scalar(count));
+                            self.push(verdict.replace('-', "_"), api_leg::scalar(count));
                         }
                     }
                 }
                 ("last_analysis_results", Value::Object(engines)) => self.engines(engines),
                 ("categories", Value::Object(by_engine)) => {
                     for (engine, label) in by_engine {
-                        let label = scalar(label).map(|label| format!("{engine}: {label}"));
+                        let label =
+                            api_leg::scalar(label).map(|label| format!("{engine}: {label}"));
                         self.push("categories_by_engine", label);
                     }
                 }
                 ("popularity_ranks", Value::Object(ranks)) => {
                     for (list, entry) in ranks {
-                        let rank = entry.get("rank").and_then(scalar);
+                        let rank = entry.get("rank").and_then(api_leg::scalar);
                         self.push(
                             "popularity_ranks",
                             rank.map(|rank| format!("{list} {rank}")),
@@ -338,7 +339,7 @@ impl ReadOut {
                     for item in items {
                         let parts: Vec<String> = ["source", "title", "severity", "details"]
                             .iter()
-                            .filter_map(|member| item.get(*member).and_then(scalar))
+                            .filter_map(|member| item.get(*member).and_then(api_leg::scalar))
                             .collect();
                         let line = (!parts.is_empty()).then(|| parts.join(" | "));
                         self.push("crowdsourced_context", line);
@@ -346,18 +347,18 @@ impl ReadOut {
                 }
                 (_, Value::Object(members)) => {
                     for (member, value) in members {
-                        self.push(format!("{name}_{member}"), scalar(value));
+                        self.push(format!("{name}_{member}"), api_leg::scalar(value));
                     }
                 }
                 (_, Value::Array(items)) => {
                     for item in items {
-                        self.push(name.as_str(), scalar(item));
+                        self.push(name.as_str(), api_leg::scalar(item));
                     }
                 }
                 (_, Value::Number(_)) if name.ends_with("_date") => {
-                    self.push(format!("{name}_unix"), scalar(value));
+                    self.push(format!("{name}_unix"), api_leg::scalar(value));
                 }
-                _ => self.push(name.as_str(), scalar(value)),
+                _ => self.push(name.as_str(), api_leg::scalar(value)),
             }
         }
     }
@@ -369,7 +370,7 @@ impl ReadOut {
             if matches!(category, Some("malicious" | "suspicious")) {
                 let said = verdict
                     .get("result")
-                    .and_then(scalar)
+                    .and_then(api_leg::scalar)
                     .or_else(|| category.map(str::to_owned));
                 self.push("flagged_by", said.map(|said| format!("{engine}: {said}")));
             }
@@ -386,9 +387,9 @@ impl ReadOut {
         line.extend(
             RECORD_MEMBERS
                 .iter()
-                .filter_map(|member| record.get(*member).and_then(scalar)),
+                .filter_map(|member| record.get(*member).and_then(api_leg::scalar)),
         );
-        if let Some(ttl) = record.get("ttl").and_then(scalar) {
+        if let Some(ttl) = record.get("ttl").and_then(api_leg::scalar) {
             line.push(format!("ttl {ttl}"));
         }
         self.push("dns_records", Some(line.join(" ")));
@@ -416,7 +417,7 @@ impl ReadOut {
                     parts
                         .iter()
                         .filter_map(|(key, value)| {
-                            scalar(value).map(|value| format!("{key}={value}"))
+                            api_leg::scalar(value).map(|value| format!("{key}={value}"))
                         })
                         .collect::<Vec<_>>()
                         .join(", ")
@@ -428,7 +429,9 @@ impl ReadOut {
         }
         let validity = certificate.get("validity");
         for bound in ["not_before", "not_after"] {
-            let at = validity.and_then(|v| v.get(bound)).and_then(scalar);
+            let at = validity
+                .and_then(|v| v.get(bound))
+                .and_then(api_leg::scalar);
             self.push(format!("certificate_{bound}"), at);
         }
         for (field, name) in [
@@ -439,7 +442,7 @@ impl ReadOut {
         ] {
             self.push(
                 format!("certificate_{name}"),
-                certificate.get(field).and_then(scalar),
+                certificate.get(field).and_then(api_leg::scalar),
             );
         }
         let common_name = certificate
@@ -461,17 +464,6 @@ impl ReadOut {
                 self.host("certificate", name);
             }
         }
-    }
-}
-
-/// A scalar as text: a string cleaned, a number or flag as written, `None` for null, an empty
-/// string or a structure. **Pure.**
-fn scalar(value: &Value) -> Option<String> {
-    match value {
-        Value::String(text) => api_leg::clean(Some(text)),
-        Value::Number(number) => Some(number.to_string()),
-        Value::Bool(flag) => Some(flag.to_string()),
-        Value::Null | Value::Array(_) | Value::Object(_) => None,
     }
 }
 

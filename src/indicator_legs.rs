@@ -2,12 +2,14 @@
 //! findings into entities and outcomes, for the `ip` and `domain` front-ends.
 //!
 //! A finding becomes evidence on the queried indicator itself, with its tags; each pivot becomes
-//! its own entity, but only in canonical form: a pivot address that is not public, or a pivot
-//! domain or email that does not parse, is dropped rather than recorded as provider text. Every
-//! source that runs leaves exactly one outcome: success with its count, the provider's "nothing
-//! known" as a valid zero, or the typed failure.
+//! its own entity, but only in canonical form: a pivot address or AS number that is not public,
+//! or a pivot domain or email that does not parse, is dropped rather than recorded as provider
+//! text. Every source that runs leaves exactly one outcome: success with its count, the
+//! provider's "nothing known" as a valid zero, or the typed failure.
 
-use crate::canonical::{canonical_coordinates, canonical_domain, canonical_email, canonical_ip};
+use crate::canonical::{
+    canonical_asn, canonical_coordinates, canonical_domain, canonical_email, canonical_ip,
+};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::http::Transport;
 use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Source};
@@ -118,11 +120,7 @@ fn pivot_entity(kind: PivotKind, value: &str) -> Option<(EntityKind, String)> {
         }
         PivotKind::Ip => canonical_ip(value).map(|v| (EntityKind::IpAddress, v)),
         PivotKind::Email => canonical_email(value).map(|v| (EntityKind::Email, v)),
-        PivotKind::Asn => {
-            let digits = value.trim().trim_start_matches(['A', 'S', 'a', 's']);
-            let asn: u32 = digits.parse().ok().filter(|n| *n > 0)?;
-            Some((EntityKind::Asn, format!("AS{asn}")))
-        }
+        PivotKind::Asn => canonical_asn(value).map(|v| (EntityKind::Asn, v)),
         PivotKind::Organisation => {
             let name = value.trim();
             (!name.is_empty()).then(|| (EntityKind::Organisation, name.to_owned()))
@@ -298,7 +296,7 @@ mod tests {
         };
         let v4 = ran("1.1.1.1");
         let v6 = ran("2606:4700:4700::1111");
-        for source in [hackertarget::SOURCE, netlas::SOURCE] {
+        for source in [hackertarget::SOURCE, netlas::SOURCE, isc::SOURCE] {
             assert!(v4.iter().any(|m| m == source), "{source} skipped IPv4");
             assert!(!v6.iter().any(|m| m == source), "{source} ran for IPv6");
         }
@@ -354,6 +352,8 @@ mod tests {
             (PivotKind::Domain, "ns1.example.net."),
             (PivotKind::Domain, "not a domain"),
             (PivotKind::Asn, "as13335"),
+            (PivotKind::Asn, "AS64512"),
+            (PivotKind::Asn, "ASN 15169"),
             (PivotKind::Email, "nope"),
             (PivotKind::Ip, "1.1.1.1"),
         ]
@@ -365,8 +365,18 @@ mod tests {
         let mut entities = Vec::new();
         let count = fold(&mut entities, Indicator::Ip("1.1.1.1"), "s", "x", finding);
         let values: Vec<&str> = entities.iter().map(|e| e.raw_value.as_str()).collect();
-        assert_eq!(values, ["1.1.1.1", "8.8.8.8", "ns1.example.net", "AS13335"]);
-        assert_eq!(count, 4);
+        // A private-use AS number is dropped, as a private address is; `ASN 15169` is AS15169.
+        assert_eq!(
+            values,
+            [
+                "1.1.1.1",
+                "8.8.8.8",
+                "ns1.example.net",
+                "AS13335",
+                "AS15169"
+            ]
+        );
+        assert_eq!(count, 5);
         assert!(entities[0].tags.iter().any(|t| t == "malicious"));
     }
 }

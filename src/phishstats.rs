@@ -6,7 +6,9 @@
 //! it: where it redirects, when it was reported, its score, title, host, TLS certificate, HTTP
 //! server, open ports, abuse contact and how often the address and host have been seen.
 //! An address with a reported URL is malicious, as `sfp_phishstats` reports it, and each host the
-//! URLs were served from is a pivot. An address with none is a valid zero.
+//! URLs were served from is a pivot. An address with none is a valid zero. The first page's
+//! failure fails the lookup; a later page's failure keeps the reports read and says where it
+//! stopped.
 
 use serde_json::{Map, Value};
 
@@ -47,7 +49,8 @@ pub fn url(indicator: Indicator<'_>, page: usize) -> Option<String> {
 /// Look `indicator` up.
 ///
 /// # Errors
-/// The [`LegError`] that stopped the lookup.
+/// The first page's failure; a later page's failure keeps the reports read and says why in their
+/// `cut_short` attribute, and fails the lookup only when those held no report.
 pub fn lookup(
     transport: &dyn Transport,
     keys: &Keys,
@@ -59,13 +62,26 @@ pub fn lookup(
         let Some(url) = url(indicator, page) else {
             return Ok(None);
         };
-        let body = match api_leg::get(transport, &API, keys, &url, now_unix)? {
-            Answer::Body(body) => body,
-            Answer::NotFound(_) => return Err(LegError::Unexpected(404)),
+        let read =
+            api_leg::get(transport, &API, keys, &url, now_unix).and_then(|answer| match answer {
+                Answer::Body(body) => decode_page(&body, indicator),
+                Answer::NotFound(_) => Err(LegError::Unexpected(404)),
+            });
+        let page_rows = match read {
+            Ok(page_rows) => page_rows,
+            Err(err) if page == 0 => return Err(err),
+            Err(err) => {
+                return match finding(&rows, true) {
+                    Some(found) => Ok(Some(found.attr(
+                        "cut_short",
+                        format!("page {} could not be read: {err}", page + 1),
+                    ))),
+                    None => Err(err),
+                };
+            }
         };
-        let page = decode_page(&body, indicator)?;
-        let full = page.len() >= PAGE;
-        rows.extend(page);
+        let full = page_rows.len() >= PAGE;
+        rows.extend(page_rows);
         if !full {
             return Ok(finding(&rows, false));
         }
@@ -73,14 +89,9 @@ pub fn lookup(
     Ok(finding(&rows, true))
 }
 
-/// A scalar as text: a string, number or flag as written, anything else `None`. **Pure.**
+/// A field's scalar as text, as [`api_leg::scalar`] reads it; `None` when absent. **Pure.**
 fn text(value: Option<&Value>) -> Option<String> {
-    match value? {
-        Value::String(text) => api_leg::clean(Some(text)),
-        Value::Number(number) => Some(number.to_string()),
-        Value::Bool(flag) => Some(flag.to_string()),
-        _ => None,
-    }
+    value.and_then(api_leg::scalar)
 }
 
 /// One report as `URL (field=value, ...)`, with every field it has but the address asked about,

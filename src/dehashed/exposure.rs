@@ -66,18 +66,7 @@ impl ExposureSearch {
     /// Why this page is not the whole answer, or `None` when it is.
     #[must_use]
     pub fn truncation(&self) -> Option<String> {
-        let more_than_read = self.total.is_some_and(|total| total > self.records as u64);
-        if !(self.has_more || more_than_read) {
-            return None;
-        }
-        let total = self
-            .total
-            .map_or_else(|| "an unreported number".to_owned(), |t| t.to_string());
-        Some(format!(
-            "partial: read the first {} of {total} matching records; absence of a breach here \
-             is not evidence of absence",
-            self.records
-        ))
+        crate::source_outcome::partial_page_note(self.records, self.total, self.has_more)
     }
 }
 
@@ -88,11 +77,7 @@ impl ExposureSearch {
 /// The validation, status, transport or decode failure that [`DehashedClient::search`]
 /// returns. A bad address is [`DehashedError::Query`]; no key is
 /// [`DehashedError::MissingKey`]; neither sends a request.
-pub fn search_email(
-    client: &DehashedClient,
-    email: &str,
-    _now_unix: u64,
-) -> Result<ExposureSearch, DehashedError> {
+pub fn search_email(client: &DehashedClient, email: &str) -> Result<ExposureSearch, DehashedError> {
     let selector = Selector::new(Field::Email, email)?;
     let request = SearchRequest {
         selector,
@@ -110,18 +95,10 @@ pub fn search_email(
     };
     let mut breaches: BTreeMap<String, ExposureBreach> = BTreeMap::new();
     for entry in &outcome.entries {
-        for value in &entry.email {
-            let value = value.trim();
-            if !value.is_empty() {
-                search.emails.insert(value.to_owned());
-            }
-        }
-        for value in &entry.username {
-            let value = value.trim();
-            if !value.is_empty() {
-                search.usernames.insert(value.to_owned());
-            }
-        }
+        search.emails.extend(entry.emails().map(str::to_owned));
+        search
+            .usernames
+            .extend(entry.usernames().map(str::to_owned));
         let dbname = entry
             .database_name
             .as_deref()
@@ -216,7 +193,7 @@ mod tests {
     #[test]
     fn records_become_per_database_exposure_metadata_and_pivots() {
         let (client, recorder) = client_for(SAMPLE);
-        let search = match search_email(&client, "ada@example.com", 7) {
+        let search = match search_email(&client, "ada@example.com") {
             Ok(search) => search,
             Err(error) => panic!("search failed: {error}"),
         };
@@ -256,7 +233,7 @@ mod tests {
     #[test]
     fn no_secret_or_personal_value_survives_the_search() {
         let (client, _recorder) = client_for(SAMPLE);
-        let search = search_email(&client, "ada@example.com", 7).unwrap_or_default();
+        let search = search_email(&client, "ada@example.com").unwrap_or_default();
         let rendered = format!("{search:?}");
         for value in [
             "hunter2-secret",
@@ -275,7 +252,7 @@ mod tests {
             .collect();
         let body = format!(r#"{{"entries": [{}]}}"#, entries.join(","));
         let (client, _recorder) = client_for(&body);
-        let search = search_email(&client, "ada@example.com", 7).unwrap_or_default();
+        let search = search_email(&client, "ada@example.com").unwrap_or_default();
         assert!(search.has_more);
         assert!(
             search
@@ -288,7 +265,7 @@ mod tests {
     #[test]
     fn an_invalid_address_sends_nothing() {
         let (client, recorder) = client_for(SAMPLE);
-        let result = search_email(&client, "not-an-email", 7);
+        let result = search_email(&client, "not-an-email");
         assert!(matches!(result, Err(DehashedError::Query(_))));
         assert!(
             recorder

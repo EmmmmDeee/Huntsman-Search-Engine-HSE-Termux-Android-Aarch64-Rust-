@@ -469,12 +469,7 @@ fn organisation(
     domain: &str,
     scan_id: &str,
 ) -> Entity {
-    let value = |name: &str| {
-        subject
-            .iter()
-            .find(|(key, value)| key == name && !value.is_empty())
-            .map(|(_, value)| value.as_str())
-    };
+    let value = |name: &str| x509::attribute(subject, name);
     let extended = value("jurisdictionC").is_some() || value("businessCategory").is_some();
     let validation = if extended { "extended" } else { "organisation" };
     let name = value("O").unwrap_or_default();

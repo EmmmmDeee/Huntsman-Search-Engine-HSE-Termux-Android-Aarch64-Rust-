@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use crate::canonical::{canonical_domain, canonical_email, canonical_ip};
 use crate::certspotter;
 use crate::crtsh::{self, CrtShError};
-use crate::dns::{self, DomainDns, RecordType, ResolveErrorKind};
+use crate::dns::{self, DomainDns, RESOLVE_SOURCE, RecordType, ResolveErrorKind};
 use crate::dns_filter;
 use crate::dnsbl::{self, Subject};
 use crate::entity::Entity;
@@ -45,8 +45,6 @@ use crate::threat_feeds::{self, Feeds};
 use crate::virustotal;
 
 mod resolve;
-
-pub use resolve::{MAX_RESOLVED_HOSTS, RESOLVE_SOURCE};
 
 pub const DOMAIN_USAGE: &str = "usage: huntsman-recon domain DOMAIN [--save FILE]";
 

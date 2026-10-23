@@ -114,14 +114,9 @@ pub fn lookup(
     }
 }
 
-/// A scalar as text: a string, number or flag as written, anything else `None`. **Pure.**
+/// A field's scalar as text, as [`api_leg::scalar`] reads it; `None` when absent. **Pure.**
 fn text(value: Option<&Value>) -> Option<String> {
-    match value? {
-        Value::String(text) => api_leg::clean(Some(text)),
-        Value::Number(number) => Some(number.to_string()),
-        Value::Bool(flag) => Some(flag.to_string()),
-        _ => None,
-    }
+    value.and_then(api_leg::scalar)
 }
 
 /// The strings of a list field. **Pure.**

@@ -2,11 +2,10 @@
 
 use std::collections::BTreeSet;
 
-use serde::{Deserialize, Serialize};
-
 use crate::au_id::{self, Identifier};
 use crate::canonical::{
-    canonical_domain, canonical_email, canonical_handle, canonical_phone, canonical_url,
+    canonical_bitcoin_address, canonical_domain, canonical_email, canonical_handle, canonical_mac,
+    canonical_phone, canonical_url,
 };
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
 
@@ -34,7 +33,7 @@ const CONNECTOR_WORDS: &[&str] = &[
     "with",
 ];
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Classified {
     pub kind: EntityKind,
     pub value: String,
@@ -69,10 +68,14 @@ pub fn classify(raw: &str) -> Classified {
     if parse_ipv4(value) {
         return classified(EntityKind::IpAddress, value, 0.92, "parsed");
     }
+    // Stored compressed and lower-case, the form `canonical_ip` emits.
+    if let Ok(v6) = value.parse::<std::net::Ipv6Addr>() {
+        return classified(EntityKind::IpAddress, &v6.to_string(), 0.92, "parsed");
+    }
     if let Some(block) = crate::netblock::Netblock::parse(value) {
         return classified(EntityKind::Netblock, &block.to_string(), 0.90, "cidr");
     }
-    if let Some(mac) = parse_mac_address(value) {
+    if let Some(mac) = canonical_mac(value) {
         return classified(EntityKind::MacAddress, &mac, 0.90, "six-octet");
     }
     if let Some(asn) = parse_asn(value) {
@@ -93,12 +96,14 @@ pub fn classify(raw: &str) -> Classified {
     if let Some(phone) = canonical_phone(value) {
         return classified(EntityKind::Phone, &phone, 0.80, "dialable-shape");
     }
-    if au_id::classify(value).is_ok() {
-        return classified(EntityKind::AbnAcn, value, 0.95, "checksum");
+    if let Some(bare) = abn_acn(value) {
+        return classified(EntityKind::AbnAcn, &bare, 0.95, "checksum");
     }
     if value.starts_with('@') {
-        let handle = canonical_handle(value).unwrap_or_else(|| value.trim().to_owned());
-        return classified(EntityKind::Username, &handle, 0.40, "handle");
+        return match canonical_handle(value) {
+            Some(handle) => classified(EntityKind::Username, &handle, 0.40, "handle"),
+            None => classified(EntityKind::Other, value, 0.20, "residual"),
+        };
     }
     // A single word is never a company, a street address or a person name.
     if value.split_whitespace().nth(1).is_none() {
@@ -124,16 +129,13 @@ pub fn classify(raw: &str) -> Classified {
     classified(EntityKind::Other, value, 0.20, "residual")
 }
 
-/// Recognises a six-octet MAC address written with `:` or `-` separators, returned in
-/// lowercase colon form so one device seen twice is one entity.
-fn parse_mac_address(value: &str) -> Option<String> {
-    let separator = if value.contains(':') { ':' } else { '-' };
-    let octets: Vec<&str> = value.split(separator).collect();
-    let well_formed = octets.len() == 6
-        && octets
-            .iter()
-            .all(|octet| octet.len() == 2 && octet.bytes().all(|b| b.is_ascii_hexdigit()));
-    well_formed.then(|| octets.join(":").to_ascii_lowercase())
+/// The bare digits of a checksum-valid ABN or ACN. A BSB has no checksum, so six digits
+/// alone are not one.
+fn abn_acn(value: &str) -> Option<String> {
+    match au_id::classify(value) {
+        Ok(Identifier::Abn { bare, .. } | Identifier::Acn { bare }) => Some(bare),
+        _ => None,
+    }
 }
 
 /// Recognises an autonomous-system number written `AS` or `ASN` followed by digits, such
@@ -146,7 +148,12 @@ fn parse_asn(value: &str) -> Option<String> {
         .or_else(|| upper.strip_prefix("AS"))?;
     let well_formed =
         (1..=10).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit());
-    well_formed.then(|| format!("AS{digits}"))
+    if !well_formed {
+        return None;
+    }
+    // AS numbers are 32-bit. Parsing also drops leading zeros, so AS013335 is AS13335.
+    let number: u32 = digits.parse().ok()?;
+    Some(format!("AS{number}"))
 }
 
 /// Recognises cryptocurrency addresses by their distinctive prefixes and character sets:
@@ -159,24 +166,8 @@ fn parse_crypto_address(value: &str) -> Option<String> {
             return Some(format!("0x{}", hex.to_ascii_lowercase()));
         }
     }
-    if trimmed.starts_with("bc1") && (25..=90).contains(&trimmed.len()) {
-        let tail = &trimmed[3..];
-        if tail
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() && b != b'b' && b != b'i' && b != b'o')
-        {
-            return Some(trimmed.to_ascii_lowercase());
-        }
-    }
-    if (trimmed.starts_with('1') || trimmed.starts_with('3'))
-        && (25..=34).contains(&trimmed.len())
-        && trimmed.bytes().all(|b| b.is_ascii_alphanumeric())
-        && !trimmed.contains('0')
-        && !trimmed.contains('O')
-        && !trimmed.contains('I')
-        && !trimmed.contains('l')
-    {
-        return Some(trimmed.to_owned());
+    if let Some(bitcoin) = canonical_bitcoin_address(trimmed) {
+        return Some(bitcoin);
     }
     if trimmed.starts_with('4')
         && trimmed.len() == 95
@@ -289,7 +280,7 @@ fn tokenize(text: &str) -> Vec<&str> {
             token.trim_matches(|c: char| {
                 matches!(
                     c,
-                    '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | '!'
+                    '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | ';' | '!'
                 )
             })
         })
@@ -342,13 +333,12 @@ fn numeric_span(tokens: &[&str]) -> Option<(Classified, usize)> {
                 width,
             ));
         }
-        match au_id::classify(&joined) {
-            Ok(Identifier::Abn { bare, .. } | Identifier::Acn { bare }) => Some((
+        abn_acn(&joined).map(|bare| {
+            (
                 classified(EntityKind::AbnAcn, &bare, 0.95, "checksum"),
                 width,
-            )),
-            _ => None,
-        }
+            )
+        })
     })
 }
 
@@ -576,6 +566,57 @@ mod tests {
     }
 
     #[test]
+    fn a_bsb_shape_is_not_an_abn_and_an_abn_is_stored_bare() {
+        // A BSB has no checksum, so any six digits would pass as one.
+        for raw in ["123456", "062-000", "062 000"] {
+            assert_eq!(classify(raw).kind, EntityKind::Other, "{raw}");
+        }
+        assert!(extract("order 123456 shipped").is_empty());
+        let abn = classify("51 824 753 556");
+        assert_eq!(abn.kind, EntityKind::AbnAcn);
+        assert_eq!(abn.value, "51824753556");
+    }
+
+    #[test]
+    fn an_ipv6_address_is_an_ip_address_in_compressed_form() {
+        for raw in [
+            "2606:4700:4700::1111",
+            "2606:4700:4700:0000:0000:0000:0000:1111",
+        ] {
+            let found = classify(raw);
+            assert_eq!(found.kind, EntityKind::IpAddress, "{raw}");
+            assert_eq!(found.value, "2606:4700:4700::1111", "{raw}");
+            assert_eq!(found.signal, "parsed", "{raw}");
+        }
+        assert_eq!(classify("2001:DB8::A").value, "2001:db8::a");
+        assert_eq!(classify("00:1A:2B:3C:4D:5E").kind, EntityKind::MacAddress);
+        let found = extract("resolver 2606:4700:4700::1111 answered");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].kind, EntityKind::IpAddress);
+        assert_eq!(found[0].value, "2606:4700:4700::1111");
+    }
+
+    #[test]
+    fn extraction_reads_addresses_inside_angle_brackets() {
+        let mail = extract("From: Ada Lovelace <ada@example.com>");
+        assert_eq!(mail.len(), 1, "{mail:?}");
+        assert_eq!(mail[0].kind, EntityKind::Email);
+        assert_eq!(mail[0].value, "ada@example.com");
+        let link = extract("see <https://example.com>");
+        assert_eq!(link.len(), 1, "{link:?}");
+        assert_eq!(link[0].kind, EntityKind::Url);
+    }
+
+    #[test]
+    fn an_at_sign_value_that_is_not_a_handle_is_residual() {
+        for raw in ["@", "@Ada Lovelace", "@josé"] {
+            let found = classify(raw);
+            assert_eq!(found.kind, EntityKind::Other, "{raw}");
+            assert_eq!(found.signal, "residual", "{raw}");
+        }
+    }
+
+    #[test]
     fn mixed_identifiers_and_address_each_yield_one_entity() {
         let found = extract("+61 412 345 678 and 51 824 753 556 at 12 Queen Street");
         let kinds: Vec<_> = found.iter().map(|item| item.kind.clone()).collect();
@@ -738,6 +779,23 @@ mod tests {
     }
 
     #[test]
+    fn asn_numbers_drop_leading_zeros_and_stay_within_32_bits() {
+        for (raw, value) in [("AS013335", "AS13335"), ("AS4294967295", "AS4294967295")] {
+            let found = classify(raw);
+            assert_eq!(found.kind, EntityKind::Asn, "{raw}");
+            assert_eq!(found.value, value, "{raw}");
+        }
+        assert_ne!(classify("AS4294967296").kind, EntityKind::Asn);
+    }
+
+    #[test]
+    fn a_mac_address_with_mixed_separators_is_one_mac_address() {
+        let found = classify("00:1A-2B:3C-4D:5E");
+        assert_eq!(found.kind, EntityKind::MacAddress);
+        assert_eq!(found.value, "00:1a:2b:3c:4d:5e");
+    }
+
+    #[test]
     fn a_cidr_block_is_a_netblock_written_as_its_first_address() {
         for (raw, value) in [
             ("192.0.2.77/24", "192.0.2.0/24"),
@@ -769,6 +827,18 @@ mod tests {
     fn bitcoin_bech32_addresses_are_detected() {
         let found = classify("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
         assert_eq!(found.kind, EntityKind::CryptoAddress);
+    }
+
+    #[test]
+    fn bitcoin_bech32_follows_the_canonical_case_rule() {
+        let upper = classify("BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4");
+        assert_eq!(upper.kind, EntityKind::CryptoAddress);
+        assert_eq!(upper.value, "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+        // b, i and o are outside the bech32 alphabet in either case.
+        for letter in ['B', 'I', 'O'] {
+            let raw = format!("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t{letter}");
+            assert_ne!(classify(&raw).kind, EntityKind::CryptoAddress, "{raw}");
+        }
     }
 
     #[test]

@@ -98,7 +98,7 @@ fn an_as_record_keeps_its_range_name_and_contacts() {
         ("https://data.iana.org/rdap/asn.json", 200, ASN_BOOTSTRAP),
         ("https://specific.test/autnum/13335", 200, CLOUDFLARE_AS),
     ]);
-    let record = registered(lookup_asn(&registry, 13335));
+    let record = registered(lookup_asn(&registry, 13335, 1));
     assert_eq!(record.handle.as_deref(), Some("AS13335"));
     assert_eq!(record.name.as_deref(), Some("CLOUDFLARENET"));
     assert_eq!(record.autnums, Some((13335, 13335)));
@@ -118,7 +118,7 @@ fn an_as_record_keeps_its_range_name_and_contacts() {
 
     let unserved = Registry::new(&[("https://data.iana.org/rdap/asn.json", 200, ASN_BOOTSTRAP)]);
     assert!(matches!(
-        lookup_asn(&unserved, 1877),
+        lookup_asn(&unserved, 1877, 1),
         Ok(Answer::NoService(why)) if why == "the IANA bootstrap names no RDAP service for AS1877"
     ));
     // A registry that writes the range as strings is read the same.
@@ -137,7 +137,7 @@ fn a_domain_record_keeps_everything_it_publishes() {
             GITHUB,
         ),
     ]);
-    let record = registered(lookup_domain(&registry, "GitHub.com."));
+    let record = registered(lookup_domain(&registry, "GitHub.com.", 1));
     assert_eq!(
         registry.urls(),
         [
@@ -177,7 +177,7 @@ fn a_network_record_keeps_its_range_blocks_and_contacts() {
         ("https://data.iana.org/rdap/ipv4.json", 200, IPV4_BOOTSTRAP),
         ("https://specific.test/ip/1.1.1.1", 200, APNIC),
     ]);
-    let record = registered(lookup_ip(&registry, IpAddr::from([1, 1, 1, 1])));
+    let record = registered(lookup_ip(&registry, IpAddr::from([1, 1, 1, 1]), 1));
     assert_eq!(record.name.as_deref(), Some("APNIC-LABS"));
     assert_eq!(record.cidrs, ["1.1.1.0/24"]);
     assert_eq!(record.start_address.as_deref(), Some("1.1.1.0"));
@@ -206,9 +206,10 @@ fn not_found_no_service_and_failures_are_told_apart() {
     let answer = lookup_domain(
         &Registry::new(&[boot, ("https://rdap.verisign.com/", 404, "{}")]),
         "no-such-name-zz.com",
+        1,
     );
     assert_eq!(answer, Ok(Answer::NotFound));
-    let answer = lookup_domain(&Registry::new(&[boot]), "example.org");
+    let answer = lookup_domain(&Registry::new(&[boot]), "example.org", 1);
     assert_eq!(
         answer,
         Ok(Answer::NoService(
@@ -225,6 +226,19 @@ fn not_found_no_service_and_failures_are_told_apart() {
             vec![boot, ("https://rdap.verisign.com/", 429, "{}")],
             SourceOutcomeKind::RateLimited,
         ),
+        // A status is typed as every other source types it.
+        (
+            vec![boot, ("https://rdap.verisign.com/", 401, "{}")],
+            SourceOutcomeKind::AuthRequired,
+        ),
+        (
+            vec![boot, ("https://rdap.verisign.com/", 408, "{}")],
+            SourceOutcomeKind::TtfbTimeout,
+        ),
+        (
+            vec![boot, ("https://rdap.verisign.com/", 600, "{}")],
+            SourceOutcomeKind::ProtocolDrift,
+        ),
         (
             vec![boot, ("https://rdap.verisign.com/", 200, "[1]")],
             SourceOutcomeKind::SchemaDrift,
@@ -236,11 +250,83 @@ fn not_found_no_service_and_failures_are_told_apart() {
         (vec![boot], SourceOutcomeKind::ConnectFailure),
     ];
     for (routes, want) in cases {
-        match lookup_domain(&Registry::new(&routes), "github.com") {
+        match lookup_domain(&Registry::new(&routes), "github.com", 1) {
             Err(failure) => assert_eq!(failure.kind, want, "{failure:?}"),
             Ok(answer) => panic!("{want:?} accepted: {answer:?}"),
         }
     }
+}
+
+fn reply(status: u16, headers: &[(&str, &str)], body: &str) -> Response {
+    Response {
+        status,
+        headers: headers
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect(),
+        body: body.as_bytes().to_vec(),
+        truncated: false,
+    }
+}
+
+/// A regional registry that refers an address to the one holding it: the record names the
+/// registry that answered, not the one that redirected.
+#[test]
+fn a_referred_record_names_the_registry_that_answered() {
+    let registry = crate::test_support::ScriptedTransport::new(vec![
+        Ok(reply(200, &[], IPV4_BOOTSTRAP)),
+        Ok(reply(
+            301,
+            &[("Location", "https://rdap.db.ripe.net/ip/1.2.3.4")],
+            "",
+        )),
+        Ok(reply(200, &[], APNIC)),
+    ]);
+    let record = registered(lookup_ip(&registry, IpAddr::from([1, 2, 3, 4]), 1));
+    let asked: Vec<String> = registry
+        .seen
+        .borrow()
+        .iter()
+        .map(|request| request.url.clone())
+        .collect();
+    assert_eq!(
+        asked,
+        [
+            "https://data.iana.org/rdap/ipv4.json",
+            "https://rdap.apnic.net/ip/1.2.3.4",
+            "https://rdap.db.ripe.net/ip/1.2.3.4"
+        ]
+    );
+    assert_eq!(record.url, "https://rdap.db.ripe.net/ip/1.2.3.4");
+    assert_eq!(record.raw, APNIC);
+}
+
+/// A registry's `Retry-After` on a 429 or 503 reaches the outcome row; an HTTP-date is counted
+/// from the scan's clock.
+#[test]
+fn a_rate_limited_registry_keeps_its_retry_after() {
+    let limited = |retry_after: &str, now_unix: u64| {
+        let registry = crate::test_support::ScriptedTransport::new(vec![
+            Ok(reply(200, &[], DNS_BOOTSTRAP)),
+            Ok(reply(429, &[("Retry-After", retry_after)], "{}")),
+        ]);
+        match lookup_domain(&registry, "github.com", now_unix) {
+            Err(failure) => failure,
+            Ok(answer) => panic!("a 429 accepted: {answer:?}"),
+        }
+    };
+    let failure = limited("120", 1);
+    assert_eq!(failure.kind, SourceOutcomeKind::RateLimited);
+    assert_eq!(failure.retry_after_secs, Some(120));
+    assert_eq!(failure.outcome(1).retry_after_secs, Some(120));
+
+    // Ninety seconds before Fri, 23 Oct 2026 12:00:00 GMT.
+    let failure = limited("Fri, 23 Oct 2026 12:00:00 GMT", 1_792_756_710);
+    assert_eq!(failure.outcome(1_792_756_710).retry_after_secs, Some(90));
+
+    // A failure with no answer to read has no delay.
+    let failure = lookup_domain(&Registry::new(&[]), "github.com", 1).expect_err("no route");
+    assert_eq!(failure.outcome(1).retry_after_secs, None);
 }
 
 #[test]

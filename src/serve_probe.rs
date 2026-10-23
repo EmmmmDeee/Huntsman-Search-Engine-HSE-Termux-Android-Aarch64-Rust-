@@ -17,8 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::base64;
-use crate::sha256::sha256;
+use crate::web_server::{hash_source, inline_block};
 
 /// The analysis the probe asks for: two fixture seeds, percent-encoded, one per line.
 pub const ANALYZE_PROBE_PATH: &str = "/api/analyze?seeds=alice%40example.com%0Aexample.com";
@@ -183,7 +182,7 @@ fn page_problems(page: &Response) -> Vec<String> {
     if script.is_empty() {
         problems.push("/ has no inline script".to_owned());
     } else {
-        let hash = format!("'sha256-{}'", base64::standard(&sha256(script.as_bytes())));
+        let hash = format!("'{}'", hash_source(script));
         let listed = page
             .header("content-security-policy")
             .and_then(|policy| directive(policy, "script-src"))
@@ -225,16 +224,6 @@ fn directive<'a>(policy: &'a str, name: &str) -> Option<&'a str> {
         let (directive, sources) = part.split_once(char::is_whitespace).unwrap_or((part, ""));
         directive.eq_ignore_ascii_case(name).then_some(sources)
     })
-}
-
-/// The text between `<tag>` and `</tag>`: what a browser hashes for a CSP hash source.
-fn inline_block<'a>(page: &'a str, tag: &str) -> &'a str {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    match (page.find(&open), page.find(&close)) {
-        (Some(start), Some(end)) if start + open.len() <= end => &page[start + open.len()..end],
-        _ => "",
-    }
 }
 
 fn get(
@@ -283,6 +272,8 @@ fn parse_response(raw: &[u8]) -> Option<Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::base64;
+    use crate::sha256::sha256;
 
     fn response(status: u16, headers: &[(&str, &str)], body: &str) -> Response {
         Response {
