@@ -70,7 +70,7 @@ fn normalised_cost_penalty(cost: Option<f64>) -> f64 {
             (cost / (cost + COST_SOFTNESS)).clamp(0.0, 1.0)
         }
         // An unbounded stated price cannot become a free request.
-        Some(cost) if cost == f64::INFINITY => 1.0,
+        Some(cost) if cost.is_infinite() && cost.is_sign_positive() => 1.0,
         // Unknown or malformed prices are uncertain, not free.
         _ => UNKNOWN_COST_PENALTY,
     }
