@@ -74,17 +74,7 @@ fn scratch(tag: &str) -> PathBuf {
 /// Whether every command the harness needs is on PATH. CI must have them all.
 fn harness_tools_present() -> bool {
     let present = [
-        "bash",
-        "timeout",
-        "curl",
-        "date",
-        "grep",
-        "chmod",
-        "mktemp",
-        "rm",
-        "tee",
-        "tail",
-        "sleep",
+        "bash", "timeout", "curl", "date", "grep", "chmod", "mktemp", "rm", "tee", "tail", "sleep",
         "uname",
     ]
     .iter()
@@ -186,13 +176,19 @@ fn a_symlinked_diagnostic_report_is_refused_without_truncating_its_target() {
         .output()
         .expect("the harness can be executed");
 
-    assert!(!out.status.success(), "a symlink destination must be refused");
+    assert!(
+        !out.status.success(),
+        "a symlink destination must be refused"
+    );
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("refusing non-regular diagnostic output"),
         "unexpected refusal: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(fs::read(&target).unwrap(), b"private original bytes".to_vec());
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        b"private original bytes".to_vec()
+    );
     let _ = fs::remove_dir_all(&home);
 }
 
