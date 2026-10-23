@@ -18,8 +18,8 @@ pub use builders::{
     is_generic_handle,
 };
 pub use graph::{
-    PairPathways, PathwayAssessment, PathwayPrecision, assess_disjoint_pathways, connection_brokers,
-    disjoint_pathways, pairwise_disjoint_pathways, resolve_identity_clusters,
+    PairPathways, PathwayAssessment, PathwayPrecision, assess_disjoint_pathways,
+    connection_brokers, disjoint_pathways, pairwise_disjoint_pathways, resolve_identity_clusters,
 };
 pub use social_extract::derive_profile_links;
 pub use types::{Basis, Relation, RelationKind, domain_key, is_identity_kind};
