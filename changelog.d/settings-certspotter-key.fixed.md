@@ -12,3 +12,6 @@
   key, and `docs/PROVIDER_CREDENTIALS.md` names it. `doctor`'s keys check and `diagnostics`'
   `providers_total` count it too, so a keys file holding only an OpenCelliD key now reads as one
   configured provider.
+- A module whose key takes two slots, WiGLE's user and token, reads as set on the Settings page
+  only when both hold a key, as `credential-status` reads it; one slot alone used to read as set.
+  HIBP's slot still reads as set through `HIBP_API_KEY`.

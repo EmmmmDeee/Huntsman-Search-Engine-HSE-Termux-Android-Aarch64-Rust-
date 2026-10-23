@@ -89,8 +89,8 @@ pub(crate) fn same_inode(_linked: &fs::Metadata, _opened: &fs::Metadata) -> bool
 
 /// `O_NONBLOCK | O_NOFOLLOW` on the Linux and Android architectures whose values are known, each
 /// with `ELOOP` 40. `O_NONBLOCK` is 0o4000 on all of them. `O_NOFOLLOW` is 0o100000 on Arm and
-/// PowerPC, where 0o400000 is `O_LARGEFILE` and would follow the link, and 0o400000 on x86,
-/// RISC-V, s390x and `LoongArch`. `None` on any other target (MIPS and SPARC use other values),
+/// PowerPC, where 0o400000 is another flag (`O_LARGEFILE` on Arm, `O_DIRECT` on PowerPC) and the
+/// open would follow the link, and 0o400000 on x86, RISC-V, s390x and `LoongArch`. `None` on any other target (MIPS and SPARC use other values),
 /// where the checks after the open are the only guard.
 const NONBLOCK_NOFOLLOW: Option<i32> = if !cfg!(any(target_os = "linux", target_os = "android")) {
     None
@@ -689,7 +689,20 @@ mod tests {
 
     /// The open itself refuses a final symlink, not only the inode check after it. Arm's
     /// `O_NOFOLLOW` is not x86's: with the x86 value an aarch64 open follows the link.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        any(
+            target_arch = "aarch64",
+            target_arch = "arm",
+            target_arch = "powerpc",
+            target_arch = "powerpc64",
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "riscv64",
+            target_arch = "s390x",
+            target_arch = "loongarch64"
+        )
+    ))]
     #[test]
     fn the_open_itself_refuses_a_final_symlink() {
         let dir = scratch("open-unfollowed");

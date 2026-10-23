@@ -1206,7 +1206,20 @@ mod tests {
 
     /// A private file swapped after the gate is refused without being read or blocking: for a
     /// symlink to another private file and for a FIFO with no writer.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        any(
+            target_arch = "aarch64",
+            target_arch = "arm",
+            target_arch = "powerpc",
+            target_arch = "powerpc64",
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "riscv64",
+            target_arch = "s390x",
+            target_arch = "loongarch64"
+        )
+    ))]
     #[test]
     fn private_file_gate_refuses_a_swap_after_the_check_without_blocking() {
         use std::sync::mpsc;

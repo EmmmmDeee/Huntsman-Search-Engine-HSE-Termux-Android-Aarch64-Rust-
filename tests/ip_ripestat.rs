@@ -26,7 +26,7 @@ fn ripestat_answer() -> String {
 const TELSTRA: &str = r#"{"status":"ok","data":{"is_less_specific":true,"announced":true,"asns":[{"asn":1221,"holder":"ASN-TELSTRA - Telstra Limited"}],"related_prefixes":[],"resource":"1.120.0.0/13","block":{"resource":"1.0.0.0/8","desc":"APNIC (Status: ALLOCATED)","name":"IANA IPv4 Address Space Registry"}}}"#;
 
 /// A holder whose name, not its handle, carries a common word one AU operator is named.
-const NOT_AN_OPERATOR: &str = r#"{"status":"ok","data":{"is_less_specific":false,"announced":true,"asns":[{"asn":64500,"holder":"ACME-NET - Space that used to belong to Acme"}],"related_prefixes":[],"resource":"198.51.0.0/16","block":{"resource":"198.0.0.0/8","desc":"ARIN","name":"IANA IPv4 Address Space Registry"}}}"#;
+const NOT_AN_OPERATOR: &str = r#"{"status":"ok","data":{"is_less_specific":false,"announced":true,"asns":[{"asn":397213,"holder":"ACME-NET - Space that used to belong to Acme"}],"related_prefixes":[],"resource":"198.51.0.0/16","block":{"resource":"198.0.0.0/8","desc":"ARIN","name":"IANA IPv4 Address Space Registry"}}}"#;
 
 /// An address no AS announces, in a registry block `RIPEstat` names.
 const UNANNOUNCED: &str = r#"{"status":"ok","data":{"is_less_specific":false,"announced":false,"asns":[],"related_prefixes":[],"resource":"44.31.0.1","type":"prefix","block":{"resource":"44.0.0.0/8","desc":"ARDC (Status: ALLOCATED)","name":"IANA IPv4 Address Space Registry"}}}"#;
@@ -183,4 +183,13 @@ fn an_australian_consumer_providers_address_is_tagged_with_its_operator() {
         .find(|e| e.kind == EntityKind::IpAddress && e.value == "8.9.10.11")
         .expect("the address");
     assert!(!address.has_tag("au-consumer-isp"), "{:?}", address.tags);
+    // The origin is a public AS, so it was read, and only its holder's name failed to match.
+    assert!(
+        other
+            .entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Asn && e.raw_value == "AS397213"),
+        "{:#?}",
+        other.entities
+    );
 }

@@ -145,7 +145,11 @@ jobs:
   # O_LARGEFILE's value), so a host-only test run cannot see a wrong flag. qemu-user runs the
   # aarch64 test binaries here and hands their system calls to the kernel. The skipped tests run
   # in `test`: two time a computation against a wall-clock bound, which emulation makes
-  # meaningless, and one runs its own binary again, which qemu-user cannot start without binfmt.
+  # meaningless; one runs its own binary again, which qemu-user cannot start without binfmt; and
+  # two compare this process's start time read from /proc/PID/stat on different test threads:
+  # qemu-user (8.2) answers that file for the emulated process with the calling thread's own start
+  # time, where the kernel gives the process's to every thread, so the reads differ under
+  # emulation only. The PID is the same on every thread either way.
   aarch64-tests:
     name: Library tests on aarch64 under qemu
     runs-on: ubuntu-24.04
@@ -168,7 +172,9 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --target aarch64-unknown-linux-gnu --lib -- \
-            --skip quadratic_time --skip http::tests::public_only_ignores_environment_proxy
+            --skip quadratic_time --skip http::tests::public_only_ignores_environment_proxy \
+            --skip scan_store::tests::process_start_time_reads_past_a_name_holding_spaces_and_parentheses \
+            --skip scan_service::tests::same_process_different_service_cannot_acknowledge_foreign_stop
           cargo test --locked --target aarch64-unknown-linux-gnu -p xtask --bins
 
   android-aarch64:

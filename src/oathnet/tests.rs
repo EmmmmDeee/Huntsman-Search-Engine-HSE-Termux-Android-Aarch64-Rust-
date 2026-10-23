@@ -277,6 +277,45 @@ fn a_passport_is_not_a_password() {
 }
 
 #[test]
+fn a_key_that_only_holds_a_marker_is_held_back_but_exposes_no_password() {
+    // Holding a value back fails closed on any marker; saying a password was exposed needs a key
+    // whose words name one.
+    for key in [
+        "passenger_name",
+        "boarding_pass",
+        "compass",
+        "bypass",
+        "hashtags",
+        "file_hash",
+        "image_hash",
+    ] {
+        let body = serde_json::json!({"success": true, "data": {"items": [
+            {"dbname": "db", key: "a-value", "trip": {key: "nested-value"}}
+        ]}});
+        let breach = &decoded(&body).breaches[0];
+        assert!(!breach.password_exposed, "{key}: {breach:?}");
+        assert!(breach.values.is_empty(), "{key}: {breach:?}");
+    }
+    for key in [
+        "userPassword",
+        "userPass",
+        "pass",
+        "pass_hash",
+        "login pass",
+        "pwdHash",
+        "pwdhash",
+        "Salt",
+    ] {
+        let body = serde_json::json!({"success": true, "data": {"items": [
+            {"dbname": "db", "trip": {key: "a-secret"}}
+        ]}});
+        let breach = &decoded(&body).breaches[0];
+        assert!(breach.password_exposed, "{key}: {breach:?}");
+        assert!(breach.values.is_empty(), "{key}: {breach:?}");
+    }
+}
+
+#[test]
 fn a_field_name_that_could_carry_a_value_is_dropped() {
     let body = serde_json::json!({"success": true, "data": {"items": [
         {"dbname": "db", "hunter2 secret": "x", "Pass=word": "x", "UserName": "ada",

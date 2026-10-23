@@ -15,8 +15,9 @@
 //! name holds one of the [`CREDENTIAL_MARKERS`] (a [`NOT_A_CREDENTIAL`] aside) is reduced to its
 //! field name and the fact that it was exposed before decoding returns, and a list or object
 //! holding such a key at any depth is never serialised, so neither value can reach an entity, a
-//! report or a saved ledger. Either one holding a value sets [`Breach::password_exposed`], even
-//! when the field's name is one the decoder drops.
+//! report or a saved ledger. A key whose words name a password ([`PASSWORD_WORDS`]) holding a
+//! value, as a field or inside a list or object, sets [`Breach::password_exposed`], even when the
+//! field's name is one the decoder drops.
 //!
 //! The lookup reads one page of [`PAGE_SIZE`] records. When `OathNet` says there are more, the
 //! answer is marked partial, never complete. A key, plan or quota refusal, a `success: false`
@@ -65,14 +66,25 @@ const PROVIDER_WORDS_MAX_CHARS: usize = 120;
 
 /// Record keys that describe the record, not the person, so they are not exposed fields.
 const RECORD_METADATA: [&str; 5] = ["id", "dbname", "indexed_at", "email_domain", "extra"];
-/// What a record key holds, in any case, when it carries a password or something derived from
+/// What a record key holds, in any case, when it may carry a password or something derived from
 /// one: `password`, `password_hash`, `hashed_password`, `passwd`, `passphrase`, `pwd`, `salt` and
-/// the like. The match fails closed, so a key that only looks like one is a credential too, with
-/// one exception: a `pass` that begins [`NOT_A_CREDENTIAL`] does not count.
+/// the like. The value of such a key is held back, and the match fails closed, so a key that only
+/// looks like one (`passenger_name`, `file_hash`) is held back too, with one exception: a `pass`
+/// that begins [`NOT_A_CREDENTIAL`] does not count. Whether a password was exposed is read more
+/// narrowly, from the key's words (see [`PASSWORD_WORDS`]).
 pub const CREDENTIAL_MARKERS: [&str; 4] = ["pass", "pwd", "hash", "salt"];
 /// A word that holds a marker but names no credential, in any case and anywhere in a key: a
 /// passport number is not a password. Any other marker in the key still counts.
 pub const NOT_A_CREDENTIAL: &str = "passport";
+/// A key names a password, and so sets [`Breach::password_exposed`] when it holds a value, when
+/// its words run together hold one of these (`Passwd`, `user_password`, `hashed_password`,
+/// `Pass=word`), when a word is `salt` or begins `pwd` (`User_PWD`), or when `pass` is the whole
+/// key or stands beside one of [`PASS_COMPANIONS`] (`user_pass`, `pass_hash`). A key that only
+/// holds a marker, such as `passenger_name`, `boarding_pass`, `compass`, `hashtags` or `file_hash`,
+/// is held back but exposes no password.
+pub const PASSWORD_WORDS: [&str; 4] = ["password", "passwd", "passphrase", "passcode"];
+/// The words beside which a bare `pass` names a password.
+pub const PASS_COMPANIONS: [&str; 5] = ["user", "login", "account", "hash", "hashed"];
 
 /// Why a lookup gave no answer. No variant carries the key, the address or a response body.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -159,9 +171,9 @@ pub struct Breach {
     /// [`Self::password_exposed`] and the field name, but the secret value an attacker would need
     /// is never emitted.
     pub values: BTreeMap<String, BTreeSet<String>>,
-    /// A record holds a value under a key named with one of the [`CREDENTIAL_MARKERS`], as a field
-    /// or inside a list or object: a password, a password hash or a salt. A field name the decoder
-    /// keeps is in [`Self::fields`]; the cleartext value is held back and never appears in
+    /// A record holds a value under a key whose words name a password ([`PASSWORD_WORDS`]), as a
+    /// field or inside a list or object: a password, a password hash or a salt. A field name the
+    /// decoder keeps is in [`Self::fields`]; the cleartext value is held back and never appears in
     /// [`Self::values`].
     pub password_exposed: bool,
     pub title: Option<String>,
@@ -410,9 +422,9 @@ pub fn decode(body: &[u8], secrets: &[&str]) -> Result<Search, OathnetError> {
 
 /// Adds the exposed fields of one record, those of its `extra` object included, and the value each
 /// non-credential one holds. The value is kept, not just the field name, so the report is
-/// unredacted; a cleartext credential (a field [`is_credential`] names) records only that it was
-/// exposed, never the secret itself, and a list or object that [`holds_credential`] is never
-/// serialised and records the same when the credential inside holds a value. **Pure.**
+/// unredacted; a cleartext credential (a field [`is_credential`] names) is never kept, nor is a
+/// list or object that [`holds_credential`], and either one records that a password was exposed
+/// when a key inside that [`names_a_password`] holds a value. **Pure.**
 fn record_fields(item: &Map<String, Value>, breach: &mut Breach) {
     let extra = item.get("extra").and_then(Value::as_object);
     let named = item
@@ -425,7 +437,7 @@ fn record_fields(item: &Map<String, Value>, breach: &mut Breach) {
         }
         // The raw key is judged, so a credential whose name `field_name` drops is still exposed.
         let credential = is_credential(key);
-        if credential || holds_credential(value, present) {
+        if names_a_password(key) || holds_credential(value, names_a_password, present) {
             breach.password_exposed = true;
         }
         let Some(field) = field_name(key) else {
@@ -438,7 +450,7 @@ fn record_fields(item: &Map<String, Value>, breach: &mut Breach) {
             // breach it came from are kept (the field name and `password_exposed`); only the secret
             // value is held back, and so is a list or object with a credential inside it. Every
             // other field's value is surfaced as the record held it.
-            if !credential && !holds_credential(value, |_| true) {
+            if !credential && !holds_credential(value, is_credential, |_| true) {
                 if let Some(text) = record_value(value) {
                     let seen = breach.values.entry(field.clone()).or_default();
                     if seen.len() < MAX_VALUES_PER_FIELD {
@@ -477,15 +489,57 @@ fn is_credential(key: &str) -> bool {
     })
 }
 
-/// `value` is a list or object with a credential key ([`is_credential`]) at some depth whose value
-/// `counts`. With every value counted, its compact JSON would carry the credential out; with only
-/// a [`present`] one counted, it exposes one. `serde_json`'s nesting limit on the body bounds the
-/// walk. **Pure.**
-fn holds_credential(value: &Value, counts: fn(&Value) -> bool) -> bool {
+/// `key` names a password by its words, as [`PASSWORD_WORDS`] says. Every key it names is also
+/// one [`is_credential`] holds back. **Pure.**
+fn names_a_password(key: &str) -> bool {
+    let words = key_words(key);
+    let joined = words.concat();
+    PASSWORD_WORDS.iter().any(|word| joined.contains(word))
+        || words
+            .iter()
+            .any(|word| word == "salt" || word.starts_with("pwd"))
+        || (words.iter().any(|word| word == "pass")
+            && (words.len() == 1
+                || words
+                    .iter()
+                    .any(|word| PASS_COMPANIONS.contains(&word.as_str()))))
+}
+
+/// The words of a key, in lower case: split at anything but a letter or digit and where a lower-case
+/// letter meets an upper-case one, so `userPass`, `user_pass` and `User Pass` read alike. **Pure.**
+fn key_words(key: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut previous_lower = false;
+    for c in key.chars() {
+        if !c.is_ascii_alphanumeric() || (previous_lower && c.is_ascii_uppercase()) {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+        }
+        if c.is_ascii_alphanumeric() {
+            word.push(c.to_ascii_lowercase());
+        }
+        previous_lower = c.is_ascii_lowercase();
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// `value` is a list or object with a key `names` (a credential, [`is_credential`], or a named
+/// password, [`names_a_password`]) at some depth whose value `counts`. With every value counted
+/// and every credential named, its compact JSON would carry a credential out; with only a
+/// [`present`] value under a named password counted, it exposes one. `serde_json`'s nesting limit
+/// on the body bounds the walk. **Pure.**
+fn holds_credential(value: &Value, names: fn(&str) -> bool, counts: fn(&Value) -> bool) -> bool {
     match value {
-        Value::Array(items) => items.iter().any(|item| holds_credential(item, counts)),
+        Value::Array(items) => items
+            .iter()
+            .any(|item| holds_credential(item, names, counts)),
         Value::Object(map) => map.iter().any(|(key, value)| {
-            (is_credential(key) && counts(value)) || holds_credential(value, counts)
+            (names(key) && counts(value)) || holds_credential(value, names, counts)
         }),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
     }

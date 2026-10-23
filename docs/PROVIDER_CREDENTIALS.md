@@ -48,7 +48,7 @@ No credential values are required in CLI arguments, logs or source control.
 | IPinfo | `HUNTSMAN_IPINFO_KEY` | optional for `ip`: IPinfo answers without a token at a lower limit; a free token gives 50,000 lookups/month |
 | Cert Spotter (SSLMate) | `HUNTSMAN_CERTSPOTTER_KEY` | optional for `domain`: Cert Spotter answers without a key at a lower limit; a free key raises it |
 | HackerTarget | `HUNTSMAN_HACKERTARGET_KEY` | optional for `ip` and `domain`: HackerTarget answers without a key at 50 queries a day; a membership key raises it |
-| OpenCelliD | `HUNTSMAN_OPENCELLID_KEY` | required for `network cell:MCC:MNC:AREA:CELL`: without it the cell-site lookup is `not_configured` and sends nothing; free account key, 1,000 credits a day |
+| OpenCelliD | `HUNTSMAN_OPENCELLID_KEY` | required for `network cell:MCC:MNC:AREA:CELL` and for the cell sites around a point in `network LAT,LON`: without it each OpenCelliD search is `not_configured` and sends nothing; free account key, 1,000 credits a day |
 | Censys | `HUNTSMAN_CENSYS_ID`, `HUNTSMAN_CENSYS_SECRET` | do not assume usable; provider access must be revalidated |
 
 ## Importing keys from Spiderfoot

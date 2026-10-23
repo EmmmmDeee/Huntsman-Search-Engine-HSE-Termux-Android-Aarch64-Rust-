@@ -180,6 +180,22 @@ fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
     slots
 }
 
+/// Whether a module whose key slots are `slots` is set up: every slot it needs holds a key, an
+/// alias standing in for its slot (WiGLE needs both of its slots; HIBP's one slot may be set
+/// through `HIBP_API_KEY`, which is not needed beside it). **Pure.**
+fn slots_set(slots: &[&str], set: impl Fn(&str) -> bool) -> bool {
+    let fallbacks = crate::provider_credentials::SLOT_FALLBACKS;
+    slots
+        .iter()
+        .filter(|slot| !fallbacks.iter().any(|(_, alias)| alias == *slot))
+        .all(|slot| {
+            set(slot)
+                || fallbacks
+                    .iter()
+                    .any(|(fallback, alias)| fallback == slot && set(alias))
+        })
+}
+
 /// A request's query parameters; the last of a repeated name wins.
 struct Params(Vec<(String, String)>);
 
@@ -298,7 +314,7 @@ impl ScanApi {
                     .unwrap_or_default();
                 let configured = match &self.slots {
                     Some(check) if !key_env.is_empty() => {
-                        Value::Bool(key_env.iter().any(|slot| check(slot)))
+                        Value::Bool(slots_set(&key_env, |slot| check(slot)))
                     }
                     _ => Value::Null,
                 };
@@ -1253,6 +1269,26 @@ mod tests {
 
     fn body(response: &ApiResponse) -> Value {
         serde_json::from_slice(&response.body).unwrap()
+    }
+
+    /// WiGLE is set up only with both of its slots; HIBP's one slot may be set through its alias.
+    #[test]
+    fn a_module_is_set_only_when_every_slot_it_needs_holds_a_key() {
+        use crate::environment::{
+            HIBP_API_KEY_ENV, HUNTSMAN_HIBP_KEY_ENV, SHODAN_KEY_ENV, WIGLE_TOKEN_ENV,
+            WIGLE_USER_ENV,
+        };
+        let wigle = [WIGLE_USER_ENV, WIGLE_TOKEN_ENV];
+        let hibp = [HUNTSMAN_HIBP_KEY_ENV, HIBP_API_KEY_ENV];
+        let with = |held: &'static [&'static str]| move |slot: &str| held.contains(&slot);
+        assert!(!slots_set(&wigle, with(&[WIGLE_USER_ENV])));
+        assert!(!slots_set(&wigle, with(&[WIGLE_TOKEN_ENV])));
+        assert!(slots_set(&wigle, with(&[WIGLE_USER_ENV, WIGLE_TOKEN_ENV])));
+        assert!(slots_set(&hibp, with(&[HUNTSMAN_HIBP_KEY_ENV])));
+        assert!(slots_set(&hibp, with(&[HIBP_API_KEY_ENV])));
+        assert!(!slots_set(&hibp, with(&[SHODAN_KEY_ENV])));
+        assert!(slots_set(&[SHODAN_KEY_ENV], with(&[SHODAN_KEY_ENV])));
+        assert!(!slots_set(&[SHODAN_KEY_ENV], with(&[])));
     }
 
     fn finished(api: &ScanApi) -> String {
