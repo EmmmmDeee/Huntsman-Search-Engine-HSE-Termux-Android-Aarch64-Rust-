@@ -1621,12 +1621,17 @@ mod tests {
         assert_eq!(row["sources"][0]["observed_at_unix"], 1);
         assert_eq!(row["uncertainty_register"]["recorded_executions"], 1);
         assert_eq!(row["uncertainty_register"]["unresolved_executions"], 0);
-        assert_eq!(row["uncertainty_register"]["discovery_completeness"], "unverified");
-        assert!(row["uncertainty_register"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["id"] == "scope:exhaustiveness_unverified"));
+        assert_eq!(
+            row["uncertainty_register"]["discovery_completeness"],
+            "unverified"
+        );
+        assert!(
+            row["uncertainty_register"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["id"] == "scope:exhaustiveness_unverified")
+        );
         assert_eq!(
             row["source_execution_summary"]["all_recorded_sources_accepted"],
             true
