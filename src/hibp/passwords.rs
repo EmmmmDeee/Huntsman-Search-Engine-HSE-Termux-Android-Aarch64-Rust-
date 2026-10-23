@@ -90,13 +90,7 @@ pub(super) fn wipe(mut bytes: Vec<u8>) {
 // FIPS 180-4 SHA-1, required by HIBP's protocol (not a security primitive here).
 #[allow(clippy::many_single_char_names)] // FIPS register and round names.
 pub(super) fn sha1_hex(data: &[u8]) -> String {
-    // Sized for the padding up front, so no reallocation leaves an unwiped copy.
-    let mut message = Vec::with_capacity(data.len() + 72);
-    message.extend_from_slice(data);
-    message.push(0x80);
-    while message.len() % 64 != 56 {
-        message.push(0);
-    }
+    let mut message = super::md4::padded(data);
     message.extend_from_slice(&(data.len() as u64).wrapping_mul(8).to_be_bytes());
     let mut state = [
         0x6745_2301_u32,

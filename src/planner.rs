@@ -15,7 +15,6 @@ use crate::pipeline::{NormalizedSeed, PipelineLimits};
 use crate::roi::{
     DispatchUtility, DispatchUtilityInputs, compute_dispatch_utility, is_geoint_bearing,
 };
-use crate::service_defs;
 use crate::source_registry;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -66,7 +65,6 @@ pub struct PlannedDispatch {
     pub target: Target,
     pub action: DispatchAction,
     pub utility: Option<DispatchUtility>,
-    pub rationale: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,15 +209,10 @@ fn planned_module(
         already_dispatched_this_module_target: false,
         geoint_bearing: is_geoint_bearing(&module.produces(), module.category()),
     });
-    let mut rationale = utility.explanation.clone();
-    if service_defs::find_service(provider_id).is_some() {
-        rationale.push("provider has keyed service definition".to_string());
-    }
     PlannedDispatch {
         target: target.clone(),
         action: DispatchAction::Module { module_index },
         utility: Some(utility),
-        rationale,
     }
 }
 
@@ -382,7 +375,6 @@ pub fn build_dispatch_plan(
                     url: route.url,
                 },
                 utility: None,
-                rationale: vec!["discovery lead only; generated route is not evidence".to_string()],
             });
         }
     }

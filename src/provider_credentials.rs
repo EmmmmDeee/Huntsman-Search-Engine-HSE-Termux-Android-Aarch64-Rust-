@@ -376,7 +376,11 @@ pub const PROVIDERS: &[Provider] = &[
     },
 ];
 
-fn secret_for_slot(keys: &Keys, slot: &str) -> Option<Secret> {
+/// The secret `keys` holds for `slot`: the one rule from a slot to its key, which
+/// `credential-status` reports with and a lookup must use. `HUNTSMAN_HIBP_KEY` falls back to a
+/// `HIBP_API_KEY` entry, HIBP's own name for the same key.
+#[must_use]
+pub fn secret_for_slot(keys: &Keys, slot: &str) -> Option<Secret> {
     keys.get(slot).or_else(|| match slot {
         crate::environment::HUNTSMAN_HIBP_KEY_ENV => keys.get(crate::environment::HIBP_API_KEY_ENV),
         _ => None,
@@ -733,6 +737,9 @@ mod tests {
             .expect("HIBP");
         assert!(hibp.configured);
         assert!(hibp.slots[0].configured);
+        let secret = secret_for_slot(&keys, crate::environment::HUNTSMAN_HIBP_KEY_ENV)
+            .expect("HIBP_API_KEY entry fills the HUNTSMAN_HIBP_KEY slot");
+        assert_eq!(secret.expose(), "0123456789abcdef0123456789abcdef");
     }
 
     #[test]

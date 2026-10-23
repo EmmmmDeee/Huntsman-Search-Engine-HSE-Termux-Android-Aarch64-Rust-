@@ -5,6 +5,7 @@ use std::path::Path;
 
 use crate::classifier::classify;
 use crate::classify::{classify_response, is_saved_challenge};
+use crate::domains::is_or_subdomain_of;
 use crate::entity::EntityKind;
 use crate::error::Error;
 use crate::fsio::read_bounded;
@@ -120,22 +121,32 @@ fn identifier_query(query: &str) -> Option<Identifier> {
 }
 
 /// Whether `text` names the identifier. Names are runs of letters, digits and `.@-_+`, with a
-/// trailing full stop removed, so a sentence that ends in the name still matches. A run matches
-/// when it equals the identifier, ignoring ASCII case. For a domain, a run also matches when it
-/// ends in the domain after a `.` or `@`: `api.example.com` and `ada@example.com` name
-/// `example.com`, while `myexample.com` and `example.com.au` do not.
+/// trailing full stop removed, so a sentence that ends in the name still matches. An address
+/// matches a run equal to it, ignoring ASCII case. A domain matches a run whose host, the part
+/// after its last `@`, is the domain or a subdomain of it by [`is_or_subdomain_of`], ignoring
+/// ASCII case: `api.example.com` and `ada@example.com` name `example.com`, while
+/// `myexample.com` and `example.com.au` do not.
 fn names_identifier(text: &str, identifier: &Identifier) -> bool {
     let value = identifier.value.as_str();
     text.split(|c: char| !(c.is_alphanumeric() || matches!(c, '.' | '@' | '-' | '_' | '+')))
         .map(|run| run.trim_end_matches('.'))
         .any(|run| {
-            run.eq_ignore_ascii_case(value)
-                || (identifier.domain
-                    && run.len() > value.len()
-                    && matches!(run.as_bytes()[run.len() - value.len() - 1], b'.' | b'@')
-                    && run
-                        .get(run.len() - value.len()..)
-                        .is_some_and(|tail| tail.eq_ignore_ascii_case(value)))
+            if !identifier.domain {
+                return run.eq_ignore_ascii_case(value);
+            }
+            if run.len() < value.len() {
+                return false;
+            }
+            // The identifier is lowercase ASCII; only a run with an uppercase letter is copied.
+            let lowered;
+            let run = if run.bytes().any(|b| b.is_ascii_uppercase()) {
+                lowered = run.to_ascii_lowercase();
+                lowered.as_str()
+            } else {
+                run
+            };
+            let host = run.rsplit_once('@').map_or(run, |(_, host)| host);
+            is_or_subdomain_of(host, value)
         })
 }
 
@@ -264,7 +275,7 @@ mod tests {
         assert!(termless.is_empty(), "{termless:?}");
         let challenged = search_response(
             200,
-            "<html>just a moment cloudflare</html>",
+            "<html>just a moment cloudflare brisbane</html>",
             "brisbane",
             "remote",
         );
@@ -384,12 +395,17 @@ mod tests {
             doc("lookalike", "Ada wrote to ada@example.company"),
             doc("subdomain", "See https://api.example.com/v1 for the feed"),
             doc("suffix", "Hosted at myexample.com and example.com.au"),
+            doc("bare-at", "Mail @example.com today"),
+            doc("double-at", "Relayed through A@B@Example.COM."),
         ];
         let ids = |query: &str| -> Vec<String> {
             search(&docs, query).into_iter().map(|hit| hit.id).collect()
         };
         assert_eq!(ids("ada@example.com"), ["email"]);
-        assert_eq!(ids("example.com"), ["email", "subdomain"]);
+        assert_eq!(
+            ids("example.com"),
+            ["bare-at", "double-at", "email", "subdomain"]
+        );
         assert_eq!(ids("Ada@EXAMPLE.com."), ["email"]);
     }
 

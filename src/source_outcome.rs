@@ -45,6 +45,38 @@ pub enum SourceOutcomeKind {
 }
 
 impl SourceOutcomeKind {
+    /// The wire label, as serde writes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::ValidZero => "valid_zero",
+            Self::AuthRequired => "auth_required",
+            Self::NotConfigured => "not_configured",
+            Self::AuthRejected => "auth_rejected",
+            Self::EntitlementDenied => "entitlement_denied",
+            Self::QuotaExhausted => "quota_exhausted",
+            Self::RateLimited => "rate_limited",
+            Self::BotWaf => "bot_waf",
+            Self::DnsFailure => "dns_failure",
+            Self::ConnectFailure => "connect_failure",
+            Self::TlsFailure => "tls_failure",
+            Self::TtfbTimeout => "ttfb_timeout",
+            Self::BodyTimeout => "body_timeout",
+            Self::Upstream4xx => "upstream4xx",
+            Self::Upstream5xx => "upstream5xx",
+            Self::RedirectChanged => "redirect_changed",
+            Self::ProtocolDrift => "protocol_drift",
+            Self::InteractionDrift => "interaction_drift",
+            Self::SchemaDrift => "schema_drift",
+            Self::ParserDrift => "parser_drift",
+            Self::SemanticDrift => "semantic_drift",
+            Self::ZeroYieldAnomaly => "zero_yield_anomaly",
+            Self::ConfirmedDead => "confirmed_dead",
+            Self::Inconclusive => "inconclusive",
+        }
+    }
+
     #[must_use]
     pub const fn is_accepted(self) -> bool {
         matches!(self, Self::Success | Self::ValidZero)
@@ -245,6 +277,22 @@ pub enum SourceHealthAction {
     Quarantine,
     RequireContractVerification,
     Investigate,
+}
+
+impl SourceHealthAction {
+    /// The wire label, as serde writes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::Retry => "retry",
+            Self::Backoff => "backoff",
+            Self::RequireCredential => "require_credential",
+            Self::Quarantine => "quarantine",
+            Self::RequireContractVerification => "require_contract_verification",
+            Self::Investigate => "investigate",
+        }
+    }
 }
 
 /// Conservative default policy. Provider-specific logic may be stricter, never
@@ -459,6 +507,93 @@ mod tests {
         assert_eq!(classify_fetch(200, login), SourceOutcomeKind::Inconclusive);
         assert_eq!(classify_fetch(403, login), SourceOutcomeKind::BotWaf);
         assert_eq!(classify_fetch(503, login), SourceOutcomeKind::BotWaf);
+    }
+
+    #[test]
+    fn labels_are_the_serde_wire_names() {
+        use SourceHealthAction as A;
+        use SourceOutcomeKind as K;
+        const KINDS: [SourceOutcomeKind; 25] = [
+            K::Success,
+            K::ValidZero,
+            K::AuthRequired,
+            K::NotConfigured,
+            K::AuthRejected,
+            K::EntitlementDenied,
+            K::QuotaExhausted,
+            K::RateLimited,
+            K::BotWaf,
+            K::DnsFailure,
+            K::ConnectFailure,
+            K::TlsFailure,
+            K::TtfbTimeout,
+            K::BodyTimeout,
+            K::Upstream4xx,
+            K::Upstream5xx,
+            K::RedirectChanged,
+            K::ProtocolDrift,
+            K::InteractionDrift,
+            K::SchemaDrift,
+            K::ParserDrift,
+            K::SemanticDrift,
+            K::ZeroYieldAnomaly,
+            K::ConfirmedDead,
+            K::Inconclusive,
+        ];
+        const ACTIONS: [SourceHealthAction; 7] = [
+            A::Accept,
+            A::Retry,
+            A::Backoff,
+            A::RequireCredential,
+            A::Quarantine,
+            A::RequireContractVerification,
+            A::Investigate,
+        ];
+        for kind in KINDS {
+            // A new variant fails to compile here until it is listed above.
+            match kind {
+                K::Success
+                | K::ValidZero
+                | K::AuthRequired
+                | K::NotConfigured
+                | K::AuthRejected
+                | K::EntitlementDenied
+                | K::QuotaExhausted
+                | K::RateLimited
+                | K::BotWaf
+                | K::DnsFailure
+                | K::ConnectFailure
+                | K::TlsFailure
+                | K::TtfbTimeout
+                | K::BodyTimeout
+                | K::Upstream4xx
+                | K::Upstream5xx
+                | K::RedirectChanged
+                | K::ProtocolDrift
+                | K::InteractionDrift
+                | K::SchemaDrift
+                | K::ParserDrift
+                | K::SemanticDrift
+                | K::ZeroYieldAnomaly
+                | K::ConfirmedDead
+                | K::Inconclusive => {}
+            }
+            let wire = serde_json::to_value(kind).expect("a kind serialises");
+            assert_eq!(wire.as_str(), Some(kind.as_str()), "{kind:?}");
+        }
+        for action in ACTIONS {
+            match action {
+                A::Accept
+                | A::Retry
+                | A::Backoff
+                | A::RequireCredential
+                | A::Quarantine
+                | A::RequireContractVerification
+                | A::Investigate => {}
+            }
+            let wire = serde_json::to_value(action).expect("an action serialises");
+            assert_eq!(wire.as_str(), Some(action.as_str()), "{action:?}");
+        }
     }
 
     #[test]

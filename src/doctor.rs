@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::diagnostics::{TermuxState, normalized_build_sha};
+use crate::diagnostics::{TERMUX_APP_DATA, TermuxState, normalized_build_sha};
 use crate::fsio::write_atomic_private;
 use crate::keys::{DEFAULT_KEYS_FILE, DefaultFileRefusal, Keys, read_private_file};
 use crate::ledger::load_chain;
@@ -1010,11 +1010,11 @@ fn termux(ctx: &Context<'_>) -> Check {
             "exit, then open Termux again",
         );
     };
-    if !prefix.starts_with("/data/data/com.termux") {
+    if !prefix.starts_with(TERMUX_APP_DATA) {
         return Check::fail(
             ID,
             format!(
-                "PREFIX is {}, not under /data/data/com.termux",
+                "PREFIX is {}, not under {TERMUX_APP_DATA}",
                 prefix.display()
             ),
             "export PREFIX=/data/data/com.termux/files/usr",

@@ -158,9 +158,9 @@ pub fn techniques_for_relation_kind(kind: RelationKind) -> &'static [&'static st
     }
 }
 
-pub fn fold_relation_techniques(
+pub fn fold_relation_techniques<'a>(
     exercised: &mut BTreeMap<String, usize>,
-    relations: &[EntityRelation],
+    relations: impl IntoIterator<Item = &'a EntityRelation>,
 ) {
     for relation in relations {
         for id in techniques_for_relation_kind(relation.kind) {

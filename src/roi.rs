@@ -23,7 +23,6 @@ pub struct DispatchUtility {
     pub failure_penalty: f64,
     pub duplicate_penalty: f64,
     pub final_utility: f64,
-    pub explanation: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,36 +55,24 @@ pub const QUOTA_COST_NEUTRAL: f64 = 0.2;
 const COST_SOFTNESS: f64 = 5.0;
 const MAX_REASONABLE_TIMEOUT_MS: f64 = 45_000.0;
 
-fn normalised_cost_penalty(cost: Option<f64>) -> (f64, String) {
+fn normalised_cost_penalty(cost: Option<f64>) -> f64 {
     match cost {
-        Some(cost) if cost <= 0.0 => (0.0, format!("CostModel confirmed free -> Some({cost:.4})")),
-        Some(cost) => {
-            let penalty = (cost / (cost + COST_SOFTNESS)).clamp(0.0, 1.0);
-            (
-                penalty,
-                format!("cost_per_request=${cost:.4} -> normalised {penalty:.3}"),
-            )
-        }
-        None => (
-            UNKNOWN_COST_PENALTY,
-            format!("cost unknown -> fixed penalty {UNKNOWN_COST_PENALTY:.3}"),
-        ),
+        Some(cost) if cost <= 0.0 => 0.0,
+        Some(cost) => (cost / (cost + COST_SOFTNESS)).clamp(0.0, 1.0),
+        None => UNKNOWN_COST_PENALTY,
     }
 }
 
-fn quota_penalty(remaining: Option<bool>) -> (f64, String) {
+fn quota_penalty(remaining: Option<bool>) -> f64 {
     match remaining {
-        Some(false) => (1.0, "quota reported exhausted".to_string()),
-        Some(true) => (0.0, "quota has budget remaining -> 0.0".to_string()),
-        None => (
-            QUOTA_COST_NEUTRAL,
-            format!("no local quota tracked -> neutral default {QUOTA_COST_NEUTRAL:.3}"),
-        ),
+        Some(false) => 1.0,
+        Some(true) => 0.0,
+        None => QUOTA_COST_NEUTRAL,
     }
 }
 
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+#[allow(clippy::cast_precision_loss)]
 pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtility {
     let expected_information_value = 1.0 - inputs.entity_confidence.unwrap_or(0.0);
     let expected_novelty = inputs.novelty_prior.clamp(0.0, 1.0);
@@ -93,8 +80,8 @@ pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtili
     let expected_optionality = inputs.optionality_prior.clamp(0.0, 1.0);
     let reliability = inputs.reliability_prior.clamp(0.0, 1.0);
     let failure_penalty = 1.0 - reliability;
-    let (cost_penalty, cost_note) = normalised_cost_penalty(inputs.cost_per_request_usd);
-    let (quota_penalty_value, quota_note) = quota_penalty(inputs.quota_remaining);
+    let cost_penalty = normalised_cost_penalty(inputs.cost_per_request_usd);
+    let quota_penalty_value = quota_penalty(inputs.quota_remaining);
     let latency_penalty =
         ((inputs.configured_timeout_ms as f64) / MAX_REASONABLE_TIMEOUT_MS).clamp(0.0, 1.0);
     let duplicate_penalty = f64::from(u8::from(inputs.already_dispatched_this_module_target));
@@ -123,61 +110,6 @@ pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtili
         ),
     );
 
-    let explanation = vec![
-        format!(
-            "expected_information_value: +{:.3} (entity_confidence={:.3} -> {:.3}, x W_INFO={W_INFO})",
-            W_INFO * expected_information_value,
-            inputs.entity_confidence.unwrap_or(0.0),
-            expected_information_value
-        ),
-        format!(
-            "expected_novelty: +{:.3} (module_cascade -> {expected_novelty:.3}, x W_NOV={W_NOV})",
-            W_NOV * expected_novelty
-        ),
-        format!(
-            "expected_independence: +{:.3} (source_count={} -> {expected_independence:.3}, x W_INDEP={W_INDEP})",
-            W_INDEP * expected_independence,
-            inputs.source_count
-        ),
-        format!(
-            "expected_optionality: +{:.3} (ProviderDescriptor.optionality_prior={:.3}, x W_OPT={W_OPT})",
-            W_OPT * expected_optionality,
-            inputs.optionality_prior
-        ),
-        format!(
-            "reliability: +{:.3} (cold-start prior={reliability:.3} — circuit-open already gated upstream, x W_REL={W_REL})",
-            W_REL * reliability
-        ),
-        format!(
-            "geoint_preference: +{:.3} (geoint_bearing={}, x W_GEO={W_GEO})",
-            W_GEO * geoint_preference,
-            inputs.geoint_bearing
-        ),
-        format!(
-            "estimated_cost: -{:.3} ({cost_note}, x W_COST={W_COST})",
-            W_COST * cost_penalty
-        ),
-        format!(
-            "quota_cost: -{:.3} ({quota_note}, x W_QUOTA={W_QUOTA})",
-            W_QUOTA * quota_penalty_value
-        ),
-        format!(
-            "latency_penalty: -{:.3} (configured_timeout_ms={} / {MAX_REASONABLE_TIMEOUT_MS}, x W_LAT={W_LAT})",
-            W_LAT * latency_penalty,
-            inputs.configured_timeout_ms
-        ),
-        format!(
-            "failure_penalty: -{:.3} (1 - reliability={reliability:.3}, x W_FAIL={W_FAIL})",
-            W_FAIL * failure_penalty
-        ),
-        format!(
-            "duplicate_penalty: -{:.3} (already_dispatched={}, x W_DUP={W_DUP})",
-            W_DUP * duplicate_penalty,
-            inputs.already_dispatched_this_module_target
-        ),
-        format!("final_utility: {final_utility:.3}"),
-    ];
-
     DispatchUtility {
         expected_information_value,
         expected_novelty,
@@ -190,7 +122,6 @@ pub fn compute_dispatch_utility(inputs: &DispatchUtilityInputs) -> DispatchUtili
         failure_penalty,
         duplicate_penalty,
         final_utility,
-        explanation,
     }
 }
 
@@ -200,11 +131,6 @@ pub fn is_geoint_bearing(produces: &[EntityKind], category: ModuleCategory) -> b
         || produces
             .iter()
             .any(|kind| matches!(kind, EntityKind::Coordinates | EntityKind::Address))
-}
-
-#[must_use]
-pub fn quota_exhausted_blocked(quota_unit: Option<&'static str>, remaining: Option<bool>) -> bool {
-    quota_unit.is_some() && remaining == Some(false)
 }
 
 const _: () = assert!(W_GEO * 4.0 < W_INFO, "W_GEO must stay well below W_INFO");
@@ -289,25 +215,6 @@ mod tests {
             ..baseline_inputs()
         });
         assert!((geo.final_utility - fresh.final_utility - W_GEO).abs() < 1e-9);
-        assert!(
-            geo.explanation
-                .iter()
-                .any(|line| line.contains("geoint_preference"))
-        );
-    }
-
-    #[test]
-    fn utility_explanation_restates_final_score() {
-        let utility = compute_dispatch_utility(&baseline_inputs());
-        let last = utility.explanation.last().unwrap();
-        assert!(last.starts_with("final_utility:"));
-    }
-
-    #[test]
-    fn quota_gate_only_blocks_tracked_exhaustion() {
-        assert!(!quota_exhausted_blocked(None, Some(false)));
-        assert!(quota_exhausted_blocked(Some("query"), Some(false)));
-        assert!(!quota_exhausted_blocked(Some("query"), None));
     }
 
     #[test]

@@ -100,19 +100,7 @@ pub(super) fn classify(args: &[String]) -> ExitCode {
     };
     let kind = classify_fetch(status, &body);
     println!("{:?}", classify_response(status, &body));
-    println!(
-        "outcome={}",
-        serde_json::to_value(kind)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_default()
-    );
-    println!(
-        "action={}",
-        serde_json::to_value(recommended_action(kind))
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_default()
-    );
+    println!("outcome={}", kind.as_str());
+    println!("action={}", recommended_action(kind).as_str());
     ExitCode::SUCCESS
 }

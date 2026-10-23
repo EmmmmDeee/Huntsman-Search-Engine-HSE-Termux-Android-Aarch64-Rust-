@@ -46,7 +46,7 @@ pub enum TermuxState {
 }
 
 /// The Termux app's data directory. Its install prefix, `files/usr`, lies under it.
-const TERMUX_APP_DATA: &str = "/data/data/com.termux";
+pub(crate) const TERMUX_APP_DATA: &str = "/data/data/com.termux";
 
 impl TermuxState {
     #[must_use]

@@ -255,14 +255,8 @@ pub(super) fn fetch_cmd(args: &[String]) -> ExitCode {
             .outcome
             .http_status
             .map_or_else(|| "none".into(), |s| s.to_string()),
-        serde_json::to_value(kind)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_default(),
-        serde_json::to_value(recommended_action(kind))
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_default(),
+        kind.as_str(),
+        recommended_action(kind).as_str(),
         fetched.redirects,
         fetched.final_url,
     );
