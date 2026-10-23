@@ -488,6 +488,8 @@ pub fn report(scan: &ScanRecord, results: &ScanResults) -> String {
         "<table class=\"meta\"><tr><th>Subject</th><td>{}</td></tr><tr><th>Lookup</th><td>{}</td></tr>\
 <tr><th>Scan</th><td>{} ({})</td></tr><tr><th>Status</th><td>{}</td></tr>\
 <tr><th>Started</th><td>{}</td></tr><tr><th>Finished</th><td>{}</td></tr>\
+<tr><th>Use case</th><td>{}</td></tr><tr><th>Depth</th><td>{}</td></tr>\
+<tr><th>Modules asked</th><td>{}</td></tr><tr><th>Types kept</th><td>{}</td></tr>\
 <tr><th>Built from</th><td>Huntsman {}</td></tr></table>",
         esc(&scan.target),
         esc(&scan.kind),
@@ -496,6 +498,26 @@ pub fn report(scan: &ScanRecord, results: &ScanResults) -> String {
         scan.status.as_str(),
         when(scan.started.or(Some(scan.created))),
         when(scan.ended),
+        esc(if scan.options.usecase.is_empty() {
+            "all"
+        } else {
+            &scan.options.usecase
+        }),
+        match scan.options.depth {
+            0 => "the target only".to_owned(),
+            1 => "1 hop past the target".to_owned(),
+            hops => format!("{hops} hops past the target"),
+        },
+        if scan.options.modules.is_empty() {
+            "every module the lookup runs".to_owned()
+        } else {
+            esc(&scan.options.modules.join(", "))
+        },
+        if scan.options.types.is_empty() {
+            "every type".to_owned()
+        } else {
+            esc(&scan.options.types.join(", "))
+        },
         esc(crate::diagnostics::embedded_build_sha()),
     );
 
@@ -542,7 +564,7 @@ pub fn report(scan: &ScanRecord, results: &ScanResults) -> String {
         report_finding(&mut out, entity);
     }
 
-    report_tail(&mut out, results);
+    report_tail(&mut out, scan, results);
     out
 }
 
@@ -613,8 +635,10 @@ fn report_finding(out: &mut String, entity: &crate::entity::Entity) {
     out.push_str("</ul></section>\n");
 }
 
-/// The report's correlations, every source consulted with its outcome, and how to read it.
-fn report_tail(out: &mut String, results: &ScanResults) {
+/// The report's correlations, every source consulted with its outcome, the gaps the sources that
+/// did not answer leave, how to run the scan again, and how to read it all: the sections
+/// `docs/CLIENT_RESEARCH_REPORT.md` requires beyond the findings.
+fn report_tail(out: &mut String, scan: &ScanRecord, results: &ScanResults) {
     let esc = |text: &str| escape_xml(text);
     if !results.correlations.is_empty() {
         out.push_str("<h2>Correlations</h2>\n<ul>");
@@ -644,11 +668,84 @@ fn report_tail(out: &mut String, results: &ScanResults) {
         );
     }
     out.push_str("</table>\n");
+
+    out.push_str("<h2>Gaps and unknowns</h2>\n");
+    let gaps: Vec<_> = results
+        .outcomes
+        .iter()
+        .filter(|outcome| !outcome.kind.is_accepted())
+        .collect();
+    if gaps.is_empty() {
+        out.push_str("<p>Every source consulted answered.</p>\n");
+    } else {
+        out.push_str(
+            "<p>These sources did not answer, so what they would have found is unknown, not \
+absent:</p><ul>",
+        );
+        for outcome in gaps {
+            let _ = write!(
+                out,
+                "<li><b>{}</b>: {}{}</li>",
+                esc(&outcome.module),
+                outcome.kind.as_str(),
+                outcome
+                    .detail
+                    .as_deref()
+                    .map_or_else(String::new, |detail| format!(", {}", esc(detail)))
+            );
+        }
+        out.push_str("</ul>\n");
+    }
+
+    let _ = writeln!(
+        out,
+        "<h2>Reproducibility</h2><p>Run this scan again with <code>huntsman-recon scans rerun {}</code>, \
+or on another installation with <code>{}</code>. Sources change over time, so a later run can \
+differ.</p>",
+        esc(&scan.id),
+        esc(&rerun_command(scan))
+    );
     let _ = write!(
         out,
         "<h2>How to read this report</h2><p>{}</p>\n</main></body></html>\n",
         esc(REPORT_METHOD)
     );
+}
+
+/// The `scans run` command line that repeats `scan`'s target, lookup and options, every word a
+/// POSIX shell would read as anything but itself single-quoted, so a pasted command runs only
+/// `scans run`.
+fn rerun_command(scan: &ScanRecord) -> String {
+    let word = |text: &str| {
+        if !text.is_empty()
+            && text.chars().all(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ',' | ':' | '@' | '/')
+            })
+        {
+            text.to_owned()
+        } else {
+            format!("'{}'", text.replace('\'', "'\\''"))
+        }
+    };
+    let options = &scan.options;
+    let mut command = format!(
+        "huntsman-recon scans run {} -k {}",
+        word(&scan.target),
+        word(&scan.kind)
+    );
+    if !options.usecase.is_empty() && options.usecase != "all" {
+        let _ = write!(command, " -u {}", word(&options.usecase));
+    }
+    if !options.types.is_empty() {
+        let _ = write!(command, " -t {}", word(&options.types.join(",")));
+    }
+    if !options.modules.is_empty() {
+        let _ = write!(command, " -m {}", word(&options.modules.join(",")));
+    }
+    if options.depth > 0 {
+        let _ = write!(command, " --depth {}", options.depth);
+    }
+    command
 }
 
 /// The report's styles: readable on a phone, and printed without the screen's colours.
@@ -1029,5 +1126,63 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("How to read this report"));
+    }
+
+    #[test]
+    fn the_html_report_names_its_gaps_and_the_command_that_runs_it_again() {
+        use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+        let (mut scan, mut results) = scan();
+        results.outcomes = vec![
+            SourceExecutionOutcome::success("crtsh", 0, 2),
+            SourceExecutionOutcome::failed(
+                "hibp",
+                0,
+                SourceOutcomeKind::RateLimited,
+                Some(429),
+                "<retry later>",
+            ),
+        ];
+        let html = text(&render(&scan, &results, "html", None).unwrap());
+        assert!(html.contains("<h2>Gaps and unknowns</h2>"), "{html}");
+        assert!(
+            html.contains("<li><b>hibp</b>: rate_limited, &lt;retry later&gt;</li>"),
+            "{html}"
+        );
+        let gaps = &html[html.find("<h2>Gaps").unwrap()..html.find("<h2>Reproducibility").unwrap()];
+        assert!(
+            !gaps.contains("crtsh"),
+            "a source that answered is no gap: {gaps}"
+        );
+        assert!(
+            html.contains("huntsman-recon scans rerun 0123456789abcdef"),
+            "{html}"
+        );
+
+        // Every option is repeated, and a target the shell would split or expand is quoted.
+        scan.target = "o'brien $(id)".to_owned();
+        scan.kind = "username".to_owned();
+        scan.options = ScanOptions {
+            usecase: "passive".to_owned(),
+            modules: vec!["github".to_owned(), "sfp_whois".to_owned()],
+            types: vec!["USERNAME".to_owned()],
+            depth: 2,
+        };
+        results.outcomes.truncate(1);
+        let html = text(&render(&scan, &results, "html", None).unwrap());
+        assert!(html.contains("Every source consulted answered."), "{html}");
+        let command = "huntsman-recon scans run 'o'\\''brien $(id)' -k username -u passive \
+-t USERNAME -m github,sfp_whois --depth 2";
+        assert!(
+            html.contains(&format!("<code>{}</code>", escape_xml(command))),
+            "{html}"
+        );
+        assert!(html.contains("<th>Depth</th><td>2 hops past the target</td>"));
+        assert!(html.contains("<th>Modules asked</th><td>github, sfp_whois</td>"));
+        // A southern-hemisphere point needs no quoting: `scans run` reads its dash as a value.
+        scan.target = "-33.86,151.21".to_owned();
+        scan.kind = "network".to_owned();
+        scan.options = ScanOptions::default();
+        let html = text(&render(&scan, &results, "html", None).unwrap());
+        assert!(html.contains("<code>huntsman-recon scans run -33.86,151.21 -k network</code>"));
     }
 }

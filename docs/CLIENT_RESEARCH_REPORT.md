@@ -1,5 +1,20 @@
 # Client research report
 
+## Start from the generated report
+
+For an engagement built on a saved scan, `huntsman-recon scans export ID -f html -o report.html`
+(or **Export → Report** in the scan view) writes the evidence half of this template for you:
+- the subject, scan options and build;
+- each finding with its confidence, sources, times and attributes;
+- the correlations;
+- every source consulted with its outcome;
+- **Gaps and unknowns**, for the sources that did not answer;
+- **Reproducibility**, with the command that runs the scan again.
+
+Findings the analyst flagged as false positives are left out and counted. Complete the
+engagement, executive answer and contradiction sections below by hand, and attach the generated
+report as the evidence appendix.
+
 ## Engagement
 
 - Client:
