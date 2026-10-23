@@ -34,13 +34,8 @@ impl CryptoArgs {
     /// [`Error::Invalid`] for a missing or extra argument, [`Error::InvalidValue`] for a value that
     /// is not a Bitcoin mainnet address.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let LookupTokens { positional, save } = LookupTokens::split(args)?;
-        if positional.len() != 1 {
-            return Err(Error::Invalid(
-                "crypto needs exactly one Bitcoin address".into(),
-            ));
-        }
-        let address = canonical_address(&positional[0])?;
+        let (raw, save) = LookupTokens::single(args, "crypto needs exactly one Bitcoin address")?;
+        let address = canonical_address(&raw)?;
         Ok(Self { address, save })
     }
 }

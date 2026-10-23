@@ -48,6 +48,23 @@ impl LookupTokens {
         }
         Ok(Self { positional, save })
     }
+
+    /// [`split`](Self::split) for a command that takes exactly one value: that value and the
+    /// save path.
+    ///
+    /// # Errors
+    /// Every [`split`](Self::split) error, then [`Error::Invalid`] with `arity` unless there is
+    /// exactly one positional value.
+    pub fn single(args: &[String], arity: &str) -> Result<(String, Option<PathBuf>), Error> {
+        let Self {
+            mut positional,
+            save,
+        } = Self::split(args)?;
+        match (positional.pop(), positional.is_empty()) {
+            (Some(value), true) => Ok((value, save)),
+            _ => Err(Error::Invalid(arity.to_owned())),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -88,6 +105,30 @@ mod tests {
         assert_eq!(
             LookupTokens::split(&owned(&["--save", "--json"])),
             Err(Error::Invalid("--save needs a file path".into()))
+        );
+    }
+
+    #[test]
+    fn single_takes_exactly_one_value_after_the_shared_option_rules() {
+        let arity = "asn needs exactly one AS number";
+        assert_eq!(
+            LookupTokens::single(&owned(&["AS13335", "--save", "out.json"]), arity),
+            Ok(("AS13335".to_owned(), Some(PathBuf::from("out.json"))))
+        );
+        assert_eq!(
+            LookupTokens::single(&owned(&["AS13335"]), arity),
+            Ok(("AS13335".to_owned(), None))
+        );
+        for args in [&[][..], &["AS1", "AS2"][..]] {
+            assert_eq!(
+                LookupTokens::single(&owned(args), arity),
+                Err(Error::Invalid(arity.into())),
+                "{args:?}"
+            );
+        }
+        assert_eq!(
+            LookupTokens::single(&owned(&["AS1", "--save"]), arity),
+            Err(Error::Invalid("--save needs a value".into()))
         );
     }
 

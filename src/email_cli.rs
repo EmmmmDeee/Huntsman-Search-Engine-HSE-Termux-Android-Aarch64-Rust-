@@ -61,12 +61,9 @@ impl EmailArgs {
     /// # Errors
     /// Invalid or missing address, repeated `--save`, or an unknown option.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let LookupTokens { positional, save } = LookupTokens::split(args)?;
-        if positional.len() != 1 {
-            return Err(Error::Invalid("email needs exactly one ADDR".into()));
-        }
-        let email = canonical_email(&positional[0])
-            .ok_or_else(|| Error::invalid_value("invalid email address"))?;
+        let (raw, save) = LookupTokens::single(args, "email needs exactly one ADDR")?;
+        let email =
+            canonical_email(&raw).ok_or_else(|| Error::invalid_value("invalid email address"))?;
         Ok(Self { email, save })
     }
 }

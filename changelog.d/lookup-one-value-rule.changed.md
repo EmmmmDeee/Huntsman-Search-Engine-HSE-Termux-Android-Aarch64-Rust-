@@ -1,0 +1,3 @@
+- The ten one-value lookup commands (`asn`, `crypto`, `domain`, `email`, `exposure`, `ip`, `netblock`, `network`, `phone`, `username`) read their value through one `LookupTokens::single` rule. Their refusal texts are unchanged.
+- The `DeHashed` client shares its rate limiter directly instead of through a second lock that was held while it slept.
+- Unused items are gone: `hibp::rate_limit::RATE_LIMIT_ENV` (read `environment::HIBP_RATE_LIMIT_ENV`), `dehashed::query::MAX_LABEL_BYTES` and `MAX_EMAIL_LOCAL_BYTES` (the shared `value_syntax` rules own those bounds), and `Error::missing_field`, `terminate_refused`, `store`, `network` and `is_local_contract`. `Purpose::NAMES` is derived from the new `Purpose::ALL`.

@@ -11,9 +11,7 @@ use std::fmt;
 use thiserror::Error;
 
 pub const MAX_EMAIL_BYTES: usize = 254;
-pub const MAX_EMAIL_LOCAL_BYTES: usize = 64;
 pub const MAX_DOMAIN_BYTES: usize = 253;
-pub const MAX_LABEL_BYTES: usize = 63;
 pub const MAX_USERNAME_BYTES: usize = 64;
 
 /// The fields a search may target. Each maps to one `DeHashed` field name.
@@ -50,23 +48,30 @@ pub enum Purpose {
 }
 
 impl Purpose {
-    pub const NAMES: [&'static str; 4] = [
-        "own-account",
-        "authorized-engagement",
-        "incident-response",
-        "security-research",
+    pub const ALL: [Self; 4] = [
+        Self::OwnAccount,
+        Self::AuthorizedEngagement,
+        Self::IncidentResponse,
+        Self::SecurityResearch,
     ];
+
+    /// Every `--purpose` name, in [`ALL`](Self::ALL) order.
+    pub const NAMES: [&'static str; 4] = {
+        let mut names = [""; 4];
+        let mut i = 0;
+        while i < Self::ALL.len() {
+            names[i] = Self::ALL[i].as_str();
+            i += 1;
+        }
+        names
+    };
 
     /// Parse a `--purpose` value. Unknown purposes are an error, never a default.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "own-account" => Some(Self::OwnAccount),
-            "authorized-engagement" => Some(Self::AuthorizedEngagement),
-            "incident-response" => Some(Self::IncidentResponse),
-            "security-research" => Some(Self::SecurityResearch),
-            _ => None,
-        }
+        Self::ALL
+            .into_iter()
+            .find(|purpose| purpose.as_str() == raw)
     }
 
     #[must_use]
@@ -143,13 +148,12 @@ fn plain_ascii(value: &str) -> bool {
 }
 
 fn validate_email(value: &str) -> Result<(), QueryError> {
-    const RULE: &str = "email must be one address: at most 254 bytes, ASCII letters, digits and ._%+- in the local part, and a valid domain after @; wildcards are not allowed";
+    const RULE: &str = "email must be one address: at most 254 bytes, ASCII letters, digits and ._%+- in the local part (not starting or ending with '.', no '..'), and a valid domain after @; wildcards are not allowed";
     if value.len() > MAX_EMAIL_BYTES || !plain_ascii(value) {
         return Err(QueryError::Invalid(RULE));
     }
     let (local, domain) = value.split_once('@').ok_or(QueryError::Invalid(RULE))?;
-    let local_ok = !local.is_empty()
-        && local.len() <= MAX_EMAIL_LOCAL_BYTES
+    let local_ok = crate::value_syntax::email_local_error(local).is_none()
         && local
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._%+-".contains(&b));
@@ -164,16 +168,7 @@ fn validate_domain(value: &str) -> Result<(), QueryError> {
     if value.len() > MAX_DOMAIN_BYTES || !value.contains('.') || !plain_ascii(value) {
         return Err(QueryError::Invalid(RULE));
     }
-    let labels_ok = value.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= MAX_LABEL_BYTES
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    });
-    if labels_ok {
+    if value.split('.').all(crate::value_syntax::is_domain_label) {
         Ok(())
     } else {
         Err(QueryError::Invalid(RULE))
@@ -246,6 +241,9 @@ mod tests {
             "a@-x.example.com",
             "a@x-.example.com",
             "a@exa..mple.com",
+            ".a@example.com",
+            "a.@example.com",
+            "a..b@example.com",
         ] {
             assert!(
                 Selector::new(Field::Email, bad).is_err(),
@@ -256,10 +254,24 @@ mod tests {
         assert!(Selector::new(Field::Domain, &long_label).is_err());
         let long_local = format!("{}@example.com", "a".repeat(65));
         assert!(Selector::new(Field::Email, &long_local).is_err());
+        let max_label = format!("{}.com", "a".repeat(63));
+        assert!(Selector::new(Field::Domain, &max_label).is_ok());
+        let max_local = format!("{}@example.com", "a".repeat(64));
+        assert!(Selector::new(Field::Email, &max_local).is_ok());
+        assert!(Selector::new(Field::Email, "a.b%c+d@example.com").is_ok());
     }
 
     #[test]
     fn purpose_parses_only_declared_names() {
+        assert_eq!(
+            Purpose::NAMES,
+            [
+                "own-account",
+                "authorized-engagement",
+                "incident-response",
+                "security-research"
+            ]
+        );
         for name in Purpose::NAMES {
             let parsed = Purpose::parse(name).expect(name);
             assert_eq!(parsed.as_str(), name);

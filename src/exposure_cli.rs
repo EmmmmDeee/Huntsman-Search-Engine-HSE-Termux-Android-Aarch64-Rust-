@@ -424,11 +424,8 @@ impl ExposureArgs {
     /// # Errors
     /// Invalid or missing address, repeated `--save`, or an unknown option.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let LookupTokens { positional, save } = LookupTokens::split(args)?;
-        if positional.len() != 1 {
-            return Err(Error::Invalid("exposure needs exactly one ADDR".into()));
-        }
-        let selector = canonical_selector(&positional[0])
+        let (raw, save) = LookupTokens::single(args, "exposure needs exactly one ADDR")?;
+        let selector = canonical_selector(&raw)
             .ok_or_else(|| Error::invalid_value("not an email address or username"))?;
         Ok(Self { selector, save })
     }

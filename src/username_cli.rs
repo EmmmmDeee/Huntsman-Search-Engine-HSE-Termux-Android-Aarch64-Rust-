@@ -38,11 +38,8 @@ impl UsernameArgs {
     /// # Errors
     /// Invalid/missing handle, repeated `--save`, or an unknown option.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let LookupTokens { positional, save } = LookupTokens::split(args)?;
-        if positional.len() != 1 {
-            return Err(Error::Invalid("username needs exactly one HANDLE".into()));
-        }
-        let username = canonical_username(&positional[0])?;
+        let (raw, save) = LookupTokens::single(args, "username needs exactly one HANDLE")?;
+        let username = canonical_username(&raw)?;
         Ok(Self { username, save })
     }
 }

@@ -63,13 +63,11 @@ impl NetworkArgs {
     /// # Errors
     /// Invalid or missing selector, repeated `--save`, or an unknown option.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let LookupTokens { positional, save } = LookupTokens::split(args)?;
-        if positional.len() != 1 {
-            return Err(Error::Invalid(
-                "network needs exactly one BSSID, LAT,LON or ssid:NAME".into(),
-            ));
-        }
-        let selector = network_selector(&positional[0])
+        let (raw, save) = LookupTokens::single(
+            args,
+            "network needs exactly one BSSID, LAT,LON or ssid:NAME",
+        )?;
+        let selector = network_selector(&raw)
             .ok_or_else(|| Error::invalid_value("invalid network selector"))?;
         Ok(Self { selector, save })
     }

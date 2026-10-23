@@ -65,11 +65,8 @@ impl NetblockArgs {
     /// [`Error::Invalid`] for a missing or extra argument, [`Error::InvalidValue`] for a value
     /// that is not a public block.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let LookupTokens { positional, save } = LookupTokens::split(args)?;
-        if positional.len() != 1 {
-            return Err(Error::Invalid("netblock needs exactly one CIDR".into()));
-        }
-        let netblock = canonical_netblock(&positional[0])
+        let (raw, save) = LookupTokens::single(args, "netblock needs exactly one CIDR")?;
+        let netblock = canonical_netblock(&raw)
             .ok_or_else(|| Error::invalid_value("not a public address block (ADDRESS/PREFIX)"))?;
         Ok(Self { netblock, save })
     }

@@ -26,8 +26,10 @@
 //! Every request carries a `user-agent` (a missing one is a 403 per the docs)
 //! and, when keyed, the `hibp-api-key` header. Keyed calls pass the shared
 //! client-side [`RateLimiter`] first (default 10/min). A 429 pauses the limiter
-//! for the server's `retry-after` and retries a bounded number of times before
-//! returning [`HibpError::RateLimited`]. A 404 on a search endpoint means "not
+//! for the server's `retry-after` (at most an hour) and retries a bounded number
+//! of times before returning [`HibpError::RateLimited`]. While that pause has
+//! more than `max_retry_after` left, a later keyed call returns
+//! [`HibpError::RateLimited`] at once instead of sleeping it out. A 404 on a search endpoint means "not
 //! found" and returns `Ok(None)` (or an empty collection).
 //!
 //! Plan gating: the stealer-log and breached-account-range calls first read
@@ -440,7 +442,11 @@ impl HibpClient {
         let mut retries = 0u8;
         loop {
             if keyed {
-                self.limiter.acquire();
+                self.limiter
+                    .acquire_within(self.config.max_retry_after)
+                    .map_err(|remaining| HibpError::RateLimited {
+                        retry_after: Some(remaining),
+                    })?;
             }
             let mut req = Request::get(url)
                 .header("User-Agent", &self.config.user_agent)
@@ -453,7 +459,7 @@ impl HibpClient {
             if status == 429 {
                 let retry_after = retry_after(&resp);
                 let wait = retry_after.unwrap_or(Duration::from_secs(2));
-                self.limiter.block_for(wait)?;
+                self.limiter.block_for(wait);
                 if wait <= self.config.max_retry_after && retries < self.config.max_429_retries {
                     retries += 1;
                     if !keyed {

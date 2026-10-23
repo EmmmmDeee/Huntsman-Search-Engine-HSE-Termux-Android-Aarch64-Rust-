@@ -68,12 +68,9 @@ impl IpArgs {
     /// # Errors
     /// A missing or repeated address, an unknown option, or a value that is not a public address.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let LookupTokens { positional, save } = LookupTokens::split(args)?;
-        if positional.len() != 1 {
-            return Err(Error::Invalid("ip needs exactly one ADDRESS".into()));
-        }
-        let ip = canonical_ip(&positional[0])
-            .ok_or_else(|| Error::invalid_value("not a public IP address"))?;
+        let (raw, save) = LookupTokens::single(args, "ip needs exactly one ADDRESS")?;
+        let ip =
+            canonical_ip(&raw).ok_or_else(|| Error::invalid_value("not a public IP address"))?;
         Ok(Self { ip, save })
     }
 }
