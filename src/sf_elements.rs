@@ -1451,13 +1451,16 @@ mod tests {
             EntityKind::IpAddress,
             "198.51.100.7",
             "ripestat",
-            &[("origin_asns", "AS64512,AS13335,AS0,AS23456")],
+            &[(
+                "origin_asns",
+                "AS64512,AS13335,AS0,AS23456,ASN8075,AS 3356,AS+174",
+            )],
         );
         let shodan = entity(
             EntityKind::IpAddress,
             "198.51.100.8",
             "shodan",
-            &[("asn", "15169")],
+            &[("asn", "AS64500,15169")],
         );
         let found = elements(
             Target {
@@ -1471,7 +1474,7 @@ mod tests {
             .iter()
             .map(|element| element.data.as_str())
             .collect();
-        assert_eq!(members, ["AS13335", "AS15169"]);
+        assert_eq!(members, ["AS13335", "AS8075", "AS3356", "AS15169"]);
     }
 
     #[test]

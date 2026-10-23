@@ -293,7 +293,9 @@ fn overview_entities(
     1
 }
 
-/// Each neighbour as an AS, with its side and how widely the adjacency was seen.
+/// Each neighbour that is a public AS number as an AS, with its side and how widely the adjacency
+/// was seen. A reserved number in an AS path, such as `AS23456` (`AS_TRANS`) or a private AS, is
+/// no AS of its own, as for an origin.
 fn neighbour_entities(
     report: &mut Report,
     asn: &str,
@@ -303,7 +305,7 @@ fn neighbour_entities(
     let mut found = 0;
     for neighbour in &neighbours.neighbours {
         let value = format!("AS{}", neighbour.asn);
-        if value == asn {
+        if value == asn || !crate::canonical::is_public_asn(neighbour.asn) {
             continue;
         }
         let seen = Evidence::new(

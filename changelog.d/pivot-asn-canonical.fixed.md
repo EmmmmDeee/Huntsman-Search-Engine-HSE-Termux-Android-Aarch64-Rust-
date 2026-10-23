@@ -15,3 +15,6 @@
   `netblock` scan whose RIPEstat answer named `AS23456` or `AS64512` beside `AS13335` saved
   `AS23456` or `AS64512` as an AS the address or block belongs to; it now saves `AS13335` only.
   A scan saved earlier keeps the elements it was saved with.
+- An `asn` lookup's RIPEstat neighbours follow the same rule: a neighbour that is not a public AS
+  number, such as `AS23456` (`AS_TRANS`) or a private AS seen in an AS path, is no longer an ASN
+  entity or a saved `BGP_AS_MEMBER`; every public neighbour still is.

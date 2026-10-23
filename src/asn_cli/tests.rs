@@ -116,6 +116,26 @@ fn an_as_is_its_registration_holder_prefixes_and_neighbours() {
     );
 }
 
+/// A reserved neighbour in an AS path is no AS of its own; a public one beside it still is.
+#[test]
+fn a_reserved_neighbour_is_no_as() {
+    const RESERVED: &str = r#"{"status":"ok","data":{"resource":"13335","query_starttime":"2026-10-15T00:00:00","neighbour_counts":{"left":2,"right":1,"unique":3,"uncertain":0},"neighbours":[{"asn":23456,"type":"left","power":5,"v4_peers":5,"v6_peers":0},{"asn":64512,"type":"left","power":2,"v4_peers":2,"v6_peers":0},{"asn":13414,"type":"right","power":12,"v4_peers":40,"v6_peers":31}]}}"#;
+    let report = printed(run(&registry((200, RESERVED)), "as13335", 1));
+    let ases: Vec<&str> = report
+        .entities
+        .iter()
+        .filter(|entity| entity.kind == EntityKind::Asn)
+        .map(|entity| entity.raw_value.as_str())
+        .collect();
+    assert!(ases.contains(&"AS13414"), "{ases:?}");
+    assert!(
+        !ases
+            .iter()
+            .any(|asn| *asn == "AS23456" || *asn == "AS64512"),
+        "{ases:?}"
+    );
+}
+
 /// In a saved scan of the AS (`13335`, as Spiderfoot writes a `BGP_AS_OWNER`), every announced
 /// prefix is a block it owns, each neighbour an AS it is not, and the AS is never its own member.
 #[test]

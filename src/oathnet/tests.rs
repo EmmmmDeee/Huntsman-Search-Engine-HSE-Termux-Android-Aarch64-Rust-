@@ -209,7 +209,9 @@ fn a_credential_only_inside_a_list_or_object_is_still_exposed() {
     let body = serde_json::json!({"success": true, "data": {"items": [
         {"dbname": "in_object", "email": "user@example.com", "credentials": {"password": "hunter2"}},
         {"dbname": "in_list", "history": ["note", {"salt": "deep-salt"}]},
-        {"dbname": "blank", "profile": {"password": "", "hash": null, "salt": [], "bio": "hi"}}
+        {"dbname": "blank", "profile": {"password": "", "hash": null, "salt": [], "bio": "hi"}},
+        {"dbname": "blank_list", "history": ["note", {"password": ""}]},
+        {"dbname": "blank_deep", "profile": {"old": {"salt": "", "bio": "hi"}}}
     ]}});
     let search = decoded(&body);
     let rendered = format!("{search:?}");
@@ -223,11 +225,22 @@ fn a_credential_only_inside_a_list_or_object_is_still_exposed() {
         .collect();
     assert_eq!(
         exposed,
-        [("blank", false), ("in_list", true), ("in_object", true)]
+        [
+            ("blank", false),
+            ("blank_deep", false),
+            ("blank_list", false),
+            ("in_list", true),
+            ("in_object", true)
+        ]
     );
-    let blank = &search.breaches[0];
-    assert!(blank.fields.contains("profile"), "{blank:?}");
-    assert_eq!(blank.values.get("profile"), None, "{blank:?}");
+    // A blank credential at any depth exposes nothing, and its list or object is still held back.
+    for (breach, field) in search.breaches[..3]
+        .iter()
+        .zip(["profile", "profile", "history"])
+    {
+        assert!(breach.fields.contains(field), "{breach:?}");
+        assert_eq!(breach.values.get(field), None, "{breach:?}");
+    }
 }
 
 #[test]
