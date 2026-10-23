@@ -78,7 +78,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
             "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres."
         }
         "geohash" => {
-            "geohash LAT,LON [PRECISION]\nEncode coordinates as a geohash. Precision defaults to 7."
+            "geohash LAT,LON [PRECISION] | geohash HASH\nEncode coordinates as a geohash (precision defaults to 7), or decode a geohash to the centre and bounds of the cell it names."
         }
         "coarsen" => {
             "coarsen LAT,LON\nRound coordinates to one decimal place for approximate location sharing."

@@ -180,8 +180,9 @@ fn real_answers_read_with_their_compressed_names_and_records() {
     assert_eq!(filtered.extended_errors[0].describe(), "17 Filtered");
 }
 
-#[test]
-fn every_record_type_reads_in_presentation_form() {
+/// An answer carrying one record of each type the reader writes a presentation form for, an
+/// unknown type with data and one without, and an extended DNS error.
+fn every_record_type() -> Vec<u8> {
     let asked = query(7, "example.com", 255).expect("query");
     let mut caa = vec![0, 5];
     caa.extend_from_slice(b"issueletsencrypt.org");
@@ -193,7 +194,7 @@ fn every_record_type_reads_in_presentation_form() {
     for number in [2024_u32, 7200, 3600, 1_209_600, 300] {
         soa.extend_from_slice(&number.to_be_bytes());
     }
-    let body = answer(
+    answer(
         &asked,
         NOERROR,
         &[
@@ -214,8 +215,12 @@ fn every_record_type_reads_in_presentation_form() {
             (100, Rdata::Raw(Vec::new())),
         ],
         Some((0, "")),
-    );
-    let message = parse(&body).expect("answer");
+    )
+}
+
+#[test]
+fn every_record_type_reads_in_presentation_form() {
+    let message = parse(&every_record_type()).expect("answer");
     let forms: Vec<String> = message
         .answers
         .iter()
@@ -361,4 +366,34 @@ fn a_name_in_record_data_cannot_run_past_the_record() {
             exchange: "a".into()
         }
     );
+}
+
+/// Every corruption of real and built answers (a byte, an extreme count or pointer, a cut, a
+/// repeated stretch) is read or refused: none panics, however its names and counts point.
+#[test]
+fn a_corrupted_answer_is_read_or_refused_never_a_panic() {
+    for (name, body) in [
+        ("github", hex(GITHUB_A)),
+        ("txt", hex(EXAMPLE_TXT)),
+        ("filtered", hex(QUAD9_FILTERED)),
+        ("every type", every_record_type()),
+    ] {
+        for (case, bytes) in crate::test_support::mutations(&body, 0xD45_3E1F, 5_000)
+            .into_iter()
+            .enumerate()
+        {
+            let outcome = std::panic::catch_unwind(|| {
+                if let Ok(message) = parse(&bytes) {
+                    for record in &message.answers {
+                        let _ = record.data.presentation();
+                    }
+                    for error in &message.extended_errors {
+                        let _ = error.describe();
+                    }
+                }
+                let _ = question(&bytes);
+            });
+            assert!(outcome.is_ok(), "{name} case {case} panicked");
+        }
+    }
 }

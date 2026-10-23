@@ -514,3 +514,23 @@ fn an_impossible_gps_coordinate_gives_no_fix() {
     let edge = with(&[(97, 90), (105, 0), (121, 180), (129, 0)]).expect("the poles and 180");
     assert!((edge.lat - 90.0).abs() < 1e-9 && (edge.lon - 180.0).abs() < 1e-9);
 }
+
+/// Every corruption of a well-formed JPEG, TIFF, WebP and PNG (a byte, an extreme count or
+/// offset, a cut, a repeated stretch) is read or refused: none panics.
+#[test]
+fn a_corrupted_image_is_read_or_refused_never_a_panic() {
+    for (name, image) in [
+        ("jpeg", exif_jpeg()),
+        ("tiff", exif_tiff()),
+        ("webp", exif_webp(true)),
+        ("png", exif_png(true)),
+    ] {
+        for (case, bytes) in crate::test_support::mutations(&image, 0x5EED_0E1F, 3_000)
+            .into_iter()
+            .enumerate()
+        {
+            let outcome = std::panic::catch_unwind(|| parse(&bytes));
+            assert!(outcome.is_ok(), "{name} case {case} panicked");
+        }
+    }
+}

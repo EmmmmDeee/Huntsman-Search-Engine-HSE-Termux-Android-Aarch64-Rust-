@@ -26,13 +26,19 @@ pub(super) fn geo(args: &[String]) -> ExitCode {
 }
 
 pub(super) fn geohash_cmd(args: &[String]) -> ExitCode {
+    // A hash on its own, with no comma, is decoded to the cell it names.
+    if let [hash] = args {
+        if !hash.contains(',') {
+            return geohash_decode(hash);
+        }
+    }
     let (pair, precision) = match args {
         [pair] => (pair, None),
         [pair, precision] => (pair, Some(precision.as_str())),
         _ => {
             return fail(
                 EX_USAGE,
-                "usage: huntsman-recon geohash LAT,LON [PRECISION]",
+                "usage: huntsman-recon geohash LAT,LON [PRECISION] | geohash HASH",
             );
         }
     };
@@ -47,6 +53,21 @@ pub(super) fn geohash_cmd(args: &[String]) -> ExitCode {
     match geohash::encode(lat, lon, precision) {
         Ok(hash) => {
             println!("{hash}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(EX_DATAERR, &e.to_string()),
+    }
+}
+
+/// The cell a geohash names: its centre, then its bounds, one `key=value` per line.
+fn geohash_decode(hash: &str) -> ExitCode {
+    match geohash::decode(&hash.trim().to_ascii_lowercase()) {
+        Ok(cell) => {
+            let (lat, lon) = cell.center();
+            println!(
+                "center={lat:.8},{lon:.8}\nlat_min={:.8}\nlat_max={:.8}\nlon_min={:.8}\nlon_max={:.8}",
+                cell.lat_min, cell.lat_max, cell.lon_min, cell.lon_max
+            );
             ExitCode::SUCCESS
         }
         Err(e) => fail(EX_DATAERR, &e.to_string()),

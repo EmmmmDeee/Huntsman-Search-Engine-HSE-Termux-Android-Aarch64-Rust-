@@ -1123,6 +1123,27 @@ fn identifier_geohash_and_coarsen_commands() {
     );
     assert_eq!(run(&["geohash", "0,0", "99"]).0, Some(65));
     assert_eq!(run(&["geohash", "0,0", "x"]).0, Some(65));
+    // A hash on its own decodes to the cell it names, which holds the encoded point.
+    assert_eq!(
+        run(&["geohash", "u4pruydqqvj"]),
+        (
+            Some(0),
+            "center=57.64911063,10.40743969\nlat_min=57.64910996\nlat_max=57.64911130\n\
+             lon_min=10.40743902\nlon_max=10.40744036\n"
+                .into()
+        )
+    );
+    assert_eq!(run(&["geohash", "U4PRUYD"]).0, Some(0), "case is folded");
+    assert_eq!(
+        run(&["geohash", "u4pa"]).0,
+        Some(65),
+        "a is not in the alphabet"
+    );
+    assert_eq!(
+        run(&["geohash", "u4pruydqqvjxy"]).0,
+        Some(65),
+        "13 characters"
+    );
     assert_eq!(
         run(&["coarsen", "-27.4698,153.0251"]),
         (Some(0), "-27.5,153.0\n".into())
