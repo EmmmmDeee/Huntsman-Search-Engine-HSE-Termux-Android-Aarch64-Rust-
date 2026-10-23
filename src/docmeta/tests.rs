@@ -1085,3 +1085,41 @@ fn trailers_packed_with_info_references_are_read_in_linear_time() {
         .expect("the parse finishes in bounded time");
     assert_eq!(title.as_deref(), Some("Kept"));
 }
+
+#[test]
+fn document_fingerprint_tracks_exact_bytes_not_the_filename_or_editable_metadata() {
+    fn report_fingerprint(bytes: &[u8], name: &str) -> String {
+        let DocmetaRun::Printed { report, .. } = run(bytes, name, 123) else {
+            panic!("docmeta should accept arbitrary local file bytes");
+        };
+        let document = report
+            .entities
+            .iter()
+            .find(|entity| entity.kind == EntityKind::Document)
+            .expect("every file has a document entity");
+        let evidence = &document.evidence[0];
+        assert_eq!(
+            evidence
+                .attributes
+                .get("file_size_bytes")
+                .map(String::as_str),
+            Some("3")
+        );
+        assert_eq!(
+            evidence
+                .attributes
+                .get("file_hash_scope")
+                .map(String::as_str),
+            Some("exact_input_bytes")
+        );
+        evidence.attributes["file_sha256"].clone()
+    }
+
+    let original = report_fingerprint(b"abc", "first.txt");
+    assert_eq!(
+        original,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    assert_eq!(original, report_fingerprint(b"abc", "renamed.txt"));
+    assert_ne!(original, report_fingerprint(b"abd", "first.txt"));
+}
