@@ -2,6 +2,9 @@
 //!
 //! Does not collect, infer identities, or write a second evidence copy. Output is
 //! bounded; an over-limit scan fails explicitly instead of silently truncating.
+mod matrix;
+pub use matrix::{compile_matrix, matrix_raw_text};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
