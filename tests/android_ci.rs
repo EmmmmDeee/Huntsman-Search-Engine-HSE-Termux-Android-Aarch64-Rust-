@@ -44,7 +44,7 @@ fn ci_cross_builds_the_actual_termux_target() {
     }
 }
 
-/// The open flags that differ between x86_64 and aarch64 are tested where Termux runs: the
+/// The open flags that differ between `x86_64` and aarch64 are tested where Termux runs: the
 /// library's tests, the no-follow and non-blocking opens among them, run as aarch64 code.
 #[test]
 fn ci_runs_the_library_tests_as_aarch64_code() {
