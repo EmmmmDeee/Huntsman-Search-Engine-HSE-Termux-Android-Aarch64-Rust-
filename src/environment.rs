@@ -40,6 +40,8 @@ pub const SERVE_BIND_ENV: &str = "HSE_BIND";
 /// A PEM bundle of root certificates that replaces the bundled Mozilla roots for every
 /// outbound TLS connection, for networks that intercept TLS with their own CA.
 pub const CA_BUNDLE_ENV: &str = "HUNTSMAN_CA_BUNDLE";
+/// Optional operator-managed Nominatim-compatible HTTPS origin, without URL path.
+pub const NOMINATIM_BASE_URL_ENV: &str = "HUNTSMAN_NOMINATIM_BASE_URL";
 
 // Credential slots: keys-file names that `keys::Keys::get` also reads from the environment.
 pub const ABUSECH_KEY_ENV: &str = "HUNTSMAN_ABUSECH_KEY";
@@ -106,6 +108,7 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     HUNTSMAN_ENV_FILE_ENV,
     SERVE_BIND_ENV,
     CA_BUNDLE_ENV,
+    NOMINATIM_BASE_URL_ENV,
     ABUSECH_KEY_ENV,
     ABUSEIPDB_KEY_ENV,
     BRAVE_KEY_ENV,
@@ -183,6 +186,17 @@ pub fn prefix() -> Option<OsString> {
 #[must_use]
 pub fn ca_bundle() -> Option<OsString> {
     std::env::var_os(CA_BUNDLE_ENV).filter(|path| !path.is_empty())
+}
+
+/// The Nominatim-compatible HTTPS origin, when set. Preserve non-Unicode
+/// errors rather than silently restoring the public default.
+/// Other library modules must not read the process environment directly.
+pub fn nominatim_base_url() -> Result<Option<String>, std::env::VarError> {
+    match std::env::var(NOMINATIM_BASE_URL_ENV) {
+        Ok(origin) => Ok(Some(origin)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// The HIBP API key from the environment, when it is set and valid Unicode.
