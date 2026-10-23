@@ -79,6 +79,9 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
         || (seg[0] & 0xffc0) == 0xfec0 // deprecated site-local fec0::/10
         || (seg[0] == 0x2001 && seg[1] == 0) // Teredo 2001::/32
         || (seg[0] == 0x2001 && seg[1] == 0xdb8) // documentation
+        || (seg[0] == 0x3fff && seg[1] < 0x1000) // documentation 3fff::/20 (RFC 9637)
+        || (seg[0] == 0x2001 && seg[1] == 2 && seg[2] == 0) // benchmarking 2001:2::/48
+        || seg[..3] == [0x64, 0xff9b, 1] // local-use NAT64 64:ff9b:1::/48 (RFC 8215)
         || (seg[0] == 0x0100 && seg[1..4] == [0, 0, 0])) // discard-only 100::/64
 }
 
@@ -144,6 +147,12 @@ mod tests {
             "2002:7f00:1::1",
             "2002:c0a8:101::1",
             "100::1",
+            "64:ff9b:1::a00:1",
+            "64:ff9b:1:7f00:1::",
+            "2001:2::1",
+            "2001:2:0:ffff::1",
+            "3fff::1",
+            "3fff:fff:ffff::1",
         ] {
             assert!(!is_public_ip(ip(s)), "{s} must not be public");
         }
@@ -171,6 +180,11 @@ mod tests {
             "::ffff:8.8.8.8",
             "64:ff9b::808:808",
             "2002:808:808::1",
+            "64:ff9b:2::1",
+            "2001:2:1::1",
+            "3ffe:ffff::1",
+            "3fff:1000::1",
+            "4000::1",
         ] {
             assert!(is_public_ip(ip(s)), "{s} should be public");
         }
