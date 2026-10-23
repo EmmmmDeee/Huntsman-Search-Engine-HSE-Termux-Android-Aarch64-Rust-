@@ -221,7 +221,8 @@ fn signature(value: &Value, strip_clock: bool, kind: &str) -> Result<String, Str
 fn change(now: &Row, previous: &Row) -> Result<&'static str, String> {
     if signature(&now.raw, false, now.kind)? == signature(&previous.raw, false, previous.kind)? {
         Ok("unchanged")
-    } else if signature(&now.raw, true, now.kind)? == signature(&previous.raw, true, previous.kind)? {
+    } else if signature(&now.raw, true, now.kind)? == signature(&previous.raw, true, previous.kind)?
+    {
         Ok("reobserved")
     } else {
         Ok("changed")
