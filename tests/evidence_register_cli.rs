@@ -59,6 +59,7 @@ fn evidence_export_preserves_raw_and_supports_delta() {
     let text = String::from_utf8(raw.stdout).expect("utf8 evidence");
     assert!(text.starts_with("[HUNTSMAN_EVIDENCE]"));
     assert!(text.contains("RAW_DATA:"));
+    assert!(text.contains("UNCERTAINTY_REGISTER:"));
     assert!(text.contains("[END_RECORD]"));
 
     let report = run(&home, &["scans", "evidence", &second, "--json"]);
@@ -70,6 +71,7 @@ fn evidence_export_preserves_raw_and_supports_delta() {
     let parsed: serde_json::Value = serde_json::from_slice(&report.stdout).expect("evidence JSON");
     assert_eq!(parsed["status"], "FULL_REGISTER");
     assert_eq!(parsed["truncated"], false);
+    assert!(parsed["uncertainty_register"]["items"].is_array());
     assert!(parsed["current_record_count"].as_u64().unwrap_or(0) > 0);
     assert!(
         parsed["records"]
