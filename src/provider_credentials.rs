@@ -376,14 +376,24 @@ pub const PROVIDERS: &[Provider] = &[
     },
 ];
 
+/// The slots that read a second name, as `(slot, alias)`: `HUNTSMAN_HIBP_KEY` falls back to a
+/// `HIBP_API_KEY` entry, HIBP's own name for the same key. A slot reads its alias only when the
+/// slot itself is unset.
+pub(crate) const SLOT_FALLBACKS: &[(&str, &str)] = &[(
+    crate::environment::HUNTSMAN_HIBP_KEY_ENV,
+    crate::environment::HIBP_API_KEY_ENV,
+)];
+
 /// The secret `keys` holds for `slot`: the one rule from a slot to its key, which
 /// `credential-status` reports with and a lookup must use. `HUNTSMAN_HIBP_KEY` falls back to a
 /// `HIBP_API_KEY` entry, HIBP's own name for the same key.
 #[must_use]
 pub fn secret_for_slot(keys: &Keys, slot: &str) -> Option<Secret> {
-    keys.get(slot).or_else(|| match slot {
-        crate::environment::HUNTSMAN_HIBP_KEY_ENV => keys.get(crate::environment::HIBP_API_KEY_ENV),
-        _ => None,
+    keys.get(slot).or_else(|| {
+        SLOT_FALLBACKS
+            .iter()
+            .find(|(fallback, _)| *fallback == slot)
+            .and_then(|(_, alias)| keys.get(alias))
     })
 }
 

@@ -18,7 +18,7 @@ static TEMP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 /// exited. A margin against a writer that has only just gone.
 const STALE_TEMP_AGE: Duration = Duration::from_secs(10 * 60);
 
-fn store_err(path: &Path, e: &std::io::Error) -> Error {
+pub(crate) fn store_err(path: &Path, e: &std::io::Error) -> Error {
     Error::Store(format!("{}: {e}", path.display()))
 }
 
@@ -187,6 +187,12 @@ fn read_opened(path: &Path, linked: &fs::Metadata, file: File, max: u64) -> Resu
         )));
     }
     require_regular_file(path, &opened)?;
+    read_to_bound(path, file, max)
+}
+
+/// At most `max` bytes of `file`, opened from `path` and already checked: a file that holds more
+/// is refused without reading past `max + 1` bytes, even if it grew after the check.
+pub(crate) fn read_to_bound(path: &Path, file: File, max: u64) -> Result<Vec<u8>, Error> {
     let mut body = Vec::new();
     file.take(max.saturating_add(1))
         .read_to_end(&mut body)
