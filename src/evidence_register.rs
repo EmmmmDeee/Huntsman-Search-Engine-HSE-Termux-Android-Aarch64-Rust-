@@ -35,40 +35,55 @@ fn stable_id(kind: &str, identifier: &str) -> String {
     format!("HSE-{}", &hex32(&sha256(&key))[..20])
 }
 
-fn insert(
-    target: &mut BTreeMap<String, Row>,
-    kind: &'static str,
-    identifier: String,
-    source: Option<String>,
-    observed_at_unix: Option<u64>,
-    raw: Value,
-    links: BTreeSet<String>,
-    false_positive: bool,
-) -> Result<(), String> {
+impl Row {
+    fn new(kind: &'static str, identifier: String, raw: Value) -> Self {
+        let id = stable_id(kind, &identifier);
+        Self {
+            id,
+            kind,
+            identifier,
+            source: None,
+            observed_at_unix: None,
+            raw,
+            links: BTreeSet::new(),
+            false_positive: false,
+        }
+    }
+
+    fn sourced(mut self, source: &str) -> Self {
+        self.source = Some(source.to_owned());
+        self
+    }
+
+    fn observed(mut self, at: u64) -> Self {
+        self.observed_at_unix = Some(at);
+        self
+    }
+
+    fn linked(mut self, links: BTreeSet<String>) -> Self {
+        self.links = links;
+        self
+    }
+
+    fn flagged(mut self, flagged: bool) -> Self {
+        self.false_positive = flagged;
+        self
+    }
+}
+
+fn insert(target: &mut BTreeMap<String, Row>, row: Row) -> Result<(), String> {
+    if target.contains_key(&row.id) {
+        return Err(format!(
+            "duplicate evidence record {}; no observation discarded",
+            row.id
+        ));
+    }
     if target.len() >= MAX_RECORDS {
         return Err(format!(
             "evidence register exceeds {MAX_RECORDS} records; no records omitted"
         ));
     }
-    let id = stable_id(kind, &identifier);
-    if target.contains_key(&id) {
-        return Err(format!(
-            "duplicate evidence record {id}; no observation discarded"
-        ));
-    }
-    target.insert(
-        id.clone(),
-        Row {
-            id,
-            kind,
-            identifier,
-            source,
-            observed_at_unix,
-            raw,
-            links,
-            false_positive,
-        },
-    );
+    target.insert(row.id.clone(), row);
     Ok(())
 }
 
@@ -77,13 +92,7 @@ fn rows(saved: &ScanResults) -> Result<BTreeMap<String, Row>, String> {
     for entity in &saved.entities {
         insert(
             &mut output,
-            "entity",
-            entity.uid.clone(),
-            None,
-            Some(entity.observed_at_unix),
-            json!(entity),
-            BTreeSet::new(),
-            false,
+            Row::new("entity", entity.uid.clone(), json!(entity)).observed(entity.observed_at_unix),
         )?;
     }
     for element in &saved.elements {
@@ -96,13 +105,11 @@ fn rows(saved: &ScanResults) -> Result<BTreeMap<String, Row>, String> {
         }
         insert(
             &mut output,
-            "element",
-            element.id.clone(),
-            Some(element.module.clone()),
-            Some(element.created / 1_000),
-            json!(element),
-            links,
-            element.fp,
+            Row::new("element", element.id.clone(), json!(element))
+                .sourced(&element.module)
+                .observed(element.created / 1_000)
+                .linked(links)
+                .flagged(element.fp),
         )?;
     }
     let mut source_sequence: BTreeMap<&str, usize> = BTreeMap::new();
@@ -111,13 +118,13 @@ fn rows(saved: &ScanResults) -> Result<BTreeMap<String, Row>, String> {
         *ordinal += 1;
         insert(
             &mut output,
-            "source_outcome",
-            format!("{}:{}", outcome.module, ordinal),
-            Some(outcome.module.clone()),
-            Some(outcome.observed_at_unix),
-            json!(outcome),
-            BTreeSet::new(),
-            false,
+            Row::new(
+                "source_outcome",
+                format!("{}:{ordinal}", outcome.module),
+                json!(outcome),
+            )
+            .sourced(&outcome.module)
+            .observed(outcome.observed_at_unix),
         )?;
     }
     for correlation in &saved.correlations {
@@ -128,41 +135,25 @@ fn rows(saved: &ScanResults) -> Result<BTreeMap<String, Row>, String> {
             .collect();
         insert(
             &mut output,
-            "correlation",
-            correlation.id.clone(),
-            Some(correlation.origin.clone()),
-            None,
-            json!(correlation),
-            links,
-            false,
+            Row::new("correlation", correlation.id.clone(), json!(correlation))
+                .sourced(&correlation.origin)
+                .linked(links),
         )?;
     }
     for (position, pivot) in saved.lineage.iter().enumerate() {
         insert(
             &mut output,
-            "lineage",
-            position.to_string(),
-            None,
-            None,
-            json!(pivot),
-            BTreeSet::new(),
-            false,
+            Row::new("lineage", position.to_string(), json!(pivot)),
         )?;
     }
     if let Some(reason) = &saved.termination {
         insert(
             &mut output,
-            "termination",
-            "scan".to_owned(),
-            None,
-            None,
-            json!(reason),
-            BTreeSet::new(),
-            false,
+            Row::new("termination", "scan".to_owned(), json!(reason)),
         )?;
     }
 
-    // A link must resolve inside the scan. Do not invent edges to unavailable records.
+    // Retain only explicit references that resolve inside this scan.
     let existing: BTreeSet<String> = output.keys().cloned().collect();
     let mut reverse: Vec<(String, String)> = Vec::new();
     for row in output.values_mut() {
@@ -350,7 +341,7 @@ pub fn compile(
     Ok(report)
 }
 
-/// Lossless field-labelled raw text view. Raw JSON remains embedded in RAW_DATA,
+/// Lossless field-labelled raw text view. Raw JSON remains embedded in `RAW_DATA`,
 /// while terminal-hostile control characters are escaped only for display.
 ///
 /// # Errors
@@ -398,29 +389,9 @@ mod tests {
         assert_eq!(stable_id("element", "x"), stable_id("element", "x"));
         assert_ne!(stable_id("element", "x"), stable_id("entity", "x"));
         let mut saved = BTreeMap::new();
-        insert(
-            &mut saved,
-            "element",
-            "x".into(),
-            None,
-            None,
-            json!({"x":1}),
-            BTreeSet::new(),
-            false,
-        )
-        .unwrap();
+        insert(&mut saved, Row::new("element", "x".into(), json!({"x":1}))).unwrap();
         assert!(
-            insert(
-                &mut saved,
-                "element",
-                "x".into(),
-                None,
-                None,
-                json!({"x":2}),
-                BTreeSet::new(),
-                false
-            )
-            .is_err()
+            insert(&mut saved, Row::new("element", "x".into(), json!({"x":2}))).is_err()
         );
     }
 
