@@ -512,10 +512,10 @@ fn key_words(key: &str) -> Vec<String> {
     let mut word = String::new();
     let mut previous_lower = false;
     for c in key.chars() {
-        if !c.is_ascii_alphanumeric() || (previous_lower && c.is_ascii_uppercase()) {
-            if !word.is_empty() {
-                words.push(std::mem::take(&mut word));
-            }
+        if (!c.is_ascii_alphanumeric() || (previous_lower && c.is_ascii_uppercase()))
+            && !word.is_empty()
+        {
+            words.push(std::mem::take(&mut word));
         }
         if c.is_ascii_alphanumeric() {
             word.push(c.to_ascii_lowercase());

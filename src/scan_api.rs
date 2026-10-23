@@ -181,7 +181,7 @@ fn key_slots() -> Vec<(&'static str, Vec<&'static str>)> {
 }
 
 /// Whether a module whose key slots are `slots` is set up: every slot it needs holds a key, an
-/// alias standing in for its slot (WiGLE needs both of its slots; HIBP's one slot may be set
+/// alias standing in for its slot (`WiGLE` needs both of its slots; HIBP's one slot may be set
 /// through `HIBP_API_KEY`, which is not needed beside it). **Pure.**
 fn slots_set(slots: &[&str], set: impl Fn(&str) -> bool) -> bool {
     let fallbacks = crate::provider_credentials::SLOT_FALLBACKS;
@@ -1271,7 +1271,7 @@ mod tests {
         serde_json::from_slice(&response.body).unwrap()
     }
 
-    /// WiGLE is set up only with both of its slots; HIBP's one slot may be set through its alias.
+    /// `WiGLE` is set up only with both of its slots; HIBP's one slot may be set through its alias.
     #[test]
     fn a_module_is_set_only_when_every_slot_it_needs_holds_a_key() {
         use crate::environment::{
