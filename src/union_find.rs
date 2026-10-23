@@ -17,16 +17,6 @@ impl UnionFind {
         }
     }
 
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.parent.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.parent.is_empty()
-    }
-
     pub fn find(&mut self, mut index: usize) -> usize {
         while self.parent[index] != index {
             self.parent[index] = self.parent[self.parent[index]];

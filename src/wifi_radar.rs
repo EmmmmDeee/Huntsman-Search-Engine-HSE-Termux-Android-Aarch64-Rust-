@@ -58,14 +58,8 @@ pub fn valid_wifi_bssid(value: &str) -> bool {
     if matches!(address.as_str(), "00:00:00:00:00:00" | "02:00:00:00:00:00") {
         return false;
     }
-    let Some(first) = address.split(':').next() else {
-        return false;
-    };
-    let Ok(first_byte) = u8::from_str_radix(first, 16) else {
-        return false;
-    };
     // IEEE 802 I/G low bit distinguishes group/broadcast from individual.
-    first_byte & 1 == 0
+    crate::oui::is_multicast(&address) == Some(false)
 }
 
 /// Age Android boot-relative scan timestamps without precision-losing integer casts.

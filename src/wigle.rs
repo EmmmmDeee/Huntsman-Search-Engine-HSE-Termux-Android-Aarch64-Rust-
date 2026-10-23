@@ -29,7 +29,7 @@ use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport, TransportConfig, percent_encode_component};
 use crate::keys::Keys;
 use crate::provider_credentials::{WigleCredentialError, wigle_credential};
-use crate::redact::scrub_secrets;
+use crate::redact::{scrub_bounded, scrub_secrets};
 use crate::rf::{
     RadioKind, RfSighting, RfSource, canonical_network_id, classify_wigle_type, is_mac,
 };
@@ -474,11 +474,7 @@ fn text(row: &Map<String, Value>, key: &str, secrets: &[&str]) -> Option<String>
 /// Provider text as a report may show it: secrets scrubbed first, then at most
 /// [`TEXT_MAX_CHARS`] characters, control characters replaced. **Pure.**
 fn clean(value: &str, secrets: &[&str]) -> String {
-    scrub_secrets(value, secrets)
-        .chars()
-        .take(TEXT_MAX_CHARS)
-        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
-        .collect()
+    scrub_bounded(value, secrets, TEXT_MAX_CHARS)
 }
 
 /// A body that is not the envelope: the error's category and position, never serde's message,

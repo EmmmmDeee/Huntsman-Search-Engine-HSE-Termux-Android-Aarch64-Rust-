@@ -79,10 +79,32 @@ pub fn scrub_secrets(text: &str, secrets: &[&str]) -> String {
     out
 }
 
+/// `text` as a diagnostic or report may show it, in this order: every secret scrubbed (first, so
+/// a truncation cannot cut a key into a fragment the scrubber no longer matches), then at most
+/// `max_chars` characters (on a char boundary), then every control character replaced by U+FFFD
+/// one for one. **Pure.**
+#[must_use]
+pub fn scrub_bounded(text: &str, secrets: &[&str], max_chars: usize) -> String {
+    scrub_secrets(text, secrets)
+        .chars()
+        .take(max_chars)
+        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)] // exact 0.0/1.0 sentinels are the contract under test
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrub_bounded_scrubs_before_it_cuts_and_neutralises_controls() {
+        // Cut first, "key=abcd" would keep "ab", a fragment the scrubber no longer matches.
+        assert_eq!(scrub_bounded("key=abcd", &["abcd"], 6), "key=[r");
+        assert_eq!(scrub_bounded("a\u{1b}[2Jb", &[], 10), "a\u{fffd}[2Jb");
+        assert_eq!(scrub_bounded("é\u{7}é", &[], 2), "é\u{fffd}");
+        assert_eq!(scrub_bounded("", &["x"], 3), "");
+    }
 
     #[test]
     fn coordinates_are_coarsened_and_validated() {

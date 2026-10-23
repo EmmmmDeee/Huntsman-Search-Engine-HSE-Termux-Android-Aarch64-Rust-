@@ -1369,10 +1369,7 @@ impl ScanService {
 
     /// How far the scan followed what it found, and why it stopped there.
     fn log_crawl(&self, id: &str, options: &ScanOptions, report: &RecursionReport) {
-        let reason = serde_json::to_value(report.termination)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_default();
+        let reason = report.termination.as_str();
         let detail = match report.termination {
             TerminationReason::Cancelled => {
                 "stop requested; the lookups still queued did not run".to_owned()

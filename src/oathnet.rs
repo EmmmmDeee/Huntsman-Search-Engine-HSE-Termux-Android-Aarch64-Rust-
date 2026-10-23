@@ -30,7 +30,7 @@ use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
 use crate::http::{Request, Response, Transport, TransportConfig, percent_encode_component};
 use crate::keys::{Keys, Secret};
-use crate::redact::scrub_secrets;
+use crate::redact::{scrub_bounded, scrub_secrets};
 use crate::source_outcome::SourceOutcomeKind;
 
 /// Source label of this leg in outcomes, evidence and saved ledgers.
@@ -530,11 +530,7 @@ fn decode_error(e: &serde_json::Error) -> OathnetError {
 /// The provider's message as a diagnostic may show it: secrets scrubbed first, then at most
 /// [`PROVIDER_WORDS_MAX_CHARS`] characters, control characters replaced. **Pure.**
 fn provider_words(message: &str, secrets: &[&str]) -> String {
-    scrub_secrets(message, secrets)
-        .chars()
-        .take(PROVIDER_WORDS_MAX_CHARS)
-        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
-        .collect()
+    scrub_bounded(message, secrets, PROVIDER_WORDS_MAX_CHARS)
 }
 
 #[cfg(test)]

@@ -7,6 +7,8 @@ use crate::entity::Entity;
 use crate::graph::{EntityRelation, Graph};
 use crate::metrics::fraction;
 
+/// The effective confidence below which a found entity is not followed: the default of
+/// `RecursionPolicy::expand_confidence_floor`, and the floor the gap report names.
 pub const EXPAND_FLOOR: f64 = 0.50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

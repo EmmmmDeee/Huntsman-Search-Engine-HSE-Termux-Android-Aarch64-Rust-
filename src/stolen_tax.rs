@@ -60,7 +60,7 @@ use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, normalise}
 use crate::fetch::{AuthStyle, Credential, FetchOptions, Fetched, RedirectPolicy, fetch_within};
 use crate::http::{Request, Transport, TransportConfig};
 use crate::keys::{Keys, Secret};
-use crate::redact::scrub_secrets;
+use crate::redact::{scrub_bounded, scrub_secrets};
 use crate::source_outcome::SourceOutcomeKind;
 
 const SRC: &str = "stolen_tax";
@@ -471,11 +471,7 @@ fn decode_error_text(e: &serde_json::Error) -> String {
 /// characters (on a char boundary), then every control character replaced by
 /// U+FFFD one for one. **Pure.**
 fn provider_words(message: &str, secrets: &[&str]) -> String {
-    scrub_secrets(message, secrets)
-        .chars()
-        .take(PROVIDER_WORDS_MAX_CHARS)
-        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
-        .collect()
+    scrub_bounded(message, secrets, PROVIDER_WORDS_MAX_CHARS)
 }
 
 /// Merge the cascade into the report, or fail when there is nothing to report and a

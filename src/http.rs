@@ -410,7 +410,7 @@ pub fn redact_url(url: &str) -> String {
         None => base.to_owned(),
     };
     if query {
-        format!("{base}?[redacted]")
+        format!("{base}?{REDACTED}")
     } else {
         base
     }

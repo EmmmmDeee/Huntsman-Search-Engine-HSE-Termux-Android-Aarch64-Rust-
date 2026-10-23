@@ -1,11 +1,6 @@
 //! Evidence ladder and claim status. Status is not implied by a catalog row.
 
-use std::fmt;
-use std::str::FromStr;
-
 use serde::{Deserialize, Serialize};
-
-use crate::error::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,29 +32,6 @@ impl EvidenceLevel {
     #[must_use]
     pub fn admits_interop(self) -> bool {
         self >= Self::DirectObservation
-    }
-}
-
-impl fmt::Display for EvidenceLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for EvidenceLevel {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "assertion" => Ok(Self::Assertion),
-            "derived_evidence" => Ok(Self::DerivedEvidence),
-            "primary_evidence" => Ok(Self::PrimaryEvidence),
-            "independent_corroboration" => Ok(Self::IndependentCorroboration),
-            "direct_observation" => Ok(Self::DirectObservation),
-            "reproduction" => Ok(Self::Reproduction),
-            "end_to_end_demonstration" => Ok(Self::EndToEndDemonstration),
-            other => Err(Error::Invalid(format!("unknown evidence level: {other}"))),
-        }
     }
 }
 

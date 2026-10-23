@@ -220,10 +220,7 @@ impl HibpCommand {
 
     fn account(&self, email: &str) -> Outcome {
         let (client, _) = self.keyed()?;
-        let options = BreachedAccountOptions {
-            truncate_response: Some(false),
-            ..BreachedAccountOptions::default()
-        };
+        let options = BreachedAccountOptions::full_model();
         let models = client.breached_account(email, &options)?;
         let mut out = header("api-v3", HIBP_ATTRIBUTION, models.len());
         line(&mut out, "query", email.trim());

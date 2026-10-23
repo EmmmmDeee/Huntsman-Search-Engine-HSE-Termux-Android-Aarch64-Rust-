@@ -2,10 +2,8 @@
 
 use serde::Deserialize;
 
-use crate::atproto::{
-    bare_handle, handle_domain_confidence, is_dns_label, is_handle, platform_handle_suffix,
-};
-use crate::canonical::canonical_domain;
+use crate::atproto::{bare_handle, handle_domain_confidence, platform_handle_suffix};
+use crate::canonical::{canonical_domain, is_domain_label};
 use crate::classifier;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
@@ -59,9 +57,9 @@ pub fn lookup<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<Report, Error> {
     let selector = username.trim().trim_start_matches('@').to_ascii_lowercase();
-    let actor = if is_dns_label(&selector) {
+    let actor = if is_domain_label(&selector) {
         format!("{selector}.bsky.social")
-    } else if is_handle(&selector) {
+    } else if canonical_domain(&selector).is_some() {
         selector.clone()
     } else {
         return Ok(Report {
@@ -225,7 +223,7 @@ fn build_entities(profile: &Profile, scan_id: &str) -> Vec<Entity> {
             &mut entities,
             EntityKind::Domain,
             domain,
-            handle_domain_confidence(true, domain),
+            handle_domain_confidence(domain),
             scan_id,
             profile_evidence.clone(),
             &["bluesky", "custom-handle", "verified-control"],

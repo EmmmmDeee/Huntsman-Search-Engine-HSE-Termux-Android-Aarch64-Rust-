@@ -127,7 +127,9 @@ pub fn phone_e164_error(value: &str) -> Option<PhoneE164Error> {
     None
 }
 
-fn valid_domain_label(label: &str) -> bool {
+/// One DNS label: 1 to 63 ASCII letters, digits or hyphens, not starting or ending with a hyphen.
+#[must_use]
+pub fn is_domain_label(label: &str) -> bool {
     !label.is_empty()
         && label.len() <= 63
         && !label.starts_with('-')
@@ -248,7 +250,7 @@ pub fn canonical_domain(raw: &str) -> Option<String> {
         return None;
     }
     let labels: Vec<&str> = domain.split('.').collect();
-    if labels.len() < 2 || !labels.iter().all(|label| valid_domain_label(label)) {
+    if labels.len() < 2 || !labels.iter().all(|label| is_domain_label(label)) {
         return None;
     }
     Some(domain)
@@ -476,6 +478,27 @@ mod form_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_and_dotted_handles_follow_the_domain_rules() {
+        assert!(is_domain_label("alice"));
+        assert!(is_domain_label("a-b"));
+        assert!(!is_domain_label("_alice"));
+        assert!(!is_domain_label("-alice"));
+        assert!(!is_domain_label("alice-"));
+        assert!(!is_domain_label(""));
+        assert!(!is_domain_label(&"a".repeat(64)));
+        assert!(!is_domain_label("café"));
+        assert!(canonical_domain("alice.dev").is_some());
+        assert!(canonical_domain(" Example.COM. ").is_some());
+        assert!(canonical_domain("a-b.example").is_some());
+        assert!(canonical_domain("alice").is_none());
+        assert!(canonical_domain("-bad.example").is_none());
+        assert!(canonical_domain("bad-.example").is_none());
+        assert!(canonical_domain("bad..example").is_none());
+        assert!(canonical_domain("bad_example.com").is_none());
+        assert!(canonical_domain("example.café").is_none());
+    }
 
     #[test]
     fn iana_tlds_are_sorted_and_recognised() {
