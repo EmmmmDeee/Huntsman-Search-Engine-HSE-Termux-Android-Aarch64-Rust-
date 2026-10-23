@@ -228,10 +228,8 @@ mod tests {
 
     #[test]
     fn observation_order_does_not_change_matrix_cells() {
-        let earlier = grouped(&[element("z", "dns", false), element("a", "dns", true)])
-            .unwrap();
-        let later = grouped(&[element("a", "dns", true), element("z", "dns", false)])
-            .unwrap();
+        let earlier = grouped(&[element("z", "dns", false), element("a", "dns", true)]).unwrap();
+        let later = grouped(&[element("a", "dns", true), element("z", "dns", false)]).unwrap();
         let first = render_row(
             "INTERNET_NAME",
             "example.org",
