@@ -240,6 +240,11 @@ fn nothing_held_is_a_valid_zero_and_a_failure_is_its_own_row() {
     assert!(leg.entities.is_empty());
 
     let leg = domain(&Net::with(&[]), "example.net", "s", 1);
+    assert!(
+        matches!(leg.error, Some(LegError::Transport(_))),
+        "{:?}",
+        leg.error
+    );
     let outcome = leg.outcome.expect("a row");
     assert_eq!(outcome.kind, SourceOutcomeKind::ConnectFailure);
     assert!(leg.entities.is_empty());
@@ -247,4 +252,21 @@ fn nothing_held_is_a_valid_zero_and_a_failure_is_its_own_row() {
     let net = Net::with(&[(&page("example.net", 0), 503, "busy")]);
     let outcome = domain(&net, "example.net", "s", 1).outcome.expect("a row");
     assert_eq!(outcome.http_status, Some(503));
+}
+
+#[test]
+fn a_host_is_a_canonical_name_and_never_a_reverse_zone_or_wildcard_name() {
+    assert_eq!(host(" Example.COM. ").as_deref(), Some("example.com"));
+    assert_eq!(host("gist.github.com").as_deref(), Some("gist.github.com"));
+    for name in [
+        "*.example.com",
+        "a%b.example.com",
+        "130.251.184.91.in-addr.arpa",
+        "x.in-addr.ARPA.",
+        "arpa.",
+        "com",
+        "",
+    ] {
+        assert_eq!(host(name), None, "{name:?}");
+    }
 }

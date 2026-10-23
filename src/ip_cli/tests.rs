@@ -391,7 +391,7 @@ fn no_network_at_all_fails_and_a_refusal_is_a_network_refusal() {
     match run(&transport, &Keys::default(), "8.8.8.8", 1) {
         IpRun::Failed(message) => assert_eq!(
             message,
-            "no source answered for ip 8.8.8.8: internetdb: no response (ConnectFailure)"
+            "no source answered for ip 8.8.8.8: mnemonic: no response (ConnectFailure)"
         ),
         IpRun::Network(message) => panic!("network: {message}"),
         IpRun::Printed { text, .. } => panic!("printed: {text}"),
@@ -400,10 +400,29 @@ fn no_network_at_all_fails_and_a_refusal_is_a_network_refusal() {
     match run(&Refusing, &Keys::default(), "8.8.8.8", 1) {
         IpRun::Network(message) => {
             assert!(
-                message.starts_with("internetdb: request refused"),
+                message.starts_with("mnemonic: request refused"),
                 "{message}"
             );
         }
+        IpRun::Failed(message) => panic!("failed: {message}"),
+        IpRun::Printed { text, .. } => panic!("printed: {text}"),
+    }
+}
+
+/// A scan that chose only `mnemonic` (`scans run 93.184.215.14 -m mnemonic`), where the egress
+/// policy refuses Mnemonic, is a network refusal (exit 77) carrying Mnemonic's reason. Before,
+/// the leg kept only its row and the lookup failed with no reason (exit 69).
+#[test]
+fn a_refused_mnemonic_leg_alone_is_a_network_refusal_with_its_reason() {
+    let chosen = crate::module_selection::Selected::new(
+        Refusing,
+        crate::module_selection::Selection::only([crate::mnemonic::SOURCE]),
+    );
+    match run(&chosen, &Keys::default(), "93.184.215.14", 1) {
+        IpRun::Network(message) => assert!(
+            message.starts_with("mnemonic: request refused before sending: network: egress-policy"),
+            "{message}"
+        ),
         IpRun::Failed(message) => panic!("failed: {message}"),
         IpRun::Printed { text, .. } => panic!("printed: {text}"),
     }

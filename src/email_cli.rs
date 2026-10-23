@@ -694,6 +694,47 @@ mod tests {
         );
     }
 
+    /// An address `XposedOrNot` lists in a breach carries the `breach` tag the exposure score
+    /// reads, as HIBP, `OathNet` and `DeHashed` hits do. It used to carry `breached`, which nothing
+    /// scored.
+    #[test]
+    fn an_xposedornot_breach_scores_as_breach_exposure() {
+        let unkeyed = ScriptedTransport::new(vec![
+            Ok(reply(404, "")),
+            Ok(reply(200, r#"{"users":[]}"#)),
+            Ok(reply(404, "No key found")),
+            Ok(reply(
+                200,
+                r#"{"success":1,"email":{"value":"x","appears":0,"frequency":0}}"#,
+            )),
+            Ok(reply(200, r#"{"disposable":false}"#)),
+            Ok(reply(200, r#"{"breaches":[["Artsy","MyHeritage"]]}"#)),
+        ]);
+        let EmailRun::Printed { report, .. } =
+            run_keyed(&unkeyed, &Keys::default(), "ada@example.com", 1)
+        else {
+            panic!("email run did not print");
+        };
+        let address = report
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "ada@example.com")
+            .expect("the address");
+        assert!(address.has_tag(crate::tags::BREACH), "{:?}", address.tags);
+        let scored = crate::exposure::compute_exposure(&report.entities);
+        let reasons = scored
+            .iter()
+            .find(|f| f.uid == address.uid)
+            .map(|f| f.reasons.clone())
+            .unwrap_or_default();
+        assert!(
+            reasons
+                .iter()
+                .any(|r| r.tag == crate::tags::BREACH && r.weight == 20),
+            "{reasons:?}"
+        );
+    }
+
     #[test]
     fn configured_keys_run_their_sources_and_each_key_goes_only_to_its_provider() {
         let keys = Keys::parse(&format!(
