@@ -522,8 +522,317 @@ fn classify(mac: &str) -> (Option<String>, Option<String>) {
     }
 }
 
+/// The most sweeps the track log keeps; an older sweep is dropped as a new one is added.
+pub const MAX_TRACK_SWEEPS: usize = 256;
+/// The most devices one logged sweep keeps, in the order the sweep listed them.
+pub const MAX_TRACK_DEVICES: usize = 128;
+/// The largest track log read or written.
+pub const MAX_TRACK_LOG_BYTES: u64 = 4 * 1024 * 1024;
+/// A follower must be seen in at least this many distinct cells: two places can be one commute.
+pub const FOLLOWER_MIN_CELLS: usize = 3;
+/// And over at least this long, so one crowded moment is not a tail.
+pub const FOLLOWER_MIN_SPAN_SECS: u64 = 600;
+
+/// One Wi-Fi sweep as the track log keeps it: when it was taken, the coarse place it was taken
+/// at (the registered serving cell, when the phone had one), and the stable devices it saw.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LoggedSweep {
+    pub ts: u64,
+    #[serde(default)]
+    pub cell: Option<String>,
+    pub devices: Vec<LoggedDevice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LoggedDevice {
+    pub mac: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl LoggedSweep {
+    /// A sweep of `devices` at `ts` in `cell`. Randomized and locally administered addresses are
+    /// not kept: they cannot be told apart across sweeps, so keeping them would only record what
+    /// the phone happened to hear. Duplicates are kept once, and at most [`MAX_TRACK_DEVICES`].
+    #[must_use]
+    pub fn new(
+        ts: u64,
+        cell: Option<String>,
+        devices: impl IntoIterator<Item = LoggedDevice>,
+    ) -> Self {
+        let mut seen = HashSet::new();
+        let devices = devices
+            .into_iter()
+            .filter_map(|device| {
+                let mac = device.mac.trim().to_ascii_lowercase();
+                (stable_identity(&mac, false) && seen.insert(mac.clone())).then(|| LoggedDevice {
+                    mac,
+                    name: device.name.filter(|name| !name.trim().is_empty()),
+                })
+            })
+            .take(MAX_TRACK_DEVICES)
+            .collect();
+        Self {
+            ts,
+            cell: cell.filter(|cell| !cell.trim().is_empty()),
+            devices,
+        }
+    }
+}
+
+/// The sweeps of a track log, one JSON object per line, oldest first. A line that does not parse
+/// is skipped and counted, so one damaged line does not lose the rest of the history. **Pure.**
+#[must_use]
+pub fn parse_track_log(bytes: &[u8]) -> (Vec<LoggedSweep>, usize) {
+    let mut skipped = 0;
+    let sweeps = bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
+        .filter_map(|line| {
+            let parsed = serde_json::from_slice::<LoggedSweep>(line).ok();
+            skipped += usize::from(parsed.is_none());
+            parsed
+        })
+        .collect();
+    (sweeps, skipped)
+}
+
+/// `sweeps` with `sweep` added, as the log's bytes: the newest [`MAX_TRACK_SWEEPS`] that fit in
+/// [`MAX_TRACK_LOG_BYTES`], oldest first. **Pure.**
+#[must_use]
+pub fn append_track_log(mut sweeps: Vec<LoggedSweep>, sweep: LoggedSweep) -> Vec<u8> {
+    sweeps.push(sweep);
+    let mut lines: Vec<Vec<u8>> = sweeps
+        .iter()
+        .rev()
+        .take(MAX_TRACK_SWEEPS)
+        .filter_map(|sweep| serde_json::to_vec(sweep).ok())
+        .collect();
+    let limit = usize::try_from(MAX_TRACK_LOG_BYTES).unwrap_or(usize::MAX);
+    let mut total = 0;
+    lines.retain(|line| {
+        total += line.len() + 1;
+        total <= limit
+    });
+    lines.reverse();
+    let mut out = Vec::with_capacity(total);
+    for line in lines {
+        out.extend_from_slice(&line);
+        out.push(b'\n');
+    }
+    out
+}
+
+/// What the track log shows: devices that recur across sweeps, and devices seen in several of the
+/// operator's distinct places, a personal-safety signal that something moved with the operator.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TrackReport {
+    pub sweeps: usize,
+    pub located_sweeps: usize,
+    pub distinct_cells: usize,
+    pub skipped_lines: usize,
+    pub recurring: Vec<RecurringDevice>,
+    pub followers: Vec<FollowerCandidate>,
+}
+
+/// The recurring devices and follower candidates of the logged `sweeps`. A sweep without a cell
+/// counts towards recurrence but not towards following, which needs to know where it was taken.
+/// **Pure.**
+#[must_use]
+pub fn track(sweeps: &[LoggedSweep], skipped_lines: usize) -> TrackReport {
+    let as_sweeps: Vec<Sweep> = sweeps
+        .iter()
+        .enumerate()
+        .map(|(index, sweep)| Sweep {
+            scan_id: index.to_string(),
+            ts: sweep.ts,
+            devices: sweep
+                .devices
+                .iter()
+                .map(|device| SweepObservation {
+                    mac: device.mac.clone(),
+                    name: device.name.clone(),
+                    bonded: false,
+                })
+                .collect(),
+        })
+        .collect();
+    let sightings: Vec<FollowerSighting> = sweeps
+        .iter()
+        .filter_map(|sweep| sweep.cell.as_ref().map(|cell| (sweep, cell)))
+        .flat_map(|(sweep, cell)| {
+            // A sighting with no address marks the place as one the operator was, so a place
+            // where nothing stable was heard still counts against every device's coverage.
+            let place = FollowerSighting {
+                mac: String::new(),
+                bonded: false,
+                ts: sweep.ts,
+                cell: cell.clone(),
+            };
+            std::iter::once(place).chain(sweep.devices.iter().map(|device| FollowerSighting {
+                mac: device.mac.clone(),
+                bonded: false,
+                ts: sweep.ts,
+                cell: cell.clone(),
+            }))
+        })
+        .collect();
+    let cells: HashSet<&str> = sweeps
+        .iter()
+        .filter_map(|sweep| sweep.cell.as_deref())
+        .collect();
+    TrackReport {
+        sweeps: sweeps.len(),
+        located_sweeps: sweeps.iter().filter(|sweep| sweep.cell.is_some()).count(),
+        distinct_cells: cells.len(),
+        skipped_lines,
+        recurring: recurring_devices(&as_sweeps, 2),
+        followers: follower_candidates(&sightings, FOLLOWER_MIN_CELLS, FOLLOWER_MIN_SPAN_SECS),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    fn device(mac: &str, name: &str) -> LoggedDevice {
+        LoggedDevice {
+            mac: mac.into(),
+            name: Some(name.into()),
+        }
+    }
+
+    /// A phone hotspot carried by someone else, a home access point and a randomized address.
+    const TAIL: &str = "00:11:22:33:44:55";
+    const HOME: &str = "00:aa:bb:cc:dd:ee";
+    const RANDOM: &str = "da:a1:19:00:00:01";
+
+    #[test]
+    fn a_logged_sweep_keeps_stable_addresses_once_and_drops_randomized_ones() {
+        let sweep = LoggedSweep::new(
+            5,
+            Some(" ".into()),
+            [
+                device(&TAIL.to_ascii_uppercase(), "car"),
+                device(TAIL, "car again"),
+                device(RANDOM, "phone"),
+                device(HOME, ""),
+            ],
+        );
+        assert_eq!(sweep.cell, None);
+        assert_eq!(
+            sweep.devices,
+            [
+                device(TAIL, "car"),
+                LoggedDevice {
+                    mac: HOME.into(),
+                    name: None
+                }
+            ]
+        );
+        let many = (0..=MAX_TRACK_DEVICES)
+            .map(|n| device(&format!("00:00:00:00:{:02x}:{:02x}", n / 256, n % 256), "x"));
+        assert_eq!(
+            LoggedSweep::new(1, None, many).devices.len(),
+            MAX_TRACK_DEVICES
+        );
+    }
+
+    /// A device heard in three of the operator's places over twenty minutes is a follower; the
+    /// home access point heard twice at home only recurs; a sweep without a cell counts towards
+    /// recurrence, never towards following.
+    #[test]
+    fn the_track_log_separates_a_follower_from_a_fixture() {
+        let sweeps = [
+            LoggedSweep::new(
+                0,
+                Some("lte:505-01-1-10".into()),
+                [device(TAIL, "car"), device(HOME, "home")],
+            ),
+            LoggedSweep::new(300, Some("lte:505-01-1-20".into()), [device(TAIL, "car")]),
+            LoggedSweep::new(900, Some("lte:505-01-2-30".into()), [device(TAIL, "car")]),
+            LoggedSweep::new(
+                1_200,
+                Some("lte:505-01-1-10".into()),
+                [device(HOME, "home")],
+            ),
+            LoggedSweep::new(1_500, None, [device(HOME, "home"), device(RANDOM, "phone")]),
+            // A place where nothing stable was heard is still a place the operator was.
+            LoggedSweep::new(1_800, Some("lte:505-01-3-40".into()), []),
+        ];
+        let report = track(&sweeps, 1);
+        assert_eq!(
+            (
+                report.sweeps,
+                report.located_sweeps,
+                report.distinct_cells,
+                report.skipped_lines
+            ),
+            (6, 5, 4, 1)
+        );
+        assert_eq!(report.followers.len(), 1, "{report:?}");
+        let follower = &report.followers[0];
+        assert_eq!(
+            (
+                follower.mac.as_str(),
+                follower.distinct_cells,
+                follower.span_secs
+            ),
+            (TAIL, 3, 900)
+        );
+        assert!(
+            (follower.coverage - 0.75).abs() < 1e-9,
+            "{}",
+            follower.coverage
+        );
+        let recurring: Vec<(&str, usize)> = report
+            .recurring
+            .iter()
+            .map(|device| (device.mac.as_str(), device.sweeps_seen))
+            .collect();
+        assert!(
+            recurring.contains(&(HOME, 3)) && recurring.contains(&(TAIL, 3)),
+            "{recurring:?}"
+        );
+        assert!(report.recurring.iter().all(|device| device.mac != RANDOM));
+
+        // Two places, or three within a few minutes, are not a tail.
+        assert!(track(&sweeps[..2], 0).followers.is_empty());
+        let quick: Vec<LoggedSweep> = sweeps[..3]
+            .iter()
+            .cloned()
+            .map(|mut sweep| {
+                sweep.ts /= 10;
+                sweep
+            })
+            .collect();
+        assert!(track(&quick, 0).followers.is_empty());
+    }
+
+    #[test]
+    fn the_track_log_keeps_its_newest_sweeps_and_survives_a_damaged_line() {
+        let mut bytes = Vec::new();
+        for ts in 0..(MAX_TRACK_SWEEPS as u64 + 5) {
+            let (sweeps, skipped) = parse_track_log(&bytes);
+            assert_eq!(skipped, 0);
+            bytes = append_track_log(
+                sweeps,
+                LoggedSweep::new(ts, Some("c".into()), [device(HOME, "home")]),
+            );
+        }
+        let (sweeps, _) = parse_track_log(&bytes);
+        assert_eq!(sweeps.len(), MAX_TRACK_SWEEPS);
+        assert_eq!(sweeps[0].ts, 5);
+        assert_eq!(
+            sweeps.last().map(|sweep| sweep.ts),
+            Some(MAX_TRACK_SWEEPS as u64 + 4)
+        );
+
+        let damaged =
+            b"{\"ts\":1,\"devices\":[]}\nnot json\n\n{\"ts\":2,\"cell\":\"c\",\"devices\":[]}\n";
+        let (sweeps, skipped) = parse_track_log(damaged);
+        assert_eq!((sweeps.len(), skipped), (2, 1));
+    }
+
     use super::*;
 
     const HW1: &str = "3C:5A:B4:11:22:33";

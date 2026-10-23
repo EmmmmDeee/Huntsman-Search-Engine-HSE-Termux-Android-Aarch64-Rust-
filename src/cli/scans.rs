@@ -73,6 +73,11 @@ fn state_dir() -> Option<PathBuf> {
         })
 }
 
+/// `$HUNTSMAN_HOME/radar/sweeps.jsonl`, else `~/.huntsman/radar/sweeps.jsonl`: `radar track`'s log.
+pub(super) fn default_radar_log() -> Option<PathBuf> {
+    state_dir().map(|state| state.join("radar").join("sweeps.jsonl"))
+}
+
 /// `$HUNTSMAN_HOME/scans`, else `~/.huntsman/scans`.
 pub(super) fn default_scan_dir() -> Option<PathBuf> {
     state_dir().map(|state| state.join("scans"))

@@ -144,7 +144,7 @@ profiles	runtime	entity profiles through intelligence report
 proof	leaf	bounded proof-environment bookkeeping
 provider_credentials	leaf	provider credential completeness manifest
 pulsedive	adapter	Pulsedive leg reached through indicator_legs from ip, domain, scan and /api/lookup
-radar	leaf	radar model utility
+radar	leaf	cross-sweep recurrence and follower detection over the private sweep log, reached through cli/radar.rs from radar track; its Bluetooth live tracker (BtRadarState) has no rootless Termux source and no caller yet
 recon	leaf	seed kinds the crtsh lookup and the domain recon front-ends share
 recursion	runtime	bounded fetch-expand-fetch crawl orchestration and termination
 rdap	adapter	keyless RDAP registration client reached through rdap_legs from domain, ip, scan and /api/lookup

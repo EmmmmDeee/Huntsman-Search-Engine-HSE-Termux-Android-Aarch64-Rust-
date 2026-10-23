@@ -131,7 +131,7 @@ const TEST_ROOT: &str = "tests or examples";
 /// decides to wire them into the binary or delete them: module, owner, why it is kept. The list
 /// only shrinks: an entry for a module that is gone, shipped or a tested `diagnostic` fails the
 /// test.
-const PENDING_OWNER_DECISION: [(&str, &str, &str); 6] = [
+const PENDING_OWNER_DECISION: [(&str, &str, &str); 5] = [
     (
         "claim_coverage",
         "JEFF DEAN, RALF JUNG",
@@ -156,11 +156,6 @@ const PENDING_OWNER_DECISION: [(&str, &str, &str); 6] = [
         "resolve",
         "JEFF DEAN, RALF JUNG",
         "L1 automatic_clusters, named only by tests/person_resolution_homonym_live_capture.rs",
-    ),
-    (
-        "radar",
-        "JEFF DEAN",
-        "sweep and Bluetooth tracking nothing names; wire it into `radar` or delete it",
     ),
 ];
 
