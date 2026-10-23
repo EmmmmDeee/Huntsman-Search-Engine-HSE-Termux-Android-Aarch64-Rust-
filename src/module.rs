@@ -434,6 +434,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public Bluesky profile lookup",
     },
     ReachableModule {
+        name: "mastodon_user",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.001"],
+        description: "public Mastodon account lookup on mastodon.social",
+    },
+    ReachableModule {
         name: "keybase",
         command: "username HANDLE",
         access: "keyless",
@@ -1430,6 +1439,7 @@ mod tests {
             crate::openpgp_keys::SRC,
             crate::github_user::SRC,
             crate::bluesky_user::SRC,
+            crate::mastodon_user::SRC,
             crate::keybase::SRC,
             crate::blockchain::SOURCE,
             crate::itunes::SOURCE,
