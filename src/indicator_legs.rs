@@ -10,6 +10,7 @@
 use crate::canonical::{
     canonical_asn, canonical_coordinates, canonical_domain, canonical_email, canonical_ip,
 };
+use crate::concurrent::{self, Job};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::http::Transport;
 use crate::indicator_sources::{DynTransport, Finding, Indicator, PivotKind, Source};
@@ -54,6 +55,9 @@ const SEED_CONFIDENCE: f64 = 0.90;
 /// Confidence of an indicator a provider ties to it.
 const PIVOT_CONFIDENCE: f64 = 0.60;
 
+/// One source's answer: what it found, nothing, or why it could not say.
+type Answer = Result<Option<Finding>, crate::api_leg::LegError>;
+
 /// What the indicator legs produced.
 #[derive(Debug, Default)]
 pub struct Legs {
@@ -82,13 +86,33 @@ pub fn run<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Legs {
     let transport = DynTransport(transport);
+    let sources: Vec<&'static Source> = planned(indicator, keys)
+        .into_iter()
+        .filter(|source| transport.runs_module(source.api.source))
+        .collect();
+    // Each source asks its own provider, so through a transport threads may share they are all
+    // asked at once and the lookup takes as long as the slowest; through one they cannot, one
+    // after another. Either way the answers are folded in the sources' order, so the report is
+    // the same.
+    let answers: Vec<Answer> = match transport.shared() {
+        Some(shared) => concurrent::all(
+            sources
+                .iter()
+                .map(|source| {
+                    let lookup = source.lookup;
+                    Box::new(move || lookup(shared, keys, indicator, now_unix)) as Job<'_, Answer>
+                })
+                .collect(),
+        ),
+        None => sources
+            .iter()
+            .map(|source| (source.lookup)(&transport, keys, indicator, now_unix))
+            .collect(),
+    };
     let mut legs = Legs::default();
-    for source in planned(indicator, keys) {
-        if !transport.runs_module(source.api.source) {
-            continue;
-        }
+    for (source, answer) in sources.into_iter().zip(answers) {
         let api = source.api;
-        match (source.lookup)(&transport, keys, indicator, now_unix) {
+        match answer {
             Ok(Some(finding)) => {
                 let count = fold(&mut legs.entities, indicator, scan_id, api.source, finding);
                 legs.outcomes.push(
@@ -258,6 +282,87 @@ mod tests {
         );
         assert!(legs.network.is_some());
         assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 11);
+    }
+
+    /// A transport threads may share whose every answer is an empty document after `delay`, so
+    /// no source's circuit opens and each one really sends; it counts what was sent.
+    struct SlowShared {
+        sent: Mutex<usize>,
+        delay: std::time::Duration,
+    }
+
+    impl Transport for SlowShared {
+        fn send(&self, _request: &Request) -> Result<Response, TransportFailure> {
+            std::thread::sleep(self.delay);
+            *self
+                .sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+            Ok(Response {
+                status: 200,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: b"{}".to_vec(),
+                truncated: false,
+            })
+        }
+
+        fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+            Some(self)
+        }
+    }
+
+    fn modules(legs: &Legs) -> Vec<&str> {
+        legs.outcomes.iter().map(|o| o.module.as_str()).collect()
+    }
+
+    /// Through a transport threads may share, every leg is asked at once: a dozen legs that each
+    /// wait 200 ms answer in well under a second, not their sum, and in the same order.
+    #[test]
+    fn through_a_shared_transport_the_legs_are_asked_at_once_in_order() {
+        let keys = all_keys();
+        let indicator = Indicator::Domain("example.com");
+        let sequential = run(&Offline::default(), &keys, indicator, "s", 1);
+        let slow = SlowShared {
+            sent: Mutex::new(0),
+            delay: std::time::Duration::from_millis(200),
+        };
+        let started = std::time::Instant::now();
+        let shared = run(&slow, &keys, indicator, "s", 1);
+        let took = started.elapsed();
+        let asked = shared.outcomes.len();
+        assert!(asked >= 10, "{:?}", modules(&shared));
+        assert_eq!(modules(&shared), modules(&sequential));
+        let sent = *slow
+            .sent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(sent >= asked, "{sent} requests for {asked} legs");
+        assert!(
+            took < std::time::Duration::from_millis(1_000),
+            "{asked} legs of 200 ms took {took:?}"
+        );
+    }
+
+    /// A shared transport is still held to the scan's chosen modules: the others send nothing.
+    #[test]
+    fn a_shared_selection_still_asks_only_the_chosen_modules() {
+        let slow = SlowShared {
+            sent: Mutex::new(0),
+            delay: std::time::Duration::ZERO,
+        };
+        let chosen = crate::module_selection::Selected::new(
+            slow,
+            crate::module_selection::Selection::only(["otx", "robtex"]),
+        );
+        assert!(chosen.shared().is_some());
+        let legs = run(
+            &chosen,
+            &all_keys(),
+            Indicator::Domain("example.com"),
+            "s",
+            1,
+        );
+        assert_eq!(modules(&legs), ["otx", "robtex"]);
     }
 
     #[test]

@@ -302,6 +302,13 @@ pub trait Transport {
     fn runs_module(&self, _module: &str) -> bool {
         true
     }
+
+    /// This transport as one several threads may share, when it is one. A lookup with several
+    /// independent sources to ask asks them all at once through it, and one after another
+    /// through a transport that cannot be shared; the answers fold the same either way.
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        None
+    }
 }
 
 /// The longest one UDP exchange waits for its answer.
@@ -699,6 +706,10 @@ impl Default for UreqTransport {
 }
 
 impl Transport for UreqTransport {
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        Some(self)
+    }
+
     fn resolve(&self, name: &str) -> Result<Vec<IpAddr>, TransportFailure> {
         if let Some(failure) = self.misconfigured() {
             return Err(failure);

@@ -235,6 +235,10 @@ impl<T: Transport + ?Sized> Transport for DynTransport<'_, T> {
     fn runs_module(&self, module: &str) -> bool {
         self.0.runs_module(module)
     }
+
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        self.0.shared()
+    }
 }
 
 #[cfg(test)]
