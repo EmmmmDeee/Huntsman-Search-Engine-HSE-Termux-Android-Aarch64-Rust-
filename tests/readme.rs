@@ -162,6 +162,16 @@ fn readme_examples_run_as_written() {
             fs::copy(&path, dir.join("docs").join(path.file_name().unwrap())).unwrap();
         }
     }
+    // Preserve the README case-check fixture paths while exercising examples in
+    // an isolated directory; no network or original checkout is accessed.
+    fs::create_dir_all(dir.join("examples")).unwrap();
+    for filename in ["vero-case-evidence.json", "vero-case-advert.txt"] {
+        fs::copy(
+            root().join("examples").join(filename),
+            dir.join("examples").join(filename),
+        )
+        .unwrap();
+    }
     let keys = dir.join("keys.env");
     fs::write(&keys, "EXAMPLE_KEY=k3y-8f2a91\n").unwrap();
     #[cfg(unix)]

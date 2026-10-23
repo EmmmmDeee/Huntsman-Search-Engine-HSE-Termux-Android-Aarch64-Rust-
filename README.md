@@ -155,7 +155,8 @@ cargo run -- search "brisbane port" docs/
 cargo run -- sources example.com       # classify + build curated routes; no network
 cargo run -- domain-lifecycle analyze docs/domain-lifecycle-example.json --as-of 1000  # offline timeline comparison
 cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
-cargo run -- id "53 004 085 616"        # ABN/ACN/BSB, strict grouping
+cargo run -- id "53 004 085 616"
+cargo run -- case-check examples/vero-case-evidence.json examples/vero-case-advert.txt  # verify the original advertisement SHA-256 and reference structure offline        # ABN/ACN/BSB, strict grouping
 cargo run -- geohash -27.4698,153.0251 9
 cargo run -- geohash r7hgdpm # decode: the cell's centre and bounds
 cargo run -- coarsen -27.4698,153.0251 # one decimal place, ~11 km
@@ -174,6 +175,7 @@ cargo run -- exposure nobody@example.com  # HIBP account + stolen.tax + OathNet 
 cargo run -- exposure @some_handle  # the same for a username: stolen.tax + OathNet (HIBP and DeHashed search addresses only)
 cargo run -- username octocat             # variants + public GitHub/Bluesky/Mastodon lookups, plus stolen.tax/OathNet when keyed
 cargo run -- phone "0412 345 678"           # offline E.164 + AU numbering-plan classification
+cargo run -- phone "+1 416 555 0199"        # NANP: plan validity, (416) 555-0199 form, class, Canada
 cargo run -- domain example.com             # crt.sh names, Cert Spotter certificates, DNS records over DoH, each subdomain resolved; network
 cargo run -- ip 1.1.1.1                    # PTR + InternetDB + RIPEstat + GreyNoise, keyed legs when set; network
 cargo run -- netblock 1.1.1.0/24            # RDAP + RIPEstat + the PTR names of every address in the block; network

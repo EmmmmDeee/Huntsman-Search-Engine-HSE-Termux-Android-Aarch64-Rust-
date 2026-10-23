@@ -1,0 +1,1 @@
+- Add a bounded offline public-business OSINT case verifier with advertisement hashing, source-reference checks, unresolved-claim preservation and a documented Bendigo example; no new network client or runtime dependency.

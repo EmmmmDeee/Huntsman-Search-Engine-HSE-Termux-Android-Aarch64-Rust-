@@ -284,6 +284,23 @@ RS
   probe_dir=""
 }
 
+# Parallel compile jobs for a source build: one per GiB of memory the phone can spare, at most
+# one per CPU and at least one. Cargo's default of one job per CPU runs eight release rustc
+# processes on a phone with a few GiB free, and Android's low-memory killer then ends Termux
+# mid-build. An explicit CARGO_BUILD_JOBS is the operator's and is kept. Prints nothing when
+# the available memory cannot be read, leaving Cargo's default.
+build_jobs() {
+  local meminfo="${HUNTSMAN_PROC_ROOT:-/proc}/meminfo" available_kib cpus jobs
+  available_kib="$(awk '$1 == "MemAvailable:" { print $2; exit }' "$meminfo" 2>/dev/null)"
+  [[ "$available_kib" =~ ^[0-9]+$ ]] || return 0
+  cpus="$(nproc 2>/dev/null || printf 1)"
+  [[ "$cpus" =~ ^[0-9]+$ && "$cpus" -ge 1 ]] || cpus=1
+  jobs=$((available_kib / 1048576))
+  ((jobs > cpus)) && jobs="$cpus"
+  ((jobs < 1)) && jobs=1
+  printf '%s\n' "$jobs"
+}
+
 install_recon() {
   cargo install   --git "$REPO"   --rev "$install_rev"   --locked   --root "$INSTALL_ROOT"   "$@"   huntsman-recon
 }
@@ -297,6 +314,14 @@ build_from_source() {
   # Embed the resolved commit so `huntsman-recon build-sha` and diagnostics name the
   # source on the phone, the same way CI and release builds do.
   export HUNTSMAN_BUILD_SHA="$install_rev"
+  if [[ -z "${CARGO_BUILD_JOBS:-}" ]]; then
+    local jobs
+    jobs="$(build_jobs)"
+    if [[ -n "$jobs" ]]; then
+      export CARGO_BUILD_JOBS="$jobs"
+      printf 'Building with %s parallel job(s), sized to the memory available.\n' "$jobs"
+    fi
+  fi
 
   local installed_sha
   install_recon

@@ -40,7 +40,10 @@ order:
    embedded. When Cargo keeps an already-installed binary whose `build-sha`
    does not match (for example one built before the SHA was embedded), the
    installer rebuilds once with `--force` and fails if the result still does
-   not match.
+   not match. It runs one compile job per GiB of `MemAvailable`, at most one
+   per CPU and at least one, so a phone with a few GiB free is not pushed into
+   Android's low-memory killer mid-build; set `CARGO_BUILD_JOBS` to choose the
+   number yourself.
 
 A published build that fails its checksum, `build-sha` or acceptance stops the
 install with the old binary untouched; it never falls back to compiling. The

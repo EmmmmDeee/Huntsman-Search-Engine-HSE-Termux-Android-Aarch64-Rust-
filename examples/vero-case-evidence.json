@@ -1,0 +1,76 @@
+{
+  "schema_version": "3.0",
+  "case_id": "HSE-AU-20261024-VERO",
+  "primary_input": {
+    "literal_text": "Hi everyone, are there any operators in the Bendigo region available for a surveillance job tomorrow (Thurs 8 Oct). 3pm ~8pm. Please reach out to me by phone 0485 839 556 or by email at chris@veroinvestigationgroup.com. Cheers.\n",
+    "literal_sha256": "860cc17ef81b1f1078ad0ace42867635dd666deeb59b0de65ab8cb19e7f6d7b4",
+    "bytes": 228,
+    "year": null,
+    "original_url": null
+  },
+  "sources": [
+    {
+      "id": "ORIGINAL",
+      "source_type": "user_chat_literal"
+    },
+    {
+      "id": "ABR",
+      "source_type": "government_registry",
+      "url": "https://abr.business.gov.au/ABN/View?id=65689136383"
+    },
+    {
+      "id": "VERO",
+      "source_type": "first_party_website",
+      "url": "https://www.veroinvestigationgroup.com/"
+    },
+    {
+      "id": "VIC_REGISTER",
+      "source_type": "government_guidance",
+      "url": "https://www.police.vic.gov.au/register-licence-registration-and-permit-holders"
+    }
+  ],
+  "facts_and_assessments": [
+    {
+      "id": "C01",
+      "class": "verified_primary_record",
+      "assertion": "ABR registration identifies the named company, not the author of the advertisement.",
+      "sources": [
+        "ABR"
+      ]
+    },
+    {
+      "id": "C02",
+      "class": "first_party_corroboration",
+      "assertion": "Advert contact information matches the published company details.",
+      "sources": [
+        "VERO",
+        "ORIGINAL"
+      ]
+    },
+    {
+      "id": "C03",
+      "class": "unverified",
+      "assertion": "Original advertisement authorship.",
+      "sources": [
+        "ORIGINAL"
+      ]
+    },
+    {
+      "id": "C04",
+      "class": "unverified",
+      "assertion": "Investigator licence status and endorsements; guidance page is not holder record.",
+      "sources": [
+        "VIC_REGISTER",
+        "VERO"
+      ]
+    },
+    {
+      "id": "C05",
+      "class": "inference_not_verified",
+      "assertion": "Assignment year is 2026.",
+      "sources": [
+        "ORIGINAL"
+      ]
+    }
+  ]
+}
