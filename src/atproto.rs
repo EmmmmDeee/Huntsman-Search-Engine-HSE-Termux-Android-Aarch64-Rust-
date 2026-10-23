@@ -55,7 +55,7 @@ pub fn handle_domain_confidence(handle: &str) -> f64 {
 }
 
 pub const DOMAIN_HANDLE_ATTRIBUTION: &str = "AT Protocol verifies a domain handle by DNS TXT at _atproto.<domain> or by HTTPS /.well-known/atproto-did while the handle is in force";
-pub const DOMAIN_HANDLE_CAVEAT: &str = "A domain handle proves DNS or web-root control at the time, not ongoing domain registration ownership; operator-issued subdomain handles should be corroborated separately";
+pub const DOMAIN_HANDLE_CAVEAT: &str = "A domain handle proves DNS or web-root control at the time, not ongoing domain registration ownership. Operator-issued subdomain handles should be corroborated separately";
 
 #[cfg(test)]
 mod tests {
