@@ -38,6 +38,12 @@ impl CredentialFingerprint {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The first 12 hex digits: the redacted form output prints in place of the digest.
+    #[must_use]
+    pub fn short(&self) -> &str {
+        &self.0[..12]
+    }
 }
 
 impl TryFrom<String> for CredentialFingerprint {
@@ -66,7 +72,7 @@ impl From<CredentialFingerprint> for String {
 
 impl fmt::Debug for CredentialFingerprint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CredentialFingerprint({}…)", &self.0[..12])
+        write!(f, "CredentialFingerprint({}…)", self.short())
     }
 }
 
@@ -109,14 +115,22 @@ impl AuthenticationAuthority {
         Ok(Self(reference))
     }
 
-    #[must_use]
-    pub fn provider_id(&self) -> &str {
-        &self.0.provider_id
+    /// The approval an operator gives by configuring `slot`.
+    ///
+    /// # Errors
+    /// As [`Self::operator_approved`].
+    pub fn configured_slot(provider_id: &str, slot: &str, now_unix: u64) -> Result<Self, Error> {
+        Self::operator_approved(OperatorCredentialRef {
+            provider_id: provider_id.into(),
+            credential_slot: slot.into(),
+            approved_at_unix: now_unix,
+            approval_provenance: format!("operator configured {slot}"),
+        })
     }
 
     #[must_use]
-    pub fn credential_slot(&self) -> &str {
-        &self.0.credential_slot
+    pub fn provider_id(&self) -> &str {
+        &self.0.provider_id
     }
 }
 
@@ -138,8 +152,19 @@ mod tests {
     fn auth_authority_requires_operator_reference_with_provenance() {
         let authority = AuthenticationAuthority::operator_approved(reference("operator")).unwrap();
         assert_eq!(authority.provider_id(), "example");
-        assert_eq!(authority.credential_slot(), "HUNTSMAN_EXAMPLE_KEY");
         assert!(AuthenticationAuthority::operator_approved(reference("  ")).is_err());
+    }
+
+    #[test]
+    fn a_configured_slot_is_approved_with_its_own_provenance() {
+        assert_eq!(
+            AuthenticationAuthority::configured_slot("example", "HUNTSMAN_EXAMPLE_KEY", 1),
+            AuthenticationAuthority::operator_approved(reference(
+                "operator configured HUNTSMAN_EXAMPLE_KEY"
+            ))
+        );
+        assert!(AuthenticationAuthority::configured_slot("example", " ", 1).is_err());
+        assert!(AuthenticationAuthority::configured_slot("", "HUNTSMAN_EXAMPLE_KEY", 1).is_err());
     }
 
     #[test]
@@ -200,6 +225,11 @@ mod tests {
         assert!(
             !format!("{cred:?}").contains(a.as_str()),
             "Debug must not print the full digest"
+        );
+        assert_eq!(a.short(), &a.as_str()[..12]);
+        assert_eq!(
+            format!("{a:?}"),
+            format!("CredentialFingerprint({}…)", a.short())
         );
     }
 }

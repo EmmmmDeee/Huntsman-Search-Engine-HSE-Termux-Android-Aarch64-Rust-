@@ -195,7 +195,7 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
                 );
             }
             if let Some(secret) = keys.get(stolen_tax::KEY_SLOT) {
-                println!("credential={}", &secret.fingerprint().as_str()[..12]);
+                println!("credential={}", secret.fingerprint().short());
             }
             println!(
                 "entities={} partial={}",
@@ -264,7 +264,7 @@ pub(super) fn fetch_cmd(args: &[String]) -> ExitCode {
         println!("detail={detail}");
     }
     if let Some(fp) = &fetched.credential_sent {
-        println!("credential={}", &fp.as_str()[..12]);
+        println!("credential={}", fp.short());
     }
     match fetched.response {
         Some(response) => {

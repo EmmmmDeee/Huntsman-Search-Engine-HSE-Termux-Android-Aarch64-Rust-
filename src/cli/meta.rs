@@ -401,10 +401,7 @@ pub(super) fn keys_cmd(args: &[String]) -> ExitCode {
             Ok(keys) => {
                 for slot in keys.slots() {
                     if let Some(secret) = keys.get(slot) {
-                        println!(
-                            "{slot} fingerprint={}",
-                            &secret.fingerprint().as_str()[..12]
-                        );
+                        println!("{slot} fingerprint={}", secret.fingerprint().short());
                     }
                 }
                 ExitCode::SUCCESS

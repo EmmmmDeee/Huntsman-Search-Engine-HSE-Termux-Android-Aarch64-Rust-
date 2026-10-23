@@ -1,9 +1,9 @@
 //! Keyed-provider registry and probe planning.
 
 use crate::api_leg::KeyPlace;
-use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use crate::credential_origin::AuthenticationAuthority;
 use crate::error::Error;
-use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
+use crate::fetch::{Credential, FetchOptions, fetch};
 use crate::http::{Method, Request, Response, Transport};
 use crate::keys::Secret;
 use crate::source_outcome::{SourceOutcomeKind, classify_fetch};
@@ -313,17 +313,8 @@ pub fn probe_service<T: Transport + ?Sized>(
     let service = find_service(service_name)
         .ok_or_else(|| Error::Invalid(format!("unknown service: {service_name}")))?;
     let now = crate::clock::unix_now();
-    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
-        provider_id: service.name.into(),
-        credential_slot: service.env_var.into(),
-        approved_at_unix: now,
-        approval_provenance: format!("operator configured {}", service.env_var),
-    })?;
-    let style = match service.key_placement {
-        KeyPlace::Header(name) => AuthStyle::Header(name.into()),
-        KeyPlace::Query(name) => AuthStyle::Query(name.into()),
-        KeyPlace::Bearer => AuthStyle::Bearer,
-    };
+    let authority = AuthenticationAuthority::configured_slot(service.name, service.env_var, now)?;
+    let style = service.key_placement.auth_style();
     let credential = Credential::new(authority, secret.clone(), style)?;
     let fetched = fetch(
         transport,

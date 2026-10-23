@@ -54,7 +54,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use crate::credential_origin::AuthenticationAuthority;
 use crate::deadline::{Clock, Deadline, SystemClock};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, normalise};
 use crate::fetch::{AuthStyle, Credential, FetchOptions, Fetched, RedirectPolicy, fetch_within};
@@ -241,13 +241,8 @@ fn lookup_within<T: Transport + ?Sized>(
 }
 
 fn credential(secret: Secret, now_unix: u64) -> Result<Credential, StolenTaxError> {
-    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
-        provider_id: "stolen.tax".into(),
-        credential_slot: KEY_SLOT.into(),
-        approved_at_unix: now_unix,
-        approval_provenance: format!("operator configured {KEY_SLOT}"),
-    })
-    .map_err(|e| StolenTaxError::Refused(e.to_string()))?;
+    let authority = AuthenticationAuthority::configured_slot("stolen.tax", KEY_SLOT, now_unix)
+        .map_err(|e| StolenTaxError::Refused(e.to_string()))?;
     Credential::new(authority, secret, AuthStyle::Bearer)
         .map(|c| c.only_for_origin(KEY_ORIGIN))
         .map_err(|e| StolenTaxError::Refused(e.to_string()))
