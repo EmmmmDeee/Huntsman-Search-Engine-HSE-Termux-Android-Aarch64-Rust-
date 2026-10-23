@@ -367,7 +367,14 @@ pub fn build_dispatch_plan(
                 ));
             }
         }
-        for route in source_registry::routes_for(&seed.kind, &seed.value) {
+        // A handle is routed as the operator wrote it; its canonical value drops the
+        // separators that tell `octo-cat` from `octocat`.
+        let route_value = if kind == TargetKind::Username {
+            seed.raw.as_str()
+        } else {
+            seed.value.as_str()
+        };
+        for route in source_registry::routes_for(&seed.kind, route_value) {
             selected.push(PlannedDispatch {
                 target: target.clone(),
                 action: DispatchAction::Route {

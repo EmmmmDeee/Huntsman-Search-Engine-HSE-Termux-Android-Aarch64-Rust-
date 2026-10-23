@@ -84,6 +84,47 @@ fn sources_routes_a_handle_to_github_users() {
     );
 }
 
+/// `octocat` is another account, so a route for `@octo-cat` must keep the `-`, and every
+/// other separator and the case the handle was written in.
+#[test]
+fn sources_routes_a_handle_as_written() {
+    for (raw, handle) in [
+        ("@octo-cat", "octo-cat"),
+        ("@john_smith", "john_smith"),
+        ("@Ada.Lovelace", "Ada.Lovelace"),
+    ] {
+        let out = bin().args(["sources", raw]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{raw}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            stdout.starts_with("kind=username confidence=0.400 routes=3\n"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "url=https://github.com/search?q={handle}&type=users\n"
+            )),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "url=https://www.google.com/search?q=%22{handle}%22\n"
+            )),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "url=https://www.bing.com/search?q=%22{handle}%22\n"
+            )),
+            "{stdout}"
+        );
+    }
+}
+
 #[test]
 fn sources_refuses_a_bare_at_sign() {
     let out = bin().args(["sources", "@"]).output().unwrap();

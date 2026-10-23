@@ -1,10 +1,9 @@
 use std::collections::{BTreeSet, HashMap};
 
-use crate::canonical::{
-    canonical_coordinates, canonical_domain, canonical_domain_host, canonical_url,
-};
+use crate::canonical::{canonical_domain, canonical_domain_host, canonical_url};
+use crate::domains::is_proxy_registrant;
 use crate::entity::{Entity, EntityKind, normalise};
-use crate::geohash::haversine_km;
+use crate::geohash::{haversine_km, parse_coords};
 
 use super::{
     Relation, RelationKind, canonical_pair, collapse_duplicates_max_confidence, domain_key,
@@ -12,12 +11,6 @@ use super::{
 };
 
 const COLLOCATION_RADIUS_KM: f64 = 1.0;
-
-fn parse_coords(raw: &str) -> Option<(f64, f64)> {
-    let canonical = canonical_coordinates(raw)?;
-    let (lat, lon) = canonical.split_once(',')?;
-    Some((lat.parse().ok()?, lon.parse().ok()?))
-}
 
 /// Domain keys a URL may be hosted on, most specific first: the exact host
 /// under the same `domain_key` Domain entities use, then its `www.`-stripped
@@ -209,11 +202,16 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
         .filter(|entity| entity.kind == EntityKind::Domain)
     {
         let mut targets = BTreeSet::<String>::new();
+        // A privacy service, its mailbox or a redaction notice stands in for the owner, so
+        // two domains behind one proxy do not share a registrant through it.
         for evidence in &domain.evidence {
             for value in evidence
                 .attr_values("registrant_org")
                 .chain(evidence.attr_values("admin_org"))
             {
+                if is_proxy_registrant(value, false) {
+                    continue;
+                }
                 let key = normalise(&EntityKind::Organisation, value);
                 if let Some(target) = orgs.get(key.as_str()) {
                     if targets.insert(target.uid.clone()) {
@@ -232,6 +230,9 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
                 .attr_values("registrant_email")
                 .chain(evidence.attr_values("admin_email"))
             {
+                if is_proxy_registrant(value, true) {
+                    continue;
+                }
                 let key = normalise(&EntityKind::Email, value);
                 if let Some(target) = emails.get(key.as_str()) {
                     if targets.insert(target.uid.clone()) {
@@ -250,6 +251,9 @@ pub fn derive_registration(entities: &[Entity], scan_id: &str) -> Vec<Relation> 
                 .attr_values("registrant_name")
                 .chain(evidence.attr_values("admin_name"))
             {
+                if is_proxy_registrant(value, false) {
+                    continue;
+                }
                 let key = normalise(&EntityKind::Person, value);
                 if let Some(target) = people.get(key.as_str()) {
                     if targets.insert(target.uid.clone()) {

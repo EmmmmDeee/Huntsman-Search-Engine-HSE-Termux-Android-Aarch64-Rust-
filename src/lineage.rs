@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::canonical::{canonical_provenance_family, canonical_url};
+use crate::canonical::canonical_provenance_family;
 use crate::entity::{Entity, Evidence};
 use crate::evidence_ancestry::{
     AncestryError, EvidenceAncestryGraph, EvidenceAncestryNode, EvidenceNodeId, canonical_family,
@@ -57,9 +57,6 @@ const ROOT_PREFIX: &str = "lineage:";
 pub enum UpstreamKind {
     Dataset,
     Registry,
-    /// Reserved for a future trusted source-origin binding. Record locators are not
-    /// independent families and this is not currently emitted by [`Lineage::of`].
-    Source,
 }
 
 /// Where one observation's data came from, as the response states it.
@@ -95,7 +92,7 @@ impl Lineage {
             if values.is_empty() {
                 continue;
             }
-            let families: BTreeSet<String> = values.iter().map(|v| family_key(*kind, v)).collect();
+            let families: BTreeSet<String> = values.iter().copied().map(canonical_family).collect();
             if families.len() > 1 {
                 return Self::Ambiguous {
                     field: (*field).to_owned(),
@@ -128,7 +125,6 @@ fn kind_is_admissible(kind: UpstreamKind, evidence: &Evidence) -> bool {
     match kind {
         UpstreamKind::Dataset => true,
         UpstreamKind::Registry => is_verified_registry_source(&evidence.provenance.source),
-        UpstreamKind::Source => false,
     }
 }
 
@@ -143,13 +139,6 @@ fn kind_is_admissible(kind: UpstreamKind, evidence: &Evidence) -> bool {
 fn is_verified_registry_source(collector: &str) -> bool {
     collector.is_ascii()
         && VERIFIED_REGISTRY_SOURCES.contains(&canonical_provenance_family(collector).as_str())
-}
-
-fn family_key(kind: UpstreamKind, value: &str) -> String {
-    match kind {
-        UpstreamKind::Source => canonical_url(value).unwrap_or_else(|| canonical_family(value)),
-        UpstreamKind::Dataset | UpstreamKind::Registry => canonical_family(value),
-    }
 }
 
 /// One collected record. `id` is unique within a resolution; `evidence` carries the
@@ -361,12 +350,10 @@ pub fn observations_from(entities: &[Entity]) -> Vec<Observation> {
 }
 
 /// The lineage label a TSV row prints for an upstream kind.
-#[must_use]
-pub const fn upstream_kind_label(kind: UpstreamKind) -> &'static str {
+const fn upstream_kind_label(kind: UpstreamKind) -> &'static str {
     match kind {
         UpstreamKind::Dataset => "dataset",
         UpstreamKind::Registry => "registry",
-        UpstreamKind::Source => "source",
     }
 }
 
