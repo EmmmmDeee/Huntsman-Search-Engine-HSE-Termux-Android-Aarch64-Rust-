@@ -74,7 +74,18 @@ fn scratch(tag: &str) -> PathBuf {
 /// Whether every command the harness needs is on PATH. CI must have them all.
 fn harness_tools_present() -> bool {
     let present = [
-        "bash", "timeout", "curl", "date", "grep", "chmod", "mktemp", "rm", "tee", "tail", "sleep", "uname",
+        "bash",
+        "timeout",
+        "curl",
+        "date",
+        "grep",
+        "chmod",
+        "mktemp",
+        "rm",
+        "tee",
+        "tail",
+        "sleep",
+        "uname",
     ]
     .iter()
     .all(|tool| {
@@ -181,7 +192,7 @@ fn a_symlinked_diagnostic_report_is_refused_without_truncating_its_target() {
         "unexpected refusal: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(fs::read(&target).unwrap(), b"private original bytes");
+    assert_eq!(fs::read(&target).unwrap(), b"private original bytes".to_vec());
     let _ = fs::remove_dir_all(&home);
 }
 
