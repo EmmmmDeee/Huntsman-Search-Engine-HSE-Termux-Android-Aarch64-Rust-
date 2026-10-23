@@ -344,13 +344,39 @@ mod tests {
         assert_eq!(register.recorded_executions, 5);
         assert_eq!(register.unresolved_executions, 3);
         assert_eq!(register.distinct_provider_issues, 2);
-        let first = register.items.iter().find(|i| i.module.as_deref() == Some("provider_a")).unwrap();
-        assert_eq!((first.observations, first.first_observed_unix, first.last_observed_unix), (2, Some(11), Some(15)));
-        assert!(register.items.iter().all(|i| i.module.as_deref() != Some("provider_b")));
-        assert!(register.items.iter().any(|i| i.id == "scope:exhaustiveness_unverified"));
+        let first = register
+            .items
+            .iter()
+            .find(|i| i.module.as_deref() == Some("provider_a"))
+            .unwrap();
+        assert_eq!(
+            (
+                first.observations,
+                first.first_observed_unix,
+                first.last_observed_unix
+            ),
+            (2, Some(11), Some(15))
+        );
+        assert!(
+            register
+                .items
+                .iter()
+                .all(|i| i.module.as_deref() != Some("provider_b"))
+        );
+        assert!(
+            register
+                .items
+                .iter()
+                .any(|i| i.id == "scope:exhaustiveness_unverified")
+        );
         results.termination = Some(TerminationReason::RequestBudget);
         let bounded = derive(&record(ScanStatus::Finished), Some(&results));
-        assert!(bounded.items.iter().any(|i| i.id == "scan:termination:request_budget"));
+        assert!(
+            bounded
+                .items
+                .iter()
+                .any(|i| i.id == "scan:termination:request_budget")
+        );
     }
 
     #[test]
@@ -359,9 +385,24 @@ mod tests {
         assert_eq!(empty.recorded_executions, 0);
         assert_eq!(empty.discovery_completeness, "unverified");
         assert!(empty.items.iter().any(|i| i.id == "scan:in_progress"));
-        assert!(empty.items.iter().any(|i| i.id == "scan:results_unavailable"));
+        assert!(
+            empty
+                .items
+                .iter()
+                .any(|i| i.id == "scan:results_unavailable")
+        );
         let no_outcomes = derive(&record(ScanStatus::Finished), Some(&saved(Vec::new())));
-        assert!(no_outcomes.items.iter().any(|i| i.id == "sources:no_recorded_executions"));
-        assert!(!no_outcomes.items.iter().any(|i| i.id == "scan:results_unavailable"));
+        assert!(
+            no_outcomes
+                .items
+                .iter()
+                .any(|i| i.id == "sources:no_recorded_executions")
+        );
+        assert!(
+            !no_outcomes
+                .items
+                .iter()
+                .any(|i| i.id == "scan:results_unavailable")
+        );
     }
 }
