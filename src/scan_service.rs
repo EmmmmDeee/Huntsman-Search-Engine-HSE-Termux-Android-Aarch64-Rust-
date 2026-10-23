@@ -939,6 +939,7 @@ impl ScanService {
                 "the scan name is longer than {MAX_NAME_BYTES} bytes"
             )));
         }
+        let (owner, owner_started) = crate::scan_store::this_process();
         let record = ScanRecord {
             format_version: FORMAT_VERSION,
             id: new_id(
@@ -960,7 +961,8 @@ impl ScanService {
             correlations: RiskCounts::default(),
             errors: 0,
             modules_run: Vec::new(),
-            owner: Some(std::process::id()),
+            owner: Some(owner),
+            owner_started,
         };
         // Register before saving the CREATED row: an identical request that finds the saved row
         // joins it instead of starting a second scan, and an immediate stop can be delivered
@@ -1656,6 +1658,7 @@ fn placeholder(id: &str) -> ScanRecord {
         errors: 0,
         modules_run: Vec::new(),
         owner: None,
+        owner_started: None,
     }
 }
 
@@ -2530,6 +2533,11 @@ mod tests {
 
         // Both instances have the same PID, but only the creator can signal the scan.
         assert_eq!(record.owner, Some(std::process::id()));
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            record.owner_started,
+            crate::scan_store::process_start_ticks(std::process::id())
+        );
         assert!(owner.owned().contains(&record.id));
         assert!(!other.owned().contains(&record.id));
         let error = other.stop(&record.id).unwrap_err();
