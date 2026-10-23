@@ -76,18 +76,13 @@ pub(super) fn vendor_for(prefix: u32) -> Option<&'static str> {
     std::str::from_utf8(bytes).ok()
 }
 
-#[must_use]
-pub fn registry_len() -> usize {
-    layout().map_or(0, |layout| layout.count)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn blob_is_well_formed_and_substantial() {
-        assert!(registry_len() > 30_000);
+        assert!(layout().is_some_and(|layout| layout.count > 30_000));
     }
 
     #[test]

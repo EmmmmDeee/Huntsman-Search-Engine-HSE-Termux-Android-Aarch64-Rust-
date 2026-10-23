@@ -7,16 +7,6 @@
 use crate::entity::EntityKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceCategory {
-    WebSearch,
-    Archive,
-    DomainIntel,
-    Infrastructure,
-    Identity,
-    Geo,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
     SearchUrl,
     BrowserRequired,
@@ -56,10 +46,9 @@ pub enum EvidenceRole {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SourceDescriptor {
+struct SourceDescriptor {
     pub id: &'static str,
     pub name: &'static str,
-    pub category: SourceCategory,
     pub accepted_kinds: &'static [EntityKind],
     pub execution: ExecutionMode,
     pub access: SourceAccess,
@@ -73,7 +62,6 @@ pub struct SourceDescriptor {
 pub struct SourceRoute {
     pub source_id: &'static str,
     pub source_name: &'static str,
-    pub category: SourceCategory,
     pub execution: ExecutionMode,
     pub access: SourceAccess,
     pub url: String,
@@ -98,7 +86,6 @@ static SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
         id: "google_exact",
         name: "Google exact search",
-        category: SourceCategory::WebSearch,
         accepted_kinds: IDENTITY_SEARCH,
         execution: ExecutionMode::SearchUrl,
         access: SourceAccess::Public,
@@ -109,7 +96,6 @@ static SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
         id: "bing_exact",
         name: "Bing exact search",
-        category: SourceCategory::WebSearch,
         accepted_kinds: IDENTITY_SEARCH,
         execution: ExecutionMode::SearchUrl,
         access: SourceAccess::Public,
@@ -120,7 +106,6 @@ static SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
         id: "google_site",
         name: "Google site search",
-        category: SourceCategory::WebSearch,
         accepted_kinds: DOMAIN_ONLY,
         execution: ExecutionMode::SearchUrl,
         access: SourceAccess::Public,
@@ -131,7 +116,6 @@ static SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
         id: "wayback",
         name: "Internet Archive Wayback Machine",
-        category: SourceCategory::Archive,
         accepted_kinds: DOMAIN_ONLY,
         execution: ExecutionMode::SearchUrl,
         access: SourceAccess::Public,
@@ -142,7 +126,6 @@ static SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
         id: "whois",
         name: "Whois.com",
-        category: SourceCategory::DomainIntel,
         accepted_kinds: DOMAIN_ONLY,
         execution: ExecutionMode::SearchUrl,
         access: SourceAccess::Public,
@@ -153,7 +136,6 @@ static SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
         id: "crtsh",
         name: "crt.sh certificate search",
-        category: SourceCategory::DomainIntel,
         accepted_kinds: DOMAIN_ONLY,
         execution: ExecutionMode::SearchUrl,
         access: SourceAccess::Public,
@@ -164,7 +146,6 @@ static SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
         id: "urlscan",
         name: "urlscan.io domain search",
-        category: SourceCategory::DomainIntel,
         accepted_kinds: DOMAIN_ONLY,
         execution: ExecutionMode::SearchUrl,
         // Plain field queries such as `domain:` work without sign-in under
@@ -178,7 +159,6 @@ static SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
         id: "shodan_host",
         name: "Shodan host view",
-        category: SourceCategory::Infrastructure,
         accepted_kinds: IP_ONLY,
         execution: ExecutionMode::BrowserRequired,
         access: SourceAccess::Public,
@@ -189,7 +169,6 @@ static SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
         id: "bgp_he",
         name: "Hurricane Electric BGP Toolkit",
-        category: SourceCategory::Infrastructure,
         accepted_kinds: IP_ONLY,
         execution: ExecutionMode::SearchUrl,
         access: SourceAccess::Public,
@@ -200,7 +179,6 @@ static SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
         id: "github_users",
         name: "GitHub user search",
-        category: SourceCategory::Identity,
         accepted_kinds: USERNAME_ONLY,
         execution: ExecutionMode::SearchUrl,
         access: SourceAccess::Public,
@@ -211,7 +189,6 @@ static SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor {
         id: "google_maps",
         name: "Google Maps coordinates",
-        category: SourceCategory::Geo,
         accepted_kinds: COORDINATES_ONLY,
         execution: ExecutionMode::SearchUrl,
         access: SourceAccess::Public,
@@ -220,11 +197,6 @@ static SOURCES: &[SourceDescriptor] = &[
         evidence_role: EvidenceRole::LeadOnly,
     },
 ];
-
-#[must_use]
-pub const fn registry() -> &'static [SourceDescriptor] {
-    SOURCES
-}
 
 #[must_use]
 pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
@@ -254,7 +226,6 @@ pub fn routes_for(kind: &EntityKind, value: &str) -> Vec<SourceRoute> {
         .map(|source| SourceRoute {
             source_id: source.id,
             source_name: source.name,
-            category: source.category,
             execution: source.execution,
             access: source.access,
             url: source.url_template.replace("{value}", &encoded),
@@ -273,7 +244,7 @@ mod tests {
     #[test]
     fn registry_is_unique_https_and_renderable() {
         let mut ids = BTreeSet::new();
-        for source in registry() {
+        for source in SOURCES {
             assert!(ids.insert(source.id), "duplicate source id {}", source.id);
             assert!(source.url_template.starts_with("https://"));
             assert!(source.reference_url.starts_with("https://"));

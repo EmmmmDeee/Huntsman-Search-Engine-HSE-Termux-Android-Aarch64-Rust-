@@ -150,6 +150,41 @@ fn search_defaults_to_adaptive_and_deep_is_spent_only_after_valid_zero() {
 }
 
 #[test]
+fn a_200_success_false_envelope_is_unavailable_not_a_printed_zero() {
+    let transport = ScriptedTransport::new(vec![
+        response(
+            200,
+            r#"{"success":false,"error":"search backend unavailable","data":[]}"#,
+        ),
+        response(200, r#"{"success":false,"error":"maintenance"}"#),
+    ]);
+    let keys = configured_keys();
+
+    let search = run_with_keys(
+        &transport,
+        &["search".into(), "email".into(), "alice@example.com".into()],
+        &keys,
+        8,
+    );
+    assert_eq!(
+        search,
+        SeekNowCliRun::Unavailable("SeekNow collection outcome=inconclusive".into())
+    );
+    let status = run_with_keys(&transport, &["status".into()], &keys, 9);
+    assert_eq!(
+        status,
+        SeekNowCliRun::Unavailable(
+            "SeekNow outcome=inconclusive detail=provider reported request failure".into()
+        )
+    );
+
+    let seen = transport.seen.borrow();
+    assert_eq!(seen.len(), 2);
+    assert!(seen[0].url.ends_with("/search"));
+    assert!(seen[1].url.ends_with("/status"));
+}
+
+#[test]
 fn explicit_fast_only_and_deep_modes_are_distinct_and_invalid_selector_is_data_error() {
     let fast = ScriptedTransport::new(vec![response(200, r#"{"success":true,"data":[]}"#)]);
     let result = run_with_keys(

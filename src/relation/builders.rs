@@ -901,6 +901,39 @@ mod tests {
         );
     }
 
+    /// RDAP keeps a privacy service's organisation, mailbox and name on each domain it fronts
+    /// and makes them entities. They name the proxy, not the owner, so no domain is registered
+    /// by them and AU-109 does not call two privacy-protected domains one registrant's.
+    #[test]
+    fn domains_behind_one_privacy_service_are_not_registered_by_it() {
+        let mut entities = vec![
+            ent(EntityKind::Organisation, "Domains By Proxy, LLC", 0.72),
+            ent(EntityKind::Person, "Registration Private", 0.72),
+        ];
+        for name in ["alpha-shop.org", "beta-shop.info"] {
+            let mailbox = format!("{}@domainsbyproxy.com", name.replace('.', "-"));
+            let mut domain = ent(EntityKind::Domain, name, 0.92);
+            domain.add_evidence(
+                evidence("rdap", "registration")
+                    .with_attr("registrant_org", "Domains By Proxy, LLC")
+                    .with_attr("registrant_email", mailbox.as_str())
+                    .with_attr("registrant_name", "Registration Private"),
+            );
+            entities.push(domain);
+            entities.push(ent(EntityKind::Email, &mailbox, 0.78));
+        }
+        let registered_by = derive_all(&entities, "s")
+            .into_iter()
+            .filter(|relation| relation.kind == RelationKind::RegisteredBy)
+            .collect::<Vec<_>>();
+        assert_eq!(registered_by, []);
+        let fired = crate::correlator::evaluate_rules(&entities, &[], "s")
+            .into_iter()
+            .map(|correlation| correlation.rule_id)
+            .collect::<Vec<_>>();
+        assert!(!fired.iter().any(|id| id == "AU-109"), "{fired:?}");
+    }
+
     #[test]
     fn handles_alias_and_identity_ownership_respect_subject_gate() {
         let mut subject = ent(EntityKind::Person, "Kyle Diegmann", 0.9);

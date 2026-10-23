@@ -193,11 +193,19 @@ pub(in crate::cli) fn sources_cmd(args: &[String]) -> ExitCode {
     if args.is_empty() {
         return fail(EX_USAGE, "usage: huntsman-recon sources QUERY...");
     }
-    let classified = classify_indicator(&args.join(" "));
+    let input = args.join(" ");
+    let classified = classify_indicator(&input);
+    // A handle is routed as written: the classified value drops `.`, `_` and `-`,
+    // which would point `@octo-cat` at the account `octocat`.
+    let value = if classified.kind == entity::EntityKind::Username {
+        input.as_str()
+    } else {
+        classified.value.as_str()
+    };
     // Residual and unsupported kinds have no descriptors, so the empty-route check
     // is the gate. A confidence floor here would drop low-confidence but routable
     // kinds such as `@handle` usernames.
-    let routes = routes_for(&classified.kind, &classified.value);
+    let routes = routes_for(&classified.kind, value);
     if routes.is_empty() {
         return fail(EX_DATAERR, "no actionable source routes");
     }

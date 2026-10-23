@@ -92,7 +92,7 @@ pub fn run_with_keys<T: Transport + ?Sized>(
     match command {
         "credits" if args.len() == 1 => match credits(transport, &credential, now_unix) {
             Ok(result) => {
-                let mut text = format!("outcome={}\n", outcome_name(result.outcome.kind));
+                let mut text = format!("outcome={}\n", result.outcome.kind.as_str());
                 if let Some(remaining) = result.remaining {
                     let _ = writeln!(text, "remaining={remaining}");
                 }
@@ -105,7 +105,7 @@ pub fn run_with_keys<T: Transport + ?Sized>(
         },
         "status" if args.len() == 1 => match status(transport, &credential, now_unix) {
             Ok(result) => {
-                let mut text = format!("outcome={}\n", outcome_name(result.outcome.kind));
+                let mut text = format!("outcome={}\n", result.outcome.kind.as_str());
                 for (key, value) in result.fields {
                     let _ = writeln!(
                         text,
@@ -207,7 +207,7 @@ fn run_search<T: Transport + ?Sized>(
             let kind = batch.receipts.last().map(|receipt| receipt.outcome.kind);
             let message = kind.map_or_else(
                 || "SeekNow collection did not produce a usable outcome".into(),
-                |kind| format!("SeekNow collection outcome={}", outcome_name(kind)),
+                |kind| format!("SeekNow collection outcome={}", kind.as_str()),
             );
             if kind.is_some_and(permission_outcome) {
                 SeekNowCliRun::NoPerm(message)
@@ -255,7 +255,7 @@ fn render_batch(batch: &crate::collector::CollectionBatch) -> String {
             text,
             "source={} outcome={} rows={} truncated={}",
             receipt.source,
-            outcome_name(receipt.outcome.kind),
+            receipt.outcome.kind.as_str(),
             receipt.parsed_rows,
             receipt.truncated
         );
@@ -267,11 +267,11 @@ fn finish_diagnostic(outcome: &SourceExecutionOutcome, text: String) -> SeekNowC
     match outcome.kind {
         SourceOutcomeKind::Success | SourceOutcomeKind::ValidZero => SeekNowCliRun::Printed(text),
         kind if permission_outcome(kind) => {
-            SeekNowCliRun::NoPerm(format!("SeekNow outcome={}", outcome_name(kind)))
+            SeekNowCliRun::NoPerm(format!("SeekNow outcome={}", kind.as_str()))
         }
         kind => SeekNowCliRun::Unavailable(format!(
             "SeekNow outcome={}{}",
-            outcome_name(kind),
+            kind.as_str(),
             outcome
                 .detail
                 .as_deref()
@@ -308,13 +308,6 @@ fn collection_outcome_name(outcome: CollectionOutcome) -> &'static str {
         CollectionOutcome::Partial => "partial",
         CollectionOutcome::Failed => "failed",
     }
-}
-
-fn outcome_name(kind: SourceOutcomeKind) -> String {
-    serde_json::to_value(kind)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".into())
 }
 
 fn result_text_mut(result: &mut SeekNowCliRun) -> Option<&mut String> {

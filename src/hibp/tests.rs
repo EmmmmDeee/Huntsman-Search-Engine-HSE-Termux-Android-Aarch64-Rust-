@@ -505,9 +505,9 @@ fn hash_vectors_cover_sha1_padding_ntlm_unicode_and_rfc_md4() {
     }
 }
 
-/// The NTLM path wipes its UTF-16LE copy of the password and MD4's padded message. A buffer that
-/// grew while being filled would have left its old allocation, holding the password, unwiped, so
-/// each is sized once and never reallocates.
+/// The NTLM path wipes its UTF-16LE copy of the password and MD4's padded message, which is also
+/// the SHA-1 path's. A buffer that grew while being filled would have left its old allocation,
+/// holding the password, unwiped, so each is sized once and never reallocates.
 #[test]
 fn ntlm_password_buffers_never_reallocate_so_the_wipe_reaches_every_copy() {
     for password in [

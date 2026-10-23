@@ -137,6 +137,40 @@ fn lead_routes_are_planned_as_leads_not_evidence() {
     assert!(plan.selected.iter().any(|item| matches!(&item.action, DispatchAction::Route { source_id, .. } if *source_id == "wayback")));
 }
 
+/// The seed's canonical value drops separators, and `octocat` is another account, so a handle's
+/// routes are built from the handle as written.
+#[test]
+fn username_routes_keep_the_handle_as_written() {
+    let handle = NormalizedSeed {
+        raw: "@octo-cat".to_string(),
+        kind: EntityKind::Username,
+        value: "octocat".to_string(),
+    };
+    let plan = build_dispatch_plan(
+        &[],
+        &[handle],
+        &PipelineLimits::default(),
+        &PlannerPolicy::default(),
+    );
+    let urls = plan
+        .selected
+        .iter()
+        .filter_map(|item| match &item.action {
+            DispatchAction::Route { url, .. } => Some(url.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        urls.contains(&"https://github.com/search?q=octo-cat&type=users"),
+        "{urls:?}"
+    );
+    assert!(
+        urls.contains(&"https://www.google.com/search?q=%22octo-cat%22"),
+        "{urls:?}"
+    );
+    assert!(urls.iter().all(|url| !url.contains("octocat")), "{urls:?}");
+}
+
 #[test]
 fn planner_output_is_stable_across_repeated_runs() {
     let policy = PlannerPolicy::default();

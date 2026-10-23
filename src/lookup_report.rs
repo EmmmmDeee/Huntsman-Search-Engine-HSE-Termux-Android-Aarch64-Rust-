@@ -94,10 +94,7 @@ pub fn outcome_row(outcome: &SourceExecutionOutcome) -> String {
     let found = outcome
         .found
         .map_or_else(|| "none".to_owned(), |count| count.to_string());
-    let kind = serde_json::to_value(outcome.kind)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".into());
+    let kind = outcome.kind.as_str();
     let mut row = format!(
         "{}\t{kind}\tfound={found}",
         escape_controls(&outcome.module)

@@ -19,6 +19,21 @@ pub struct ResultSet {
     pub records: Vec<Map<String, Value>>,
 }
 
+impl ResultSet {
+    /// Why this page is not the whole answer, or `None` when it is.
+    #[must_use]
+    pub fn truncation(&self) -> Option<String> {
+        let total = self.total?;
+        (total > self.records.len() as u64).then(|| {
+            format!(
+                "partial: read the first {} of {total} matching records; absence of a record \
+                 here is not evidence of absence",
+                self.records.len()
+            )
+        })
+    }
+}
+
 #[must_use]
 pub fn field_str(record: &Map<String, Value>, key: &str) -> Option<String> {
     let rendered = match record.get(key)? {
@@ -102,5 +117,23 @@ mod tests {
             let response: Response = serde_json::from_str(body).expect("response");
             assert!(check_envelope(response, "ckan_test").expect("ok").is_none());
         }
+    }
+
+    #[test]
+    fn truncation_names_a_page_cut_short_of_the_total() {
+        let page = |total: Option<u64>, records: usize| ResultSet {
+            total,
+            records: vec![Map::new(); records],
+        };
+        assert_eq!(
+            page(Some(340), 100).truncation().as_deref(),
+            Some(
+                "partial: read the first 100 of 340 matching records; absence of a record here \
+                 is not evidence of absence"
+            )
+        );
+        assert_eq!(page(Some(100), 100).truncation(), None);
+        assert_eq!(page(None, 100).truncation(), None);
+        assert_eq!(page(Some(0), 0).truncation(), None);
     }
 }

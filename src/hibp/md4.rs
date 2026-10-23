@@ -6,9 +6,10 @@
 //! small local implementation avoids a new dependency; it is tested against
 //! the RFC 1320 appendix A.5 vectors.
 
-/// `data` followed by MD4's `0x80` and zero padding, in a buffer with room for the 8-byte
-/// length too. It is sized up front, so building it never reallocates and leaves an unwiped
-/// copy of `data` behind.
+/// `data` followed by the `0x80` and zero padding that MD4 and SHA-1 share, in a buffer with
+/// room for the 8-byte length too, which each caller appends in its own byte order (MD4
+/// little-endian, SHA-1 big-endian). It is sized up front, so building it never reallocates and
+/// leaves an unwiped copy of `data` behind.
 pub(super) fn padded(data: &[u8]) -> Vec<u8> {
     let mut msg = Vec::with_capacity(data.len() + 72);
     msg.extend_from_slice(data);

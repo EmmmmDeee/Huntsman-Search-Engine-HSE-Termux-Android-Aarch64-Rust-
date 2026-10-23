@@ -113,6 +113,8 @@ pub fn lookup<T: Transport + ?Sized>(
             .take(MAX_HITS)
             .collect();
         if outcome.kind.is_accepted() {
+            // A partial page stays partial after the name filter: its note is kept.
+            let partial = outcome.detail.take();
             outcome = if matched.is_empty() {
                 SourceExecutionOutcome::valid_zero(spec.module, now_unix)
                     .with_http_status(outcome.http_status.unwrap_or(200))
@@ -120,6 +122,7 @@ pub fn lookup<T: Transport + ?Sized>(
                 SourceExecutionOutcome::success(spec.module, now_unix, matched.len())
                     .with_http_status(outcome.http_status.unwrap_or(200))
             };
+            outcome.detail = partial;
         }
         for rec in matched {
             (spec.emit)(rec, scan_id, &mut entities);
@@ -209,17 +212,18 @@ fn parse_register(
             SourceExecutionOutcome::valid_zero(module, now_unix).with_http_status(response.status),
             Vec::new(),
         ),
-        Ok(Some(result)) if result.records.is_empty() => (
-            SourceExecutionOutcome::valid_zero(module, now_unix).with_http_status(response.status),
-            Vec::new(),
-        ),
         Ok(Some(result)) => {
-            let found = result.records.len();
-            (
-                SourceExecutionOutcome::success(module, now_unix, found)
-                    .with_http_status(response.status),
-                result.records,
-            )
+            let outcome = if result.records.is_empty() {
+                SourceExecutionOutcome::valid_zero(module, now_unix)
+            } else {
+                SourceExecutionOutcome::success(module, now_unix, result.records.len())
+            }
+            .with_http_status(response.status);
+            let outcome = match result.truncation() {
+                Some(note) => outcome.with_detail(note),
+                None => outcome,
+            };
+            (outcome, result.records)
         }
     }
 }
@@ -1058,6 +1062,40 @@ mod tests {
                 .iter()
                 .filter(|o| o.module != "asic_persons.banned")
                 .all(|o| o.kind == SourceOutcomeKind::ValidZero)
+        );
+    }
+
+    #[test]
+    fn page_cut_short_of_the_total_is_a_partial_miss_not_a_clean_one() {
+        let mut script = empty_script();
+        let partial = json_ok(&format!(
+            r#"{{"success":true,"result":{{"total":340,"records":[{ADVISER}]}}}}"#
+        ));
+        script.insert(ADVISER_RES.into(), Ok(partial));
+        let fake = Fake::new(script);
+        let report = lookup(&fake, "Bill Abbott", "scan", 1).expect("lookup");
+        let advisers = report
+            .outcomes
+            .iter()
+            .find(|o| o.module == "asic_persons.advisers")
+            .expect("advisers outcome");
+        assert_eq!(advisers.kind, SourceOutcomeKind::ValidZero);
+        assert_eq!(advisers.found, Some(0));
+        assert_eq!(
+            advisers.detail.as_deref(),
+            Some(
+                "partial: read the first 1 of 340 matching records; absence of a record here is \
+                 not evidence of absence"
+            )
+        );
+        assert!(
+            report
+                .outcomes
+                .iter()
+                .filter(|o| o.module != "asic_persons.advisers")
+                .all(|o| o.detail.is_none()),
+            "{:?}",
+            report.outcomes
         );
     }
 

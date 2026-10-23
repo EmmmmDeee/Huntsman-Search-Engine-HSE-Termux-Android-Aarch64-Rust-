@@ -353,17 +353,23 @@ fn parse_json_endpoint(
         };
     };
     if let Some(kind) = provider_failure_kind(&value, response.status) {
+        let outcome = outcome_with(
+            module,
+            kind,
+            now_unix,
+            response.status,
+            Some(0),
+            "provider reported request failure",
+        );
+        // Keep the pause fetch read from Retry-After, as `fetch::answer` does.
+        let outcome = match fetched_outcome.retry_after_secs {
+            Some(secs) => outcome.with_retry_after(secs),
+            None => outcome,
+        };
         return JsonEndpointResult {
             value: None,
             meta,
-            outcome: outcome_with(
-                module,
-                kind,
-                now_unix,
-                response.status,
-                Some(0),
-                "provider reported request failure",
-            ),
+            outcome,
         };
     }
     if fetched_outcome.kind != SourceOutcomeKind::Inconclusive {
@@ -425,62 +431,11 @@ fn parse_search_response(
     now_unix: u64,
     row_limit: usize,
 ) -> SeekNowSearchResult {
-    let mut meta = response_meta(response);
-    if response.truncated {
-        return result_with_outcome(
-            meta,
-            outcome_with(
-                module,
-                SourceOutcomeKind::ParserDrift,
-                now_unix,
-                response.status,
-                None,
-                "truncated response body",
-            ),
-        );
-    }
-
-    if !response_body_may_refine(fetched_outcome.kind) {
-        return result_with_outcome(meta, fetched_outcome);
-    }
-
-    let value: Value = match serde_json::from_slice(&response.body) {
-        Ok(value) => value,
-        Err(_) if fetched_outcome.kind != SourceOutcomeKind::Inconclusive => {
-            return result_with_outcome(meta, fetched_outcome);
-        }
-        Err(_) => {
-            return result_with_outcome(
-                meta,
-                outcome_with(
-                    module,
-                    SourceOutcomeKind::ParserDrift,
-                    now_unix,
-                    response.status,
-                    None,
-                    "response body is not valid JSON",
-                ),
-            );
-        }
+    let endpoint = parse_json_endpoint(response, fetched_outcome, module, now_unix);
+    let mut meta = endpoint.meta;
+    let Some(value) = endpoint.value else {
+        return result_with_outcome(meta, endpoint.outcome);
     };
-
-    if let Some(kind) = provider_failure_kind(&value, response.status) {
-        return result_with_outcome(
-            meta,
-            outcome_with(
-                module,
-                kind,
-                now_unix,
-                response.status,
-                Some(0),
-                "provider reported request failure",
-            ),
-        );
-    }
-
-    if fetched_outcome.kind != SourceOutcomeKind::Inconclusive {
-        return result_with_outcome(meta, fetched_outcome);
-    }
 
     let Some(items) = recognized_items(&value) else {
         return result_with_outcome(
@@ -632,6 +587,10 @@ fn provider_failure_kind(value: &Value, http_status: u16) -> Option<SourceOutcom
     if http_status == 403 && failed {
         return Some(SourceOutcomeKind::AuthRejected);
     }
+    // An explicit `success: false` on a 2xx is a failed request, never a zero or a success.
+    if failed && (200..300).contains(&http_status) {
+        return Some(SourceOutcomeKind::Inconclusive);
+    }
     None
 }
 
@@ -660,7 +619,7 @@ fn recognized_items(value: &Value) -> Option<&Vec<Value>> {
 
 fn normalize_row(value: &Value) -> Option<SeekNowRow> {
     let object = value.as_object()?;
-    let upstream = extract_upstream(object);
+    let (upstream, upstream_truncated) = extract_upstream(object);
     let mut fields = BTreeMap::new();
     let mut sensitive_fields = BTreeSet::new();
     let mut truncated_fields = BTreeSet::new();
@@ -685,6 +644,7 @@ fn normalize_row(value: &Value) -> Option<SeekNowRow> {
         }
         fields.insert(key.clone(), value);
     }
+    fields_truncated |= upstream_truncated;
 
     Some(SeekNowRow {
         fields,
@@ -695,29 +655,51 @@ fn normalize_row(value: &Value) -> Option<SeekNowRow> {
     })
 }
 
-fn extract_upstream(object: &serde_json::Map<String, Value>) -> SeekNowUpstream {
-    SeekNowUpstream {
-        dbname: upstream_values(object.get("dbname")),
-        breach: upstream_values(object.get("breach")),
-        source_db: upstream_values(object.get("source_db")),
-        database_name: upstream_values(object.get("database_name")),
-        dataset: upstream_values(object.get("dataset")),
-        source: upstream_values(object.get("source")),
+/// The row's upstream aliases, and whether a bound removed any of their array values.
+fn extract_upstream(object: &serde_json::Map<String, Value>) -> (SeekNowUpstream, bool) {
+    let mut truncated = false;
+    let mut values = |key: &str| {
+        let (values, cut) = upstream_values(object.get(key));
+        truncated |= cut;
+        values
+    };
+    let upstream = SeekNowUpstream {
+        dbname: values("dbname"),
+        breach: values("breach"),
+        source_db: values("source_db"),
+        database_name: values("database_name"),
+        dataset: values("dataset"),
+        source: values("source"),
         record_id: ["record_id", "id", "_id"]
             .iter()
             .find_map(|key| object.get(*key).and_then(bounded_scalar_string)),
-    }
+    };
+    (upstream, truncated)
 }
 
-fn upstream_values(value: Option<&Value>) -> Vec<String> {
+/// One alias's bounded values, and whether a bound removed any: an array element over
+/// `MAX_FIELD_CHARS`, or one past the first `MAX_FIELDS_PER_ROW`. A non-scalar element is
+/// dropped by type, not by a bound, so it is not flagged. An over-long scalar is flagged by
+/// `normalize_row`, which sees the same value.
+fn upstream_values(value: Option<&Value>) -> (Vec<String>, bool) {
     match value {
-        Some(Value::Array(values)) => values
-            .iter()
-            .filter_map(bounded_scalar_string)
-            .take(MAX_FIELDS_PER_ROW)
-            .collect(),
-        Some(value) => bounded_scalar_string(value).into_iter().collect(),
-        None => Vec::new(),
+        Some(Value::Array(values)) => {
+            let mut kept = Vec::new();
+            let mut truncated = false;
+            for value in values {
+                let Some(text) = scalar_string(value) else {
+                    continue;
+                };
+                if text.chars().count() > MAX_FIELD_CHARS || kept.len() >= MAX_FIELDS_PER_ROW {
+                    truncated = true;
+                    continue;
+                }
+                kept.push(text);
+            }
+            (kept, truncated)
+        }
+        Some(value) => (bounded_scalar_string(value).into_iter().collect(), false),
+        None => (Vec::new(), false),
     }
 }
 

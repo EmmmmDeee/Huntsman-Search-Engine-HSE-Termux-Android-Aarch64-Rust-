@@ -12,11 +12,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::attack::{
-    Coverage, Technique, coverage, reconnaissance, techniques_for_entity_kind,
-    techniques_for_relation_kind,
+    Coverage, Technique, coverage, fold_relation_techniques, reconnaissance,
+    techniques_for_entity_kind,
 };
 use crate::entity::{Entity, Evidence};
 use crate::graph::EntityRelation;
+use crate::metrics::fraction;
 
 pub const COVERAGE_BASIS: &str = "leaf_techniques";
 
@@ -74,14 +75,13 @@ pub fn coverage_from_observations(
         }
     }
 
-    for relation in relations.iter().filter(|relation| {
-        observed_uids.contains(relation.from_uid.as_str())
-            && observed_uids.contains(relation.to_uid.as_str())
-    }) {
-        for id in techniques_for_relation_kind(relation.kind) {
-            *exercised.entry((*id).to_owned()).or_insert(0) += 1;
-        }
-    }
+    fold_relation_techniques(
+        &mut exercised,
+        relations.iter().filter(|relation| {
+            observed_uids.contains(relation.from_uid.as_str())
+                && observed_uids.contains(relation.to_uid.as_str())
+        }),
+    );
 
     hierarchy_coverage(&coverage(&exercised))
 }
@@ -156,12 +156,7 @@ pub fn hierarchy_coverage(raw: &Coverage) -> HierarchyCoverage {
         })
         .collect::<Vec<_>>();
 
-    #[allow(clippy::cast_precision_loss)]
-    let coverage_fraction = if leaves.is_empty() {
-        0.0
-    } else {
-        covered_leaves.len() as f64 / leaves.len() as f64
-    };
+    let coverage_fraction = fraction(covered_leaves.len(), leaves.len());
 
     HierarchyCoverage {
         coverage_basis: COVERAGE_BASIS,

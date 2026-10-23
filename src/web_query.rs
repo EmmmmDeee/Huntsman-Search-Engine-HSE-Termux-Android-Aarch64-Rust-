@@ -74,10 +74,7 @@ impl SearchReport {
     pub fn render(&self) -> String {
         let mut out = String::new();
         for outcome in &self.outcomes {
-            let kind = serde_json::to_value(outcome.kind)
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .unwrap_or_else(|| "unknown".into());
+            let kind = outcome.kind.as_str();
             let found = outcome
                 .found
                 .map_or_else(|| "none".to_owned(), |count| count.to_string());

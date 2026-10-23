@@ -1687,10 +1687,7 @@ fn outcome_line(outcome: &SourceExecutionOutcome) -> String {
     if let Some(retry) = outcome.retry_after_secs {
         parts.insert("retry_after_s", retry.to_string());
     }
-    let mut line = serde_json::to_value(outcome.kind)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| format!("{:?}", outcome.kind));
+    let mut line = outcome.kind.as_str().to_owned();
     for (key, value) in parts {
         let _ = write!(line, " {key}={value}");
     }

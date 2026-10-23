@@ -80,6 +80,43 @@ fn a_lookup_saves_its_ledger_and_exits_141_when_the_reader_has_gone() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// The skipped-keys-file warning is written while the lookup collects, before it saves. A stderr
+/// whose reader has gone must not end the lookup there.
+#[cfg(unix)]
+#[test]
+fn a_keys_file_warning_on_a_closed_stderr_does_not_cost_the_ledger() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = scratch("warning");
+    let keys = dir.join(".huntsman.env");
+    fs::write(&keys, "# no keys\n").unwrap();
+    // Readable by others, so the default-file gate skips it and names it on stderr.
+    fs::set_permissions(&keys, fs::Permissions::from_mode(0o644)).unwrap();
+    let ledger = dir.join("phone.json");
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let out = command(
+        env!("CARGO_BIN_EXE_huntsman-recon"),
+        &dir,
+        &["phone", "+61412345678", "--save", ledger.to_str().unwrap()],
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::from(writer))
+    .output()
+    .unwrap();
+    assert!(
+        ledger.exists(),
+        "the ledger was not saved: status {:?}",
+        out.status
+    );
+    assert!(
+        !matches!(out.status.code(), Some(code) if code == i32::from(EX_PIPE) || code == i32::from(EX_IOERR)),
+        "the warning's failed write ended the lookup: {:?}",
+        out.status
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn plan_saves_its_session_and_exits_141_when_the_reader_has_gone() {
     let dir = scratch("plan");

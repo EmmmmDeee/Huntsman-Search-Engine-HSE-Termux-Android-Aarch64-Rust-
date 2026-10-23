@@ -157,7 +157,7 @@ fn check_offline_gates() -> Gate {
         3,
         search_response(
             200,
-            "<html>just a moment cloudflare</html>",
+            "<html>just a moment cloudflare brisbane</html>",
             "brisbane",
             "remote",
         )
