@@ -847,6 +847,26 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_401_renders_the_hibp_key_rejected() {
+        // Without a challenge page a 401 is a rejected key, which `doctor --probe` fails on.
+        let keys = Keys::parse("HUNTSMAN_HIBP_KEY=fake-hibp-key-never-render\n").expect("keys");
+        let transport = FakeTransport {
+            response: Response {
+                status: 401,
+                headers: Vec::new(),
+                body: Vec::new(),
+                truncated: false,
+            },
+            seen: RefCell::new(Vec::new()),
+        };
+        let rendered = render_probed(&keys, &transport);
+        assert!(
+            rendered.contains("provider=HIBP\tstate=configured\tprobe=rejected"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
     fn unconfigured_and_unregistered_probes_stay_explicit() {
         let keys = Keys::parse("HUNTSMAN_BRAVE_KEY=brave-key\n").expect("keys");
         let transport = FakeTransport {
