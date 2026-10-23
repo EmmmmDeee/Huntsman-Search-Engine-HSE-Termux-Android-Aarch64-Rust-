@@ -162,7 +162,7 @@ fn a_credential_by_any_name_or_inside_a_list_or_object_keeps_no_value() {
         {"dbname": "db", "email": "user@example.com", "User_PWD": "pwd-secret",
          "extra": {"hashed_password": "$2b$12$extra-hash", "twitter": "@ada"},
          "credentials": {"login": "ada", "Password": "nested-secret"},
-         "history": [{"old": [{"salt": "deep-salt"}]}],
+         "history": ["note", {"old": [1, {"salt": "deep-salt"}]}],
          "tags": ["a", {"b": 1}]}
     ]}});
     let search = decoded(&body);
@@ -203,6 +203,67 @@ fn a_credential_by_any_name_or_inside_a_list_or_object_keeps_no_value() {
 }
 
 #[test]
+fn a_credential_only_inside_a_list_or_object_is_still_exposed() {
+    // A credential inside a list or object exposes a password as a field of its own does, and one
+    // that holds nothing exposes nothing, as a blank field does not; both are held back.
+    let body = serde_json::json!({"success": true, "data": {"items": [
+        {"dbname": "in_object", "email": "user@example.com", "credentials": {"password": "hunter2"}},
+        {"dbname": "in_list", "history": ["note", {"salt": "deep-salt"}]},
+        {"dbname": "blank", "profile": {"password": "", "hash": null, "salt": [], "bio": "hi"}}
+    ]}});
+    let search = decoded(&body);
+    let rendered = format!("{search:?}");
+    for secret in ["hunter2", "deep-salt"] {
+        assert!(!rendered.contains(secret), "{secret:?} emitted: {rendered}");
+    }
+    let exposed: Vec<(&str, bool)> = search
+        .breaches
+        .iter()
+        .map(|breach| (breach.dbname.as_str(), breach.password_exposed))
+        .collect();
+    assert_eq!(
+        exposed,
+        [("blank", false), ("in_list", true), ("in_object", true)]
+    );
+    let blank = &search.breaches[0];
+    assert!(blank.fields.contains("profile"), "{blank:?}");
+    assert_eq!(blank.values.get("profile"), None, "{blank:?}");
+}
+
+#[test]
+fn a_passport_is_not_a_password() {
+    // `pass` does not count where it begins `passport`, in any case and anywhere in a key; every
+    // other marker rule stands.
+    let body = serde_json::json!({"success": true, "data": {"items": [
+        {"dbname": "db", "passport_number": "X1234567", "Old_Passports": ["P7654321"],
+         "documents": {"Passport": "P1111111"}}
+    ]}});
+    let breach = &decoded(&body).breaches[0];
+    assert!(!breach.password_exposed, "{breach:?}");
+    let kept: Vec<(&str, Vec<&str>)> = breach
+        .values
+        .iter()
+        .map(|(field, values)| (field.as_str(), values.iter().map(String::as_str).collect()))
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            ("documents", vec![r#"{"Passport":"P1111111"}"#]),
+            ("old_passports", vec![r#"["P7654321"]"#]),
+            ("passport_number", vec!["X1234567"])
+        ]
+    );
+    for key in ["passphrase", "user_pass", "Passwd", "passport_password"] {
+        let body = serde_json::json!({"success": true, "data": {"items": [
+            {"dbname": "db", key: "a-secret"}
+        ]}});
+        let breach = &decoded(&body).breaches[0];
+        assert!(breach.password_exposed, "{key}: {breach:?}");
+        assert!(breach.values.is_empty(), "{key}: {breach:?}");
+    }
+}
+
+#[test]
 fn a_field_name_that_could_carry_a_value_is_dropped() {
     let body = serde_json::json!({"success": true, "data": {"items": [
         {"dbname": "db", "hunter2 secret": "x", "Pass=word": "x", "UserName": "ada",
@@ -215,6 +276,24 @@ fn a_field_name_that_could_carry_a_value_is_dropped() {
         .map(String::as_str)
         .collect();
     assert_eq!(fields, ["count", "nested", "username"]);
+    assert!(
+        search.breaches[0].password_exposed,
+        "`Pass=word` is exposed"
+    );
+    // The credential rule reads the raw key, so a credential is exposed under any name; only the
+    // name and the value are dropped.
+    let long = format!("password_{}", "x".repeat(MAX_FIELD_BYTES));
+    for key in ["user-password", "Password Hash", long.as_str()] {
+        let body = serde_json::json!({"success": true, "data": {"items": [
+            {"dbname": "db", key: "dropped-secret"}
+        ]}});
+        let breach = &decoded(&body).breaches[0];
+        assert!(breach.password_exposed, "{key}: {breach:?}");
+        assert!(
+            breach.fields.is_empty() && breach.values.is_empty(),
+            "{key}: {breach:?}"
+        );
+    }
 }
 
 #[test]

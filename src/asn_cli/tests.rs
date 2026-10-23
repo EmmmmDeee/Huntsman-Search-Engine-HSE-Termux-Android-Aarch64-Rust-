@@ -186,45 +186,68 @@ fn a_failed_call_is_named_and_the_rest_still_reported() {
     );
 }
 
-/// Answers as [`registry`] does, except that the `announced-prefixes` call panics.
-struct PanicsOnPrefixes(RoutedTransport);
+/// Answers as [`registry`] does, except that the call whose path holds `.1` panics.
+struct PanicsOn(RoutedTransport, String);
 
-impl Transport for PanicsOnPrefixes {
+impl Transport for PanicsOn {
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-        assert!(
-            !request.url.contains("/announced-prefixes/"),
-            "the transport broke"
-        );
+        assert!(!request.url.contains(&self.1), "the transport broke");
         self.0.send(request)
     }
 }
 
 /// A call that panics is an answer that could not be read: it is named on the row, and the other
-/// calls and the registration are still reported.
+/// calls and the registration are still reported, whichever of the three calls it is.
 #[test]
 fn a_call_that_panics_is_named_and_the_rest_still_reported() {
-    let transport = PanicsOnPrefixes(registry((200, NEIGHBOURS)));
-    let report = printed(run(&transport, "AS13335", 1));
-    let routing = outcome(&report, "ripestat");
-    assert_eq!(routing.kind, SourceOutcomeKind::Success);
-    assert_eq!(
-        routing.detail.as_deref(),
-        Some(
-            "as-overview: held by CLOUDFLARENET - Cloudflare, Inc.; asn-neighbours: 1 left, 1 \
-             right, 1 uncertain on 2026-10-15T00:00:00; announced-prefixes failed: the call \
-             panicked"
-        )
-    );
-    assert!(
-        !report
-            .entities
-            .iter()
-            .any(|entity| entity.kind == EntityKind::Netblock),
-        "{:#?}",
-        report.entities
-    );
-    find(&report, &EntityKind::Asn, "AS13414");
-    assert_eq!(outcome(&report, "rdap").kind, SourceOutcomeKind::Success);
+    const OVERVIEW_SAID: &str = "as-overview: held by CLOUDFLARENET - Cloudflare, Inc.";
+    const PREFIXES_SAID: &str = "announced-prefixes: 1 IPv4 and 1 IPv6 from 2026-10-01T08:00:00 \
+                                 to 2026-10-15T08:00:00";
+    const NEIGHBOURS_SAID: &str = "asn-neighbours: 1 left, 1 right, 1 uncertain on \
+                                   2026-10-15T00:00:00";
+    for (call, said) in [
+        ("as-overview", [PREFIXES_SAID, NEIGHBOURS_SAID]),
+        ("announced-prefixes", [OVERVIEW_SAID, NEIGHBOURS_SAID]),
+        ("asn-neighbours", [OVERVIEW_SAID, PREFIXES_SAID]),
+    ] {
+        let transport = PanicsOn(registry((200, NEIGHBOURS)), format!("/{call}/"));
+        let report = printed(run(&transport, "AS13335", 1));
+        let routing = outcome(&report, "ripestat");
+        assert_eq!(routing.kind, SourceOutcomeKind::Success, "{call}");
+        assert_eq!(
+            routing.detail.as_deref(),
+            Some(format!("{}; {}; {call} failed: the call panicked", said[0], said[1]).as_str()),
+        );
+        let asn = find(&report, &EntityKind::Asn, "AS13335");
+        assert_eq!(
+            values(asn, "registry_block").is_empty(),
+            call == "as-overview",
+            "{call}"
+        );
+        assert_eq!(
+            report
+                .entities
+                .iter()
+                .any(|entity| entity.kind == EntityKind::Netblock),
+            call != "announced-prefixes",
+            "{call}: {:#?}",
+            report.entities
+        );
+        assert_eq!(
+            report
+                .entities
+                .iter()
+                .any(|entity| entity.raw_value == "AS13414"),
+            call != "asn-neighbours",
+            "{call}: {:#?}",
+            report.entities
+        );
+        assert_eq!(
+            outcome(&report, "rdap").kind,
+            SourceOutcomeKind::Success,
+            "{call}"
+        );
+    }
 }
 
 /// A reserved, private-use or documentation AS number is refused before any request.

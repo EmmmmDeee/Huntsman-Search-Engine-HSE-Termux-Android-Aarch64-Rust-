@@ -14,8 +14,8 @@ pub enum BreachLeg {
     /// `recon stolen-tax`. Operator key required. Cleartext is not a field.
     StolenTax,
     /// `OathNet` breach search. Operator key required. Non-credential record values leave a
-    /// record; a field named with `pass`, `pwd`, `hash` or `salt`, or a list or object holding
-    /// one, only as exposed.
+    /// record; a field named with `pass` (not as the start of `passport`), `pwd`, `hash` or
+    /// `salt`, or a list or object holding one, only as exposed.
     OathNet,
     /// `DeHashed` exact-match search. Operator key required. Only database names and the
     /// presence of a password or hash leave a record.
