@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 use huntsman_recon::exit::{EX_PIPE, EX_USAGE};
 use huntsman_recon::stdio_failure::status_for;
-use huntsman_recon::textnorm::escape_controls_keep_lines;
+use huntsman_recon::textnorm::{escape_controls_keep_lines, escape_unsafe_text};
 
 /// Makes a failed write to standard output or standard error end the process with the status
 /// `stdio_failure` gives it, rather than a panic: 141 without a message when the reader has gone,
@@ -31,6 +31,14 @@ pub(super) fn exit_on_output_failure() {
 pub(super) fn fail(code: u8, msg: &str) -> ExitCode {
     eprintln!("{}", escape_controls_keep_lines(msg));
     ExitCode::from(code)
+}
+
+/// A value as pretty JSON for standard output. Its text may come from a remote source, so the
+/// characters a terminal can act on are written as escapes, which JSON readers decode unchanged.
+pub(super) fn terminal_json_pretty<T: serde::Serialize + ?Sized>(
+    value: &T,
+) -> serde_json::Result<String> {
+    serde_json::to_string_pretty(value).map(|json| escape_unsafe_text(&json))
 }
 
 /// Reports a refused argument on stderr: the reason, then the usage line it refers to. Exit

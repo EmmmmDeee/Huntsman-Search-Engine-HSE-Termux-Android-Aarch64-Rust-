@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::fail;
+use super::{fail, terminal_json_pretty};
 use huntsman_recon::cell_radar;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
@@ -212,7 +212,7 @@ fn print_report<T: serde::Serialize>(
         print!("{}", render(parsed));
         return Ok(());
     }
-    match serde_json::to_string_pretty(parsed) {
+    match terminal_json_pretty(parsed) {
         Ok(output) => {
             println!("{output}");
             Ok(())

@@ -1,5 +1,7 @@
 //! Pure text-normalisation helpers rebuilt from the monolith's `util::str_util`.
 
+use std::fmt::Write as _;
+
 /// Whether [`escape_controls`] writes `c` escaped: a control character, a line or paragraph
 /// separator, or a bidirectional embedding, override or isolate control. The separators start a new
 /// line for readers that split on them, and the others reorder the text around them, so a name can
@@ -40,6 +42,24 @@ pub fn escape_controls(s: &str) -> String {
 #[must_use]
 pub fn escape_controls_keep_lines(s: &str) -> String {
     escape_where(s, |c| c != '\n' && c != '\t' && is_escaped(c))
+}
+
+/// JSON with DEL, the C1 controls, the line and paragraph separators and the bidirectional
+/// controls written as `\uXXXX`. JSON already escapes the control characters below U+0020, and
+/// the JSON text around these characters is ASCII, so they can only occur inside a string. The
+/// escaped form decodes to the same value, so a reader sees the same text.
+#[must_use]
+pub fn escape_unsafe_text(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        // Below U+007F, JSON has escaped what needs it inside strings, and the rest is layout.
+        if c >= '\u{7f}' && is_escaped(c) {
+            let _ = write!(out, "\\u{:04x}", u32::from(c));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Decodes the named and numeric character references in `s`. A reference that is unknown,
@@ -707,6 +727,26 @@ pub fn shares_whole_word_token(haystack: &str, needle: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escape_unsafe_text_writes_terminal_controls_and_decodes_to_the_same_value() {
+        let value = serde_json::json!({"name": "a\u{9b}31m\u{2028}b\u{202e}c\u{7f}d", "n": 1});
+        let json = serde_json::to_string_pretty(&value).unwrap();
+        let written = escape_unsafe_text(&json);
+        // Pretty JSON's own line breaks stay; nothing else that is escaped may appear raw.
+        assert!(
+            !written.chars().any(|c| c != '\n' && is_escaped(c)),
+            "{written:?}"
+        );
+        assert!(
+            written.contains("\\u009b") && written.contains("\\u202e"),
+            "{written}"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&written).unwrap(),
+            value
+        );
+    }
 
     #[test]
     fn escape_controls_neutralises_line_and_terminal_controls() {

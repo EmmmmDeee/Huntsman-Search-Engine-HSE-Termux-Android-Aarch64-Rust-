@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use super::fail;
 use super::lookup::{Refused, collect};
+use super::{fail, terminal_json_pretty};
 use huntsman_recon::doctor::STATE_DIR;
 use huntsman_recon::environment::HUNTSMAN_HOME_ENV;
 use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_PIPE, EX_UNAVAILABLE, EX_USAGE};
@@ -218,7 +218,7 @@ fn emit(response: &ApiResponse) -> ExitCode {
     }
     let pretty = serde_json::from_slice::<Value>(&response.body)
         .ok()
-        .and_then(|body| serde_json::to_string_pretty(&body).ok());
+        .and_then(|body| terminal_json_pretty(&body).ok());
     println!(
         "{}",
         pretty.unwrap_or_else(|| response.text().trim_end().to_owned())
@@ -488,7 +488,7 @@ fn rules_listing(parsed: &Parsed) -> ExitCode {
     if parsed.on("--json") {
         println!(
             "{}",
-            serde_json::to_string_pretty(&rows).unwrap_or_else(|_| rows.to_string())
+            terminal_json_pretty(&rows).unwrap_or_else(|_| rows.to_string())
         );
     } else {
         println!("ID\tRISK\tORIGIN\tNAME");
@@ -690,7 +690,7 @@ fn now_ms() -> u64 {
 
 fn finished(record: &ScanRecord, json: bool) -> ExitCode {
     if json {
-        match serde_json::to_string_pretty(record) {
+        match terminal_json_pretty(record) {
             Ok(body) => println!("{body}"),
             Err(error) => return fail(EX_IOERR, &format!("scans: {error}")),
         }

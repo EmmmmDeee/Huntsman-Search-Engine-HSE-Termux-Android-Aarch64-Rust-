@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 
-use crate::cli::{MAX_PLAIN_FILE_BYTES, fail};
+use crate::cli::{MAX_PLAIN_FILE_BYTES, fail, terminal_json_pretty};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
@@ -381,7 +381,7 @@ fn recurse_scan(args: &[String]) -> ExitCode {
     let analysis = recursion_analysis(&report);
     if json {
         let view = recursion_json(seeds.len(), &report, &analysis);
-        match serde_json::to_string_pretty(&view) {
+        match terminal_json_pretty(&view) {
             Ok(body) => println!("{body}"),
             Err(error) => return fail(EX_DATAERR, &format!("json: {error}")),
         }

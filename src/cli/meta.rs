@@ -5,7 +5,7 @@ use std::io::{IsTerminal, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use super::fail;
+use super::{fail, terminal_json_pretty};
 use huntsman_recon::attack_cli::{ATTACK_USAGE, render as render_attack};
 use huntsman_recon::clock;
 use huntsman_recon::diagnostics::{self, CredentialResolution, TermuxState};
@@ -43,7 +43,7 @@ pub(super) fn diagnostics_cmd(args: &[String]) -> ExitCode {
     };
     let report = diagnostics_snapshot();
     if json {
-        match serde_json::to_string_pretty(&report) {
+        match terminal_json_pretty(&report) {
             Ok(body) => println!("{body}"),
             Err(error) => return fail(EX_DATAERR, &format!("json: {error}")),
         }
@@ -288,7 +288,7 @@ pub(super) fn modules_cmd(args: &[String]) -> ExitCode {
     };
     let modules = reachable_modules();
     if json {
-        match serde_json::to_string_pretty(&serde_json::json!({
+        match terminal_json_pretty(&serde_json::json!({
             "count": modules.len(),
             "modules": modules,
         })) {
