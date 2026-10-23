@@ -93,7 +93,12 @@ pub fn compile_matrix(scan: &ScanRecord, saved: &ScanResults) -> Result<Value, S
     let rows: Vec<Value> = grid
         .into_iter()
         .map(|((kind, value), providers)| {
-            sources.extend(providers.keys().filter(|source| !source.is_empty()).cloned());
+            sources.extend(
+                providers
+                    .keys()
+                    .filter(|source| !source.is_empty())
+                    .cloned(),
+            );
             let row = render_row(&kind, &value, providers);
             multi_source_rows += usize::from(row["SOURCE_MODULE_COUNT"].as_u64().unwrap_or(0) > 1);
             mixed_flags += usize::from(row["MIXED_FLAG_STATUS"] == true);
@@ -139,7 +144,9 @@ pub fn compile_matrix(scan: &ScanRecord, saved: &ScanResults) -> Result<Value, S
         "scan_complete": scan.status == ScanStatus::Finished,
         "truncated": false,
     });
-    let len = serde_json::to_vec(&report).map_err(|error| error.to_string())?.len();
+    let len = serde_json::to_vec(&report)
+        .map_err(|error| error.to_string())?
+        .len();
     if len > MAX_RENDER_BYTES {
         return Err(format!(
             "matrix requires {len} bytes, above {MAX_RENDER_BYTES}; no output truncated"
@@ -202,7 +209,11 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(grid.len(), 1);
-        let row = render_row("INTERNET_NAME", "example.org", grid.into_values().next().unwrap());
+        let row = render_row(
+            "INTERNET_NAME",
+            "example.org",
+            grid.into_values().next().unwrap(),
+        );
         assert_eq!(row["SOURCE_MODULE_COUNT"], 2);
         assert_eq!(row["OBSERVATION_COUNT"], 3);
         assert_eq!(row["OPERATOR_FLAGGED_COUNT"], 1);
@@ -214,13 +225,20 @@ mod tests {
     fn matrix_keys_are_exact_and_stable() {
         assert_eq!(stable_id("a", "bc"), stable_id("a", "bc"));
         assert_ne!(stable_id("a", "bc"), stable_id("ab", "c"));
-        assert_ne!(stable_id("domain", "EXAMPLE.org"), stable_id("domain", "example.org"));
+        assert_ne!(
+            stable_id("domain", "EXAMPLE.org"),
+            stable_id("domain", "example.org")
+        );
     }
 
     #[test]
     fn missing_module_is_not_counted_as_a_source() {
         let grid = grouped(&[element("a", "", false)]).unwrap();
-        let row = render_row("INTERNET_NAME", "example.org", grid.into_values().next().unwrap());
+        let row = render_row(
+            "INTERNET_NAME",
+            "example.org",
+            grid.into_values().next().unwrap(),
+        );
         assert_eq!(row["SOURCE_MODULE_COUNT"], 0);
         assert!(row["CELLS"][0]["SOURCE_MODULE"].is_null());
     }
