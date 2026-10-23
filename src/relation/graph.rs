@@ -7,6 +7,13 @@ use super::types::{Basis, Relation};
 
 /// How deep a pathway that `disjoint_pathways` counts may run.
 const PATHWAY_MAX_DEPTH: usize = 8;
+/// Resource caps for exact evidence-basis packing; larger inputs use the conservative fallback.
+const EXACT_MAX_EDGES: usize = 20;
+const EXACT_MAX_BASES: usize = 12;
+const EXACT_MAX_NODES: usize = 12;
+const EXACT_MAX_WALK_VISITS: usize = 2_048;
+const EXACT_MAX_PATH_MASKS: usize = 96;
+const EXACT_MAX_PACK_STATES: usize = 4_096;
 /// How deep a path whose intermediate nodes `connection_brokers` scores may run.
 const BROKER_MAX_DEPTH: usize = 6;
 /// The parent of a search's first step.
@@ -168,23 +175,16 @@ impl<'a> IdentityIndex<'a> {
     }
 
     /// Count independent evidence bases exactly when the graph is small enough to enumerate.
-    /// All simple routes up to PATHWAY_MAX_DEPTH are considered; a shared named basis occupies
+    /// All simple routes up to `PATHWAY_MAX_DEPTH` are considered; a shared named basis occupies
     /// just one bit even if several edges of a path use it. No relation confidence threshold
     /// is imposed on existence of a route. Resource limits make this a best-effort exact
     /// improvement over the legacy greedy lower bound, not a proof of global optimality on
     /// arbitrarily large or dense evidence graphs.
     fn exact_pathway_count(&self, start: usize, end: usize, cap: usize) -> Option<usize> {
-        const MAX_EDGES: usize = 20;
-        const MAX_BASES: usize = 12;
-        const MAX_NODES: usize = 12;
-        const MAX_WALK_VISITS: usize = 2_048;
-        const MAX_PATH_MASKS: usize = 96;
-        const MAX_PACK_STATES: usize = 4_096;
-
         if start == end || cap == 0 {
             return Some(0);
         }
-        if self.edges.len() > MAX_EDGES || self.bases.len() > MAX_BASES || self.len() > MAX_NODES {
+        if self.edges.len() > EXACT_MAX_EDGES || self.bases.len() > EXACT_MAX_BASES || self.len() > EXACT_MAX_NODES {
             return None;
         }
 
@@ -198,12 +198,12 @@ impl<'a> IdentityIndex<'a> {
         impl Walk<'_, '_> {
             fn collect(&mut self, at: usize, end: usize, depth: usize, used: u32) -> bool {
                 self.visits += 1;
-                if self.visits > MAX_WALK_VISITS {
+                if self.visits > EXACT_MAX_WALK_VISITS {
                     return false;
                 }
                 if at == end {
                     self.masks.push(used);
-                    return self.masks.len() <= MAX_PATH_MASKS;
+                    return self.masks.len() <= EXACT_MAX_PATH_MASKS;
                 }
                 if depth == PATHWAY_MAX_DEPTH {
                     return true;
@@ -242,7 +242,7 @@ impl<'a> IdentityIndex<'a> {
                     return Some(result);
                 }
                 self.visited += 1;
-                if self.visited > MAX_PACK_STATES {
+                if self.visited > EXACT_MAX_PACK_STATES {
                     return None;
                 }
                 let mut result = 0;
