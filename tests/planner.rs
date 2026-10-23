@@ -122,6 +122,31 @@ fn planner_blocks_unknown_paid_cost_under_budget() {
 }
 
 #[test]
+fn malformed_explicit_budget_preserves_free_discovery_and_paid_controls() {
+    for budget in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+        let policy = PlannerPolicy {
+            budget_usd: Some(budget),
+            configured_providers: BTreeSet::from(["intelx".to_owned()]),
+            ..PlannerPolicy::default()
+        };
+        let plan = build_dispatch_plan(&modules(), &[seed()], &PipelineLimits::default(), &policy);
+        assert!(
+            plan.selected.iter().any(|dispatch| {
+                matches!(dispatch.action, DispatchAction::Module { module_index: 0 })
+            }),
+            "free module must remain eligible under {budget:?}"
+        );
+        assert!(
+            plan.excluded.iter().any(|dispatch| {
+                dispatch.provider_id == "intelx"
+                    && dispatch.reason == DispatchExclusion::UnknownPaidCost
+            }),
+            "unknown paid costs cannot consume a malformed budget"
+        );
+    }
+}
+
+#[test]
 fn lead_routes_are_planned_as_leads_not_evidence() {
     let plan = build_dispatch_plan(
         &[],
