@@ -484,11 +484,7 @@ fn bounded_exact_pathways(
                     continue;
                 }
                 self.seen[next] = true;
-                let ok = self.enumerate(
-                    next,
-                    depth + 1,
-                    mask | (1_u64 << self.index.basis[edge]),
-                );
+                let ok = self.enumerate(next, depth + 1, mask | (1_u64 << self.index.basis[edge]));
                 self.seen[next] = false;
                 if !ok {
                     return false;
