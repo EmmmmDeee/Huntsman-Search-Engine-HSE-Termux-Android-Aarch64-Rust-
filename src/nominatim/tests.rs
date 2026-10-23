@@ -605,7 +605,7 @@ fn operator_endpoint_can_change_without_polluting_url_cache_keys() {
 #[test]
 fn direct_api_rejects_invalid_geocoding_input_before_network() {
     let transport = RecordingTransport::default();
-    for query in ["", "  ", "bad\\nquery"] {
+    for query in ["", "  ", "bad\nquery"] {
         assert!(matches!(
             forward(&transport, query, "input-test", 100),
             Err(Error::Invalid(_))
