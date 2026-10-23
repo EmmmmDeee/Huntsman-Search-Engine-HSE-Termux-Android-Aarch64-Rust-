@@ -123,6 +123,18 @@ accept_staged_runtime() {
   # this handset. Exercise the recon binary offline before replacing the live
   # copy, with bounded wall-clock time and disposable generated artifacts.
   if [ "$CHANNEL" = recon ]; then
+    # A checksum-verified release can still carry an older or mislabelled
+    # binary. Main-channel tags encode the first seven digits of the exact
+    # source revision; bind the running executable to that tag before install.
+    if [[ "$TAG" == main-* ]]; then
+      local built_sha
+      built_sha="$(timeout 30 "$stage" build-sha)" ||
+        die "could not read staged binary build-sha; $dest left unchanged"
+      [[ "$built_sha" =~ ^[0-9a-f]{40}$ ]] ||
+        die "staged binary has invalid build-sha; $dest left unchanged"
+      [[ "${built_sha:0:7}" == "${TAG#main-}" ]] ||
+        die "staged binary revision does not match release $TAG; $dest left unchanged"
+    fi
     mkdir "$tmp/acceptance"
     (
       cd "$tmp/acceptance"
