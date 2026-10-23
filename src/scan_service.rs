@@ -1589,12 +1589,20 @@ impl ScanService {
     /// [`ServiceError::NotFound`] for no such scan, [`ServiceError::Conflict`] while it runs.
     pub fn delete(&self, id: &str) -> Result<(), ServiceError> {
         let record = self.store.get(id).or_else(|error| match error {
+            // A scan this service still runs keeps its directory however unreadable its row: its
+            // worker still writes there, and deleting it would lose what the scan finds.
+            StoreError::Io(reason) if self.owned().contains(id) => {
+                Err(ServiceError::Conflict(format!(
+                    "scan {id} is still running and its row cannot be read ({reason}); \
+                     delete it once it ends"
+                )))
+            }
             // An unreadable row can still be deleted.
             StoreError::Io(_) => Ok(ScanRecord {
                 status: ScanStatus::ErrorFailed,
                 ..placeholder(id)
             }),
-            other => Err(other),
+            other => Err(other.into()),
         })?;
         if record.status.is_active() {
             return Err(ServiceError::Conflict(format!(
@@ -2443,6 +2451,33 @@ mod tests {
                 .any(|entry| entry.message.contains("marked ERROR_FAILED"))
         );
         service.delete(&record.id).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_running_scan_whose_row_cannot_be_read_is_not_deleted() {
+        let (service, dir) = with_lookup(
+            "unreadable-delete",
+            Arc::new(|_, _, _| Ok(LookupOutput::default())),
+        );
+        // `create` registers the scan as this service's, as a running scan is.
+        let (record, _) = service
+            .create(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let scan_dir = dir.join(&record.id);
+        std::fs::write(scan_dir.join("scan.json"), b"not a scan row").unwrap();
+
+        let error = service.delete(&record.id).unwrap_err();
+
+        assert!(matches!(error, ServiceError::Conflict(_)), "{error}");
+        assert!(scan_dir.join("scan.json").exists());
+        // Once no worker runs it, an unreadable row is deleted as before.
+        service.owned().remove(&record.id);
+        service.delete(&record.id).unwrap();
+        assert!(!scan_dir.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
