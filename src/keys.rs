@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
-use std::fs::{File, Metadata};
+use std::fs::Metadata;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -434,13 +434,9 @@ fn current_uid() -> Option<u32> {
 
 /// `None` when `path` does not exist; otherwise the parsed file or the refusal.
 ///
-/// The open uses default flags. `O_NOFOLLOW` (and `O_NONBLOCK`) could be set with
-/// `OpenOptionsExt::custom_flags`, which is safe Rust; the obstacle is the flag
-/// values, which differ per architecture (e.g. `O_NOFOLLOW` on `x86_64` vs `aarch64`)
-/// and would need the `libc` crate or a hard-coded per-target table. Instead the
-/// opened descriptor must be the inode `lstat` saw and pass the gate again. The
-/// residual gap: a regular file swapped for a FIFO between `lstat` and `open`
-/// makes `open` block before the re-check; that needs write access to `$HOME`.
+/// The open is [`fsio::open_unfollowed`](crate::fsio::open_unfollowed): on Linux and Android it
+/// neither follows a symlink nor blocks on a FIFO swapped in after `lstat`, and the opened
+/// descriptor must still be the inode `lstat` saw and pass the gate again.
 fn load_default_file(path: &Path) -> Result<Option<Result<Keys, DefaultFileRefusal>>, Error> {
     match read_private_file(path, MAX_KEYS_FILE_BYTES)? {
         None => Ok(None),
@@ -460,6 +456,15 @@ pub(crate) fn read_private_file(
     path: &Path,
     max: u64,
 ) -> Result<Option<Result<Vec<u8>, DefaultFileRefusal>>, Error> {
+    read_private_file_with(path, max, || {})
+}
+
+/// [`read_private_file`], running `after_check` between the `lstat` gate and the open.
+fn read_private_file_with(
+    path: &Path,
+    max: u64,
+    after_check: impl FnOnce(),
+) -> Result<Option<Result<Vec<u8>, DefaultFileRefusal>>, Error> {
     let store = |e: std::io::Error| store_err(path, &e);
     let linked = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
@@ -472,9 +477,10 @@ pub(crate) fn read_private_file(
     if let Some(refusal) = default_file_refusal(&FileFacts::of(&linked), uid) {
         return Ok(Some(Err(refusal)));
     }
-    let file = match File::open(path) {
+    after_check();
+    let file = match crate::fsio::open_unfollowed(path) {
         Ok(file) => file,
-        Err(e) if e.kind() == ErrorKind::NotFound => {
+        Err(e) if e.kind() == ErrorKind::NotFound || crate::fsio::is_refused_link(&e) => {
             return Ok(Some(Err(DefaultFileRefusal::ChangedWhileOpening)));
         }
         Err(e) => return Err(store(e)),
@@ -1194,6 +1200,57 @@ mod tests {
             .expect_err("symlink must be refused");
         assert_eq!(refusal, DefaultFileRefusal::Symlink);
         assert!(!refusal_text(refusal).contains(GATE_SECRET));
+        std::fs::remove_dir_all(&home).expect("cleanup");
+    }
+
+    /// A private file swapped after the gate is refused without being read or blocking: for a
+    /// symlink to another private file and for a FIFO with no writer.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn private_file_gate_refuses_a_swap_after_the_check_without_blocking() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let home = fake_home("gate-swap");
+        let target = home.join("real_key");
+        write_mode(&target, GATE_SECRET, 0o600);
+        let path = home.join("api_key");
+        // Each replacement is made beside the checked file and renamed over it, so its inode
+        // differs from the checked one.
+        let swaps: [fn(&Path, &Path); 2] = [
+            |swapped, target| std::os::unix::fs::symlink(target, swapped).expect("symlink"),
+            |swapped, _| {
+                let made = std::process::Command::new("mkfifo")
+                    .arg(swapped)
+                    .status()
+                    .expect("mkfifo available on Linux/Termux");
+                assert!(made.success(), "mkfifo {}", swapped.display());
+            },
+        ];
+        for swap in swaps {
+            write_mode(&path, "TEST_ONLY_CHECKED", 0o600);
+            let (answer, answered) = mpsc::channel();
+            let (worker_path, worker_target) = (path.clone(), target.clone());
+            let worker = std::thread::spawn(move || {
+                let result = read_private_file_with(&worker_path, 4096, || {
+                    let swapped = worker_path.with_file_name("swapped");
+                    swap(&swapped, &worker_target);
+                    std::fs::rename(&swapped, &worker_path).expect("rename over the checked file");
+                });
+                let _ = answer.send(result.map_err(|error| error.to_string()));
+            });
+            let result = answered
+                .recv_timeout(Duration::from_secs(3))
+                .expect("the gate must not block on a swapped-in FIFO");
+            worker.join().expect("gate worker");
+            let refusal = result
+                .expect("io")
+                .expect("exists")
+                .expect_err("a swapped file must be refused");
+            assert_eq!(refusal, DefaultFileRefusal::ChangedWhileOpening);
+            assert!(!refusal_text(refusal).contains(GATE_SECRET));
+            std::fs::remove_file(&path).expect("remove swapped path");
+        }
         std::fs::remove_dir_all(&home).expect("cleanup");
     }
 

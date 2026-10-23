@@ -87,27 +87,52 @@ pub(crate) fn same_inode(_linked: &fs::Metadata, _opened: &fs::Metadata) -> bool
     true
 }
 
-/// Open a read candidate without blocking on a FIFO swapped in after `lstat`.
-///
-/// Linux and Android expose `O_NONBLOCK` (0o4000) and `O_NOFOLLOW` (0o400000);
-/// the opened descriptor must still pass the existing regular-file and inode
-/// checks. Keep the ordinary portable open on other targets.
-fn open_read_candidate(path: &Path) -> Result<File, Error> {
+/// `O_NONBLOCK | O_NOFOLLOW` on the Linux and Android architectures whose values are known.
+/// `O_NONBLOCK` is 0o4000 on all of them. `O_NOFOLLOW` is 0o100000 on Arm, where 0o400000 is
+/// `O_LARGEFILE` and would follow the link, and 0o400000 on x86 and RISC-V. `None` on any other
+/// target, where the checks after the open are the only guard.
+const NONBLOCK_NOFOLLOW: Option<i32> = if !cfg!(any(target_os = "linux", target_os = "android")) {
+    None
+} else if cfg!(any(target_arch = "aarch64", target_arch = "arm")) {
+    Some(0o4_000 | 0o100_000)
+} else if cfg!(any(
+    target_arch = "x86",
+    target_arch = "x86_64",
+    target_arch = "riscv64"
+)) {
+    Some(0o4_000 | 0o400_000)
+} else {
+    None
+};
+
+/// `ELOOP`, the error an `O_NOFOLLOW` open of a final symlink fails with on every target
+/// [`NONBLOCK_NOFOLLOW`] covers.
+const ELOOP: i32 = 40;
+
+/// Open `path` read-only without following a final symlink or blocking on a FIFO, where
+/// [`NONBLOCK_NOFOLLOW`] is known; an ordinary read-only open elsewhere. The caller must still
+/// check that the descriptor is a regular file and the inode `lstat` saw.
+pub(crate) fn open_unfollowed(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true);
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
+    #[cfg(unix)]
+    if let Some(flags) = NONBLOCK_NOFOLLOW {
         use std::os::unix::fs::OpenOptionsExt as _;
-        const O_NONBLOCK: i32 = 0o4_000;
-        const O_NOFOLLOW: i32 = 0o400_000;
-        options.custom_flags(O_NONBLOCK | O_NOFOLLOW);
+        options.custom_flags(flags);
     }
-    options.open(path).map_err(|error| {
-        // O_NOFOLLOW reports ELOOP when the checked file was swapped for a
-        // symlink. Preserve the public refusal contract rather than exposing
-        // an arbitrary platform error or retrying through the link.
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        if error.raw_os_error() == Some(40) {
+    options.open(path)
+}
+
+/// Whether `error` is [`open_unfollowed`] refusing a final symlink.
+pub(crate) fn is_refused_link(error: &std::io::Error) -> bool {
+    NONBLOCK_NOFOLLOW.is_some() && error.raw_os_error() == Some(ELOOP)
+}
+
+/// Open a read candidate through [`open_unfollowed`]. A symlink swapped in after `lstat` keeps
+/// the public refusal text rather than a platform error.
+fn open_read_candidate(path: &Path) -> Result<File, Error> {
+    open_unfollowed(path).map_err(|error| {
+        if is_refused_link(&error) {
             return Error::Store(format!("{}: {REFUSED_SYMLINK}", path.display()));
         }
         store_err(path, &error)
@@ -120,8 +145,8 @@ fn open_read_candidate(path: &Path) -> Result<File, Error> {
 /// potentially blocking or triggering device behavior. The opened handle is
 /// checked again before reading: it must be the inode `lstat` saw and a regular
 /// file, so a link or a replacement planted between the check and the open is
-/// refused rather than followed. On Linux/Android, `O_NONBLOCK | O_NOFOLLOW`
-/// also prevents FIFO blocking and symlink traversal before the descriptor is
+/// refused rather than followed. On Linux/Android, [`open_unfollowed`] also
+/// prevents FIFO blocking and symlink traversal before the descriptor is
 /// validated; inode comparison remains mandatory after opening.
 ///
 /// # Errors
@@ -651,6 +676,32 @@ mod tests {
         worker.join().expect("reader worker");
         let message = result.expect_err("replaced FIFO must not be read");
         assert!(message.contains(NOT_REGULAR_FILE), "{message}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The open itself refuses a final symlink, not only the inode check after it. Arm's
+    /// `O_NOFOLLOW` is not x86's: with the x86 value an aarch64 open follows the link.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn the_open_itself_refuses_a_final_symlink() {
+        let dir = scratch("open-unfollowed");
+        let target = dir.join("target");
+        fs::write(&target, b"secret").unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(
+            NONBLOCK_NOFOLLOW.is_some(),
+            "no O_NOFOLLOW value for {}",
+            std::env::consts::ARCH
+        );
+        let error = open_unfollowed(&link).expect_err("a final symlink must not be opened");
+        assert!(is_refused_link(&error), "{error:?}");
+        let refused = open_read_candidate(&link).expect_err("a final symlink must not be opened");
+        assert!(refused.to_string().contains(REFUSED_SYMLINK), "{refused}");
+        let mut opened = open_unfollowed(&target).expect("a regular file opens");
+        let mut body = Vec::new();
+        opened.read_to_end(&mut body).unwrap();
+        assert_eq!(body, b"secret");
         let _ = fs::remove_dir_all(&dir);
     }
 

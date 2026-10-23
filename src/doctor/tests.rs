@@ -949,6 +949,38 @@ fn a_cache_tag_symlink_is_rejected_even_if_target_has_signature() {
     assert!(!tagged_cache(&cache));
 }
 
+/// A tag swapped after the check is refused: a symlink by the open itself, another regular file
+/// by the inode check, even when each carries the signature.
+#[cfg(unix)]
+#[test]
+fn a_cache_tag_swapped_after_the_check_is_rejected() {
+    let scratch = Scratch::new("tag-swapped");
+    let cache = scratch.home.join("cache");
+    fs::create_dir_all(&cache).expect("cache");
+    let tag = cache.join("CACHEDIR.TAG");
+    let elsewhere = scratch.home.join("other-tag");
+    fs::write(&elsewhere, CACHEDIR_SIGNATURE).expect("other tag");
+    // The replacement is written while the checked tag still exists, so its inode differs.
+    let swaps: [fn(&Path, &Path); 2] = [
+        |tag, elsewhere| {
+            fs::remove_file(tag).expect("remove tag");
+            std::os::unix::fs::symlink(elsewhere, tag).expect("symlink");
+        },
+        |tag, _| {
+            let replacement = tag.with_file_name("replacement");
+            fs::write(&replacement, CACHEDIR_SIGNATURE).expect("replacement");
+            fs::rename(&replacement, tag).expect("rename over the tag");
+        },
+    ];
+    for swap in swaps {
+        fs::write(&tag, CACHEDIR_SIGNATURE).expect("tag");
+        assert!(tagged_cache(&cache), "the checked tag itself is accepted");
+        let accepted = tagged_cache_with(&cache, || swap(&tag, &elsewhere));
+        assert!(!accepted, "a tag swapped after the check must be refused");
+        fs::remove_file(&tag).expect("remove swapped tag");
+    }
+}
+
 #[test]
 fn a_regular_cache_tag_with_signature_is_accepted() {
     let scratch = Scratch::new("tag-regular");
