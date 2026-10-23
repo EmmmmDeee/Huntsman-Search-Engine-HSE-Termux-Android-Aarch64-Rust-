@@ -173,7 +173,7 @@ impl HibpClient {
     pub fn breaches(&self, filter: &BreachesFilter) -> Result<Vec<BreachModel>, HibpError> {
         let mut q = Vec::new();
         if let Some(d) = &filter.domain {
-            q.push(("Domain", d.clone()));
+            q.push(("Domain", non_empty(d, "domain")?.to_owned()));
         }
         if let Some(s) = filter.is_spam_list {
             q.push(("IsSpamList", s.to_string()));
@@ -217,7 +217,7 @@ impl HibpClient {
             q.push(("truncateResponse", t.to_string()));
         }
         if let Some(d) = &opts.domain {
-            q.push(("domain", d.clone()));
+            q.push(("domain", non_empty(d, "domain")?.to_owned()));
         }
         if let Some(u) = opts.include_unverified {
             q.push(("IncludeUnverified", u.to_string()));

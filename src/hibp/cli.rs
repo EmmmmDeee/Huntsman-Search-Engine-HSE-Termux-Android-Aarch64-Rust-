@@ -206,10 +206,7 @@ impl HibpCommand {
     }
 
     fn breaches(&self, domain: Option<&str>) -> Outcome {
-        let domain = match domain.map(str::trim) {
-            Some("") => return Err(HibpError::InvalidInput("domain is empty".into()).into()),
-            other => other,
-        };
+        // The client trims the filter and refuses a blank one before any request.
         let filter = BreachesFilter {
             domain: domain.map(str::to_owned),
             is_spam_list: None,

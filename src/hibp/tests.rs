@@ -94,6 +94,41 @@ fn public_endpoints_and_filters_never_send_credentials() {
 }
 
 #[test]
+fn a_domain_filter_is_trimmed_and_a_blank_one_is_refused_before_any_request() {
+    let (client, fake) = keyed();
+    for blank in ["", "   "] {
+        let filter = BreachesFilter {
+            domain: Some(blank.into()),
+            is_spam_list: None,
+        };
+        assert!(matches!(
+            client.breaches(&filter),
+            Err(HibpError::InvalidInput(message)) if message == "domain is empty"
+        ));
+        let options = BreachedAccountOptions {
+            domain: Some(blank.into()),
+            ..BreachedAccountOptions::default()
+        };
+        assert!(matches!(
+            client.breached_account("ada@example.com", &options),
+            Err(HibpError::InvalidInput(message)) if message == "domain is empty"
+        ));
+    }
+    assert!(fake.requests().is_empty(), "a blank filter sent a request");
+    fake.push(200, "[]");
+    let padded = BreachesFilter {
+        domain: Some("  example.com ".into()),
+        is_spam_list: None,
+    };
+    assert!(client.breaches(&padded).unwrap().is_empty());
+    assert!(
+        fake.requests()[0]
+            .url
+            .ends_with("/breaches?Domain=example.com")
+    );
+}
+
+#[test]
 fn account_and_paste_options_models_and_not_found() {
     let (client, fake) = keyed();
     fake.push(200, r#"[{"Name":"Example","DataClasses":["Passwords"]}]"#);
