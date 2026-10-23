@@ -1954,7 +1954,7 @@ static PAGE_POLICY: LazyLock<String> = LazyLock::new(|| {
 const OTHER_POLICY: &str = "default-src 'none'; frame-ancestors 'none'";
 
 /// The text between `<tag>` and `</tag>`, the part a browser hashes for a CSP hash source.
-fn inline_block<'a>(page: &'a str, tag: &str) -> &'a str {
+pub(crate) fn inline_block<'a>(page: &'a str, tag: &str) -> &'a str {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     match (page.find(&open), page.find(&close)) {
@@ -1963,7 +1963,7 @@ fn inline_block<'a>(page: &'a str, tag: &str) -> &'a str {
     }
 }
 
-fn hash_source(content: &str) -> String {
+pub(crate) fn hash_source(content: &str) -> String {
     format!("sha256-{}", base64::standard(&sha256(content.as_bytes())))
 }
 

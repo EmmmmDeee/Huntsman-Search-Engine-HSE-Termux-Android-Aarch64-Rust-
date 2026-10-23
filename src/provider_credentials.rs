@@ -501,7 +501,7 @@ pub fn probe<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> Vec<ProviderP
                     evidence: Vec::new(),
                 };
             };
-            match probe_service(transport, service.name, secret.expose()) {
+            match probe_service(transport, service.name, &secret) {
                 Ok(result) => {
                     let probe = match result.verdict {
                         ProbeVerdict::Valid => ProbeState::Valid,
@@ -815,6 +815,30 @@ mod tests {
         assert!(rendered.contains("provider=HIBP\tstate=configured\tprobe=valid"));
         assert!(rendered.contains("probe.subscription_name=Core 1"));
         assert!(rendered.contains("probe.rpm=10"));
+    }
+
+    #[test]
+    fn a_challenge_page_leaves_the_hibp_key_unchecked() {
+        // HIBP is behind Cloudflare. Its interstitial, served with 403 or with 200, never reached
+        // HIBP, so the key is neither rejected nor valid.
+        let keys = Keys::parse("HUNTSMAN_HIBP_KEY=fake-hibp-key-never-render\n").expect("keys");
+        let page = "<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>cloudflare <script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/jsch/v1\"></script></body></html>";
+        for status in [403, 200] {
+            let transport = FakeTransport {
+                response: Response {
+                    status,
+                    headers: Vec::new(),
+                    body: page.as_bytes().to_vec(),
+                    truncated: false,
+                },
+                seen: RefCell::new(Vec::new()),
+            };
+            let rendered = render_probed(&keys, &transport);
+            assert!(
+                rendered.contains("provider=HIBP\tstate=configured\tprobe=indeterminate"),
+                "HTTP {status}: {rendered}"
+            );
+        }
     }
 
     #[test]
