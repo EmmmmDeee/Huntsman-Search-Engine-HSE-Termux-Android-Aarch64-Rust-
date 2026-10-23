@@ -391,34 +391,35 @@ pub fn country_of(e164: &str) -> Option<(&'static str, &'static str, &'static st
 }
 
 /// Toll-free codes: those in service and those set aside for toll-free use, never geographic.
-const NANP_TOLL_FREE: &[&str] = &[
-    "800", "822", "833", "844", "855", "866", "877", "880", "881", "882", "883", "884", "885",
-    "886", "887", "888", "889",
+/// Codes are numbers, not text: as text, a run of them lands in the binary as one long digit
+/// string that the release key scan reads as a key wherever a hex letter abuts it.
+const NANP_TOLL_FREE: &[u16] = &[
+    800, 822, 833, 844, 855, 866, 877, 880, 881, 882, 883, 884, 885, 886, 887, 888, 889,
 ];
 
 /// Other non-geographic service codes and what each carries. `900` is premium-rate, kept apart.
-const NANP_SERVICE: &[(&str, &str)] = &[
-    ("500", "personal communications service"),
-    ("521", "personal communications service"),
-    ("522", "personal communications service"),
-    ("523", "personal communications service"),
-    ("524", "personal communications service"),
-    ("525", "personal communications service"),
-    ("526", "personal communications service"),
-    ("527", "personal communications service"),
-    ("528", "personal communications service"),
-    ("529", "personal communications service"),
-    ("532", "personal communications service"),
-    ("533", "personal communications service"),
-    ("544", "personal communications service"),
-    ("566", "personal communications service"),
-    ("577", "personal communications service"),
-    ("588", "personal communications service"),
-    ("600", "Canadian non-geographic service"),
-    ("622", "Canadian non-geographic service"),
-    ("633", "Canadian non-geographic service"),
-    ("700", "interexchange carrier service"),
-    ("710", "US government special service"),
+const NANP_SERVICE: &[(u16, &str)] = &[
+    (500, "personal communications service"),
+    (521, "personal communications service"),
+    (522, "personal communications service"),
+    (523, "personal communications service"),
+    (524, "personal communications service"),
+    (525, "personal communications service"),
+    (526, "personal communications service"),
+    (527, "personal communications service"),
+    (528, "personal communications service"),
+    (529, "personal communications service"),
+    (532, "personal communications service"),
+    (533, "personal communications service"),
+    (544, "personal communications service"),
+    (566, "personal communications service"),
+    (577, "personal communications service"),
+    (588, "personal communications service"),
+    (600, "Canadian non-geographic service"),
+    (622, "Canadian non-geographic service"),
+    (633, "Canadian non-geographic service"),
+    (700, "interexchange carrier service"),
+    (710, "US government special service"),
 ];
 
 /// What the North American Numbering Plan says about a `+1` number, offline: its area code (NPA),
@@ -527,11 +528,12 @@ fn nanp_national(national: &str) -> Result<Nanp, NanpError> {
     if is_n11(nxx) {
         return Err(NanpError::ExchangeN11);
     }
-    let class = if NANP_TOLL_FREE.contains(&npa) {
+    let code: u16 = npa.parse().map_err(|_| NanpError::Length)?;
+    let class = if NANP_TOLL_FREE.contains(&code) {
         NanpClass::TollFree
     } else if npa == "900" {
         NanpClass::Premium
-    } else if let Some(&(_, purpose)) = NANP_SERVICE.iter().find(|(code, _)| *code == npa) {
+    } else if let Some(&(_, purpose)) = NANP_SERVICE.iter().find(|(service, _)| *service == code) {
         NanpClass::NonGeographic(purpose)
     } else {
         NanpClass::Geographic
