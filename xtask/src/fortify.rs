@@ -188,7 +188,12 @@ const PHASES: &[Phase] = &[
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
     let root = repository_root();
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         ["plan"] => output(plan()),
         ["validate"] => match validate(&root) {
             Ok(()) => {
@@ -236,23 +241,27 @@ fn plan() -> Value {
     let roles: Vec<Value> = ROLES
         .iter()
         .enumerate()
-        .map(|(index, role)| json!({
-            "rank": index + 1,
-            "id": role.id,
-            "owner": role.owner,
-            "reports_to": role.parent,
-            "responsibility": role.responsibility,
-        }))
+        .map(|(index, role)| {
+            json!({
+                "rank": index + 1,
+                "id": role.id,
+                "owner": role.owner,
+                "reports_to": role.parent,
+                "responsibility": role.responsibility,
+            })
+        })
         .collect();
     let phases: Vec<Value> = PHASES
         .iter()
-        .map(|phase| json!({
-            "id": phase.id,
-            "owner": phase.owner,
-            "predecessor": phase.predecessor,
-            "contract": phase.contract,
-            "verification": phase.verification,
-        }))
+        .map(|phase| {
+            json!({
+                "id": phase.id,
+                "owner": phase.owner,
+                "predecessor": phase.predecessor,
+                "contract": phase.contract,
+                "verification": phase.verification,
+            })
+        })
         .collect();
     json!({
         "schema": "huntsman.fortified-pipeline/1",
@@ -285,7 +294,9 @@ fn validate_model(roles: &[Role], phases: &[Phase]) -> Result<()> {
     }
     let mut seen_roles = BTreeSet::new();
     for (index, role) in roles.iter().enumerate() {
-        if role.id.is_empty() || role.owner.is_empty() || role.responsibility.is_empty()
+        if role.id.is_empty()
+            || role.owner.is_empty()
+            || role.responsibility.is_empty()
             || !seen_roles.insert(role.id)
         {
             return Err(Error::Refused("duplicate or incomplete role".to_owned()));
@@ -308,7 +319,10 @@ fn validate_model(roles: &[Role], phases: &[Phase]) -> Result<()> {
         if (index == 0 && phase.predecessor.is_some())
             || (index > 0 && phase.predecessor != Some(phases[index - 1].id))
         {
-            return Err(Error::Refused(format!("invalid phase dependency {}", phase.id)));
+            return Err(Error::Refused(format!(
+                "invalid phase dependency {}",
+                phase.id
+            )));
         }
     }
     Ok(())
@@ -334,11 +348,20 @@ fn contains_all(text: &str, required: &[&str], path: &str) -> Result<()> {
 fn validate(root: &Path) -> Result<()> {
     validate_model(ROLES, PHASES)?;
     let manifest = checked_text(root, "Cargo.toml")?;
-    contains_all(&manifest, &["members = [\"xtask\"]", "rust-version = \"1.87\""], "Cargo.toml")?;
+    contains_all(
+        &manifest,
+        &["members = [\"xtask\"]", "rust-version = \"1.87\""],
+        "Cargo.toml",
+    )?;
     let ci = checked_text(root, ".github/workflows/ci.yml")?;
     contains_all(
         &ci,
-        &["gate full", "gate msrv", "aarch64-linux-android", "pull_request:"],
+        &[
+            "gate full",
+            "gate msrv",
+            "aarch64-linux-android",
+            "pull_request:",
+        ],
         ".github/workflows/ci.yml",
     )?;
     let audit = checked_text(root, ".github/workflows/audit.yml")?;
@@ -371,8 +394,7 @@ fn status(root: &Path) -> Result<Value> {
     let branch = String::from_utf8_lossy(&git_stdout(root, &["branch", "--show-current"])?)
         .trim()
         .to_owned();
-    let dirty = !git_stdout(root, &["status", "--porcelain", "--untracked-files=all"])?
-        .is_empty();
+    let dirty = !git_stdout(root, &["status", "--porcelain", "--untracked-files=all"])?.is_empty();
     let checked_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|problem| Error::Refused(format!("invalid system clock: {problem}")))?
