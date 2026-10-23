@@ -46,6 +46,11 @@ fn grouped(elements: &[DataElement]) -> Result<Grid, String> {
         cell.ids.push(element.id.clone());
         cell.flagged += usize::from(element.fp);
     }
+    for modules in grid.values_mut() {
+        for cell in modules.values_mut() {
+            cell.ids.sort_unstable();
+        }
+    }
     Ok(grid)
 }
 
@@ -219,6 +224,26 @@ mod tests {
         assert_eq!(row["OPERATOR_FLAGGED_COUNT"], 1);
         assert_eq!(row["MIXED_FLAG_STATUS"], true);
         assert_eq!(row["CELLS"][0]["ELEMENT_IDS"], json!(["a", "b"]));
+    }
+
+    #[test]
+    fn observation_order_does_not_change_matrix_cells() {
+        let earlier = grouped(&[element("z", "dns", false), element("a", "dns", true)])
+            .unwrap();
+        let later = grouped(&[element("a", "dns", true), element("z", "dns", false)])
+            .unwrap();
+        let first = render_row(
+            "INTERNET_NAME",
+            "example.org",
+            earlier.into_values().next().unwrap(),
+        );
+        let second = render_row(
+            "INTERNET_NAME",
+            "example.org",
+            later.into_values().next().unwrap(),
+        );
+        assert_eq!(first, second);
+        assert_eq!(first["CELLS"][0]["ELEMENT_IDS"], json!(["a", "z"]));
     }
 
     #[test]
