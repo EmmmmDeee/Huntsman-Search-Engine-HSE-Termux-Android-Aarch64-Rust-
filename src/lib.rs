@@ -179,6 +179,7 @@ pub mod scan_route;
 pub mod scan_search;
 pub mod scan_service;
 pub mod scan_store;
+pub mod scan_uncertainty;
 pub mod search;
 pub mod securitytrails;
 pub mod seeknow;
