@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 use huntsman_recon::clock;
 use huntsman_recon::fsio::{read_bounded, write_atomic_private};
@@ -138,11 +138,11 @@ fn file_stamp(path: &Path) -> Result<String, String> {
     if !meta.is_file() || meta.file_type().is_symlink() {
         return Err(format!("{}: not a regular evidence file", path.display()));
     }
-    let modified = meta
-        .modified()
-        .map_err(|error| format!("{}: {error}", path.display()))?
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let (modified_secs, modified_nanos) = clock::unix_parts_of(
+        meta.modified()
+            .map_err(|error| format!("{}: {error}", path.display()))?,
+    )
+    .ok_or_else(|| format!("{}: modification time precedes the Unix epoch", path.display()))?;
     #[cfg(unix)]
     let inode = {
         use std::os::unix::fs::MetadataExt;
@@ -153,8 +153,8 @@ fn file_stamp(path: &Path) -> Result<String, String> {
     Ok(format!(
         "{}:{}:{}:{inode}",
         meta.len(),
-        modified.as_secs(),
-        modified.subsec_nanos()
+        modified_secs,
+        modified_nanos
     ))
 }
 
