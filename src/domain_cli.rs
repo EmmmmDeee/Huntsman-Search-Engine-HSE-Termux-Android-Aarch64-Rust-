@@ -171,6 +171,7 @@ pub fn run<T: Transport + ?Sized + Sync>(
         unanswered,
     } = found;
     merge_by_uid(&mut entities);
+    tag_lookalikes(&domain, &mut entities);
 
     // A source that answered "nothing known" answered: its zero row is the result.
     let answered = outcomes.iter().any(|o| o.kind.is_accepted());
@@ -203,6 +204,28 @@ pub fn run<T: Transport + ?Sized + Sync>(
     DomainRun::Printed {
         text,
         report: Report { entities, outcomes },
+    }
+}
+
+/// Tags each other registered domain the lookup found whose name is one edit or one look-alike
+/// character from the domain's own, as `githuh.com` is to `github.com`. Hosts under the domain
+/// and other names in its own registered domain are never look-alikes. **Pure.**
+fn tag_lookalikes(domain: &str, entities: &mut [Entity]) {
+    let Some(own) = crate::domains::registrable_domain(domain) else {
+        return;
+    };
+    let label = |registered: &str| registered.split('.').next().unwrap_or("").to_owned();
+    let own_label = label(&own);
+    for entity in entities
+        .iter_mut()
+        .filter(|entity| entity.kind == EntityKind::Domain)
+    {
+        let Some(registered) = crate::domains::registrable_domain(&entity.value) else {
+            continue;
+        };
+        if registered != own && crate::validation::is_lookalike(&label(&registered), &own_label) {
+            entity.tag(tags::LOOKALIKE);
+        }
     }
 }
 
@@ -1308,6 +1331,30 @@ mod tests {
 
         let report = soa("example.com", "hostmaster.notexample.com.");
         assert!(entity(&report, &EntityKind::Email, "hostmaster@notexample.com").is_none());
+    }
+
+    /// A name the lookup finds in another registered domain one edit or one look-alike
+    /// character from the domain's own is tagged; the domain's own hosts and unrelated names
+    /// are not.
+    #[test]
+    fn a_name_one_edit_from_the_domain_is_a_lookalike() {
+        let domain = "github.com";
+        let zone = Zone::new(&[
+            (domain, "A", IPV4),
+            (domain, "NS", "ns1.githuh.com."),
+            (domain, "NS", "ns2.dns-host.net."),
+            (domain, "MX", "10 mx.github.com."),
+        ]);
+        let report = printed(&zone, domain);
+        let tagged = |host: &str| {
+            entity(&report, &EntityKind::Domain, host)
+                .unwrap_or_else(|| panic!("{host}"))
+                .has_tag(tags::LOOKALIKE)
+        };
+        assert!(tagged("ns1.githuh.com"));
+        assert!(!tagged("ns2.dns-host.net"));
+        assert!(!tagged("mx.github.com"));
+        assert!(!tagged("github.com"));
     }
 
     /// `shop`'s own addresses, beside the domain's.

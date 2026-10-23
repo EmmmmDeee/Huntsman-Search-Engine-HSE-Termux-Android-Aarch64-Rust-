@@ -14,6 +14,10 @@ pub const SUBDOMAIN: &str = "subdomain";
 /// The host has neither an A nor an AAAA record: its zone answered both queries with none.
 /// Spiderfoot reports such a name as `INTERNET_NAME_UNRESOLVED`.
 pub const UNRESOLVED: &str = "unresolved";
+/// Another registered domain whose name is one edit or one look-alike character from the looked-up
+/// domain's (`githuh.com`, `g00gle.com`); Spiderfoot reports it as `SIMILARDOMAIN`. It says the
+/// names are confusable, not who holds either.
+pub const LOOKALIKE: &str = "lookalike";
 pub const WEB_SCRAPED: &str = "web-scraped";
 pub const CT_LOG: &str = "ct-log";
 pub const PTR: &str = "ptr";

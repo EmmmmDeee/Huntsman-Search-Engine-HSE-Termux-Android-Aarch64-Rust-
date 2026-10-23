@@ -161,6 +161,7 @@ fn entity_type(entity: &Entity, target: Target<'_>) -> &'static str {
                         "INTERNET_NAME"
                     }
                 }
+                Some(_) if entity.has_tag(tags::LOOKALIKE) => "SIMILARDOMAIN",
                 Some(_) if unresolved => "AFFILIATE_INTERNET_NAME_UNRESOLVED",
                 Some(_) => "AFFILIATE_INTERNET_NAME",
                 // The address's own reverse zone names it: Spiderfoot takes such a name as the
@@ -1156,6 +1157,25 @@ mod tests {
         value: "example.com",
         kind: "INTERNET_NAME",
     };
+
+    #[test]
+    fn a_lookalike_domain_is_a_similar_domain_not_an_affiliate() {
+        let mut lookalike = entity(EntityKind::Domain, "examp1e.com", "dns", &[]);
+        lookalike.tag(tags::LOOKALIKE);
+        let found = elements(
+            DOMAIN,
+            &[
+                lookalike,
+                entity(EntityKind::Domain, "example.net", "robtex", &[]),
+            ],
+            1_700_000_000,
+        );
+        assert_eq!(of_type(&found, "SIMILARDOMAIN")[0].data, "examp1e.com");
+        assert_eq!(
+            of_type(&found, "AFFILIATE_INTERNET_NAME")[0].data,
+            "example.net"
+        );
+    }
 
     #[test]
     fn hosts_under_the_target_are_internet_names_and_others_are_affiliates() {
