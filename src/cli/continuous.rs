@@ -4,7 +4,9 @@
 //! canonicalisation or attribution model. Nothing runs until targets are configured.
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -13,7 +15,7 @@ use huntsman_recon::clock;
 use huntsman_recon::fsio::write_atomic_private;
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_service::{ScanRequest, plan};
-use huntsman_recon::scan_store::{ScanOptions, ScanRecord};
+use huntsman_recon::scan_store::{MAX_RESULTS_BYTES, ScanOptions, ScanRecord};
 use huntsman_recon::sha256::{hex32, sha256};
 
 use super::scans::default_scan_dir;
@@ -106,6 +108,63 @@ fn due(record: Option<&ScanRecord>, now: u64, cadence_ms: u64) -> bool {
     })
 }
 
+
+// Stat-only change detector. This is bounded to one metadata query per selected
+// latest scan each tick; metadata collisions remain a documented limitation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RevisionStamp {
+    bytes: u64,
+    modified_ns: u64,
+}
+
+fn revision_stamp(path: &Path) -> Result<RevisionStamp, String> {
+    let meta = fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > MAX_RESULTS_BYTES {
+        return Err(format!("{}: invalid saved-results file", path.display()));
+    }
+    let modified = meta.modified().map_err(|e| e.to_string())?
+        .duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?;
+    let modified_ns = u64::try_from(modified.as_nanos())
+        .map_err(|_| "saved-results timestamp overflow".to_owned())?;
+    Ok(RevisionStamp { bytes: meta.len(), modified_ns })
+}
+
+fn results_path(api: &ScanApi, record: &ScanRecord) -> PathBuf {
+    api.service().store().dir().join(&record.id).join("results.json")
+}
+
+fn normalised_path(record: &ScanRecord, directory: &Path) -> PathBuf {
+    let key = format!("{}\\0{}", record.kind, record.target);
+    directory.join(format!("{}.json", &hex32(&sha256(key.as_bytes()))[..32]))
+}
+
+/// Preserve historical output, but remove it from the current slot before a
+/// refused or revised analysis could otherwise continue to be presented as valid.
+fn archive_current(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() =>
+            return Err(format!("{}: invalid current report", path.display())),
+        Ok(_) => {}
+    }
+    for offset in 0..32_u64 {
+        let stale = path.with_extension(format!(
+            "stale-{}.json", clock::unix_now_millis().saturating_add(offset)
+        ));
+        if fs::symlink_metadata(&stale).is_ok() {
+            continue;
+        }
+        fs::rename(path, &stale).map_err(|e| format!("archive failed: {e}"))?;
+        return Ok(true);
+    }
+    Err("stale archive collision".to_owned())
+}
+
+fn needs_reconciliation(previous: Option<&RevisionStamp>, current: RevisionStamp, exists: bool) -> bool {
+    !exists || previous != Some(&current)
+}
+
 fn normalise_saved(
     api: &ScanApi,
     record: &ScanRecord,
@@ -140,7 +199,7 @@ fn normalise_saved(
 fn cycle(
     api: &ScanApi,
     config: &Config,
-    observed: &mut BTreeSet<String>,
+    observed: &mut BTreeMap<String, RevisionStamp>,
     retry_after: &mut BTreeMap<String, u64>,
 ) -> Result<(), String> {
     let now = clock::unix_now_millis();
@@ -187,22 +246,61 @@ fn cycle(
     }
     for record in normalise {
         let analysis_key = format!("analysis:{}", record.id);
-        if !record.status.is_active()
-            && !observed.contains(&record.id)
-            && retry_after
-                .get(&analysis_key)
-                .is_none_or(|until| now >= *until)
-        {
-            match normalise_saved(api, record, &config.normalised_dir) {
-                Ok(true) => {
-                    observed.insert(record.id.clone());
-                    eprintln!("continuous: normalised saved scan {}", record.id);
+        let output = normalised_path(record, &config.normalised_dir);
+        if record.status.is_active() {
+            if let Err(error) = archive_current(&output) {
+                eprintln!("continuous: {error}");
+            }
+            continue;
+        }
+        let source = results_path(api, record);
+        let stamp = match revision_stamp(&source) {
+            Ok(stamp) => stamp,
+            Err(error) => {
+                if let Err(archive_error) = archive_current(&output) {
+                    eprintln!("continuous: {archive_error}");
                 }
-                Ok(false) => {}
-                Err(error) => {
-                    eprintln!("continuous: {error}");
-                    retry_after.insert(analysis_key, now.saturating_add(RETRY));
+                observed.remove(&record.id);
+                eprintln!("continuous: {error}");
+                continue;
+            }
+        };
+        if !needs_reconciliation(observed.get(&record.id), stamp, output.is_file()) {
+            continue;
+        }
+        if let Err(error) = archive_current(&output) {
+            eprintln!("continuous: {error}");
+            continue;
+        }
+        let changed = observed.get(&record.id) != Some(&stamp);
+        observed.remove(&record.id);
+        if changed {
+            retry_after.remove(&analysis_key);
+        }
+        if retry_after.get(&analysis_key).is_some_and(|until| now < *until) {
+            continue;
+        }
+        match normalise_saved(api, record, &config.normalised_dir) {
+            Ok(true) => {
+                // Never mark a revision observed if it changed during analysis.
+                match revision_stamp(&source) {
+                    Ok(after) if after == stamp => {
+                        observed.insert(record.id.clone(), stamp);
+                        retry_after.remove(&analysis_key);
+                        eprintln!("continuous: normalised saved scan {}", record.id);
+                    }
+                    _ => {
+                        if let Err(error) = archive_current(&output) {
+                            eprintln!("continuous: {error}");
+                        }
+                        eprintln!("continuous: scan {} changed during analysis", record.id);
+                    }
                 }
+            }
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("continuous: {error}");
+                retry_after.insert(analysis_key, now.saturating_add(RETRY));
             }
         }
     }
@@ -237,7 +335,7 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
     thread::Builder::new()
         .name("continuous-normalisation".to_owned())
         .spawn(move || {
-            let mut observed = BTreeSet::new();
+            let mut observed = BTreeMap::new();
             let mut retry_after = BTreeMap::new();
             loop {
                 if let Err(error) = cycle(&api, &config, &mut observed, &mut retry_after) {
@@ -252,7 +350,7 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{config, due};
+    use super::{RevisionStamp, archive_current, config, due, needs_reconciliation, revision_stamp};
     use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus};
     use std::path::PathBuf;
 
@@ -339,4 +437,47 @@ mod tests {
         assert!(!due(Some(&record), 60_099, 60_000));
         assert!(due(Some(&record), 60_100, 60_000));
     }
+    #[test]
+    fn changed_evidence_and_restart_invalidate_cached_analysis() {
+        let old = RevisionStamp { bytes: 10, modified_ns: 100 };
+        let new = RevisionStamp { bytes: 11, modified_ns: 101 };
+        assert!(!needs_reconciliation(Some(&old), old, true));
+        assert!(needs_reconciliation(Some(&old), new, true));
+        assert!(needs_reconciliation(Some(&old), old, false));
+        assert!(needs_reconciliation(None, old, true));
+    }
+
+    #[test]
+    fn stale_report_is_preserved_and_removed_from_current_slot() {
+        let dir = std::env::temp_dir().join(format!(
+            "hse-continuous-{}-{}", std::process::id(), huntsman_recon::clock::unix_now_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let report = dir.join("canonical.json");
+        std::fs::write(&report, b"historical").unwrap();
+        assert!(archive_current(&report).unwrap());
+        assert!(!report.exists());
+        let files = std::fs::read_dir(&dir).unwrap()
+            .map(|entry| entry.unwrap().path()).collect::<Vec<_>>();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].to_string_lossy().contains(".stale-"));
+        assert_eq!(std::fs::read(&files[0]).unwrap(), b"historical");
+        assert!(!archive_current(&report).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn revision_stamp_detects_saved_results_replacement() {
+        let dir = std::env::temp_dir().join(format!(
+            "hse-continuous-revision-{}-{}", std::process::id(), huntsman_recon::clock::unix_now_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("results.json");
+        std::fs::write(&path, b"original").unwrap();
+        let old = revision_stamp(&path).unwrap();
+        std::fs::write(&path, b"updated-data").unwrap();
+        assert_ne!(revision_stamp(&path).unwrap(), old);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
 }
