@@ -63,8 +63,7 @@ echo "build-ok $*"
     let mut path = OsString::from(root.as_os_str());
     path.push(":");
     path.push(std::env::var_os("PATH").unwrap_or_default());
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts/container-build-retry.sh");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/container-build-retry.sh");
     let output = Command::new("bash")
         .arg(script)
         .args(["--pull", "-f", "Dockerfile", "."])
