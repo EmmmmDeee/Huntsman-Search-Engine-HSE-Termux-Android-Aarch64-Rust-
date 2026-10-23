@@ -1,0 +1,1 @@
+- Deleting a scan no longer removes one the server is still running when that scan's row cannot be read. An unreadable row was treated as a failed scan and its directory was deleted under the live worker, so everything the scan went on to find was lost. Such a delete is now refused until the scan ends, and an unreadable row of a scan that is not running is deleted as before.
