@@ -1,0 +1,1 @@
+- `dehashed` reports a failure to write its result. A query whose answer could not reach standard output, because the reader had gone or the disk was full, exited 0, so a script believed the answer had been delivered. The result is now written and flushed, and a failed write or flush exits 74 (`EX_IOERR`), as `hibp` already does.

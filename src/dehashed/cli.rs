@@ -192,14 +192,20 @@ pub fn run(
     err: &mut dyn Write,
 ) -> u8 {
     match execute(args, key, http) {
-        Ok(text) => {
-            let _ = out.write_all(text.as_bytes());
-            0
-        }
+        Ok(text) => emit(&text, out),
         Err(failure) => {
             let _ = writeln!(err, "{}", failure.message);
             failure.code
         }
+    }
+}
+
+/// Writes the query's result to standard output. A write or flush that fails, such as a closed
+/// pipe or a full disk, is an I/O failure: the caller must not be told the result was delivered.
+fn emit(text: &str, out: &mut dyn Write) -> u8 {
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => 0,
+        Err(_) => EX_IOERR,
     }
 }
 
