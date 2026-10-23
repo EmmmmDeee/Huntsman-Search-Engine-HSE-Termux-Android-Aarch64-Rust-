@@ -43,7 +43,7 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
 }
 
 fn is_public_v4(ip: Ipv4Addr) -> bool {
-    let [a, b, c, _] = ip.octets();
+    let [a, b, c, d] = ip.octets();
     !(a == 0 // "this network", incl. 0.0.0.0
         || ip.is_private()
         || ip.is_loopback()
@@ -52,7 +52,9 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || ip.is_multicast()
         || ip.is_documentation()
         || (a == 100 && (64..=127).contains(&b)) // CGNAT 100.64/10
-        || (a == 192 && b == 0 && c == 0) // IETF protocol assignments
+        // IANA marks only 192.0.0.9/32 (PCP) and 192.0.0.10/32 (TURN)
+        // globally reachable within the otherwise reserved 192.0.0.0/24.
+        || (a == 192 && b == 0 && c == 0 && !matches!(d, 9 | 10))
         || (a == 198 && (b == 18 || b == 19)) // benchmarking 198.18/15
         || a >= 240) // reserved 240/4
 }
@@ -109,6 +111,9 @@ mod tests {
             "100.64.0.1",
             "100.127.255.255",
             "192.0.0.8",
+            "192.0.0.11",
+            "192.0.0.170",
+            "192.0.0.171",
             "192.0.2.1",
             "198.18.0.1",
             "198.19.255.255",
@@ -150,6 +155,10 @@ mod tests {
             "1.1.1.1",
             "8.8.8.8",
             "93.184.216.34",
+            "192.0.0.9",
+            "192.0.0.10",
+            "::ffff:192.0.0.9",
+            "64:ff9b::c000:9",
             "172.15.255.255",
             "172.32.0.1",
             "100.63.255.255",
@@ -164,6 +173,18 @@ mod tests {
             "2002:808:808::1",
         ] {
             assert!(is_public_ip(ip(s)), "{s} should be public");
+        }
+    }
+
+    #[test]
+    fn only_iana_global_anycast_exceptions_are_public_in_192_0_0_24() {
+        for last in 0..=255_u8 {
+            let address = IpAddr::V4(Ipv4Addr::new(192, 0, 0, last));
+            assert_eq!(
+                is_public_ip(address),
+                matches!(last, 9 | 10),
+                "{address} has unexpected egress classification"
+            );
         }
     }
 
