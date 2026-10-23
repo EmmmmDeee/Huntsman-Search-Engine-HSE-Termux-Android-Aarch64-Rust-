@@ -228,3 +228,75 @@ fn ordinary_changes_are_committed_and_pushed() {
         ]
     );
 }
+
+#[test]
+fn an_interrupted_test_run_never_commits_or_pushes_main() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sandbox = Sandbox::new("interrupted-test");
+    sandbox.write("docs/pending.md", "not verified yet\n");
+    let previous_head = sandbox.head();
+    let previous_remote = sandbox.pushed();
+
+    // Exercise the real 'all' lifecycle without building Rust in the scratch clone.
+    // The stub succeeds at build/check but simulates cargo test killed by SIGKILL
+    // (shell exit status 128 + 9). Incomplete tests must be a hard release gate.
+    let mock_bin = sandbox.root.join("mock-bin");
+    fs::create_dir_all(&mock_bin).unwrap();
+    let mock_cargo = mock_bin.join("cargo");
+    fs::write(
+        &mock_cargo,
+        r#"#!/bin/sh
+case "$1" in
+build)
+  mkdir -p "$CARGO_TARGET_DIR/debug" || exit 99
+  printf '#!/bin/sh\nexit 0\n' > "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
+  chmod 755 "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
+  ;;
+test) exit 137 ;;
+*) exit 99 ;;
+esac
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&mock_cargo).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&mock_cargo, permissions).unwrap();
+
+    let mut path = std::ffi::OsString::from(mock_bin.as_os_str());
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    let output = sandbox
+        .command("bash", &sandbox.work)
+        .env("PATH", path)
+        .args(["scripts/lifecycle.sh", "all"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "test exit 137 should fail the lifecycle: {stderr}"
+    );
+    assert!(
+        stderr.contains("tests interrupted (exit 137); refusing sync"),
+        "unexpected failure: {stderr}"
+    );
+    assert_eq!(
+        sandbox.head(),
+        previous_head,
+        "local changes were committed"
+    );
+    assert_eq!(
+        sandbox.pushed(),
+        previous_remote,
+        "remote main was modified"
+    );
+
+    let state = fs::read_to_string(sandbox.root.join("state/lifecycle-state")).unwrap();
+    assert!(
+        state.contains("phase=test\nstatus=failed\n"),
+        "interrupted tests must be recorded as failed: {state}"
+    );
+    assert!(state.contains("tests incomplete"), "{state}");
+}

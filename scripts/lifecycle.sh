@@ -77,9 +77,9 @@ test_cmd() {
     return 0
   fi
   if [[ "$status" -eq 137 ]]; then
-    log "test killed (memory). build and check still gate sync"
-    write_state test degraded "SIGKILL; retry when memory is free"
-    return 0
+    log "test interrupted (exit 137); refusing to sync unverified changes"
+    write_state test failed "exit 137; tests incomplete (SIGKILL or out of memory)"
+    die "tests interrupted (exit 137); refusing sync"
   fi
   write_state test failed "exit $status"
   die "tests failed with exit $status"
