@@ -962,10 +962,14 @@ impl ScanService {
             modules_run: Vec::new(),
             owner: Some(std::process::id()),
         };
-        self.store.create(&record)?;
-        // Register before returning the CREATED row, so an immediate stop can be
-        // delivered even if the worker thread has not yet entered execute().
+        // Register before saving the CREATED row: an identical request that finds the saved row
+        // joins it instead of starting a second scan, and an immediate stop can be delivered
+        // even if the worker thread has not yet entered execute().
         self.owned().insert(record.id.clone());
+        if let Err(error) = self.store.create(&record) {
+            self.owned().remove(&record.id);
+            return Err(error.into());
+        }
         self.log(
             &record.id,
             "huntsman",
@@ -1039,7 +1043,7 @@ impl ScanService {
     }
 
     /// Start a scan of `request`, or join the scan of the same target, lookup and options that
-    /// this process is still waiting to run or running: `serve`'s `/api/lookup`, so a page
+    /// this service is still waiting to run or running: `serve`'s `/api/lookup`, so a page
     /// reloaded mid-lookup waits on the lookup already under way instead of starting another.
     /// Two requests at once start one scan between them.
     ///
@@ -1053,14 +1057,23 @@ impl ScanService {
         let options = validate_options(&request.options)?;
         let me = Some(std::process::id());
         // Held from the search to the start, so a second request finds the first one's scan.
-        let _joining = self.state();
-        let running = self.store.list()?.into_iter().find(|record| {
-            record.status.is_active()
-                && record.owner == me
-                && record.target == plan.target
-                && record.kind == plan.kind.command()
-                && record.options == options
-        });
+        let state = self.state();
+        let records = self.store.list()?;
+        // Only a scan this service still runs, and whose last status it could save, can be
+        // joined: a joiner of any other active row would wait on a worker that never comes, or
+        // be handed the error of a status the row could not record.
+        let running = {
+            let owned = self.owned();
+            records.into_iter().find(|record| {
+                record.status.is_active()
+                    && record.owner == me
+                    && owned.contains(&record.id)
+                    && !state.status_failures.contains_key(&record.id)
+                    && record.target == plan.target
+                    && record.kind == plan.kind.command()
+                    && record.options == options
+            })
+        };
         match running {
             Some(record) => Ok(record),
             None => self.start(request),
@@ -1187,7 +1200,7 @@ impl ScanService {
     /// The worker: wait for a place, run the lookups, save what they found.
     fn execute(&self, id: &str, plan: &ScanPlan) {
         if self.set_status(id, ScanStatus::Starting, None).is_err() {
-            self.owned().remove(id);
+            self.release(id, false);
             return;
         }
         {
@@ -1201,14 +1214,6 @@ impl ScanService {
             state.running += 1;
         }
         let outcome = catch_unwind(AssertUnwindSafe(|| self.collect(id, plan)));
-        {
-            let mut state = self.state();
-            state.running -= 1;
-            state.aborts.remove(id);
-            state.graph_cancellations.remove(id);
-        }
-        self.owned().remove(id);
-        self.freed.notify_all();
         if outcome.is_err() {
             self.log(
                 id,
@@ -1216,8 +1221,45 @@ impl ScanService {
                 LogLevel::Error,
                 "the scan failed unexpectedly; what it saved is kept",
             );
-            let _ = self.set_status(id, ScanStatus::ErrorFailed, Some(clock::unix_now_millis()));
         }
+        self.release(id, true);
+    }
+
+    /// The worker's last step: give up its place among the running scans when it `held_place`,
+    /// then scan `id`. A row the worker leaves active, because a status could not be saved or the
+    /// lookups panicked, is marked `ERROR_FAILED` before the scan is given up: no worker remains
+    /// to finish it, and an active row can be neither stopped nor deleted and holds back
+    /// continuous rescans of its target until the next start.
+    fn release(&self, id: &str, held_place: bool) {
+        if held_place {
+            self.state().running -= 1;
+        }
+        if self
+            .store
+            .get(id)
+            .is_ok_and(|record| record.status.is_active())
+        {
+            let ended =
+                self.set_status(id, ScanStatus::ErrorFailed, Some(clock::unix_now_millis()));
+            self.log(
+                id,
+                "huntsman",
+                LogLevel::Error,
+                if ended.is_ok() {
+                    "the scan ended without recording an outcome; marked ERROR_FAILED"
+                } else {
+                    "the scan ended without recording an outcome and could not be marked ERROR_FAILED"
+                },
+            );
+        }
+        {
+            let mut state = self.state();
+            state.aborts.remove(id);
+            state.graph_cancellations.remove(id);
+            // Under the state lock, so a stop or a join sees the scan either still owned or ended.
+            self.owned().remove(id);
+        }
+        self.freed.notify_all();
     }
 
     fn collect(&self, id: &str, plan: &ScanPlan) {
@@ -2280,6 +2322,131 @@ mod tests {
     }
 
     #[test]
+    fn a_request_does_not_join_a_row_this_instance_no_longer_runs() {
+        let (service, dir) = with_lookup(
+            "stranded-join",
+            Arc::new(|kind: ScanKind, selector: &str, _: &Selection| Ok(found(kind, selector))),
+        );
+        let request = ScanRequest {
+            target: "1.1.1.1".into(),
+            ..ScanRequest::default()
+        };
+        let (stranded, _) = service.create(&request).unwrap();
+        // An active row under this process that the service no longer owns, as a worker that
+        // gave up without ending its row used to leave behind.
+        service.owned().remove(&stranded.id);
+
+        let joined = service.start_or_join(&request).unwrap();
+
+        assert_ne!(
+            joined.id, stranded.id,
+            "a request must not wait on a row that no worker runs"
+        );
+        let ended = service
+            .wait(&joined.id, Instant::now() + Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(ended.status, ScanStatus::Finished);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_request_does_not_join_a_scan_whose_status_could_not_be_saved() {
+        let (service, dir) = with_lookup(
+            "unsaved-status-join",
+            Arc::new(|kind: ScanKind, selector: &str, _: &Selection| Ok(found(kind, selector))),
+        );
+        let request = ScanRequest {
+            target: "1.1.1.1".into(),
+            ..ScanRequest::default()
+        };
+        let (failing, _) = service.create(&request).unwrap();
+        // Still owned, but its worker could not save its first transition: a joiner would only
+        // be handed that error.
+        let _ = service.set_status_with(&failing.id, ScanStatus::Starting, None, |_| {
+            Err(StoreError::Io("synthetic disk write failure".into()))
+        });
+
+        let joined = service.start_or_join(&request).unwrap();
+
+        assert_ne!(joined.id, failing.id);
+        let ended = service
+            .wait(&joined.id, Instant::now() + Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(ended.status, ScanStatus::Finished);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_request_joins_the_scan_this_instance_is_running() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let entered_tx = Mutex::new(entered_tx);
+        let (service, dir) = with_lookup(
+            "running-join",
+            Arc::new(move |kind: ScanKind, selector: &str, _: &Selection| {
+                let _ = entered_tx.lock().unwrap().send(());
+                // Every lookup after the release finds the channel closed and goes straight on.
+                let _ = release_rx.lock().unwrap().recv();
+                Ok(found(kind, selector))
+            }),
+        );
+        let request = ScanRequest {
+            target: "1.1.1.1".into(),
+            ..ScanRequest::default()
+        };
+        let first = service.start_or_join(&request).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        let second = service.start_or_join(&request).unwrap();
+
+        assert_eq!(
+            second.id, first.id,
+            "a lookup reloaded mid-scan waits on the scan under way"
+        );
+        drop(release_tx);
+        let ended = service
+            .wait(&first.id, Instant::now() + Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(ended.status, ScanStatus::Finished);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_scan_its_worker_gives_up_on_is_ended_and_can_be_deleted() {
+        let (service, dir) =
+            with_lookup("released", Arc::new(|_, _, _| Ok(LookupOutput::default())));
+        let (record, _) = service
+            .create(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        // The worker's first transition could not be saved, so the row is still CREATED.
+        let _ = service.set_status_with(&record.id, ScanStatus::Starting, None, |_| {
+            Err(StoreError::Io("synthetic disk write failure".into()))
+        });
+
+        service.release(&record.id, false);
+
+        let row = service.store().get(&record.id).unwrap();
+        assert_eq!(row.status, ScanStatus::ErrorFailed);
+        assert!(row.ended.is_some());
+        assert!(!service.owned().contains(&record.id));
+        assert!(!service.state().status_failures.contains_key(&record.id));
+        assert!(
+            service
+                .store()
+                .log(&record.id)
+                .unwrap()
+                .iter()
+                .any(|entry| entry.message.contains("marked ERROR_FAILED"))
+        );
+        service.delete(&record.id).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn stopping_a_foreign_owned_scan_is_an_explicit_conflict() {
         let (service, dir) = with_lookup(
             "foreign-stop",
@@ -2655,6 +2822,7 @@ mod tests {
                 })
                 .unwrap();
             assert_eq!(record.status, ScanStatus::ErrorFailed);
+            service.delete(&record.id).unwrap();
         }
         assert_eq!(service.state().running, 0);
         let _ = std::fs::remove_dir_all(&dir);
