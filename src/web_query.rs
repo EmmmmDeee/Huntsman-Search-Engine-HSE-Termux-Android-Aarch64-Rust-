@@ -1045,7 +1045,9 @@ mod tests {
         assert!(search(&fake, &"a".repeat(MAX_SEARCH_QUERY_BYTES + 1), 100).is_err());
         assert!(search(&fake, &"🙂".repeat(MAX_SEARCH_QUERY_BYTES / 4 + 1), 100).is_err());
         assert_eq!(
-            checked_query(&"a".repeat(MAX_SEARCH_QUERY_BYTES), "query").unwrap().len(),
+            checked_query(&"a".repeat(MAX_SEARCH_QUERY_BYTES), "query")
+                .unwrap()
+                .len(),
             MAX_SEARCH_QUERY_BYTES
         );
     }
@@ -1053,7 +1055,10 @@ mod tests {
     #[test]
     fn adaptive_search_skips_quoted_variant_over_budget_and_keeps_baseline_hits() {
         let fake = Fake::new(vec![
-            Ok(response(200, r#"<a href="https://unique-variant-limit.example/hit">x</a>"#)),
+            Ok(response(
+                200,
+                r#"<a href="https://unique-variant-limit.example/hit">x</a>"#,
+            )),
             Ok(response(200, "<html>no links</html>")),
             Ok(response(200, "<html>no links</html>")),
         ]);
@@ -1063,7 +1068,10 @@ mod tests {
         assert_eq!(report.rounds.len(), 1);
         assert_eq!(report.stop_reason, "query_variant_budget_exhausted");
         assert_eq!(report.hits.len(), 1);
-        assert_eq!(report.hits[0].url, "https://unique-variant-limit.example/hit");
+        assert_eq!(
+            report.hits[0].url,
+            "https://unique-variant-limit.example/hit"
+        );
     }
 
     #[test]
