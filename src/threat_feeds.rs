@@ -663,8 +663,7 @@ fn listed_key(word: &str) -> Option<Key> {
         return Some(Key::Address(address));
     }
     if let Some(block) = Netblock::parse(word) {
-        let whole = if block.is_ipv6() { 128 } else { 32 };
-        return Some(if block.prefix_len() == whole {
+        return Some(if block.host_bits() == 0 {
             Key::Address(block.network())
         } else {
             Key::Block(block)
