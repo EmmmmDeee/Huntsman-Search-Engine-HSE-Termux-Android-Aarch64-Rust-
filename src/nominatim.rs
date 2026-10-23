@@ -11,7 +11,9 @@
 //! Public Nominatim allows at most one HTTP request per second across an application.
 //! A bounded in-process cache avoids repeat queries, a shared lock serialises live
 //! requests with a full second after each attempt, and the circuit breaker handles failures.
-//! Multi-process and multi-device application traffic needs upstream coordination.
+//! The HTTPS origin is switchable via HUNTSMAN_NOMINATIM_BASE_URL without recompiling.
+//! Multi-process and multi-device traffic is NOT coordinated: aggregate use of OSMF's
+//! public endpoint requires a single gateway or a separately operated service.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
@@ -27,8 +29,68 @@ use crate::http::{DEFAULT_USER_AGENT, Request, Response, Transport, percent_enco
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
 
 pub const SOURCE: &str = "nominatim";
-const SEARCH: &str = "https://nominatim.openstreetmap.org/search";
-const REVERSE: &str = "https://nominatim.openstreetmap.org/reverse";
+const PUBLIC_BASE: &str = "https://nominatim.openstreetmap.org";
+/// HTTPS origin for an operator-managed Nominatim-compatible service.
+/// When absent, the public OSMF endpoint is used subject to its usage policy.
+pub const BASE_URL_ENV: &str = "HUNTSMAN_NOMINATIM_BASE_URL";
+
+/// Reject userinfo, query, fragments, paths, non-HTTPS schemes and unqualified
+/// hostnames before the guarded transport sees a replacement endpoint.
+/// This does not replace DNS-based public-egress checks on resolved addresses.
+fn valid_base(base: &str) -> bool {
+    let Some(authority) = base.strip_prefix("https://") else {
+        return false;
+    };
+    if authority.len() > 253 || authority.is_empty() {
+        return false;
+    }
+    let (hostname, port) = match authority.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    if port.is_some_and(|port| {
+        port.is_empty()
+            || port.len() > 5
+            || !port.bytes().all(|c| c.is_ascii_digit())
+            || !port.parse::<u16>().is_ok_and(|number| number != 0)
+    }) {
+        return false;
+    }
+    if hostname.len() > 253 || !hostname.contains('.') || hostname.ends_with('.') {
+        return false;
+    }
+    hostname.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    }) && hostname
+        .rsplit_once('.')
+        .is_some_and(|(_, suffix)| suffix.len() >= 2
+            && suffix.bytes().all(|c| c.is_ascii_alphabetic()))
+}
+
+fn configured_base() -> Result<String, Error> {
+    match std::env::var(BASE_URL_ENV) {
+        Ok(base) if valid_base(&base) => Ok(base),
+        Ok(_) | Err(std::env::VarError::NotUnicode(_)) => Err(Error::Invalid(format!(
+            "{BASE_URL_ENV} must be an HTTPS origin with a qualified hostname and no path, userinfo, query or fragment"
+        ))),
+        Err(std::env::VarError::NotPresent) => Ok(PUBLIC_BASE.to_owned()),
+    }
+}
+
+fn search_url_at(base: &str, query: &str) -> String {
+    format!(
+        "{base}/search?q={}&format=jsonv2&addressdetails=1&limit={RESULT_LIMIT}",
+        percent_encode_unreserved(query)
+    )
+}
+
+fn reverse_url_at(base: &str, lat: f64, lon: f64) -> String {
+    format!("{base}/reverse?lat={lat}&lon={lon}&format=jsonv2&addressdetails=1")
+}
 
 /// Most matches one forward search keeps. Nominatim's own default is ten; a place that matches
 /// more than this is too broad to be a finding.
@@ -139,16 +201,13 @@ enum Reverse {
 /// The forward search URL for `query`. **Pure.**
 #[must_use]
 pub fn search_url(query: &str) -> String {
-    format!(
-        "{SEARCH}?q={}&format=jsonv2&addressdetails=1&limit={RESULT_LIMIT}",
-        percent_encode_unreserved(query)
-    )
+    search_url_at(PUBLIC_BASE, query)
 }
 
 /// The reverse search URL for a `lat,lon` point. **Pure.**
 #[must_use]
 pub fn reverse_url(lat: f64, lon: f64) -> String {
-    format!("{REVERSE}?lat={lat}&lon={lon}&format=jsonv2&addressdetails=1")
+    reverse_url_at(PUBLIC_BASE, lat, lon)
 }
 
 /// Forward-geocode `query`: a place name or address into coordinates and an address.
@@ -161,7 +220,15 @@ pub fn forward<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
-    let (response, outcome, cached) = get(transport, &search_url(query), now_unix)?;
+    // A direct Rust caller may bypass the CLI's query checks. Refuse invalid
+    // input before it consumes a public-service rate slot or reaches the wire.
+    if query.trim().is_empty() || query.len() > 512 || query.chars().any(char::is_control) {
+        return Err(Error::Invalid(
+            "Nominatim query must be non-empty, at most 512 bytes and contain no controls".into(),
+        ));
+    }
+    let url = search_url_at(&configured_base()?, query);
+    let (response, outcome, cached) = get(transport, &url, now_unix)?;
     let Some(response) = response else {
         return Ok(miss(outcome));
     };
@@ -185,7 +252,15 @@ pub fn reverse<T: Transport + ?Sized>(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, Error> {
-    let (response, outcome, cached) = get(transport, &reverse_url(lat, lon), now_unix)?;
+    if !lat.is_finite()
+        || !lon.is_finite()
+        || !(-90.0..=90.0).contains(&lat)
+        || !(-180.0..=180.0).contains(&lon)
+    {
+        return Err(Error::Invalid("invalid Nominatim latitude or longitude".into()));
+    }
+    let url = reverse_url_at(&configured_base()?, lat, lon);
+    let (response, outcome, cached) = get(transport, &url, now_unix)?;
     let Some(response) = response else {
         return Ok(miss(outcome));
     };
@@ -203,9 +278,12 @@ fn cacheable(url: &str, response: &Response) -> bool {
     if response.status != 200 || response.truncated || response.body.len() > MAX_CACHE_BODY {
         return false;
     }
-    if url.starts_with(SEARCH) {
+    // Full URLs are used as cache keys, preventing one operator endpoint from
+    // supplying evidence for another. Parse only the known response shapes.
+    let endpoint = url.split_once('?').map_or(url, |(path, _)| path);
+    if endpoint.ends_with("/search") {
         serde_json::from_slice::<Vec<Place>>(&response.body).is_ok()
-    } else if url.starts_with(REVERSE) {
+    } else if endpoint.ends_with("/reverse") {
         serde_json::from_slice::<Reverse>(&response.body).is_ok()
     } else {
         false
@@ -478,6 +556,8 @@ fn place_entities(
         provenance.recorded_at_unix = observation.recorded_at_unix;
         let mut evidence = Evidence::new(provenance, summary)
             .with_attr("dataset", "OpenStreetMap Nominatim")
+            .with_attr("source_attribution", "© OpenStreetMap contributors")
+            .with_attr("source_license", "ODbL 1.0")
             .with_attr("mode", mode.tag())
             .with_attr("query", query)
             // Preserve the exact UTF-8 bytes of this bounded JSON response, not a
