@@ -100,8 +100,14 @@ fn rows(saved: &ScanResults) -> Result<BTreeMap<String, Row>, String> {
     }
     for (position, pivot) in saved.lineage.iter().enumerate() {
         insert(
-            &mut output, "lineage", position.to_string(), None, None,
-            json!(pivot), BTreeSet::new(), false,
+            &mut output,
+            "lineage",
+            position.to_string(),
+            None,
+            None,
+            json!(pivot),
+            BTreeSet::new(),
+            false,
         )?;
     }
     if let Some(reason) = &saved.termination {
