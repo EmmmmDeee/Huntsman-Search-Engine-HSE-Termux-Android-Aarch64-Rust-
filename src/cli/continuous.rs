@@ -142,7 +142,12 @@ fn file_stamp(path: &Path) -> Result<String, String> {
         meta.modified()
             .map_err(|error| format!("{}: {error}", path.display()))?,
     )
-    .ok_or_else(|| format!("{}: modification time precedes the Unix epoch", path.display()))?;
+    .ok_or_else(|| {
+        format!(
+            "{}: modification time precedes the Unix epoch",
+            path.display()
+        )
+    })?;
     #[cfg(unix)]
     let inode = {
         use std::os::unix::fs::MetadataExt;
