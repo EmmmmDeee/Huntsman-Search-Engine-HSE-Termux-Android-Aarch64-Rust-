@@ -2,7 +2,8 @@
 //!
 //! A network selector is a BSSID (`aa:bb:cc:dd:ee:ff`), a coordinate pair (`LAT,LON`) or an
 //! SSID (`ssid:NAME`, or any other text when the kind is named), or a cell site
-//! (`cell:MCC:MNC:AREA:CELL`), which the `OpenCelliD` indicator leg looks up. A BSSID is first classified
+//! (`cell:MCC:MNC:AREA:CELL`), which the `OpenCelliD` indicator leg looks up; a coordinate pair is
+//! also searched for the cell sites `OpenCelliD` lists around it. A BSSID is first classified
 //! offline: its OUI vendor and whether it is a randomised (locally administered) address. Then
 //! the keyed `WiGLE` legs ([`crate::wigle`]) search for what the selector names: `WiFi` always,
 //! and Bluetooth too for a MAC address or a place. Without
@@ -41,7 +42,7 @@ pub const NETWORK_USAGE: &str =
     "usage: huntsman-recon network BSSID|LAT,LON|ssid:NAME|cell:MCC:MNC:AREA:CELL [--save FILE]";
 pub const NETWORK_HELP: &str = "\
 network BSSID|LAT,LON|ssid:NAME|cell:MCC:MNC:AREA:CELL [--save FILE]
-Look up a WiFi network, or a cell site. A cell site (cell:505:01:17:91, the country, network, area and cell numbers radar cells reports) is looked up in OpenCelliD, which gives the tower's position, range and sample count; it needs HUNTSMAN_OPENCELLID_KEY, and without it makes no request and reports not_configured. WiGLE is not searched for a cell site. A BSSID (aa:bb:cc:dd:ee:ff) is classified offline first: its OUI vendor and whether it is a randomised address. Then WiGLE search runs: a BSSID searches WiGLE's WiFi and Bluetooth databases for that address, ssid:NAME searches WiFi networks with exactly that name, and LAT,LON searches both databases in a box of about 220 m around the point, nearest first. WiGLE needs HUNTSMAN_WIGLE_USER (the API Name) and HUNTSMAN_WIGLE_TOKEN (the API Token) from https://wigle.net/account in the environment; without them it makes no request and reports not_configured. Each search spends one of the account's daily WiGLE queries, so a BSSID or LAT,LON spends two. credential-status --probe checks the credentials without spending one. Results are lineage-rendered entities, then wigle_networks=N (none when WiGLE gave no answer) and one wigle_network row per network: SSID, encryption, channel, position, first and last seen, and the street address WiGLE gives the position; for a BSSID or LAT,LON, then wigle_bluetooth_devices=N and one wigle_bluetooth row per device: name, radio (bt or ble), device class, position, first and last seen, address. --save FILE writes an unverified ledger that verify can reload.";
+Look up a WiFi network, or a cell site. A cell site (cell:505:01:17:91, the country, network, area and cell numbers radar cells reports) is looked up in OpenCelliD, which gives the tower's position, range and sample count; it needs HUNTSMAN_OPENCELLID_KEY, and without it makes no request and reports not_configured. WiGLE is not searched for a cell site. With the same key, LAT,LON also lists the cell sites OpenCelliD places in the 1.8 km square around the point (at most 50, one request), each a cell: selector network takes back; they are sites near the point, not ones any device there used. A BSSID (aa:bb:cc:dd:ee:ff) is classified offline first: its OUI vendor and whether it is a randomised address. Then WiGLE search runs: a BSSID searches WiGLE's WiFi and Bluetooth databases for that address, ssid:NAME searches WiFi networks with exactly that name, and LAT,LON searches both databases in a box of about 220 m around the point, nearest first. WiGLE needs HUNTSMAN_WIGLE_USER (the API Name) and HUNTSMAN_WIGLE_TOKEN (the API Token) from https://wigle.net/account in the environment; without them it makes no request and reports not_configured. Each search spends one of the account's daily WiGLE queries, so a BSSID or LAT,LON spends two. credential-status --probe checks the credentials without spending one. Results are lineage-rendered entities, then wigle_networks=N (none when WiGLE gave no answer) and one wigle_network row per network: SSID, encryption, channel, position, first and last seen, and the street address WiGLE gives the position; for a BSSID or LAT,LON, then wigle_bluetooth_devices=N and one wigle_bluetooth row per device: name, radio (bt or ble), device class, position, first and last seen, address. --save FILE writes an unverified ledger that verify can reload.";
 
 /// Source label for the offline OUI classification of a BSSID selector.
 pub const OUI_SOURCE: &str = "oui";
@@ -151,16 +152,19 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
                 report.entities.extend(legs.entities);
                 report.outcomes.extend(legs.outcomes);
             }
-            _ => report.outcomes.push(SourceExecutionOutcome::failed(
-                opencellid::SOURCE,
-                now_unix,
-                SourceOutcomeKind::NotConfigured,
-                None,
-                format!(
-                    "no OpenCelliD key configured ({}); no request made",
-                    opencellid::KEY_SLOT
-                ),
-            )),
+            _ => report.outcomes.push(opencellid_not_configured(now_unix)),
+        }
+    }
+    // A point is searched for the cell sites OpenCelliD lists around it, under the same key.
+    if let NetworkSelector::Area { lat, lon } = selector {
+        match wigle {
+            Some((transport, _)) if !transport.runs_module(opencellid::SOURCE) => {}
+            Some((transport, keys)) if keys.get(opencellid::KEY_SLOT).is_some() => {
+                let outcome =
+                    area_cells_leg(transport, keys, (lat, lon), &scan_id, now_unix, &mut report);
+                report.outcomes.push(outcome);
+            }
+            _ => report.outcomes.push(opencellid_not_configured(now_unix)),
         }
     }
     merge_by_uid(&mut report.entities);
@@ -188,6 +192,83 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
         }
         Err(msg) => NetworkRun::Failed(msg),
     }
+}
+
+/// The row an `OpenCelliD` search leaves when its key is not set: no request, never a zero.
+fn opencellid_not_configured(now_unix: u64) -> SourceExecutionOutcome {
+    SourceExecutionOutcome::failed(
+        opencellid::SOURCE,
+        now_unix,
+        SourceOutcomeKind::NotConfigured,
+        None,
+        format!(
+            "no OpenCelliD key configured ({}); no request made",
+            opencellid::KEY_SLOT
+        ),
+    )
+}
+
+/// The cell sites `OpenCelliD` lists in the square around a point: each a `cell:` entity a
+/// `network` lookup takes back, with its position, radio, range and sample count as evidence.
+/// They are sites near the point, not ones any device there used.
+fn area_cells_leg(
+    transport: &dyn Transport,
+    keys: &Keys,
+    (lat, lon): (f64, f64),
+    scan_id: &str,
+    now_unix: u64,
+    report: &mut Report,
+) -> SourceExecutionOutcome {
+    let area = match opencellid::area(transport, keys, lat, lon, now_unix) {
+        Ok(area) => area,
+        Err(err) => return err.outcome(&opencellid::API, now_unix),
+    };
+    if area.cells.is_empty() {
+        return SourceExecutionOutcome::valid_zero(opencellid::SOURCE, now_unix);
+    }
+    let listed = area.cells.len();
+    if let Some(count) = area.count.filter(|count| *count > listed as u64) {
+        let note = Evidence::new(
+            EvidenceProvenance::for_scan(opencellid::SOURCE, scan_id),
+            format!(
+                "OpenCelliD lists {count} cell sites in the {:.0} m square around the point; the first {listed} are kept",
+                2.0 * opencellid::AREA_HALF_SIDE_M
+            ),
+        )
+        .with_attr("cells_in_area", count.to_string());
+        if let Some(point) = report
+            .entities
+            .iter_mut()
+            .find(|entity| entity.kind == EntityKind::Coordinates)
+        {
+            point.add_evidence(note);
+        }
+    }
+    for site in &area.cells {
+        let cell = &site.cell;
+        let value = format!(
+            "{CELL_PREFIX}{}:{:02}:{}:{}",
+            cell.mcc, cell.mnc, cell.lac, cell.cellid
+        );
+        let evidence = Evidence::new(
+            EvidenceProvenance::for_scan(opencellid::SOURCE, scan_id),
+            "Cell site OpenCelliD places near the point",
+        )
+        .with_attr("position", format!("{:.6},{:.6}", site.lat, site.lon))
+        .with_optional_attrs([("radio", site.radio.as_deref())])
+        .with_optional_attrs([
+            (
+                "range_m",
+                site.range.map(|range| range.to_string()).as_deref(),
+            ),
+            ("samples", site.samples.map(|n| n.to_string()).as_deref()),
+        ]);
+        let mut entity = Entity::new(EntityKind::Other, value, 0.70, scan_id);
+        entity.tag(tags::GEOINT);
+        entity.add_evidence(evidence);
+        report.entities.push(entity);
+    }
+    SourceExecutionOutcome::success(opencellid::SOURCE, now_unix, listed)
 }
 
 fn seed_entity(selector: &NetworkSelector, scan_id: &str) -> Entity {
