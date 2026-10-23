@@ -64,11 +64,12 @@ fn valid_base(base: &str) -> bool {
             && label.len() <= 63
             && !label.starts_with('-')
             && !label.ends_with('-')
-            && label.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
-    }) && hostname
-        .rsplit_once('.')
-        .is_some_and(|(_, suffix)| suffix.len() >= 2
-            && suffix.bytes().all(|c| c.is_ascii_alphabetic()))
+            && label
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    }) && hostname.rsplit_once('.').is_some_and(|(_, suffix)| {
+        suffix.len() >= 2 && suffix.bytes().all(|c| c.is_ascii_alphabetic())
+    })
 }
 
 fn configured_base() -> Result<String, Error> {
@@ -257,7 +258,9 @@ pub fn reverse<T: Transport + ?Sized>(
         || !(-90.0..=90.0).contains(&lat)
         || !(-180.0..=180.0).contains(&lon)
     {
-        return Err(Error::Invalid("invalid Nominatim latitude or longitude".into()));
+        return Err(Error::Invalid(
+            "invalid Nominatim latitude or longitude".into(),
+        ));
     }
     let url = reverse_url_at(&configured_base()?, lat, lon);
     let (response, outcome, cached) = get(transport, &url, now_unix)?;
