@@ -36,6 +36,62 @@ pub const COUNTRIES: &[(&str, &str, &str)] = &[
     ("1658", "JM", "Jamaica"),
     ("1876", "JM", "Jamaica"),
     ("1939", "PR", "Puerto Rico"),
+    // Canada's geographic area codes, in service or assigned (NANP area-code list, 2026-10).
+    ("1204", "CA", "Canada"),
+    ("1226", "CA", "Canada"),
+    ("1236", "CA", "Canada"),
+    ("1249", "CA", "Canada"),
+    ("1250", "CA", "Canada"),
+    ("1257", "CA", "Canada"),
+    ("1263", "CA", "Canada"),
+    ("1289", "CA", "Canada"),
+    ("1306", "CA", "Canada"),
+    ("1343", "CA", "Canada"),
+    ("1354", "CA", "Canada"),
+    ("1365", "CA", "Canada"),
+    ("1367", "CA", "Canada"),
+    ("1368", "CA", "Canada"),
+    ("1382", "CA", "Canada"),
+    ("1403", "CA", "Canada"),
+    ("1416", "CA", "Canada"),
+    ("1418", "CA", "Canada"),
+    ("1428", "CA", "Canada"),
+    ("1431", "CA", "Canada"),
+    ("1437", "CA", "Canada"),
+    ("1438", "CA", "Canada"),
+    ("1450", "CA", "Canada"),
+    ("1468", "CA", "Canada"),
+    ("1474", "CA", "Canada"),
+    ("1506", "CA", "Canada"),
+    ("1514", "CA", "Canada"),
+    ("1519", "CA", "Canada"),
+    ("1548", "CA", "Canada"),
+    ("1579", "CA", "Canada"),
+    ("1581", "CA", "Canada"),
+    ("1584", "CA", "Canada"),
+    ("1587", "CA", "Canada"),
+    ("1604", "CA", "Canada"),
+    ("1613", "CA", "Canada"),
+    ("1639", "CA", "Canada"),
+    ("1647", "CA", "Canada"),
+    ("1672", "CA", "Canada"),
+    ("1683", "CA", "Canada"),
+    ("1705", "CA", "Canada"),
+    ("1709", "CA", "Canada"),
+    ("1742", "CA", "Canada"),
+    ("1753", "CA", "Canada"),
+    ("1778", "CA", "Canada"),
+    ("1780", "CA", "Canada"),
+    ("1782", "CA", "Canada"),
+    ("1807", "CA", "Canada"),
+    ("1819", "CA", "Canada"),
+    ("1825", "CA", "Canada"),
+    ("1867", "CA", "Canada"),
+    ("1873", "CA", "Canada"),
+    ("1879", "CA", "Canada"),
+    ("1902", "CA", "Canada"),
+    ("1905", "CA", "Canada"),
+    ("1942", "CA", "Canada"),
     // The Caribbean Netherlands share +599 with Curaçao (+599 9).
     ("5993", "BQ", "Sint Eustatius"),
     ("5994", "BQ", "Saba"),
@@ -250,7 +306,8 @@ pub const COUNTRIES: &[(&str, &str, &str)] = &[
     ("77", "KZ", "Kazakhstan"),
     // Single-digit
     ("7", "RU", "Russia"),
-    ("1", "US", "NANP (US / Canada)"),
+    // Every other +1 number: the United States, or a toll-free or service code of the plan.
+    ("1", "US", "United States"),
 ];
 
 /// Longest-prefix country match.
@@ -318,48 +375,6 @@ pub fn country_of(e164: &str) -> Option<(&'static str, &'static str, &'static st
     let digits = e164.strip_prefix('+')?;
     match_country(digits)
 }
-
-/// Canada's geographic area codes, in service or assigned, sorted for binary search.
-/// Source: the NANP area-code list, Canada sections (2026-10).
-const NANP_CANADA: &[&str] = &[
-    "204", "226", "236", "249", "250", "257", "263", "289", "306", "343", "354", "365", "367",
-    "368", "382", "403", "416", "418", "428", "431", "437", "438", "450", "468", "474", "506",
-    "514", "519", "548", "579", "581", "584", "587", "604", "613", "639", "647", "672", "683",
-    "705", "709", "742", "753", "778", "780", "782", "807", "819", "825", "867", "873", "879",
-    "902", "905", "942",
-];
-
-/// The area codes of the plan's other countries and of the US territories outside the 50
-/// states, with ISO 3166-1 alpha-2 code and name. `808` is not here: Hawaii, a state, holds it.
-const NANP_OTHER: &[(&str, &str, &str)] = &[
-    ("242", "BS", "The Bahamas"),
-    ("246", "BB", "Barbados"),
-    ("264", "AI", "Anguilla"),
-    ("268", "AG", "Antigua and Barbuda"),
-    ("284", "VG", "British Virgin Islands"),
-    ("340", "VI", "U.S. Virgin Islands"),
-    ("345", "KY", "Cayman Islands"),
-    ("441", "BM", "Bermuda"),
-    ("473", "GD", "Grenada"),
-    ("649", "TC", "Turks and Caicos Islands"),
-    ("658", "JM", "Jamaica"),
-    ("664", "MS", "Montserrat"),
-    ("670", "MP", "Northern Mariana Islands"),
-    ("671", "GU", "Guam"),
-    ("684", "AS", "American Samoa"),
-    ("721", "SX", "Sint Maarten"),
-    ("758", "LC", "Saint Lucia"),
-    ("767", "DM", "Dominica"),
-    ("784", "VC", "Saint Vincent and the Grenadines"),
-    ("787", "PR", "Puerto Rico"),
-    ("809", "DO", "Dominican Republic"),
-    ("829", "DO", "Dominican Republic"),
-    ("849", "DO", "Dominican Republic"),
-    ("868", "TT", "Trinidad and Tobago"),
-    ("869", "KN", "Saint Kitts and Nevis"),
-    ("876", "JM", "Jamaica"),
-    ("939", "PR", "Puerto Rico"),
-];
 
 /// Toll-free codes: those in service and those set aside for toll-free use, never geographic.
 const NANP_TOLL_FREE: &[&str] = &[
@@ -507,18 +522,11 @@ fn nanp_national(national: &str) -> Result<Nanp, NanpError> {
     } else {
         NanpClass::Geographic
     };
+    // The dialling-prefix table is the one list of which plan country holds an area code.
     let region = (class == NanpClass::Geographic).then(|| {
-        NANP_CANADA
-            .binary_search(&npa)
-            .ok()
-            .map(|_| ("CA", "Canada", true))
-            .or_else(|| {
-                NANP_OTHER
-                    .iter()
-                    .find(|(code, ..)| *code == npa)
-                    .map(|&(_, iso, name)| (iso, name, true))
-            })
-            .unwrap_or(("US", "United States", false))
+        let (prefix, iso, name) =
+            match_country(&format!("1{national}")).unwrap_or(("1", "US", "United States"));
+        (iso, name, prefix.len() > 1)
     });
     Ok(Nanp {
         npa: npa.to_owned(),
@@ -694,17 +702,20 @@ mod tests {
     }
 
     #[test]
-    fn the_canadian_table_is_sorted_and_the_tables_do_not_overlap() {
-        assert!(NANP_CANADA.windows(2).all(|pair| pair[0] < pair[1]));
-        for (code, ..) in NANP_OTHER {
-            assert!(NANP_CANADA.binary_search(code).is_err(), "{code}");
-            assert!(!NANP_TOLL_FREE.contains(code), "{code}");
+    fn every_listed_area_code_is_a_valid_geographic_code_of_its_country() {
+        for &(prefix, iso, _) in COUNTRIES.iter().filter(|(prefix, ..)| prefix.len() == 4) {
+            let Some(npa) = prefix.strip_prefix('1') else {
+                continue;
+            };
+            let number = plan(&format!("+1{npa}5550100"));
+            assert_eq!(number.class, NanpClass::Geographic, "{prefix}");
+            assert_eq!(number.region.map(|(code, ..)| code), Some(iso), "{prefix}");
         }
-        for code in NANP_CANADA.iter().chain(NANP_TOLL_FREE) {
-            assert!(
-                nanp_national(&format!("{code}5550100")).is_ok(),
-                "{code} is valid"
-            );
-        }
+        let mut prefixes: Vec<&str> = COUNTRIES.iter().map(|(prefix, ..)| *prefix).collect();
+        prefixes.sort_unstable();
+        assert!(
+            prefixes.windows(2).all(|pair| pair[0] != pair[1]),
+            "a prefix is listed twice"
+        );
     }
 }

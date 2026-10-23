@@ -464,6 +464,8 @@ mod tests {
         assert_eq!(from_phone("+61412345678"), Some("Australia"));
         assert_eq!(from_phone("+442071838750"), Some("United Kingdom"));
         assert_eq!(from_phone("+18764567890"), Some("Jamaica"));
+        assert_eq!(from_phone("+14165550199"), Some("Canada"));
+        assert_eq!(from_phone("+12025550123"), Some("United States"));
         assert_eq!(from_phone("0412 345 678"), Some("Australia"));
         assert_eq!(from_phone("not a number"), None);
         assert_eq!(from_iban("DE89370400440532013000"), Some("Germany"));
