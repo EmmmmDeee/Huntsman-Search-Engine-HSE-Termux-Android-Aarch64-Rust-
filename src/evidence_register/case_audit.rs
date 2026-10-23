@@ -13,6 +13,18 @@ pub const MAX_CASE_BYTES: usize = 256 * 1024;
 pub const MAX_ADVERT_BYTES: usize = 16 * 1024;
 const MAX_SOURCES: usize = 64;
 const MAX_CLAIMS: usize = 512;
+const MAX_ID_CHARS: usize = 128;
+
+/// Every class a claim may carry. A class outside this list is refused, so a misspelt
+/// `verified_primary_record` can neither skip the registry rule nor drop out of the unresolved
+/// claims.
+pub const CLAIM_CLASSES: [&str; 5] = [
+    "verified_primary_record",
+    "first_party_corroboration",
+    "unverified",
+    "inference_not_verified",
+    "not_stated",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaseAudit {
@@ -37,6 +49,23 @@ fn text_field<'a>(object: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("{key} must be a nonempty string"))
 }
 
+/// An identifier: 1 to 128 ASCII letters, digits, `_`, `-`, `.` or `:`. The audit prints case
+/// and claim identifiers one per `key=value` line, so one holding a newline or a comma could
+/// forge a line or split a list.
+fn id_field<'a>(object: &'a Value, key: &str) -> Result<&'a str, String> {
+    let id = text_field(object, key)?;
+    if id.len() > MAX_ID_CHARS
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':'))
+    {
+        return Err(format!(
+            "{key} must be 1 to {MAX_ID_CHARS} ASCII letters, digits, '_', '-', '.' or ':'"
+        ));
+    }
+    Ok(id)
+}
+
 fn array_field<'a>(object: &'a Value, key: &str, max: usize) -> Result<&'a [Value], String> {
     let array = field(object, key)?
         .as_array()
@@ -57,7 +86,7 @@ pub fn audit_case(case_bytes: &[u8], advert_bytes: &[u8]) -> Result<CaseAudit, S
     }
     let case: Value =
         serde_json::from_slice(case_bytes).map_err(|e| format!("invalid case JSON: {e}"))?;
-    let case_id = text_field(&case, "case_id")?.to_owned();
+    let case_id = id_field(&case, "case_id")?.to_owned();
     let input = field(&case, "primary_input")?;
     let expected_bytes = field(input, "bytes")?
         .as_u64()
@@ -74,15 +103,15 @@ pub fn audit_case(case_bytes: &[u8], advert_bytes: &[u8]) -> Result<CaseAudit, S
 
     let mut sources = BTreeMap::<&str, &str>::new();
     for source in array_field(&case, "sources", MAX_SOURCES)? {
-        let id = text_field(source, "id")?;
+        let id = id_field(source, "id")?;
         let kind = text_field(source, "source_type")?;
         if sources.insert(id, kind).is_some() {
             return Err(format!("duplicate source ID: {id}"));
         }
-        if let Some(url) = source.get("url").and_then(Value::as_str) {
-            if !url.starts_with("https://") {
-                return Err(format!("source {id} has a non-HTTPS URL"));
-            }
+        match source.get("url") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(url)) if url.starts_with("https://") => {}
+            Some(_) => return Err(format!("source {id} has a URL that is not an HTTPS string")),
         }
     }
     if !sources.contains_key("ORIGINAL") {
@@ -93,11 +122,17 @@ pub fn audit_case(case_bytes: &[u8], advert_bytes: &[u8]) -> Result<CaseAudit, S
     let mut unresolved = Vec::new();
     let claims = array_field(&case, "facts_and_assessments", MAX_CLAIMS)?;
     for claim in claims {
-        let id = text_field(claim, "id")?;
+        let id = id_field(claim, "id")?;
         if !ids.insert(id) {
             return Err(format!("duplicate claim ID: {id}"));
         }
         let class = text_field(claim, "class")?;
+        if !CLAIM_CLASSES.contains(&class) {
+            return Err(format!(
+                "claim {id} has unknown class {class:?}; expected one of {}",
+                CLAIM_CLASSES.join(", ")
+            ));
+        }
         let _ = text_field(claim, "assertion")?;
         let references = array_field(claim, "sources", MAX_SOURCES)?;
         if references.is_empty() {
@@ -220,5 +255,57 @@ mod tests {
         v["sources"][1]["url"] = json!("http://localhost/");
         assert!(check(&v).is_err());
         assert!(audit_case(&vec![b'x'; MAX_CASE_BYTES + 1], AD.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn a_misspelt_class_cannot_pass_as_verified_or_drop_out_of_the_unresolved() {
+        let mut v = example();
+        v["facts_and_assessments"][0]["class"] = json!("verified_primary_recrod");
+        v["facts_and_assessments"][0]["sources"] = json!(["COMPANY"]);
+        let err = check(&v).expect_err("unknown class");
+        assert!(err.contains("unknown class"), "{err}");
+        for class in CLAIM_CLASSES {
+            let mut v = example();
+            v["facts_and_assessments"][1]["class"] = json!(class);
+            v["facts_and_assessments"][1]["sources"] = json!(["ABR", "ORIGINAL"]);
+            assert!(check(&v).is_ok(), "{class}");
+        }
+    }
+
+    #[test]
+    fn an_identifier_cannot_forge_an_output_line_or_split_a_list() {
+        for (path, id) in [
+            ("case_id", "case\nexternal_claims=verified"),
+            ("claim", "C02\nexternal_claims=verified"),
+            ("claim", "C02,C03"),
+            ("source", "ORIGINAL "),
+        ] {
+            let mut v = example();
+            match path {
+                "case_id" => v["case_id"] = json!(id),
+                "claim" => v["facts_and_assessments"][1]["id"] = json!(id),
+                _ => v["sources"][2]["id"] = json!(id),
+            }
+            assert!(check(&v).is_err(), "{path} {id:?}");
+        }
+        let mut v = example();
+        v["case_id"] = json!("HSE-AU:2026.10_x");
+        assert!(check(&v).is_ok());
+    }
+
+    #[test]
+    fn a_source_url_must_be_an_https_string_when_present() {
+        for url in [
+            json!(5),
+            json!(["https://example.com/"]),
+            json!("ftp://example.com/"),
+        ] {
+            let mut v = example();
+            v["sources"][2]["url"] = url.clone();
+            assert!(check(&v).is_err(), "{url}");
+        }
+        let mut v = example();
+        v["sources"][2]["url"] = Value::Null;
+        assert!(check(&v).is_ok());
     }
 }
