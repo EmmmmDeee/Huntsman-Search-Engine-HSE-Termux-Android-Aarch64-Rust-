@@ -1,0 +1,1 @@
+- Allow an operator-selected, validated HTTPS Nominatim service origin with guarded egress, retain the public default, refuse malformed geocoding inputs before transport, and explicitly preserve OpenStreetMap attribution in evidence.
