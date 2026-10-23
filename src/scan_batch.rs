@@ -9,13 +9,15 @@ pub const MAX_BATCH_SEEDS: usize = 1_000;
 
 /// Parse one-target-per-line input using the legacy Huntsman semantics:
 /// trim whitespace, ignore blank/comment lines, preserve first-seen order, and
-/// de-duplicate exact seed spellings.
+/// de-duplicate exact seed spellings. A leading byte-order mark is ignored.
 ///
 /// # Errors
 /// Empty input after filtering or more than [`MAX_BATCH_SEEDS`] unique seeds.
 pub fn parse_seed_list(body: &str) -> Result<Vec<String>, Error> {
     let mut seen = BTreeSet::new();
     let mut seeds = Vec::new();
+    // A file saved "UTF-8 with BOM" starts with U+FEFF, which trim keeps: drop it, and only it.
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
 
     for line in body.lines().map(str::trim) {
         if line.is_empty() || line.starts_with('#') || !seen.insert(line.to_owned()) {
@@ -41,6 +43,23 @@ pub fn parse_seed_list(body: &str) -> Result<Vec<String>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_byte_order_mark_is_not_part_of_the_first_seed_or_comment() {
+        assert_eq!(
+            parse_seed_list("\u{feff}example.com\nexample.org\n").unwrap(),
+            ["example.com", "example.org"]
+        );
+        assert_eq!(
+            parse_seed_list("\u{feff}# seeds\nexample.com\n").unwrap(),
+            ["example.com"]
+        );
+        // Only a leading mark is a file's encoding mark; one later in a line is the line's own.
+        assert_eq!(
+            parse_seed_list("example.com\n\u{feff}x\n").unwrap(),
+            ["example.com", "\u{feff}x"]
+        );
+    }
 
     #[test]
     fn trims_skips_comments_deduplicates_and_preserves_order() {

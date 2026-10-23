@@ -181,6 +181,24 @@ fn invalid_hash_and_cross_host_content_scope_are_rejected() {
 }
 
 #[test]
+fn a_content_scope_that_is_not_an_http_url_is_bad_input_not_a_network_error() {
+    // The command makes no request, so a malformed scope must not read as a network failure.
+    for scope in ["ftp://example.com/", "not a url"] {
+        let mut a = observation("a", 100, &"a".repeat(64));
+        a["kind"] = json!("content_digest");
+        a["scope"] = json!(scope);
+        let out = run(vec![a]);
+        assert_eq!(out.status.code(), Some(65));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("content digest needs exact-host URL"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("network"), "{stderr}");
+    }
+}
+
+#[test]
 fn unsupported_observation_fields_are_rejected() {
     let mut a = observation("a", 100, "ns1.example.net");
     a["trusted"] = json!(true);

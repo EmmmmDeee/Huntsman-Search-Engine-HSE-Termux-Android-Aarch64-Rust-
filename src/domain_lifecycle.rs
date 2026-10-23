@@ -105,10 +105,6 @@ pub struct Report {
     pub coverage_gaps: Vec<Gap>,
 }
 
-fn invalid(message: &str) -> Error {
-    Error::Invalid(message.into())
-}
-
 fn bounded_text(value: &str, max: usize) -> bool {
     !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
 }
@@ -126,24 +122,24 @@ fn dns_record(scope: &str, raw: &str) -> Result<String, Error> {
         "A" => raw
             .parse::<std::net::Ipv4Addr>()
             .map(|ip| ip.to_string())
-            .map_err(|_| invalid("invalid IPv4 DNS record")),
+            .map_err(|_| Error::invalid("invalid IPv4 DNS record")),
         "AAAA" => raw
             .parse::<std::net::Ipv6Addr>()
             .map(|ip| ip.to_string())
-            .map_err(|_| invalid("invalid IPv6 DNS record")),
-        "NS" => exact_domain(raw).ok_or_else(|| invalid("invalid nameserver record")),
+            .map_err(|_| Error::invalid("invalid IPv6 DNS record")),
+        "NS" => exact_domain(raw).ok_or_else(|| Error::invalid("invalid nameserver record")),
         "MX" => {
             let fields: Vec<_> = raw.split_whitespace().collect();
             if fields.len() != 2 {
-                return Err(invalid("MX needs priority and host"));
+                return Err(Error::invalid("MX needs priority and host"));
             }
             let priority = fields[0]
                 .parse::<u16>()
-                .map_err(|_| invalid("invalid MX priority"))?;
+                .map_err(|_| Error::invalid("invalid MX priority"))?;
             let host = if fields[1] == "." && priority == 0 {
                 ".".to_owned()
             } else {
-                exact_domain(fields[1]).ok_or_else(|| invalid("invalid MX host"))?
+                exact_domain(fields[1]).ok_or_else(|| Error::invalid("invalid MX host"))?
             };
             Ok(format!("{priority} {host}"))
         }
@@ -152,9 +148,9 @@ fn dns_record(scope: &str, raw: &str) -> Result<String, Error> {
 }
 
 fn validate(o: &mut Observation, domain: &str, as_of: u64) -> Result<(), Error> {
-    o.host = exact_domain(&o.host).ok_or_else(|| invalid("invalid observation host"))?;
+    o.host = exact_domain(&o.host).ok_or_else(|| Error::invalid("invalid observation host"))?;
     if o.host != domain {
-        return Err(invalid(
+        return Err(Error::invalid(
             "observation host differs from the exact input domain",
         ));
     }
@@ -167,12 +163,12 @@ fn validate(o: &mut Observation, domain: &str, as_of: u64) -> Result<(), Error> 
         || o.source_url.len() > 4096
         || parse_http_uri(&o.source_url).is_err()
     {
-        return Err(invalid(
+        return Err(Error::invalid(
             "invalid, missing or oversized observation provenance/payload",
         ));
     }
     if o.retrieved_at > as_of || o.event_at.is_some_and(|t| t > o.retrieved_at) {
-        return Err(invalid(
+        return Err(Error::invalid(
             "observation time is in the future or follows retrieval",
         ));
     }
@@ -181,13 +177,15 @@ fn validate(o: &mut Observation, domain: &str, as_of: u64) -> Result<(), Error> 
         return Ok(());
     }
     if o.value.trim().is_empty() {
-        return Err(invalid("successful observation needs a nonempty value"));
+        return Err(Error::invalid(
+            "successful observation needs a nonempty value",
+        ));
     }
     match o.kind {
         ObservationKind::Dns => {
             o.scope.make_ascii_uppercase();
             if !matches!(o.scope.as_str(), "A" | "AAAA" | "NS" | "MX" | "TXT" | "SOA") {
-                return Err(invalid("unsupported DNS record scope"));
+                return Err(Error::invalid("unsupported DNS record scope"));
             }
             // Each line is one record. Reordering and duplicate records are not changes.
             let records: BTreeSet<String> = o
@@ -200,12 +198,16 @@ fn validate(o: &mut Observation, domain: &str, as_of: u64) -> Result<(), Error> 
             o.value = records.into_iter().collect::<Vec<_>>().join("\n");
         }
         ObservationKind::ContentDigest => {
-            let uri = parse_http_uri(&o.scope)?;
+            // An offline command: a scope that is not an http(s) URL is bad input, not a network
+            // failure.
+            let uri = parse_http_uri(&o.scope).map_err(|_| {
+                Error::invalid("content digest needs exact-host URL and SHA-256 hex value")
+            })?;
             if uri.host().and_then(exact_domain).as_deref() != Some(domain)
                 || o.value.len() != 64
                 || !o.value.bytes().all(|b| b.is_ascii_hexdigit())
             {
-                return Err(invalid(
+                return Err(Error::invalid(
                     "content digest needs exact-host URL and SHA-256 hex value",
                 ));
             }
@@ -220,15 +222,20 @@ fn validate(o: &mut Observation, domain: &str, as_of: u64) -> Result<(), Error> 
 /// timeline but cannot support change findings. No inference crosses datasets.
 pub fn analyze(mut input: Input, as_of: u64) -> Result<Report, Error> {
     if input.schema_version != 1 || input.observations.len() > MAX_OBSERVATIONS {
-        return Err(invalid("unsupported schema or observation limit exceeded"));
+        return Err(Error::invalid(
+            "unsupported schema or observation limit exceeded",
+        ));
     }
-    let domain = exact_domain(&input.domain).ok_or_else(|| invalid("invalid input domain"))?;
+    let domain =
+        exact_domain(&input.domain).ok_or_else(|| Error::invalid("invalid input domain"))?;
     let mut by_id = BTreeMap::new();
     for o in &mut input.observations {
         validate(o, &domain, as_of)?;
         if let Some(previous) = by_id.insert(o.id.clone(), o.clone()) {
             if previous != *o {
-                return Err(invalid("duplicate observation ID has conflicting content"));
+                return Err(Error::invalid(
+                    "duplicate observation ID has conflicting content",
+                ));
             }
         }
     }
