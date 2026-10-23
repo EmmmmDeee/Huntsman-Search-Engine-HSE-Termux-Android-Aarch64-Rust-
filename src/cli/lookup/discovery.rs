@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::cli::{MAX_PLAIN_FILE_BYTES, fail, usage_error};
+use crate::cli::{MAX_PLAIN_FILE_BYTES, fail, terminal_json_pretty, usage_error};
 use huntsman_recon::classifier::{self, classify as classify_indicator};
 use huntsman_recon::clock;
 use huntsman_recon::entity;
@@ -80,7 +80,7 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
     if adaptive {
         return match web_query::adaptive_search(&transport, &query, now) {
             Ok(report) => {
-                match serde_json::to_string_pretty(&report) {
+                match terminal_json_pretty(&report) {
                     Ok(serialized) => println!("{serialized}"),
                     Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
                 }

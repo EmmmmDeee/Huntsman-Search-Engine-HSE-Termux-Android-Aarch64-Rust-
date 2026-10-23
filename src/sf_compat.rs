@@ -17,7 +17,7 @@ use crate::module::reachable_modules;
 use crate::scan_route::{NetworkSelector, ScanKind};
 use crate::sf_elements::DataElement;
 use crate::sf_types;
-use crate::textnorm::{escape_controls, is_escaped};
+use crate::textnorm::{escape_controls, escape_unsafe_text};
 
 pub const SF_USAGE: &str = "usage: huntsman-recon sf [-M|-T|-V] | -l IP:PORT | -C SCAN_ID | -s TARGET [-u all|footprint|investigate|passive] [-m MODULE[,MODULE...]] [-t TYPE[,TYPE...] [-f] [-x]] [-F TYPE[,TYPE...]] [--depth N] [-o tab|csv|json] [-H] [-n] [-r] [-S LENGTH] [-D DELIMITER] [-d] [-q]";
 
@@ -576,25 +576,8 @@ fn render_json(rows: &[Row<'_>]) -> Result<String, Error> {
         })
         .collect();
     serde_json::to_string_pretty(&rows)
-        .map(|body| format!("{}\n", escape_unsafe_in_json(&body)))
+        .map(|body| format!("{}\n", escape_unsafe_text(&body)))
         .map_err(|error| Error::Invalid(format!("sf json: {error}")))
-}
-
-/// JSON escapes the control characters below U+0020 but leaves DEL, the C1 controls (U+0080 to
-/// U+009F), the line and paragraph separators and the bidirectional controls as they are, and a
-/// terminal or a reader can act on those. Written as `\uXXXX` the JSON reads the same. They can only
-/// occur inside a string, since the JSON text around them is ASCII.
-fn escape_unsafe_in_json(json: &str) -> String {
-    let mut out = String::with_capacity(json.len());
-    for c in json.chars() {
-        // Below U+007F, JSON has escaped what needs it inside strings, and the rest is layout.
-        if c >= '\u{7f}' && is_escaped(c) {
-            let _ = write!(out, "\\u{:04x}", u32::from(c));
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// `sf.py`'s tab rows: the module padded to 30 characters and the type to 45, as its
