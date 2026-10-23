@@ -393,6 +393,7 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 mod tests {
     use super::{
         RevisionStamp, archive_current, config, due, needs_reconciliation, revision_stamp,
+        source_hash,
     };
     use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus};
     use std::path::PathBuf;
@@ -534,6 +535,12 @@ mod tests {
         let old = revision_stamp(&path).unwrap();
         std::fs::write(&path, b"updated-data").unwrap();
         assert_ne!(revision_stamp(&path).unwrap(), old);
+        // Same-size evidence edits can escape a coarse metadata stamp, but the
+        // pre/post content digest detects them during a reconciliation attempt.
+        std::fs::write(&path, br#"{"fp":0}"#).unwrap();
+        let before = source_hash(&path).unwrap();
+        std::fs::write(&path, br#"{"fp":1}"#).unwrap();
+        assert_ne!(source_hash(&path).unwrap(), before);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
