@@ -1,0 +1,40 @@
+name: fortify-rustfmt-one-shot
+
+on:
+  push:
+    branches:
+      - feat/fortified-pipeline-controller-20261023
+
+permissions:
+  contents: write
+
+jobs:
+  format-feature-branch:
+    if: github.actor == 'EmmmmDeee'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: "1.99"
+          components: rustfmt
+      - name: Apply official rustfmt to added Rust files only
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2024 xtask/src/fortify.rs xtask/tests/fortify.rs xtask/src/main.rs
+          git diff --check
+      - name: Commit formatting on this feature branch
+        run: |
+          set -euo pipefail
+          git add -- xtask/src/fortify.rs xtask/tests/fortify.rs xtask/src/main.rs
+          if git diff --cached --quiet; then
+            echo "Already formatted"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "style(xtask): apply rustfmt to fortified controller"
+          git push origin HEAD:refs/heads/feat/fortified-pipeline-controller-20261023
