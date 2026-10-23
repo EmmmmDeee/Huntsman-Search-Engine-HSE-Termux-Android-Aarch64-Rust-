@@ -395,7 +395,7 @@ fn add_social_fields(
         SOCIAL_CONF,
         scan_id,
         profile_evidence.clone().with_attr("platform", "twitter"),
-        &["twitter", "social-profile"],
+        &["twitter", crate::tags::SOCIAL_PROFILE],
     );
 }
 
@@ -426,7 +426,7 @@ fn add_blog(user: &GhUser, scan_id: &str, profile_evidence: &Evidence, entities:
             DOMAIN_CONF,
             scan_id,
             profile_evidence.clone().with_attr("blog_url", blog),
-            &["personal-site", "derived"],
+            &["personal-site", crate::tags::DERIVED],
         );
     }
 }

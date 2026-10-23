@@ -10,12 +10,10 @@ pub const FABRICATED_BREACH: &str = "fabricated-breach";
 /// come from a security compromise. It describes the incident, not the person.
 pub const SPAM_LIST: &str = "spam-list";
 pub const WEB: &str = "web";
-pub const CRAWLED: &str = "crawled";
 pub const SUBDOMAIN: &str = "subdomain";
 /// The host has neither an A nor an AAAA record: its zone answered both queries with none.
 /// Spiderfoot reports such a name as `INTERNET_NAME_UNRESOLVED`.
 pub const UNRESOLVED: &str = "unresolved";
-pub const EXTERNAL: &str = "external";
 pub const WEB_SCRAPED: &str = "web-scraped";
 pub const CT_LOG: &str = "ct-log";
 pub const PTR: &str = "ptr";
@@ -30,15 +28,9 @@ pub const VULNERABLE: &str = "vulnerable";
 pub const SOCIAL_PROFILE: &str = "social-profile";
 pub const CANDIDATE: &str = "candidate";
 pub const SEARCH_DISCOVERED: &str = "search-discovered";
-pub const BREACH_DERIVED: &str = "breach-derived";
-pub const RECALLED: &str = "recalled";
 pub const DERIVED: &str = "derived";
-pub const RECYCLED: &str = "recycled";
 pub const NAME_DERIVED: &str = "name-derived";
-pub const SOURCE_DOCUMENT: &str = "source-document";
 pub const GEOINT: &str = "geoint";
-pub const COARSE: &str = "coarse";
-pub const HOSTING: &str = "hosting";
 /// The organisation a registration record names as the registrar.
 pub const REGISTRAR: &str = "registrar";
 /// A mailbox or telephone a registration record names for abuse reports.

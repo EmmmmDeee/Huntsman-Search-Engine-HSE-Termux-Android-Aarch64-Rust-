@@ -183,9 +183,9 @@ fn derived_entities(username: &str, scan_id: &str) -> Vec<Entity> {
         if entity.uid == seed_uid {
             continue;
         }
-        entity.tag("derived");
+        entity.tag(crate::tags::DERIVED);
         entity.tag("variant");
-        entity.tag("candidate");
+        entity.tag(crate::tags::CANDIDATE);
         entity.add_evidence(
             Evidence::new(
                 EvidenceProvenance::for_scan("username_variants", scan_id),
@@ -514,7 +514,7 @@ mod tests {
                 .entities
                 .iter()
                 .any(|entity| entity.kind == EntityKind::Url
-                    && entity.has_tag("wikipedia-edit")
+                    && entity.has_tag(crate::tags::WIKIPEDIA_EDIT)
                     && entity.value.contains("oldid=900001"))
         );
     }

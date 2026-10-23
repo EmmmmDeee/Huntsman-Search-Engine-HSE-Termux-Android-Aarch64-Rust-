@@ -463,7 +463,7 @@ mod tests {
         ]
         .into_iter()
         .fold(
-            Finding::new("s").attr("k", "v").tag("malicious"),
+            Finding::new("s").attr("k", "v").tag(crate::tags::MALICIOUS),
             |finding, (kind, value)| finding.pivot(kind, value, "p"),
         );
         let mut entities = Vec::new();
