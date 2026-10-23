@@ -106,8 +106,7 @@ fn evidence_export_preserves_raw_and_supports_delta() {
         "matrix JSON: {}",
         String::from_utf8_lossy(&matrix.stderr)
     );
-    let matrix: serde_json::Value =
-        serde_json::from_slice(&matrix.stdout).expect("matrix JSON");
+    let matrix: serde_json::Value = serde_json::from_slice(&matrix.stdout).expect("matrix JSON");
     assert_eq!(matrix["format"], "huntsman_sparse_evidence_matrix");
     assert_eq!(matrix["truncated"], false);
     assert!(matrix["rows"].is_array());
