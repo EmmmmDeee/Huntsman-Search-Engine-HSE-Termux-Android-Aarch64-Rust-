@@ -12,8 +12,7 @@
 use std::collections::BTreeSet;
 
 use crate::canonical::{canonical_domain, canonical_ip};
-pub use crate::dns::RESOLVE_SOURCE;
-use crate::dns::{self, RecordType, ResolveErrorKind, ResolveQuery};
+use crate::dns::{self, RESOLVE_SOURCE, RecordType, ResolveErrorKind, ResolveQuery};
 use crate::domains::is_proper_subdomain_of;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::http::Transport;
@@ -24,7 +23,7 @@ use super::{DOMAIN_CONFIDENCE, RECORD_CONFIDENCE};
 
 /// The most hosts one lookup resolves, two queries each. A host past it is still an entity of
 /// the lookup; the outcome row counts it as not resolved.
-pub const MAX_RESOLVED_HOSTS: usize = 512;
+const MAX_RESOLVED_HOSTS: usize = 512;
 /// A name that does not resolve: weaker than one that does, never stronger than its finder's.
 const UNRESOLVED_CONFIDENCE: f64 = 0.50;
 

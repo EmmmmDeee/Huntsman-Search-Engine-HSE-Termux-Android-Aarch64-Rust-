@@ -1054,7 +1054,7 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         network: true,
         category: ModuleCategory::Threat,
         attack_techniques: &["T1596.005"],
-        description: "Internet Storm Center (DShield) reports, threat feeds and SSH and web honeypot activity of an address",
+        description: "Internet Storm Center (DShield) reports, threat feeds and SSH and web honeypot activity of an IPv4 address",
     },
     ReachableModule {
         name: "maltiverse",

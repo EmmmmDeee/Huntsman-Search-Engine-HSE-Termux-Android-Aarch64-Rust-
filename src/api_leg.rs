@@ -364,6 +364,19 @@ pub fn clean(text: Option<&str>) -> Option<String> {
     )
 }
 
+/// A scalar as text: a string cleaned, a number or flag as written, `None` for null, an empty
+/// string or a structure. **Pure.**
+#[must_use]
+pub fn scalar(value: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    match value {
+        Value::String(text) => clean(Some(text)),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(flag) => Some(flag.to_string()),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
+}
+
 /// `reason` as a failed leg's diagnostic keeps it: at most [`MAX_DIAGNOSTIC_CHARS`] characters,
 /// ending in `…` when cut. **Pure.**
 fn diagnostic(reason: &str) -> String {

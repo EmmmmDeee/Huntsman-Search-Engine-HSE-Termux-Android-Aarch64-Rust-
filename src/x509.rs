@@ -80,11 +80,17 @@ impl Certificate {
     /// The first value of the subject attribute `name`. **Pure.**
     #[must_use]
     pub fn subject_value(&self, name: &str) -> Option<&str> {
-        self.subject
-            .iter()
-            .find(|(key, value)| key == name && !value.is_empty())
-            .map(|(_, value)| value.as_str())
+        attribute(&self.subject, name)
     }
+}
+
+/// The first non-empty value of the attribute `name` in a name's `attributes`. **Pure.**
+#[must_use]
+pub fn attribute<'a>(attributes: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    attributes
+        .iter()
+        .find(|(key, value)| key == name && !value.is_empty())
+        .map(|(_, value)| value.as_str())
 }
 
 /// Read one DER certificate. **Pure.**

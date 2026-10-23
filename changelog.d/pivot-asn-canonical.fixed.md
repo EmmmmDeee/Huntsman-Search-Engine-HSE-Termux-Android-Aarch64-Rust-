@@ -1,0 +1,7 @@
+- An AS number an indicator source names in an `ip` or `domain` lookup (ISC's `as`, Maltiverse's
+  `as_number` and the other sources' AS pivots) becomes an ASN entity only when it is a public AS
+  number, read as the `asn` command reads one. A private-use or reserved number, for example an
+  ISC answer with `"as": 64512`, became an `AS64512` entity, a value `asn AS64512` refuses; it is
+  now dropped, as a non-public pivot address is. A pivot written `ASN13335` or `AS 13335` was
+  dropped and is now the entity `AS13335`. The `asn` attribute on the queried address keeps the
+  provider's value either way.
