@@ -551,6 +551,7 @@ impl ScanApi {
                         json!({
                             "module": outcome.module,
                             "outcome": outcome.kind,
+                            "observed_at_unix": outcome.observed_at_unix,
                             "found": outcome.found,
                             "http_status": outcome.http_status,
                             "retry_after_secs": outcome.retry_after_secs,
@@ -560,8 +561,10 @@ impl ScanApi {
                     .collect()
             })
             .unwrap_or_default();
+        let uncertainty_register = crate::scan_uncertainty::derive(&record, results.as_ref());
         let mut value = json!(record);
         value["sources"] = Value::Array(sources);
+        value["uncertainty_register"] = json!(uncertainty_register);
         value["source_execution_summary"] = results.as_ref().map_or(Value::Null, |saved| {
             source_execution_summary(&saved.outcomes)
         });
@@ -1615,6 +1618,15 @@ mod tests {
         assert_eq!(row["report"], "report");
         assert_eq!(row["source_execution_summary"]["success"], 1);
         assert_eq!(row["source_execution_summary"]["accepted"], 1);
+        assert_eq!(row["sources"][0]["observed_at_unix"], 1);
+        assert_eq!(row["uncertainty_register"]["recorded_executions"], 1);
+        assert_eq!(row["uncertainty_register"]["unresolved_executions"], 0);
+        assert_eq!(row["uncertainty_register"]["discovery_completeness"], "unverified");
+        assert!(row["uncertainty_register"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == "scope:exhaustiveness_unverified"));
         assert_eq!(
             row["source_execution_summary"]["all_recorded_sources_accepted"],
             true
