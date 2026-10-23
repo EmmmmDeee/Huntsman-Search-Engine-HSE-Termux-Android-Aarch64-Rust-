@@ -157,6 +157,7 @@ cargo run -- domain-lifecycle analyze docs/domain-lifecycle-example.json --as-of
 cargo run -- geo -27.4698,153.0251 -33.8688,151.2093
 cargo run -- id "53 004 085 616"        # ABN/ACN/BSB, strict grouping
 cargo run -- geohash -27.4698,153.0251 9
+cargo run -- geohash r7hgdpm # decode: the cell's centre and bounds
 cargo run -- coarsen -27.4698,153.0251 # one decimal place, ~11 km
 cargo run -- classify 200 "<html>just a moment cloudflare</html>"
 cargo run -- keys keys.env               # mode 600; prints slot + fingerprint prefix, never the value
