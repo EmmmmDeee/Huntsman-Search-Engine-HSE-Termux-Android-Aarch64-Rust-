@@ -73,7 +73,7 @@ pub fn clusters_from_lineage(resolution: &crate::lineage::Resolution) -> Vec<Res
             ]
         })
         .collect::<Vec<_>>();
-    ids.sort();
+    ids.sort_unstable();
     ids.dedup();
     let index = ids
         .iter()
