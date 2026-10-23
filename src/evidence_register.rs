@@ -227,11 +227,7 @@ fn change(now: &Row, previous: &Row) -> Result<&'static str, String> {
     }
 }
 
-fn to_json(
-    row: &Row,
-    change_status: &str,
-    known: &BTreeMap<String, Row>,
-) -> Result<Value, String> {
+fn to_json(row: &Row, change_status: &str, known: &BTreeMap<String, Row>) -> Result<Value, String> {
     let mut missing = Vec::new();
     if row.observed_at_unix.is_none() {
         missing.push("observation_timestamp_not_recorded".to_owned());
