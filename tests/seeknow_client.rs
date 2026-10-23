@@ -124,14 +124,36 @@ fn provider_failures_are_classified_from_top_level_envelope_only() {
             r#"{"success":false,"error":"rate_limited","credits_remaining":42}"#,
             SourceOutcomeKind::RateLimited,
         ),
+        // A 2xx that says `success: false` is a failed request: not a validated zero, and
+        // not a success even when rows came with it.
+        (
+            200,
+            r#"{"success":false,"error":"search backend unavailable","data":[]}"#,
+            SourceOutcomeKind::Inconclusive,
+        ),
+        (
+            200,
+            r#"{"success":false,"error":"partial failure","data":[{"email":"alice@example.com"}]}"#,
+            SourceOutcomeKind::Inconclusive,
+        ),
     ];
 
     for (status, body, expected) in cases {
-        let transport =
-            ScriptedTransport::new(vec![response_with(status, body, Vec::new(), false)]);
+        // fetch reads a 429's Retry-After; refining the JSON envelope must keep it.
+        let headers = if status == 429 {
+            vec![("Retry-After".into(), "30".into())]
+        } else {
+            Vec::new()
+        };
+        let transport = ScriptedTransport::new(vec![response_with(status, body, headers, false)]);
         let result = search_fast(&transport, &credential(), &auto_search(), 9).unwrap();
         assert_eq!(result.outcome.kind, expected, "{body}");
         assert_eq!(result.rows.len(), 0);
+        assert_eq!(
+            result.outcome.retry_after_secs,
+            (status == 429).then_some(30),
+            "{body}"
+        );
     }
 
     let leaked_text = r#"{

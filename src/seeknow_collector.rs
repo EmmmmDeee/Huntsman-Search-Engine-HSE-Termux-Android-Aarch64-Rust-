@@ -15,7 +15,7 @@ use crate::fetch::{AuthStyle, Credential};
 use crate::http::Transport;
 use crate::keys::Keys;
 use crate::seeknow::{
-    KEY_SLOT, SEARCH_LIMIT_MAX, SeekNowQueryType, SeekNowRow, SeekNowSearch, SeekNowSearchResult,
+    KEY_SLOT, SeekNowQueryType, SeekNowRow, SeekNowSearch, SeekNowSearchResult, effective_limit,
     search_deep, search_fast,
 };
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
@@ -84,10 +84,7 @@ pub fn plan_selector(
         EntityKind::DeviceId => SeekNowQueryType::MachineId,
         _ => return Err(CollectorError::UnsupportedSelector(selector.kind.clone())),
     };
-    let limit = limits
-        .max_records_per_response
-        .clamp(1, usize::from(SEARCH_LIMIT_MAX));
-    let limit = u16::try_from(limit).unwrap_or(SEARCH_LIMIT_MAX);
+    let limit = effective_limit(u16::try_from(limits.max_records_per_response).unwrap_or(u16::MAX));
     Ok(SeekNowSearch {
         query: selector.value.clone(),
         query_type,

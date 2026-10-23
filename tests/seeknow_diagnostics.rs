@@ -47,6 +47,28 @@ fn credits_and_status_are_authenticated_zero_redirect_gets() {
 }
 
 #[test]
+fn a_2xx_success_false_envelope_is_never_a_successful_diagnostic() {
+    let transport = ScriptedTransport::new(vec![
+        response(r#"{"success":false,"error":"maintenance","credits_remaining":5}"#),
+        response(r#"{"success":false,"error":"maintenance"}"#),
+    ]);
+    let credential = credential();
+
+    let credits_result = credits(&transport, &credential, 14).unwrap();
+    assert_eq!(credits_result.outcome.kind, SourceOutcomeKind::Inconclusive);
+    assert_eq!(credits_result.outcome.http_status, Some(200));
+    assert_eq!(credits_result.remaining, None);
+
+    let status_result = status(&transport, &credential, 15).unwrap();
+    assert_eq!(status_result.outcome.kind, SourceOutcomeKind::Inconclusive);
+    assert_eq!(
+        status_result.outcome.detail.as_deref(),
+        Some("provider reported request failure")
+    );
+    assert!(status_result.fields.is_empty());
+}
+
+#[test]
 fn upstream_arrays_survive_as_multiple_values_for_lineage() {
     let transport = ScriptedTransport::new(vec![response(
         r#"{"success":true,"data":[{"email":"a@example.com","dbname":["Dataset A","Dataset B"],"source":["mirror-1","mirror-2"],"record_id":"r1"}]}"#,
@@ -112,4 +134,42 @@ fn rows_fields_and_strings_are_bounded_with_visible_truncation() {
     assert!(result.rows[0].truncated_fields.contains("bio"));
     assert!(!result.rows[0].fields.contains_key("bio"));
     assert!(result.rows[0].fields_truncated);
+}
+
+#[test]
+fn upstream_arrays_are_bounded_with_visible_truncation() {
+    let names = (0..=MAX_FIELDS_PER_ROW)
+        .map(|i| format!("Dataset {i}"))
+        .collect::<Vec<_>>();
+    let huge = "x".repeat(MAX_FIELD_CHARS + 1);
+    let body = serde_json::json!({"success": true, "data": [
+        {"email": "a@example.com", "dbname": names},
+        {"email": "b@example.com", "source": ["mirror-1", huge]},
+        // A null element is dropped by type, not by a bound.
+        {"email": "c@example.com", "dbname": ["Dataset A", null]},
+    ]})
+    .to_string();
+    let transport = ScriptedTransport::new(vec![response(&body)]);
+    let result = search_fast(
+        &transport,
+        &credential(),
+        &SeekNowSearch {
+            query: "a@example.com".into(),
+            query_type: SeekNowQueryType::Email,
+            limit: SEARCH_LIMIT_MAX,
+        },
+        16,
+    )
+    .unwrap();
+
+    assert_eq!(result.rows.len(), 3);
+    assert_eq!(
+        result.rows[0].upstream.dbname,
+        names[..MAX_FIELDS_PER_ROW].to_vec()
+    );
+    assert!(result.rows[0].fields_truncated);
+    assert_eq!(result.rows[1].upstream.source, vec!["mirror-1".to_owned()]);
+    assert!(result.rows[1].fields_truncated);
+    assert_eq!(result.rows[2].upstream.dbname, vec!["Dataset A".to_owned()]);
+    assert!(!result.rows[2].fields_truncated);
 }

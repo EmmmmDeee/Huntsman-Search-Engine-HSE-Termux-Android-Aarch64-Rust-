@@ -97,6 +97,27 @@ fn fast_positive_stops_and_fast_failure_never_spends_deep_credit() {
         batch.receipts[0].outcome.kind,
         SourceOutcomeKind::AuthRejected
     );
+
+    // A 200 that says `success: false` is not a validated zero, so no deep credit is spent.
+    let refused = ScriptedTransport::new(vec![response(
+        200,
+        r#"{"success":false,"error":"search backend unavailable","data":[]}"#,
+    )]);
+    let batch = collect_with_credential(
+        &selector(EntityKind::Email, "alice@example.com"),
+        &refused,
+        &credential(),
+        &CollectionLimits::default(),
+        SeekNowCollectionMode::Adaptive,
+        12,
+    )
+    .unwrap();
+    assert_eq!(batch.outcome, CollectionOutcome::Failed);
+    assert_eq!(refused.request_count(), 1);
+    assert_eq!(
+        batch.receipts[0].outcome.kind,
+        SourceOutcomeKind::Inconclusive
+    );
 }
 
 #[test]
