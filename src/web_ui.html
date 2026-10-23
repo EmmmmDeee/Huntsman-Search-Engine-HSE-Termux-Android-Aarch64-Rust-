@@ -317,6 +317,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="toolbar">
 <button class="btn" id="screfresh" type="button">Refresh</button>
 <details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="xlsx">Excel</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button></div></details>
+<details class="menu" id="scevidence"><summary class="btn">Evidence</summary><div class="menu-list"><button type="button" data-eformat="raw">Raw TXT</button><button type="button" data-eformat="json">JSON</button><button type="button" data-eformat="delta">Delta TXT</button></div></details>
 <button class="btn" id="scstop" type="button" hidden>Stop</button>
 <button class="btn" id="screrun" type="button">Re-run</button>
 <button class="btn" id="sccompare" type="button">Compare</button>
@@ -1332,6 +1333,25 @@ $('scexport').addEventListener('click',async e=>{
   const b=e.target.closest('button[data-format]');if(!b)return;
   $('scexport').open=false;
   try{await exportFile(b.dataset.format)}catch(err){fail('scerror',err.message)}
+});
+// Evidence exports use the same offline scan record model as the CLI and API.
+// A delta compares against the newest prior scan of the same target and kind.
+$('scevidence').addEventListener('click',async e=>{
+  const button=e.target.closest('button[data-eformat]');if(!button)return;
+  $('scevidence').open=false;
+  try{
+    const mode=button.dataset.eformat;
+    const params=new URLSearchParams({format:mode==='json'?'json':'raw'});
+    if(mode==='delta'){
+      if(!scan)throw new Failure('Open a completed scan before requesting its evidence delta.');
+      const all=await api('/api/scans');
+      const previous=all.filter(x=>x.id!==sid&&x.target===scan.target&&x.kind===scan.kind&&(x.created||0)<(scan.created||0)).sort((a,b)=>(b.created||0)-(a.created||0))[0];
+      if(!previous)throw new Failure('No earlier scan of this target and type to compare. Re-run the scan first.');
+      params.set('baseline',previous.id);
+    }
+    const suffix=mode==='json'?'json':'txt';
+    await fetchFile(base()+'/evidence?'+params,'huntsman-'+sid+'-evidence-'+mode+'.'+suffix);
+  }catch(err){fail('scerror',err.message)}
 });
 // A menu near the right edge opens leftward, so it never runs off a phone's screen: placed from
 // its button before it opens, so it never paints off the edge, then checked once it has opened.
