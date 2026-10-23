@@ -70,7 +70,7 @@ impl<T> Selected<T> {
     }
 }
 
-impl<T: Transport> Transport for Selected<T> {
+impl<T: Transport + Sync> Transport for Selected<T> {
     fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
         self.inner.send(request)
     }
@@ -89,6 +89,11 @@ impl<T: Transport> Transport for Selected<T> {
 
     fn runs_module(&self, module: &str) -> bool {
         self.selection.runs(module) && self.inner.runs_module(module)
+    }
+
+    /// Shared as itself, so a source asked from another thread is still held to the selection.
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        self.inner.shared().map(|_| self as &(dyn Transport + Sync))
     }
 }
 
