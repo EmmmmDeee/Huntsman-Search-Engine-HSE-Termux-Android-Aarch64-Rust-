@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use crate::scan_store::{ScanRecord, ScanResults, ScanStatus};
 use crate::sf_elements::DataElement;
 use crate::sha256::{hex32, sha256};
+use crate::textnorm::escape_unsafe_text;
 
 use super::{MAX_RECORDS, MAX_RENDER_BYTES};
 
@@ -28,6 +29,20 @@ fn stable_id(kind: &str, value: &str) -> String {
     format!("HSE-MX-{}", &hex32(&sha256(&bytes))[..20])
 }
 
+/// Report DNS-like equivalence candidates without coalescing original observations.
+/// ASCII-only and type-scoped: no general-purpose person, email or Unicode folding.
+fn normalization_candidate(kind: &str, value: &str) -> Option<String> {
+    if !matches!(kind, "DOMAIN_NAME" | "INTERNET_NAME")
+        || !value.is_ascii()
+        || value.is_empty()
+        || value.bytes().any(|byte| byte.is_ascii_whitespace())
+    {
+        return None;
+    }
+    let unqualified = value.strip_suffix('.').unwrap_or(value);
+    (!unqualified.is_empty()).then(|| unqualified.to_ascii_lowercase())
+}
+
 fn grouped(elements: &[DataElement]) -> Result<Grid, String> {
     if elements.len() > MAX_RECORDS {
         return Err(format!(
@@ -37,7 +52,7 @@ fn grouped(elements: &[DataElement]) -> Result<Grid, String> {
         ));
     }
     let mut grid: Grid = BTreeMap::new();
-    for element in elements {
+    for element in elements.iter().filter(|item| item.kind != "ROOT") {
         let cell = grid
             .entry((element.kind.clone(), element.data.clone()))
             .or_default()
@@ -72,7 +87,13 @@ fn render_row(kind: &str, value: &str, providers: BTreeMap<String, Cell>) -> Val
             })
         })
         .collect();
+    let candidate = normalization_candidate(kind, value);
+    let normalization = candidate
+        .as_ref()
+        .map(|_| "ascii_dns_casefold_optional_terminal_dot");
     json!({
+        "NORMALIZED_MATCH_CANDIDATE": candidate,
+        "NORMALIZATION_METHOD": normalization,
         "RECORD_ID": stable_id(kind, value),
         "FINDING_TYPE": kind,
         "EXACT_VALUE": value,
@@ -83,6 +104,37 @@ fn render_row(kind: &str, value: &str, providers: BTreeMap<String, Cell>) -> Val
         "CELLS": cells,
         "VERIFICATION_STATUS": "recorded_unverified",
     })
+}
+
+/// Report potential DNS presentation variants without equating their source records.
+fn normalized_candidate_groups(rows: &[Value]) -> Vec<Value> {
+    let mut candidate_groups: BTreeMap<(String, String), Vec<(String, String)>> = BTreeMap::new();
+    for row in rows {
+        let (Some(kind), Some(candidate), Some(value), Some(id)) = (
+            row["FINDING_TYPE"].as_str(),
+            row["NORMALIZED_MATCH_CANDIDATE"].as_str(),
+            row["EXACT_VALUE"].as_str(),
+            row["RECORD_ID"].as_str(),
+        ) else {
+            continue;
+        };
+        candidate_groups
+            .entry((kind.to_owned(), candidate.to_owned()))
+            .or_default()
+            .push((value.to_owned(), id.to_owned()));
+    }
+    candidate_groups
+        .into_iter()
+        .filter(|(_, variants)| variants.len() > 1)
+        .map(|((kind, candidate), variants)| {
+            json!({
+                "FINDING_TYPE": kind,
+                "CANDIDATE_VALUE": candidate,
+                "EXACT_VARIANTS": variants,
+                "VERIFICATION_STATUS": "unverified_candidate",
+            })
+        })
+        .collect()
 }
 
 /// Build a bounded sparse evidence matrix offline. Rows are exact type/value
@@ -110,6 +162,7 @@ pub fn compile_matrix(scan: &ScanRecord, saved: &ScanResults) -> Result<Value, S
             row
         })
         .collect();
+    let normalization_candidates = normalized_candidate_groups(&rows);
     let observed_modules: BTreeSet<&str> = sources.iter().map(String::as_str).collect();
     let mut executions = BTreeMap::new();
     for outcome in &saved.outcomes {
@@ -121,6 +174,12 @@ pub fn compile_matrix(scan: &ScanRecord, saved: &ScanResults) -> Result<Value, S
         .map(String::as_str)
         .collect();
     let flagged = saved.elements.iter().filter(|element| element.fp).count();
+    let root_elements = saved
+        .elements
+        .iter()
+        .filter(|element| element.kind == "ROOT")
+        .count();
+    let matrix_elements = saved.elements.len() - root_elements;
     let report = json!({
         "format": "huntsman_sparse_evidence_matrix",
         "schema": 1,
@@ -128,10 +187,14 @@ pub fn compile_matrix(scan: &ScanRecord, saved: &ScanResults) -> Result<Value, S
         "axes": ["finding_type_and_exact_value", "recorded_source_module"],
         "columns": sources,
         "rows": rows,
+        "normalization_candidates": normalization_candidates,
         "summary": {
             "matrix_rows": rows.len(),
             "recorded_elements": saved.elements.len(),
+            "matrix_elements": matrix_elements,
+            "root_elements_excluded_from_matrix": root_elements,
             "operator_flagged_elements": flagged,
+            "normalization_candidate_groups": normalization_candidates.len(),
             "multi_module_exact_matches": multi_source_rows,
             "mixed_operator_flag_rows": mixed_flags,
             "module_execution_counts": executions,
@@ -144,7 +207,9 @@ pub fn compile_matrix(scan: &ScanRecord, saved: &ScanResults) -> Result<Value, S
             "multiple_observations_are_not_independent_corroboration",
             "source_claims_and_confidence_are_not_independently_verified",
             "operator_false_positive_flags_are_not_factual_contradictions",
-            "source_execution_without_elements_does_not_establish_no_results"
+            "source_execution_without_elements_does_not_establish_no_results",
+            "normalization_candidates_are_not_confirmed_equivalent",
+            "root_elements_remain_in_the_saved_scan_but_are_excluded_from_findings_matrix"
         ],
         "scan_complete": scan.status == ScanStatus::Finished,
         "truncated": false,
@@ -166,14 +231,16 @@ pub fn compile_matrix(scan: &ScanRecord, saved: &ScanResults) -> Result<Value, S
 /// Refuses serialization errors or over-limit output.
 pub fn matrix_raw_text(report: &Value) -> Result<String, String> {
     let mut output = format!(
-        "[HUNTSMAN_MATRIX]\nSCAN: {}\nSUMMARY: {}\nUNCERTAINTY_REGISTER: {}\n",
+        "[HUNTSMAN_MATRIX]\nSCAN: {}\nSUMMARY: {}\nUNCERTAINTY_REGISTER: {}\nNORMALIZATION_CANDIDATES: {}\n",
         report["scan"]["id"].as_str().unwrap_or("UNKNOWN"),
-        report["summary"],
-        report["uncertainty_register"]
+        escape_unsafe_text(&report["summary"].to_string()),
+        escape_unsafe_text(&report["uncertainty_register"].to_string()),
+        escape_unsafe_text(&report["normalization_candidates"].to_string())
     );
     for row in report["rows"].as_array().into_iter().flatten() {
         let encoded = serde_json::to_string(row).map_err(|error| error.to_string())?;
-        writeln!(output, "\n[MATRIX_ROW]\n{encoded}\n[END_MATRIX_ROW]")
+        let safe = escape_unsafe_text(&encoded);
+        writeln!(output, "\n[MATRIX_ROW]\n{safe}\n[END_MATRIX_ROW]")
             .map_err(|error| error.to_string())?;
         if output.len() > MAX_RENDER_BYTES {
             return Err("matrix raw export exceeds limit; no output truncated".to_owned());
@@ -242,6 +309,65 @@ mod tests {
         );
         assert_eq!(first, second);
         assert_eq!(first["CELLS"][0]["ELEMENT_IDS"], json!(["a", "z"]));
+    }
+
+    #[test]
+    fn dns_normalization_is_annotated_not_silently_merged() {
+        assert_eq!(
+            normalization_candidate("DOMAIN_NAME", "Example.ORG."),
+            Some("example.org".to_owned())
+        );
+        assert_eq!(
+            normalization_candidate("DOMAIN_NAME", "example.org"),
+            Some("example.org".to_owned())
+        );
+        assert_eq!(normalization_candidate("EMAILADDR", "A@B.COM"), None);
+        assert_eq!(
+            normalization_candidate("INTERNET_NAME", "éxample.org"),
+            None
+        );
+        let mut upper = element("a", "dns", false);
+        upper.kind = "DOMAIN_NAME".to_owned();
+        upper.data = "Example.ORG.".to_owned();
+        let mut lower = element("b", "rdap", false);
+        lower.kind = "DOMAIN_NAME".to_owned();
+        lower.data = "example.org".to_owned();
+        let grid = grouped(&[upper, lower]).unwrap();
+        assert_eq!(grid.len(), 2);
+        let values: Vec<Value> = grid
+            .into_iter()
+            .map(|((kind, value), sources)| render_row(&kind, &value, sources))
+            .collect();
+        assert_eq!(
+            values[0]["NORMALIZED_MATCH_CANDIDATE"],
+            values[1]["NORMALIZED_MATCH_CANDIDATE"]
+        );
+        assert_ne!(values[0]["RECORD_ID"], values[1]["RECORD_ID"]);
+        let groups = normalized_candidate_groups(&values);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["CANDIDATE_VALUE"], "example.org");
+        assert_eq!(groups[0]["EXACT_VARIANTS"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn root_is_not_a_source_finding() {
+        let mut root = element("root", "target", false);
+        root.kind = "ROOT".to_owned();
+        assert!(grouped(&[root]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn raw_export_escapes_bidi_controls_without_losing_json_values() {
+        let text = json!({
+            "scan": {"id": "a"},
+            "summary": {},
+            "uncertainty_register": {},
+            "rows": [{"EXACT_VALUE": "left\u{202e}right"}]
+        });
+        let raw = matrix_raw_text(&text).unwrap();
+        assert!(!raw.contains('\u{202e}'));
+        assert!(raw.contains(r"\u202e"));
+        assert!(raw.contains("[END_HUNTSMAN_MATRIX]"));
     }
 
     #[test]
