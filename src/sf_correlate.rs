@@ -255,11 +255,19 @@ fn matcher(value: &Value, rule: &str, first: bool) -> Result<Matcher, RuleError>
         };
         let test = match method {
             "exact" => {
-                if first
-                    && field.attr == Attr::Type
-                    && sf_types::find(&pattern).is_none_or(|kind| kind.code != pattern)
-                {
-                    return Err(error(rule, format!("unknown type {pattern}")));
+                // Types match exactly, as in Spiderfoot, so a type that is not catalogued, or is
+                // written in another case, would never match in any scope.
+                if field.attr == Attr::Type {
+                    match sf_types::find(&pattern) {
+                        None => return Err(error(rule, format!("unknown type {pattern}"))),
+                        Some(kind) if kind.code != pattern => {
+                            return Err(error(
+                                rule,
+                                format!("type {pattern} is written {}", kind.code),
+                            ));
+                        }
+                        Some(_) => {}
+                    }
                 }
                 Test::Exact(pattern)
             }

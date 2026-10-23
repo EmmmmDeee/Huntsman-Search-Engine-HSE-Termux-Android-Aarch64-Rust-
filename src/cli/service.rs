@@ -156,8 +156,10 @@ fn web_radar() -> Result<huntsman_recon::wifi_radar::WifiScan, LookupError> {
 
 /// The saved scans `serve` shows and starts: the same store, runner, correlation rules and API
 /// router as `scans`, so a scan run from either shows in both. A scan a stopped server left running
-/// reads `ABORTED`, and a rule file in `~/.huntsman/correlations` that cannot be read is named on
-/// stderr as well as in each scan's log. When there is no usable scan directory the server still
+/// reads `ABORTED`, and each rule error [`huntsman_recon::sf_correlate::with_dir`] reports for
+/// `~/.huntsman/correlations` (a rule file that cannot be read or loaded, a rules path that cannot
+/// be listed, files past the limit) is named on stderr as `scans rules` names it, and in each
+/// scan's log. When there is no usable scan directory the server still
 /// starts, says why on stderr, and the scan routes answer `404`; lookups and analysis are
 /// unaffected.
 fn scan_api() -> Option<std::sync::Arc<ScanApi>> {
@@ -170,10 +172,7 @@ fn scan_api() -> Option<std::sync::Arc<ScanApi>> {
     match open_api(&dir, default_rules_dir().as_deref()) {
         Ok(api) => {
             for failure in api.service().rule_errors() {
-                eprintln!(
-                    "serve: correlation rule {} is not used: {}",
-                    failure.rule, failure.reason
-                );
+                eprintln!("serve: {failure}");
             }
             Some(std::sync::Arc::new(api))
         }

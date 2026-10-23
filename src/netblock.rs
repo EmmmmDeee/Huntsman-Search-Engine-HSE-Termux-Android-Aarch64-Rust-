@@ -1,7 +1,7 @@
 //! Address blocks in CIDR form: the one place Huntsman parses a block, tests whether it holds an
-//! address, writes it canonically and lists its addresses. SPF `ip4`/`ip6` mechanisms, the RDAP
-//! bootstrap, the `netblock` lookup, the threat feeds and the correlation rules' `subnet` match
-//! all use it.
+//! address, writes it canonically and lists its addresses. Every module that reads a block uses
+//! it, among them SPF `ip4`/`ip6` mechanisms, the RDAP bootstrap and leg, the `netblock` lookup,
+//! the threat feeds, the correlation rules' `subnet` match, canonical forms and the classifier.
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
