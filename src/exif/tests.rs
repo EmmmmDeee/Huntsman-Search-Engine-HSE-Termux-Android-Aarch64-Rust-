@@ -466,3 +466,29 @@ fn a_long_number_array_shows_whole_numbers_and_how_many_there_are() {
     assert_eq!(count, "(4096 values)");
     assert!(shown.split(", ").all(|number| number == "12345"), "{shown}");
 }
+
+#[test]
+fn png_chunks_require_the_complete_crc_field() {
+    // CRC presence is structural; checksum verification is a separate concern.
+    for kind in [b"IHDR", b"IEND", b"eXIf"] {
+        let mut full = b"\x89PNG\r\n\x1a\n".to_vec();
+        full.extend_from_slice(&0_u32.to_be_bytes());
+        full.extend_from_slice(kind);
+        full.extend_from_slice(&[0_u8; 4]);
+        let complete = super::png_chunks(&full)
+            .next()
+            .expect("one chunk")
+            .expect("complete CRC");
+        assert_eq!(complete.0, kind);
+        for missing in 1..=4 {
+            let truncated = &full[..full.len() - missing];
+            assert!(
+                super::png_chunks(truncated)
+                    .next()
+                    .expect("truncated chunk")
+                    .is_err(),
+                "{kind:?}: missing {missing} CRC bytes must be rejected"
+            );
+        }
+    }
+}

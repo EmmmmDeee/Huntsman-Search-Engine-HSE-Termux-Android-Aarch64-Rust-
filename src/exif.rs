@@ -422,13 +422,15 @@ pub(crate) fn png_chunks(
             let body_end = (at + 8).checked_add(length)?;
             let body = data.get(at + 8..body_end)?;
             // length(4) + type(4) + body + crc(4).
-            Some((&header[4..], body, body_end.checked_add(4)?))
+            let next = body_end.checked_add(4)?;
+            data.get(body_end..next)?;
+            Some((&header[4..], body, next))
         });
         let Some((kind, body, next)) = chunk else {
             done = true;
             return Some(Err("PNG: truncated chunk"));
         };
-        at = next.min(data.len());
+        at = next;
         done = kind == b"IEND";
         Some(Ok((kind, body)))
     })
