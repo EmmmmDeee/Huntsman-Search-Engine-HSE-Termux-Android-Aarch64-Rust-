@@ -456,65 +456,74 @@ fn bounded_exact_pathways(
         return None;
     }
 
-    fn enumerate(
-        index: &IdentityIndex<'_>,
-        at: usize,
+    struct PathCollector<'i, 'a> {
+        index: &'i IdentityIndex<'a>,
         end: usize,
-        depth: usize,
-        mask: u64,
-        seen: &mut [bool],
-        visits: &mut usize,
-        paths: &mut Vec<u64>,
-    ) -> bool {
-        *visits += 1;
-        if *visits > EXACT_MAX_PATH_VISITS {
-            return false;
-        }
-        if at == end {
-            paths.push(mask);
-            return paths.len() <= EXACT_MAX_PATHS;
-        }
-        if depth == PATHWAY_MAX_DEPTH {
-            return true;
-        }
-        for &edge in &index.incident[at] {
-            let next = index.across(edge, at);
-            if seen[next] {
-                continue;
-            }
-            seen[next] = true;
-            let ok = enumerate(
-                index,
-                next,
-                end,
-                depth + 1,
-                mask | (1_u64 << index.basis[edge]),
-                seen,
-                visits,
-                paths,
-            );
-            seen[next] = false;
-            if !ok {
-                return false;
-            }
-        }
-        true
+        seen: Vec<bool>,
+        visits: usize,
+        paths: Vec<u64>,
     }
 
-    let mut paths = Vec::new();
-    let mut seen = vec![false; index.len()];
-    seen[start] = true;
-    let mut visits = 0;
-    if !enumerate(index, start, end, 0, 0, &mut seen, &mut visits, &mut paths) {
+    impl PathCollector<'_, '_> {
+        fn enumerate(&mut self, at: usize, depth: usize, mask: u64) -> bool {
+            self.visits += 1;
+            if self.visits > EXACT_MAX_PATH_VISITS {
+                return false;
+            }
+            if at == self.end {
+                self.paths.push(mask);
+                return self.paths.len() <= EXACT_MAX_PATHS;
+            }
+            if depth == PATHWAY_MAX_DEPTH {
+                return true;
+            }
+            for position in 0..self.index.incident[at].len() {
+                let edge = self.index.incident[at][position];
+                let next = self.index.across(edge, at);
+                if self.seen[next] {
+                    continue;
+                }
+                self.seen[next] = true;
+                let ok = self.enumerate(
+                    next,
+                    depth + 1,
+                    mask | (1_u64 << self.index.basis[edge]),
+                );
+                self.seen[next] = false;
+                if !ok {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+
+    let mut collector = PathCollector {
+        index,
+        end,
+        seen: vec![false; index.len()],
+        visits: 0,
+        paths: Vec::new(),
+    };
+    collector.seen[start] = true;
+    if !collector.enumerate(start, 0, 0) {
         return None;
     }
+    let mut paths = collector.paths;
     // A path using a strict superset of another path's bases can never increase
     // the number of disjoint paths; retain only inclusion-minimal basis sets.
     paths.sort_unstable_by_key(|mask| (mask.count_ones(), *mask));
     paths.dedup();
-    let mut minimal = Vec::new();
+    let mut minimal: Vec<u64> = Vec::new();
     for mask in paths {
-        if !minimal.iter().any(|&subset| subset & mask == subset) {
+        let mut redundant = false;
+        for &subset in &minimal {
+            if subset & mask == subset {
+                redundant = true;
+                break;
+            }
+        }
+        if !redundant {
             minimal.push(mask);
         }
     }
