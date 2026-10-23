@@ -275,7 +275,8 @@ fn navigator_layer() -> String {
 /// Render one legacy-compatible `attack` subcommand.
 ///
 /// # Errors
-/// [`Usage`] for an unknown verb or flag.
+/// [`Usage`] for any invocation outside the grammar: a missing or unknown verb, an unknown
+/// flag, or a surplus argument.
 pub fn render(args: &[String]) -> Result<String, Usage> {
     let Some((verb, rest)) = args.split_first() else {
         return Err(Usage);
@@ -320,6 +321,43 @@ mod tests {
             assert_eq!(render(&args(values)), Err(Usage), "{values:?}");
         }
         assert_eq!(Usage.to_string(), ATTACK_USAGE);
+    }
+
+    #[test]
+    fn text_reports_list_every_row_and_their_totals() {
+        let (_index, _raw, hierarchy) = coverage_state();
+        let coverage = render(&args(&["coverage"])).unwrap();
+        for technique in &hierarchy.covered_leaves {
+            let row = format!("{:<12}  {:<36}  ", technique.id, technique.name);
+            assert!(coverage.contains(&row), "{row}");
+        }
+        for rollup in &hierarchy.parent_rollups {
+            let row = format!("{:<12}  {:<36}  ", rollup.id, rollup.name);
+            assert!(coverage.contains(&row), "{row}");
+        }
+        assert!(coverage.contains(&format!(
+            "{}/{} independent leaf techniques covered",
+            hierarchy.leaf_techniques_covered, hierarchy.leaf_techniques_total
+        )));
+        let gaps = render(&args(&["gaps"])).unwrap();
+        for technique in &hierarchy.uncovered_leaves {
+            let row = format!("{:<12}  {}\n", technique.id, technique.name);
+            assert!(gaps.contains(&row), "{row}");
+        }
+        assert!(gaps.contains(&format!(
+            "{} of {} independent leaf techniques are uncovered.",
+            hierarchy.uncovered_leaves.len(),
+            hierarchy.leaf_techniques_total
+        )));
+        let status = render(&args(&["status"])).unwrap();
+        for label in [
+            "Recon catalogue   :",
+            "Leaf coverage     :",
+            "Mapped collectors :",
+            "Reachable modules :",
+        ] {
+            assert!(status.contains(label), "{label}");
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Ported from M D's `src/modules/crtsh/tests.rs` (764ce8e). No live network: every
 //! lookup runs against a scripted fake transport.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
 use super::*;
@@ -62,21 +62,36 @@ fn entry(name_value: &str) -> CrtEntry {
     }
 }
 
-/// The lookup's result and how many [`TRANSIENT_PAUSE`]s it slept on a fake clock.
+/// A fake clock that checks every pause is [`TRANSIENT_PAUSE`] and counts them.
+struct Pauses {
+    clock: FakeClock,
+    count: Cell<u32>,
+}
+
+impl Clock for Pauses {
+    fn now(&self) -> std::time::Instant {
+        self.clock.now()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        assert_eq!(duration, TRANSIENT_PAUSE);
+        self.count.set(self.count.get() + 1);
+        self.clock.sleep(duration);
+    }
+}
+
+/// The lookup's result and how many pauses it took.
 fn run_counting(
     script: &Script,
     kind: ReconTargetKind,
     seed: &str,
 ) -> (Result<CrtShReport, CrtShError>, u32) {
-    let clock = FakeClock::new();
+    let clock = Pauses {
+        clock: FakeClock::new(),
+        count: Cell::new(0),
+    };
     let out = lookup_with_clock(script, kind, seed, "scan", &clock);
-    let slept = clock.elapsed();
-    let pauses = u32::try_from(slept.as_nanos() / TRANSIENT_PAUSE.as_nanos()).unwrap();
-    assert_eq!(
-        TRANSIENT_PAUSE * pauses,
-        slept,
-        "every pause is TRANSIENT_PAUSE"
-    );
+    let pauses = clock.count.get();
     if let Ok(report) = &out {
         assert_eq!(pauses + 1, report.attempts.max(1));
     }

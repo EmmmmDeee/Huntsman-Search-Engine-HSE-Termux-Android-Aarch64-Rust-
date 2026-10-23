@@ -87,7 +87,7 @@ impl CoverageRequirement {
         claim_id: &ClaimId,
         observations: &[CoverageObservation],
     ) -> CoverageAssessment {
-        if !self.is_well_formed() {
+        if claim_id.0.trim().is_empty() || !self.is_well_formed() {
             return CoverageAssessment {
                 negative_admissible: false,
                 qualifying_providers: BTreeSet::new(),
@@ -108,9 +108,12 @@ impl CoverageRequirement {
 
             match observation.outcome {
                 CoverageOutcome::Positive => saw_positive = true,
-                // An unnamed provider cannot vouch for absence; its positive,
-                // failure or partial result still counts against the claim.
-                CoverageOutcome::CleanNegative if observation.provider_id.trim().is_empty() => {}
+                // An unnamed provider cannot vouch for absence: its clean negative is
+                // insufficient coverage, and its positive, failure or partial result
+                // still blocks the negative.
+                CoverageOutcome::CleanNegative if observation.provider_id.trim().is_empty() => {
+                    saw_incomplete = true;
+                }
                 CoverageOutcome::CleanNegative => {
                     if observation
                         .completeness
