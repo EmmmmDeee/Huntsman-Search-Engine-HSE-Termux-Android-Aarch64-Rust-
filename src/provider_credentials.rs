@@ -390,7 +390,7 @@ pub(crate) const SLOT_FALLBACKS: &[(&str, &str)] = &[(
     crate::environment::HIBP_API_KEY_ENV,
 )];
 
-/// A single abuse.ch Auth-Key works for both ThreatFox and URLhaus.
+/// A single abuse.ch Auth-Key works for both `ThreatFox` and `URLhaus`.
 /// Each explicitly configured slot takes precedence over its peer.
 const SHARED_AUTH_KEY_FALLBACKS: &[(&str, &str)] = &[
     (
