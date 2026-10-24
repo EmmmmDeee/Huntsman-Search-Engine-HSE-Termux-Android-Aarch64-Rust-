@@ -1173,10 +1173,25 @@ fn the_web_ui_runs_as_a_service_that_restarts_with_each_install() {
     assert!(run.contains("termux-wake-lock"), "{run}");
     assert!(
         run.contains(&format!(
+            "export HUNTSMAN_HOME='{}'",
+            t.temp.join(".huntsman").display()
+        )),
+        "the service keeps its state where this install chose: {run}"
+    );
+    assert!(
+        run.contains(&format!(
             "bind=\"$(head -n 1 '{}' 2>/dev/null)\"",
             t.temp.join(".huntsman/serve.bind").display()
         )),
         "the service binds the address `huntsman start` chose: {run}"
+    );
+    assert!(
+        t.provenance().contains(&format!(
+            "state_dir={}\n",
+            t.temp.join(".huntsman").display()
+        )),
+        "{}",
+        t.provenance()
     );
     assert!(
         run.contains(&format!(
@@ -1233,6 +1248,50 @@ fn the_web_ui_runs_as_a_service_that_restarts_with_each_install() {
         )),
         "{}",
         t.calls()
+    );
+}
+
+/// `HUNTSMAN_HOME` given to the installer is one decision for the whole install: the service's
+/// run script exports it and reads serve.bind under it, and the install record is kept there.
+#[test]
+fn a_state_dir_given_to_the_installer_reaches_the_service() {
+    let t = Prebuilt::new().with_runit();
+    publish_release(&t.releases, BUILT_REV, FAKE_RECON, FAKE_RECON);
+    let hunt = t.temp.join("hunt");
+    let out = t.run(
+        &[
+            ("HUNTSMAN_REV", BUILT_REV),
+            ("HUNTSMAN_HOME", hunt.to_str().unwrap()),
+        ],
+        BUILT_REV,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let run = fs::read_to_string(t.service().join("run")).unwrap();
+    assert!(
+        run.contains(&format!("export HUNTSMAN_HOME='{}'\n", hunt.display())),
+        "{run}"
+    );
+    assert!(
+        run.contains(&format!(
+            "bind=\"$(head -n 1 '{}' 2>/dev/null)\"",
+            hunt.join("serve.bind").display()
+        )),
+        "{run}"
+    );
+    let export_at = run.find("export HUNTSMAN_HOME=").unwrap();
+    let exec_at = run.find("exec \"").unwrap();
+    assert!(
+        export_at < exec_at,
+        "the export comes before the server starts: {run}"
+    );
+    let provenance = fs::read_to_string(hunt.join("installed-revision")).unwrap();
+    assert!(
+        provenance.contains(&format!("state_dir={}\n", hunt.display())),
+        "{provenance}"
+    );
+    assert!(
+        !t.temp.join(".huntsman/installed-revision").exists(),
+        "nothing of this install lands under ~/.huntsman"
     );
 }
 

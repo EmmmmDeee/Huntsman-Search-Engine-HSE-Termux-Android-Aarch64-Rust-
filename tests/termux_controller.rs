@@ -34,6 +34,7 @@ case "$1" in
     if grep -q FORGED "$2"; then echo "invalid input: ledger chain broken" >&2; exit 65; fi
     echo "entries=1"; echo "tip=abc123"
     ;;
+  state-dir) echo "HUNTSMAN_HOME=${HUNTSMAN_HOME:-unset}" ;;
   *) echo "recon passthrough: $*" ;;
 esac
 "#;
@@ -100,12 +101,22 @@ impl Phone {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        self.run_with_home(args, Some(&self.path("home/.huntsman")))
+    }
+
+    /// [`Self::run`] with `HUNTSMAN_HOME` set to `home`, or left out of the environment.
+    fn run_with_home(&self, args: &[&str], home: Option<&Path>) -> Output {
         let path = format!(
             "{}:{}",
             self.path("bin").display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        Command::new("bash")
+        let mut command = Command::new("bash");
+        match home {
+            Some(home) => command.env("HUNTSMAN_HOME", home),
+            None => command.env_remove("HUNTSMAN_HOME"),
+        };
+        command
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/termux/huntsman"))
             .args(args)
             .current_dir(&self.dir)
@@ -114,7 +125,6 @@ impl Phone {
             .env("PREFIX", self.path("prefix"))
             .env("TMPDIR", self.path("prefix/tmp"))
             .env("SVDIR", self.path("service"))
-            .env("HUNTSMAN_HOME", self.path("home/.huntsman"))
             .env("HUNTSMAN_START_TIMEOUT", "2")
             .env("LOG", self.path("log"))
             .env("FAKE_PORTS", self.path("ports"))
@@ -377,6 +387,59 @@ fn scan_pipe_never_replaces_an_earlier_ledger_even_with_the_same_timestamp() {
         );
         assert!(report.contains("Ledger check: verified"), "{report}");
     }
+}
+
+/// install.sh writes the state directory it chose into the service's run script. A shell without
+/// `HUNTSMAN_HOME` drives the same service: `start` writes serve.bind where the run script reads
+/// it, and every command passed on to huntsman-recon reads the scan store the service keeps. An
+/// exported `HUNTSMAN_HOME` still wins, as it does for huntsman-recon itself.
+#[test]
+fn the_state_dir_the_installer_chose_reaches_start_and_every_forwarded_command() {
+    let phone = Phone::new();
+    let hunt = phone.path("home/hunt");
+    fs::write(
+        phone.path("service/huntsman-serve/run"),
+        format!(
+            "#!/bin/sh\nexport HUNTSMAN_HOME='{}'\nexec huntsman-recon serve\n",
+            hunt.display()
+        ),
+    )
+    .unwrap();
+    phone.mark("127.0.0.1:8080", "foreign");
+    let out = phone.run_with_home(&["start"], None);
+    assert!(out.status.success(), "{}", text(&out));
+    assert_eq!(
+        fs::read_to_string(hunt.join("serve.bind")).unwrap(),
+        "127.0.0.1:8081\n",
+        "serve.bind lands where the service's run script reads it"
+    );
+    assert!(!phone.path("home/.huntsman/serve.bind").exists());
+    let out = phone.run_with_home(&["state-dir"], None);
+    assert!(
+        text(&out).contains(&format!("HUNTSMAN_HOME={}", hunt.display())),
+        "{}",
+        text(&out)
+    );
+    let out = phone.run(&["state-dir"]);
+    assert!(
+        text(&out).contains(&format!(
+            "HUNTSMAN_HOME={}",
+            phone.path("home/.huntsman").display()
+        )),
+        "{}",
+        text(&out)
+    );
+    // A run script from an earlier installer, without the export: ~/.huntsman, as before.
+    fs::write(phone.path("service/huntsman-serve/run"), "#!/bin/sh\n").unwrap();
+    let out = phone.run_with_home(&["state-dir"], None);
+    assert!(
+        text(&out).contains(&format!(
+            "HUNTSMAN_HOME={}",
+            phone.path("home/.huntsman").display()
+        )),
+        "{}",
+        text(&out)
+    );
 }
 
 #[test]

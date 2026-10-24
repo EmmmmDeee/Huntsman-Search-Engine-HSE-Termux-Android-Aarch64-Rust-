@@ -10,10 +10,23 @@ umask 077
 
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 RECON="${HUNTSMAN_RECON:-huntsman-recon}"
-STATE_DIR="${HUNTSMAN_HOME:-$HOME/.huntsman}"
 REPORTS_DIR="${HUNTSMAN_REPORTS:-$HOME/huntsman-reports}"
 SERVICE="${SVDIR:-$PREFIX/var/service}/huntsman-serve"
 SERVICE_LOG="$PREFIX/var/log/sv/huntsman-serve/current"
+
+# The state directory install.sh wrote into the service's run script, if any.
+service_state_dir() {
+  local line
+  line="$(grep -m 1 '^export HUNTSMAN_HOME=' "$SERVICE/run" 2>/dev/null)" || return 1
+  line="${line#export HUNTSMAN_HOME=}"
+  line="${line#\'}"
+  printf '%s' "${line%\'}"
+}
+# The state directory: HUNTSMAN_HOME, else the service's, else ~/.huntsman. Exported, so the
+# commands passed on to huntsman-recon read the serve.bind and scan store the service keeps,
+# whether or not this shell exports HUNTSMAN_HOME.
+STATE_DIR="${HUNTSMAN_HOME:-$(service_state_dir || printf '%s' "$HOME/.huntsman")}"
+export HUNTSMAN_HOME="$STATE_DIR"
 # The address the service binds. The run script reads this file, so a port
 # chosen here survives restarts and reboots.
 BIND_FILE="$STATE_DIR/serve.bind"

@@ -1103,3 +1103,21 @@ fn a_regular_cache_tag_with_signature_is_accepted() {
     fs::write(cache.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).expect("tag");
     assert!(tagged_cache(&cache));
 }
+
+/// `install.sh` records the state directory it chose; the record keeps it through `fix`.
+#[test]
+fn the_install_record_keeps_the_state_dir_the_installer_chose() {
+    let record = parse_provenance(
+        "revision=0123456789abcdef0123456789abcdef01234567\nstate_dir=/data/data/com.termux/files/home/hunt\n",
+    );
+    assert_eq!(
+        record.state_dir.as_deref(),
+        Some("/data/data/com.termux/files/home/hunt")
+    );
+    assert!(
+        render_provenance(&record).contains("state_dir=/data/data/com.termux/files/home/hunt\n"),
+        "{}",
+        render_provenance(&record)
+    );
+    assert_eq!(parse_provenance("revision=abc\n").state_dir, None);
+}

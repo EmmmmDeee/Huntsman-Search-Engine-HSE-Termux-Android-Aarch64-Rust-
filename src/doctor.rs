@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::diagnostics::{TERMUX_APP_DATA, TermuxState, normalized_build_sha};
-use crate::fsio::write_atomic_private;
+use crate::fsio::{read_bounded, write_atomic_private};
 use crate::keys::{
     DEFAULT_KEYS_FILE, DefaultFileRefusal, Keys, MAX_KEYS_FILE_BYTES, read_private_file,
 };
@@ -47,6 +47,8 @@ pub const STATE_DIR: &str = ".huntsman";
 pub const SERVE_BIND_FILE: &str = "serve.bind";
 /// The runit service the installer sets up under `$PREFIX`, which the Termux controller manages.
 const TERMUX_SERVICE_DIR: &str = "var/service/huntsman-serve";
+/// The most of the service's run script `doctor` reads to find the state directory it exports.
+const MAX_RUN_SCRIPT_BYTES: u64 = 64 * 1024;
 
 /// The state directory: `$HUNTSMAN_HOME`, else `~/.huntsman`, as the installer, the controller
 /// and every command resolve it.
@@ -360,6 +362,8 @@ struct Provenance {
     repository: Option<String>,
     rustc: Option<String>,
     cargo_target_dir: Option<String>,
+    /// The state directory the installer chose, as `install.sh` records it.
+    state_dir: Option<String>,
 }
 
 enum ProvenanceRead {
@@ -404,6 +408,7 @@ fn parse_provenance(text: &str) -> Provenance {
             "repository" => record.repository = value,
             "rustc" => record.rustc = value,
             "cargo_target_dir" => record.cargo_target_dir = value,
+            "state_dir" => record.state_dir = value,
             _ => {}
         }
     }
@@ -417,6 +422,7 @@ fn render_provenance(record: &Provenance) -> String {
         ("repository", &record.repository),
         ("rustc", &record.rustc),
         ("cargo_target_dir", &record.cargo_target_dir),
+        ("state_dir", &record.state_dir),
     ] {
         if let Some(value) = value {
             let _ = writeln!(out, "{key}={value}");
@@ -515,6 +521,20 @@ fn state_dir(ctx: &Context<'_>) -> Check {
         );
     };
     let shown = ctx.show(&dir);
+    // The installer wrote the state directory it chose into the web UI service's run script. A
+    // shell that resolves another one reads scans and a serve.bind the service never writes.
+    if let Some(service) = service_state_dir(ctx).filter(|service| *service != dir) {
+        let service_shown = ctx.show(&service);
+        return Check::warn(
+            ID,
+            format!(
+                "{shown} here, but the web UI service keeps its scans and serve.bind in {service_shown}"
+            ),
+            format!(
+                "export HUNTSMAN_HOME={service_shown}, or run commands through huntsman, which does"
+            ),
+        );
+    }
     match fs::metadata(&dir) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Check::warn(
             ID,
@@ -915,6 +935,24 @@ fn serve(ctx: &Context<'_>) -> Check {
     }
 }
 
+/// The state directory the installer wrote into the web UI service's run script, as
+/// `export HUNTSMAN_HOME='…'`, when the service is set up and its run script says.
+fn service_state_dir(ctx: &Context<'_>) -> Option<PathBuf> {
+    if !termux_service(ctx) {
+        return None;
+    }
+    let run = ctx.prefix.as_ref()?.join(TERMUX_SERVICE_DIR).join("run");
+    let text = read_bounded(&run, MAX_RUN_SCRIPT_BYTES).ok()?;
+    String::from_utf8_lossy(&text).lines().find_map(|line| {
+        let value = line.strip_prefix("export HUNTSMAN_HOME=")?;
+        let value = value
+            .strip_prefix('\'')
+            .and_then(|rest| rest.strip_suffix('\''))
+            .unwrap_or(value);
+        (!value.is_empty()).then(|| PathBuf::from(value))
+    })
+}
+
 /// Whether the installer set up the runit service the Termux controller manages.
 fn termux_service(ctx: &Context<'_>) -> bool {
     ctx.termux == TermuxState::Detected
@@ -1235,6 +1273,10 @@ fn record_install(ctx: &Context<'_>, host: &dyn Host) -> (String, Result<(), Str
                     .as_ref()
                     .map(|home| home.join(BUILD_CACHE).display().to_string())
             }),
+            // The record lives in the state directory it names.
+            state_dir: old
+                .state_dir
+                .or_else(|| path.parent().map(|dir| dir.display().to_string())),
         };
         write_atomic_private(
             &path,
