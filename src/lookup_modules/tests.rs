@@ -177,6 +177,7 @@ fn verdict<N: Transport + Clone + Send + Sync + 'static>(
         },
         ScanKind::Username => match username_cli::run(&transport, &keys, target, now) {
             username_cli::UsernameRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
+            username_cli::UsernameRun::Network(why) => Verdict::Refused(why),
             username_cli::UsernameRun::Failed(why) => Verdict::Unavailable(why),
         },
         ScanKind::Phone => match phone_cli::run_keyed(&transport, &keys, target, now) {
@@ -322,11 +323,8 @@ fn anchor(kind: ScanKind) -> Option<&'static str> {
         ScanKind::Asn => Some(ripestat::SOURCE),
         ScanKind::Email => Some(gravatar::SRC),
         ScanKind::People => Some("asic_persons"),
-        ScanKind::Username
-        | ScanKind::Phone
-        | ScanKind::Network
-        | ScanKind::Exposure
-        | ScanKind::CryptoAddress => None,
+        ScanKind::Username => Some(keybase::SRC),
+        ScanKind::Phone | ScanKind::Network | ScanKind::Exposure | ScanKind::CryptoAddress => None,
     }
 }
 
@@ -492,11 +490,6 @@ const BROKEN: &[(ScanKind, &str, Net)] = &[
     (ScanKind::Email, "ipqs", Net::Refusing),
     (ScanKind::Email, "whoxy", Net::Refusing),
     (ScanKind::Email, "hunter", Net::Refusing),
-    (ScanKind::Username, "github_user", Net::Refusing),
-    (ScanKind::Username, "bluesky_user", Net::Refusing),
-    (ScanKind::Username, "keybase", Net::Refusing),
-    (ScanKind::Username, "wikipedia", Net::Refusing),
-    (ScanKind::Username, "mastodon_user", Net::Refusing),
     (ScanKind::Exposure, "hibp", Net::Refusing),
     (ScanKind::Exposure, "stolen_tax", Net::Refusing),
     (ScanKind::Exposure, "oathnet", Net::Refusing),
@@ -526,11 +519,6 @@ const BROKEN: &[(ScanKind, &str, Net)] = &[
     (ScanKind::Domain, "torexits", Net::Silent),
     (ScanKind::Domain, "voipbl", Net::Silent),
     (ScanKind::Domain, "vxvault", Net::Silent),
-    (ScanKind::Username, "github_user", Net::Silent),
-    (ScanKind::Username, "bluesky_user", Net::Silent),
-    (ScanKind::Username, "keybase", Net::Silent),
-    (ScanKind::Username, "wikipedia", Net::Silent),
-    (ScanKind::Username, "mastodon_user", Net::Silent),
     (ScanKind::Exposure, "hibp", Net::Silent),
     (ScanKind::Exposure, "oathnet", Net::Silent),
     (ScanKind::Exposure, "dehashed", Net::Silent),
