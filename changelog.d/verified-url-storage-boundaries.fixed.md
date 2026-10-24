@@ -1,0 +1,3 @@
+- Resolve HTTP redirect references without dropping the current path or query; normalize literal path dot segments while preserving encoded octets, repeated slashes, query data and origin-based credential handling.
+- Reject unsupported scan-row and scan-artifact versions before filesystem mutation, preserving readable existing records and avoiding invalid new directories.
+- Isolate startup test state from inherited operator HOME/HUNTSMAN_HOME so read-only home directories do not corrupt diagnostic assertions or touch operator state. See `docs/AUDIT.md` for verified defects, deferred work and evidence limits.

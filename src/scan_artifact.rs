@@ -118,10 +118,17 @@ fn fsio_err(error: &crate::error::Error) -> ArtifactError {
 /// survives a crash. The encoded artifact is capped at [`MAX_ARTIFACT_BYTES`].
 ///
 /// # Errors
+/// [`ArtifactError::UnsupportedVersion`] for a format this build cannot read,
 /// [`ArtifactError::Malformed`] if the artifact cannot be encoded, and
 /// [`ArtifactError::Io`] on a symlink, an artifact over the cap, or a write,
 /// flush, or rename failure.
 pub fn write(path: &Path, artifact: &ScanArtifact) -> Result<(), ArtifactError> {
+    if artifact.format_version != FORMAT_VERSION {
+        return Err(ArtifactError::UnsupportedVersion {
+            found: artifact.format_version,
+            supported: FORMAT_VERSION,
+        });
+    }
     let limit = usize::try_from(MAX_ARTIFACT_BYTES).unwrap_or(usize::MAX);
     let bytes = match crate::json::to_bounded_json(artifact, limit, true) {
         Ok(Ok(bytes)) => bytes,
@@ -408,11 +415,53 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_version_write_preserves_a_readable_artifact() {
+        let path = scratch("version-write-preserves");
+        let original = corroborated();
+        write(&path, &original).unwrap();
+        let original_bytes = fs::read(&path).unwrap();
+        let mut replacement = original.clone();
+        replacement.scan_id = "unsupported replacement".into();
+        for version in [0, FORMAT_VERSION + 1, u32::MAX] {
+            replacement.format_version = version;
+            assert!(
+                matches!(
+                    write(&path, &replacement),
+                    Err(ArtifactError::UnsupportedVersion { .. })
+                ),
+                "unsupported artifact version {version} must not replace a readable artifact"
+            );
+            assert_eq!(fs::read(&path).unwrap(), original_bytes);
+            assert_eq!(read(&path).unwrap(), original);
+        }
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn unsupported_version_write_does_not_create_an_artifact_or_its_parent() {
+        let path = scratch("version-write-new");
+        let new_path = path.parent().unwrap().join("missing").join("scan.json");
+        let mut artifact = corroborated();
+        artifact.format_version = FORMAT_VERSION + 1;
+        assert!(matches!(
+            write(&new_path, &artifact),
+            Err(ArtifactError::UnsupportedVersion { .. })
+        ));
+        assert!(
+            !new_path.parent().unwrap().exists(),
+            "invalid writes must not create parents"
+        );
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn a_different_format_version_is_refused() {
         let path = scratch("version");
         let mut artifact = corroborated();
         artifact.format_version = FORMAT_VERSION + 1;
-        write(&path, &artifact).unwrap();
+        // An incompatible persisted file can come from another build. The local
+        // writer refuses it, so construct the read-rejection fixture directly.
+        fs::write(&path, serde_json::to_vec(&artifact).unwrap()).unwrap();
         match read(&path) {
             Err(ArtifactError::UnsupportedVersion { found, supported }) => {
                 assert_eq!(found, FORMAT_VERSION + 1);
