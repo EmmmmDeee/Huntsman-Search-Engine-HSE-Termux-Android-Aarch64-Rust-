@@ -1,2 +1,2 @@
-- Add opt-in `query --exa QUERY` with up to five lead-only URLs from the Exa Search API, using the private `HUNTSMAN_EXA_KEY` slot.
+- Add opt-in `query --exa QUERY` with up to five lead-only URLs from Exa Lite Search, using the private `HUNTSMAN_EXA_KEY` slot.
 - Keep default and adaptive queries keyless; no background or automatic Exa credit spending.
