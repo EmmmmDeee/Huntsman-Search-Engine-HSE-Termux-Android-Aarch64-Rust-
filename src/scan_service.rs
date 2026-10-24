@@ -803,7 +803,31 @@ impl ScanService {
         })
     }
 
-    #[must_use]
+    /// The saved row for `id`, reconciled with its owner's liveness: a scan whose owning process
+    /// is gone reads `ABORTED`, saved and logged so, rather than `RUNNING` for ever.
+    ///
+    /// # Errors
+    /// [`ServiceError::NotFound`] for an unknown id; a store failure as [`ServiceError::Store`].
+    pub fn record(&self, id: &str) -> Result<ScanRecord, ServiceError> {
+        let mut record = self.store.get(id)?;
+        self.store
+            .reconcile(&mut record, clock::unix_now_millis())?;
+        Ok(record)
+    }
+
+    /// Every saved row, each reconciled as [`Self::record`] does.
+    ///
+    /// # Errors
+    /// A store failure as [`ServiceError::Store`].
+    pub fn records(&self) -> Result<Vec<ScanRecord>, ServiceError> {
+        let now = clock::unix_now_millis();
+        let mut records = self.store.list()?;
+        for record in &mut records {
+            self.store.reconcile(record, now)?;
+        }
+        Ok(records)
+    }
+
     pub fn store(&self) -> &ScanStore {
         &self.store
     }
@@ -1573,6 +1597,13 @@ impl ScanService {
         // Otherwise a stop could read RUNNING and replace a newly FINISHED row.
         let mut state = self.state();
         let mut record = self.store.get(id)?;
+        // A scan whose process is gone has nothing left to signal: marking it ABORTED is the stop.
+        if self
+            .store
+            .reconcile(&mut record, clock::unix_now_millis())?
+        {
+            return Ok(record);
+        }
         if !record.status.is_active() {
             return Err(ServiceError::Conflict(format!(
                 "scan {id} is {}, not running",
@@ -1612,7 +1643,7 @@ impl ScanService {
     /// # Errors
     /// [`ServiceError::NotFound`] for no such scan, [`ServiceError::Conflict`] while it runs.
     pub fn delete(&self, id: &str) -> Result<(), ServiceError> {
-        let record = self.store.get(id).or_else(|error| match error {
+        let mut record = self.store.get(id).or_else(|error| match error {
             // A scan this service still runs keeps its directory however unreadable its row: its
             // worker still writes there, and deleting it would lose what the scan finds.
             StoreError::Io(reason) if self.owned().contains(id) => {
@@ -1628,6 +1659,9 @@ impl ScanService {
             }),
             other => Err(other.into()),
         })?;
+        // A scan whose process is gone is settled first, so it can be deleted like any ended scan.
+        self.store
+            .reconcile(&mut record, clock::unix_now_millis())?;
         if record.status.is_active() {
             return Err(ServiceError::Conflict(format!(
                 "scan {id} is {}; stop it before deleting it",
@@ -2326,6 +2360,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A scan whose process Android stopped while the server stayed up: Stop succeeds (the row
+    /// reads ABORTED), Delete succeeds, and reading it says ABORTED with the owner named in its log,
+    /// instead of a RUNNING row that answers 409 to both until the next restart.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_scan_whose_process_died_can_be_stopped_deleted_and_reads_aborted() {
+        let (service, dir) = with_lookup(
+            "dead-owner",
+            Arc::new(|_, _, _| Ok(LookupOutput::default())),
+        );
+        let orphan = |tag: &str| {
+            let mut row = placeholder(&new_id(tag, 1, 0));
+            row.status = ScanStatus::Running;
+            // No process has this pid, so the owner that recorded it is gone.
+            row.owner = Some(u32::MAX);
+            service.store().create(&row).unwrap();
+            row.id
+        };
+        let stopped = orphan("stop");
+        assert_eq!(service.stop(&stopped).unwrap().status, ScanStatus::Aborted);
+        assert_eq!(
+            service.store().get(&stopped).unwrap().status,
+            ScanStatus::Aborted
+        );
+        let deleted = orphan("delete");
+        service.delete(&deleted).unwrap();
+        assert!(service.store().get(&deleted).is_err());
+        let read = orphan("read");
+        assert_eq!(service.record(&read).unwrap().status, ScanStatus::Aborted);
+        assert!(
+            service
+                .records()
+                .unwrap()
+                .iter()
+                .all(|row| row.status == ScanStatus::Aborted)
+        );
+        let log = service.store().log(&read).unwrap();
+        assert!(
+            log.iter()
+                .any(|entry| entry.message.contains(&format!("pid {}", u32::MAX))),
+            "{log:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn failed_status_persistence_is_reported_without_overwriting_the_saved_row() {
         let (service, dir) = with_lookup(
@@ -2577,7 +2656,12 @@ mod tests {
             })
             .unwrap();
         record.status = ScanStatus::Running;
-        record.owner = Some(std::process::id().wrapping_add(1));
+        // The test runner's parent is alive for as long as this test runs, so the owner is a
+        // live foreign process, not one whose death reconciles the row to ABORTED. Its recorded
+        // start time must be that process's own, or the row reads as a reused pid.
+        let parent = std::os::unix::process::parent_id();
+        record.owner = Some(parent);
+        record.owner_started = crate::scan_store::process_start_ticks(parent);
         service.store().update(&record).unwrap();
         let controller = ScanService::new(service.store().clone(), Arc::clone(&service.lookup));
         let cancellation = controller.graph_cancellation(&record.id);

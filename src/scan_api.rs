@@ -366,9 +366,9 @@ impl ScanApi {
     }
 
     fn list(&self) -> ApiResponse {
-        match self.service.store().list() {
+        match self.service.records() {
             Ok(records) => ok(200, &json!(records)),
-            Err(failure) => service_error(&failure.into()),
+            Err(failure) => service_error(&failure),
         }
     }
 
@@ -413,9 +413,8 @@ impl ScanApi {
 
     fn record(&self, id: &str) -> Result<ScanRecord, ApiResponse> {
         self.service
-            .store()
-            .get(id)
-            .map_err(|failure| service_error(&failure.into()))
+            .record(id)
+            .map_err(|failure| service_error(&failure))
     }
 
     fn results(&self, id: &str) -> Result<(ScanRecord, Option<ScanResults>), ApiResponse> {
@@ -1278,6 +1277,56 @@ mod tests {
 
     fn body(response: &ApiResponse) -> Value {
         serde_json::from_slice(&response.body).unwrap()
+    }
+
+    /// A scan whose process is gone reads ABORTED from the list and the scan page, and Stop
+    /// answers 202 rather than 409, so the page never shows a RUNNING row nobody can act on.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_scan_whose_process_died_lists_as_aborted_and_can_be_stopped() {
+        let (api, dir) = api("dead-owner-api");
+        let finished = api
+            .service()
+            .run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let mut orphan = api.service().store().get(&finished.id).unwrap();
+        orphan.status = ScanStatus::Running;
+        orphan.ended = None;
+        // No process has this pid, so the owner that recorded it is gone.
+        orphan.owner = Some(u32::MAX);
+        orphan.owner_started = None;
+        api.service().store().update(&orphan).unwrap();
+        let listed = body(&api.handle("GET", "/api/scans", ""));
+        assert_eq!(listed[0]["status"], "ABORTED", "{listed}");
+        let shown = body(&api.handle("GET", &format!("/api/scans/{}", finished.id), ""));
+        assert_eq!(shown["status"], "ABORTED", "{shown}");
+        let log = body(&api.handle("GET", &format!("/api/scans/{}/log", finished.id), ""));
+        assert!(
+            log.as_array().unwrap().iter().any(|entry| {
+                entry["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains(&format!("pid {}", u32::MAX)))
+            }),
+            "{log}"
+        );
+        // A second orphan: Stop settles it instead of refusing it.
+        let mut again = api.service().store().get(&finished.id).unwrap();
+        again.status = ScanStatus::Running;
+        again.ended = None;
+        again.owner = Some(u32::MAX);
+        api.service().store().update(&again).unwrap();
+        let stopped = api.handle("POST", &format!("/api/scans/{}/stop", finished.id), "");
+        assert_eq!(
+            stopped.status,
+            202,
+            "{}",
+            String::from_utf8_lossy(&stopped.body)
+        );
+        assert_eq!(body(&stopped)["status"], "ABORTED");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The Settings page reads a module as set by [`slots_set`]: `WiGLE`'s two modules need both
