@@ -344,9 +344,11 @@ use the key only for `https://stolen.tax:443`; same-site redirects are bounded,
 and the key is not reattached after leaving that origin. HTTP 429 is retried
 on the same key up to three attempts per path, with `Retry-After` capped at
 four seconds. Partial results name failed or skipped paths. A row that
-matches the query but names no breach or stealer host mints no marker; it is
-counted on an `unnamed_rows=N` line before `entities=`, so such a match is not
-read as not found. The legacy
+matches the query but names no breach or stealer host (an osintcat row with an
+email or username but no corpus name, a hudsonrock stealer with no host name)
+mints no marker; such rows
+are counted on an `unnamed_rows=N` line before `entities=`, so a match like that
+is not read as not found. The legacy
 persistent multi-key pool is deferred; paid lookups are never automatic.
 Differential fixtures record the legacy output, with blank-name/host placeholder
 markers intentionally suppressed.

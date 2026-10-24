@@ -299,9 +299,9 @@ pub fn parse_libtest_summary(output: &str) -> Option<(u64, u64)> {
                 };
                 match pair[0].parse::<u64>() {
                     Ok(n) => *slot = Some(n),
-                    // A count that is all digits but too large for u64 is refused like a
-                    // total that overflows, not skipped so the other lines pass as the total.
-                    Err(_) if pair[0].bytes().all(|b| b.is_ascii_digit()) => return None,
+                    // A count too large for u64 is refused like a total that overflows, not
+                    // skipped so the other lines pass as the total.
+                    Err(e) if *e.kind() == std::num::IntErrorKind::PosOverflow => return None,
                     Err(_) => {}
                 }
             }
@@ -510,6 +510,12 @@ test result: ok. 18446744073709551616 passed; 0 failed; 0 ignored; 0 measured; 0
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ";
         assert_eq!(parse_libtest_summary(single), None);
+        // u64 parsing takes a leading '+', so a signed count past u64::MAX is refused too.
+        let signed = "\
+test result: ok. +18446744073709551616 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+";
+        assert_eq!(parse_libtest_summary(signed), None);
     }
 
     #[test]

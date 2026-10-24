@@ -582,7 +582,7 @@ fn an_unnamed_echo_beside_a_failed_or_skipped_path_is_a_partial_answer() {
 }
 
 #[test]
-fn unnamed_rows_count_identities_without_a_corpus_or_host_across_paths() {
+fn unnamed_rows_count_matches_without_a_corpus_or_host_across_paths() {
     let osint = decode(
         "osintcat",
         r#"{"success":true,"data":{"breach_data":[
@@ -592,6 +592,8 @@ fn unnamed_rows_count_identities_without_a_corpus_or_host_across_paths() {
             {"note":"no identity and no corpus"}
         ]}}"#,
     );
+    // A row without a corpus counts when it carries an identity; one with neither matched
+    // nothing.
     assert_eq!(osint.unnamed_rows, 2);
     let hudson = decode(
         "hudsonrock",
@@ -601,10 +603,12 @@ fn unnamed_rows_count_identities_without_a_corpus_or_host_across_paths() {
             {"top_logins":["m***d@example.com",""]}
         ]}}"#,
     );
-    assert_eq!(hudson.unnamed_rows, 1);
+    // A host-less stealer is a match even when every login is masked.
+    assert_eq!(hudson.unnamed_rows, 2);
+    assert_eq!(hudson.emails, ["d@example.com", "e@example.com"]);
     let mut merged = osint;
     merge_data(&mut merged, hudson);
-    assert_eq!(merged.unnamed_rows, 3);
+    assert_eq!(merged.unnamed_rows, 4);
 }
 
 #[test]
