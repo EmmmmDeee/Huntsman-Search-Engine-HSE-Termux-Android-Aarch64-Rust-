@@ -36,7 +36,7 @@ use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::ripestat;
-use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
 use crate::tags;
 use crate::threat_feeds::{self, Feeds};
 use crate::virustotal;
@@ -79,15 +79,13 @@ impl IpArgs {
 
 pub type IpRun = SourceRun<Report>;
 
-/// One leg's result, folded into the report, with the first leg the egress policy refused and
-/// the first that got no response.
+/// One leg's result, folded into the report. How the lookup ends when no leg answered is decided
+/// from the rows by [`SourceReach`], not from a side channel.
 struct Lookup<'a> {
     ip: &'a str,
     scan_id: &'a str,
     now_unix: u64,
     report: Report,
-    refused: Option<String>,
-    unanswered: Option<String>,
 }
 
 impl Lookup<'_> {
@@ -146,14 +144,6 @@ impl Lookup<'_> {
     }
 
     fn failed(&mut self, api: &Api, err: &LegError) {
-        let first = match err {
-            LegError::Refused(_) => Some(&mut self.refused),
-            LegError::Transport(_) => Some(&mut self.unanswered),
-            _ => None,
-        };
-        if let Some(first) = first {
-            first.get_or_insert_with(|| format!("{}: {err}", api.source));
-        }
         self.report.outcomes.push(err.outcome(api, self.now_unix));
     }
 }
@@ -178,8 +168,6 @@ pub fn run<T: Transport + ?Sized>(
         scan_id: &scan_id,
         now_unix,
         report: Report::default(),
-        refused: None,
-        unanswered: None,
     };
 
     if transport.runs_module(RESOLVE_SOURCE) {
@@ -239,12 +227,7 @@ pub fn run<T: Transport + ?Sized>(
     }
 
     let legs = indicator_legs::run(transport, keys, Indicator::Ip(&ip), &scan_id, now_unix);
-    let Lookup {
-        mut report,
-        refused,
-        unanswered,
-        ..
-    } = lookup;
+    let Lookup { mut report, .. } = lookup;
     report.entities.extend(legs.entities);
     report.outcomes.extend(legs.outcomes);
     if let Ok(address) = ip.parse() {
@@ -258,15 +241,13 @@ pub fn run<T: Transport + ?Sized>(
         );
     }
     merge_by_uid(&mut report.entities);
-    // The CLI's exit codes (ARCHITECTURE.md): a refusal by the egress policy is 77, no usable
-    // response 69.
-    let collected = report.outcomes.iter().any(|o| o.kind.is_accepted());
-    if !collected {
-        return match (refused, unanswered.or(legs.network)) {
-            (Some(message), _) => IpRun::Network(message),
-            (None, Some(why)) => IpRun::Failed(format!("no source answered for ip {ip}: {why}")),
-            (None, None) => IpRun::Failed(format!("no source answered for ip {ip}")),
-        };
+    // The CLI's exit codes (ARCHITECTURE.md): a request refused before sending is 77, no usable
+    // response 69. One authority reads the rows: no accepted row and one refused is a refusal,
+    // else the first transport failure or other reason is "no source answered".
+    if let Some(run) =
+        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for ip {ip}"))
+    {
+        return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => IpRun::Printed { text, report },
@@ -358,14 +339,11 @@ fn join<T: ToString>(items: &[T]) -> String {
         .join(",")
 }
 
-/// Mnemonic's passive DNS: its entities, and a failure through [`Lookup::failed`], so a refusal or
-/// no response can be the lookup's reason.
+/// Mnemonic's passive DNS: its entities and its outcome row. A refused or silent leg's row carries
+/// the reason, which [`SourceReach`] reads when no leg answered.
 fn mnemonic_leg(lookup: &mut Lookup<'_>, seen: crate::mnemonic::Leg) {
     lookup.report.entities.extend(seen.entities);
-    match &seen.error {
-        Some(err) => lookup.failed(&crate::mnemonic::API, err),
-        None => lookup.report.outcomes.extend(seen.outcome),
-    }
+    lookup.report.outcomes.extend(seen.outcome);
 }
 
 fn internetdb_leg(lookup: &mut Lookup<'_>, host: &internetdb::Host) {
