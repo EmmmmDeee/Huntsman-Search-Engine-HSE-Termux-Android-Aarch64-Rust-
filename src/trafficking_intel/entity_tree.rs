@@ -194,7 +194,7 @@ impl EntityTree {
             if depth >= max_depth {
                 continue;
             }
-            if let Some(neighbours) = adj.get(&parent_id) {
+            if let Some(neighbours) = adj.get(parent_id.as_str()) {
                 for neighbour in neighbours {
                     if visited.len() >= limit {
                         break;
