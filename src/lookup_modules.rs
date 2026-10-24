@@ -119,12 +119,47 @@ pub fn asks_any(kind: ScanKind, selection: &Selection) -> bool {
 }
 
 /// The lookup kinds that ask `module`, by their commands (`ip`, `domain`), in [`ScanKind`]'s
-/// order: what a New Scan page shows each module looks up. **Pure.**
+/// order: what a New Scan page shows each module looks up. `module` may be a label a Sources
+/// table shows (`hibp_account`, `wigle_bluetooth`, `asic_persons.banned`), which names its
+/// module. **Pure.**
 #[must_use]
 pub fn lookups_asking(module: &str) -> Vec<&'static str> {
+    let module = crate::module::module_of(module);
     ScanKind::ALL
         .iter()
         .filter(|kind| modules(**kind).contains(&module))
+        .map(|kind| kind.command())
+        .collect()
+}
+
+/// The offline modules `kind`'s lookup runs over the target itself, whatever was chosen. They
+/// ask nothing, so they are on no lookup's list and choosing one alone chooses no lookup; a scan's
+/// Sources table still shows them. **Pure.**
+#[must_use]
+pub fn offline_runs(kind: ScanKind) -> Vec<&'static str> {
+    match kind {
+        ScanKind::Email => vec!["email_parse"],
+        ScanKind::Username => vec!["username_variants"],
+        ScanKind::Phone => vec!["phone_intl", "phone_au"],
+        ScanKind::Network => vec![crate::network_cli::OUI_SOURCE],
+        ScanKind::Ip
+        | ScanKind::Domain
+        | ScanKind::Netblock
+        | ScanKind::Asn
+        | ScanKind::People
+        | ScanKind::Exposure
+        | ScanKind::CryptoAddress => Vec::new(),
+    }
+}
+
+/// The lookup kinds that run `module` offline, by their commands, in [`ScanKind`]'s order: what a
+/// New Scan page says instead of "no scan lookup asks it". **Pure.**
+#[must_use]
+pub fn lookups_running_offline(module: &str) -> Vec<&'static str> {
+    let module = crate::module::module_of(module);
+    ScanKind::ALL
+        .iter()
+        .filter(|kind| offline_runs(**kind).contains(&module))
         .map(|kind| kind.command())
         .collect()
 }

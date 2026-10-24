@@ -403,6 +403,86 @@ fn each_module_names_the_lookups_that_ask_it() {
     assert_eq!(lookups_asking("oathnet"), ["email", "exposure", "username"]);
     assert_eq!(lookups_asking("wigle"), ["network"]);
     assert!(lookups_asking("source_registry").is_empty());
+    // The labels a Sources table shows for a module's legs name the module's lookups too.
+    assert_eq!(lookups_asking("hibp_account"), ["email", "exposure"]);
+    assert_eq!(lookups_asking("wigle_bluetooth"), ["network"]);
+    assert_eq!(lookups_asking("asic_persons.banned"), ["people"]);
+}
+
+/// A name the Sources table shows chooses the module whose leg it labels, so a scan can be re-run
+/// with just that source by the name the page showed.
+#[test]
+fn a_source_label_chooses_its_module() {
+    let hibp = selection(&["hibp_account".to_owned()]).expect("hibp_account names hibp");
+    assert!(hibp.runs("hibp") && !hibp.runs("oathnet"));
+    assert!(asks_any(ScanKind::Email, &hibp) && asks_any(ScanKind::Exposure, &hibp));
+    let bluetooth =
+        selection(&["WiGLE_Bluetooth".to_owned()]).expect("wigle_bluetooth names wigle");
+    assert!(bluetooth.runs("wigle"));
+    assert!(asks_any(ScanKind::Network, &bluetooth));
+    let part = selection(&["asic_persons.banned".to_owned()]).expect("a part names its module");
+    assert!(part.runs("asic_persons"));
+    let leg_part = selection(&["hibp_account.breach".to_owned()]).expect("a leg's part names it");
+    assert!(leg_part.runs("hibp"));
+    let error = selection(&["nonesuch.part".to_owned()]).expect_err("an unknown part is refused");
+    assert!(error.contains("nonesuch.part"), "{error}");
+}
+
+/// The offline modules a lookup runs over the target itself are reachable modules no lookup asks,
+/// and every offline row a lookup leaves is one of them, so the page can say "always runs offline
+/// in" for exactly the modules a scan's Sources table shows without a network leg.
+#[test]
+fn offline_modules_a_lookup_runs_are_named_and_asked_by_none() {
+    for kind in ScanKind::ALL {
+        let runs = offline_runs(kind);
+        for module in &runs {
+            assert!(
+                offline(module),
+                "{kind:?} runs {module}, which is not an offline module"
+            );
+            assert!(
+                !modules(kind).contains(module),
+                "{kind:?} lists {module}, which asks nothing"
+            );
+            assert!(
+                lookups_asking(module).is_empty(),
+                "{module} is asked by a lookup"
+            );
+            assert!(
+                lookups_running_offline(module).contains(&kind.command()),
+                "{module} does not name {kind:?}"
+            );
+        }
+        let net = Everywhere::default();
+        let rows = rows(kind, &Selection::all(), &net)
+            .unwrap_or_else(|why| panic!("{kind:?} printed no report: {why}"));
+        let left: Vec<&str> = rows
+            .iter()
+            .map(|row| module_of(&row.module))
+            .filter(|module| offline(module))
+            .collect();
+        for module in &left {
+            assert!(
+                runs.contains(module),
+                "{kind:?} left an offline row for {module}, which offline_runs leaves out"
+            );
+        }
+        if matches!(kind, ScanKind::Phone | ScanKind::Network) {
+            let mut left = left;
+            left.sort_unstable();
+            left.dedup();
+            let mut runs = runs;
+            runs.sort_unstable();
+            assert_eq!(
+                left, runs,
+                "{kind:?} runs other offline modules than it names"
+            );
+        }
+    }
+    assert_eq!(lookups_running_offline("phone_au"), ["phone"]);
+    assert_eq!(lookups_running_offline("oui"), ["network"]);
+    assert!(lookups_running_offline("rdap").is_empty());
+    assert!(lookups_running_offline("exif").is_empty());
 }
 
 /// The network a refusal contract case runs over.

@@ -331,6 +331,9 @@ impl ScanApi {
                     "key_env": key_env,
                     "configured": configured,
                     "lookups": crate::lookup_modules::lookups_asking(module.name),
+                    // The lookups that run an offline module over the target itself, so the
+                    // page can say so instead of "no scan lookup asks it".
+                    "offline_in": crate::lookup_modules::lookups_running_offline(module.name),
                     "spiderfoot": crate::module::spiderfoot_names(module.name),
                 })
             })
@@ -1753,14 +1756,34 @@ mod tests {
             body(&started)["options"]["modules"],
             json!(["sfp_ripe", "rdap"])
         );
-        let id = body(&started)["id"].as_str().unwrap().to_owned();
+        // The label a Sources table shows for a module's leg chooses that module: hibp_account
+        // is HIBP's account search, wigle_bluetooth WiGLE's Bluetooth search.
+        let by_label = api.handle(
+            "POST",
+            "/api/scans",
+            "target=ada@example.com&modules=hibp_account",
+        );
+        assert_eq!(by_label.status, 202, "{}", by_label.text());
+        let bluetooth = api.handle(
+            "POST",
+            "/api/scans",
+            "target=00:11:22:33:44:55&modules=wigle_bluetooth",
+        );
+        assert_eq!(bluetooth.status, 202, "{}", bluetooth.text());
+        let ids: Vec<String> = [&started, &by_label, &bluetooth]
+            .iter()
+            .map(|response| body(response)["id"].as_str().unwrap().to_owned())
+            .collect();
         for _ in 0..200 {
-            if !api.service().store().get(&id).unwrap().status.is_active() {
+            if ids
+                .iter()
+                .all(|id| !api.service().store().get(id).unwrap().status.is_active())
+            {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        let shown = body(&api.handle("GET", &format!("/api/scans/{id}"), ""));
+        let shown = body(&api.handle("GET", &format!("/api/scans/{}", ids[0]), ""));
         assert_eq!(shown["honoured"]["modules"], true);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2332,6 +2355,15 @@ mod tests {
             ripestat.unwrap()["lookups"],
             json!(["ip", "netblock", "asn"])
         );
+        // An offline module no lookup asks still names the lookups that run it over the target,
+        // as the Sources table of a phone scan shows phone_intl and phone_au.
+        let phone_intl = modules
+            .iter()
+            .find(|module| module["name"] == "phone_intl")
+            .unwrap();
+        assert_eq!(phone_intl["lookups"], json!([]));
+        assert_eq!(phone_intl["offline_in"], json!(["phone"]));
+        assert_eq!(ripestat.unwrap()["offline_in"], json!([]));
         // And every name a scan may choose it by, so Clone can restore a scan that chose a
         // Spiderfoot module: `sfp_whois` stands for both RDAP and Whoxy.
         assert_eq!(

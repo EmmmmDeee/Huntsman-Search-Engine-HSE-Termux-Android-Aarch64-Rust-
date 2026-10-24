@@ -1274,19 +1274,21 @@ pub fn spiderfoot_names(module: &str) -> Vec<String> {
 /// (`asic_persons.banned`) the module. **Pure.**
 #[must_use]
 pub fn module_of(label: &str) -> &str {
-    match label {
+    let module = label.split_once('.').map_or(label, |(module, _)| module);
+    match module {
         "hibp_account" => "hibp",
         "wigle_bluetooth" => "wigle",
-        _ => label.split_once('.').map_or(label, |(module, _)| module),
+        _ => module,
     }
 }
 
 /// The selection a scan's chosen `names` make. Each name is a module [`reachable_modules`] lists,
+/// a label a Sources table shows for one (`hibp_account`, `wigle_bluetooth`, see [`module_of`]),
 /// or a Spiderfoot module (`sfp_spamhaus`, `sfp_dnsresolve`) standing for every module that does
 /// its work, in any case. No name chooses every module.
 ///
 /// # Errors
-/// Every name that is neither, in the order given.
+/// Every name that is none of those, in the order given.
 pub fn selection(names: &[String]) -> Result<Selection, String> {
     let names: Vec<String> = names
         .iter()
@@ -1299,10 +1301,13 @@ pub fn selection(names: &[String]) -> Result<Selection, String> {
     let mut chosen = Vec::new();
     let mut unknown = Vec::new();
     for name in &names {
+        let wanted = module_of(name);
         let modules: Vec<&str> = REACHABLE_MODULES
             .iter()
             .map(|module| module.name)
-            .filter(|module| module == name || spiderfoot_names(module).iter().any(|sf| sf == name))
+            .filter(|module| {
+                *module == wanted || spiderfoot_names(module).iter().any(|sf| sf == name)
+            })
             .collect();
         if modules.is_empty() {
             unknown.push(name.as_str());
