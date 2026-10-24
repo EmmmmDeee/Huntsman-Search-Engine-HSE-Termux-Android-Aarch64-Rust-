@@ -246,6 +246,18 @@ mod tests {
     }
 
     #[test]
+    fn documented_traversal_preserves_bounds_and_rejects_unknown_root() {
+        let g = graph();
+        assert!(g.expand_documented("company", 1, 0).unwrap().is_empty());
+        assert_eq!(g.expand_documented("company", 0, 10).unwrap().len(), 1);
+        assert_eq!(g.expand_documented("company", 10, 1).unwrap().len(), 1);
+        assert_eq!(
+            g.expand_documented("unknown", 0, 0),
+            Err(GraphError::UnknownEndpoint("unknown".into()))
+        );
+    }
+
+    #[test]
     fn validates_supported_graph() {
         assert!(graph().validate().is_ok());
     }
