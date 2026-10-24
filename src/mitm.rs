@@ -200,7 +200,7 @@ fn classify_deviation(
             "high",
             "Avoid joining this SSID until the approved router configuration and BSSID are verified.",
         )),
-        Some(expected) if **expected != observed => Some((
+        Some(expected) if *expected != observed => Some((
             "security_changed",
             "review",
             "Verify whether the network administrator changed its authentication or transition-mode configuration.",
