@@ -390,12 +390,35 @@ pub(crate) const SLOT_FALLBACKS: &[(&str, &str)] = &[(
     crate::environment::HIBP_API_KEY_ENV,
 )];
 
+/// Stored credential alone does not establish a runnable lookup integration.
+const CREDENTIAL_ONLY_PROVIDERS: &[&str] = &[
+    "Brave Search",
+    "Exa",
+    "OpenRouter",
+    "Google Gemini",
+    "Censys",
+];
+
+/// Declared key slots without a currently implemented lookup leg.
+const UNWIRED_SLOTS: &[&str] = &[
+    crate::environment::CRIMINALIP_KEY_ENV,
+    crate::environment::DOMAINSDB_KEY_ENV,
+    crate::environment::FULLCONTACT_KEY_ENV,
+    crate::environment::HLR_KEY_ENV,
+    crate::environment::INTELX_KEY_ENV,
+    crate::environment::NIAMONX_KEY_ENV,
+    crate::environment::ONYPHE_KEY_ENV,
+    crate::environment::OPENCNAM_KEY_ENV,
+    crate::environment::OSINTCAT_KEY_ENV,
+    crate::environment::TROVE_KEY_ENV,
+];
+
 /// The secret `keys` holds for `slot`: the one rule from a slot to its key, which
 /// `credential-status` reports with and a lookup must use. `HUNTSMAN_HIBP_KEY` falls back to a
 /// `HIBP_API_KEY` entry, HIBP's own name for the same key.
 #[must_use]
 pub fn secret_for_slot(keys: &Keys, slot: &str) -> Option<Secret> {
-    keys.get(slot).or_else(|| {
+    keys.provider_key(slot).or_else(|| {
         SLOT_FALLBACKS
             .iter()
             .find(|(fallback, _)| *fallback == slot)
@@ -536,6 +559,17 @@ pub fn probe<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> Vec<ProviderP
         .collect()
 }
 
+/// Report the presence of reserved but unconnected credential slots, never values.
+fn write_unwired_slots(out: &mut String, keys: &Keys) {
+    for &slot in UNWIRED_SLOTS {
+        if keys.get(slot).is_some() {
+            out.push_str("unwired_slot=");
+            out.push_str(slot);
+            out.push_str("\tstate=credential_only\n");
+        }
+    }
+}
+
 #[must_use]
 pub fn render(keys: &Keys) -> String {
     let mut out = String::new();
@@ -543,6 +577,7 @@ pub fn render(keys: &Keys) -> String {
         write_status(&mut out, &provider, None, &[]);
     }
     write_unrecognised(&mut out, keys);
+    write_unwired_slots(&mut out, keys);
     out
 }
 
@@ -558,6 +593,7 @@ pub fn render_probed<T: Transport + ?Sized>(keys: &Keys, transport: &T) -> Strin
         );
     }
     write_unrecognised(&mut out, keys);
+    write_unwired_slots(&mut out, keys);
     out
 }
 
@@ -576,6 +612,9 @@ fn write_status(
     out.push_str(provider.name);
     out.push_str("\tstate=");
     out.push_str(state);
+    if CREDENTIAL_ONLY_PROVIDERS.contains(&provider.name) {
+        out.push_str("\tintegration=credential_only");
+    }
     if let Some(probe) = probe {
         out.push_str("\tprobe=");
         out.push_str(probe.as_str());
@@ -757,6 +796,55 @@ mod tests {
         assert!(!wigle.configured);
         assert!(wigle.slots[0].configured);
         assert!(!wigle.slots[1].configured);
+    }
+
+    #[test]
+    fn shared_abuse_ch_key_fills_both_provider_slots() {
+        use crate::environment::{ABUSECH_KEY_ENV, THREATFOX_KEY_ENV};
+        for (configured, other) in [
+            (ABUSECH_KEY_ENV, THREATFOX_KEY_ENV),
+            (THREATFOX_KEY_ENV, ABUSECH_KEY_ENV),
+        ] {
+            let keys = Keys::parse(&format!("{configured}=TEST_ONLY_SHARED\n")).expect("keys");
+            assert_eq!(
+                secret_for_slot(&keys, other).expect("shared slot").expose(),
+                "TEST_ONLY_SHARED"
+            );
+            let rendered = render(&keys);
+            assert!(!rendered.contains("TEST_ONLY_SHARED"));
+            assert!(rendered.contains("provider=ThreatFox (abuse.ch)\tstate=configured"));
+            assert!(rendered.contains("provider=URLhaus (abuse.ch)\tstate=configured"));
+        }
+        let both = Keys::parse(&format!(
+            "{ABUSECH_KEY_ENV}=TEST_ONLY_URLHAUS\n{THREATFOX_KEY_ENV}=TEST_ONLY_THREATFOX\n"
+        ))
+        .expect("keys");
+        assert_eq!(
+            secret_for_slot(&both, ABUSECH_KEY_ENV)
+                .expect("explicit key")
+                .expose(),
+            "TEST_ONLY_URLHAUS"
+        );
+        assert_eq!(
+            secret_for_slot(&both, THREATFOX_KEY_ENV)
+                .expect("explicit key")
+                .expose(),
+            "TEST_ONLY_THREATFOX"
+        );
+    }
+
+    #[test]
+    fn declared_but_unwired_key_does_not_claim_active_integration() {
+        use crate::environment::{EXA_KEY_ENV, INTELX_KEY_ENV};
+        let keys = Keys::parse(&format!(
+            "{EXA_KEY_ENV}=TEST_ONLY_EXA\n{INTELX_KEY_ENV}=TEST_ONLY_INTELX\n"
+        ))
+        .expect("keys");
+        let output = render(&keys);
+        assert!(output.contains("provider=Exa\tstate=configured\tintegration=credential_only"));
+        assert!(output.contains("unwired_slot=HUNTSMAN_INTELX_KEY\tstate=credential_only"));
+        assert!(!output.contains("TEST_ONLY_EXA"));
+        assert!(!output.contains("TEST_ONLY_INTELX"));
     }
 
     #[test]
