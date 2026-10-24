@@ -63,7 +63,7 @@ fn trusted_baseline_flags_unenrolled_and_downgraded_ap() {
         String::from_utf8_lossy(&out.stderr)
     );
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(report["status"], "unconfirmed_indicators");
+    assert_eq!(report["status"], "historical_unconfirmed_indicators");
     assert_eq!(
         report["findings"][0]["code"],
         "security_below_trusted_floor"
