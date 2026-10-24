@@ -298,14 +298,27 @@ pub fn from_wifi_scan(scan: &WifiScan, baseline: Option<&Baseline>) -> Report {
 /// treated as evidence of a *currently nearby* adversary.
 #[must_use]
 pub fn from_wifi_replay(scan: &WifiScan, baseline: Option<&Baseline>) -> Report {
-    let observations: Vec<_> = scan.observations.iter().map(|row| AccessPoint {
-        ssid: row.sighting.name.clone().unwrap_or_default(),
-        bssid: row.sighting.network_id.clone(),
-        security: Security::parse(row.capabilities.as_deref()
-            .or(row.sighting.encryption.as_deref()).unwrap_or("")),
-        frequency_mhz: row.frequency_mhz,
-    }).collect();
-    let mut report = assess(&observations, baseline, "termux_wifi_replay_unverified", scan.rejected);
+    let observations: Vec<_> = scan
+        .observations
+        .iter()
+        .map(|row| AccessPoint {
+            ssid: row.sighting.name.clone().unwrap_or_default(),
+            bssid: row.sighting.network_id.clone(),
+            security: Security::parse(
+                row.capabilities
+                    .as_deref()
+                    .or(row.sighting.encryption.as_deref())
+                    .unwrap_or(""),
+            ),
+            frequency_mhz: row.frequency_mhz,
+        })
+        .collect();
+    let mut report = assess(
+        &observations,
+        baseline,
+        "termux_wifi_replay_unverified",
+        scan.rejected,
+    );
     if report.status == "unconfirmed_indicators" {
         report.status = "historical_unconfirmed_indicators";
     }
@@ -503,7 +516,12 @@ mod tests {
         assert_eq!(Security::parse("[RSN-PSK-CCMP][ESS]"), Security::Wpa2);
         assert_eq!(Security::parse("[WPA-PSK][WPA2-PSK][ESS]"), Security::Wpa);
         let baseline = parse_baseline(br#"{"networks":[{"ssid":"Corp","bssids":["3c:5a:b4:11:22:33"],"minimum_security":"WPA3"}]}"#).unwrap();
-        let report = assess(&[ap("Corp", "3c:5a:b4:11:22:33", Security::Unknown)], Some(&baseline), "fixture", 0);
+        let report = assess(
+            &[ap("Corp", "3c:5a:b4:11:22:33", Security::Unknown)],
+            Some(&baseline),
+            "fixture",
+            0,
+        );
         assert_eq!(report.findings[0].code, "trusted_ssid_security_unverified");
         assert_eq!(report.findings[0].severity, "review");
         assert!(!report.mitm_confirmed);
@@ -512,7 +530,8 @@ mod tests {
 
     #[test]
     fn replay_is_historical_not_a_live_warning() {
-        let raw = br#"[{"bssid":"3c:5a:b4:11:22:33","ssid":"Corp","rssi":-40,"capabilities":"[ESS]"}]"#;
+        let raw =
+            br#"[{"bssid":"3c:5a:b4:11:22:33","ssid":"Corp","rssi":-40,"capabilities":"[ESS]"}]"#;
         let baseline = parse_baseline(br#"{"networks":[{"ssid":"Corp","bssids":["3c:5a:b4:11:22:33"],"minimum_security":"WPA3"}]}"#).unwrap();
         let scan = crate::wifi_radar::parse_replay(raw).unwrap();
         let report = from_wifi_replay(&scan, Some(&baseline));
