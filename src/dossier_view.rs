@@ -215,6 +215,22 @@ pub fn render(document: &Value) -> Result<String, String> {
         }
         out.push_str("</section>");
     }
+    // Preserve non-indexed top-level provenance, original media hashes, audit trail,
+    // verification metadata and limitations in the human-readable view as well as the API.
+    // These fields are intentionally not minted new evidence IDs.
+    out.push_str("<section id=\"context\"><h2>Additional provenance, media and audit data</h2>");
+    for (key, value) in root {
+        if !GROUPS.iter().any(|(group, _)| group == key) {
+            let _ = write!(
+                out,
+                "<article><h3>{}</h3><dl>",
+                escape(&readable(key))
+            );
+            field(&mut out, key, value, &ids);
+            out.push_str("</dl></article>");
+        }
+    }
+    out.push_str("</section>");
     out.push_str("</main><footer><p>This viewer does not rewrite source records or infer unsupported conclusions.</p></footer></body></html>");
     Ok(out)
 }
@@ -239,6 +255,20 @@ mod tests {
         assert!(html.contains("&quot;x&quot;&amp;f=1"));
         assert!(html.contains("2 indexed records"));
     }
+    #[test]
+    fn includes_nonindexed_provenance_and_original_media() {
+        let mut doc = fixture();
+        doc["media_manifest"] = serde_json::json!([{"filename":"original.jpg","sha256":"abc123"}]);
+        doc["audit_changes_2026_10_24"] = serde_json::json!([{"action":"checked"}]);
+        doc["verification"] = serde_json::json!({"media_hashed":6});
+        let html = render(&doc).unwrap();
+        assert!(html.contains("original.jpg"));
+        assert!(html.contains("abc123"));
+        assert!(html.contains("checked"));
+        assert!(html.contains("media hashed"));
+        assert!(html.contains("2 indexed records"));
+    }
+
     #[test]
     fn refuses_duplicate_and_missing_rows() {
         let mut doc = fixture();
