@@ -2,6 +2,8 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
 
 use crate::http::{Request, Response, Transport, TransportFailure};
 use crate::source_outcome::SourceOutcomeKind;
@@ -89,6 +91,164 @@ impl Transport for RoutedTransport {
                 detail: "no route".into(),
                 blocked: false,
             })
+    }
+}
+
+/// Every request the egress policy refuses, as for a host that resolves to 0.0.0.0: each HTTP
+/// send and each UDP exchange is blocked, as the real transport's policy can block both, so
+/// nothing is sent. The policy never blocks the system resolver, so `resolve` keeps the trait's
+/// unblocked failure. Threads may share it, as they share the real transport, so a lookup asks
+/// its independent sources at once through it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Refusing;
+
+impl Refusing {
+    fn failure() -> TransportFailure {
+        TransportFailure {
+            kind: SourceOutcomeKind::ConnectFailure,
+            detail: "egress-policy: destination (0.0.0.0) is not publicly routable".into(),
+            blocked: true,
+        }
+    }
+}
+
+impl Transport for Refusing {
+    fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
+        Err(Self::failure())
+    }
+
+    fn exchange_udp(&self, _: SocketAddr, _: &[u8]) -> Result<Vec<u8>, TransportFailure> {
+        Err(Self::failure())
+    }
+
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        Some(self)
+    }
+}
+
+/// No network: every HTTP send gets no response. The kind is `DnsFailure` because crt.sh pauses
+/// two seconds before it retries a `ConnectFailure`. The system resolver and UDP keep the trait's
+/// unblocked failures. Threads may share it, as they share [`Refusing`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Silent;
+
+impl Transport for Silent {
+    fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
+        Err(TransportFailure {
+            kind: SourceOutcomeKind::DnsFailure,
+            detail: "no route to host".into(),
+            blocked: false,
+        })
+    }
+
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        Some(self)
+    }
+}
+
+/// Every source reached, answering with an error: each HTTP send gets HTTP 500 with an empty body
+/// (crt.sh retries only 429, 502 and 503), the system resolver knows no name, and a UDP exchange
+/// gets no answer, unblocked. Threads may share it, as they share [`Refusing`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Failing;
+
+impl Transport for Failing {
+    fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
+        Ok(Response {
+            status: 500,
+            headers: Vec::new(),
+            body: Vec::new(),
+            truncated: false,
+        })
+    }
+
+    fn resolve(&self, _: &str) -> Result<Vec<IpAddr>, TransportFailure> {
+        Ok(Vec::new())
+    }
+
+    fn exchange_udp(&self, server: SocketAddr, _: &[u8]) -> Result<Vec<u8>, TransportFailure> {
+        Err(TransportFailure {
+            kind: SourceOutcomeKind::ConnectFailure,
+            detail: format!("no UDP answer from {server}"),
+            blocked: false,
+        })
+    }
+
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        Some(self)
+    }
+}
+
+/// One thing a [`Recording`] transport was asked to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Attempt {
+    /// An HTTP request, by its URL.
+    Http(String),
+    /// A name asked of the system resolver.
+    SystemResolver(String),
+    /// A DNS message sent over UDP, by its server.
+    Udp(SocketAddr),
+}
+
+/// `inner`, keeping every attempt asked of it in order. Clones share one record, so a lookup's
+/// clones of the transport all write to it.
+#[derive(Debug, Clone, Default)]
+pub struct Recording<T> {
+    pub inner: T,
+    pub asked: Arc<Mutex<Vec<Attempt>>>,
+}
+
+impl<T> Recording<T> {
+    #[must_use]
+    pub fn new(inner: T) -> Self {
+        Self {
+            inner,
+            asked: Arc::default(),
+        }
+    }
+
+    /// Every attempt so far, in order.
+    #[must_use]
+    pub fn attempts(&self) -> Vec<Attempt> {
+        self.asked
+            .lock()
+            .map(|asked| asked.clone())
+            .unwrap_or_default()
+    }
+
+    fn note(&self, attempt: Attempt) {
+        if let Ok(mut asked) = self.asked.lock() {
+            asked.push(attempt);
+        }
+    }
+}
+
+impl<T: Transport + Sync> Transport for Recording<T> {
+    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        self.note(Attempt::Http(request.url.clone()));
+        self.inner.send(request)
+    }
+
+    fn resolve(&self, name: &str) -> Result<Vec<IpAddr>, TransportFailure> {
+        self.note(Attempt::SystemResolver(name.to_owned()));
+        self.inner.resolve(name)
+    }
+
+    fn exchange_udp(
+        &self,
+        server: SocketAddr,
+        message: &[u8],
+    ) -> Result<Vec<u8>, TransportFailure> {
+        self.note(Attempt::Udp(server));
+        self.inner.exchange_udp(server, message)
+    }
+
+    fn runs_module(&self, module: &str) -> bool {
+        self.inner.runs_module(module)
+    }
+
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        self.inner.shared().map(|_| self as &(dyn Transport + Sync))
     }
 }
 

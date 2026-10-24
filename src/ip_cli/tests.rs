@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use super::*;
 use crate::http::{Request, Response, TransportFailure};
 use crate::source_outcome::SourceOutcomeKind;
+use crate::test_support::Refusing;
 
 /// Every IP leg for `ip`, with no threat feed consulted: the feeds' own tests cover them.
 fn run<T: Transport + ?Sized>(transport: &T, keys: &Keys, ip: &str, now_unix: u64) -> IpRun {
@@ -433,19 +434,6 @@ fn a_refused_mnemonic_leg_alone_is_a_network_refusal_with_its_reason() {
         ),
         IpRun::Failed(message) => panic!("failed: {message}"),
         IpRun::Printed { text, .. } => panic!("printed: {text}"),
-    }
-}
-
-/// Every request refused by the egress policy, as for a host that resolves to 0.0.0.0.
-struct Refusing;
-
-impl Transport for Refusing {
-    fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
-        Err(TransportFailure {
-            kind: SourceOutcomeKind::ConnectFailure,
-            detail: "egress-policy: destination (0.0.0.0) is not publicly routable".into(),
-            blocked: true,
-        })
     }
 }
 
