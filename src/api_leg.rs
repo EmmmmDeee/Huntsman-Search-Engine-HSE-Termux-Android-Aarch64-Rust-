@@ -624,7 +624,10 @@ mod tests {
             assert_eq!(sent.len(), 2);
             assert_eq!(sent[0].url, crate::threatfox::URL);
             assert_eq!(sent[1].url, crate::urlhaus::URL);
-            assert!(sent.iter().all(|req| req.header_value("Auth-Key") == Some("TEST_ONLY_ABUSECH")));
+            assert!(
+                sent.iter()
+                    .all(|req| req.header_value("Auth-Key") == Some("TEST_ONLY_ABUSECH"))
+            );
         }
     }
 
@@ -634,7 +637,13 @@ mod tests {
         assert!(!crate::threatfox::API.wanted(&keys));
         assert!(!crate::urlhaus::API.wanted(&keys));
         let recorder = Recorder::new(200, "{}");
-        let result = get(&recorder, &crate::threatfox::API, &keys, crate::threatfox::URL, 1);
+        let result = get(
+            &recorder,
+            &crate::threatfox::API,
+            &keys,
+            crate::threatfox::URL,
+            1,
+        );
         assert!(matches!(result, Err(LegError::MissingKey(_))));
         assert!(recorder.sent().is_empty());
     }
