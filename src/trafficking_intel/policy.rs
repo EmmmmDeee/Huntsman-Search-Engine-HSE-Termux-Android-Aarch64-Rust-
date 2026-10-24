@@ -130,6 +130,27 @@ mod tests {
     }
 
     #[test]
+    fn oversized_observation_set_abstains_without_partial_assessment() {
+        let observations = vec![
+            observation(Indicator::WageWithholding, "publisher-a", "source-a");
+            10_001
+        ];
+        let result = ReviewPolicy::default().assess(&observations);
+        assert_eq!(result.status, AssessmentStatus::InsufficientEvidence);
+        assert!(result.evidence_refs.is_empty());
+        assert!(result.supported_indicators.is_empty());
+    }
+
+    #[test]
+    fn oversized_field_abstains_without_partial_assessment() {
+        let mut input = observation(Indicator::WageWithholding, "a", "one");
+        input.evidence_ref = "x".repeat(2_049);
+        let result = ReviewPolicy::default().assess(&[input]);
+        assert_eq!(result.status, AssessmentStatus::InsufficientEvidence);
+        assert!(result.evidence_refs.is_empty());
+    }
+
+    #[test]
     fn syndication_is_not_independent_corroboration() {
         let observations = [
             observation(Indicator::WageWithholding, "publisher-a", "mirror-one"),
