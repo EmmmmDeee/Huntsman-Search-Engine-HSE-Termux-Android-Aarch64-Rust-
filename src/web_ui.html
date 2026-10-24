@@ -780,7 +780,8 @@ async function loadMods(){
       i.type='checkbox';i.value=m.name;i.id='mod-'+m.name;i.checked=open;i.disabled=!open;i.dataset.names=(m.spiderfoot||[m.name]).join(' ');text.htmlFor=i.id;
       if(m.access==='operator_key')name.append(' ',el('span','label warn','key'));
       text.append(name,m.description);
-      if(asks)text.append(el('span','help',asks.length?'Asked by: '+asks.map(k=>kinds[k]||k).join(', ')+(m.configured===false?'. Its key is not set, so it is skipped until one is.':''):'Runs as its own command'+(m.command?' (huntsman '+m.command+')':'')+'; no scan lookup asks it.'));
+      const offline=m.offline_in||[];
+      if(asks)text.append(el('span','help',asks.length?'Asked by: '+asks.map(k=>kinds[k]||k).join(', ')+(m.configured===false?'. Its key is not set, so it is skipped until one is.':''):offline.length?'Always runs offline in: '+offline.map(k=>kinds[k]||k).join(', ')+'. It reads the target itself and asks nothing, so it is not a choice; its rows appear under Sources.':'Runs as its own command'+(m.command?' (huntsman '+m.command+')':'')+'; no scan lookup asks it.'));
       box.append(i);put(tr,'',box);put(tr,'',text);tb.append(tr);
     }
     loaded.modules=true;

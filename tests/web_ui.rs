@@ -391,6 +391,7 @@ const PAGE_READS: &[(&str, &str, &str)] = &[
     ("settings", "/modules/0/key_env", "m.key_env"),
     ("settings", "/modules/0/configured", "m.configured"),
     ("settings", "/modules/0/lookups", "asks=m.lookups"),
+    ("settings", "/modules/0/offline_in", "m.offline_in"),
     (
         "settings",
         "/modules/0/spiderfoot",
