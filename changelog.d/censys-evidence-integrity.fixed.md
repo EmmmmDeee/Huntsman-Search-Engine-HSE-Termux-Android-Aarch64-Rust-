@@ -1,0 +1,1 @@
+- Preserve Censys AS labels separately from managing organizations, and refuse malformed consumed service, DNS and network metadata as schema drift without fabricating successful evidence; sparse valid responses remain supported.
