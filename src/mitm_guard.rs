@@ -1,7 +1,10 @@
 //! Evidence-gated, advisory MITM/evil-twin Wi-Fi assessment for rootless Android.
 //! Only scans and operator-supplied baselines are used; no packet injection,
 //! deauthentication, raw monitor mode, forced disconnect, or credential collection.
-//! Research: arxiv.org/abs/2203.00579, 2302.00338, 2505.07724, 2512.10470.
+//! Research: arxiv.org/abs/2406.01927 (rogue AP positioning),
+//! arxiv.org/abs/2108.09062 (ARP anomaly evidence), and
+//! arxiv.org/abs/2601.22770 (Android TLS validation vulnerabilities).
+//! These motivate evidence gates only; no paper classifier is reproduced.
 //! A scan cannot establish interception: all output is explicitly unconfirmed.
 
 use std::collections::{BTreeMap, BTreeSet};
