@@ -15,7 +15,7 @@ use huntsman_recon::module_selection::Selection;
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_route::ScanKind;
 use huntsman_recon::scan_service::{LookupOutput, ScanRequest, ScanService};
-use huntsman_recon::scan_store::{Risk, ScanCorrelation, ScanOptions, ScanStore};
+use huntsman_recon::scan_store::{Risk, ScanCorrelation, ScanOptions, ScanStatus, ScanStore};
 use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use huntsman_recon::termination::TerminationReason;
 use huntsman_recon::{sf_compat, sf_types};
@@ -850,6 +850,63 @@ fn scans_live_on_the_server_and_only_the_analysis_is_kept_for_the_tab() {
             &call[..call.len().min(40)]
         );
     }
+}
+
+/// The page's idea of a live scan is the store's: every status the API calls active is one the
+/// page polls and offers Stop for, and no settled one is, so Stop shows exactly while a scan can
+/// be stopped, polling runs on through `ABORT-REQUESTED` until the scan settles, and every Stop
+/// button posts to the scan's `stop` route.
+#[test]
+fn stop_is_offered_exactly_while_the_api_calls_a_scan_active() {
+    let script = inline("script");
+    let active = script
+        .split("const ACTIVE=[")
+        .nth(1)
+        .and_then(|rest| rest.split("];").next())
+        .unwrap_or_else(|| panic!("no ACTIVE list"));
+    let active: Vec<&str> = active
+        .split(',')
+        .map(|status| status.trim().trim_matches('\''))
+        .collect();
+    for status in [
+        ScanStatus::Created,
+        ScanStatus::Starting,
+        ScanStatus::Running,
+        ScanStatus::AbortRequested,
+        ScanStatus::Aborted,
+        ScanStatus::Finished,
+        ScanStatus::ErrorFailed,
+    ] {
+        assert_eq!(
+            active.contains(&status.as_str()),
+            status.is_active(),
+            "{} in {active:?}",
+            status.as_str()
+        );
+    }
+    assert!(script.contains("const live=s=>ACTIVE.includes(s);"));
+    // The scan page: Stop while live, Delete once settled, and polling while live.
+    assert!(
+        script.contains("$('scstop').hidden=!live(s.status);$('scdelete').hidden=live(s.status);")
+    );
+    assert!(script.contains("$('scstop').onclick=()=>act1('stop',[sid]);"));
+    assert!(script.contains(
+        "const was=scan&&scan.status,running=live(s.status),ended=!!was&&live(was)&&!running;"
+    ));
+    assert!(script.contains("if(running)later(()=>loadScan(false),"));
+    // The scans list: a Stop button per live row, the bulk Stop over the live rows picked, and
+    // polling while any row is live.
+    assert!(script.contains(
+        "live(s.status)?button('Stop',()=>act1('stop',[s.id])):button('Delete',()=>act1('delete',[s.id]))"
+    ));
+    assert!(script.contains(
+        "$('sstop').onclick=()=>act1('stop',[...picked].filter(id=>scans.some(s=>s.id===id&&live(s.status))));"
+    ));
+    assert!(script.contains("if(scans.some(s=>live(s.status)))later(loadScans);else resume=null;"));
+    // Every action, Stop included, is one POST to the scan's own route.
+    assert!(
+        script.contains("const r=await api('/api/scans/'+enc(id)+'/'+action,{method:'POST'});")
+    );
 }
 
 #[test]
