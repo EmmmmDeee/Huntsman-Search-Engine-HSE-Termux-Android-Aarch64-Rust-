@@ -334,7 +334,7 @@ fn values_marker(count: usize) -> String {
 struct Fields {
     list: Vec<(String, String)>,
     index: HashMap<String, usize>,
-    seen: HashSet<(String, String)>,
+    seen: HashSet<(String, [u8; 32])>,
     /// Indexes into `list` whose value is cut or full and takes no more.
     full: HashSet<usize>,
     /// Per index into `list`, the distinct values not kept.
@@ -348,12 +348,16 @@ impl Fields {
     /// fits a key's bound is counted against that key, never appended cut part way through.
     fn push(&mut self, key: impl Into<String>, value: impl Into<String>) {
         let key = key.into();
-        let (value, cut) = cap_value_within(&value.into(), 0, VALUE_BOUND);
+        let raw = value.into();
+        // Deduplicate the complete value, not its bounded rendering: two different
+        // values can share an identical displayed prefix and length.
+        let fingerprint = sha256(raw.trim().as_bytes());
+        let (value, cut) = cap_value_within(&raw, 0, VALUE_BOUND);
         if value.is_empty() {
             return;
         }
         if let Some(&at) = self.index.get(&key) {
-            if self.seen.contains(&(key.clone(), value.clone())) {
+            if self.seen.contains(&(key.clone(), fingerprint)) {
                 return;
             }
             let current = &self.list[at].1;
@@ -376,7 +380,7 @@ impl Fields {
             self.index.insert(key.clone(), self.list.len());
             self.list.push((key.clone(), value.clone()));
         }
-        self.seen.insert((key, value));
+        self.seen.insert((key, fingerprint));
     }
 
     /// The fields, each whose later values did not fit closed with their count, with the keys not
