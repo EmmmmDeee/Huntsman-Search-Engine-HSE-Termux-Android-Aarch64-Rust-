@@ -86,10 +86,7 @@ impl Api {
     pub fn wanted(&self, keys: &Keys) -> bool {
         match self.key {
             None => true,
-            Some(key) => {
-                !key.required
-                    || keys.provider_key(key.slot).is_some()
-            }
+            Some(key) => !key.required || keys.provider_key(key.slot).is_some(),
         }
     }
 
