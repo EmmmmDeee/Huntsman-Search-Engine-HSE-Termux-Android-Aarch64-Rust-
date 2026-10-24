@@ -2370,6 +2370,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Stop on a running scan answers 202 with the row `ABORT-REQUESTED`; the scan settles
+    /// `ABORTED`, with its end time, once the lookup it was in returns; and a second Stop is the
+    /// 409 a finished scan's is. The page's Stop buttons act on the first answer and poll for the
+    /// second, so both are locked here, not only the refusal.
+    #[test]
+    fn stop_on_a_running_scan_answers_202_and_the_scan_settles_aborted() {
+        use std::sync::{Mutex, mpsc};
+        use std::time::Duration;
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let entered_tx = Mutex::new(entered_tx);
+        let dir = scratch("stop-running");
+        let lookup = Arc::new(move |_kind: ScanKind, selector: &str, _: &Selection| {
+            entered_tx.lock().unwrap().send(()).unwrap();
+            release_rx.lock().unwrap().recv().unwrap();
+            Ok(LookupOutput {
+                text: "report".into(),
+                entities: vec![Entity::builder(EntityKind::IpAddress, selector, 0.9, "s").build()],
+                outcomes: vec![SourceExecutionOutcome::success("internetdb", 1, 1)],
+            })
+        });
+        let api = ScanApi::new(
+            ScanService::new(ScanStore::open(&dir).unwrap(), lookup),
+            None,
+        );
+        let started = api.handle("POST", "/api/scans", "target=1.1.1.1");
+        assert_eq!(
+            started.status,
+            202,
+            "{}",
+            String::from_utf8_lossy(&started.body)
+        );
+        let id = body(&started)["id"].as_str().unwrap().to_owned();
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let stopping = api.handle("POST", &format!("/api/scans/{id}/stop"), "");
+        assert_eq!(
+            stopping.status,
+            202,
+            "{}",
+            String::from_utf8_lossy(&stopping.body)
+        );
+        assert_eq!(body(&stopping)["status"], "ABORT-REQUESTED");
+        release_tx.send(()).unwrap();
+        let mut row = Value::Null;
+        for _ in 0..400 {
+            row = body(&api.handle("GET", &format!("/api/scans/{id}"), ""));
+            if row["status"] != "ABORT-REQUESTED" && row["status"] != "RUNNING" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(row["status"], "ABORTED", "{row}");
+        assert!(row["ended"].is_u64(), "{row}");
+        assert_eq!(
+            api.handle("POST", &format!("/api/scans/{id}/stop"), "")
+                .status,
+            409
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn methods_paths_and_bad_input_get_their_status() {
         let (api, dir) = api("errors");

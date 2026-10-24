@@ -959,13 +959,24 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
     }
 
     // A stopped server is named, with the command that starts it; its return is noticed without
-    // a reload, and the saved scans are all still there.
+    // a reload, and the saved scans are all still there. A scan the stopped server left RUNNING,
+    // as Android leaves one when it kills the server mid-scan, reads ABORTED after the restart
+    // and offers Delete, instead of a RUNNING row nobody can act on.
     {
       const ctx = await browser.newContext(PHONE);
       const page = await ctx.newPage();
       await page.goto(base + '/', { waitUntil: 'networkidle' });
       await page.waitForSelector('#scans tr');
       await stop();
+      const store = path.join(home, '.huntsman', 'scans');
+      const from = path.join(store, fs.readdirSync(store).find(name => /^[0-9a-f]{16}$/.test(name)));
+      const orphan = 'ab0ab0ab0ab0ab0a', orphanDir = path.join(store, orphan);
+      const row = JSON.parse(fs.readFileSync(path.join(from, 'scan.json'), 'utf8'));
+      Object.assign(row, { id: orphan, name: 'left running', status: 'RUNNING', ended: null });
+      delete row.owner;
+      delete row.owner_started;
+      fs.mkdirSync(orphanDir, { mode: 0o700 });
+      fs.writeFileSync(path.join(orphanDir, 'scan.json'), JSON.stringify(row), { mode: 0o600 });
       await page.click('#srefresh');
       await page.waitForSelector('#serror:not([hidden])', { timeout: 5000 }).catch(() => {});
       await page.waitForTimeout(300);
@@ -978,7 +989,16 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check('a server started again on the same build does not ask to reload', await page.isHidden('#upgraded'), 'shown');
       await page.click('#srefresh');
       await page.waitForFunction(() => document.getElementById('serror').hidden, null, { timeout: 5000 }).catch(() => {});
-      check('saved scans survive a server restart', (await page.$$('#scans tr')).length === kept && kept > 0, `${(await page.$$('#scans tr')).length} of ${kept}`);
+      check('saved scans survive a server restart', (await page.$$('#scans tr')).length === kept + 1 && kept > 0, `${(await page.$$('#scans tr')).length} of ${kept + 1}`);
+      const left = (await api(page, '/api/scans')).find(s => s.id === orphan);
+      const shown = await page.$$eval('#scans tr', trs => trs.filter(tr => tr.textContent.includes('left running')).map(tr => ({
+        status: (tr.querySelector('td[data-label=Status]') || {}).textContent,
+        actions: [...tr.querySelectorAll('td[data-label=Action] button')].map(b => b.textContent),
+      })));
+      metrics.leftRunning = { left, shown };
+      check('a scan the stopped server left running reads ABORTED after the restart and offers Delete',
+        !!left && left.status === 'ABORTED' && left.ended > 0 && shown.length === 1 && shown[0].status === 'ABORTED' && shown[0].actions.includes('Delete') && !shown[0].actions.includes('Stop'),
+        { left, shown });
       await ctx.close();
     }
   } catch (error) {
