@@ -470,7 +470,9 @@ fn get<T: Transport + ?Sized>(
         .with_timeout(TIMEOUT);
     let fetched =
         fetch(transport, request, None, options, SOURCE, now_unix).map_err(|error| Failure {
-            kind: SourceOutcomeKind::Inconclusive,
+            // `fetch` errors only before anything is sent: a blocked egress address, or a URL or
+            // redirect target that could not be sent safely.
+            kind: SourceOutcomeKind::RefusedBeforeSending,
             http_status: None,
             detail: error.to_string(),
             retry_after_secs: None,

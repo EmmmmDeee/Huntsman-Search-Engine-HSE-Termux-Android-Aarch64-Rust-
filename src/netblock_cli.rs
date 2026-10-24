@@ -309,9 +309,7 @@ fn sweep<T: Transport + ?Sized + Sync>(
             Some(Err(error)) if error.kind == ResolveErrorKind::Empty => tally.unnamed += 1,
             Some(Err(error)) => {
                 tally.failed += 1;
-                tally
-                    .first_failure
-                    .get_or_insert((error.kind, error.detail));
+                dns::keep_failure(&mut tally.first_failure, error.kind, error.detail);
             }
             None => {}
         }

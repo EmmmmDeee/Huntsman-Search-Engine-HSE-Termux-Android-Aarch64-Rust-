@@ -114,11 +114,16 @@ fn an_empty_success_is_a_zero_and_a_failure_envelope_is_not() {
             .as_bytes(),
         &[TOKEN],
     );
-    let Err(WigleError::Provider(words)) = refused else {
+    let Err(error @ WigleError::Provider(_)) = refused else {
         panic!("expected a provider failure, got {refused:?}");
+    };
+    let WigleError::Provider(words) = &error else {
+        unreachable!()
     };
     assert!(!words.contains(TOKEN), "{words}");
     assert!(!words.contains('\u{7}'), "{words}");
+    // A provider's own "no" answered the request, so it stays inconclusive, not a refusal.
+    assert_eq!(error.outcome_kind(), SourceOutcomeKind::Inconclusive);
 }
 
 #[test]
@@ -296,7 +301,13 @@ fn a_user_with_a_colon_is_refused_before_sending() {
     };
     let transport = Recorder::new(Vec::new());
     let result = search(&transport, &keys, Database::Wifi, &bssid(), 7);
-    assert!(matches!(result, Err(WigleError::Refused(_))), "{result:?}");
+    let Err(error @ WigleError::Refused(_)) = result else {
+        panic!("expected a refusal, got {result:?}");
+    };
+    assert_eq!(
+        error.outcome_kind(),
+        SourceOutcomeKind::RefusedBeforeSending
+    );
     assert!(transport.sent().is_empty());
 }
 

@@ -100,7 +100,7 @@ pub(super) fn resolve<T: Transport + ?Sized + Sync>(
             }
             Some(HostAnswer::Failed(kind, detail)) => {
                 tally.failed += 1;
-                tally.first_failure.get_or_insert((*kind, detail.clone()));
+                dns::keep_failure(&mut tally.first_failure, *kind, detail.clone());
             }
             None => tally.aborted += 1,
         }
@@ -184,7 +184,7 @@ fn resolve_host<T: Transport + ?Sized>(transport: &T, host: &str) -> HostAnswer 
             })),
             Err(error) if error.kind == ResolveErrorKind::Empty => {}
             Err(error) => {
-                failure.get_or_insert((error.kind, error.detail));
+                dns::keep_failure(&mut failure, error.kind, error.detail);
             }
         }
     }

@@ -206,6 +206,41 @@ fn a_failed_call_is_named_and_the_rest_still_reported() {
     );
 }
 
+/// The one `ripestat` row is refused before sending only when every call was refused; a call that
+/// reached a server and then failed wins over a held refusal, so the source is not mislabelled as
+/// refused. This locks the first-non-refusal selection in `routing_entities`.
+#[test]
+fn the_ripestat_row_is_refused_only_when_every_call_was_refused() {
+    let refused =
+        || crate::api_leg::LegError::Refused("network: egress-policy: blocked".to_owned());
+
+    // Every call refused before sending: the one row is a refusal.
+    let all_refused = Routing {
+        overview: Err(refused()),
+        prefixes: Err(refused()),
+        neighbours: Err(refused()),
+    };
+    let mut report = Report::default();
+    routing_entities(&mut report, "AS13335", "scan", &all_refused, 1);
+    assert_eq!(report.outcomes.len(), 1);
+    assert_eq!(
+        report.outcomes[0].kind,
+        SourceOutcomeKind::RefusedBeforeSending
+    );
+
+    // One call reached a server (HTTP 503) beside two refusals: the row keeps the reached-server
+    // kind, because the source was reachable.
+    let mixed = Routing {
+        overview: Err(refused()),
+        prefixes: Err(crate::api_leg::LegError::Server(503)),
+        neighbours: Err(refused()),
+    };
+    let mut report = Report::default();
+    routing_entities(&mut report, "AS13335", "scan", &mixed, 1);
+    assert_eq!(report.outcomes.len(), 1);
+    assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Upstream5xx);
+}
+
 /// Answers as [`registry`] does, except that the call whose path holds `.1` panics.
 struct PanicsOn(RoutedTransport, String);
 

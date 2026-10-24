@@ -499,6 +499,27 @@ fn an_unreachable_network_is_not_asked_feed_after_feed() {
 }
 
 #[test]
+fn a_blocked_egress_refuses_every_feed_before_sending() {
+    // A blocked egress is not a transport failure, so it never aborts the fan-out: every feed is
+    // asked and every row is refused, not connect_failure.
+    let feeds = Feeds::new(Box::new(crate::test_support::Refusing), None);
+    let (entities, rows) = check(&feeds, &[address("198.51.100.20")], "s", now());
+    assert!(entities.is_empty());
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter()
+            .all(|row| row.kind == SourceOutcomeKind::RefusedBeforeSending),
+        "{rows:?}"
+    );
+    assert!(!rows.iter().any(|row| {
+        row.detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not asked")
+    }));
+}
+
+#[test]
 fn no_feeds_asks_nothing() {
     let (entities, rows) = check(&Feeds::none(), &[address("198.51.100.20")], "s", now());
     assert!(entities.is_empty() && rows.is_empty());

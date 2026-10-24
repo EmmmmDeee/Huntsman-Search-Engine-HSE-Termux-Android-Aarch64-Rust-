@@ -125,7 +125,16 @@ pub fn run<T: Transport + Sync + ?Sized>(
                 report.entities.extend(entities);
                 report.outcomes.push(outcome);
             }
-            // A URL the guarded fetch refused names nothing about the handle.
+            // A URL the guarded fetch refused before sending names nothing about the handle.
+            Err(error @ Error::Network(_)) => {
+                report
+                    .outcomes
+                    .push(SourceExecutionOutcome::refused_before_sending(
+                        module,
+                        now_unix,
+                        error.to_string(),
+                    ));
+            }
             Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
                 module,
                 now_unix,
@@ -280,6 +289,44 @@ mod tests {
     fn rejects_path_and_placeholder_selectors() {
         assert!(UsernameArgs::parse(&["../root".into()]).is_err());
         assert!(UsernameArgs::parse(&["username".into()]).is_err());
+    }
+
+    #[test]
+    fn a_blocked_transport_refuses_the_profile_legs_that_reach_the_network() {
+        let UsernameRun::Printed { report, .. } = run(
+            &crate::test_support::Refusing,
+            &Keys::default(),
+            "janedoe",
+            1,
+        ) else {
+            panic!("a blocked username lookup did not print its rows");
+        };
+        let kind = |module: &str| {
+            report
+                .outcomes
+                .iter()
+                .find(|o| o.module == module)
+                .unwrap_or_else(|| panic!("no {module} row in {:?}", report.outcomes))
+                .kind
+        };
+        // A leg that builds a request gets `Error::Network` from the blocked egress, so its row is
+        // refused before sending, not an inconclusive "no response".
+        for module in [github_user::SRC, bluesky_user::SRC, wikipedia::SRC] {
+            assert_eq!(
+                kind(module),
+                SourceOutcomeKind::RefusedBeforeSending,
+                "{module}"
+            );
+        }
+        // A refusal is never read as a reached-but-silent source.
+        assert!(
+            report
+                .outcomes
+                .iter()
+                .all(|o| !o.kind.is_transport_failure()),
+            "{:?}",
+            report.outcomes
+        );
     }
 
     #[test]

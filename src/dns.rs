@@ -163,6 +163,9 @@ pub enum ResolveErrorKind {
     BotWaf,
     RateLimited,
     Truncated,
+    /// The guarded request path sent nothing: the egress policy dropped the resolver's address, or
+    /// its URL could not be sent safely. The resolver was not asked.
+    Refused,
 }
 
 impl ResolveErrorKind {
@@ -175,6 +178,7 @@ impl ResolveErrorKind {
             Self::BotWaf => "bot_waf",
             Self::RateLimited => "rate_limited",
             Self::Truncated => "truncated",
+            Self::Refused => "refused",
         }
     }
 
@@ -185,8 +189,27 @@ impl ResolveErrorKind {
             Self::Timeout => SourceOutcomeKind::TtfbTimeout,
             Self::RateLimited => SourceOutcomeKind::RateLimited,
             Self::BotWaf => SourceOutcomeKind::BotWaf,
+            Self::Refused => SourceOutcomeKind::RefusedBeforeSending,
             Self::Upstream | Self::Truncated | Self::Empty => SourceOutcomeKind::Inconclusive,
         }
+    }
+}
+
+/// Record a resolver failure in `slot`, keeping the most informative one: the slot takes the first
+/// failure, but a held [`ResolveErrorKind::Refused`] (nothing was sent) gives way to a later
+/// failure that did reach a server. So a tally over several names or addresses is refused only
+/// when every query that failed was refused. **Pure** apart from `slot`.
+pub(crate) fn keep_failure(
+    slot: &mut Option<(ResolveErrorKind, String)>,
+    kind: ResolveErrorKind,
+    detail: String,
+) {
+    let replace = match slot {
+        None => true,
+        Some((held, _)) => *held == ResolveErrorKind::Refused && kind != ResolveErrorKind::Refused,
+    };
+    if replace {
+        *slot = Some((kind, detail));
     }
 }
 
@@ -299,10 +322,19 @@ pub fn resolve_with_config<T: Transport + ?Sized>(
             0,
         ) {
             Err(error) => {
-                last_error = Some(ResolveError {
-                    kind: ResolveErrorKind::Upstream,
-                    detail: error.to_string(),
-                });
+                // `fetch` errors only before anything is sent, so this is a refusal. Record it only
+                // while no server has given a real failure: the pool is refused only when every
+                // server asked refused; one that reached a server and then failed overwrites it
+                // through the `interpret_fetched` arm below.
+                if last_error
+                    .as_ref()
+                    .is_none_or(|e: &ResolveError| e.kind == ResolveErrorKind::Refused)
+                {
+                    last_error = Some(ResolveError {
+                        kind: ResolveErrorKind::Refused,
+                        detail: error.to_string(),
+                    });
+                }
             }
             Ok(fetched) => match interpret_fetched(&fetched, query.record_type) {
                 Ok(records) if !records.is_empty() => {
@@ -980,6 +1012,75 @@ mod tests {
         .expect_err("all fail");
         assert_eq!(error.kind, ResolveErrorKind::Upstream);
         assert_eq!(error.detail, "refused");
+    }
+
+    fn blocked() -> Result<Response, TransportFailure> {
+        Err(TransportFailure {
+            kind: SourceOutcomeKind::ConnectFailure,
+            detail: "egress-policy: destination (0.0.0.0) is not publicly routable".into(),
+            blocked: true,
+        })
+    }
+
+    #[test]
+    fn a_pool_every_server_blocked_is_refused_before_sending() {
+        let transport = FakeTransport::new(vec![blocked(), blocked(), blocked()]);
+        let error = resolve_with_pool(
+            &transport,
+            &ResolveQuery {
+                name: "example.com".into(),
+                record_type: RecordType::A,
+            },
+        )
+        .expect_err("all blocked");
+        assert_eq!(error.kind, ResolveErrorKind::Refused);
+        assert_eq!(
+            error.kind.outcome_kind(),
+            SourceOutcomeKind::RefusedBeforeSending
+        );
+    }
+
+    #[test]
+    fn a_reached_server_beats_a_refusal_before_and_after_it() {
+        // A blocked egress, a server that was reached and timed out, then a blocked egress again:
+        // the pool is refused only when every server refused, so the timeout wins.
+        let transport = FakeTransport::new(vec![
+            blocked(),
+            Err(TransportFailure {
+                kind: SourceOutcomeKind::TtfbTimeout,
+                detail: "timed out".into(),
+                blocked: false,
+            }),
+            blocked(),
+        ]);
+        let error = resolve_with_pool(
+            &transport,
+            &ResolveQuery {
+                name: "example.com".into(),
+                record_type: RecordType::A,
+            },
+        )
+        .expect_err("all fail");
+        assert_eq!(error.kind, ResolveErrorKind::Timeout);
+    }
+
+    #[test]
+    fn keep_failure_prefers_a_reached_server_over_a_refusal() {
+        let mut slot = None;
+        keep_failure(&mut slot, ResolveErrorKind::Refused, "first".into());
+        assert_eq!(slot, Some((ResolveErrorKind::Refused, "first".to_owned())));
+        // A failure that reached a server replaces a held refusal.
+        keep_failure(&mut slot, ResolveErrorKind::Timeout, "reached".into());
+        assert_eq!(
+            slot,
+            Some((ResolveErrorKind::Timeout, "reached".to_owned()))
+        );
+        // A later refusal does not clobber the reached-server failure.
+        keep_failure(&mut slot, ResolveErrorKind::Refused, "again".into());
+        assert_eq!(
+            slot,
+            Some((ResolveErrorKind::Timeout, "reached".to_owned()))
+        );
     }
 
     fn doh(body: &[u8]) -> Response {

@@ -164,7 +164,8 @@ impl OathnetError {
             Self::Server(_) => SourceOutcomeKind::Upstream5xx,
             Self::Transport(kind) | Self::NotAnAnswer(kind) => *kind,
             Self::Decode(_) => SourceOutcomeKind::SchemaDrift,
-            Self::Refused(_) | Self::Provider(_) => SourceOutcomeKind::Inconclusive,
+            Self::Refused(_) => SourceOutcomeKind::RefusedBeforeSending,
+            Self::Provider(_) => SourceOutcomeKind::Inconclusive,
         }
     }
 

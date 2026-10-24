@@ -30,7 +30,7 @@ use crate::indicator_sources::Indicator;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::SourceExecutionOutcome;
 use crate::textnorm::upper_first;
 use crate::{duolingo, openpgp_keys};
 
@@ -114,16 +114,12 @@ impl Gathered {
         self.report.outcomes.push(outcome);
     }
 
-    /// Record a source the transport refused to send to: a failed row, like a timeout.
+    /// Record a source the guarded path refused to send to: a row that says nothing was sent.
     fn refused(&mut self, module: &str, now_unix: u64, message: String) {
         self.refused
             .get_or_insert_with(|| format!("{module}: {message}"));
-        self.outcome(SourceExecutionOutcome::failed(
-            module,
-            now_unix,
-            SourceOutcomeKind::ConnectFailure,
-            None,
-            message,
+        self.outcome(SourceExecutionOutcome::refused_before_sending(
+            module, now_unix, message,
         ));
     }
 
@@ -865,7 +861,7 @@ mod tests {
         assert_eq!(
             rows,
             [
-                ("gravatar", SourceOutcomeKind::ConnectFailure),
+                ("gravatar", SourceOutcomeKind::RefusedBeforeSending),
                 ("duolingo", SourceOutcomeKind::ValidZero),
                 ("openpgp_keys", SourceOutcomeKind::ValidZero),
                 ("stopforumspam", SourceOutcomeKind::ValidZero),
