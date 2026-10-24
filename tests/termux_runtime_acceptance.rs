@@ -77,8 +77,8 @@ fn scratch(tag: &str) -> PathBuf {
 /// Whether every command the harness needs is on PATH. CI must have them all.
 fn harness_tools_present() -> bool {
     let present = [
-        "bash", "timeout", "curl", "jq", "date", "grep", "chmod", "mktemp", "rm", "tee", "tail", "sleep",
-        "uname",
+        "bash", "timeout", "curl", "jq", "date", "grep", "chmod", "mktemp", "rm", "tee", "tail",
+        "sleep", "uname",
     ]
     .iter()
     .all(|tool| {
