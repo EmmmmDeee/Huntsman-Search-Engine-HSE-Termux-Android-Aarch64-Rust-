@@ -312,6 +312,22 @@ impl Keys {
         None
     }
 
+    /// Resolve one of the two provider slots that accept the same operator-issued
+    /// abuse.ch Auth-Key. The explicitly configured slot always takes precedence.
+    /// A fallback is read only when its paired slot is absent; no secret is copied
+    /// to persistent storage.
+    #[must_use]
+    pub fn provider_key(&self, slot: &str) -> Option<Secret> {
+        self.get(slot).or_else(|| {
+            let other = match slot {
+                environment::THREATFOX_KEY_ENV => environment::ABUSECH_KEY_ENV,
+                environment::ABUSECH_KEY_ENV => environment::THREATFOX_KEY_ENV,
+                _ => return None,
+            };
+            self.get(other)
+        })
+    }
+
     /// A runtime setting kept beside the keys, by the chain [`Self::get`] reads: the file's value,
     /// else the environment's when this `Keys` reads it. A setting is not a credential, so the
     /// environment's text is returned as it is, however it is shaped; only a value that is not
