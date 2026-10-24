@@ -1,0 +1,1 @@
+- Correct the mobile New Scan descriptions: All asks all eligible modules but cannot guarantee complete discovery or functioning providers; Passive uses provider classifications but cannot guarantee that requests are unobservable. Add source-level regression assertions. No changes to scan execution, permissions, API schemas, dependencies, credentials or stored evidence.
