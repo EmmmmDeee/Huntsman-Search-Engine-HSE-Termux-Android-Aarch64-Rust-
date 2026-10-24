@@ -72,10 +72,15 @@ pub enum DehashedError {
     Server(u16),
     #[error("dehashed: unexpected HTTP {0}")]
     Unexpected(u16),
-    /// No response. The kind is the cause the fetch observed (DNS, connect, TLS, a timeout), or
-    /// `Inconclusive` for a request refused before it was sent.
+    /// No response: the request was sent (or attempted) and the kind is the cause the fetch
+    /// observed (DNS, connect, TLS, a timeout).
     #[error("dehashed: transport error: request failed")]
     Transport(SourceOutcomeKind),
+    /// The guarded egress refused the request before it was sent: the policy dropped every address
+    /// of the destination, or the endpoint URL could not be parsed into a sendable https request.
+    /// Nothing reached the network, so it says nothing about the identifier.
+    #[error("dehashed: request refused before sending")]
+    Refused,
     /// A 200 that is not an API answer: a challenge page served in its place.
     #[error("dehashed: response is not an API answer ({0:?})")]
     NotAnAnswer(SourceOutcomeKind),
@@ -100,6 +105,7 @@ impl DehashedError {
             Self::Server(_) => SourceOutcomeKind::Upstream5xx,
             Self::Unexpected(status) => classify_http_status(*status),
             Self::Transport(kind) | Self::NotAnAnswer(kind) => *kind,
+            Self::Refused => SourceOutcomeKind::RefusedBeforeSending,
             Self::Decode(_) => SourceOutcomeKind::SchemaDrift,
             Self::Query(_)
             | Self::KeyFilePermissions
@@ -295,12 +301,16 @@ impl DehashedClient {
 }
 
 /// One request through [`fetch`], redirects off, with the response and what the fetch made of
-/// it. No response is [`DehashedError::Transport`] carrying the fetch's cause; nothing the
-/// transport said is kept, since it can name the request.
+/// it. A request the guarded egress refused before sending is [`DehashedError::Refused`] (fetch's
+/// `Err`); a request that was attempted but got no response is [`DehashedError::Transport`]
+/// carrying the fetch's cause; nothing the transport said is kept, since it can name the request.
 fn send(
     http: &dyn Transport,
     request: Request,
 ) -> Result<(Response, SourceExecutionOutcome), DehashedError> {
+    // `fetch` returns `Err` only when the request was refused before it was sent (egress policy
+    // blocked, or the endpoint URL could not be parsed); every request actually attempted comes
+    // back as a `Fetched`, with its response or with none and the fetch's cause (handled below).
     let fetched = fetch(
         http,
         request,
@@ -309,7 +319,7 @@ fn send(
         "dehashed",
         clock::unix_now(),
     )
-    .map_err(|_| DehashedError::Transport(SourceOutcomeKind::Inconclusive))?;
+    .map_err(|_| DehashedError::Refused)?;
     let Some(response) = fetched.response else {
         return Err(DehashedError::Transport(fetched.outcome.kind));
     };

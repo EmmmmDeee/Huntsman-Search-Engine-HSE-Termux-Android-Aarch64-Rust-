@@ -104,6 +104,7 @@ impl From<HibpError> for Failure {
             | HibpError::Server { .. }
             | HibpError::UnexpectedStatus { .. }
             | HibpError::Transport { .. }
+            | HibpError::Refused
             | HibpError::NotAnAnswer(_)
             | HibpError::Decode(_)
             | HibpError::OAuth(_) => EX_UNAVAILABLE,

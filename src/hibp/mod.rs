@@ -19,15 +19,20 @@ pub use key::{ApiKey, KeyLoader};
 use crate::http::{Request, Response, Transport};
 use crate::source_outcome::SourceOutcomeKind;
 
-/// One request through [`crate::fetch::fetch`], redirects off. No response is
-/// [`HibpError::Transport`] carrying the fetch's cause, and a 2xx challenge page is
-/// [`HibpError::NotAnAnswer`]; any other status is the caller's to map, so a 404 "not found"
+/// One request through [`crate::fetch::fetch`], redirects off. A request the guarded egress
+/// refused before sending is [`HibpError::Refused`] (fetch's `Err`); a request that was attempted
+/// but got no response is [`HibpError::Transport`] carrying the fetch's cause; a 2xx challenge page
+/// is [`HibpError::NotAnAnswer`]; any other status is the caller's to map, so a 404 "not found"
 /// still reaches it. Nothing the transport said is kept, since it can name the request.
 fn send(http: &dyn Transport, request: Request) -> Result<Response, HibpError> {
     let transport = |kind| HibpError::Transport {
         message: "request failed".into(),
         kind,
     };
+    // `fetch` returns `Err` only when the request was refused before it was sent: the egress
+    // policy blocked the destination, or the endpoint URL could not be parsed. Every request that
+    // was actually attempted comes back as a `Fetched` — with its response, or with none and the
+    // fetch's cause when there was no response (handled just below).
     let fetched = crate::fetch::fetch(
         http,
         request,
@@ -36,7 +41,7 @@ fn send(http: &dyn Transport, request: Request) -> Result<Response, HibpError> {
         "hibp",
         crate::clock::unix_now(),
     )
-    .map_err(|_| transport(SourceOutcomeKind::ConnectFailure))?;
+    .map_err(|_| HibpError::Refused)?;
     let Some(response) = fetched.response else {
         return Err(transport(fetched.outcome.kind));
     };
