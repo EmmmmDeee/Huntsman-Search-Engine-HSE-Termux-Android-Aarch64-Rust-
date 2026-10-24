@@ -18,6 +18,7 @@ blockchain	adapter	blockchain.info Bitcoin address source client reached through
 bluesky_user	adapter	public Bluesky profile source client
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
 canonical	runtime	canonicalization for entities and provenance
+censys	adapter	Censys Platform v3 IP host lookup reached through the indicator legs when a PAT is configured
 circuit	leaf	bounded circuit/cache state
 ckan	adapter	CKAN source adapter
 claim_coverage	leaf	shadow-mode claim coverage accounting
