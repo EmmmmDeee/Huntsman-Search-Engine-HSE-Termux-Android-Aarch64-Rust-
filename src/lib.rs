@@ -66,6 +66,7 @@ pub mod doctor;
 pub mod domain_cli;
 pub mod domain_lifecycle;
 pub mod domains;
+pub mod dossier_view;
 pub mod duolingo;
 pub mod egress;
 pub mod email_cli;

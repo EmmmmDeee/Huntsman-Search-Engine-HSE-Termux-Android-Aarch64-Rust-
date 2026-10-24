@@ -1309,6 +1309,24 @@ fn respond_with(
     bytes
 }
 
+/// Render the health contract without inflating the shared request router.
+fn health_response(config: &ServeConfig, head: bool) -> String {
+    let body = serde_json::to_string_pretty(&Health {
+        status: "ok",
+        name: "huntsman-recon",
+        version: env!("CARGO_PKG_VERSION"),
+        build_sha: crate::diagnostics::embedded_build_sha(),
+        page: &PAGE_ID,
+        auth: if config.bearer_token.is_some() {
+            "token"
+        } else {
+            "none"
+        },
+    })
+    .unwrap_or_else(|_| "{\"status\":\"error\"}".into());
+    json_ok(&body, head)
+}
+
 /// The answer to a parsed request: the guards every route shares, then the route's own.
 fn route(
     parsed: &ParsedRequest<'_>,
@@ -1353,6 +1371,8 @@ fn route(
             | "/api/command"
             | "/api/lookup"
             | "/api/analyze"
+            | "/api/evidence"
+            | "/evidence"
             | "/api/radar/wifi"
             | "/api/radar/cells"
             | TRACK_PATH
@@ -1369,22 +1389,7 @@ fn route(
     }
     let text = match parsed.path {
         "/" | "/index.html" => response(200, "text/html; charset=utf-8", &PAGE, head),
-        "/api/health" => {
-            let body = serde_json::to_string_pretty(&Health {
-                status: "ok",
-                name: "huntsman-recon",
-                version: env!("CARGO_PKG_VERSION"),
-                build_sha: crate::diagnostics::embedded_build_sha(),
-                page: &PAGE_ID,
-                auth: if config.bearer_token.is_some() {
-                    "token"
-                } else {
-                    "none"
-                },
-            })
-            .unwrap_or_else(|_| "{\"status\":\"error\"}".into());
-            json_ok(&body, head)
-        }
+        "/api/health" => health_response(config, head),
         "/api/modules" => {
             let body = serde_json::to_string_pretty(&serde_json::json!({
                 "count": reachable_modules().len(),
@@ -1411,6 +1416,8 @@ fn route(
         }
         TRACK_PATH => sensor_response(parsed, routes.track.as_ref(), "radar track", Method::Post),
         "/api/analyze" => analyze_response(parsed, routes.analyze.as_ref()),
+        "/evidence" => dossier_page_response(parsed, config),
+        "/api/evidence" => dossier_json_response(parsed, config),
         KEYS_PATH => keys_response(parsed, routes.keys_home.as_deref()),
         INSPECT_PATH => inspect_response(parsed, upload, routes),
         INVESTIGATE_PATH => investigate_response(parsed, routes.investigate.as_ref()),
@@ -1419,6 +1426,61 @@ fn route(
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
     };
     text.into_bytes()
+}
+
+/** Render the complete case dossier on loopback only; never expose local case material on a public bind. */
+fn dossier_page_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> String {
+    let head = parsed.method == Method::Head;
+    if !config.bind.ip().is_loopback() {
+        return json_error(403, "local evidence is available only on a loopback bind");
+    }
+    if !parsed.query.is_empty() {
+        return json_error(400, "evidence page takes no query parameters");
+    }
+    match crate::dossier_view::load().and_then(|document| crate::dossier_view::render(&document)) {
+        Ok(html) => response(200, "text/html; charset=utf-8; hse=dossier", &html, head),
+        Err(message) => {
+            let code = if message.contains("exceeds") {
+                413
+            } else if message.contains("cannot open") {
+                404
+            } else {
+                422
+            };
+            response(
+                code,
+                "text/plain; charset=utf-8",
+                &format!("{message}\n"),
+                head,
+            )
+        }
+    }
+}
+
+/// Return the complete source register, preserving all fields and records.
+fn dossier_json_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> String {
+    if !config.bind.ip().is_loopback() {
+        return json_error(403, "local evidence is available only on a loopback bind");
+    }
+    if !parsed.query.is_empty() {
+        return json_error(400, "evidence API takes no query parameters");
+    }
+    match crate::dossier_view::load() {
+        Ok(document) => match serde_json::to_string(&document) {
+            Ok(json) => json_ok(&json, parsed.method == Method::Head),
+            Err(_) => json_error(500, "dossier serialization failed"),
+        },
+        Err(message) => {
+            let code = if message.contains("exceeds") {
+                413
+            } else if message.contains("cannot open") {
+                404
+            } else {
+                422
+            };
+            json_error(code, &message)
+        }
+    }
 }
 
 /// The answer to a protected request without the server's token. It names the remedy, because the
@@ -2223,6 +2285,14 @@ static PAGE_POLICY: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// Dedicated, script-free CSP for locally rendered dossier pages.
+static DOSSIER_POLICY: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "default-src 'none'; script-src 'none'; style-src '{}'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        hash_source(crate::dossier_view::STYLE)
+    )
+});
+
 /// Every other response loads nothing and may not be framed.
 const OTHER_POLICY: &str = "default-src 'none'; frame-ancestors 'none'";
 
@@ -2295,7 +2365,9 @@ fn response_head(status: u16, content_type: &str, content_length: usize, extra: 
         401 => "WWW-Authenticate: Bearer realm=\"huntsman-recon\"\r\n",
         _ => "",
     };
-    let policy = if content_type.starts_with("text/html") {
+    let policy = if content_type.ends_with("; hse=dossier") {
+        DOSSIER_POLICY.as_str()
+    } else if content_type.starts_with("text/html") {
         PAGE_POLICY.as_str()
     } else {
         OTHER_POLICY
@@ -2355,6 +2427,25 @@ mod tests {
         } else {
             loopback_bind()
         }
+    }
+
+    #[test]
+    fn local_evidence_cannot_be_read_from_a_public_bind_even_with_token() {
+        for path in ["/evidence", "/api/evidence"] {
+            let request = format!(
+                "GET {path} HTTP/1.1\r\nHost: public.example\r\nAuthorization: Bearer secret\r\n\r\n"
+            );
+            let answer = response_for_request(&request, Some("secret"), public_bind());
+            assert!(answer.starts_with("HTTP/1.1 403"), "{path}: {answer}");
+        }
+    }
+
+    #[test]
+    fn evidence_html_has_a_dedicated_script_free_policy() {
+        let headers = response_head(200, "text/html; charset=utf-8; hse=dossier", 10, "");
+        assert!(headers.contains("script-src 'none'; style-src 'sha256-"));
+        assert!(!headers.contains("unsafe-inline"));
+        assert!(headers.contains("frame-ancestors 'none'"));
     }
 
     /// Running out of descriptors or memory must not end `serve`, and losing the pending
