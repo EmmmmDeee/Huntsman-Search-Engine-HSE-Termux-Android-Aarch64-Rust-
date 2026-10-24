@@ -59,6 +59,7 @@ pub enum GraphError {
     SelfLink,
     EmptyEndpoint,
     DuplicateEvidenceReference,
+    ResourceLimitExceeded,
 }
 
 impl EntityTree {
@@ -165,6 +166,13 @@ impl EntityTree {
         self.validate()?;
         if !self.nodes.iter().any(|node| node.id == root) {
             return Err(GraphError::UnknownEndpoint(root.to_owned()));
+        }
+        // Cap work on malformed or oversized inputs before building adjacency.
+        // Existing public graph representation remains unchanged.
+        const MAX_GRAPH_NODES: usize = 100_000;
+        const MAX_GRAPH_EDGES: usize = 200_000;
+        if self.nodes.len() > MAX_GRAPH_NODES || self.edges.len() > MAX_GRAPH_EDGES {
+            return Err(GraphError::ResourceLimitExceeded);
         }
         let limit = max_nodes.min(10_000);
         if limit == 0 {
