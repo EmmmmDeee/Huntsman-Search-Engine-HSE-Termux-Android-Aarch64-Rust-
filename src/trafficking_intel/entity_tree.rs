@@ -69,11 +69,16 @@ impl EntityTree {
             return Err(GraphError::ResourceLimitExceeded);
         }
         const MAX_FIELD_BYTES: usize = 2_048;
-        if self.nodes.iter().any(|n| n.id.len() > MAX_FIELD_BYTES || n.label.len() > MAX_FIELD_BYTES)
-            || self.edges.iter().any(|e| e.from.len() > MAX_FIELD_BYTES
-                || e.to.len() > MAX_FIELD_BYTES
-                || e.evidence_refs.len() > 256
-                || e.evidence_refs.iter().any(|r| r.len() > MAX_FIELD_BYTES))
+        if self
+            .nodes
+            .iter()
+            .any(|n| n.id.len() > MAX_FIELD_BYTES || n.label.len() > MAX_FIELD_BYTES)
+            || self.edges.iter().any(|e| {
+                e.from.len() > MAX_FIELD_BYTES
+                    || e.to.len() > MAX_FIELD_BYTES
+                    || e.evidence_refs.len() > 256
+                    || e.evidence_refs.iter().any(|r| r.len() > MAX_FIELD_BYTES)
+            })
         {
             return Err(GraphError::ResourceLimitExceeded);
         }
