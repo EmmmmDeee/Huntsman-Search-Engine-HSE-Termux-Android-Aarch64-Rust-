@@ -125,7 +125,7 @@ fn run(
         );
     };
 
-    let mut problems = Vec::new();
+    let mut problems = build_revision_problems(&health, crate::diagnostics::embedded_build_sha());
     match get(addr, "/", None, timeout) {
         Ok(page) => problems.extend(page_problems(&page)),
         Err(error) => problems.push(format!("/: {}", error.kind())),
@@ -163,6 +163,30 @@ fn huntsman_version(response: &Response) -> Option<String> {
         return None;
     }
     Some(value.get("version")?.as_str()?.to_owned())
+}
+
+/// A running server on the same port can predate the CLI's last install.
+/// "Healthy" must not hide a known revision mismatch; absent metadata from an
+/// older server is an explicit verification gap. Development builds without an
+/// embedded commit cannot enforce revision parity.
+fn build_revision_problems(health: &Response, expected: &str) -> Vec<String> {
+    if expected == "unknown" {
+        return Vec::new();
+    }
+    let reported = serde_json::from_str::<serde_json::Value>(&health.body)
+        .ok()
+        .and_then(|value| value.get("build_sha")?.as_str().map(str::to_owned));
+    match reported.as_deref() {
+        Some(revision) if revision == expected => Vec::new(),
+        Some(revision) if crate::diagnostics::normalized_build_sha(revision) != "unknown" => {
+            vec![format!(
+                "/api/health running build {revision} differs from installed CLI build {expected}; restart the Huntsman web service"
+            )]
+        }
+        _ => vec![
+            "/api/health did not report a verifiable running build SHA; restart or upgrade the Huntsman web service".to_owned(),
+        ],
+    }
 }
 
 /// Why the page would not work in a browser, or nothing when it would.
@@ -320,6 +344,33 @@ mod tests {
         let mut broken = page("go()", "go()");
         broken.body = broken.body.replace("/api/analyze", "");
         assert_eq!(page_problems(&broken), ["/ does not call /api/analyze"]);
+    }
+
+    #[test]
+    fn a_known_cli_revision_requires_matching_running_server_revision() {
+        const EXPECTED: &str = "0123456789abcdef0123456789abcdef01234567";
+        const DIFFERENT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let health = |sha: Option<&str>| {
+            response(
+                200,
+                &[],
+                &serde_json::json!({
+                    "name": "huntsman-recon",
+                    "version": "0.2.0",
+                    "build_sha": sha,
+                })
+                .to_string(),
+            )
+        };
+        assert!(build_revision_problems(&health(Some(EXPECTED)), EXPECTED).is_empty());
+        let mismatch = build_revision_problems(&health(Some(DIFFERENT)), EXPECTED);
+        assert_eq!(mismatch.len(), 1);
+        assert!(mismatch[0].contains("differs from installed CLI build"));
+        let unknown = build_revision_problems(&health(None), EXPECTED);
+        assert_eq!(unknown.len(), 1);
+        assert!(unknown[0].contains("did not report"));
+        // No false revision assertion when the build does not embed provenance.
+        assert!(build_revision_problems(&health(Some(DIFFERENT)), "unknown").is_empty());
     }
 
     #[test]
