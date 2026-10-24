@@ -441,8 +441,9 @@ fn keyed() -> Keys {
 }
 
 #[test]
-fn collect_for_lookup_without_key_makes_no_request() {
-    // A lookup with no SeekNow key is unchanged: the leg returns None and sends nothing.
+fn collect_for_lookup_without_key_makes_no_request_and_says_so() {
+    // A lookup with no SeekNow key sends nothing, and its report carries the one row that says
+    // the leg was asked and skipped for lack of a key, as every other keyed leg leaves.
     let transport = ScriptedTransport::new(Vec::new());
     let leg = collect_for_lookup(
         &transport,
@@ -450,8 +451,16 @@ fn collect_for_lookup_without_key_makes_no_request() {
         "alice@example.com",
         &Keys::default(),
         30,
+    )
+    .expect("the skipped leg is reported");
+    assert!(leg.entities.is_empty(), "{:?}", leg.entities);
+    assert_eq!(leg.outcomes.len(), 1);
+    assert_eq!(leg.outcomes[0].module, "seeknow");
+    assert_eq!(leg.outcomes[0].kind, SourceOutcomeKind::NotConfigured);
+    assert_eq!(
+        leg.outcomes[0].detail.as_deref(),
+        Some("no operator key configured; no request made")
     );
-    assert!(leg.is_none());
     assert_eq!(transport.request_count(), 0);
 }
 

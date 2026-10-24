@@ -184,6 +184,19 @@ pub struct LookupLeg {
     pub outcomes: Vec<SourceExecutionOutcome>,
 }
 
+impl LookupLeg {
+    /// Whether `SeekNow` was asked: a leg skipped for lack of a key made no request and carries
+    /// only the row saying so.
+    #[must_use]
+    pub fn asked(&self) -> bool {
+        !self.entities.is_empty()
+            || self
+                .outcomes
+                .iter()
+                .any(|outcome| outcome.kind != SourceOutcomeKind::NotConfigured)
+    }
+}
+
 /// The operator-approved `SeekNow` credential built from `keys`.
 ///
 /// This is the single builder for both the `seeknow` command and the lookup leg, so the
@@ -229,8 +242,18 @@ pub fn collect_for_lookup<T: Transport + ?Sized>(
     keys: &Keys,
     now_unix: u64,
 ) -> Option<LookupLeg> {
-    if keys.get(KEY_SLOT).is_none() || !SeekNowCollector.accepts(&kind) {
+    if !SeekNowCollector.accepts(&kind) {
         return None;
+    }
+    if keys.get(KEY_SLOT).is_none() {
+        // Asked without a key: no request, and the row that says so, as every keyed leg leaves.
+        return Some(LookupLeg {
+            entities: Vec::new(),
+            outcomes: vec![SourceExecutionOutcome::not_configured(
+                COLLECTOR_ID,
+                now_unix,
+            )],
+        });
     }
     let credential = operator_credential(keys, now_unix, "huntsman-recon lookup").ok()?;
     let scan_id = crate::entity::scan_id(&kind.to_string(), value);

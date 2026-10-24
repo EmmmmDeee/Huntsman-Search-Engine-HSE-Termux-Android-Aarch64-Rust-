@@ -68,6 +68,10 @@ impl PeopleArgs {
 /// Result of one `people` invocation, before the binary maps it to an exit code.
 pub type PeopleRun = SourceRun<Report>;
 
+/// What a name of fewer than two alphabetic tokens prints: no register is asked and nothing is
+/// saved.
+pub const SKIP_LINE: &str = "people: skipped (need two alphabetic tokens)\n";
+
 /// Look up `name` over `transport` and render entities, outcomes, and lineage, asking each
 /// register only when the transport's lookup asks its module ([`Transport::runs_module`]).
 /// A single-token name prints the skip line and makes no request.
@@ -76,7 +80,7 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
     let name = canonical_name(name);
     if name_tokens(&name).len() < 2 {
         return PeopleRun::Printed {
-            text: "people: skipped (need two alphabetic tokens)\n".into(),
+            text: SKIP_LINE.into(),
             report: Report::default(),
         };
     }

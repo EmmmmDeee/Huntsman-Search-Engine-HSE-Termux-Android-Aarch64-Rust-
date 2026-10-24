@@ -165,6 +165,10 @@ fn compose_people(run: PeopleRun, seeknow: Option<LookupLeg>) -> Result<Collecte
     let policies = (PEOPLE_POLICY, PEOPLE_POLICY);
     match run {
         PeopleRun::Printed { text, report } => {
+            // The skip (fewer than two name tokens) asked no register and saves nothing, so a
+            // `SeekNow` leg that made no request either, for lack of a key, adds nothing to it; a
+            // leg that ran is kept, as it was.
+            let seeknow = seeknow.filter(|leg| text != people_cli::SKIP_LINE || leg.asked());
             let (text, entities, outcomes) =
                 with_seeknow_leg(seeknow, text, report.entities, report.outcomes)?;
             Ok(done(text, entities, outcomes, policies.0))
@@ -286,7 +290,7 @@ fn seeknow_leg(
 
 /// Append a `SeekNow` leg to a lookup's report.
 ///
-/// With no leg (no key, or `seeknow` not asked), the report is returned unchanged, byte for byte. With one, `SeekNow`'s
+/// With no leg (`seeknow` not asked), the report is returned unchanged, byte for byte. With one, `SeekNow`'s
 /// entities are merged into the report by uid, its source outcome is appended, and the report
 /// text is re-rendered so the console shows the merged result. A `SeekNow` failure is reported
 /// as one outcome row, never an abort of the lookup.
@@ -884,6 +888,28 @@ mod tests {
             .err()
             .unwrap_or_else(|| panic!("a lookup nothing answered was reported"));
         assert_eq!(refused.exit_status(), EX_UNAVAILABLE);
+    }
+
+    /// A name the people lookup skips prints the skip line alone, with nothing to save, when
+    /// `SeekNow` has no key and so made no request either; what a keyed `SeekNow` found is kept.
+    #[test]
+    fn a_skipped_people_lookup_keeps_its_skip_line_when_seeknow_has_no_key() {
+        let skipped = || PeopleRun::Printed {
+            text: people_cli::SKIP_LINE.into(),
+            report: people_cli::Report::default(),
+        };
+        let not_configured = LookupLeg {
+            entities: Vec::new(),
+            outcomes: vec![SourceExecutionOutcome::not_configured("seeknow", 1)],
+        };
+        assert!(!not_configured.asked());
+        let alone = compose_people(skipped(), Some(not_configured))
+            .unwrap_or_else(|refused| panic!("refused: {}", refused.message()));
+        assert_eq!(alone.text, people_cli::SKIP_LINE);
+        assert_eq!((alone.entities.len(), alone.outcomes.len()), (0, 0));
+        let found = compose_people(skipped(), Some(seeknow_found()))
+            .unwrap_or_else(|refused| panic!("refused: {}", refused.message()));
+        found_by_seeknow(&found);
     }
 
     /// An exposure leg that answered is reported the same way, saved as an exposure.
