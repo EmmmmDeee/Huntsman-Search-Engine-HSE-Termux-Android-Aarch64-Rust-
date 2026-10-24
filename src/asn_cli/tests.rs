@@ -241,6 +241,26 @@ fn the_ripestat_row_is_refused_only_when_every_call_was_refused() {
     assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Upstream5xx);
 }
 
+/// When no call answered, the lookup ends from its one ripestat row (and the RDAP row) through
+/// `SourceReach`: a request refused before sending is a refusal (exit 77), and no response at
+/// all is "no usable response" (exit 69) with the first reason in row order.
+#[test]
+fn no_source_answered_is_a_refusal_or_no_response_from_its_rows() {
+    match run(&crate::test_support::Refusing, "AS13335", 1) {
+        AsnRun::Network(message) => assert!(message.contains("egress-policy"), "{message}"),
+        AsnRun::Failed(message) => panic!("failed: {message}"),
+        AsnRun::Printed { text, .. } => panic!("printed: {text}"),
+    }
+    match run(&RoutedTransport::new(&[]), "AS13335", 1) {
+        AsnRun::Failed(message) => assert!(
+            message.starts_with("no source answered for AS13335: "),
+            "{message}"
+        ),
+        AsnRun::Network(message) => panic!("network: {message}"),
+        AsnRun::Printed { text, .. } => panic!("printed: {text}"),
+    }
+}
+
 /// Answers as [`registry`] does, except that the call whose path holds `.1` panics.
 struct PanicsOn(RoutedTransport, String);
 
