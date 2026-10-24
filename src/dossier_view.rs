@@ -102,10 +102,10 @@ pub fn validate(document: &Value) -> Result<usize, String> {
 
 /// Load at most 4 MiB. Avoid silently truncating by reading one byte beyond the bound.
 pub fn load() -> Result<Value, String> {
-    let path = std::env::var_os("HUNTSMAN_DOSSIER_PATH")
+    let path = crate::environment::dossier_path()
         .map(PathBuf::from)
         .or_else(|| {
-            std::env::var_os("HOME")
+            crate::environment::home()
                 .map(|h| PathBuf::from(h).join(".huntsman/dossier/register.json"))
         })
         .ok_or("Set HOME or HUNTSMAN_DOSSIER_PATH")?;

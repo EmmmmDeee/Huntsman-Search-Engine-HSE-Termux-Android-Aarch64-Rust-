@@ -28,6 +28,8 @@ pub const HIBP_RATE_LIMIT_ENV: &str = "HIBP_RATE_LIMIT_PER_MINUTE";
 pub const PROVIDER_COST_ENV_PREFIX: &str = "HSE_PROVIDER_COST_";
 /// The state directory `install.sh` uses instead of `~/.huntsman` when this is set.
 pub const HUNTSMAN_HOME_ENV: &str = "HUNTSMAN_HOME";
+/// Optional path to the local, read-only evidence dossier, not an API key.
+pub const DOSSIER_PATH_ENV: &str = "HUNTSMAN_DOSSIER_PATH";
 /// The runtime variables file `install.sh` creates instead of `~/.huntsman.env` when this is set.
 /// `huntsman-recon` reads only `~/.huntsman.env`; `doctor` reports the difference.
 pub const HUNTSMAN_ENV_FILE_ENV: &str = "HUNTSMAN_ENV_FILE";
@@ -107,6 +109,7 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     HUNTSMAN_HIBP_KEY_ENV,
     HIBP_RATE_LIMIT_ENV,
     HUNTSMAN_HOME_ENV,
+    DOSSIER_PATH_ENV,
     HUNTSMAN_ENV_FILE_ENV,
     SERVE_BIND_ENV,
     CA_BUNDLE_ENV,
@@ -169,6 +172,12 @@ pub fn is_known_variable(name: &str) -> bool {
 #[must_use]
 pub fn home() -> Option<OsString> {
     std::env::var_os(HOME_ENV)
+}
+
+/// The operator-selected local evidence register file, if configured.
+#[must_use]
+pub fn dossier_path() -> Option<OsString> {
+    std::env::var_os(DOSSIER_PATH_ENV)
 }
 
 /// `$TERMUX_VERSION`, when it is set. The Termux app exports it in every shell it starts.
