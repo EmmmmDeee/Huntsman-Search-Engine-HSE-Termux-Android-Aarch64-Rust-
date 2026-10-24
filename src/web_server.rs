@@ -1224,20 +1224,20 @@ fn respond_with(
 
 /// Render the health contract without inflating the shared request router.
 fn health_response(config: &ServeConfig, head: bool) -> String {
-        let body = serde_json::to_string_pretty(&Health {
-            status: "ok",
-            name: "huntsman-recon",
-            version: env!("CARGO_PKG_VERSION"),
-            build_sha: crate::diagnostics::embedded_build_sha(),
-            page: &PAGE_ID,
-            auth: if config.bearer_token.is_some() {
-                "token"
-            } else {
-                "none"
-            },
-        })
-        .unwrap_or_else(|_| "{\"status\":\"error\"}".into());
-        json_ok(&body, head)
+    let body = serde_json::to_string_pretty(&Health {
+        status: "ok",
+        name: "huntsman-recon",
+        version: env!("CARGO_PKG_VERSION"),
+        build_sha: crate::diagnostics::embedded_build_sha(),
+        page: &PAGE_ID,
+        auth: if config.bearer_token.is_some() {
+            "token"
+        } else {
+            "none"
+        },
+    })
+    .unwrap_or_else(|_| "{\"status\":\"error\"}".into());
+    json_ok(&body, head)
 }
 
 /// The answer to a parsed request: the guards every route shares, then the route's own.
