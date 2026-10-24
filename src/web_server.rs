@@ -2502,6 +2502,51 @@ mod tests {
     /// start hidden, a call carries `Authorization` only then, and a loopback answer clears a token
     /// an earlier page stored. A public bind still gets the field, the `#token=` fragment and the
     /// prompt on a refusal.
+    /// Provenance the API answers reaches the screen: when each source was queried, the module and
+    /// false-positive flag of every graph node, every data type in the legend (no first-20 cut),
+    /// each Inspect reader's claim with its recording time and the full report, and a bulk action
+    /// that names the scans it could not act on instead of stopping at the first refusal.
+    #[test]
+    fn the_page_shows_the_provenance_the_api_answers() {
+        let script = inline_block(INDEX_HTML, "script");
+        assert!(
+            INDEX_HTML.contains("<th>Source</th><th>Outcome</th><th>Observed</th><th>Detail</th>")
+        );
+        assert!(
+            script.contains(
+                "fill('srcs',src,o=>[o.module,'',when(o.observed_at_unix*1000),why(o)]);"
+            )
+        );
+        assert!(
+            script.contains(
+                "(i.first_observed_unix?' · first '+when(i.first_observed_unix*1000):'')"
+            )
+        );
+        assert!(script.contains("(i.category?' · '+i.category:'')+(i.outcome?' · '+i.outcome:'')"));
+        assert!(script.contains("module:n.module,fp:!!n.fp,"));
+        assert!(script.contains("(n.module?' · '+n.module:'')+(n.fp?' · false positive':'')"));
+        assert!(script.contains("for(const t of types){"));
+        assert!(!script.contains("types.slice(0,20)"));
+        assert!(script.contains("lg.append(el('span','',flagged+' flagged false positive'))"));
+        assert!(INDEX_HTML.contains("<th>source</th><th>claim</th><th>recorded</th>"));
+        assert!(
+            INDEX_HTML.contains("<th>source</th><th>field</th><th>value</th><th>recorded</th>")
+        );
+        assert!(INDEX_HTML.contains(
+            r#"<details><summary>Full report</summary><pre id="ireport"></pre></details>"#
+        ));
+        assert!(script.contains("claims.push([src,x.summary,at]);"));
+        assert!(script.contains("at=when(x.provenance?.recorded_at_unix*1000)"));
+        assert!(script.contains("$('ireport').textContent=r.text||'';"));
+        assert!(script.contains("when(e.observed_at_unix*1000)"));
+        assert!(script.contains("(o.observed_at_unix?' at '+when(o.observed_at_unix*1000):'')"));
+        assert!(
+            script
+                .contains("failed.push(((scans.find(s=>s.id===id)||{}).name||id)+': '+e.message)")
+        );
+        assert!(script.contains("fail(where,(ids.length-failed.length)+' of '+ids.length+' done · failed: '+failed.join(' · '))"));
+    }
+
     #[test]
     fn the_page_asks_for_a_token_only_when_the_server_needs_one() {
         let script = inline_block(INDEX_HTML, "script");

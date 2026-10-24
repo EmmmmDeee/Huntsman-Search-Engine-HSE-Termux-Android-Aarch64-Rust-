@@ -28,7 +28,11 @@ const PAGE: &str = include_str!("../src/web_ui.html");
 /// views Spiderfoot lacks without letting the page grow unchecked. It was raised from 112 KiB for
 /// the Inspect view (file metadata): at 114 KiB the check measured 46 ms loaded, 56 ms painted.
 /// A 2-KiB bounded increment covers on-demand raw evidence export; browser timing is gated.
-const PAGE_BUDGET: usize = 118 * 1024;
+/// Raised to 121 KiB for provenance the page once dropped: when each source was queried, the
+/// module and false-positive flag of a graph node, every data type in the legend, each Inspect
+/// reader's claim with its recording time and the full report, and bulk actions that name their
+/// failures instead of stopping at the first.
+const PAGE_BUDGET: usize = 121 * 1024;
 /// WCAG 2.2 AA for text under 18.66 px bold or 24 px: the page has none larger.
 const AA: f64 = 4.5;
 /// WCAG 2.2 AA for a graphical object a reader must see (1.4.11), such as a graph node.
@@ -314,6 +318,11 @@ const PAGE_READS: &[(&str, &str, &str)] = &[
     ("scan", "/sources/1/http_status", "o.http_status"),
     ("scan", "/sources/1/retry_after_secs", "o.retry_after_secs"),
     ("scan", "/sources/1/detail", "o.detail"),
+    (
+        "scan",
+        "/sources/0/observed_at_unix",
+        "when(o.observed_at_unix*1000)",
+    ),
     ("summary", "/0/type", "t.type"),
     ("summary", "/0/description", "t.description||t.type"),
     ("summary", "/0/total", "t.total"),
@@ -350,6 +359,8 @@ const PAGE_READS: &[(&str, &str, &str)] = &[
     ("log", "/0/level", "x.level"),
     ("log", "/0/message", "x.message"),
     ("graph", "/nodes/0/id", "n.id"),
+    ("graph", "/nodes/0/module", "module:n.module"),
+    ("graph", "/nodes/0/fp", "fp:!!n.fp"),
     ("graph", "/nodes/0/type", "n.type"),
     ("graph", "/nodes/0/data", "n.data"),
     ("graph", "/edges/0/source", "e.source"),
