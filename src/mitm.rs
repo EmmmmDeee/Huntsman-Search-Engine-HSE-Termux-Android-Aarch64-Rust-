@@ -120,7 +120,10 @@ impl TrustedBaseline {
         if anchors.len() > MAX_ANCHORS {
             return Err("too many BSSIDs for one baseline".into());
         }
-        if anchors.values().any(|security| *security == Security::Unknown) {
+        if anchors
+            .values()
+            .any(|security| *security == Security::Unknown)
+        {
             return Err("unknown security: cannot create verified baseline".into());
         }
         let baseline = Self {
@@ -197,7 +200,8 @@ pub fn assess(scan: &WifiScan, baseline: &TrustedBaseline) -> Result<Report, Str
     let mut inspected = 0;
     let mut any_unknown = false;
     for obs in &scan.observations {
-        if obs.freshness == "stale" || obs.sighting.name.as_deref() != Some(baseline.ssid.as_str()) {
+        if obs.freshness == "stale" || obs.sighting.name.as_deref() != Some(baseline.ssid.as_str())
+        {
             continue;
         }
         let bssid = obs.sighting.network_id.to_ascii_lowercase();
@@ -285,8 +289,7 @@ pub fn assess(scan: &WifiScan, baseline: &TrustedBaseline) -> Result<Report, Str
     }
 
     findings.sort_by(|a, b| {
-        (&a.bssid, a.kind, a.evidence.as_str())
-            .cmp(&(&b.bssid, b.kind, b.evidence.as_str()))
+        (&a.bssid, a.kind, a.evidence.as_str()).cmp(&(&b.bssid, b.kind, b.evidence.as_str()))
     });
     findings.dedup_by(|a, b| a.bssid == b.bssid && a.kind == b.kind);
     let incomplete = inspected == 0 || scan.status == "inconclusive" || scan.status == "stale_only";
@@ -309,7 +312,8 @@ pub fn assess(scan: &WifiScan, baseline: &TrustedBaseline) -> Result<Report, Str
         limitations.push("At least one security advertisement could not be classified.");
     }
     if trusted_seen.is_empty() {
-        limitations.push("No trusted BSSID was observed: the baseline cannot be independently confirmed.");
+        limitations
+            .push("No trusted BSSID was observed: the baseline cannot be independently confirmed.");
     }
     Ok(Report {
         status,
@@ -344,7 +348,9 @@ mod tests {
     #[test]
     fn spoofed_name_open_is_high_but_not_confirmed() {
         let b = TrustedBaseline::enroll(&scan(GOOD), "Home").unwrap();
-        let s = scan(r#"[{"ssid":"Home","bssid":"a0:11:22:33:44:66","rssi":-20,"capabilities":"[ESS]"}]"#);
+        let s = scan(
+            r#"[{"ssid":"Home","bssid":"a0:11:22:33:44:66","rssi":-20,"capabilities":"[ESS]"}]"#,
+        );
         let r = assess(&s, &b).unwrap();
         assert_eq!(r.status, "suspected");
         assert_eq!(r.findings[0].kind, "unrecognized_open_ap");
@@ -353,7 +359,9 @@ mod tests {
     #[test]
     fn a_new_protected_mesh_radio_is_only_review() {
         let b = TrustedBaseline::enroll(&scan(GOOD), "Home").unwrap();
-        let s = scan(r#"[{"ssid":"Home","bssid":"a0:11:22:33:44:66","rssi":-20,"capabilities":"[WPA2-PSK-CCMP][ESS]"}]"#);
+        let s = scan(
+            r#"[{"ssid":"Home","bssid":"a0:11:22:33:44:66","rssi":-20,"capabilities":"[WPA2-PSK-CCMP][ESS]"}]"#,
+        );
         let r = assess(&s, &b).unwrap();
         assert_eq!(r.status, "review");
     }
@@ -361,14 +369,22 @@ mod tests {
     #[test]
     fn security_change_on_known_bssid() {
         let b = TrustedBaseline::enroll(&scan(GOOD), "Home").unwrap();
-        let s = scan(r#"[{"ssid":"Home","bssid":"a0:11:22:33:44:55","rssi":-60,"capabilities":"[ESS]"}]"#);
-        assert_eq!(assess(&s, &b).unwrap().findings[0].kind, "security_downgrade");
+        let s = scan(
+            r#"[{"ssid":"Home","bssid":"a0:11:22:33:44:55","rssi":-60,"capabilities":"[ESS]"}]"#,
+        );
+        assert_eq!(
+            assess(&s, &b).unwrap().findings[0].kind,
+            "security_downgrade"
+        );
     }
 
     #[test]
     fn unknown_not_open_and_no_match_not_safe() {
         assert_eq!(classify_capabilities(None), Security::Unknown);
-        assert_eq!(classify_capabilities(Some("[OWE_TRANSITION][ESS]")), Security::EnhancedOpen);
+        assert_eq!(
+            classify_capabilities(Some("[OWE_TRANSITION][ESS]")),
+            Security::EnhancedOpen
+        );
         let b = TrustedBaseline::enroll(&scan(GOOD), "Home").unwrap();
         assert_eq!(assess(&scan("[]"), &b).unwrap().status, "inconclusive");
     }
@@ -384,9 +400,17 @@ mod tests {
     #[test]
     fn conflicting_capabilities_reported() {
         let b = TrustedBaseline::enroll(&scan(GOOD), "Home").unwrap();
-        let s = scan(r#"[
+        let s = scan(
+            r#"[
             {"ssid":"Home","bssid":"a0:11:22:33:44:55","rssi":-60,"capabilities":"[WPA2-PSK-CCMP][ESS]"},
-            {"ssid":"Home","bssid":"a0:11:22:33:44:55","rssi":-60,"capabilities":"[ESS]"}]"#);
-        assert!(assess(&s, &b).unwrap().findings.iter().any(|f| f.kind == "conflicting_advertisement"));
+            {"ssid":"Home","bssid":"a0:11:22:33:44:55","rssi":-60,"capabilities":"[ESS]"}]"#,
+        );
+        assert!(
+            assess(&s, &b)
+                .unwrap()
+                .findings
+                .iter()
+                .any(|f| f.kind == "conflicting_advertisement")
+        );
     }
 }
