@@ -1,5 +1,5 @@
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use super::*;
 use crate::dehashed::DehashedClient;
@@ -135,70 +135,72 @@ fn ended<R>(run: SourceRun<R>, rows: impl FnOnce(R) -> Vec<SourceExecutionOutcom
     }
 }
 
-/// How `kind`'s lookup of `target` ended over `net`, asking only what `chosen` runs, with a key
-/// for every keyed leg.
+/// How `kind`'s lookup of `target` at `now` ended over `net`, asking only what `chosen` runs, with
+/// a key for every keyed leg.
 fn verdict<N: Transport + Clone + Send + Sync + 'static>(
     kind: ScanKind,
     target: &str,
     chosen: &Selection,
     net: &N,
+    now: u64,
 ) -> Verdict {
     let transport = Selected::new(net.clone(), chosen.clone());
     let feeds = Feeds::new(Box::new(Selected::new(net.clone(), chosen.clone())), None);
     let keys = keys();
     match kind {
         ScanKind::Ip => ended(
-            ip_cli::run(&transport, &keys, &feeds, target, NOW),
+            ip_cli::run(&transport, &keys, &feeds, target, now),
             |report| report.outcomes,
         ),
         ScanKind::Domain => ended(
-            domain_cli::run(&transport, &keys, &feeds, target, NOW),
+            domain_cli::run(&transport, &keys, &feeds, target, now),
             |report| report.outcomes,
         ),
         ScanKind::Netblock => ended(
-            netblock_cli::run(&transport, &feeds, target, NOW),
+            netblock_cli::run(&transport, &feeds, target, now),
             |report| report.outcomes,
         ),
-        ScanKind::Asn => ended(asn_cli::run(&transport, target, NOW), |report| {
+        ScanKind::Asn => ended(asn_cli::run(&transport, target, now), |report| {
             report.outcomes
         }),
         ScanKind::Network => ended(
-            network_cli::run(Some((&transport, &keys)), target, NOW),
+            network_cli::run(Some((&transport, &keys)), target, now),
             |report| report.outcomes,
         ),
-        ScanKind::CryptoAddress => ended(crypto_cli::run(&transport, target, NOW), |report| {
+        ScanKind::CryptoAddress => ended(crypto_cli::run(&transport, target, now), |report| {
             report.outcomes
         }),
-        ScanKind::Email => match email_cli::run_keyed(&transport, &keys, target, NOW) {
+        ScanKind::Email => match email_cli::run_keyed(&transport, &keys, target, now) {
             email_cli::EmailRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
             email_cli::EmailRun::Network(why) => Verdict::Refused(why),
             email_cli::EmailRun::Failed(why) => Verdict::Unavailable(why),
         },
-        ScanKind::Username => match username_cli::run(&transport, &keys, target, NOW) {
+        ScanKind::Username => match username_cli::run(&transport, &keys, target, now) {
             username_cli::UsernameRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
             username_cli::UsernameRun::Failed(why) => Verdict::Unavailable(why),
         },
-        ScanKind::Phone => match phone_cli::run_keyed(&transport, &keys, target, NOW) {
+        ScanKind::Phone => match phone_cli::run_keyed(&transport, &keys, target, now) {
             phone_cli::PhoneRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
             phone_cli::PhoneRun::Failed(why) => Verdict::Unavailable(why),
         },
-        ScanKind::People => match people_cli::run(&transport, target, NOW) {
+        ScanKind::People => match people_cli::run(&transport, target, now) {
             people_cli::PeopleRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
             people_cli::PeopleRun::Network(why) => Verdict::Refused(why),
             people_cli::PeopleRun::Failed(why) => Verdict::Unavailable(why),
         },
-        ScanKind::Exposure => exposure(&transport, &keys, target, chosen, net),
+        ScanKind::Exposure => exposure(&transport, &keys, target, chosen, net, now),
     }
 }
 
-/// The exposure lookup of `target` with every breach leg configured: HIBP and `DeHashed` over
-/// `net` with local pacing off, stolen.tax and `OathNet` over `transport`.
+/// The exposure lookup of `target` at `now` with every breach leg configured: HIBP and `DeHashed`
+/// over `net` with local pacing off, stolen.tax and `OathNet` over `transport`.
 fn exposure<N: Transport + Clone + Send + Sync + 'static>(
     transport: &(dyn Transport + Sync),
     keys: &Keys,
     target: &str,
     chosen: &Selection,
     net: &N,
+    now: u64,
 ) -> Verdict {
     let key = ApiKey::new("0123456789abcdef0123456789abcdef").expect("a valid HIBP key");
     let hibp = HibpClient::with_config(
@@ -217,7 +219,7 @@ fn exposure<N: Transport + Clone + Send + Sync + 'static>(
         dehashed: Some(&dehashed),
         selection: Some(chosen),
     };
-    match exposure_cli::run(sources, target, NOW) {
+    match exposure_cli::run(sources, target, now) {
         exposure_cli::ExposureRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
         exposure_cli::ExposureRun::Network(why) => Verdict::Refused(why),
         exposure_cli::ExposureRun::Failed(why) => Verdict::Unavailable(why),
@@ -231,7 +233,7 @@ fn rows(
     chosen: &Selection,
     net: &Everywhere,
 ) -> Result<Vec<SourceExecutionOutcome>, String> {
-    match verdict(kind, target(kind), chosen, net) {
+    match verdict(kind, target(kind), chosen, net, NOW) {
         Verdict::Printed(rows) => Ok(rows),
         Verdict::Refused(why) | Verdict::Unavailable(why) => Err(why),
     }
@@ -430,31 +432,260 @@ const IN_SCOPE: [ScanKind; 8] = [
     ScanKind::Network,
 ];
 
-/// The lookups that do not keep the contract over a network yet, as the first run found them. Each
-/// entry must still break it in at least one case, so the fix that makes a lookup keep it fails
-/// until its entry is deleted: the list only shrinks.
-const PENDING: &[(ScanKind, Net)] = &[
-    (ScanKind::Ip, Net::Refusing),
-    (ScanKind::Netblock, Net::Refusing),
-    (ScanKind::Asn, Net::Refusing),
-    (ScanKind::Domain, Net::Refusing),
-    (ScanKind::Email, Net::Refusing),
-    (ScanKind::Username, Net::Refusing),
-    (ScanKind::Exposure, Net::Refusing),
-    (ScanKind::Network, Net::Refusing),
-    (ScanKind::Ip, Net::Silent),
-    (ScanKind::Netblock, Net::Silent),
-    (ScanKind::Asn, Net::Silent),
-    (ScanKind::Domain, Net::Silent),
-    (ScanKind::Username, Net::Silent),
-    (ScanKind::Exposure, Net::Silent),
-    (ScanKind::Network, Net::Silent),
+/// Every `(kind, module, net)` that breaks the refusal contract today: the module, chosen alone,
+/// breaks it over `net` for at least one of its [`targets`]. The run that seeded the list found
+/// exactly these; [`KNOWN_GAPS`] is kept apart. Each net's broken set, less `KNOWN_GAPS`, must
+/// equal its entries here exactly: a module that newly breaks the contract fails naming it, and
+/// so does an entry no case breaks any more. Each phase of the refusal-routing plan deletes
+/// exactly the triples it fixes, so the list only shrinks.
+const BROKEN: &[(ScanKind, &str, Net)] = &[
+    // Over Refusing.
+    (ScanKind::Ip, "dnsresolve", Net::Refusing),
+    (ScanKind::Ip, "rdap", Net::Refusing),
+    (ScanKind::Ip, "spamhaus", Net::Refusing),
+    (ScanKind::Ip, "spamcop", Net::Refusing),
+    (ScanKind::Ip, "uceprotect", Net::Refusing),
+    (ScanKind::Ip, "dronebl", Net::Refusing),
+    (ScanKind::Ip, "sorbs", Net::Refusing),
+    (ScanKind::Ip, "surbl", Net::Refusing),
+    (ScanKind::Ip, "shodan", Net::Refusing),
+    (ScanKind::Ip, "pulsedive", Net::Refusing),
+    (ScanKind::Ip, "netlas", Net::Refusing),
+    (ScanKind::Ip, "otx", Net::Refusing),
+    (ScanKind::Ip, "urlscan", Net::Refusing),
+    (ScanKind::Ip, "ipinfo", Net::Refusing),
+    (ScanKind::Ip, "robtex", Net::Refusing),
+    (ScanKind::Ip, "hackertarget", Net::Refusing),
+    (ScanKind::Ip, "stopforumspam", Net::Refusing),
+    (ScanKind::Ip, "isc", Net::Refusing),
+    (ScanKind::Ip, "maltiverse", Net::Refusing),
+    (ScanKind::Ip, "phishstats", Net::Refusing),
+    (ScanKind::Ip, "leakix", Net::Refusing),
+    (ScanKind::Ip, "threatfox", Net::Refusing),
+    (ScanKind::Ip, "urlhaus", Net::Refusing),
+    (ScanKind::Ip, "ipqs", Net::Refusing),
+    (ScanKind::Ip, "abusech", Net::Refusing),
+    (ScanKind::Ip, "alienvaultiprep", Net::Refusing),
+    (ScanKind::Ip, "blocklistde", Net::Refusing),
+    (ScanKind::Ip, "botvrij", Net::Refusing),
+    (ScanKind::Ip, "cinsscore", Net::Refusing),
+    (ScanKind::Ip, "cleantalk", Net::Refusing),
+    (ScanKind::Ip, "coinblocker", Net::Refusing),
+    (ScanKind::Ip, "cybercrimetracker", Net::Refusing),
+    (ScanKind::Ip, "emergingthreats", Net::Refusing),
+    (ScanKind::Ip, "greensnow", Net::Refusing),
+    (ScanKind::Ip, "openphish", Net::Refusing),
+    (ScanKind::Ip, "phishtank", Net::Refusing),
+    (ScanKind::Ip, "stevenblack_hosts", Net::Refusing),
+    (ScanKind::Ip, "torexits", Net::Refusing),
+    (ScanKind::Ip, "voipbl", Net::Refusing),
+    (ScanKind::Ip, "vxvault", Net::Refusing),
+    (ScanKind::Netblock, "rdap", Net::Refusing),
+    (ScanKind::Netblock, "ripestat", Net::Refusing),
+    (ScanKind::Netblock, "dnsresolve", Net::Refusing),
+    (ScanKind::Netblock, "abusech", Net::Refusing),
+    (ScanKind::Netblock, "alienvaultiprep", Net::Refusing),
+    (ScanKind::Netblock, "blocklistde", Net::Refusing),
+    (ScanKind::Netblock, "botvrij", Net::Refusing),
+    (ScanKind::Netblock, "cinsscore", Net::Refusing),
+    (ScanKind::Netblock, "cleantalk", Net::Refusing),
+    (ScanKind::Netblock, "coinblocker", Net::Refusing),
+    (ScanKind::Netblock, "cybercrimetracker", Net::Refusing),
+    (ScanKind::Netblock, "emergingthreats", Net::Refusing),
+    (ScanKind::Netblock, "greensnow", Net::Refusing),
+    (ScanKind::Netblock, "openphish", Net::Refusing),
+    (ScanKind::Netblock, "phishtank", Net::Refusing),
+    (ScanKind::Netblock, "stevenblack_hosts", Net::Refusing),
+    (ScanKind::Netblock, "torexits", Net::Refusing),
+    (ScanKind::Netblock, "voipbl", Net::Refusing),
+    (ScanKind::Netblock, "vxvault", Net::Refusing),
+    (ScanKind::Asn, "rdap", Net::Refusing),
+    (ScanKind::Asn, "ripestat", Net::Refusing),
+    (ScanKind::Domain, "certspotter", Net::Refusing),
+    (ScanKind::Domain, "dns", Net::Refusing),
+    (ScanKind::Domain, "rdap", Net::Refusing),
+    (ScanKind::Domain, "mnemonic", Net::Refusing),
+    (ScanKind::Domain, "spamhaus", Net::Refusing),
+    (ScanKind::Domain, "surbl", Net::Refusing),
+    (ScanKind::Domain, "adguard_dns", Net::Refusing),
+    (ScanKind::Domain, "cleanbrowsing", Net::Refusing),
+    (ScanKind::Domain, "cloudflaredns", Net::Refusing),
+    (ScanKind::Domain, "comodo", Net::Refusing),
+    (ScanKind::Domain, "dns_for_family", Net::Refusing),
+    (ScanKind::Domain, "opendns", Net::Refusing),
+    (ScanKind::Domain, "quad9", Net::Refusing),
+    (ScanKind::Domain, "yandexdns", Net::Refusing),
+    (ScanKind::Domain, "virustotal", Net::Refusing),
+    (ScanKind::Domain, "hunter", Net::Refusing),
+    (ScanKind::Domain, "shodan", Net::Refusing),
+    (ScanKind::Domain, "pulsedive", Net::Refusing),
+    (ScanKind::Domain, "netlas", Net::Refusing),
+    (ScanKind::Domain, "otx", Net::Refusing),
+    (ScanKind::Domain, "urlscan", Net::Refusing),
+    (ScanKind::Domain, "robtex", Net::Refusing),
+    (ScanKind::Domain, "hackertarget", Net::Refusing),
+    (ScanKind::Domain, "submd", Net::Refusing),
+    (ScanKind::Domain, "maltiverse", Net::Refusing),
+    (ScanKind::Domain, "leakix", Net::Refusing),
+    (ScanKind::Domain, "threatfox", Net::Refusing),
+    (ScanKind::Domain, "urlhaus", Net::Refusing),
+    (ScanKind::Domain, "whoxy", Net::Refusing),
+    (ScanKind::Domain, "securitytrails", Net::Refusing),
+    (ScanKind::Domain, "hudsonrock", Net::Refusing),
+    (ScanKind::Domain, "abusech", Net::Refusing),
+    (ScanKind::Domain, "alienvaultiprep", Net::Refusing),
+    (ScanKind::Domain, "blocklistde", Net::Refusing),
+    (ScanKind::Domain, "botvrij", Net::Refusing),
+    (ScanKind::Domain, "cinsscore", Net::Refusing),
+    (ScanKind::Domain, "cleantalk", Net::Refusing),
+    (ScanKind::Domain, "coinblocker", Net::Refusing),
+    (ScanKind::Domain, "cybercrimetracker", Net::Refusing),
+    (ScanKind::Domain, "emergingthreats", Net::Refusing),
+    (ScanKind::Domain, "greensnow", Net::Refusing),
+    (ScanKind::Domain, "openphish", Net::Refusing),
+    (ScanKind::Domain, "phishtank", Net::Refusing),
+    (ScanKind::Domain, "stevenblack_hosts", Net::Refusing),
+    (ScanKind::Domain, "torexits", Net::Refusing),
+    (ScanKind::Domain, "voipbl", Net::Refusing),
+    (ScanKind::Domain, "vxvault", Net::Refusing),
+    (ScanKind::Email, "stopforumspam", Net::Refusing),
+    (ScanKind::Email, "kickbox", Net::Refusing),
+    (ScanKind::Email, "xposed_or_not", Net::Refusing),
+    (ScanKind::Email, "ipqs", Net::Refusing),
+    (ScanKind::Email, "whoxy", Net::Refusing),
+    (ScanKind::Email, "hunter", Net::Refusing),
+    (ScanKind::Username, "github_user", Net::Refusing),
+    (ScanKind::Username, "bluesky_user", Net::Refusing),
+    (ScanKind::Username, "keybase", Net::Refusing),
+    (ScanKind::Username, "wikipedia", Net::Refusing),
+    (ScanKind::Username, "mastodon_user", Net::Refusing),
+    (ScanKind::Exposure, "hibp", Net::Refusing),
+    (ScanKind::Exposure, "stolen_tax", Net::Refusing),
+    (ScanKind::Exposure, "oathnet", Net::Refusing),
+    (ScanKind::Network, "opencellid", Net::Refusing),
+    // Over Silent.
+    (ScanKind::Ip, "dnsresolve", Net::Silent),
+    (ScanKind::Ip, "rdap", Net::Silent),
+    (ScanKind::Ip, "spamhaus", Net::Silent),
+    (ScanKind::Ip, "spamcop", Net::Silent),
+    (ScanKind::Ip, "uceprotect", Net::Silent),
+    (ScanKind::Ip, "dronebl", Net::Silent),
+    (ScanKind::Ip, "sorbs", Net::Silent),
+    (ScanKind::Ip, "surbl", Net::Silent),
+    (ScanKind::Ip, "abusech", Net::Silent),
+    (ScanKind::Ip, "alienvaultiprep", Net::Silent),
+    (ScanKind::Ip, "blocklistde", Net::Silent),
+    (ScanKind::Ip, "botvrij", Net::Silent),
+    (ScanKind::Ip, "cinsscore", Net::Silent),
+    (ScanKind::Ip, "cleantalk", Net::Silent),
+    (ScanKind::Ip, "coinblocker", Net::Silent),
+    (ScanKind::Ip, "cybercrimetracker", Net::Silent),
+    (ScanKind::Ip, "emergingthreats", Net::Silent),
+    (ScanKind::Ip, "greensnow", Net::Silent),
+    (ScanKind::Ip, "openphish", Net::Silent),
+    (ScanKind::Ip, "phishtank", Net::Silent),
+    (ScanKind::Ip, "stevenblack_hosts", Net::Silent),
+    (ScanKind::Ip, "torexits", Net::Silent),
+    (ScanKind::Ip, "voipbl", Net::Silent),
+    (ScanKind::Ip, "vxvault", Net::Silent),
+    (ScanKind::Netblock, "rdap", Net::Silent),
+    (ScanKind::Netblock, "ripestat", Net::Silent),
+    (ScanKind::Netblock, "dnsresolve", Net::Silent),
+    (ScanKind::Netblock, "abusech", Net::Silent),
+    (ScanKind::Netblock, "alienvaultiprep", Net::Silent),
+    (ScanKind::Netblock, "blocklistde", Net::Silent),
+    (ScanKind::Netblock, "botvrij", Net::Silent),
+    (ScanKind::Netblock, "cinsscore", Net::Silent),
+    (ScanKind::Netblock, "cleantalk", Net::Silent),
+    (ScanKind::Netblock, "coinblocker", Net::Silent),
+    (ScanKind::Netblock, "cybercrimetracker", Net::Silent),
+    (ScanKind::Netblock, "emergingthreats", Net::Silent),
+    (ScanKind::Netblock, "greensnow", Net::Silent),
+    (ScanKind::Netblock, "openphish", Net::Silent),
+    (ScanKind::Netblock, "phishtank", Net::Silent),
+    (ScanKind::Netblock, "stevenblack_hosts", Net::Silent),
+    (ScanKind::Netblock, "torexits", Net::Silent),
+    (ScanKind::Netblock, "voipbl", Net::Silent),
+    (ScanKind::Netblock, "vxvault", Net::Silent),
+    (ScanKind::Asn, "rdap", Net::Silent),
+    (ScanKind::Asn, "ripestat", Net::Silent),
+    (ScanKind::Domain, "spamhaus", Net::Silent),
+    (ScanKind::Domain, "surbl", Net::Silent),
+    (ScanKind::Domain, "adguard_dns", Net::Silent),
+    (ScanKind::Domain, "cleanbrowsing", Net::Silent),
+    (ScanKind::Domain, "cloudflaredns", Net::Silent),
+    (ScanKind::Domain, "comodo", Net::Silent),
+    (ScanKind::Domain, "dns_for_family", Net::Silent),
+    (ScanKind::Domain, "opendns", Net::Silent),
+    (ScanKind::Domain, "quad9", Net::Silent),
+    (ScanKind::Domain, "yandexdns", Net::Silent),
+    (ScanKind::Domain, "abusech", Net::Silent),
+    (ScanKind::Domain, "alienvaultiprep", Net::Silent),
+    (ScanKind::Domain, "blocklistde", Net::Silent),
+    (ScanKind::Domain, "botvrij", Net::Silent),
+    (ScanKind::Domain, "cinsscore", Net::Silent),
+    (ScanKind::Domain, "cleantalk", Net::Silent),
+    (ScanKind::Domain, "coinblocker", Net::Silent),
+    (ScanKind::Domain, "cybercrimetracker", Net::Silent),
+    (ScanKind::Domain, "emergingthreats", Net::Silent),
+    (ScanKind::Domain, "greensnow", Net::Silent),
+    (ScanKind::Domain, "openphish", Net::Silent),
+    (ScanKind::Domain, "phishtank", Net::Silent),
+    (ScanKind::Domain, "stevenblack_hosts", Net::Silent),
+    (ScanKind::Domain, "torexits", Net::Silent),
+    (ScanKind::Domain, "voipbl", Net::Silent),
+    (ScanKind::Domain, "vxvault", Net::Silent),
+    (ScanKind::Username, "github_user", Net::Silent),
+    (ScanKind::Username, "bluesky_user", Net::Silent),
+    (ScanKind::Username, "keybase", Net::Silent),
+    (ScanKind::Username, "wikipedia", Net::Silent),
+    (ScanKind::Username, "mastodon_user", Net::Silent),
+    (ScanKind::Exposure, "hibp", Net::Silent),
+    (ScanKind::Exposure, "oathnet", Net::Silent),
+    (ScanKind::Exposure, "dehashed", Net::Silent),
+    (ScanKind::Network, "opencellid", Net::Silent),
+    // Over Failing, none.
 ];
 
 /// Modules that break the contract over a network for a reason outside their lookup: stolen.tax
-/// reports no response as a path failure that carries no transport kind. Held to the same rule as
-/// [`PENDING`].
+/// reports no response as a path failure that carries no transport kind. Each entry must still
+/// break the contract, and an entry here is never also on [`BROKEN`].
 const KNOWN_GAPS: &[(ScanKind, &str, Net)] = &[(ScanKind::Exposure, "stolen_tax", Net::Silent)];
+
+/// Every `(kind, module, target)` case whose module, chosen alone, asks nothing: domain
+/// `dnsresolve` resolves only the hosts other sources found; the profile front-ends, not the
+/// email and username lookups, run seeknow and the breach modules; `ada_lovelace` is no GitHub
+/// login or Bluesky handle; `WiGLE` takes no cell and `OpenCelliD` no SSID. Over every net the
+/// cases that asked nothing must be exactly these (the three nets agree), so a module that falls
+/// silent (a renamed key slot, a `runs_module` name that no longer matches, a pacing hold) fails
+/// instead of passing with nothing to hold it to.
+const ASKS_NOTHING: &[(ScanKind, &str, &str)] = &[
+    (ScanKind::Domain, "dnsresolve", "huntsman-shop.net"),
+    (ScanKind::Email, "seeknow", "ada@huntsman-shop.net"),
+    (ScanKind::Email, "hibp", "ada@huntsman-shop.net"),
+    (ScanKind::Email, "stolen_tax", "ada@huntsman-shop.net"),
+    (ScanKind::Email, "oathnet", "ada@huntsman-shop.net"),
+    (ScanKind::Email, "dehashed", "ada@huntsman-shop.net"),
+    (ScanKind::Username, "github_user", "ada_lovelace"),
+    (ScanKind::Username, "bluesky_user", "ada_lovelace"),
+    (ScanKind::Username, "seeknow", "ada_lovelace"),
+    (ScanKind::Username, "seeknow", "adalovelace"),
+    (ScanKind::Username, "stolen_tax", "ada_lovelace"),
+    (ScanKind::Username, "stolen_tax", "adalovelace"),
+    (ScanKind::Username, "oathnet", "ada_lovelace"),
+    (ScanKind::Username, "oathnet", "adalovelace"),
+    (ScanKind::Network, "wigle", "cell:505:01:17:91"),
+    (ScanKind::Network, "opencellid", "ssid:Cafe Guest"),
+];
+
+/// A time past every pacing hold another test can leave at a real host. A probe at it reaches
+/// every host its case asks, so the case can close their circuits before it runs.
+const PROBE_NOW: u64 = NOW + 1_000_000_000;
+
+/// Held by each contract test while it runs, so their failures at the same real hosts never
+/// interleave in the process-wide pacing breaker. A test that panics poisons it; the others
+/// still take it.
+static CONTRACT: Mutex<()> = Mutex::new(());
 
 /// The selectors the contract looks up for `kind`. A network lookup takes each selector form that
 /// asks a source; a BSSID is left out, because its OUI row always answers. `ada_lovelace` is no
@@ -517,6 +748,11 @@ impl Case {
         matches!(self.verdict, Verdict::Refused(_))
     }
 
+    /// Whether the module asked anything at all.
+    fn asked_any(&self) -> bool {
+        !self.asked.is_empty()
+    }
+
     /// Whether the module sent anything the egress policy can refuse: an HTTP request or a UDP
     /// exchange. The policy never refuses the system resolver.
     fn sent(&self) -> bool {
@@ -552,16 +788,31 @@ fn forget_pacing(asked: &[Attempt]) {
     }
 }
 
-/// Every case over `N`: each lookup in [`IN_SCOPE`], each module on its list that asks anything,
-/// chosen alone, for each of its [`targets`].
+/// What `module`, chosen alone, asked of a fresh `Recording<N>`, and how `kind`'s lookup of
+/// `target` at `now` ended.
+fn ask<N: Transport + Clone + Default + Send + Sync + 'static>(
+    kind: ScanKind,
+    module: &'static str,
+    target: &str,
+    now: u64,
+) -> (Vec<Attempt>, Verdict) {
+    let net = Recording::new(N::default());
+    let verdict = verdict(kind, target, &Selection::only([module]), &net, now);
+    (net.attempts(), verdict)
+}
+
+/// Every case over `N`: each lookup in [`IN_SCOPE`], each module on its list that is not
+/// [`offline`], chosen alone, for each of its [`targets`]. A module that asks nothing for a target
+/// is still a case, and [`ASKS_NOTHING`] lists it. A probe at [`PROBE_NOW`] first learns the hosts
+/// the case reaches, and their pacing circuits are closed before the case runs and again after.
 fn cases<N: Transport + Clone + Default + Send + Sync + 'static>() -> Vec<Case> {
     let mut cases = Vec::new();
     for kind in IN_SCOPE {
         for module in modules(kind).into_iter().filter(|module| !offline(module)) {
             for target in targets(kind) {
-                let net = Recording::new(N::default());
-                let verdict = verdict(kind, target, &Selection::only([module]), &net);
-                let asked = net.attempts();
+                let (probed, _) = ask::<N>(kind, module, target, PROBE_NOW);
+                forget_pacing(&probed);
+                let (asked, verdict) = ask::<N>(kind, module, target, NOW);
                 forget_pacing(&asked);
                 cases.push(Case {
                     kind,
@@ -576,78 +827,140 @@ fn cases<N: Transport + Clone + Default + Send + Sync + 'static>() -> Vec<Case> 
     cases
 }
 
-/// Hold every case over `net` to `keeps`, except the lookups [`PENDING`] and the modules
-/// [`KNOWN_GAPS`] list, and hold each entry listed for `net` to still breaking it in at least one
-/// case. On failure the message gives what this run calls for as Rust literals.
-fn ratchet(net: Net, cases: &[Case], keeps: impl Fn(&Case) -> bool) {
-    let broken: Vec<&Case> = cases.iter().filter(|case| !keeps(case)).collect();
-    let unexpected: Vec<String> = broken
+/// `(kind, module, net)` as a [`BROKEN`] or [`KNOWN_GAPS`] entry, in Rust.
+fn triple(kind: ScanKind, module: &str, net: Net) -> String {
+    format!("(ScanKind::{kind:?}, {module:?}, Net::{net:?})")
+}
+
+/// `(kind, module, target)` as an [`ASKS_NOTHING`] entry, in Rust.
+fn silent((kind, module, target): &(ScanKind, &str, &str)) -> String {
+    format!("(ScanKind::{kind:?}, {module:?}, {target:?})")
+}
+
+/// Hold every case over `net` to the refusal contract:
+///
+/// - a case that asked nothing is never a refusal, whatever [`BROKEN`] or [`KNOWN_GAPS`] lists;
+/// - the cases that asked nothing are exactly [`ASKS_NOTHING`];
+/// - every case that asked something `keeps` the contract, except that the `(kind, module)` pairs
+///   it breaks for, less [`KNOWN_GAPS`], are exactly [`BROKEN`]'s entries for `net`;
+/// - each [`KNOWN_GAPS`] entry for `net` still breaks it.
+///
+/// On failure the message names each difference, says how many cases asked something, and gives
+/// `BROKEN`'s entries for `net` and the `ASKS_NOTHING` list as this run found them, in Rust.
+fn hold(net: Net, cases: &[Case], keeps: impl Fn(&Case) -> bool) {
+    let mut wrong: Vec<String> = cases
         .iter()
-        .filter(|case| {
-            !PENDING.contains(&(case.kind, net))
-                && !KNOWN_GAPS.contains(&(case.kind, case.module, net))
-        })
-        .map(|case| format!("  {}", case.line()))
+        .filter(|case| !case.asked_any() && case.refused())
+        .map(|case| format!("  asked nothing, yet is a refusal: {}", case.line()))
         .collect();
-    let stale_pending = PENDING
+
+    let quiet: Vec<(ScanKind, &str, &str)> = cases
         .iter()
-        .filter(|(kind, listed)| *listed == net && !broken.iter().any(|case| case.kind == *kind))
-        .map(|(kind, _)| format!("  PENDING (ScanKind::{kind:?}, Net::{net:?})"));
-    let stale_gaps = KNOWN_GAPS
+        .filter(|case| !case.asked_any())
+        .map(|case| (case.kind, case.module, case.target))
+        .collect();
+    wrong.extend(
+        quiet
+            .iter()
+            .filter(|case| !ASKS_NOTHING.contains(case))
+            .map(|case| {
+                format!(
+                    "  asked nothing, unlisted in ASKS_NOTHING: {}",
+                    silent(case)
+                )
+            }),
+    );
+    wrong.extend(
+        ASKS_NOTHING
+            .iter()
+            .filter(|listed| !quiet.contains(listed))
+            .map(|listed| {
+                format!(
+                    "  stale ASKS_NOTHING entry, asked or never run: {}",
+                    silent(listed)
+                )
+            }),
+    );
+
+    let breaks = |case: &&Case| case.asked_any() && !keeps(case);
+    let mut broken: Vec<(ScanKind, &str)> = cases
         .iter()
-        .filter(|(kind, module, listed)| {
-            *listed == net
-                && !broken
-                    .iter()
-                    .any(|case| case.kind == *kind && case.module == *module)
-        })
-        .map(|(kind, module, _)| {
-            format!("  KNOWN_GAPS (ScanKind::{kind:?}, {module:?}, Net::{net:?})")
-        });
-    let stale: Vec<String> = stale_pending.chain(stale_gaps).collect();
-    if unexpected.is_empty() && stale.is_empty() {
+        .filter(breaks)
+        .map(|case| (case.kind, case.module))
+        .collect();
+    broken.dedup();
+    let gap = |kind: ScanKind, module: &str| KNOWN_GAPS.contains(&(kind, module, net));
+    let expected: Vec<(ScanKind, &str)> = broken
+        .iter()
+        .copied()
+        .filter(|(kind, module)| !gap(*kind, module))
+        .collect();
+    let listed: Vec<(ScanKind, &str)> = BROKEN
+        .iter()
+        .filter(|(_, _, listed)| *listed == net)
+        .map(|(kind, module, _)| (*kind, *module))
+        .collect();
+    wrong.extend(
+        cases
+            .iter()
+            .filter(breaks)
+            .filter(|case| {
+                !gap(case.kind, case.module) && !listed.contains(&(case.kind, case.module))
+            })
+            .map(|case| format!("  new breakage, which BROKEN leaves out: {}", case.line())),
+    );
+    wrong.extend(
+        listed
+            .iter()
+            .filter(|pair| !expected.contains(pair))
+            .map(|(kind, module)| {
+                let entry = triple(*kind, module, net);
+                format!("  stale BROKEN entry, no case outside KNOWN_GAPS breaks it: {entry}")
+            }),
+    );
+    wrong.extend(
+        KNOWN_GAPS
+            .iter()
+            .filter(|(kind, module, listed)| *listed == net && !broken.contains(&(*kind, *module)))
+            .map(|(kind, module, _)| {
+                let entry = triple(*kind, module, net);
+                format!("  stale KNOWN_GAPS entry, no case breaks it: {entry}")
+            }),
+    );
+    if wrong.is_empty() {
         return;
     }
-    let pending: Vec<String> = IN_SCOPE
+
+    let asking = cases.iter().filter(|case| case.asked_any()).count();
+    let broken_now: Vec<String> = expected
         .iter()
-        .filter(|kind| broken.iter().any(|case| case.kind == **kind))
-        .map(|kind| format!("    (ScanKind::{kind:?}, Net::{net:?}),"))
+        .map(|(kind, module)| format!("    {},", triple(*kind, module, net)))
         .collect();
-    let mut triples: Vec<String> = broken
+    let quiet_now: Vec<String> = quiet
         .iter()
-        .map(|case| {
-            format!(
-                "    (ScanKind::{:?}, {:?}, Net::{net:?}),",
-                case.kind, case.module
-            )
-        })
+        .map(|case| format!("    {},", silent(case)))
         .collect();
-    triples.dedup();
     panic!(
-        "the refusal contract over Net::{net:?} ran {} cases.\n\
-         {} cases break it that neither PENDING nor KNOWN_GAPS lists:\n{}\n\
-         {} listed entries no case breaks any more; delete them:\n{}\n\
-         Every (kind, net) that breaks it over Net::{net:?}, as PENDING entries:\n&[\n{}\n]\n\
-         Every (kind, module, net) that breaks it over Net::{net:?}:\n&[\n{}\n]",
+        "the refusal contract over Net::{net:?}: {asking} of {} cases asked something.\n\
+         {} differences:\n{}\n\
+         BROKEN's Net::{net:?} entries, as this run found them:\n{}\n\
+         ASKS_NOTHING, as this run found it:\n&[\n{}\n]",
         cases.len(),
-        unexpected.len(),
-        unexpected.join("\n"),
-        stale.len(),
-        stale.join("\n"),
-        pending.join("\n"),
-        triples.join("\n"),
+        wrong.len(),
+        wrong.join("\n"),
+        broken_now.join("\n"),
+        quiet_now.join("\n"),
     );
 }
 
 /// A module chosen alone whose requests the egress policy refused is a refusal (exit 77) naming
 /// it. One that asked only the system resolver, which the policy never refuses, got no response
-/// (exit 69) and names it. One that asks nothing alone is never a refusal.
+/// (exit 69) and names it. One that asked nothing is never a refusal.
 #[test]
 fn a_module_chosen_alone_and_refused_is_a_refusal_naming_it() {
-    ratchet(Net::Refusing, &cases::<Refusing>(), |case| {
-        if case.asked.is_empty() {
-            !case.refused()
-        } else if case.sent() {
+    let _serial = CONTRACT.lock().unwrap_or_else(PoisonError::into_inner);
+    hold(Net::Refusing, &cases::<Refusing>(), |case| {
+        if case.sent() {
             case.refused_naming_it()
         } else {
             case.unavailable_naming_it()
@@ -656,20 +969,16 @@ fn a_module_chosen_alone_and_refused_is_a_refusal_naming_it() {
 }
 
 /// A module chosen alone that got no response is unavailable (exit 69) naming it, never a
-/// refusal. One that asks nothing alone is never a refusal.
+/// refusal. One that asked nothing is never a refusal.
 #[test]
 fn a_module_chosen_alone_without_a_response_is_unavailable_naming_it() {
-    ratchet(Net::Silent, &cases::<Silent>(), |case| {
-        if case.asked.is_empty() {
-            !case.refused()
-        } else {
-            case.unavailable_naming_it()
-        }
-    });
+    let _serial = CONTRACT.lock().unwrap_or_else(PoisonError::into_inner);
+    hold(Net::Silent, &cases::<Silent>(), Case::unavailable_naming_it);
 }
 
 /// A source that answered, even with an error, was reached, so its lookup is never a refusal.
 #[test]
 fn a_module_whose_source_answered_with_an_error_is_never_a_refusal() {
-    ratchet(Net::Failing, &cases::<Failing>(), |case| !case.refused());
+    let _serial = CONTRACT.lock().unwrap_or_else(PoisonError::into_inner);
+    hold(Net::Failing, &cases::<Failing>(), |case| !case.refused());
 }

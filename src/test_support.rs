@@ -97,7 +97,8 @@ impl Transport for RoutedTransport {
 /// Every request the egress policy refuses, as for a host that resolves to 0.0.0.0: each HTTP
 /// send and each UDP exchange is blocked, as the real transport's policy can block both, so
 /// nothing is sent. The policy never blocks the system resolver, so `resolve` keeps the trait's
-/// unblocked failure.
+/// unblocked failure. Threads may share it, as they share the real transport, so a lookup asks
+/// its independent sources at once through it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Refusing;
 
@@ -119,11 +120,15 @@ impl Transport for Refusing {
     fn exchange_udp(&self, _: SocketAddr, _: &[u8]) -> Result<Vec<u8>, TransportFailure> {
         Err(Self::failure())
     }
+
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        Some(self)
+    }
 }
 
 /// No network: every HTTP send gets no response. The kind is `DnsFailure` because crt.sh pauses
 /// two seconds before it retries a `ConnectFailure`. The system resolver and UDP keep the trait's
-/// unblocked failures.
+/// unblocked failures. Threads may share it, as they share [`Refusing`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Silent;
 
@@ -135,11 +140,15 @@ impl Transport for Silent {
             blocked: false,
         })
     }
+
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        Some(self)
+    }
 }
 
 /// Every source reached, answering with an error: each HTTP send gets HTTP 500 with an empty body
 /// (crt.sh retries only 429, 502 and 503), the system resolver knows no name, and a UDP exchange
-/// gets no answer, unblocked.
+/// gets no answer, unblocked. Threads may share it, as they share [`Refusing`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Failing;
 
@@ -163,6 +172,10 @@ impl Transport for Failing {
             detail: format!("no UDP answer from {server}"),
             blocked: false,
         })
+    }
+
+    fn shared(&self) -> Option<&(dyn Transport + Sync)> {
+        Some(self)
     }
 }
 
