@@ -50,7 +50,11 @@ fn baseline_requires_confirmation_and_assessment_is_evidence_gated() {
         .arg("--confirmed")
         .output()
         .unwrap();
-    assert!(enrolled.status.success(), "{}", String::from_utf8_lossy(&enrolled.stderr));
+    assert!(
+        enrolled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&enrolled.stderr)
+    );
     let repeated = bin()
         .arg("mitm")
         .arg("baseline")
@@ -73,7 +77,11 @@ fn baseline_requires_confirmation_and_assessment_is_evidence_gated() {
         .arg(&suspect)
         .output()
         .unwrap();
-    assert!(assessed.status.success(), "{}", String::from_utf8_lossy(&assessed.stderr));
+    assert!(
+        assessed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&assessed.stderr)
+    );
     let report: serde_json::Value = serde_json::from_slice(&assessed.stdout).unwrap();
     assert_eq!(report["status"], "suspected");
     assert_eq!(report["findings"][0]["kind"], "unrecognized_open_ap");
@@ -96,12 +104,29 @@ fn empty_capture_is_inconclusive_not_proof_of_no_attack() {
     )
     .unwrap();
     fs::write(&empty, "[]").unwrap();
-    assert!(bin().arg("mitm").arg("baseline").arg("Home")
-        .arg("--file").arg(&good).arg("--output").arg(&baseline)
-        .arg("--confirmed").status().unwrap().success());
-    let report = bin().arg("mitm").arg("assess")
-        .arg("--baseline").arg(&baseline).arg("--file").arg(&empty)
-        .output().unwrap();
+    assert!(
+        bin()
+            .arg("mitm")
+            .arg("baseline")
+            .arg("Home")
+            .arg("--file")
+            .arg(&good)
+            .arg("--output")
+            .arg(&baseline)
+            .arg("--confirmed")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let report = bin()
+        .arg("mitm")
+        .arg("assess")
+        .arg("--baseline")
+        .arg(&baseline)
+        .arg("--file")
+        .arg(&empty)
+        .output()
+        .unwrap();
     assert!(report.status.success());
     let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
     assert_eq!(json["status"], "inconclusive");
