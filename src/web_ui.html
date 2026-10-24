@@ -882,6 +882,7 @@ $('rawdownload').onclick=async()=>{
     const allElements=await elements('');
     const allCorrelations=await get('correlations',base()+'/correlations');
     const allGraph=await get('graph',base()+'/graph');
+    const allLog=await get('log',base()+'/log');
     const fence=String.fromCharCode(96).repeat(3);
     const parts=[fence+'text\n',
       '[HUNTSMAN_SAVED_SCAN_RAW_DUMP_V1]\n',
@@ -899,6 +900,7 @@ $('rawdownload').onclick=async()=>{
     append('DATA_ELEMENTS',allElements);
     append('CORRELATIONS',allCorrelations);
     append('RELATIONSHIP_GRAPH',allGraph);
+    append('SCAN_LOG',allLog);
     parts.push('[END_HUNTSMAN_SAVED_SCAN_RAW_DUMP_V1]\n',fence+'\n');
     download(new Blob(parts,{type:'text/plain;charset=utf-8'}),
       'huntsman-evidence-'+scanId+'-'+Date.now()+'.txt');
