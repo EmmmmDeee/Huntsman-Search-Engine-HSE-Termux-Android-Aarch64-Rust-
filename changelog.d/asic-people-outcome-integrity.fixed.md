@@ -1,0 +1,3 @@
+- ASIC people-register lookups retain independently accepted source outcomes if another register is blocked, malformed, truncated, or challenged. A failed source no longer discards clean responses from other registers, and all-source failures remain failures.
+- An incomplete CKAN result page without a matching person is `inconclusive`, not `valid_zero`; a page containing matches remains a qualified success. A CKAN success envelope without a result is schema drift, not proof of absence.
+- Offline regression tests cover partial pages, mixed source failures, egress refusal, malformed envelopes, truncation, and challenge pages. No additional network requests, API keys, persistence schemas, or non-Rust runtime dependencies.
