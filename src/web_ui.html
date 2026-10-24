@@ -293,7 +293,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel" id="rresult" hidden>
 <div class="panel-heading">OS-cached observations <span class="badge" id="rrows-n"></span></div>
 <p class="note" id="rsummary"></p>
-<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>Age (s)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rrows"></tbody></table></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>MHz</th><th>Width (MHz)</th><th>Security</th><th>OS clock (µs)</th><th>Age (s)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rrows"></tbody></table></div>
 </div>
 <div class="panel" id="rcresult" hidden>
 <div class="panel-heading">Cells Android reports <span class="badge" id="rcrows-n"></span></div>
@@ -644,6 +644,10 @@ $('rread').onclick=async()=>{
       o.sighting?.name||'(hidden)',
       o.sighting?.signal_dbm??'',
       o.band||'unknown',
+      o.frequency_mhz??'',
+      o.channel_bandwidth_mhz??'',
+      o.capabilities||o.sighting?.encryption||'',
+      o.os_timestamp_us??'',
       o.age_secs==null?'unknown':Math.round(o.age_secs),
       o.freshness||'unknown',
       radarPivot(o)

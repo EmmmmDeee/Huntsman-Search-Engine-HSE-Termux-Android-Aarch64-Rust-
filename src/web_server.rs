@@ -2571,6 +2571,22 @@ mod tests {
         }
     }
 
+    /// The Radar table shows every field the OS cache gives for a network, not only the coarse
+    /// band: the exact frequency, the channel width, the security capabilities and the OS clock the
+    /// age is computed from, which before reached only the exported JSON.
+    #[test]
+    fn the_radar_table_shows_every_observation_field() {
+        for needed in [
+            "o.frequency_mhz??''",
+            "o.channel_bandwidth_mhz??''",
+            "o.capabilities||o.sighting?.encryption||''",
+            "o.os_timestamp_us??''",
+            "<th>MHz</th><th>Width (MHz)</th><th>Security</th><th>OS clock (µs)</th>",
+        ] {
+            assert!(INDEX_HTML.contains(needed), "the page lacks {needed}");
+        }
+    }
+
     /// The Radar tab offers both reads and the sweep from the page, each only on a press, through
     /// the routes above.
     #[test]
