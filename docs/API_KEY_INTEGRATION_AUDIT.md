@@ -29,7 +29,7 @@ still sends no request to either keyed provider.
 ## Credential slots without executable lookup integrations
 
 `credential-status` labels the existing Brave Search, Exa, OpenRouter,
-Google Gemini and Censys catalogued credential slots as
+Google Gemini and Censys Legacy catalogued credential slots as
 `integration=credential_only`: they can be stored, but that does **not**
 mean that an appropriate lookup leg has been implemented or invoked.
 
@@ -39,6 +39,13 @@ Niamonx, Onyphe, OpenCNAM, OSINTCAT and Trove are surfaced as
 automatically called and do not represent working integrations. Their full
 provider response contracts, permissions and safe data handling must be
 verified before introducing any network access.
+
+Censys Platform v3 is now wired for public IP host lookups through the
+`HUNTSMAN_CENSYS_TOKEN` Personal Access Token. Free Platform accounts can use
+the host lookup; the retired Censys legacy ID and secret slots are retained only
+for compatibility and cannot authenticate v3 calls. Keyless operation never
+contacts Censys; a documented 404 is a zero, while a 200 malformed response or
+an authentication/entitlement/quota refusal is not.
 
 Huntsman's runtime remains LLM-free; an OpenRouter or Gemini key does not
 enable an LLM in Huntsman.

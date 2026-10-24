@@ -58,6 +58,8 @@ pub const BRAVE_KEY_ENV: &str = "HUNTSMAN_BRAVE_KEY";
 pub const CENSYS_ID_ENV: &str = "HUNTSMAN_CENSYS_ID";
 pub const CERTSPOTTER_KEY_ENV: &str = "HUNTSMAN_CERTSPOTTER_KEY";
 pub const CENSYS_SECRET_ENV: &str = "HUNTSMAN_CENSYS_SECRET";
+/// Personal Access Token for the free-plan-compatible Censys Platform API v3.
+pub const CENSYS_TOKEN_ENV: &str = "HUNTSMAN_CENSYS_TOKEN";
 pub const CRIMINALIP_KEY_ENV: &str = "HUNTSMAN_CRIMINALIP_KEY";
 pub const DEHASHED_KEY_ENV: &str = "HUNTSMAN_DEHASHED_KEY";
 pub const DOMAINSDB_KEY_ENV: &str = "HUNTSMAN_DOMAINSDB_KEY";
@@ -128,6 +130,7 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     CENSYS_ID_ENV,
     CERTSPOTTER_KEY_ENV,
     CENSYS_SECRET_ENV,
+    CENSYS_TOKEN_ENV,
     CRIMINALIP_KEY_ENV,
     DEHASHED_KEY_ENV,
     DOMAINSDB_KEY_ENV,

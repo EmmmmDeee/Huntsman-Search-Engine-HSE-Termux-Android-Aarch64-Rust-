@@ -49,7 +49,8 @@ No credential values are required in CLI arguments, logs or source control.
 | Cert Spotter (SSLMate) | `HUNTSMAN_CERTSPOTTER_KEY` | optional for `domain`: Cert Spotter answers without a key at a lower limit; a free key raises it |
 | HackerTarget | `HUNTSMAN_HACKERTARGET_KEY` | optional for `ip` and `domain`: HackerTarget answers without a key at 50 queries a day; a membership key raises it |
 | OpenCelliD | `HUNTSMAN_OPENCELLID_KEY` | required for `network cell:MCC:MNC:AREA:CELL` and for the cell sites around a point in `network LAT,LON`: without it each OpenCelliD search is `not_configured` and sends nothing; free account key, 1,000 credits a day |
-| Censys | `HUNTSMAN_CENSYS_ID`, `HUNTSMAN_CENSYS_SECRET` | do not assume usable; provider access must be revalidated |
+| Censys Platform | `HUNTSMAN_CENSYS_TOKEN` | v3 IP host lookup (`ip`, `scan -k ip`, web UI); free accounts support host lookup with a Personal Access Token, account limits apply; a 404 means no host, failures remain explicit |
+| Censys Legacy | `HUNTSMAN_CENSYS_ID`, `HUNTSMAN_CENSYS_SECRET` | legacy slots retained for import/backward compatibility but not used by Platform v3; create a new PAT to use the active source |
 
 ## Importing keys from Spiderfoot
 
@@ -124,6 +125,7 @@ HUNTSMAN_IPINFO_KEY=
 HUNTSMAN_HACKERTARGET_KEY=
 HUNTSMAN_CERTSPOTTER_KEY=
 HUNTSMAN_OPENCELLID_KEY=
+HUNTSMAN_CENSYS_TOKEN=
 HUNTSMAN_CENSYS_ID=
 HUNTSMAN_CENSYS_SECRET=
 ```
