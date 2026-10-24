@@ -219,6 +219,27 @@ fn classify_deviation(
     }
 }
 
+/// Conflicting classes are signals to review, not proof of a rogue AP.
+fn add_conflicts(
+    findings: &mut Vec<Finding>,
+    seen: BTreeMap<String, BTreeSet<String>>,
+    ssid: &str,
+) {
+    for (bssid, securities) in seen {
+        if securities.len() > 1 {
+            findings.push(Finding {
+                kind: "conflicting_advertisement",
+                severity: "high",
+                ssid: ssid.to_owned(),
+                bssid,
+                evidence: format!("same scan, conflicting capability classes: {securities:?}"),
+                recommended_action:
+                    "Confirm with an authorised AP controller or monitor-mode capture before attributing the anomaly.",
+            });
+        }
+    }
+}
+
 /// Check only exact SSID matches. One scan is NOT a time-series, and
 /// unrecognised BSSIDs in enterprise/mesh networks are commonplace.
 /// Never classify a network as a confirmed MITM from these observations.
@@ -275,21 +296,7 @@ pub fn assess(scan: &WifiScan, baseline: &TrustedBaseline) -> Result<Report, Str
         });
     }
 
-    // Conflicting security for one BSSID within a capture is a reason to
-    // investigate, not proof that the radio was impersonated.
-    for (bssid, securities) in seen {
-        if securities.len() > 1 {
-            findings.push(Finding {
-                kind: "conflicting_advertisement",
-                severity: "high",
-                ssid: baseline.ssid.clone(),
-                bssid,
-                evidence: format!("same scan, conflicting capability classes: {securities:?}"),
-                recommended_action:
-                    "Confirm with an authorised AP controller or monitor-mode capture before attributing the anomaly.",
-            });
-        }
-    }
+    add_conflicts(&mut findings, seen, &baseline.ssid);
 
     findings.sort_by(|a, b| {
         (&a.bssid, a.kind, a.evidence.as_str()).cmp(&(&b.bssid, b.kind, b.evidence.as_str()))
