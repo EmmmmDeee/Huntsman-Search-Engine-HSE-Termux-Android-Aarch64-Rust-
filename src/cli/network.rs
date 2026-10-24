@@ -333,6 +333,7 @@ fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
 mod tests {
     use super::stolen_tax_summary;
     use huntsman_recon::entity::{Entity, EntityKind};
+    use huntsman_recon::source_outcome::SourceOutcomeKind;
     use huntsman_recon::stolen_tax::{PathFailure, StolenTaxReport};
 
     #[test]
@@ -341,6 +342,7 @@ mod tests {
             entities: Vec::new(),
             failed_paths: vec![PathFailure {
                 path: "snusbase",
+                kind: SourceOutcomeKind::TtfbTimeout,
                 reason: "no response (TtfbTimeout)".into(),
             }],
             skipped_paths: Vec::new(),
