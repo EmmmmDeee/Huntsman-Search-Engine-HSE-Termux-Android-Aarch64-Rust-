@@ -8,6 +8,8 @@ use huntsman_recon::classifier::{self, classify as classify_indicator};
 use huntsman_recon::clock;
 use huntsman_recon::entity;
 use huntsman_recon::error::Error;
+use huntsman_recon::exa;
+use huntsman_recon::keys::Keys;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::{TransportConfig, UreqTransport};
@@ -70,6 +72,43 @@ pub(in crate::cli) fn investigate_cmd(args: &[String]) -> ExitCode {
 pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
     if args.is_empty() {
         return fail(EX_USAGE, "usage: huntsman-recon query QUERY...");
+    }
+    // Exa consumes provider credits: never enable it for ordinary or adaptive
+    // queries. The explicit flag is the sole network trigger for this source.
+    if args.first().is_some_and(|arg| arg == "--exa") {
+        let terms = &args[1..];
+        if terms.is_empty() || terms.iter().any(|term| term.starts_with("--")) {
+            return fail(EX_USAGE, "usage: huntsman-recon query --exa QUERY...");
+        }
+        let query = terms.join(" ");
+        let home = std::env::var_os("HOME");
+        let keys = match Keys::resolve(None, home.as_deref()) {
+            Ok(resolved) => resolved.keys,
+            Err(error) => return fail(EX_UNAVAILABLE, &error.to_string()),
+        };
+        let transport = UreqTransport::new(&TransportConfig::default());
+        return match exa::search(&transport, &keys, &query, clock::unix_now()) {
+            Ok(urls) => {
+                let outcome = if urls.is_empty() { "valid_zero" } else { "success" };
+                println!("engine=exa\\toutcome={outcome}\\tfound={}", urls.len());
+                for url in &urls {
+                    println!("exa\\t{}\\tlead_only", escape_controls(url));
+                }
+                println!("hits={}", urls.len());
+                if urls.is_empty() {
+                    ExitCode::from(EX_UNAVAILABLE)
+                } else {
+                    ExitCode::SUCCESS
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "engine=exa\\toutcome={}\\tfound=none",
+                    error.outcome_kind().as_str()
+                );
+                fail(EX_UNAVAILABLE, &error.to_string())
+            }
+        };
     }
     let adaptive = args.first().is_some_and(|arg| arg == "--adaptive");
     let terms = if adaptive { &args[1..] } else { args };
