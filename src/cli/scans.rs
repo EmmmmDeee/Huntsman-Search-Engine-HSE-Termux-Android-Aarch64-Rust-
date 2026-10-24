@@ -52,10 +52,16 @@ fn lookup_with(refusal: impl Fn(Refused) -> String + Send + Sync + 'static) -> S
     })
 }
 
-/// Whether a key slot holds a key, read from the same places the lookups read keys:
+/// Whether a slot has an accepted provider credential, including shared-key aliases, read from
 /// `~/.huntsman.env` when it passes the default-file checks, then the environment.
 pub(super) fn slot_check() -> SlotCheck {
-    Arc::new(|slot| crate::cli::credentials::lookup_keys().get(slot).is_some())
+    Arc::new(|slot| {
+        huntsman_recon::provider_credentials::secret_for_slot(
+            &crate::cli::credentials::lookup_keys(),
+            slot,
+        )
+        .is_some()
+    })
 }
 
 /// `$HUNTSMAN_HOME`, else `~/.huntsman`; only an absolute directory counts.

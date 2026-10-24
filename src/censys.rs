@@ -56,8 +56,45 @@ pub fn lookup(
     }
 }
 
-fn string_at<'a>(value: &'a Value, path: &str) -> Option<&'a str> {
-    value.pointer(path).and_then(Value::as_str)
+/// Missing/null optional fields are compatible; malformed present fields are
+/// schema drift, not absence. Extractors only inspect the fields we consume.
+fn field<'a, T>(
+    value: &'a Value,
+    key: &str,
+    extract: impl FnOnce(&'a Value) -> Option<T>,
+) -> Result<Option<T>, LegError> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => extract(value)
+            .map(Some)
+            .ok_or_else(|| LegError::Decode(format!("Censys {key} has an invalid shape"))),
+    }
+}
+
+fn object_field<'a>(value: &'a Value, key: &str) -> Result<&'a Value, LegError> {
+    field(value, key, |value| value.is_object().then_some(value))
+        .map(|object| object.unwrap_or(&Value::Null))
+}
+
+/// Sparse service objects are permitted, but malformed present fields must not
+/// be counted as successfully observed services or silently lose their details.
+fn service_ports(services: &[Value]) -> Result<Vec<String>, LegError> {
+    let mut ports = Vec::new();
+    for service in services {
+        if !service.is_object() {
+            return Err(LegError::Decode("Censys service is not an object".into()));
+        }
+        let transport = field(service, "transport_protocol", Value::as_str)?;
+        let protocol = field(service, "protocol", Value::as_str)?;
+        let port = field(service, "port", |value| {
+            value.as_u64().and_then(|port| u16::try_from(port).ok())
+        })?;
+        if let Some(port) = port {
+            let protocol = transport.or(protocol).unwrap_or("unknown");
+            ports.push(format!("{port}/{protocol}"));
+        }
+    }
+    Ok(ports)
 }
 
 /// Convert one Censys v3 response into the evidence and canonical pivots
@@ -74,7 +111,7 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Finding, LegError> {
     let requested = ip
         .parse::<std::net::IpAddr>()
         .map_err(|_| LegError::Decode("invalid requested host address".into()))?;
-    let returned = string_at(host, "/ip").and_then(|address| address.parse().ok());
+    let returned = field(host, "ip", Value::as_str)?.and_then(|address| address.parse().ok());
     if returned != Some(requested) {
         return Err(LegError::Decode("Censys answer names another host".into()));
     }
@@ -83,40 +120,28 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Finding, LegError> {
         Some(Value::Array(services)) => services.as_slice(),
         Some(_) => return Err(LegError::Decode("Censys services are not an array".into())),
     };
-    let dns = match host.pointer("/dns/names") {
+    let dns = object_field(host, "dns")?;
+    let dns = match dns.get("names") {
         None | Some(Value::Null) => &[][..],
         Some(Value::Array(names)) => names.as_slice(),
         Some(_) => return Err(LegError::Decode("Censys DNS names are not an array".into())),
     };
-    let asn = host
-        .pointer("/autonomous_system/asn")
-        .and_then(Value::as_u64)
-        .map(|number| format!("AS{number}"));
-    let organisation = string_at(host, "/autonomous_system/name");
-    let country = string_at(host, "/location/country");
-    let city = string_at(host, "/location/city");
+    let routing = object_field(host, "autonomous_system")?;
+    let asn = field(routing, "asn", Value::as_u64)?.map(|number| format!("AS{number}"));
+    let as_name = field(routing, "name", Value::as_str)?;
+    let organisation = field(routing, "organization", Value::as_str)?;
+    let location = object_field(host, "location")?;
+    let country = field(location, "country", Value::as_str)?;
+    let city = field(location, "city", Value::as_str)?;
     let mut finding = Finding::new(format!("Censys: {} services on {ip}", services.len()))
         .attr("service_count", services.len().to_string())
         .opt_attr("country", country)
         .opt_attr("city", city)
-        .opt_attr("as_name", organisation)
+        .opt_attr("as_name", as_name)
+        .opt_attr("as_organization", organisation)
         .opt_attr("asn", asn.as_deref());
 
-    let ports: Vec<String> = services
-        .iter()
-        .filter_map(|service| {
-            let port = service.get("port")?.as_u64()?;
-            if port > u64::from(u16::MAX) {
-                return None;
-            }
-            let protocol = service
-                .get("transport_protocol")
-                .and_then(Value::as_str)
-                .or_else(|| service.get("protocol").and_then(Value::as_str))
-                .unwrap_or("unknown");
-            Some(format!("{port}/{protocol}"))
-        })
-        .collect();
+    let ports = service_ports(services)?;
     if !ports.is_empty() {
         finding = finding.list_attr("services", &ports);
     }
@@ -130,7 +155,10 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Finding, LegError> {
             "Censys observed the network organisation",
         );
     }
-    for name in dns.iter().filter_map(Value::as_str) {
+    for name in dns {
+        let name = name
+            .as_str()
+            .ok_or_else(|| LegError::Decode("Censys DNS name is not a string".into()))?;
         finding = finding.pivot(PivotKind::Domain, name, "Censys observed a DNS name");
     }
     Ok(finding)
