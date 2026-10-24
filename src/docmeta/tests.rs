@@ -445,6 +445,28 @@ fn a_value_past_the_bound_is_cut_and_says_how_long_it_is() {
 }
 
 #[test]
+fn distinct_long_values_with_identical_visible_prefixes_are_counted() {
+    // The suffix differs beyond the display cap, but the bounded renderings match.
+    // The duplicate first value must not be counted a second time.
+    let prefix = "A".repeat(12_000);
+    let first = format!("{prefix}X");
+    let second = format!("{prefix}Y");
+    let parsed = parse(&png(&[
+        text_chunk("Hist", &first),
+        text_chunk("Hist", &second),
+        text_chunk("Hist", &first),
+    ]));
+    assert_eq!(parsed.fields.len(), 1);
+    assert_eq!(parsed.values_omitted, 1);
+    let shown = field(&parsed, "png:Hist").expect("one bounded field");
+    assert!(shown.contains("12001 bytes"), "{shown}");
+    assert!(
+        shown.ends_with(" (1 more value(s) not kept)"),
+        "{shown}"
+    );
+}
+
+#[test]
 fn repeated_values_past_the_bound_are_counted_never_dropped_silently() {
     // 3000 distinct values of one property: those that fit are joined, the join says it was cut,
     // and every value is either shown or counted as not kept.
