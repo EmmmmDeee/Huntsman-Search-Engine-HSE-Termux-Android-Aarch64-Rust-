@@ -364,8 +364,7 @@ struct ResolverWorkerSlot(&'static std::sync::atomic::AtomicUsize);
 
 impl Drop for ResolverWorkerSlot {
     fn drop(&mut self) {
-        self.0
-            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
@@ -442,9 +441,9 @@ where
             "{name}: no answer within {}s",
             timeout.as_secs()
         ))),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            Err(failure(format!("{name}: native resolver worker stopped without an answer")))
-        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(failure(format!(
+            "{name}: native resolver worker stopped without an answer"
+        ))),
     }
 }
 
