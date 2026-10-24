@@ -225,8 +225,13 @@ pub fn assess(
 /// promoted to current evidence. A replay lacking a boot clock is unverified.
 #[must_use]
 pub fn from_wifi_scan(scan: &WifiScan, baseline: Option<&Baseline>) -> Report {
+    // Offline replays and unknown boot-clock ages cannot establish present
+    // network proximity. Keep the assessment inconclusive in those cases.
+    // Only an OS-cached observation with a verified boot-relative age may
+    // contribute to a current MITM warning; historical WiGLE replay remains
+    // available separately and explicitly unverified.
     let observations: Vec<_> = scan.observations.iter()
-        .filter(|row| row.freshness != "stale")
+        .filter(|row| row.freshness == "os_cached")
         .map(|row| AccessPoint {
             ssid: row.sighting.name.clone().unwrap_or_default(),
             bssid: row.sighting.network_id.clone(),
@@ -338,6 +343,25 @@ mod tests {
         let r = from_wigle_jsonl(raw,None).unwrap();
         assert_eq!(r.evaluated_access_points,1);
         assert_eq!(r.rejected_records,0);
+    }
+
+    #[test]
+    fn unknown_age_or_replay_is_not_a_current_mitm_indicator() {
+        let raw = br#"[{"bssid":"3c:5a:b4:11:22:33","ssid":"Corp","rssi":-50,"timestamp":980000000,"capabilities":"[ESS]"}]"#;
+        let baseline = parse_baseline(br#"{"networks":[{"ssid":"Corp","bssids":["3c:5a:b4:11:22:33"],"minimum_security":"WPA3"}]}"#).unwrap();
+        let unknown_age = crate::wifi_radar::parse_scan(raw, None).unwrap();
+        let replay = crate::wifi_radar::parse_replay(raw).unwrap();
+        for scan in [&unknown_age, &replay] {
+            let result = from_wifi_scan(scan, Some(&baseline));
+            assert_eq!(result.status, "inconclusive");
+            assert_eq!(result.evaluated_access_points, 0);
+            assert!(result.findings.is_empty());
+            assert!(!result.mitm_confirmed);
+        }
+        let current = crate::wifi_radar::parse_scan(raw, Some(1000.0)).unwrap();
+        let result = from_wifi_scan(&current, Some(&baseline));
+        assert_eq!(result.status, "unconfirmed_indicators");
+        assert_eq!(result.findings.len(), 1);
     }
 
     #[test]
