@@ -2096,6 +2096,8 @@ mod tests {
             target["raw"][0]["evidence"]["attributes"]["ports"],
             "22,443"
         );
+        // The raw record's provenance names the scan it is read from, not the lookup's private id.
+        assert_eq!(target["raw"][0]["evidence"]["provenance"]["scan_id"], id);
         let graph = body(&api.handle("GET", &format!("/api/scans/{id}/graph"), ""));
         assert_eq!(
             graph["edges"].as_array().unwrap().len() + 1,

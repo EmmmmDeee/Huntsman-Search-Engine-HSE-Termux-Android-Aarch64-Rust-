@@ -1581,6 +1581,8 @@ impl ScanService {
         errors: usize,
         crawl: Crawl,
     ) -> Result<(), ServiceError> {
+        let mut found = found;
+        stamp_scan_id(&mut found.entities, id);
         let now = clock::unix_now_millis();
         let target = Target {
             value: &plan.target,
@@ -1842,6 +1844,31 @@ fn outcome_line(outcome: &SourceExecutionOutcome) -> String {
         line.push_str(detail);
     }
     line
+}
+
+/// Every observation saved under scan `id` is this scan's. Each lookup front-end mints a private
+/// id for the entities it builds, which names no saved scan, so a raw record read on the page or
+/// in an export led nowhere. The saved scan's id replaces it on every entity, on every evidence
+/// record's provenance and on every observation a merge kept, and a kept observation that then
+/// differs from the record's own in nothing is dropped, as [`crate::entity::merge_by_uid`] would
+/// have dropped it.
+fn stamp_scan_id(entities: &mut [Entity], id: &str) {
+    for entity in entities {
+        id.clone_into(&mut entity.scan_id);
+        for evidence in &mut entity.evidence {
+            evidence.provenance.scan_id = Some(id.to_owned());
+            let mut kept = vec![evidence.provenance.clone()];
+            evidence.merged_provenance.retain_mut(|observation| {
+                observation.scan_id = Some(id.to_owned());
+                if kept.contains(observation) {
+                    false
+                } else {
+                    kept.push(observation.clone());
+                    true
+                }
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2277,6 +2304,60 @@ mod tests {
             == "2 lookups over 2 generations found 2 entities; stopped (max_depth): depth 1 reached; a deeper scan would look up more of its findings"));
         let rerun = service.rerun_request(&record.id).unwrap();
         assert_eq!(rerun.options.depth, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A lookup mints a private scan id for what it builds. Saved, every observation names the
+    /// saved scan instead, so a raw record's provenance leads to a scan in the list, and an
+    /// observation a merge kept that differed only by that private id is not kept twice.
+    #[test]
+    fn saved_observations_name_the_saved_scan_not_the_lookups_private_id() {
+        let (service, dir) = with_lookup(
+            "stamp",
+            Arc::new(|kind: ScanKind, selector: &str, _: &Selection| {
+                let mut output = found(kind, selector);
+                let evidence = &mut output.entities[0].evidence[0];
+                let mut again = evidence.provenance.clone();
+                again.scan_id = Some("t".into());
+                evidence.merged_provenance.push(again);
+                let mut other_source = evidence.provenance.clone();
+                other_source.source = "greynoise".into();
+                other_source.scan_id = Some("u".into());
+                evidence.merged_provenance.push(other_source);
+                Ok(output)
+            }),
+        );
+        let record = service
+            .run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        assert_eq!(record.status, ScanStatus::Finished);
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        assert!(!results.entities.is_empty());
+        for entity in &results.entities {
+            assert_eq!(entity.scan_id, record.id, "{}", entity.uid);
+            for evidence in &entity.evidence {
+                assert_eq!(
+                    evidence.provenance.scan_id.as_deref(),
+                    Some(record.id.as_str())
+                );
+                for observation in &evidence.merged_provenance {
+                    assert_eq!(observation.scan_id.as_deref(), Some(record.id.as_str()));
+                    assert_ne!(observation, &evidence.provenance);
+                }
+            }
+        }
+        let merged = &results.entities[0].evidence[0].merged_provenance;
+        assert_eq!(merged.len(), 1, "{merged:?}");
+        assert_eq!(merged[0].source, "greynoise");
+        assert!(
+            !serde_json::to_string(&results)
+                .unwrap()
+                .contains("\"scan_id\":\"s\""),
+            "no private lookup id survives in what is saved"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
