@@ -74,31 +74,28 @@ pub(super) fn mitm_cmd(args: &[String]) -> ExitCode {
         }
         None => None,
     };
-    let report = match file {
-        Some(path) => {
-            let bytes = match read_bounded(Path::new(path), mitm_guard::MAX_IMPORT_BYTES) {
-                Ok(b) => b,
-                Err(e) => return fail(EX_NOINPUT, &e.to_string()),
-            };
-            if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'[') {
-                match wifi_radar::parse_replay(&bytes) {
-                    Ok(scan) => mitm_guard::from_wifi_replay(&scan, baseline.as_ref()),
-                    Err(error) => return fail(EX_DATAERR, &error.to_string()),
-                }
-            } else {
-                match mitm_guard::from_wigle_jsonl(&bytes, baseline.as_ref()) {
-                    Ok(report) => report,
-                    Err(error) => return fail(EX_DATAERR, &error),
-                }
+    let report = if let Some(path) = file {
+        let bytes = match read_bounded(Path::new(path), mitm_guard::MAX_IMPORT_BYTES) {
+            Ok(b) => b,
+            Err(e) => return fail(EX_NOINPUT, &e.to_string()),
+        };
+        if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'[') {
+            match wifi_radar::parse_replay(&bytes) {
+                Ok(scan) => mitm_guard::from_wifi_replay(&scan, baseline.as_ref()),
+                Err(error) => return fail(EX_DATAERR, &error.to_string()),
+            }
+        } else {
+            match mitm_guard::from_wigle_jsonl(&bytes, baseline.as_ref()) {
+                Ok(report) => report,
+                Err(error) => return fail(EX_DATAERR, &error),
             }
         }
-        None => {
-            let scan = match super::radar::capture_wifi() {
-                Ok(s) => s,
-                Err(error) => return fail(EX_UNAVAILABLE, &error),
-            };
-            mitm_guard::from_wifi_scan(&scan, baseline.as_ref())
-        }
+    } else {
+        let scan = match super::radar::capture_wifi() {
+            Ok(s) => s,
+            Err(error) => return fail(EX_UNAVAILABLE, &error),
+        };
+        mitm_guard::from_wifi_scan(&scan, baseline.as_ref())
     };
     if json {
         match terminal_json_pretty(&report) {
