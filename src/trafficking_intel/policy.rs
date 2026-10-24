@@ -88,6 +88,32 @@ impl ReviewPolicy {
             })
             .collect();
 
+        // A source or cited record cannot represent independent origins at once.
+        // Reject contradictory mappings instead of assessing a misleading subset.
+        let mut source_origins = BTreeMap::new();
+        let mut reference_origins = BTreeMap::new();
+        for observation in &valid {
+            let origin = observation.origin_id.as_str();
+            if source_origins
+                .insert(observation.source_id.as_str(), origin)
+                .is_some_and(|previous| previous != origin)
+                || reference_origins
+                    .insert(observation.evidence_ref.as_str(), origin)
+                    .is_some_and(|previous| previous != origin)
+            {
+                return Assessment {
+                    status: AssessmentStatus::InsufficientEvidence,
+                    supported_indicators: Vec::new(),
+                    independent_origins: 0,
+                    limitations: vec![
+                        "Conflicting source or evidence reference origins; assessment withheld."
+                            .to_owned(),
+                    ],
+                    evidence_refs: Vec::new(),
+                };
+            }
+        }
+
         let mut origins = BTreeSet::new();
         let mut by_indicator: BTreeMap<Indicator, BTreeSet<&str>> = BTreeMap::new();
         let mut evidence_refs = BTreeSet::new();
@@ -121,6 +147,15 @@ impl ReviewPolicy {
             "Do not publish potential victim identifiers or automate enforcement actions."
                 .to_owned(),
         ];
+
+        limitations.push(
+            "Source independence and corroboration are caller-asserted, not authenticated."
+                .to_owned(),
+        );
+        limitations.push(
+            "Evidence references cover eligible observations, not each supported indicator."
+                .to_owned(),
+        );
 
         if valid.len() != observations.len() {
             limitations.push("Incomplete or uncorroborated observations were excluded.".to_owned());
@@ -215,6 +250,31 @@ mod tests {
             ReviewPolicy::default().assess(&observations).status,
             AssessmentStatus::InsufficientEvidence
         );
+    }
+
+    #[test]
+    fn conflicting_source_origins_abstain() {
+        let observations = [
+            observation(Indicator::WageWithholding, "publisher-a", "same-source"),
+            observation(Indicator::WageWithholding, "publisher-b", "same-source"),
+        ];
+        let result = ReviewPolicy::default().assess(&observations);
+        assert_eq!(result.status, AssessmentStatus::InsufficientEvidence);
+        assert_eq!(result.independent_origins, 0);
+        assert!(result.evidence_refs.is_empty());
+        assert!(result.limitations.iter().any(|item| item.contains("Conflicting")));
+    }
+
+    #[test]
+    fn shared_evidence_reference_cannot_inflate_independent_origins() {
+        let mut second = observation(Indicator::WageWithholding, "publisher-b", "source-b");
+        second.evidence_ref = "published-record-source-a".to_owned();
+        let result = ReviewPolicy::default().assess(&[
+            observation(Indicator::WageWithholding, "publisher-a", "source-a"),
+            second,
+        ]);
+        assert_eq!(result.status, AssessmentStatus::InsufficientEvidence);
+        assert!(result.supported_indicators.is_empty());
     }
 
     #[test]
