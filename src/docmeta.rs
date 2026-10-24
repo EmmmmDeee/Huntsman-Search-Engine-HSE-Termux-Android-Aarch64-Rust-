@@ -1375,20 +1375,30 @@ fn gif_comments(data: &[u8]) -> Vec<String> {
     }
     for _ in 0..MAX_GIF_BLOCKS {
         match data.get(cursor).copied() {
-            // Extension: introducer, label, then a sub-block chain.
+            // Extension: introducer, label, then a sub-block chain. Only a Comment Extension's bytes
+            // are collected; any other extension is skipped without copying its payload.
             Some(0x21) => {
                 let label = data.get(cursor + 1).copied();
-                let (text, next) = gif_sub_blocks(data, cursor + 2);
                 if label == Some(0xFE) {
+                    let (text, next) = gif_sub_blocks(data, cursor + 2);
+                    // A comment is surfaced only when its chain reached the zero-length terminator;
+                    // a chain that ran off the end of the file is truncated evidence, not a complete
+                    // field, so it is dropped rather than promoted.
+                    let Some(next) = next else { break };
                     if let Some(bytes) = text {
                         out.push(latin1(&bytes));
                     }
+                    cursor = next;
+                } else {
+                    let Some(next) = gif_skip_sub_blocks(data, cursor + 2) else {
+                        break;
+                    };
+                    cursor = next;
                 }
-                let Some(next) = next else { break };
-                cursor = next;
             }
             // Image descriptor: 9 fixed bytes, a packed byte, an optional local colour table, the
-            // LZW minimum-code-size byte, then an image-data sub-block chain.
+            // LZW minimum-code-size byte, then an image-data sub-block chain. The compressed image
+            // data is skipped by its lengths, never copied.
             Some(0x2C) => {
                 let Some(local) = data.get(cursor + 9).copied() else {
                     break;
@@ -1398,8 +1408,9 @@ fn gif_comments(data: &[u8]) -> Vec<String> {
                     at += 3 * gif_color_table_entries(local);
                 }
                 at += 1;
-                let (_, next) = gif_sub_blocks(data, at);
-                let Some(next) = next else { break };
+                let Some(next) = gif_skip_sub_blocks(data, at) else {
+                    break;
+                };
                 cursor = next;
             }
             // The trailer (0x3B), a malformed byte, or the end of the stream all stop the walk.
@@ -1439,6 +1450,26 @@ fn gif_sub_blocks(data: &[u8], from: usize) -> (Option<Vec<u8>>, Option<usize>) 
         cursor = end;
     }
     (collected, None)
+}
+
+/// Advance past a GIF sub-block chain from `from` without collecting it, used for image data and
+/// non-comment extensions so a frame's compressed bytes are never copied. Returns the index one past
+/// the zero-length terminator, or `None` when the chain runs off the end of the file. Bounded by
+/// [`MAX_GIF_BLOCKS`]. **Pure.**
+fn gif_skip_sub_blocks(data: &[u8], from: usize) -> Option<usize> {
+    let mut cursor = from;
+    for _ in 0..MAX_GIF_BLOCKS {
+        let len = data.get(cursor).copied()?;
+        if len == 0 {
+            return Some(cursor + 1);
+        }
+        cursor = cursor + 1 + usize::from(len);
+        // A sub-block whose data extends past the end of the file is a truncated chain.
+        if cursor > data.len() {
+            return None;
+        }
+    }
+    None
 }
 
 // ── bytes ──────────────────────────────────────────────────────────────────────────────────

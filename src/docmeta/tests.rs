@@ -1262,3 +1262,18 @@ fn every_truncation_of_a_gif_is_read_never_a_panic() {
         assert!(outcome.is_ok(), "cut {cut} panicked");
     }
 }
+
+#[test]
+fn a_truncated_comment_chain_is_not_emitted_as_a_complete_comment() {
+    // Header and logical screen descriptor (no colour table), then a Comment Extension whose single
+    // sub-block is complete but whose zero-length terminator is missing because the file ends.
+    // Truncated evidence must not be promoted to a complete field: the format is still named, but no
+    // gif:Comment is surfaced.
+    let bytes = b"GIF89a\x01\x00\x01\x00\x00\x00\x00\x21\xFE\x04note";
+    let parsed = parse(bytes);
+    assert_eq!(parsed.format, "GIF");
+    assert_eq!(field(&parsed, "gif:Comment"), None);
+    // The same comment with its terminator present is a complete field and is surfaced.
+    let terminated = gif(&[gif_comment(b"note")]);
+    assert_eq!(field(&parse(&terminated), "gif:Comment"), Some("note"));
+}
