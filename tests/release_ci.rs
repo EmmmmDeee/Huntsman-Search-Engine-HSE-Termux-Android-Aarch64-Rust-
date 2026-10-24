@@ -1247,7 +1247,13 @@ fn run_installer_with(
     let assets = root.join("assets");
     let fakes = root.join("fakes");
     let prefix = root.join("prefix");
-    for d in [&assets, &fakes, &prefix.join("bin"), &root.join("tmp"), &root.join("home")] {
+    for d in [
+        &assets,
+        &fakes,
+        &prefix.join("bin"),
+        &root.join("tmp"),
+        &root.join("home"),
+    ] {
         fs::create_dir_all(d).unwrap();
     }
     let asset = "huntsman-recon-aarch64-linux-android";
@@ -1268,7 +1274,11 @@ fn run_installer_with(
         let service = prefix.join("var/service/huntsman-serve");
         fs::create_dir_all(&state).unwrap();
         fs::create_dir_all(&service).unwrap();
-        fs::write(state.join("installed-revision"), "revision=ffffffffffffffffffffffffffffffffffffffff\n").unwrap();
+        fs::write(
+            state.join("installed-revision"),
+            "revision=ffffffffffffffffffffffffffffffffffffffff\n",
+        )
+        .unwrap();
         fs::write(service.join("run"), "#!/bin/sh\n").unwrap();
         if service_down {
             fs::write(service.join("down"), "").unwrap();
