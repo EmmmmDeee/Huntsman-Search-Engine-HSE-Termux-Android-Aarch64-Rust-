@@ -754,24 +754,64 @@ impl ScanStore {
                 continue;
             }
             let was = record.status;
-            record.status = ScanStatus::Aborted;
-            record.ended = Some(now_ms);
-            self.update(&record)?;
-            self.append_log(
-                &record.id,
-                &LogEntry {
-                    time: now_ms,
-                    component: "huntsman".into(),
-                    level: LogLevel::Warning,
-                    message: format!(
-                        "the server stopped while this scan was {}; marked ABORTED",
-                        was.as_str()
-                    ),
-                },
+            self.abort(
+                &mut record,
+                now_ms,
+                &format!(
+                    "the server stopped while this scan was {}; marked ABORTED",
+                    was.as_str()
+                ),
             )?;
             recovered += 1;
         }
         Ok(recovered)
+    }
+
+    /// Mark `record` `ABORTED`, ended at `now_ms`, with a log entry naming the owner, when it is
+    /// active and the other process that owned it is gone; returns whether it did. A row this
+    /// process owns, one another live process is running, and one with no owner recorded are left
+    /// as they are. Reads reconcile with it so a scan whose process Android stopped while the
+    /// server stayed up never reads `RUNNING` for ever, un-stoppable and un-deletable;
+    /// [`Self::recover`] is the start-up sweep over every row.
+    ///
+    /// # Errors
+    /// [`StoreError::Io`] when the row or its log cannot be saved.
+    pub fn reconcile(&self, record: &mut ScanRecord, now_ms: u64) -> Result<bool, StoreError> {
+        let Some(owner) = record.owner else {
+            return Ok(false);
+        };
+        if !record.status.is_active()
+            || owner == std::process::id()
+            || other_process_alive(owner, record.owner_started)
+        {
+            return Ok(false);
+        }
+        let was = record.status;
+        self.abort(
+            record,
+            now_ms,
+            &format!(
+                "the process running this scan (pid {owner}) stopped while it was {}; marked ABORTED",
+                was.as_str()
+            ),
+        )?;
+        Ok(true)
+    }
+
+    /// Save `record` as `ABORTED`, ended at `now_ms`, and log `message` against it.
+    fn abort(&self, record: &mut ScanRecord, now_ms: u64, message: &str) -> Result<(), StoreError> {
+        record.status = ScanStatus::Aborted;
+        record.ended = Some(now_ms);
+        self.update(record)?;
+        self.append_log(
+            &record.id,
+            &LogEntry {
+                time: now_ms,
+                component: "huntsman".into(),
+                level: LogLevel::Warning,
+                message: message.to_owned(),
+            },
+        )
     }
 }
 
@@ -1297,6 +1337,55 @@ mod tests {
         );
         assert_eq!(store.get(&done.id).unwrap(), done);
         assert_eq!(store.recover(10_000).unwrap(), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_active_row_whose_owner_is_gone_reconciles_to_aborted_on_read() {
+        let dir = scratch("reconcile");
+        let store = ScanStore::open(&dir).unwrap();
+        // No process has this pid, so the owner that recorded it is gone.
+        let mut orphan = record(&new_id("g", 11, 0), 11_000, ScanStatus::Running);
+        orphan.owner = Some(u32::MAX);
+        store.create(&orphan).unwrap();
+        assert!(store.reconcile(&mut orphan, 12_000).unwrap());
+        assert_eq!(orphan.status, ScanStatus::Aborted);
+        assert_eq!(orphan.ended, Some(12_000));
+        let saved = store.get(&orphan.id).unwrap();
+        assert_eq!(saved.status, ScanStatus::Aborted);
+        let log = store.log(&orphan.id).unwrap();
+        assert!(
+            log[0].message.contains(&format!("pid {}", u32::MAX))
+                && log[0].message.contains("RUNNING"),
+            "{}",
+            log[0].message
+        );
+        // Settled rows are not touched again.
+        assert!(!store.reconcile(&mut orphan, 13_000).unwrap());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reconciling_leaves_rows_this_process_owns_another_live_process_runs_or_nobody_claimed() {
+        let dir = scratch("reconcile-live");
+        let store = ScanStore::open(&dir).unwrap();
+        let mut ours = record(&new_id("o", 12, 0), 12_000, ScanStatus::Running);
+        ours.owner = Some(std::process::id());
+        let mut theirs = record(&new_id("t", 13, 0), 13_000, ScanStatus::Starting);
+        theirs.owner = Some(std::os::unix::process::parent_id());
+        let mut unclaimed = record(&new_id("u", 14, 0), 14_000, ScanStatus::Running);
+        unclaimed.owner = None;
+        for row in [&ours, &theirs, &unclaimed] {
+            store.create(row).unwrap();
+        }
+        for row in [&mut ours, &mut theirs, &mut unclaimed] {
+            let was = row.status;
+            assert!(!store.reconcile(row, 15_000).unwrap());
+            assert_eq!(row.status, was);
+            assert_eq!(store.get(&row.id).unwrap().status, was);
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
