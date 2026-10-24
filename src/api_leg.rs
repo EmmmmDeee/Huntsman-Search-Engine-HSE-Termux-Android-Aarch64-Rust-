@@ -89,7 +89,7 @@ impl Api {
             Some(key) => {
                 !key.required
                     || crate::provider_credentials::secret_for_slot(keys, key.slot).is_some()
-            },
+            }
         }
     }
 
