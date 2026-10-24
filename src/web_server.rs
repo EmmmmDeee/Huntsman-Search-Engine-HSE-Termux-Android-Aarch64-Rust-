@@ -1277,7 +1277,6 @@ fn route(
     text.into_bytes()
 }
 
-
 /** Render the complete case dossier on loopback only; never expose local case material on a public bind. */
 fn dossier_page_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> String {
     let head = parsed.method == Method::Head;
@@ -1290,9 +1289,19 @@ fn dossier_page_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> St
     match crate::dossier_view::load().and_then(|document| crate::dossier_view::render(&document)) {
         Ok(html) => response(200, "text/html; charset=utf-8; hse=dossier", &html, head),
         Err(message) => {
-            let code = if message.contains("exceeds") { 413 }
-                else if message.contains("cannot open") { 404 } else { 422 };
-            response(code, "text/plain; charset=utf-8", &format!("{message}\n"), head)
+            let code = if message.contains("exceeds") {
+                413
+            } else if message.contains("cannot open") {
+                404
+            } else {
+                422
+            };
+            response(
+                code,
+                "text/plain; charset=utf-8",
+                &format!("{message}\n"),
+                head,
+            )
         }
     }
 }
@@ -1311,8 +1320,13 @@ fn dossier_json_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> St
             Err(_) => json_error(500, "dossier serialization failed"),
         },
         Err(message) => {
-            let code = if message.contains("exceeds") { 413 }
-                else if message.contains("cannot open") { 404 } else { 422 };
+            let code = if message.contains("exceeds") {
+                413
+            } else if message.contains("cannot open") {
+                404
+            } else {
+                422
+            };
             json_error(code, &message)
         }
     }

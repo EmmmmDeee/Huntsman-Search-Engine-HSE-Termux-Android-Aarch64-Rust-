@@ -183,7 +183,10 @@ mod tests {
     #[test]
     fn refuses_duplicate_and_missing_rows() {
         let mut doc = fixture();
-        doc["claims"].as_array_mut().unwrap().push(serde_json::json!({"id":"S01"}));
+        doc["claims"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"id":"S01"}));
         assert!(validate(&doc).unwrap_err().contains("duplicate"));
         doc.as_object_mut().unwrap().remove("actions");
         assert!(validate(&doc).is_err());
