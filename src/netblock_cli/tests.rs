@@ -52,6 +52,26 @@ fn outcome<'a>(report: &'a Report, source: &str) -> &'a SourceExecutionOutcome {
         .unwrap_or_else(|| panic!("no {source} row in {:#?}", report.outcomes))
 }
 
+/// When no source answered, the lookup ends from its rows through `SourceReach`: a request
+/// refused before sending is a refusal (exit 77), and no response at all is "no usable response"
+/// (exit 69) with the first reason in row order.
+#[test]
+fn no_source_answered_is_a_refusal_or_no_response_from_its_rows() {
+    match run(&crate::test_support::Refusing, "1.1.1.0/30", 1) {
+        NetblockRun::Network(message) => assert!(message.contains("egress-policy"), "{message}"),
+        NetblockRun::Failed(message) => panic!("failed: {message}"),
+        NetblockRun::Printed { text, .. } => panic!("printed: {text}"),
+    }
+    match run(&RoutedTransport::new(&[]), "1.1.1.0/30", 1) {
+        NetblockRun::Failed(message) => assert!(
+            message.starts_with("no source answered for netblock 1.1.1.0/30: "),
+            "{message}"
+        ),
+        NetblockRun::Network(message) => panic!("network: {message}"),
+        NetblockRun::Printed { text, .. } => panic!("printed: {text}"),
+    }
+}
+
 /// A block is its registration, the prefix and AS that route it, and the names its reverse zone
 /// gives its addresses: each address with a PTR record is in the block, each name the address's.
 #[test]

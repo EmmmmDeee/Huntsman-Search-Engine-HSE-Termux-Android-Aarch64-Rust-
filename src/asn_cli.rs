@@ -26,7 +26,7 @@ use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::rdap_legs;
 use crate::ripestat::{self, AsOverview, Neighbours, Prefixes};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceReach, SourceRun};
 
 pub const ASN_USAGE: &str = "usage: huntsman-recon asn AS-NUMBER [--save FILE]";
 pub const ASN_HELP: &str = "\
@@ -112,14 +112,14 @@ pub fn run<T: Transport + ?Sized + Sync>(transport: &T, asn: &str, now_unix: u64
     let mut report = Report::default();
     report.entities.extend(registration.entities);
     report.outcomes.extend(registration.outcome);
-    let network = routing
-        .and_then(|routing| routing_entities(&mut report, &value, &scan_id, &routing, now_unix));
+    if let Some(routing) = routing {
+        routing_entities(&mut report, &value, &scan_id, &routing, now_unix);
+    }
     merge_by_uid(&mut report.entities);
-    if !report.outcomes.iter().any(|o| o.kind.is_accepted()) {
-        return match network {
-            Some(message) => AsnRun::Network(message),
-            None => AsnRun::Failed(format!("no source answered for {value}")),
-        };
+    if let Some(run) =
+        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {value}"))
+    {
+        return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => AsnRun::Printed { text, report },
@@ -134,14 +134,15 @@ fn caught<R>(call: impl FnOnce() -> Result<R, LegError>) -> Result<R, LegError> 
 }
 
 /// The holder, prefixes and neighbours as entities, and the one `ripestat` row that says what
-/// each call answered. Returns the transport failure, if one stopped a call.
+/// each call answered. How the lookup ends when no call answered is read from that row by
+/// [`SourceReach`], not returned here.
 fn routing_entities(
     report: &mut Report,
     asn: &str,
     scan_id: &str,
     routing: &Routing,
     now_unix: u64,
-) -> Option<String> {
+) {
     let evidence = |summary: String| {
         Evidence::new(
             EvidenceProvenance::for_scan(ripestat::SOURCE, scan_id),
@@ -218,10 +219,6 @@ fn routing_entities(
         said.push(format!("{call} failed: {error}"));
     }
     let detail = said.join("; ");
-    let network = failures
-        .iter()
-        .find(|(_, error)| matches!(error, LegError::Transport(_)))
-        .map(|(call, error)| format!("{} {call}: {error}", ripestat::SOURCE));
     let outcome = match failures.first() {
         Some(first) if failures.len() == 3 => {
             // Every call failed: this one row is refused only when all three were refused, so it
@@ -241,7 +238,6 @@ fn routing_entities(
             .with_detail(detail),
     };
     report.outcomes.push(outcome);
-    network
 }
 
 /// The AS's holder and registry block on the AS, and the holder as an organisation tied to it.

@@ -17,7 +17,6 @@ use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
-use crate::api_leg::LegError;
 use crate::canonical::{canonical_ip, canonical_netblock};
 use crate::dns::{self, RESOLVE_SOURCE, ResolveErrorKind};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
@@ -28,7 +27,7 @@ use crate::lookup_report;
 use crate::netblock::Netblock;
 use crate::rdap_legs;
 use crate::ripestat;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceReach, SourceRun};
 use crate::tags;
 use crate::threat_feeds::{self, Feeds};
 
@@ -90,7 +89,6 @@ pub fn run<T: Transport + ?Sized + Sync>(
     let value = block.to_string();
     let scan_id = crate::entity::scan_id("netblock", &value);
     let mut report = Report::default();
-    let mut network = None;
 
     let registration = rdap_legs::netblock(transport, block, &scan_id, now_unix);
     report.entities.extend(registration.entities);
@@ -103,21 +101,11 @@ pub fn run<T: Transport + ?Sized + Sync>(
                 SourceExecutionOutcome::valid_zero(ripestat::SOURCE, now_unix),
             ),
             Ok(routing) => routing_leg(&mut report, &value, &scan_id, &routing, now_unix),
-            Err(err) => {
-                if let LegError::Transport(_) = err {
-                    network = Some(format!("{}: {err}", ripestat::SOURCE));
-                }
-                report.outcomes.push(err.outcome(&ripestat::API, now_unix));
-            }
+            Err(err) => report.outcomes.push(err.outcome(&ripestat::API, now_unix)),
         }
         match place {
             Ok(place) => place_leg(&mut report, &value, &scan_id, &place),
-            Err(err) => {
-                if let LegError::Transport(_) = err {
-                    network.get_or_insert_with(|| format!("{}: {err}", ripestat::SOURCE));
-                }
-                report.outcomes.push(err.outcome(&ripestat::API, now_unix));
-            }
+            Err(err) => report.outcomes.push(err.outcome(&ripestat::API, now_unix)),
         }
     }
     if transport.runs_module(RESOLVE_SOURCE) {
@@ -135,11 +123,10 @@ pub fn run<T: Transport + ?Sized + Sync>(
     );
 
     merge_by_uid(&mut report.entities);
-    if !report.outcomes.iter().any(|o| o.kind.is_accepted()) {
-        return match network {
-            Some(message) => NetblockRun::Network(message),
-            None => NetblockRun::Failed(format!("no source answered for netblock {value}")),
-        };
+    if let Some(run) = SourceReach::of(&report.outcomes)
+        .unanswered(&format!("no source answered for netblock {value}"))
+    {
+        return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => NetblockRun::Printed { text, report },
