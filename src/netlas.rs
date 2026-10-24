@@ -22,6 +22,7 @@ use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
+use crate::tags;
 
 pub const SOURCE: &str = "netlas";
 pub const KEY_SLOT: &str = crate::environment::NETLAS_KEY_ENV;
@@ -217,8 +218,7 @@ pub fn decode(answer: Answer, indicator: Indicator<'_>) -> Result<Option<Finding
         Answer::Body(body) => body,
     };
     let raw: Value = api_leg::decode(&body)?;
-    let mut body = Body::deserialize(&raw)
-        .map_err(|e| LegError::Decode(format!("unexpected response shape: {e}")))?;
+    let mut body: Body = api_leg::decode_value(&raw)?;
     if !is_about(&body, indicator) {
         return Err(LegError::Decode("answer names another indicator".into()));
     }
@@ -250,7 +250,7 @@ pub fn decode(answer: Answer, indicator: Indicator<'_>) -> Result<Option<Finding
     .tag_if(!body.ioc.is_empty(), "suspicious")
     .tag_if(privacy.is_vpn, "vpn")
     .tag_if(privacy.is_proxy, "proxy")
-    .tag_if(privacy.is_tor, "tor-exit")
+    .tag_if(privacy.is_tor, tags::TOR_EXIT)
     .tag_if(anycast, "anycast");
     finding = services(finding, &body);
     finding = listings(finding, &body.ioc);
@@ -592,6 +592,23 @@ mod tests {
         assert!(pivots.contains(&(PivotKind::Domain, "gec.example.com")));
         assert_eq!(value(&f, "dns_txt"), Some("v=spf1 -all"));
         assert!(f.tags.is_empty());
+    }
+
+    #[test]
+    fn a_tor_exit_carries_the_canonical_tag() {
+        let body = r#"{"ip":"185.220.101.1","type":"ip","privacy":{"is_vpn":false,"is_proxy":false,"is_tor":true}}"#;
+        let f = finding(body, Indicator::Ip("185.220.101.1"));
+        assert_eq!(f.tags, [tags::TOR_EXIT]);
+    }
+
+    #[test]
+    fn a_mis_shaped_answer_names_no_body_value() {
+        let body = r#"{"ip":"1.1.1.1","ports":[{"port":"x"}]}"#;
+        let detail = match decode(Answer::Body(body.into()), Indicator::Ip("1.1.1.1")) {
+            Err(error) => error.outcome(&API, 1).detail.unwrap_or_default(),
+            Ok(found) => panic!("decoded {found:?}"),
+        };
+        assert_eq!(detail, "netlas: unexpected response shape: data error");
     }
 
     #[test]

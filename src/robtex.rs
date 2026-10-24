@@ -135,8 +135,7 @@ fn when(unix: Option<u64>) -> Option<String> {
 /// a body that is not the documented shape.
 pub fn decode_ip(body: &[u8]) -> Result<Option<Finding>, LegError> {
     let raw: Value = api_leg::decode(body)?;
-    let body = IpBody::deserialize(&raw)
-        .map_err(|e| LegError::Decode(format!("unexpected response shape: {e}")))?;
+    let body: IpBody = api_leg::decode_value(&raw)?;
     match body.status.as_str() {
         "ok" => {}
         "ratelimited" => return Err(LegError::RateLimited { retry_after: None }),
@@ -223,8 +222,7 @@ pub fn decode_forward(body: &[u8], domain: &str) -> Result<Option<Finding>, LegE
     let mut others: Vec<String> = Vec::new();
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
         let value: Value = api_leg::decode(line.as_bytes())?;
-        let record = Record::deserialize(&value)
-            .map_err(|e| LegError::Decode(format!("unexpected record shape: {e}")))?;
+        let record: Record = api_leg::decode_value(&value)?;
         raw.push(value);
         first = match (first, record.time_first) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -342,6 +340,23 @@ mod tests {
             decode_ip(br#"{"status":"nope"}"#),
             Err(LegError::Decode(_))
         ));
+    }
+
+    #[test]
+    fn a_mis_shaped_answer_or_record_names_no_body_value() {
+        for decoded in [
+            decode_ip(br#"{"status":"ok","as":"60729"}"#),
+            decode_forward(
+                br#"{"rrname":"example.com","rrdata":93,"rrtype":"A"}"#,
+                "example.com",
+            ),
+        ] {
+            let detail = match decoded {
+                Err(error) => error.outcome(&API, 1).detail.unwrap_or_default(),
+                Ok(found) => panic!("decoded {found:?}"),
+            };
+            assert_eq!(detail, "robtex: unexpected response shape: data error");
+        }
     }
 
     fn value<'a>(f: &'a Finding, key: &str) -> Option<&'a str> {

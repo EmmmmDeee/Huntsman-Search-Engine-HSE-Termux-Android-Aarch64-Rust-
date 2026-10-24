@@ -351,6 +351,19 @@ pub fn decode<D: serde::de::DeserializeOwned>(body: &[u8]) -> Result<D, LegError
     })
 }
 
+/// An already parsed `value` as `D`, or a [`LegError::Decode`] naming only the error's
+/// category: never serde's message, which can quote the body, and no position, which a parsed
+/// value does not have. **Pure.**
+///
+/// # Errors
+/// [`LegError::Decode`] when the value is not `D`.
+pub fn decode_value<D: serde::de::DeserializeOwned>(
+    value: &serde_json::Value,
+) -> Result<D, LegError> {
+    D::deserialize(value)
+        .map_err(|_| LegError::Decode("unexpected response shape: data error".into()))
+}
+
 /// Provider text as a finding keeps it: trimmed, control characters replaced, `None` when
 /// blank. Never shortened: an attribute, a summary or a pivot holds all the provider said.
 /// **Pure.**
@@ -690,6 +703,25 @@ mod tests {
         };
         assert!(!err.to_string().contains("secret"), "{err}");
         assert!(!err.to_string().contains("nope"), "{err}");
+    }
+
+    #[test]
+    fn a_parsed_value_of_the_wrong_shape_never_quotes_the_body() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Port {
+            _port: u16,
+        }
+        let value = serde_json::json!({"_port": "443"});
+        let err = match decode_value::<Port>(&value) {
+            Err(err) => err,
+            Ok(port) => panic!("decoded {port:?}"),
+        };
+        assert_eq!(
+            err,
+            LegError::Decode("unexpected response shape: data error".into())
+        );
+        assert!(!err.to_string().contains("443"), "{err}");
+        assert!(!err.to_string().contains("string"), "{err}");
     }
 
     #[test]

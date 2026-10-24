@@ -400,7 +400,12 @@ mod tests {
         };
         let v4 = ran("1.1.1.1");
         let v6 = ran("2606:4700:4700::1111");
-        for source in [hackertarget::SOURCE, netlas::SOURCE, isc::SOURCE] {
+        for source in [
+            hackertarget::SOURCE,
+            netlas::SOURCE,
+            isc::SOURCE,
+            urlhaus::SOURCE,
+        ] {
             assert!(v4.iter().any(|m| m == source), "{source} skipped IPv4");
             assert!(!v6.iter().any(|m| m == source), "{source} ran for IPv6");
         }

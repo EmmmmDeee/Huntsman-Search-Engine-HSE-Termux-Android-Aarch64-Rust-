@@ -15,13 +15,13 @@
 //! TLS subject, issuer, expiry, fingerprint, versions, JARM and JA3S, SSH fingerprint and HASSH,
 //! device type, OS, cloud, each CVE with its CVSS score, the verified and known-exploited ones,
 //! the highest score, and the first and newest banner times. Host names, banner names, TLS
-//! subject names, the AS and the organisation are pivots, and so is the position when Shodan
-//! names its city: a position with no city is a country's centre, which would tie unrelated
-//! addresses together. When the whole answer is longer than the transport's body limit, the
-//! lookup asks again with `minify=true`, which leaves the banners out, and says so in
-//! `banners_omitted`. For a domain: the whole answer as JSON in `raw_answer`, every subdomain,
-//! every record as `name TYPE value` (TXT and every other type), the newest `last_seen`, and the
-//! addresses and names it resolves to as pivots.
+//! subject names that are not addresses, the AS and the organisation are pivots, and so is the
+//! position when Shodan names its city: a position with no city is a country's centre, which
+//! would tie unrelated addresses together. When the whole answer is longer than the transport's
+//! body limit, the lookup asks again with `minify=true`, which leaves the banners out, and says
+//! so in `banners_omitted`. For a domain: the whole answer as JSON in `raw_answer`, every
+//! subdomain, every record as `name TYPE value` (TXT and every other type), the newest
+//! `last_seen`, and the addresses and names it resolves to as pivots.
 
 use std::collections::HashSet;
 
@@ -182,17 +182,10 @@ struct NoInfo {
     _error: String,
 }
 
-fn shape(e: &serde_json::Error) -> LegError {
-    LegError::Decode(format!("unexpected response shape: {e}"))
-}
-
-/// A string or number at `pointer` in `value`, as text. **Pure.**
+/// The scalar at `pointer` in `value` as text, as [`api_leg::scalar`] reads it; `None` when
+/// absent. **Pure.**
 fn text(value: &Value, pointer: &str) -> Option<String> {
-    match value.pointer(pointer)? {
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
+    value.pointer(pointer).and_then(api_leg::scalar)
 }
 
 /// Every string in the list at `pointer` in `value`. **Pure.**
@@ -330,7 +323,14 @@ impl Banners {
             .pointer("/ssl/cert/subject/CN")
             .and_then(Value::as_str)
         {
-            self.names.push(subject.trim_start_matches("*.").to_owned());
+            let name = subject
+                .trim()
+                .trim_start_matches("*.")
+                .trim_end_matches('.');
+            // A certificate can name an address; that is not a host name to pivot on.
+            if !name.is_empty() && name.parse::<std::net::IpAddr>().is_err() {
+                self.names.push(name.to_owned());
+            }
         }
         if let Some(time) = banner.get("timestamp").and_then(Value::as_str) {
             self.saw(time);
@@ -446,7 +446,7 @@ fn host(mut raw: Value, ip: &str) -> Result<Finding, LegError> {
         Some(Value::Array(banners)) => banners,
         Some(_) => return Err(LegError::Decode("banners are not a list".into())),
     };
-    let host = Host::deserialize(&raw).map_err(|e| shape(&e))?;
+    let host: Host = api_leg::decode_value(&raw)?;
     if host.ip_str.parse::<std::net::IpAddr>().ok() != ip.parse().ok() {
         return Err(LegError::Decode("answer names another address".into()));
     }
@@ -500,7 +500,7 @@ fn host(mut raw: Value, ip: &str) -> Result<Finding, LegError> {
 }
 
 fn dns(raw: &Value, domain: &str) -> Result<Option<Finding>, LegError> {
-    let dns = Dns::deserialize(raw).map_err(|e| shape(&e))?;
+    let dns: Dns = api_leg::decode_value(raw)?;
     if !dns.domain.eq_ignore_ascii_case(domain) {
         return Err(LegError::Decode("answer names another domain".into()));
     }

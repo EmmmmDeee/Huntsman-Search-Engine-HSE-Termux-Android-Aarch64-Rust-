@@ -99,7 +99,9 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
     if first.starts_with("api count exceeded") {
         return Err(LegError::RateLimited { retry_after: None });
     }
-    if first.starts_with("error") {
+    // Every error text is "error" and a space; a host line has no space, and its name may
+    // begin with "error" (`errorception.com`).
+    if first.starts_with("error ") {
         let reason = api_leg::clean(Some(&first)).unwrap_or_default();
         return Err(LegError::Decode(format!("HackerTarget: {reason}")));
     }
@@ -307,6 +309,36 @@ mod tests {
             decode(b"error check your search parameter", d),
             Err(LegError::Decode(_))
         ));
+    }
+
+    #[test]
+    fn a_host_named_error_something_is_a_host_not_error_text() {
+        let f = decode(
+            b"errorception.com,192.0.2.1\nwww.errorception.com,192.0.2.1\n",
+            Indicator::Domain("errorception.com"),
+        )
+        .unwrap_or_else(|e| panic!("a host list must decode: {e}"))
+        .unwrap_or_else(|| panic!("a host list is a finding"));
+        assert_eq!(f.summary, "HackerTarget: 1 host");
+        let pivots: Vec<(PivotKind, &str)> = f
+            .pivots
+            .iter()
+            .map(|p| (p.kind, p.value.as_str()))
+            .collect();
+        assert_eq!(
+            pivots,
+            [
+                (PivotKind::Domain, "www.errorception.com"),
+                (PivotKind::Ip, "192.0.2.1")
+            ]
+        );
+        let f = decode(
+            b"errorpages.example\nzeta.example",
+            Indicator::Ip("192.0.2.1"),
+        )
+        .unwrap_or_else(|e| panic!("a domain list must decode: {e}"))
+        .unwrap_or_else(|| panic!("a domain list is a finding"));
+        assert_eq!(f.summary, "HackerTarget: 2 domains");
     }
 
     /// The page the service gives for a path it does not have, recorded 2026-10-15.

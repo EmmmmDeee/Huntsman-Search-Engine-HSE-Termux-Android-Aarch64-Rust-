@@ -34,8 +34,6 @@ pub const INTEL: Source = Source {
     kinds: &[IndicatorKind::Ip, IndicatorKind::Domain],
     lookup,
 };
-/// Most distinct names kept in one attribute.
-const MAX_NAMES: usize = 15;
 
 /// Both lists must be present; either may be `null`.
 #[derive(Deserialize)]
@@ -138,7 +136,7 @@ pub fn lookup(
 fn distinct(values: impl Iterator<Item = String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for value in values {
-        if !out.contains(&value) && out.len() < MAX_NAMES {
+        if !out.contains(&value) {
             out.push(value);
         }
     }
@@ -251,6 +249,18 @@ mod tests {
         );
         assert_eq!(f.pivots.len(), 1);
         assert_eq!(f.pivots[0].value, "files.example.com");
+    }
+
+    #[test]
+    fn every_distinct_port_is_kept() {
+        let services: Vec<String> = (1..=16)
+            .map(|port| format!(r#"{{"event_source":"HttpPlugin","port":"{port}"}}"#))
+            .collect();
+        let body = format!(r#"{{"Services":[{}],"Leaks":null}}"#, services.join(","));
+        let f = finding(&body, Indicator::Ip("198.51.100.7"));
+        assert!(f.summary.contains("16 exposed service(s)"), "{}", f.summary);
+        let all: Vec<String> = (1..=16).map(|port| port.to_string()).collect();
+        assert!(f.attrs.contains(&("ports", all.join(","))), "{:?}", f.attrs);
     }
 
     #[test]

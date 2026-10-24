@@ -18,7 +18,6 @@
 //! together. It is kept as `coordinates` either way.
 
 use std::collections::HashSet;
-use std::net::IpAddr;
 
 use serde::Deserialize;
 use serde_json::{Number, Value};
@@ -303,10 +302,7 @@ impl Pulses {
 /// an address: OTX writes an IPv6 address uncompressed (`2606:4700:4700:0:0:0:0:1111`). **Pure.**
 fn is_about(answered: &str, indicator: Indicator<'_>) -> bool {
     match indicator {
-        Indicator::Ip(ip) => matches!(
-            (answered.trim().parse::<IpAddr>(), ip.parse::<IpAddr>()),
-            (Ok(answered), Ok(ip)) if answered == ip
-        ),
+        Indicator::Ip(ip) => crate::canonical::same_ip(answered, ip),
         _ => answered.eq_ignore_ascii_case(indicator.value()),
     }
 }
@@ -416,8 +412,7 @@ impl Body {
 /// [`LegError::Decode`] for a body that is not the documented shape or names another indicator.
 pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, LegError> {
     let mut raw: Value = api_leg::decode(body)?;
-    let answer = Body::deserialize(&raw)
-        .map_err(|e| LegError::Decode(format!("unexpected response shape: {e}")))?;
+    let answer: Body = api_leg::decode_value(&raw)?;
     if !is_about(&answer.indicator, indicator) {
         return Err(LegError::Decode("answer names another indicator".into()));
     }
@@ -653,6 +648,16 @@ mod tests {
         let body = r#"{"indicator":"zz.example","pulse_info":{"count":1,"pulses":{"id":"x"}}}"#;
         let decoded = decode(body.as_bytes(), Indicator::Domain("zz.example"));
         assert!(matches!(decoded, Err(LegError::Decode(_))), "{decoded:?}");
+    }
+
+    #[test]
+    fn a_mis_shaped_answer_names_no_body_value() {
+        let body = r#"{"indicator":"185.220.101.1","pulse_info":{"count":"abc"}}"#;
+        let detail = match decode(body.as_bytes(), Indicator::Ip("185.220.101.1")) {
+            Err(error) => error.outcome(&API, 1).detail.unwrap_or_default(),
+            Ok(found) => panic!("decoded {found:?}"),
+        };
+        assert_eq!(detail, "otx: unexpected response shape: data error");
     }
 
     #[test]

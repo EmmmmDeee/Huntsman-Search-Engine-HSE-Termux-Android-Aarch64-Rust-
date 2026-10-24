@@ -293,16 +293,16 @@ fn ip(body: &IpBody, score: u8) -> Finding {
         .list_attr("flags", &set)
         .opt_attr("connection_type", body.connection_type.as_deref())
         .opt_attr("abuse_velocity", body.abuse_velocity.as_deref())
-        .opt_attr("isp", body.isp.as_deref())
-        .opt_attr("org", body.organization.as_deref())
-        .opt_attr("country", body.country_code.as_deref())
-        .opt_attr("city", body.city.as_deref())
-        .opt_attr("region", body.region.as_deref())
+        .opt_attr("isp", known(body.isp.as_deref()))
+        .opt_attr("org", known(body.organization.as_deref()))
+        .opt_attr("country", known(body.country_code.as_deref()))
+        .opt_attr("city", known(body.city.as_deref()))
+        .opt_attr("region", known(body.region.as_deref()))
         .opt_attr("postal_code", known(body.zip_code.as_deref()))
-        .opt_attr("timezone", body.timezone.as_deref())
+        .opt_attr("timezone", known(body.timezone.as_deref()))
         .tag_if(body.vpn, "vpn")
         .tag_if(body.proxy, "proxy")
-        .tag_if(body.tor, "tor-exit");
+        .tag_if(body.tor, tags::TOR_EXIT);
     let position = body
         .latitude
         .zip(body.longitude)
@@ -321,7 +321,7 @@ fn ip(body: &IpBody, score: u8) -> Finding {
             "AS IPQualityScore gives for the address",
         );
     }
-    if let Some(host) = body.host.as_deref() {
+    if let Some(host) = known(body.host.as_deref()) {
         finding = finding.pivot(
             PivotKind::Domain,
             host,
@@ -397,12 +397,12 @@ fn phone(body: &PhoneBody, score: u8) -> Finding {
     let mut finding = Finding::new(summary("phone", score, &set))
         .list_attr("flags", &set)
         .attr("valid", body.valid.to_string())
-        .opt_attr("carrier", body.carrier.as_deref())
-        .opt_attr("line_type", body.line_type.as_deref())
-        .opt_attr("country", body.country.as_deref())
-        .opt_attr("region", body.region.as_deref())
+        .opt_attr("carrier", known(body.carrier.as_deref()))
+        .opt_attr("line_type", known(body.line_type.as_deref()))
+        .opt_attr("country", known(body.country.as_deref()))
+        .opt_attr("region", known(body.region.as_deref()))
         .tag_if(body.voip, "voip");
-    if let Some(carrier) = body.carrier.as_deref() {
+    if let Some(carrier) = known(body.carrier.as_deref()) {
         finding = finding.pivot(
             PivotKind::Organisation,
             carrier,
@@ -478,6 +478,40 @@ mod tests {
         assert!(f.attrs.contains(&("line_type", "VOIP".into())));
         assert!(f.tags.contains(&tags::MALICIOUS));
         assert!(f.pivots.iter().any(|p| p.kind == PivotKind::Organisation));
+    }
+
+    #[test]
+    fn a_number_ipqs_cannot_place_has_no_carrier_line_type_or_region() {
+        let body = r#"{"success":true,"valid":true,"fraud_score":10,"carrier":"N/A","line_type":"N/A","country":"AU","region":"N/A"}"#;
+        let f = decode(body.as_bytes(), Indicator::Phone("+61412345678"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            f.attrs
+                .iter()
+                .all(|(k, _)| !["carrier", "line_type", "region"].contains(k)),
+            "IPQS's N/A is no value: {:?}",
+            f.attrs
+        );
+        assert!(f.attrs.contains(&("country", "AU".into())));
+        assert!(
+            f.pivots.iter().all(|p| p.kind != PivotKind::Organisation),
+            "N/A is no carrier: {:?}",
+            f.pivots
+        );
+    }
+
+    #[test]
+    fn an_address_ipqs_cannot_place_has_no_network_or_place_and_a_tor_exit_is_tagged() {
+        let body = r#"{"success":true,"fraud_score":75,"country_code":"N/A","region":"N/A","city":"N/A","ISP":"N/A","organization":"N/A","timezone":"N/A","host":"N/A","tor":true}"#;
+        let f = decode(body.as_bytes(), Indicator::Ip("185.220.101.1"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            f.attrs.iter().all(|(_, v)| v != "N/A"),
+            "IPQS's N/A is no value: {:?}",
+            f.attrs
+        );
+        assert!(f.pivots.is_empty(), "N/A is no host name: {:?}", f.pivots);
+        assert_eq!(f.tags, [tags::TOR_EXIT]);
     }
 
     #[test]

@@ -165,6 +165,53 @@ fn a_banner_without_details_is_still_a_service_and_a_wildcard_name_is_its_domain
 }
 
 #[test]
+fn a_certificate_naming_an_address_is_kept_but_is_not_a_domain_pivot() {
+    let body = r#"{"ip_str":"8.8.8.8","ports":[443,8443],"data":[{"port":443,"ssl":{"cert":{"subject":{"CN":"192.168.1.1"}}}},{"port":8443,"ssl":{"cert":{"subject":{"CN":" 2001:db8::1 "}}}}]}"#;
+    let finding = ip(body, "8.8.8.8");
+    assert_eq!(
+        value(&finding, "tls_subjects"),
+        Some("192.168.1.1,2001:db8::1")
+    );
+    assert!(
+        pivots(&finding, PivotKind::Domain).is_empty(),
+        "{:?}",
+        finding.pivots
+    );
+}
+
+#[test]
+fn banner_text_is_cleaned_before_it_is_joined_and_a_flag_is_kept() {
+    let body = r#"{"ip_str":"8.8.8.8","ports":[443,80],"data":[{"port":443,"product":"nginx ","version":"1.18.0"},{"port":80,"product":" ","version":"2.4"},{"port":8080,"product":"x","http":{"waf":true}}]}"#;
+    let finding = ip(body, "8.8.8.8");
+    assert_eq!(
+        value(&finding, "services"),
+        Some("443/tcp nginx 1.18.0,80/tcp 2.4,8080/tcp x")
+    );
+    assert_eq!(value(&finding, "products"), Some("nginx 1.18.0,2.4,x"));
+    assert_eq!(value(&finding, "waf"), Some("true"));
+}
+
+#[test]
+fn a_mis_shaped_answer_names_no_body_value() {
+    for (body, indicator) in [
+        (
+            r#"{"ip_str":"8.8.8.8","ports":["443"],"data":[]}"#,
+            Indicator::Ip("8.8.8.8"),
+        ),
+        (
+            r#"{"domain":"example.com","subdomains":"www"}"#,
+            Indicator::Domain("example.com"),
+        ),
+    ] {
+        let detail = match decode(Answer::Body(body.into()), indicator) {
+            Err(error) => error.outcome(&API, 1).detail.unwrap_or_default(),
+            Ok(found) => panic!("decoded {found:?}"),
+        };
+        assert_eq!(detail, "shodan: unexpected response shape: data error");
+    }
+}
+
+#[test]
 fn a_position_without_a_city_is_kept_but_is_not_a_pivot() {
     let body = r#"{"ip_str":"8.8.8.8","ports":[53],"latitude":37.751,"longitude":-97.822,"country_code":"US","city":null,"data":[]}"#;
     let finding = ip(body, "8.8.8.8");

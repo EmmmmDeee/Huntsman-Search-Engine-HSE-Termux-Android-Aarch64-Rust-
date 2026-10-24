@@ -42,7 +42,7 @@ No credential values are required in CLI arguments, logs or source control.
 | ThreatFox (abuse.ch) | `HUNTSMAN_THREATFOX_KEY` | used by `ip` and `domain` when set in the environment; free abuse.ch Auth-Key |
 | Netlas | `HUNTSMAN_NETLAS_KEY` | optional for `ip` and `domain`: Netlas answers without a key at a lower limit; a free Community key raises it |
 | SecurityTrails | `HUNTSMAN_SECTRAILS_KEY` | used by `domain` when set in the environment; free: 50 queries/month |
-| URLhaus (abuse.ch) | `HUNTSMAN_ABUSECH_KEY` | used by `ip` and `domain` when set in the environment; the same free abuse.ch Auth-Key as `HUNTSMAN_THREATFOX_KEY` |
+| URLhaus (abuse.ch) | `HUNTSMAN_ABUSECH_KEY` | used by `ip` (IPv4 addresses only) and `domain` when set in the environment; the same free abuse.ch Auth-Key as `HUNTSMAN_THREATFOX_KEY` |
 | AlienVault OTX | `HUNTSMAN_OTX_KEY` | optional for `ip` and `domain`: OTX answers without a key at a lower limit; a free key raises it |
 | urlscan.io | `HUNTSMAN_URLSCAN_KEY` | optional for `ip` and `domain`: searches work without a key at a lower quota; a free key raises it |
 | IPinfo | `HUNTSMAN_IPINFO_KEY` | optional for `ip`: IPinfo answers without a token at a lower limit; a free token gives 50,000 lookups/month |

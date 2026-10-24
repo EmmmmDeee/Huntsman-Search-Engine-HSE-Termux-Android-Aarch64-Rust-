@@ -15,9 +15,10 @@ use crate::module_selection::Selection;
 use crate::scan_route::ScanKind;
 use crate::threat_feeds;
 use crate::{
-    abuseipdb, blockchain, bluesky_user, certspotter, dehashed, duolingo, exposure_cli,
-    github_user, gravatar, greynoise, hunter, internetdb, keybase, mnemonic, numverify, oathnet,
-    openpgp_keys, rdap, ripestat, seeknow_collector, virustotal, wigle, wikipedia,
+    abuseipdb, asic_director, asic_persons, blockchain, bluesky_user, certspotter, dehashed,
+    duolingo, exposure_cli, github_user, gravatar, greynoise, hunter, internetdb, keybase,
+    mnemonic, numverify, oathnet, openpgp_keys, rdap, ripestat, seeknow_collector, virustotal,
+    wigle, wikipedia,
 };
 
 /// The breach legs an email address's lookup folds in.
@@ -94,8 +95,8 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             phone
         }
         ScanKind::People => vec![
-            "asic_persons",
-            "asic_director",
+            asic_persons::SRC,
+            asic_director::SRC,
             seeknow_collector::COLLECTOR_ID,
         ],
         ScanKind::Network => {
