@@ -23,6 +23,32 @@ impl Default for ReviewPolicy {
 impl ReviewPolicy {
     #[must_use]
     pub fn assess(self, observations: &[Observation]) -> Assessment {
+        // Fail closed: never silently assess a truncated subset of observations.
+        const MAX_OBSERVATIONS: usize = 10_000;
+        const MAX_FIELD_BYTES: usize = 2_048;
+        if observations.len() > MAX_OBSERVATIONS
+            || observations.iter().any(|observation| {
+                [
+                    &observation.source_id,
+                    &observation.origin_id,
+                    &observation.evidence_ref,
+                    &observation.observed_at,
+                ]
+                .iter()
+                .any(|field| field.len() > MAX_FIELD_BYTES)
+            })
+        {
+            return Assessment {
+                status: AssessmentStatus::InsufficientEvidence,
+                supported_indicators: Vec::new(),
+                independent_origins: 0,
+                limitations: vec![
+                    "Assessment input exceeds resource limits; no conclusions were produced."
+                        .to_owned(),
+                ],
+                evidence_refs: Vec::new(),
+            };
+        }
         let minimum = self.minimum_independent_origins.max(2);
         let valid: Vec<&Observation> = observations
             .iter()
