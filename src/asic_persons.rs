@@ -128,35 +128,7 @@ pub fn lookup<T: Transport + ?Sized>(
             .filter(|rec| record_name_matches(rec, spec.name_field, name))
             .take(MAX_HITS)
             .collect();
-        if outcome.kind.is_accepted() {
-            // A partial page cannot prove absence when no locally read row matches.
-            // Positive matches still carry the partial-page qualification.
-            let partial = outcome.detail.take();
-            let status = outcome.http_status.unwrap_or(200);
-            outcome = if matched.is_empty() {
-                if let Some(note) = partial {
-                    SourceExecutionOutcome::observed(
-                        spec.module,
-                        now_unix,
-                        SourceOutcomeKind::Inconclusive,
-                        Some(status),
-                        Some(0),
-                        note,
-                    )
-                } else {
-                    SourceExecutionOutcome::valid_zero(spec.module, now_unix)
-                        .with_http_status(status)
-                }
-            } else {
-                let mut found =
-                    SourceExecutionOutcome::success(spec.module, now_unix, matched.len())
-                        .with_http_status(status);
-                if let Some(note) = partial {
-                    found = found.with_detail(note);
-                }
-                found
-            };
-        }
+        outcome = name_filter_outcome(outcome, matched.len(), spec.module, now_unix);
         for rec in matched {
             (spec.emit)(rec, scan_id, &mut entities);
         }
@@ -172,6 +144,42 @@ pub fn lookup<T: Transport + ?Sized>(
         }
     }
     Ok(Report { entities, outcomes })
+}
+
+/// Reconcile the register's page verdict with the locally matched names.
+/// A cut-off result set can show a positive match but cannot prove absence.
+fn name_filter_outcome(
+    mut outcome: SourceExecutionOutcome,
+    matched: usize,
+    module: &'static str,
+    now_unix: u64,
+) -> SourceExecutionOutcome {
+    if !outcome.kind.is_accepted() {
+        return outcome;
+    }
+    let partial = outcome.detail.take();
+    let status = outcome.http_status.unwrap_or(200);
+    if matched == 0 {
+        if let Some(note) = partial {
+            SourceExecutionOutcome::observed(
+                module,
+                now_unix,
+                SourceOutcomeKind::Inconclusive,
+                Some(status),
+                Some(0),
+                note,
+            )
+        } else {
+            SourceExecutionOutcome::valid_zero(module, now_unix).with_http_status(status)
+        }
+    } else {
+        let mut found =
+            SourceExecutionOutcome::success(module, now_unix, matched).with_http_status(status);
+        if let Some(note) = partial {
+            found = found.with_detail(note);
+        }
+        found
+    }
 }
 
 struct Register {
