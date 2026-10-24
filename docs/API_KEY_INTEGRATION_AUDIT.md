@@ -82,7 +82,9 @@ performed by the operator.
 
 `HUNTSMAN_EXA_KEY` is now used **only** by `huntsman-recon query --exa QUERY...`.
 This is an explicit, chargeable Exa `/search` request, never part of default or
-adaptive queries, scanning or continuous collection. The API uses `x-api-key`,
+adaptive queries, scanning or continuous collection. It requests the Exa Lite
+search type (currently US$4 per 1,000 requests, compared with US$7 per 1,000
+for Auto); prices and free credits can change and are controlled by Exa. The API uses `x-api-key`,
 fixed HTTPS origin, no redirects, and at most five URL results per call. Hits
 are **lead_only**, not corroboration; no remote document content is downloaded.
 A free starter account may include monthly search credits subject to Exa's
