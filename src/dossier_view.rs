@@ -220,7 +220,7 @@ pub fn render(document: &Value) -> Result<String, String> {
     // These fields are intentionally not minted new evidence IDs.
     out.push_str("<section id=\"context\"><h2>Additional provenance, media and audit data</h2>");
     for (key, value) in root {
-        if !GROUPS.iter().any(|(group, _)| group == key) {
+        if !GROUPS.iter().any(|(group, _)| *group == key.as_str()) {
             let _ = write!(
                 out,
                 "<article><h3>{}</h3><dl>",
@@ -265,7 +265,7 @@ mod tests {
         assert!(html.contains("original.jpg"));
         assert!(html.contains("abc123"));
         assert!(html.contains("checked"));
-        assert!(html.contains("media hashed"));
+        assert!(html.contains("media_hashed"));
         assert!(html.contains("2 indexed records"));
     }
 
