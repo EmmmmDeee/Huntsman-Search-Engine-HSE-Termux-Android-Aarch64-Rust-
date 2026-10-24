@@ -412,6 +412,13 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <button class="btn btn-primary" id="arun" type="submit">Analyze</button>
 </form>
 <p class="help">Offline: links the seeds, ranks the next pivots, names the gaps and plans the sources, with no network request and no key.</p>
+<form class="row" id="investigate">
+<textarea id="txtext" rows="4" maxlength="20000" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Or paste an advert, a message thread or a page: every email, phone, @handle, domain, IP, coordinates and company number in it becomes a seed above" aria-label="text to extract seeds from"></textarea>
+<button class="btn" id="txrun" type="submit">Extract seeds</button>
+</form>
+<p class="note" id="txstatus" role="status"></p>
+<p class="alert" id="txerror" role="alert" hidden></p>
+<div class="table-wrap" id="txresult" hidden><table><thead><tr><th>kind</th><th>value</th><th>confidence</th><th>signal</th></tr></thead><tbody id="txentities"></tbody></table></div>
 </div></div>
 <p class="alert" id="aerror" role="alert" hidden></p>
 <div id="aresult" hidden>
@@ -1625,6 +1632,23 @@ $('analyze').onsubmit=async ev=>{
   }catch(e){fail('aerror',unreachable(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
 };
 $('adownload').onclick=()=>{if(alast)save(alast,'huntsman-analysis')};
+// Extract seeds from pasted text: the investigate command over the text, offline; what it finds
+// joins the seeds above, deduplicated, and is listed with the signal that found each.
+$('investigate').onsubmit=async ev=>{
+  ev.preventDefault();$('txerror').hidden=true;
+  const text=$('txtext').value;if(!text.trim())return;
+  const b=$('txrun');b.disabled=true;$('txstatus').textContent='Extracting…';
+  try{
+    const r=await api('/api/investigate',{method:'POST',body:text}),es=r.entities||[];
+    const have=new Set($('seeds').value.split('\n').map(s=>s.trim()).filter(Boolean));
+    for(const e of es)have.add(e.value);
+    $('seeds').value=[...have].join('\n');
+    fill('txentities',es,e=>[e.kind,e.value,e.confidence==null?'':Number(e.confidence).toFixed(2),(e.evidence||[]).map(x=>x.attributes&&x.attributes.signal||'').filter(Boolean).join(' ')]);
+    $('txresult').hidden=false;
+    $('txstatus').textContent=es.length?es.length+' seed'+(es.length===1?'':'s')+' extracted and added above; Analyze links them.':'Nothing actionable in this text: no email, phone, handle, domain, IP, coordinates or company number.';
+  }catch(e){$('txstatus').textContent='Not extracted.';fail('txerror',e.message)}
+  finally{b.disabled=false}
+};
 // Recover last analysis after Android discards a background tab.
 {
   const raw=sess.get('hse-analysis');

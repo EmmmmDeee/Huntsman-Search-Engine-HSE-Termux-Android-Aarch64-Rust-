@@ -37,7 +37,7 @@ const bin = process.argv[2];
 if (!bin || !fs.existsSync(bin)) { process.stderr.write('usage: node check.cjs path/to/huntsman-recon\n'); process.exit(64); }
 const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true };
 // Two additional KiB accommodate the complete, lossless on-demand TXT exporter.
-const PAGE_BUDGET = 128 * 1024;
+const PAGE_BUDGET = 132 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -673,6 +673,18 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await page.waitForSelector('#aresult:not([hidden])', { timeout: 20000 });
       metrics[`${scheme}AnalyzeMs`] = Date.now() - t;
       check(`${scheme}: analysis lists entities`, (await page.$$('#aentities tr')).length >= 6, 'too few rows');
+      // Seeds extracted from a pasted text join the seeds, without duplicates, each with its signal.
+      const seedsBefore = await page.inputValue('#seeds');
+      await page.fill('#txtext', 'Seller says call +61412345678 or write to ada.lovelace@example.net; the shop is at example.org and the same +61412345678 again.');
+      await page.click('#txrun');
+      await page.waitForSelector('#txresult:not([hidden])', { timeout: 10000 }).catch(() => {});
+      const extracted = await page.$$eval('#txentities tr', trs => trs.map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent)));
+      const seedsAfter = await page.inputValue('#seeds');
+      const seedLines = seedsAfter.split('\n');
+      check(`${scheme}: pasted text is extracted into seeds, once each, with the signal that found each`,
+        extracted.length >= 2 && extracted.every(row => row.length === 4 && row[3]) && seedsAfter.startsWith(seedsBefore) && seedLines.includes('ada.lovelace@example.net') && seedLines.filter(l => l === '+61412345678').length === 1,
+        { extracted, status: await page.textContent('#txstatus'), seedsAfter });
+      await page.fill('#seeds', SEEDS);
       await audit(page, `${scheme} analysis`);
       await page.reload({ waitUntil: 'networkidle' });
       check(`${scheme}: analysis survives a reload`, await page.evaluate(() => !document.getElementById('aresult').hidden), 'analysis hidden');

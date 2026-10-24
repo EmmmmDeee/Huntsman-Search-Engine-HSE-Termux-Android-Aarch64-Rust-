@@ -8,7 +8,9 @@ mod plan;
 mod profiles;
 mod scan;
 
-pub(super) use discovery::{investigate_cmd, query_cmd, search_cmd, sf_cmd, sources_cmd};
+pub(super) use discovery::{
+    investigate_cmd, investigate_entities, query_cmd, search_cmd, sf_cmd, sources_cmd,
+};
 pub(super) use plan::plan_cmd;
 pub(super) use profiles::{
     Refused, asn_cmd, collect, crypto_cmd, docmeta_cmd, domain_cmd, email_cmd, exif_cmd,

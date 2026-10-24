@@ -25,7 +25,7 @@ use huntsman_recon::web_server::{
     LookupError, LookupQuery, LookupReport, ServeConfig, Server, resolve_serve_bind,
 };
 
-use super::lookup::{Refused, collect};
+use super::lookup::{Refused, collect, investigate_entities};
 use super::scans::{default_rules_dir, default_scan_dir, open_api};
 
 /// Printed once by `serve` under Termux. Android may stop a process that Termux started while
@@ -99,6 +99,26 @@ fn web_inspect(label: &str, bytes: &[u8]) -> Result<LookupReport, LookupError> {
         text,
         entities,
         outcomes,
+        scan: None,
+        status: None,
+    })
+}
+
+/// `/api/investigate`: the `investigate` command over the text the page sends, as one report. The
+/// classifier makes no request, so the report has no outcomes; each entity carries the
+/// classifier's evidence naming the signal that found it.
+fn web_investigate(text: &str) -> Result<LookupReport, LookupError> {
+    let entities = investigate_entities(text);
+    let text =
+        huntsman_recon::lookup_report::render(&entities, &[]).map_err(|message| LookupError {
+            status: 500,
+            message,
+        })?;
+    Ok(LookupReport {
+        route: "investigate",
+        text,
+        entities,
+        outcomes: Vec::new(),
         scan: None,
         status: None,
     })
@@ -333,6 +353,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
                 .with_radar_cells(std::sync::Arc::new(web_cells))
                 .with_radar_track(std::sync::Arc::new(web_track))
                 .with_inspect(std::sync::Arc::new(web_inspect))
+                .with_investigate(std::sync::Arc::new(web_investigate))
                 .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
                     web_analyze(seeds, analyze_history.as_deref())
                 }));
@@ -371,9 +392,54 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{rule_error_line, web_inspect};
+    use super::{rule_error_line, web_inspect, web_investigate};
     use huntsman_recon::entity::{Entity, EntityKind};
     use huntsman_recon::source_outcome::SourceOutcomeKind;
+
+    /// The page's text goes through the same extraction as `investigate TEXT...`: every actionable
+    /// entity in it, with the classifier's signal as evidence, rendered as the command prints it;
+    /// no outcome row, as nothing was asked of any source.
+    #[test]
+    fn pasted_text_is_investigated_as_the_command_investigates_it() {
+        let report = web_investigate(
+            "Seller says call +61412345678 or write to ada@example.com; site example.org",
+        )
+        .expect("text is investigated");
+        assert_eq!(report.route, "investigate");
+        assert!(report.outcomes.is_empty(), "{:?}", report.outcomes);
+        let kinds: Vec<(EntityKind, &str)> = report
+            .entities
+            .iter()
+            .map(|entity| (entity.kind.clone(), entity.raw_value.as_str()))
+            .collect();
+        assert!(
+            kinds.contains(&(EntityKind::Email, "ada@example.com")),
+            "{kinds:?}"
+        );
+        assert!(
+            kinds.iter().any(|(kind, _)| *kind == EntityKind::Phone),
+            "{kinds:?}"
+        );
+        for entity in &report.entities {
+            assert!(
+                entity.evidence.iter().any(|evidence| {
+                    evidence.provenance.source == "classifier"
+                        && evidence.attributes.contains_key("signal")
+                }),
+                "{entity:?}"
+            );
+        }
+        assert!(
+            report
+                .text
+                .starts_with(&format!("entities={}\n", report.entities.len())),
+            "{}",
+            report.text
+        );
+        assert!(report.text.contains("ada@example.com"), "{}", report.text);
+        let none = web_investigate("nothing actionable here").expect("an empty text is a report");
+        assert_eq!(none.entities.len(), 0, "{:?}", none.text);
+    }
 
     #[test]
     fn a_rule_error_prints_on_one_line_without_driving_the_terminal() {

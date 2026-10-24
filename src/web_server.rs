@@ -125,6 +125,10 @@ const KEYS_PATH: &str = "/api/settings/keys";
 const INSPECT_PATH: &str = "/api/inspect";
 /// The radar track route: a `POST`, as each call appends a sweep to the track log.
 const TRACK_PATH: &str = "/api/radar/track";
+/// Free text in (an advert, a message thread, a page), the actionable entities in it out: the
+/// `investigate` command for text pasted in the browser. The text is the body, read whole within
+/// [`MAX_FORM_BYTES`]; a longer text is for `investigate --file` in Termux.
+const INVESTIGATE_PATH: &str = "/api/investigate";
 /// The largest file `/api/inspect` reads: the bound the `exif` and `docmeta` commands read from
 /// disk, so the page reads what the commands read (64 MiB).
 const MAX_INSPECT_BYTES: usize = 64 * 1024 * 1024;
@@ -199,6 +203,11 @@ pub type AnalyzeHandler =
 pub type InspectHandler =
     Arc<dyn Fn(&str, &[u8]) -> Result<LookupReport, LookupError> + Send + Sync>;
 
+/// Investigates one pasted text: the entities the classifier finds in it, answered as a report
+/// like a lookup's, with no outcomes, as the command makes no request. Installed by the binary,
+/// which owns the `investigate` command.
+pub type InvestigateHandler = Arc<dyn Fn(&str) -> Result<LookupReport, LookupError> + Send + Sync>;
+
 #[derive(Clone)]
 struct Inspect {
     handler: InspectHandler,
@@ -250,6 +259,7 @@ struct Routes {
     track: Option<Sensor<TrackReport>>,
     analyze: Option<AnalyzeHandler>,
     inspect: Option<Inspect>,
+    investigate: Option<InvestigateHandler>,
     scans: Option<Arc<ScanApi>>,
     /// The home whose keys file every lookup reads, for [`KEYS_PATH`].
     keys_home: Option<PathBuf>,
@@ -394,6 +404,13 @@ impl Server {
             handler,
             live: Arc::new(AtomicUsize::new(0)),
         });
+        self
+    }
+
+    /// Serve `POST /api/investigate` through `handler`. Without this the route answers `404`.
+    #[must_use]
+    pub fn with_investigate(mut self, handler: InvestigateHandler) -> Self {
+        self.routes.investigate = Some(handler);
         self
     }
 
@@ -1012,7 +1029,11 @@ fn inspect_admits(head: &str, config: &ServeConfig, routes: &Routes) -> Option<(
 /// Only the scan API and the key save change state, so only they take POST, with the file
 /// inspection, whose upload is too large for a query string.
 fn takes_post(path: &str) -> bool {
-    ScanApi::handles(path) || path == KEYS_PATH || path == INSPECT_PATH || path == TRACK_PATH
+    ScanApi::handles(path)
+        || path == KEYS_PATH
+        || path == INSPECT_PATH
+        || path == TRACK_PATH
+        || path == INVESTIGATE_PATH
 }
 
 /// `none` is a typed URL or bookmark; `same-origin` is this page. Anything else came from another
@@ -1337,6 +1358,7 @@ fn route(
             | TRACK_PATH
             | KEYS_PATH
             | INSPECT_PATH
+            | INVESTIGATE_PATH
     ) || ScanApi::handles(parsed.path);
     if protected && !authorized(parsed, config) {
         return response(401, "application/json; charset=utf-8", UNAUTHORIZED, head).into_bytes();
@@ -1391,6 +1413,7 @@ fn route(
         "/api/analyze" => analyze_response(parsed, routes.analyze.as_ref()),
         KEYS_PATH => keys_response(parsed, routes.keys_home.as_deref()),
         INSPECT_PATH => inspect_response(parsed, upload, routes.inspect.as_ref()),
+        INVESTIGATE_PATH => investigate_response(parsed, routes.investigate.as_ref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
@@ -1924,6 +1947,69 @@ fn analyze_response(parsed: &ParsedRequest<'_>, analyze: Option<&AnalyzeHandler>
     }
 }
 
+/// `POST /api/investigate`: the actionable entities in the text sent as the body, as a report like
+/// a lookup's. The text travels in the body, never the URL, which is kept in history and logs;
+/// it is read whole within [`MAX_FORM_BYTES`], as a key save is, so a longer text is refused with
+/// the command that reads one from a file in Termux.
+fn investigate_response(
+    parsed: &ParsedRequest<'_>,
+    handler: Option<&InvestigateHandler>,
+) -> String {
+    let Some(handler) = handler else {
+        return json_error(404, "text investigation is not enabled on this server");
+    };
+    if parsed.method != Method::Post {
+        return json_error(405, "investigation needs POST with the text as the body");
+    }
+    if let Some(refused) = page_refusal(parsed, "investigation", true) {
+        return refused;
+    }
+    if !parsed.query.is_empty() {
+        return json_error(
+            400,
+            "investigation takes no query string: send the text as the body",
+        );
+    }
+    let length = match parsed.content_length {
+        None | Some(0) => return json_error(400, "investigation needs the text as the body"),
+        Some(length) if length > MAX_FORM_BYTES => {
+            return json_error(
+                413,
+                &format!(
+                    "the text is longer than {MAX_FORM_BYTES} bytes; in Termux, investigate --file FILE reads a longer one"
+                ),
+            );
+        }
+        Some(length) => length,
+    };
+    let Some(body) = parsed.body else {
+        return json_error(400, "the request ended before its head did");
+    };
+    // The request was decoded lossily, so a byte that was not UTF-8 is U+FFFD by now and never
+    // fewer bytes than it was: a body shorter than it announced was cut.
+    if body.len() < length {
+        return json_error(400, "the text ended before the length it announced");
+    }
+    let text = body.to_owned();
+    let handler = Arc::clone(handler);
+    let worker = thread::Builder::new()
+        .name("serve-investigate".into())
+        .stack_size(ANALYZE_STACK_BYTES)
+        .spawn(move || handler(&text));
+    let outcome = match worker {
+        Ok(worker) => worker.join(),
+        Err(_) => return json_error(503, "could not start an investigation worker"),
+    };
+    match outcome {
+        Ok(Ok(report)) => match serde_json::to_string(&report) {
+            Ok(body) => json_ok(&body, false),
+            Err(_) => json_error(500, "the investigation could not be encoded"),
+        },
+        Ok(Err(error)) => json_error(error.status, &error.message),
+        Err(_) => json_error(500, "investigation failed unexpectedly"),
+    }
+}
+
 /// `POST /api/inspect?name=FILE`: the uploaded file's EXIF and embedded document metadata, as a
 /// report. The body is the file's raw bytes (`fetch` with a `File` as its body), read only once
 /// [`inspect_admits`] took the request; a request it did not take is answered why here.
@@ -2383,6 +2469,7 @@ mod tests {
                     track: None,
                     analyze: echo_seeds().analyze,
                     inspect: None,
+                    investigate: None,
                     scans: None,
                     keys_home: None,
                 };
@@ -3409,6 +3496,7 @@ mod tests {
             track: None,
             analyze: None,
             inspect: None,
+            investigate: None,
             scans: None,
             keys_home: None,
         };
@@ -3585,6 +3673,7 @@ mod tests {
             track: None,
             analyze: None,
             inspect: None,
+            investigate: None,
             scans: Some(Arc::new(api)),
             keys_home: None,
         };
@@ -3891,9 +3980,128 @@ mod tests {
             track: None,
             analyze: Some(Arc::new(handler)),
             inspect: None,
+            investigate: None,
             scans: None,
             keys_home: None,
         }
+    }
+
+    fn investigations(
+        handler: impl Fn(&str) -> Result<LookupReport, LookupError> + Send + Sync + 'static,
+    ) -> Routes {
+        Routes {
+            investigate: Some(Arc::new(handler)),
+            ..Routes::default()
+        }
+    }
+
+    /// One `POST /api/investigate` with `body` as the text, as the page sends it.
+    fn investigate(body: &str, extra: &str, routes: &Routes) -> String {
+        text(respond(
+            &format!(
+                "POST {INVESTIGATE_PATH} HTTP/1.1\r\nHost: localhost\r\n{HEADER}{extra}Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+            &test_config(loopback_bind(), None),
+            routes,
+        ))
+    }
+
+    /// `POST /api/investigate` hands the body to the installed handler as text and answers its
+    /// report like a lookup's. The text never travels in a URL; a `GET`, a query string, a missing
+    /// body or a text longer than a form body is refused, the last naming the command that reads
+    /// a longer one; and the route answers 404 until the binary installs it.
+    #[test]
+    fn a_pasted_text_is_investigated_from_the_body() {
+        let routes = investigations(|text| {
+            let entities: Vec<Entity> = text
+                .split_whitespace()
+                .filter(|word| word.contains('@'))
+                .map(|word| Entity::new(crate::entity::EntityKind::Email, word, 0.9, "investigate"))
+                .collect();
+            Ok(LookupReport {
+                route: "investigate",
+                text: format!("entities={}\n", entities.len()),
+                entities,
+                outcomes: Vec::new(),
+                scan: None,
+                status: None,
+            })
+        });
+        let answer = investigate("call ada@example.com now", "", &routes);
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        let body: serde_json::Value =
+            serde_json::from_str(answer.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["route"], "investigate");
+        assert_eq!(body["text"], "entities=1\n");
+        assert_eq!(body["entities"].as_array().map(Vec::len), Some(1), "{body}");
+        assert_eq!(body["outcomes"], serde_json::json!([]));
+        assert!(body.get("scan").is_none() && body.get("status").is_none());
+
+        let config = test_config(loopback_bind(), None);
+        let ask = |request: String, routes: &Routes| text(respond(&request, &config, routes));
+        let none = ask(
+            format!(
+                "POST {INVESTIGATE_PATH} HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: 1\r\n\r\nx"
+            ),
+            &Routes::default(),
+        );
+        assert!(none.starts_with("HTTP/1.1 404"), "{none}");
+        let get = ask(
+            format!("GET {INVESTIGATE_PATH} HTTP/1.1\r\nHost: localhost\r\n{HEADER}\r\n"),
+            &routes,
+        );
+        assert!(get.starts_with("HTTP/1.1 405"), "{get}");
+        let in_url = ask(
+            format!(
+                "POST {INVESTIGATE_PATH}?text=a HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: 1\r\n\r\nx"
+            ),
+            &routes,
+        );
+        assert!(
+            in_url.starts_with("HTTP/1.1 400") && in_url.contains("send the text as the body"),
+            "{in_url}"
+        );
+        let empty = investigate("", "", &routes);
+        assert!(
+            empty.starts_with("HTTP/1.1 400") && empty.contains("needs the text as the body"),
+            "{empty}"
+        );
+        let long = ask(
+            format!(
+                "POST {INVESTIGATE_PATH} HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: {}\r\n\r\n",
+                MAX_FORM_BYTES + 1
+            ),
+            &routes,
+        );
+        assert!(
+            long.starts_with("HTTP/1.1 413") && long.contains("investigate --file FILE"),
+            "{long}"
+        );
+        let short = ask(
+            format!(
+                "POST {INVESTIGATE_PATH} HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: 9\r\n\r\nab"
+            ),
+            &routes,
+        );
+        assert!(
+            short.starts_with("HTTP/1.1 400") && short.contains("ended before the length"),
+            "{short}"
+        );
+        let failed = investigate(
+            "x",
+            "",
+            &investigations(|_| {
+                Err(LookupError {
+                    status: 422,
+                    message: "no text".into(),
+                })
+            }),
+        );
+        assert!(
+            failed.starts_with("HTTP/1.1 422") && failed.contains("no text"),
+            "{failed}"
+        );
     }
 
     /// Answers with the seeds it was given, so a test can see exactly what reached the spine.
@@ -4966,6 +5174,12 @@ mod tests {
                 handler: Arc::new(refuse),
                 live: Arc::new(AtomicUsize::new(0)),
             }),
+            investigate: Some(Arc::new(|_: &str| {
+                Err(LookupError {
+                    status: 422,
+                    message: "unused".into(),
+                })
+            })),
             scans: scan_routes("guard").0.scans,
             keys_home: Some(home.clone()),
         };
@@ -4991,6 +5205,7 @@ mod tests {
             ("GET", KEYS_PATH, "key request", true),
             ("GET", "/api/analyze?seeds=a", "analysis", false),
             ("POST", "/api/inspect?name=a", "inspection", true),
+            ("POST", INVESTIGATE_PATH, "investigation", true),
         ] {
             for site in ["cross-site", "same-site"] {
                 let answer = ask(
