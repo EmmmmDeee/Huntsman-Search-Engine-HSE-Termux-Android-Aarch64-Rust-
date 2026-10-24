@@ -1222,6 +1222,24 @@ fn respond_with(
     bytes
 }
 
+/// Render the health contract without inflating the shared request router.
+fn health_response(config: &ServeConfig, head: bool) -> String {
+        let body = serde_json::to_string_pretty(&Health {
+            status: "ok",
+            name: "huntsman-recon",
+            version: env!("CARGO_PKG_VERSION"),
+            build_sha: crate::diagnostics::embedded_build_sha(),
+            page: &PAGE_ID,
+            auth: if config.bearer_token.is_some() {
+                "token"
+            } else {
+                "none"
+            },
+        })
+        .unwrap_or_else(|_| "{\"status\":\"error\"}".into());
+        json_ok(&body, head)
+}
+
 /// The answer to a parsed request: the guards every route shares, then the route's own.
 fn route(
     parsed: &ParsedRequest<'_>,
@@ -1283,22 +1301,7 @@ fn route(
     }
     let text = match parsed.path {
         "/" | "/index.html" => response(200, "text/html; charset=utf-8", &PAGE, head),
-        "/api/health" => {
-            let body = serde_json::to_string_pretty(&Health {
-                status: "ok",
-                name: "huntsman-recon",
-                version: env!("CARGO_PKG_VERSION"),
-                build_sha: crate::diagnostics::embedded_build_sha(),
-                page: &PAGE_ID,
-                auth: if config.bearer_token.is_some() {
-                    "token"
-                } else {
-                    "none"
-                },
-            })
-            .unwrap_or_else(|_| "{\"status\":\"error\"}".into());
-            json_ok(&body, head)
-        }
+        "/api/health" => health_response(config, head),
         "/api/modules" => {
             let body = serde_json::to_string_pretty(&serde_json::json!({
                 "count": reachable_modules().len(),
