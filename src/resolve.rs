@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn lineage_projection_retains_revalidated_approved_merge() {
         use crate::entity::{Evidence, EvidenceProvenance};
-        use crate::lineage::{resolve_with_lineage, Observation};
+        use crate::lineage::{Observation, resolve_with_lineage};
 
         let observation = Observation {
             id: EvidenceNodeId("registry".into()),
