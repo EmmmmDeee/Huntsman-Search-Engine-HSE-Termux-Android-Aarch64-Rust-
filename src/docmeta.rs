@@ -17,7 +17,9 @@
 //!
 //! A WebP or GIF is recognised by its container magic and named as such even when it carries only an
 //! embedded XMP packet (found the same byte-scanned way as in any other container) or, for a GIF, a
-//! comment. This complements the `exif` command, which decodes the binary EXIF block; `docmeta` reads the
+//! comment. A JPEG's IPTC IIM block (the legacy Photoshop `APP13` record) is read too, surfacing the
+//! by-line and caption writer, credit and source, headline and caption, keywords and the named
+//! location (city, province, country) as `iptc:*` fields. This complements the `exif` command, which decodes the binary EXIF block; `docmeta` reads the
 //! XMP packet and PDF dictionary, which `exif` does not. Metadata is editable, so every field is the
 //! file's embedded claim, not an independently verified fact. The scanner is bounds-checked and
 //! allocation-bounded: it searches for the uncompressed metadata only, never decompresses, and caps
@@ -53,7 +55,7 @@ pub const DOCMETA_USAGE: &str = "usage: huntsman-recon docmeta FILE";
 
 pub const DOCMETA_HELP: &str = "\
 docmeta FILE
-Read the metadata a document embeds in itself, keyless and offline: no network request and no key. Every uncompressed XMP metadata packet (the <x:xmpmeta> XML block PDFs, JPEG, TIFF and PNG carry) is flattened field by field, including structured properties such as the xmpMM:History edit events and the xmpMM:DerivedFrom source document, and the /Info dictionary a PDF's trailer names (Title, Author, Subject, Keywords, Creator, Producer, CreationDate, ModDate) is read too, and for a PNG its uncompressed textual chunks (tEXt and iTXt) and modification time (tIME) become png:* fields (compressed chunks and the binary EXIF block, left to the exif command, are not read), and a GIF's Comment Extension blocks become gif:Comment fields; an outline bookmark's title is never mistaken for the document's, an encrypted PDF's /Info strings are flagged rather than shown as ciphertext, and when an incremental update replaced or removed an /Info value, the superseded value still stored in the file is reported as info-prior:KEY with pdf:InfoRevisions counting the revisions. Every field is kept as evidence on a document entity for the file, so author, creator tool, create/modify timestamps, edit history, document and instance identifiers and title are preserved; a property stated more than once keeps each distinct value. When the XMP holds a GPS position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address. Metadata is editable, so each field is the file's embedded claim, not an independently verified fact. This complements the exif command, which decodes the binary EXIF block; docmeta reads the XMP packet and PDF dictionary instead. A file with no embedded metadata is a clean result naming its format and size. Office Open XML (.docx, .xlsx, .pptx) keeps its core properties in a deflate-compressed part, which is not read; an embedded XMP packet in such a file is.";
+Read the metadata a document embeds in itself, keyless and offline: no network request and no key. Every uncompressed XMP metadata packet (the <x:xmpmeta> XML block PDFs, JPEG, TIFF and PNG carry) is flattened field by field, including structured properties such as the xmpMM:History edit events and the xmpMM:DerivedFrom source document, and the /Info dictionary a PDF's trailer names (Title, Author, Subject, Keywords, Creator, Producer, CreationDate, ModDate) is read too, and for a PNG its uncompressed textual chunks (tEXt and iTXt) and modification time (tIME) become png:* fields (compressed chunks and the binary EXIF block, left to the exif command, are not read), and a GIF's Comment Extension blocks become gif:Comment fields, and a JPEG's IPTC IIM block (the legacy Photoshop APP13 record) becomes iptc:* fields (by-line, caption writer, credit, source, headline, caption, keywords and the named city/province/country location); an outline bookmark's title is never mistaken for the document's, an encrypted PDF's /Info strings are flagged rather than shown as ciphertext, and when an incremental update replaced or removed an /Info value, the superseded value still stored in the file is reported as info-prior:KEY with pdf:InfoRevisions counting the revisions. Every field is kept as evidence on a document entity for the file, so author, creator tool, create/modify timestamps, edit history, document and instance identifiers and title are preserved; a property stated more than once keeps each distinct value. When the XMP holds a GPS position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address. Metadata is editable, so each field is the file's embedded claim, not an independently verified fact. This complements the exif command, which decodes the binary EXIF block; docmeta reads the XMP packet and PDF dictionary instead. A file with no embedded metadata is a clean result naming its format and size. Office Open XML (.docx, .xlsx, .pptx) keeps its core properties in a deflate-compressed part, which is not read; an embedded XMP packet in such a file is.";
 
 /// The largest file read, in bytes. The whole file is read because a PDF's `/Info` and the XMP
 /// packet can sit anywhere in it; a larger file is refused by name.
@@ -93,6 +95,12 @@ const MAX_PDF_TRAILERS: usize = 64;
 /// Most blocks walked in one GIF's block stream, and most sub-blocks read from one of them. A GIF of
 /// countless empty blocks or an unterminated sub-block chain costs at most this many steps.
 const MAX_GIF_BLOCKS: usize = 4096;
+
+/// Most Photoshop image-resource blocks walked in one JPEG APP13 segment.
+const MAX_PHOTOSHOP_BLOCKS: usize = 256;
+
+/// Most IPTC datasets read from one IPTC image-resource block.
+const MAX_IPTC_DATASETS: usize = 512;
 
 /// The XMP list containers whose `rdf:li` items make up one property's value, with their close tags.
 const XMP_CONTAINERS: [(&str, &str); 3] = [
@@ -172,6 +180,9 @@ pub fn parse(data: &[u8]) -> Parsed {
     }
     if format == "GIF" {
         extract_gif_comments(data, &mut fields);
+    }
+    if format == "JPEG" {
+        extract_iptc(data, &mut fields);
     }
     extract_xmp(&xmp_source(data), &mut fields);
     let fields = fields.list;
@@ -1470,6 +1481,127 @@ fn gif_skip_sub_blocks(data: &[u8], from: usize) -> Option<usize> {
         }
     }
     None
+}
+
+// ── IPTC (Photoshop APP13) ───────────────────────────────────────────────────────────────
+
+/// A JPEG's IPTC IIM metadata, read keyless and offline. The IIM datasets ride in an APP13 (`0xED`)
+/// "Photoshop 3.0" segment, inside the `8BIM` image-resource block whose id is `0x0404`. Each known
+/// Application-Record text dataset becomes an `iptc:<Field>` field: the by-line and caption writer
+/// (who made or captioned the file), the credit and source, the headline and caption, the keywords,
+/// and the named location (city, sub-location, province, country). A repeated dataset such as a
+/// keyword keeps each value. Values are read as UTF-8. **Pure.**
+fn extract_iptc(data: &[u8], fields: &mut Fields) {
+    for segment in jpeg_segments(data).filter(|segment| segment.marker == 0xED) {
+        let Some(mut irb) = segment.payload.strip_prefix(b"Photoshop 3.0\0") else {
+            continue;
+        };
+        for _ in 0..MAX_PHOTOSHOP_BLOCKS {
+            let Some((id, block, rest)) = photoshop_block(irb) else {
+                break;
+            };
+            if id == 0x0404 {
+                parse_iptc_datasets(block, fields);
+            }
+            irb = rest;
+        }
+        if fields.list.len() >= MAX_METADATA_FIELDS {
+            break;
+        }
+    }
+}
+
+/// Split the first `8BIM` image-resource block off `irb`: its resource id, its data, and the bytes
+/// after it. The Pascal name field (a length byte then the name) and the data are each padded to an
+/// even length. `None` when `irb` does not begin with a whole block. **Pure.**
+fn photoshop_block(irb: &[u8]) -> Option<(u16, &[u8], &[u8])> {
+    let rest = irb.strip_prefix(b"8BIM")?;
+    let id = u16::from_be_bytes([*rest.first()?, *rest.get(1)?]);
+    let name_total = 1 + usize::from(*rest.get(2)?);
+    // Pad the name field to an even length.
+    let name_total = name_total + (name_total % 2);
+    let after_name = rest.get(2 + name_total..)?;
+    let size = usize::try_from(u32::from_be_bytes([
+        *after_name.first()?,
+        *after_name.get(1)?,
+        *after_name.get(2)?,
+        *after_name.get(3)?,
+    ]))
+    .ok()?;
+    let data = after_name.get(4..4 + size)?;
+    let padded = size + (size % 2);
+    let tail = after_name.get(4 + padded..).unwrap_or_default();
+    Some((id, data, tail))
+}
+
+/// Walk the IPTC IIM datasets in one resource block: each is `0x1C`, a record byte, a dataset byte, a
+/// two-byte big-endian length, then the value. A known Application-Record text dataset is pushed as
+/// an `iptc:<Field>` field; an unknown or binary dataset is stepped over. An extended-length marker
+/// (rare, the high bit set) ends the walk rather than risk a misread. Bounded by
+/// [`MAX_IPTC_DATASETS`]. **Pure.**
+fn parse_iptc_datasets(data: &[u8], fields: &mut Fields) {
+    let mut at = 0usize;
+    for _ in 0..MAX_IPTC_DATASETS {
+        if data.get(at).copied() != Some(0x1C) {
+            break;
+        }
+        let (Some(&record), Some(&dataset)) = (data.get(at + 1), data.get(at + 2)) else {
+            break;
+        };
+        let Some(len) = data
+            .get(at + 3..at + 5)
+            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+        else {
+            break;
+        };
+        // An extended length (high bit set) counts length bytes rather than giving a length; it is
+        // not decoded here, so stop at it.
+        if len & 0x8000 != 0 {
+            break;
+        }
+        let end = at + 5 + usize::from(len);
+        let Some(value) = data.get(at + 5..end) else {
+            break;
+        };
+        if let Some(name) = iptc_field_name(record, dataset) {
+            fields.push(
+                format!("iptc:{name}"),
+                String::from_utf8_lossy(value).into_owned(),
+            );
+        }
+        at = end;
+    }
+}
+
+/// The field name for an IPTC Application-Record (record `2`) text dataset, or `None` for a binary or
+/// unmapped dataset. **Pure.**
+fn iptc_field_name(record: u8, dataset: u8) -> Option<&'static str> {
+    if record != 2 {
+        return None;
+    }
+    Some(match dataset {
+        5 => "ObjectName",
+        25 => "Keywords",
+        40 => "SpecialInstructions",
+        55 => "DateCreated",
+        60 => "TimeCreated",
+        80 => "Byline",
+        85 => "BylineTitle",
+        90 => "City",
+        92 => "SubLocation",
+        95 => "ProvinceState",
+        100 => "CountryCode",
+        101 => "CountryName",
+        103 => "TransmissionReference",
+        105 => "Headline",
+        110 => "Credit",
+        115 => "Source",
+        116 => "CopyrightNotice",
+        118 => "Contact",
+        120 => "Caption",
+        122 => "CaptionWriter",
+        _ => return None,
+    })
 }
 
 // ── bytes ──────────────────────────────────────────────────────────────────────────────────
