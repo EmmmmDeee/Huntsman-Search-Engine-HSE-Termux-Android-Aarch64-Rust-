@@ -690,7 +690,7 @@ impl ScanApi {
         value["report"] = results.map_or(Value::Null, |results| Value::String(results.text));
         // What the runner does with each New Scan option, so the page never shows a dead control.
         value["honoured"] = json!({
-            "usecase": "passive skips the keyed breach lookup of every email; the other use cases run every source of each lookup",
+            "usecase": true,
             "types": true,
             "modules": true,
             "depth": true,

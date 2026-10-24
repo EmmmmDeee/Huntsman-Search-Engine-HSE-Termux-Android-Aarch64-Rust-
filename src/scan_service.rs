@@ -239,7 +239,8 @@ fn validate_options(options: &ScanOptions) -> Result<ScanOptions, ServiceError> 
 
 /// The modules a scan with `options` asks: the ones it chose, else every one.
 fn chosen(options: &ScanOptions) -> Result<Selection, ServiceError> {
-    crate::module::selection(&options.modules).map_err(ServiceError::BadRequest)
+    let named = crate::module::selection(&options.modules).map_err(ServiceError::BadRequest)?;
+    Ok(crate::module::use_case_selection(&options.usecase, &named))
 }
 
 /// Shared, cancellation-aware admission for all lookups started by this service.
@@ -1015,12 +1016,22 @@ impl ScanService {
         let plan = plan(&request.target, request.kind.as_deref())?;
         let options = validate_options(&request.options)?;
         if !lookup_modules::asks_any(plan.kind, &chosen(&options)?) {
-            return Err(ServiceError::BadRequest(format!(
-                "none of the chosen modules ({}) looks up the target: the {} lookup asks {}",
-                options.modules.join(", "),
-                plan.kind.command(),
-                lookup_modules::modules(plan.kind).join(", ")
-            )));
+            let asks = lookup_modules::modules(plan.kind).join(", ");
+            let why = if options.modules.is_empty() {
+                format!(
+                    "the {} use case runs none of the modules the {} lookup asks ({asks}); choose \
+                     all or another use case",
+                    options.usecase,
+                    plan.kind.command()
+                )
+            } else {
+                format!(
+                    "none of the chosen modules ({}) looks up the target: the {} lookup asks {asks}",
+                    options.modules.join(", "),
+                    plan.kind.command()
+                )
+            };
+            return Err(ServiceError::BadRequest(why));
         }
         let name = request
             .name
@@ -2024,6 +2035,76 @@ mod tests {
             service.correlate("nope"),
             Err(ServiceError::NotFound(_))
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Footprint and Investigate choose modules by category, as the New Scan page describes them,
+    /// so they spend less than All and differ from each other; a use case never widens a choice.
+    #[test]
+    fn a_use_case_keeps_the_scan_to_its_modules() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&calls);
+        let (service, dir) = with_lookup(
+            "usecase",
+            Arc::new(move |kind: ScanKind, selector: &str, chosen: &Selection| {
+                let asked: Vec<&str> = ["rdap", "spamhaus", "github_user", "oathnet"]
+                    .into_iter()
+                    .filter(|module| chosen.runs(module))
+                    .collect();
+                seen.lock().unwrap().push(format!(
+                    "{} {selector} asks {}",
+                    kind.command(),
+                    asked.join(",")
+                ));
+                Ok(found(kind, selector))
+            }),
+        );
+        let scan = |usecase: &str, modules: &[&str]| {
+            service.run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                options: ScanOptions {
+                    usecase: usecase.into(),
+                    modules: modules.iter().map(|module| (*module).to_owned()).collect(),
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+        };
+        let asked = || {
+            let asked = calls.lock().unwrap().clone();
+            calls.lock().unwrap().clear();
+            asked
+        };
+        let all = scan("all", &[]).unwrap();
+        assert_eq!(all.status, ScanStatus::Finished);
+        assert_eq!(
+            asked(),
+            ["ip 1.1.1.1 asks rdap,spamhaus,github_user,oathnet"]
+        );
+        assert_eq!(scan("footprint", &[]).unwrap().options.usecase, "footprint");
+        assert_eq!(asked(), ["ip 1.1.1.1 asks rdap,github_user,oathnet"]);
+        scan("Investigate", &[]).unwrap();
+        assert_eq!(asked(), ["ip 1.1.1.1 asks rdap,spamhaus,oathnet"]);
+        scan("investigate", &["rdap", "github_user"]).unwrap();
+        assert_eq!(asked(), ["ip 1.1.1.1 asks rdap"]);
+        // A use case that leaves the chosen modules nothing to ask is refused before the scan is
+        // saved, naming the modules as they were chosen.
+        let refused = service
+            .run(&ScanRequest {
+                target: "ada@example.com".into(),
+                kind: Some("exposure".into()),
+                options: ScanOptions {
+                    usecase: "footprint".into(),
+                    modules: vec!["spamhaus".into()],
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap_err();
+        assert!(
+            matches!(&refused, ServiceError::BadRequest(why) if why.starts_with("none of the chosen modules (spamhaus) looks up the target: the exposure lookup asks hibp,")),
+            "{refused:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
