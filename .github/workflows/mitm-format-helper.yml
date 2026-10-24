@@ -20,6 +20,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rustup component add rustfmt --toolchain 1.99
           cargo fmt --all
           for path in src/mitm.rs src/cli/mitm.rs tests/mitm_cli.rs; do
             printf 'HSE_FORMAT_BEGIN:%s\n' "$path"
