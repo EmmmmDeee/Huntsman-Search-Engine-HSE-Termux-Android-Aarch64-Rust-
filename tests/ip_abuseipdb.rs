@@ -4,12 +4,14 @@
 //! that answers `AbuseIPDB`'s documented `check` shape (with the report list only when `verbose`
 //! asks for it, as the API does) and refuses every other host. When the report list is past the
 //! body limit, the lookup asks again without it, keeps the score and says the reports were unread.
+//! An address the check marks a Tor exit carries the one Tor-exit tag every source gives.
 
 use huntsman_recon::entity::{EntityKind, Evidence};
 use huntsman_recon::http::{Request, Response, Transport, TransportFailure};
 use huntsman_recon::ip_cli::{IpRun, run};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::source_outcome::SourceOutcomeKind;
+use huntsman_recon::tags;
 use huntsman_recon::threat_feeds::Feeds;
 
 /// The documented `check` answer for the address, without the report list.
@@ -188,4 +190,52 @@ fn a_report_list_past_the_body_limit_still_keeps_the_score() {
         .map(|o| o.kind)
         .collect();
     assert_eq!(kinds, [SourceOutcomeKind::Success], "{:?}", report.outcomes);
+}
+
+/// Answers the documented `check` with `isTor` set, as `AbuseIPDB` marks a Tor exit relay.
+struct TorExit;
+
+impl Transport for TorExit {
+    fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+        if request
+            .url
+            .starts_with("https://api.abuseipdb.com/api/v2/check?ipAddress=118.25.6.39&")
+        {
+            return Ok(Response {
+                status: 200,
+                headers: Vec::new(),
+                body: CHECK
+                    .replacen(r#""isTor":false"#, r#""isTor":true"#, 1)
+                    .into_bytes(),
+                truncated: false,
+            });
+        }
+        Err(TransportFailure {
+            kind: SourceOutcomeKind::ConnectFailure,
+            detail: "no route".into(),
+            blocked: false,
+        })
+    }
+}
+
+#[test]
+fn a_tor_exit_carries_the_tag_every_tor_source_gives() {
+    let keys = Keys::parse("HUNTSMAN_ABUSEIPDB_KEY=abuseipdb-test-key-0815")
+        .unwrap_or_else(|e| panic!("{e}"));
+    let report = match run(
+        &TorExit,
+        &keys,
+        &Feeds::none(),
+        "118.25.6.39",
+        1_760_000_000,
+    ) {
+        IpRun::Printed { report, .. } => report,
+        IpRun::Network(why) | IpRun::Failed(why) => panic!("ip did not print: {why}"),
+    };
+    let address = report
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress && e.value == "118.25.6.39")
+        .unwrap_or_else(|| panic!("no address entity: {:#?}", report.entities));
+    assert!(address.has_tag(tags::TOR_EXIT), "{:?}", address.tags);
 }

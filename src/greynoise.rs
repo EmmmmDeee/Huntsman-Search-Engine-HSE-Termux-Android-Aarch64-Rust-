@@ -12,6 +12,7 @@ use serde::Deserialize;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::Transport;
+use crate::indicator_sources::{Indicator, IndicatorKind};
 use crate::keys::Keys;
 
 pub const SOURCE: &str = "greynoise";
@@ -69,7 +70,7 @@ struct Body {
 /// This capability check sends no network request.
 #[must_use]
 pub fn answers_for(ip: &str) -> bool {
-    ip.parse::<std::net::Ipv4Addr>().is_ok()
+    IndicatorKind::Ipv4.covers(Indicator::Ip(ip))
 }
 
 /// The request URL for `ip`. **Pure.**
@@ -102,7 +103,7 @@ pub fn decode(answer: Answer, ip: &str) -> Result<Option<Sighting>, LegError> {
     };
     let whole: serde_json::Value = api_leg::decode(&body)?;
     let body: Body = api_leg::decode(&body)?;
-    if body.ip.trim() != ip {
+    if !crate::canonical::same_ip(&body.ip, ip) {
         return Err(LegError::Decode("answer names another address".into()));
     }
     if not_found {

@@ -7,8 +7,6 @@
 //! address, is not an answer either, however few of its lists it has. Every port, hostname, CPE,
 //! tag and CVE of an answer is kept, each once.
 
-use std::net::IpAddr;
-
 use serde::Deserialize;
 
 use crate::api_leg::{self, Answer, Api, LegError};
@@ -93,8 +91,7 @@ pub fn decode(answer: Answer, ip: &str) -> Result<Option<Host>, LegError> {
         }
         Answer::Body(body) => {
             let body: Body = api_leg::decode(&body)?;
-            let about = |text: &str| text.trim().parse::<IpAddr>().ok();
-            if about(&body.ip).is_none() || about(&body.ip) != about(ip) {
+            if !crate::canonical::same_ip(&body.ip, ip) {
                 return Err(LegError::Decode(
                     "answer is not about the address looked up".into(),
                 ));

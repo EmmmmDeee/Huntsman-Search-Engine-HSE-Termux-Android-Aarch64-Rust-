@@ -18,7 +18,6 @@
 //! together. It is kept as `coordinates` either way.
 
 use std::collections::HashSet;
-use std::net::IpAddr;
 
 use serde::Deserialize;
 use serde_json::{Number, Value};
@@ -303,10 +302,7 @@ impl Pulses {
 /// an address: OTX writes an IPv6 address uncompressed (`2606:4700:4700:0:0:0:0:1111`). **Pure.**
 fn is_about(answered: &str, indicator: Indicator<'_>) -> bool {
     match indicator {
-        Indicator::Ip(ip) => matches!(
-            (answered.trim().parse::<IpAddr>(), ip.parse::<IpAddr>()),
-            (Ok(answered), Ok(ip)) if answered == ip
-        ),
+        Indicator::Ip(ip) => crate::canonical::same_ip(answered, ip),
         _ => answered.eq_ignore_ascii_case(indicator.value()),
     }
 }

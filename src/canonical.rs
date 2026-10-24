@@ -154,6 +154,19 @@ pub fn canonical_ip(raw: &str) -> Option<String> {
     is_public_ip(ip).then(|| ip.to_string())
 }
 
+/// Whether `answered` and `asked` are the same IP address however each is written (surrounding
+/// whitespace, IPv6 compression or case). **Pure.**
+#[must_use]
+pub fn same_ip(answered: &str, asked: &str) -> bool {
+    matches!(
+        (
+            answered.trim().parse::<std::net::IpAddr>(),
+            asked.trim().parse::<std::net::IpAddr>(),
+        ),
+        (Ok(a), Ok(b)) if a == b
+    )
+}
+
 /// A public address block in canonical form, `192.0.2.7/24` written `192.0.2.0/24`, or `None`
 /// for a bare address, a malformed block, or a block whose first address is not public (see
 /// [`is_public_ip`]): a private or documentation block is refused before any request. **Pure.**
@@ -484,6 +497,35 @@ mod tests {
             "",
         ] {
             assert_eq!(canonical_ip(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn the_same_address_matches_however_it_is_written() {
+        for (answered, asked) in [
+            ("1.1.1.1", "1.1.1.1"),
+            (" 8.8.8.8\n", "8.8.8.8"),
+            ("2606:4700:4700:0:0:0:0:1111", "2606:4700:4700::1111"),
+            (
+                "2606:4700:4700::1111",
+                " 2606:4700:4700:0000:0000:0000:0000:1111 ",
+            ),
+            ("2001:4860:4860::8888", "2001:4860:4860::8888"),
+            ("2A00:1450::1", "2a00:1450::1"),
+        ] {
+            assert!(same_ip(answered, asked), "{answered:?} vs {asked:?}");
+        }
+        for (answered, asked) in [
+            ("1.1.1.1", "1.0.0.1"),
+            ("2606:4700:4700::1111", "2606:4700:4700::1001"),
+            ("::ffff:8.8.8.8", "8.8.8.8"),
+            ("", "1.1.1.1"),
+            ("1.1.1.1", ""),
+            ("", ""),
+            ("example.com", "example.com"),
+            ("001.1.1.1", "1.1.1.1"),
+        ] {
+            assert!(!same_ip(answered, asked), "{answered:?} vs {asked:?}");
         }
     }
 

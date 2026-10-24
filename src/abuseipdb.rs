@@ -10,7 +10,6 @@
 //! `ipAddress` is not the address looked up (however either is written) is refused.
 
 use serde::Deserialize;
-use std::net::IpAddr;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::http::{Transport, percent_encode_component};
@@ -242,10 +241,7 @@ fn check<T: Transport + ?Sized>(
 pub fn decode(body: &[u8], ip: &str) -> Result<Check, LegError> {
     let whole: serde_json::Value = api_leg::decode(body)?;
     let data = api_leg::decode::<Envelope>(body)?.data;
-    if !matches!(
-        (data.ip_address.trim().parse::<IpAddr>(), ip.parse::<IpAddr>()),
-        (Ok(answered), Ok(asked)) if answered == asked
-    ) {
+    if !crate::canonical::same_ip(&data.ip_address, ip) {
         return Err(LegError::Decode("answer names another address".into()));
     }
     if data.abuse_confidence_score > 100 {

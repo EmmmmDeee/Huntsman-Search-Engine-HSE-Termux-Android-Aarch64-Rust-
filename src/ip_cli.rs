@@ -511,7 +511,7 @@ fn abuseipdb_leg(lookup: &mut Lookup<'_>, check: &abuseipdb::Check) {
         tags.push(tags::MALICIOUS);
     }
     if check.tor {
-        tags.push("tor-exit");
+        tags.push(tags::TOR_EXIT);
     }
     let mut evidence = lookup
         .evidence(

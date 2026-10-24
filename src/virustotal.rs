@@ -170,10 +170,7 @@ pub fn lookup<T: Transport + ?Sized>(
 fn is_about(id: &str, object: Object, value: &str) -> bool {
     match object {
         Object::Domain => id.eq_ignore_ascii_case(value),
-        Object::Ip => matches!(
-            (id.trim().parse::<IpAddr>(), value.parse::<IpAddr>()),
-            (Ok(answered), Ok(asked)) if answered == asked
-        ),
+        Object::Ip => crate::canonical::same_ip(id, value),
     }
 }
 
