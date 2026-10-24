@@ -64,17 +64,30 @@ pub fn validate(document: &Value) -> Result<usize, String> {
     let mut ids = BTreeSet::new();
     let mut total = 0_usize;
     for (key, _) in GROUPS {
-        let rows = object.get(key).and_then(Value::as_array)
+        let rows = object
+            .get(key)
+            .and_then(Value::as_array)
             .ok_or_else(|| format!("required `{key}` array absent"))?;
         for (index, row) in rows.iter().enumerate() {
-            let row = row.as_object().ok_or_else(|| format!("{key}[{index}] is not an object"))?;
-            let id = row.get("id").and_then(Value::as_str)
+            let row = row
+                .as_object()
+                .ok_or_else(|| format!("{key}[{index}] is not an object"))?;
+            let id = row
+                .get("id")
+                .and_then(Value::as_str)
                 .ok_or_else(|| format!("{key}[{index}] lacks a string id"))?;
-            if id.len() > 64 || id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
+            if id.len() > 64
+                || id.is_empty()
+                || !id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            {
                 return Err(format!("invalid evidence id in {key}[{index}]"));
             }
             if !ids.insert(id.to_owned()) {
-                return Err(format!("duplicate evidence id `{id}`; refusing information loss"));
+                return Err(format!(
+                    "duplicate evidence id `{id}`; refusing information loss"
+                ));
             }
             total += 1;
         }
@@ -86,23 +99,33 @@ pub fn validate(document: &Value) -> Result<usize, String> {
 pub fn load() -> Result<Value, String> {
     let path = std::env::var_os("HUNTSMAN_DOSSIER_PATH")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".huntsman/dossier/register.json")))
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|h| PathBuf::from(h).join(".huntsman/dossier/register.json"))
+        })
         .ok_or("Set HOME or HUNTSMAN_DOSSIER_PATH")?;
-    let file = File::open(&path).map_err(|e| format!("cannot open dossier {}: {e}", path.display()))?;
+    let file =
+        File::open(&path).map_err(|e| format!("cannot open dossier {}: {e}", path.display()))?;
     let mut bytes = Vec::new();
-    file.take(MAX_DOSSIER_BYTES + 1).read_to_end(&mut bytes)
+    file.take(MAX_DOSSIER_BYTES + 1)
+        .read_to_end(&mut bytes)
         .map_err(|e| format!("cannot read dossier: {e}"))?;
     if bytes.len() as u64 > MAX_DOSSIER_BYTES {
-        return Err(format!("dossier exceeds {MAX_DOSSIER_BYTES} bytes; no records were omitted"));
+        return Err(format!(
+            "dossier exceeds {MAX_DOSSIER_BYTES} bytes; no records were omitted"
+        ));
     }
-    let doc: Value = serde_json::from_slice(&bytes).map_err(|e| format!("invalid dossier JSON: {e}"))?;
+    let doc: Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("invalid dossier JSON: {e}"))?;
     validate(&doc)?;
     Ok(doc)
 }
 
 fn field(out: &mut String, key: &str, value: &Value, ids: &BTreeSet<&str>) {
     let _ = write!(out, "<dt>{}</dt><dd>", escape(&readable(key)));
-    let value = value.as_str().map(str::to_owned)
+    let value = value
+        .as_str()
+        .map(str::to_owned)
         .unwrap_or_else(|| value.to_string());
     if key == "url" && (value.starts_with("https://") || value.starts_with("http://")) {
         let val = escape(&value);
