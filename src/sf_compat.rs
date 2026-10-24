@@ -377,7 +377,8 @@ pub fn action(args: &SfArgs) -> Result<SfAction, Error> {
 }
 
 /// The lookup a saved scan of a target of this Spiderfoot type runs, or `None` for a type no
-/// lookup takes yet (a `WiFi` SSID or coordinate pair).
+/// lookup takes yet (a `WiFi` SSID) or two take (a coordinate pair: `network` searches `WiGLE`
+/// around it, `geocode` reverse-geocodes it).
 #[must_use]
 pub fn scan_kind(target_type: &str) -> Option<ScanKind> {
     match target_type {
@@ -390,6 +391,7 @@ pub fn scan_kind(target_type: &str) -> Option<ScanKind> {
         "USERNAME" => Some(ScanKind::Username),
         "HUMAN_NAME" => Some(ScanKind::People),
         "BITCOIN_ADDRESS" => Some(ScanKind::CryptoAddress),
+        "PHYSICAL_ADDRESS" => Some(ScanKind::Place),
         _ => None,
     }
 }
@@ -416,6 +418,10 @@ pub fn target_type(kind: ScanKind, canonical: &str) -> &'static str {
             _ => "HSE_WIFI_SSID",
         },
         ScanKind::CryptoAddress => "BITCOIN_ADDRESS",
+        ScanKind::Place if crate::canonical::canonical_coordinates(canonical).is_some() => {
+            "PHYSICAL_COORDINATES"
+        }
+        ScanKind::Place => "PHYSICAL_ADDRESS",
     }
 }
 
@@ -860,6 +866,19 @@ mod tests {
             ),
             "BITCOIN_ADDRESS"
         );
+        // A written address is a takeable target: the geocode lookup runs it. Its point is the
+        // coordinates type, which the network lookup also takes, so a coordinates element names
+        // no one lookup; `sf.py` detects neither, so neither is reached from `-s`.
+        assert_eq!(scan_kind("PHYSICAL_ADDRESS"), Some(ScanKind::Place));
+        assert_eq!(
+            target_type(ScanKind::Place, "Eiffel Tower, Paris"),
+            "PHYSICAL_ADDRESS"
+        );
+        assert_eq!(
+            target_type(ScanKind::Place, "48.8584,2.2945"),
+            "PHYSICAL_COORDINATES"
+        );
+        assert_eq!(scan_kind("PHYSICAL_COORDINATES"), None);
     }
 
     #[test]

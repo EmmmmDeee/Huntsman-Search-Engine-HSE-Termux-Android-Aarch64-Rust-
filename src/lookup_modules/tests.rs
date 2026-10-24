@@ -14,7 +14,7 @@ use crate::test_support::{Attempt, Failing, Recording, Refusing, Silent};
 use crate::threat_feeds::Feeds;
 use crate::{
     asn_cli, crypto_cli, domain_cli, email_cli, environment, exposure_cli, ip_cli, netblock_cli,
-    network_cli, people_cli, phone_cli, stolen_tax, username_cli,
+    network_cli, nominatim_cli, people_cli, phone_cli, stolen_tax, username_cli,
 };
 
 const NOW: u64 = 1_760_000_000;
@@ -23,8 +23,12 @@ const NOW: u64 = 1_760_000_000;
 const RIPESTAT: &[u8] =
     br#"{"status":"ok","data":{"announced":false,"prefixes":[],"neighbours":[],"resources":[]}}"#;
 
+/// One Nominatim place, as its forward search lists it and its reverse search returns it.
+const PLACE: &[u8] = br#"{"osm_type":"way","osm_id":1,"lat":"48.8584","lon":"2.2945","category":"tourism","type":"attraction","place_rank":30,"importance":0.5,"addresstype":"tourism","name":"Eiffel Tower","display_name":"Eiffel Tower, Paris, France","address":{"tourism":"Eiffel Tower","city":"Paris","country":"France","country_code":"fr"}}"#;
+const PLACES: &[u8] = br#"[{"osm_type":"way","osm_id":1,"lat":"48.8584","lon":"2.2945","category":"tourism","type":"attraction","place_rank":30,"importance":0.5,"addresstype":"tourism","name":"Eiffel Tower","display_name":"Eiffel Tower, Paris, France","address":{"tourism":"Eiffel Tower","city":"Paris","country":"France","country_code":"fr"}}]"#;
+
 /// A network that answers each threat feed with one unlisted address, `RIPEstat` and the CKAN
-/// registers with empty data, and everything else "not found"; resolves every name to nothing;
+/// registers with empty data, Nominatim with one place, and everything else "not found"; resolves every name to nothing;
 /// answers no UDP; and keeps everything it was asked. Each lookup then has a leg that answers, so
 /// it prints its report, and its every row, instead of failing.
 #[derive(Clone, Default)]
@@ -61,6 +65,15 @@ impl Transport for Everywhere {
             (
                 200,
                 br#"{"success":true,"result":{"records":[],"total":0}}"#,
+            )
+        } else if url.contains("nominatim") {
+            (
+                200,
+                if url.contains("/reverse?") {
+                    PLACE
+                } else {
+                    PLACES
+                },
             )
         } else {
             (404, b"{}")
@@ -170,6 +183,9 @@ fn verdict<N: Transport + Clone + Send + Sync + 'static>(
         ScanKind::CryptoAddress => ended(crypto_cli::run(&transport, target, now), |report| {
             report.outcomes
         }),
+        ScanKind::Place => ended(nominatim_cli::run(&transport, target, now), |report| {
+            report.outcomes
+        }),
         ScanKind::Email => match email_cli::run_keyed(&transport, &keys, target, now) {
             email_cli::EmailRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
             email_cli::EmailRun::Network(why) => Verdict::Refused(why),
@@ -253,6 +269,7 @@ const fn target(kind: ScanKind) -> &'static str {
         ScanKind::People => "Ada Lovelace",
         ScanKind::Network => "00:11:22:33:44:55",
         ScanKind::CryptoAddress => "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+        ScanKind::Place => "Eiffel Tower",
     }
 }
 
@@ -324,7 +341,11 @@ fn anchor(kind: ScanKind) -> Option<&'static str> {
         ScanKind::Email => Some(gravatar::SRC),
         ScanKind::People => Some("asic_persons"),
         ScanKind::Username => Some(keybase::SRC),
-        ScanKind::Phone | ScanKind::Network | ScanKind::Exposure | ScanKind::CryptoAddress => None,
+        ScanKind::Phone
+        | ScanKind::Network
+        | ScanKind::Exposure
+        | ScanKind::CryptoAddress
+        | ScanKind::Place => None,
     }
 }
 

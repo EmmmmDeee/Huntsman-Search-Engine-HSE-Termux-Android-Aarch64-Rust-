@@ -256,7 +256,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <label class="fl" for="starget">Scan Target</label>
 <input id="starget" class="mono" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" placeholder="The target of your scan.">
 <label class="fl" for="skind">Target type</label>
-<select id="skind"><option value="auto">Detect from the target</option><option value="domain">Domain name</option><option value="ip">IP address</option><option value="netblock">Address block (CIDR)</option><option value="asn">AS number</option><option value="email">E-mail address</option><option value="exposure">E-mail breach exposure</option><option value="phone">Phone number</option><option value="username">Username</option><option value="people">Human name</option><option value="network">Wi-Fi BSSID or location</option><option value="crypto">Bitcoin address</option></select>
+<select id="skind"><option value="auto">Detect from the target</option><option value="domain">Domain name</option><option value="ip">IP address</option><option value="netblock">Address block (CIDR)</option><option value="asn">AS number</option><option value="email">E-mail address</option><option value="exposure">E-mail breach exposure</option><option value="phone">Phone number</option><option value="username">Username</option><option value="people">Human name</option><option value="network">Wi-Fi BSSID or location</option><option value="crypto">Bitcoin address</option><option value="geocode">Place, address or LAT,LON</option></select>
 <label class="fl" for="sdepth">Recursion depth</label>
 <input id="sdepth" type="number" min="0" step="1" value="0" inputmode="numeric" aria-describedby="sdepth-h">
 <p class="help" id="sdepth-h">How many hops the scan follows what it finds, as Spiderfoot feeds each finding to the modules that take it: every email, username, domain, phone, IP address and BSSID found is looked up in turn. 0 looks up the target only.</p>
@@ -1350,8 +1350,8 @@ async function prefill(f){
 }
 const clone=s=>s&&prefill({...s.options,name:s.name||s.target,target:s.target,kind:s.kind});
 // Launch a follow-up scan from a typed pivot, preserving depth/use case.
-const PIVOT=new Set(['INTERNET_NAME','DOMAIN_NAME','DOMAIN_NAME_PARENT','AFFILIATE_INTERNET_NAME','AFFILIATE_DOMAIN_NAME','CO_HOSTED_SITE','CO_HOSTED_SITE_DOMAIN','SIMILARDOMAIN','IP_ADDRESS','IPV6_ADDRESS','AFFILIATE_IPADDR','AFFILIATE_IPV6_ADDRESS','NETBLOCK_OWNER','NETBLOCKV6_OWNER','NETBLOCK_MEMBER','NETBLOCKV6_MEMBER','BGP_AS_OWNER','BGP_AS_MEMBER','EMAILADDR','EMAILADDR_GENERIC','AFFILIATE_EMAILADDR','PHONE_NUMBER','USERNAME','HUMAN_NAME','HSE_MAC_ADDRESS','BITCOIN_ADDRESS']);
-const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:'auto',usecase:o.usecase,depth:o.depth})};
+const PIVOT=new Set(['INTERNET_NAME','DOMAIN_NAME','DOMAIN_NAME_PARENT','AFFILIATE_INTERNET_NAME','AFFILIATE_DOMAIN_NAME','CO_HOSTED_SITE','CO_HOSTED_SITE_DOMAIN','SIMILARDOMAIN','IP_ADDRESS','IPV6_ADDRESS','AFFILIATE_IPADDR','AFFILIATE_IPV6_ADDRESS','NETBLOCK_OWNER','NETBLOCKV6_OWNER','NETBLOCK_MEMBER','NETBLOCKV6_MEMBER','BGP_AS_OWNER','BGP_AS_MEMBER','EMAILADDR','EMAILADDR_GENERIC','AFFILIATE_EMAILADDR','PHONE_NUMBER','USERNAME','HUMAN_NAME','HSE_MAC_ADDRESS','BITCOIN_ADDRESS','PHYSICAL_ADDRESS','PHYSICAL_COORDINATES']);
+const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:x.type==='PHYSICAL_ADDRESS'?'geocode':'auto',usecase:o.usecase,depth:o.depth})};
 // Spiderfoot has no offline analysis of a saved scan; this is Huntsman's /analyze over the saved
 // entities, shown whole: every count, every stated limitation, and the report as returned. Not
 // cached: a false-positive flag set since must turn it into the server's refusal.

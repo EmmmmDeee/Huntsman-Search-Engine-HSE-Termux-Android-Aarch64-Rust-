@@ -33,7 +33,7 @@ use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_save::{
     self, ASN_POLICY, CRYPTO_POLICY, DOMAIN_POLICY, EMAIL_EXPOSURE_POLICY, EMAIL_POLICY,
     EXPOSURE_POLICY, IP_POLICY, NETBLOCK_POLICY, NETWORK_POLICY, PEOPLE_POLICY, PHONE_POLICY,
-    SavePolicy, USERNAME_EXPOSURE_POLICY, USERNAME_POLICY,
+    PLACE_POLICY, SavePolicy, USERNAME_EXPOSURE_POLICY, USERNAME_POLICY,
 };
 use huntsman_recon::module_selection::{Selected, Selection};
 use huntsman_recon::netblock_cli::{NETBLOCK_USAGE, NetblockArgs};
@@ -110,6 +110,7 @@ pub(in crate::cli) fn collect(
         ScanKind::Domain => domain(selector, now, chosen),
         ScanKind::Network => network(selector, now, chosen),
         ScanKind::CryptoAddress => crypto(selector, now, chosen),
+        ScanKind::Place => place(selector, now, chosen),
     }
 }
 
@@ -545,6 +546,13 @@ fn crypto(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Ref
     Ok(done(text, report.entities, report.outcomes, CRYPTO_POLICY))
 }
 
+/// The Nominatim leg for a place name, street address or `lat,lon` point, keyless.
+fn place(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Refused> {
+    let transport = transport(&TransportConfig::default(), chosen);
+    let (text, report) = source_report(nominatim_cli::run(&transport, selector, now))?;
+    Ok(done(text, report.entities, report.outcomes, PLACE_POLICY))
+}
+
 /// The exit status for a rejected lookup argument. A value the operator supplied that cannot be
 /// canonicalised is a data error (65); every other rejection is a usage error (64). The error's
 /// variant decides, so no wording of a message, and no echoed option text, can change the status.
@@ -704,22 +712,9 @@ pub(in crate::cli) fn itunes_cmd(args: &[String]) -> ExitCode {
 }
 
 pub(in crate::cli) fn geocode_cmd(args: &[String]) -> ExitCode {
-    let parsed = match GeocodeArgs::parse(args) {
-        Ok(p) => p,
-        Err(e) => return usage_failure(&e, GEOCODE_USAGE),
-    };
-    let transport = transport(&TransportConfig::default(), &Selection::all());
-    match source_report(nominatim_cli::run(
-        &transport,
-        &parsed.query,
-        clock::unix_now(),
-    )) {
-        Ok((text, _)) => {
-            print!("{text}");
-            ExitCode::SUCCESS
-        }
-        Err(refused) => fail(refused.exit_status(), refused.message()),
-    }
+    lookup_cmd(args, GeocodeArgs::parse, GEOCODE_USAGE, |p| {
+        (ScanKind::Place, p.query, p.save)
+    })
 }
 
 /// EXIF metadata and GPS of one local image: keyless and offline, no transport. The file is read

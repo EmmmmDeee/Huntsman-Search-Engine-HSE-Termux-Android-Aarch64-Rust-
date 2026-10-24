@@ -17,8 +17,8 @@ use crate::threat_feeds;
 use crate::{
     abuseipdb, asic_director, asic_persons, blockchain, bluesky_user, certspotter, dehashed,
     duolingo, exposure_cli, github_user, gravatar, greynoise, hunter, internetdb, keybase,
-    mnemonic, numverify, oathnet, openpgp_keys, rdap, ripestat, seeknow_collector, virustotal,
-    wigle, wikipedia,
+    mnemonic, nominatim, numverify, oathnet, openpgp_keys, rdap, ripestat, seeknow_collector,
+    virustotal, wigle, wikipedia,
 };
 
 /// The breach legs an email address's lookup folds in.
@@ -106,6 +106,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         }
         ScanKind::Exposure => BREACH.to_vec(),
         ScanKind::CryptoAddress => vec![blockchain::SOURCE],
+        ScanKind::Place => vec![nominatim::SOURCE],
     };
     let mut seen = std::collections::BTreeSet::new();
     modules.retain(|module| seen.insert(*module));
@@ -148,7 +149,8 @@ pub fn offline_runs(kind: ScanKind) -> Vec<&'static str> {
         | ScanKind::Asn
         | ScanKind::People
         | ScanKind::Exposure
-        | ScanKind::CryptoAddress => Vec::new(),
+        | ScanKind::CryptoAddress
+        | ScanKind::Place => Vec::new(),
     }
 }
 
