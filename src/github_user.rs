@@ -5,7 +5,7 @@
 use serde::Deserialize;
 
 use crate::canonical::{canonical_email, canonical_url};
-use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use crate::credential_origin::AuthenticationAuthority;
 use crate::domains::host_only;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::error::Error;
@@ -132,13 +132,8 @@ fn miss(outcome: SourceExecutionOutcome) -> Report {
 }
 
 fn token_credential(secret: crate::keys::Secret, now_unix: u64) -> Result<Credential, Error> {
-    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
-        provider_id: "github".into(),
-        credential_slot: TOKEN_SLOT.into(),
-        approved_at_unix: now_unix,
-        approval_provenance: format!("operator configured {TOKEN_SLOT}"),
-    })
-    .map_err(|e| Error::Invalid(e.to_string()))?;
+    let authority = AuthenticationAuthority::configured_slot("github", TOKEN_SLOT, now_unix)
+        .map_err(|e| Error::Invalid(e.to_string()))?;
     Ok(Credential::new(authority, secret, AuthStyle::Bearer)?.only_for_origin(API_ORIGIN))
 }
 

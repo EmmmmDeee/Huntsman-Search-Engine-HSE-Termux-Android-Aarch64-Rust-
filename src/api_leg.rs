@@ -18,7 +18,7 @@
 
 use std::time::Duration;
 
-use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use crate::credential_origin::AuthenticationAuthority;
 use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch, json_error_detail};
 use crate::http::{Request, Response, Transport, TransportConfig};
 use crate::keys::{Keys, Secret};
@@ -41,6 +41,18 @@ pub enum KeyPlace {
     Query(&'static str),
     /// `Authorization: Bearer <key>`.
     Bearer,
+}
+
+impl KeyPlace {
+    /// The `fetch` auth style that sends a key placed here.
+    #[must_use]
+    pub fn auth_style(self) -> AuthStyle {
+        match self {
+            Self::Header(name) => AuthStyle::Header(name.into()),
+            Self::Query(name) => AuthStyle::Query(name.into()),
+            Self::Bearer => AuthStyle::Bearer,
+        }
+    }
 }
 
 /// How a provider takes its key.
@@ -302,18 +314,9 @@ fn credential(
     secret: Secret,
     now_unix: u64,
 ) -> Result<Credential, LegError> {
-    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
-        provider_id: api.provider.into(),
-        credential_slot: key.slot.into(),
-        approved_at_unix: now_unix,
-        approval_provenance: format!("operator configured {}", key.slot),
-    })
-    .map_err(|e| LegError::Refused(e.to_string()))?;
-    let style = match key.place {
-        KeyPlace::Header(name) => AuthStyle::Header(name.into()),
-        KeyPlace::Query(name) => AuthStyle::Query(name.into()),
-        KeyPlace::Bearer => AuthStyle::Bearer,
-    };
+    let authority = AuthenticationAuthority::configured_slot(api.provider, key.slot, now_unix)
+        .map_err(|e| LegError::Refused(e.to_string()))?;
+    let style = key.place.auth_style();
     Credential::new(authority, secret, style)
         .map(|c| c.only_for_origin(api.origin))
         .map_err(|e| LegError::Refused(e.to_string()))
@@ -511,6 +514,19 @@ mod tests {
         let sent = transport.sent();
         assert_eq!(sent[0].url, format!("{URL}?ip=1.2.3.4&key={KEY}"));
         assert!(sent[0].headers.iter().all(|(_, v)| !v.contains(KEY)));
+    }
+
+    #[test]
+    fn each_key_place_is_sent_by_the_fetch_style_of_that_place() {
+        assert_eq!(
+            KeyPlace::Header("Key").auth_style(),
+            AuthStyle::Header("Key".into())
+        );
+        assert_eq!(
+            KeyPlace::Query("key").auth_style(),
+            AuthStyle::Query("key".into())
+        );
+        assert_eq!(KeyPlace::Bearer.auth_style(), AuthStyle::Bearer);
     }
 
     #[test]

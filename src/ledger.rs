@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::fsio::{read_bounded_replacing, write_atomic_private};
+use crate::fsio::{read_bounded_replacing, write_json_private};
 use crate::sha256::{hex32, sha256};
 use crate::stage::{EvidenceLevel, Status};
 
@@ -178,18 +178,7 @@ pub fn save_chain(path: &Path, entries: &[LedgerEntry]) -> Result<(), Error> {
     if !chain_intact(entries) {
         return Err(Error::Invalid("refusing to write a broken chain".into()));
     }
-    let limit = usize::try_from(MAX_LEDGER_BYTES).unwrap_or(usize::MAX);
-    let body = match crate::json::to_bounded_json(&entries, limit, true) {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(required_bytes)) => {
-            return Err(Error::Store(format!(
-                "{}: exceeds {MAX_LEDGER_BYTES} bytes (needs {required_bytes})",
-                path.display()
-            )));
-        }
-        Err(error) => return Err(Error::Store(error.to_string())),
-    };
-    write_atomic_private(path, &body, MAX_LEDGER_BYTES)
+    write_json_private(path, entries, MAX_LEDGER_BYTES)
 }
 
 /// Load a chain and verify every link.

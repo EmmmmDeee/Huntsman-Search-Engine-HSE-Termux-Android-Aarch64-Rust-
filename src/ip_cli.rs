@@ -188,8 +188,7 @@ pub fn run<T: Transport + ?Sized>(
     lookup.report.entities.extend(registration.entities);
     lookup.report.outcomes.extend(registration.outcome);
     let seen = crate::mnemonic::ip(transport, &ip, &scan_id, now_unix);
-    lookup.report.entities.extend(seen.entities);
-    lookup.report.outcomes.extend(seen.outcome);
+    mnemonic_leg(&mut lookup, seen);
     if internetdb::API.runs(transport, keys) {
         match internetdb::lookup(transport, &ip, now_unix) {
             Ok(Some(host)) => internetdb_leg(&mut lookup, &host),
@@ -356,6 +355,16 @@ fn join<T: ToString>(items: &[T]) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// Mnemonic's passive DNS: its entities, and a failure through [`Lookup::failed`], so a refusal or
+/// no response can be the lookup's reason.
+fn mnemonic_leg(lookup: &mut Lookup<'_>, seen: crate::mnemonic::Leg) {
+    lookup.report.entities.extend(seen.entities);
+    match &seen.error {
+        Some(err) => lookup.failed(&crate::mnemonic::API, err),
+        None => lookup.report.outcomes.extend(seen.outcome),
+    }
 }
 
 fn internetdb_leg(lookup: &mut Lookup<'_>, host: &internetdb::Host) {

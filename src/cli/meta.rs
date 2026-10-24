@@ -401,10 +401,7 @@ pub(super) fn keys_cmd(args: &[String]) -> ExitCode {
             Ok(keys) => {
                 for slot in keys.slots() {
                     if let Some(secret) = keys.get(slot) {
-                        println!(
-                            "{slot} fingerprint={}",
-                            &secret.fingerprint().as_str()[..12]
-                        );
+                        println!("{slot} fingerprint={}", secret.fingerprint().short());
                     }
                 }
                 ExitCode::SUCCESS
@@ -478,7 +475,7 @@ pub(super) fn run_history_cmd(args: &[String]) -> ExitCode {
         }
         let Some((passed, failed)) = huntsman_recon::run_history::parse_libtest_summary(&buffer)
         else {
-            eprintln!("run-history: no 'test result:' line found in stdin");
+            eprintln!("run-history: no usable 'test result:' totals in stdin");
             return ExitCode::from(EX_DATAERR);
         };
         let mut rewritten: Vec<String> = args

@@ -1,0 +1,7 @@
+- `plan --load-session DIR ID` no longer prints a saved session's title raw. A session file
+  can be edited or come from someone else, and a title holding an escape sequence such as
+  `ESC ]0;owned BEL` changed the terminal's title, while a line feed in it started a second
+  line that read as a `session=` line of its own. The title's control characters, line and
+  paragraph separators and bidirectional controls are now written as Rust escapes, such as
+  `\u{1b}` and `\n`, so the summary stays one line. Titles without them, including every
+  title `plan --session-dir` writes, print as before.

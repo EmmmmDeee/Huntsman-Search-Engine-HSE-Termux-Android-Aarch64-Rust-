@@ -14,6 +14,7 @@ use crate::api_leg::{self, Answer, Api, LegError};
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, Source};
 use crate::keys::Keys;
+use crate::tags;
 
 /// The id legacy breach records already use, so the correlator groups it as breach evidence.
 pub const SOURCE: &str = "xposed_or_not";
@@ -36,6 +37,17 @@ struct Body {
     breaches: Option<Vec<Vec<String>>>,
     #[serde(default, rename = "Error")]
     error: Option<String>,
+}
+
+impl Body {
+    /// The miss: no breaches and `Error` "not found", whatever its case.
+    fn is_miss(&self) -> bool {
+        self.breaches.is_none()
+            && self
+                .error
+                .as_deref()
+                .is_some_and(|e| e.eq_ignore_ascii_case("not found"))
+    }
 }
 
 /// The request URL for `email`. **Pure.**
@@ -72,10 +84,7 @@ pub fn lookup(
 /// [`LegError::Unexpected`] for a `404` that is not the miss.
 fn decode_not_found(body: &[u8]) -> Result<Option<Finding>, LegError> {
     match api_leg::decode::<Body>(body) {
-        Ok(Body {
-            breaches: None,
-            error: Some(error),
-        }) if error.eq_ignore_ascii_case("not found") => Ok(None),
+        Ok(body) if body.is_miss() => Ok(None),
         _ => Err(LegError::Unexpected(404)),
     }
 }
@@ -86,13 +95,13 @@ fn decode_not_found(body: &[u8]) -> Result<Option<Finding>, LegError> {
 /// [`LegError::Decode`] for a body that is not the documented shape.
 pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
     let body: Body = api_leg::decode(body)?;
+    if body.is_miss() {
+        return Ok(None);
+    }
     let Some(breaches) = body.breaches else {
-        return match body.error.as_deref() {
-            Some(e) if e.eq_ignore_ascii_case("not found") => Ok(None),
-            _ => Err(LegError::Decode(
-                "answer has neither breaches nor a miss".into(),
-            )),
-        };
+        return Err(LegError::Decode(
+            "answer has neither breaches nor a miss".into(),
+        ));
     };
     let mut names: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -114,7 +123,7 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
         ))
         .attr("breach_count", total.to_string())
         .list_attr("breaches", &names)
-        .tag("breached"),
+        .tag(tags::BREACH),
     ))
 }
 
@@ -135,7 +144,7 @@ mod tests {
             f.summary,
             "XposedOrNot: the address is in 3 public breaches"
         );
-        assert_eq!(f.tags, ["breached"]);
+        assert_eq!(f.tags, [tags::BREACH]);
         assert!(
             f.attrs
                 .iter()
@@ -152,7 +161,7 @@ mod tests {
             .flatten()
             .unwrap_or_else(|| panic!("body must decode"));
         assert!(f.summary.contains("120 public breaches"), "{}", f.summary);
-        assert_eq!(f.tags, ["breached"]);
+        assert_eq!(f.tags, [tags::BREACH]);
         let kept = f
             .attrs
             .iter()

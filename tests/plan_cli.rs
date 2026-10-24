@@ -79,6 +79,45 @@ fn a_saved_session_reloads() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A session file can be edited or come from someone else, so its title is untrusted text. The
+/// summary printed it raw: an escape sequence in it drove the terminal, and a line feed started a
+/// second line that read as a `session=` line of its own. The summary is one line, with the
+/// control characters written as Rust escapes.
+#[test]
+fn a_loaded_session_title_cannot_drive_the_terminal_or_split_the_summary() {
+    let dir = scratch("title-controls");
+    let sessions = dir.to_str().unwrap();
+    let out = plan(&["--session-dir", sessions, "ada@example.com"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let id = text
+        .lines()
+        .find_map(|line| line.strip_prefix("session="))
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no session= line in {text}"));
+
+    let file = dir.join("sessions").join(format!("{id}.json"));
+    let mut session: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    session["title"] = serde_json::Value::from("x\u{1b}]0;owned\u{7}\nsession=forged title=y");
+    fs::write(&file, serde_json::to_vec(&session).unwrap()).unwrap();
+
+    let reloaded = plan(&["--load-session", sessions, id]);
+    assert!(reloaded.status.success(), "{}", stderr(&reloaded));
+    let summary = stdout(&reloaded);
+    assert_eq!(summary.lines().count(), 1, "{summary:?}");
+    assert!(
+        !summary.contains('\u{1b}') && !summary.contains('\u{7}'),
+        "{summary:?}"
+    );
+    assert!(
+        summary.starts_with(&format!(
+            "session={id} title=x\\u{{1b}}]0;owned\\u{{7}}\\nsession=forged title=y candidates="
+        )),
+        "{summary:?}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// A session file that is read but does not hold a session is bad data (65), as a malformed
 /// ledger is for `verify`; only a file that cannot be read is unreadable input (66). The message
 /// names the file and what is wrong with it. A session an older build wrote, which lacks a field

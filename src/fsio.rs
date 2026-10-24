@@ -38,21 +38,27 @@ pub(crate) enum SymlinkRefusal {
 }
 
 /// The policy for every write in this crate: a symbolic link is refused, so a write cannot land in
-/// whatever file the link points at. A path that does not exist yet is allowed.
-pub(crate) fn check_not_symlink(path: &Path) -> Result<(), SymlinkRefusal> {
+/// whatever file the link points at. A path that does not exist yet is allowed. Returns the
+/// `lstat` result of an existing path (`None` when it does not exist), for a writer that compares
+/// it with the descriptor it then opens.
+pub(crate) fn check_not_symlink(path: &Path) -> Result<Option<fs::Metadata>, SymlinkRefusal> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => Err(SymlinkRefusal::Linked),
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(meta) => Ok(Some(meta)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(SymlinkRefusal::Unreadable(e)),
     }
 }
 
 fn refuse_symlink(path: &Path) -> Result<(), Error> {
-    check_not_symlink(path).map_err(|refusal| match refusal {
-        SymlinkRefusal::Linked => Error::Store(format!("{}: {REFUSED_SYMLINK}", path.display())),
-        SymlinkRefusal::Unreadable(e) => store_err(path, &e),
-    })
+    check_not_symlink(path)
+        .map(|_| ())
+        .map_err(|refusal| match refusal {
+            SymlinkRefusal::Linked => {
+                Error::Store(format!("{}: {REFUSED_SYMLINK}", path.display()))
+            }
+            SymlinkRefusal::Unreadable(e) => store_err(path, &e),
+        })
 }
 
 fn require_regular_file(path: &Path, meta: &fs::Metadata) -> Result<(), Error> {
@@ -261,6 +267,31 @@ pub fn write_atomic(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
 /// (see `private_mode_verdict`); on shared storage that case warns and writes.
 pub fn write_atomic_private(path: &Path, body: &[u8], max: u64) -> Result<(), Error> {
     write_atomic_mode(path, body, max, true)
+}
+
+/// [`write_atomic_private`] of `value` as pretty JSON, serialised within `max` bytes: a value
+/// over the ceiling is refused with the size it needs, and never written in part.
+///
+/// # Errors
+/// `Error::Store` for a value over `max` bytes, a serialisation failure, or as
+/// [`write_atomic_private`].
+pub(crate) fn write_json_private<T: serde::Serialize + ?Sized>(
+    path: &Path,
+    value: &T,
+    max: u64,
+) -> Result<(), Error> {
+    let limit = usize::try_from(max).unwrap_or(usize::MAX);
+    let body = match crate::json::to_bounded_json(&value, limit, true) {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(required_bytes)) => {
+            return Err(Error::Store(format!(
+                "{}: exceeds {max} bytes (needs {required_bytes})",
+                path.display()
+            )));
+        }
+        Err(error) => return Err(Error::Store(error.to_string())),
+    };
+    write_atomic_private(path, &body, max)
 }
 
 fn write_atomic_mode(path: &Path, body: &[u8], max: u64, private: bool) -> Result<(), Error> {

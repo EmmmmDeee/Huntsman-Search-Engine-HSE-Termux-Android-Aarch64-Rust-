@@ -30,7 +30,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use crate::credential_origin::AuthenticationAuthority;
 use crate::fetch::{AuthStyle, Credential, FetchOptions, fetch};
 use crate::http::{Request, Response, Transport, TransportConfig, percent_encode_component};
 use crate::keys::{Keys, Secret};
@@ -368,13 +368,8 @@ pub fn search<T: Transport + ?Sized>(
 }
 
 fn credential(secret: Secret, now_unix: u64) -> Result<Credential, OathnetError> {
-    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
-        provider_id: "oathnet.org".into(),
-        credential_slot: KEY_SLOT.into(),
-        approved_at_unix: now_unix,
-        approval_provenance: format!("operator configured {KEY_SLOT}"),
-    })
-    .map_err(|e| OathnetError::Refused(e.to_string()))?;
+    let authority = AuthenticationAuthority::configured_slot("oathnet.org", KEY_SLOT, now_unix)
+        .map_err(|e| OathnetError::Refused(e.to_string()))?;
     Credential::new(authority, secret, AuthStyle::Header(KEY_HEADER.into()))
         .map(|c| c.only_for_origin(KEY_ORIGIN))
         .map_err(|e| OathnetError::Refused(e.to_string()))

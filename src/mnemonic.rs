@@ -210,11 +210,12 @@ pub fn lookup<T: Transport + ?Sized>(
     Ok(answers)
 }
 
-/// The leg's entities and its outcome row.
+/// The leg's entities, its outcome row and, when the lookup failed, why.
 #[derive(Debug, Default)]
 pub struct Leg {
     pub entities: Vec<Entity>,
     pub outcome: Option<SourceExecutionOutcome>,
+    pub error: Option<LegError>,
 }
 
 /// Passive DNS for `domain`: every record on the domain, each public address its names answered
@@ -259,6 +260,7 @@ fn leg(
             return Leg {
                 entities: Vec::new(),
                 outcome: Some(err.outcome(&API, now_unix)),
+                error: Some(err),
             };
         }
     };
@@ -266,6 +268,7 @@ fn leg(
         return Leg {
             entities: Vec::new(),
             outcome: Some(SourceExecutionOutcome::valid_zero(SOURCE, now_unix)),
+            error: None,
         };
     }
     let mut entities = entities(&answers);
@@ -275,6 +278,7 @@ fn leg(
     Leg {
         entities,
         outcome: Some(outcome),
+        error: None,
     }
 }
 
@@ -305,11 +309,7 @@ const SEED_CONFIDENCE: f64 = 0.90;
 
 /// A host name in canonical form, or `None` for a reverse-zone or wildcard name. **Pure.**
 fn host(name: &str) -> Option<String> {
-    let name = name.trim().trim_end_matches('.');
-    if name.contains(['*', '%']) || name.to_ascii_lowercase().ends_with(".arpa") {
-        return None;
-    }
-    canonical_domain(name)
+    canonical_domain(name).filter(|name| !is_or_subdomain_of(name, "arpa"))
 }
 
 fn is_address_type(rrtype: &str) -> bool {

@@ -54,7 +54,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use crate::credential_origin::AuthenticationAuthority;
 use crate::deadline::{Clock, Deadline, SystemClock};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, normalise};
 use crate::fetch::{AuthStyle, Credential, FetchOptions, Fetched, RedirectPolicy, fetch_within};
@@ -241,13 +241,8 @@ fn lookup_within<T: Transport + ?Sized>(
 }
 
 fn credential(secret: Secret, now_unix: u64) -> Result<Credential, StolenTaxError> {
-    let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
-        provider_id: "stolen.tax".into(),
-        credential_slot: KEY_SLOT.into(),
-        approved_at_unix: now_unix,
-        approval_provenance: format!("operator configured {KEY_SLOT}"),
-    })
-    .map_err(|e| StolenTaxError::Refused(e.to_string()))?;
+    let authority = AuthenticationAuthority::configured_slot("stolen.tax", KEY_SLOT, now_unix)
+        .map_err(|e| StolenTaxError::Refused(e.to_string()))?;
     Credential::new(authority, secret, AuthStyle::Bearer)
         .map(|c| c.only_for_origin(KEY_ORIGIN))
         .map_err(|e| StolenTaxError::Refused(e.to_string()))
@@ -836,7 +831,9 @@ fn breach_evidence_text(name: &str, marker: &str, breach: &BreachRecord) -> Stri
 }
 
 /// Merged rows → entities. The queried identity is never re-emitted as its own
-/// pivot (case-insensitive), and a restated spelling of one value mints once.
+/// pivot (compared case-insensitively and in the entity kind's canonical form, so
+/// `@ada_99`, `ada.99` and a padded query all match row `ada_99`), and a restated
+/// spelling of one value mints once.
 /// **Pure.**
 fn build_entities(data: &StolenTaxData, query: &str, scan_id: &str) -> Vec<Entity> {
     let mut entities = Vec::new();
@@ -848,9 +845,12 @@ fn build_entities(data: &StolenTaxData, query: &str, scan_id: &str) -> Vec<Entit
         (EntityKind::Email, &data.emails),
         (EntityKind::Username, &data.usernames),
     ] {
+        let query_key = normalise(&kind, query);
         for value in values {
+            let key = normalise(&kind, value);
             if value.to_lowercase() == query_lower
-                || !seen.insert((kind.clone(), normalise(&kind, value)))
+                || key == query_key
+                || !seen.insert((kind.clone(), key))
             {
                 continue;
             }
