@@ -38,7 +38,7 @@ use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::recon::ReconTargetKind;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceReach, SourceRun};
 use crate::spf::Mechanism;
 use crate::tags;
 use crate::threat_feeds::{self, Feeds};
@@ -107,7 +107,7 @@ pub fn run<T: Transport + ?Sized + Sync>(
     };
 
     let scan_id = crate::entity::scan_id("domain", &domain);
-    let mut found = Found::default();
+    let mut found = Report::default();
     let mut sections = Vec::new();
 
     if transport.runs_module(CRTSH_SOURCE) {
@@ -118,7 +118,7 @@ pub fn run<T: Transport + ?Sized + Sync>(
     if transport.runs_module(certspotter::SOURCE) {
         let certificates = certspotter::lookup(transport, keys, &domain, &scan_id, now_unix);
         found.entities.extend(certificates.entities);
-        found.leg(certificates.outcome);
+        found.outcomes.push(certificates.outcome);
     }
     let Resolved {
         resolvers_up,
@@ -135,12 +135,12 @@ pub fn run<T: Transport + ?Sized + Sync>(
     let registration = crate::rdap_legs::domain(transport, &domain, &scan_id, now_unix);
     found.entities.extend(registration.entities);
     if let Some(outcome) = registration.outcome {
-        found.leg(outcome);
+        found.outcomes.push(outcome);
     }
     let seen = crate::mnemonic::domain(transport, &domain, &scan_id, now_unix);
     found.entities.extend(seen.entities);
     if let Some(outcome) = seen.outcome {
-        found.leg(outcome);
+        found.outcomes.push(outcome);
     }
     let (listed, rows) = dnsbl::check(transport, Subject::Domain(&domain), &scan_id, now_unix);
     found.entities.extend(listed);
@@ -164,25 +164,24 @@ pub fn run<T: Transport + ?Sized + Sync>(
         &scan_id,
         now_unix,
     );
-    let Found {
+    let Report {
         mut entities,
         outcomes,
-        refused,
-        unanswered,
     } = found;
     merge_by_uid(&mut entities);
     tag_lookalikes(&domain, &mut entities);
 
-    // A source that answered "nothing known" answered: its zero row is the result.
-    let answered = outcomes.iter().any(|o| o.kind.is_accepted());
-    if entities.is_empty() && !answered {
-        return match (refused, unanswered) {
-            (Some(message), _) => DomainRun::Network(message),
-            (None, Some(why)) => {
-                DomainRun::Failed(format!("no source answered for domain {domain}: {why}"))
-            }
-            (None, None) => DomainRun::Failed(format!("no source answered for domain {domain}")),
-        };
+    // A source that answered "nothing known" answered: its zero row is the result, so the lookup
+    // ends from its rows only when it has no entity to show. It reads them through `SourceReach`,
+    // like ip: a request refused before sending is a refusal (exit 77), else no usable response
+    // (exit 69), as the README's exit codes say.
+    let reach = if entities.is_empty() {
+        SourceReach::of(&outcomes)
+    } else {
+        SourceReach::Answered
+    };
+    if let Some(run) = reach.unanswered(&format!("no source answered for domain {domain}")) {
+        return run;
     }
     // Offline, so it never turns a lookup no source answered into a result.
     if let Some(policy) = registry_policy(&domain, &scan_id) {
@@ -274,7 +273,7 @@ fn dns_leg<T: Transport + ?Sized>(
     domain: &str,
     scan_id: &str,
     now_unix: u64,
-    found: &mut Found,
+    found: &mut Report,
     sections: &mut Vec<String>,
 ) -> Resolved {
     if !transport.runs_module(DNS_SOURCE) {
@@ -304,16 +303,8 @@ fn dns_leg<T: Transport + ?Sized>(
         };
     };
     let unfiltered = dns_filter::Unfiltered::from_records(&records);
-    let resolvers_up = match resolver_failure(&records) {
-        Some(failure) => {
-            found.no_response(format!(
-                "dns: no resolver answered ({})",
-                failure.error.detail
-            ));
-            false
-        }
-        None => true,
-    };
+    // The DNS outcome row carries the resolver failure's reason, read like any other row.
+    let resolvers_up = resolver_failure(&records).is_none();
     found.outcomes.push(dns_outcome(&records, now_unix));
     found.entities.extend(dns_entities(&records, scan_id));
     sections.push(records.render());
@@ -329,7 +320,7 @@ fn crtsh_leg<T: Transport + ?Sized>(
     domain: &str,
     scan_id: &str,
     now_unix: u64,
-    found: &mut Found,
+    found: &mut Report,
 ) -> String {
     match crtsh::lookup(transport, ReconTargetKind::Domain, domain, scan_id) {
         Ok(report) => {
@@ -343,25 +334,13 @@ fn crtsh_leg<T: Transport + ?Sized>(
             });
             format!("crtsh: {count} certificate-transparency entities")
         }
-        Err(CrtShError::Refused(reason)) => {
-            let detail = format!("crtsh: request refused: {reason}");
-            found.refused(detail.clone());
-            found.outcomes.push(SourceExecutionOutcome::failed(
-                CRTSH_SOURCE,
-                now_unix,
-                SourceOutcomeKind::RefusedBeforeSending,
-                None,
-                detail,
-            ));
-            format!("crtsh: refused ({reason})")
-        }
         Err(error) => {
-            let message = error.to_string();
-            let kind = match error {
-                CrtShError::NoResponse(kind) => {
-                    found.no_response(message.clone());
-                    kind
-                }
+            // The row carries the reason; `SourceReach` reads a refusal as exit 77 and a
+            // no-response as exit 69. The section line keeps its "refused"/"unavailable" wording.
+            let detail = error.to_string();
+            let kind = match &error {
+                CrtShError::Refused(_) => SourceOutcomeKind::RefusedBeforeSending,
+                CrtShError::NoResponse(kind) => *kind,
                 _ => SourceOutcomeKind::Inconclusive,
             };
             found.outcomes.push(SourceExecutionOutcome::failed(
@@ -369,41 +348,13 @@ fn crtsh_leg<T: Transport + ?Sized>(
                 now_unix,
                 kind,
                 None,
-                &message,
+                &detail,
             ));
-            format!("crtsh: unavailable ({message})")
+            match &error {
+                CrtShError::Refused(reason) => format!("crtsh: refused ({reason})"),
+                _ => format!("crtsh: unavailable ({detail})"),
+            }
         }
-    }
-}
-
-/// What the legs have found so far: their entities, one outcome per leg, the first request the
-/// egress policy refused and the first leg that got no response at all. A lookup where no leg
-/// answered is a refusal (exit 77) when a request was refused, otherwise it fails with the first
-/// reason no leg answered (exit 69), as the README's exit codes say.
-#[derive(Default)]
-struct Found {
-    entities: Vec<Entity>,
-    outcomes: Vec<SourceExecutionOutcome>,
-    refused: Option<String>,
-    unanswered: Option<String>,
-}
-
-impl Found {
-    fn refused(&mut self, message: String) {
-        self.refused.get_or_insert(message);
-    }
-
-    fn no_response(&mut self, message: String) {
-        self.unanswered.get_or_insert(message);
-    }
-
-    /// Record a keyed leg's outcome; one that got no response is remembered as the reason.
-    fn leg(&mut self, outcome: SourceExecutionOutcome) {
-        if outcome.kind.is_transport_failure() {
-            let detail = outcome.detail.as_deref().unwrap_or("no response");
-            self.no_response(format!("{}: {detail}", outcome.module));
-        }
-        self.outcomes.push(outcome);
     }
 }
 
@@ -415,7 +366,7 @@ fn keyed_legs<T: Transport + ?Sized>(
     domain: &str,
     scan_id: &str,
     now_unix: u64,
-    found: &mut Found,
+    found: &mut Report,
 ) {
     if virustotal::API.runs(transport, keys) {
         let api = &virustotal::API;
@@ -430,10 +381,14 @@ fn keyed_legs<T: Transport + ?Sized>(
                 found
                     .entities
                     .extend(virustotal_entities(domain, scan_id, &report));
-                found.leg(SourceExecutionOutcome::success(api.source, now_unix, 1));
+                found
+                    .outcomes
+                    .push(SourceExecutionOutcome::success(api.source, now_unix, 1));
             }
-            Ok(None) => found.leg(SourceExecutionOutcome::valid_zero(api.source, now_unix)),
-            Err(err) => found.leg(err.outcome(api, now_unix)),
+            Ok(None) => found
+                .outcomes
+                .push(SourceExecutionOutcome::valid_zero(api.source, now_unix)),
+            Err(err) => found.outcomes.push(err.outcome(api, now_unix)),
         }
     }
     if hunter::API.runs(transport, keys) {
@@ -445,7 +400,7 @@ fn keyed_legs<T: Transport + ?Sized>(
             now_unix,
             &mut found.entities,
         );
-        found.leg(outcome);
+        found.outcomes.push(outcome);
     }
     let legs = indicator_legs::run(
         transport,
@@ -455,10 +410,8 @@ fn keyed_legs<T: Transport + ?Sized>(
         now_unix,
     );
     found.entities.extend(legs.entities);
+    // Each indicator row carries its own reason; `SourceReach` reads them like the other legs'.
     found.outcomes.extend(legs.outcomes);
-    if let Some(message) = legs.network {
-        found.no_response(message);
-    }
 }
 
 /// The first query that no resolver answered, when the zone answered none of them: neither a
@@ -1626,7 +1579,7 @@ mod tests {
     /// refusal, not the `entitlement_denied` it used to read as.
     #[test]
     fn a_refused_crtsh_leg_is_a_refused_before_sending_row() {
-        let mut found = Found::default();
+        let mut found = Report::default();
         let line = crtsh_leg(&Refusing, "example.com", "scan", 1, &mut found);
         assert!(line.starts_with("crtsh: refused ("), "{line}");
         assert_eq!(found.outcomes.len(), 1);
@@ -1641,10 +1594,6 @@ mod tests {
                 .is_some_and(|d| d.starts_with("crtsh: request refused: ")),
             "{:?}",
             found.outcomes[0].detail
-        );
-        assert_eq!(
-            found.refused.as_deref(),
-            found.outcomes[0].detail.as_deref()
         );
     }
 
