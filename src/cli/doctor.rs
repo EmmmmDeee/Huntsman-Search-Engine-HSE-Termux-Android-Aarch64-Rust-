@@ -22,7 +22,7 @@ use huntsman_recon::exit::{EX_CONFIG, EX_DATAERR, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::http::{TransportConfig, UreqTransport};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::provider_credentials;
-use huntsman_recon::serve_probe::{self, ServeProbe, ServeState};
+use huntsman_recon::serve_probe::{self, AddrSource, ServeProbe, ServeState};
 use huntsman_recon::web_server::DEFAULT_BIND;
 
 pub(super) const DOCTOR_HELP: &str = "doctor [serve] [--fix] [--json] [--probe] [--bind ADDR]
@@ -30,7 +30,7 @@ Check everything that decides whether Huntsman works here, and print the exact c
   --fix        make every repair that can be undone, then check again (same as `fix`)
   --probe      also test each configured key against its provider; this spends quota
   --json       print the report as JSON
-  --bind ADDR  the serve address to probe (default HSE_BIND, else 127.0.0.1:8080)
+  --bind ADDR  the serve address to probe (default HSE_BIND, else the address huntsman start recorded in ~/.huntsman/serve.bind, else 127.0.0.1:8080)
 doctor serve probes only the server: it prints serve=healthy|not_running|foreign|unauthorized|degraded and exits 0 only when healthy, 69 otherwise.
 Exit 0 when no check fails (warnings allowed), 78 when one does.";
 
@@ -105,18 +105,27 @@ pub(super) fn fix_cmd(args: &[String]) -> ExitCode {
     }
 }
 
-/// The serve address: `--bind`, else `HSE_BIND`, else the default. A wildcard bind is probed
-/// on loopback, where the server also listens.
-fn serve_addr(bind: Option<&str>) -> Option<SocketAddr> {
-    let text = bind
-        .map(str::to_owned)
-        .or_else(|| env::var(SERVE_BIND_ENV).ok())
-        .unwrap_or_else(|| DEFAULT_BIND.to_owned());
+/// The serve address and where it came from: `--bind`, else `HSE_BIND`, else the address
+/// `huntsman start` recorded in the state directory, else the default. A wildcard bind is probed
+/// on loopback, where the server also listens. The error names the setting that is not
+/// `HOST:PORT`.
+fn serve_addr(bind: Option<&str>, place: &Place) -> Result<(SocketAddr, AddrSource), String> {
+    let (text, source) = serve_bind(bind, place);
     let text = text.trim();
     let text = text
         .strip_prefix("localhost:")
         .map_or_else(|| text.to_owned(), |port| format!("127.0.0.1:{port}"));
-    let mut addr: SocketAddr = text.parse().ok()?;
+    let Ok(mut addr) = text.parse::<SocketAddr>() else {
+        return Err(match &source {
+            AddrSource::Flag => format!("doctor --bind needs HOST:PORT, not {text:?}"),
+            AddrSource::Env => format!("{SERVE_BIND_ENV} is {text:?}, not HOST:PORT"),
+            AddrSource::File(path) => format!(
+                "{} holds {text:?}, not HOST:PORT; huntsman start rewrites it, or remove it",
+                path.display()
+            ),
+            AddrSource::Default => format!("the default bind {text:?} is not HOST:PORT"),
+        });
+    };
     if addr.ip().is_unspecified() {
         addr.set_ip(if addr.is_ipv4() {
             std::net::Ipv4Addr::LOCALHOST.into()
@@ -124,22 +133,58 @@ fn serve_addr(bind: Option<&str>) -> Option<SocketAddr> {
             std::net::Ipv6Addr::LOCALHOST.into()
         });
     }
-    Some(addr)
+    Ok((addr, source))
+}
+
+/// The bind text and its source, before parsing. The controller's file counts only when it holds
+/// a first line; an empty `HSE_BIND` is unset, as `serve` treats it.
+fn serve_bind(bind: Option<&str>, place: &Place) -> (String, AddrSource) {
+    if let Some(bind) = bind {
+        return (bind.to_owned(), AddrSource::Flag);
+    }
+    if let Some(bind) = env::var(SERVE_BIND_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return (bind, AddrSource::Env);
+    }
+    if let Some(path) = place.serve_bind_file() {
+        let recorded = fs::read_to_string(&path).ok().and_then(|text| {
+            text.lines()
+                .next()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+        });
+        if let Some(bind) = recorded {
+            return (bind, AddrSource::File(path));
+        }
+    }
+    (DEFAULT_BIND.to_owned(), AddrSource::Default)
 }
 
 fn run(options: &Options) -> ExitCode {
-    let Some(addr) = serve_addr(options.bind.as_deref()) else {
-        return fail(EX_USAGE, "doctor --bind needs HOST:PORT");
+    let place = Place::read();
+    let (addr, source) = match serve_addr(options.bind.as_deref(), &place) {
+        Ok(found) => found,
+        // A bad --bind is a usage error; a bad HSE_BIND or serve.bind is the phone's setup.
+        Err(message) => {
+            let code = if options.bind.is_some() {
+                EX_USAGE
+            } else {
+                EX_CONFIG
+            };
+            return fail(code, &message);
+        }
     };
     let token = env::var(SERVE_TOKEN_ENV)
         .ok()
         .filter(|token| !token.trim().is_empty());
-    let probe = serve_probe::probe(addr, token.as_deref(), PROBE_TIMEOUT);
+    let probe = serve_probe::probe(addr, token.as_deref(), PROBE_TIMEOUT, source);
     if options.mode == Mode::ServeOnly {
         return print_serve(&probe, options.json);
     }
 
-    let place = Place::read();
     let host = ProcessHost {
         exe: place.current_exe.clone(),
         tmp: place.tmpdir.clone().unwrap_or_else(env::temp_dir),
@@ -196,11 +241,12 @@ fn print_serve(probe: &ServeProbe, json: bool) -> ExitCode {
         }
     } else {
         println!(
-            "serve={} addr={} version={} ms={}",
+            "serve={} addr={} version={} ms={} bind={}",
             probe.state.as_str(),
             probe.addr,
             probe.version.as_deref().unwrap_or("none"),
-            probe.elapsed_ms
+            probe.elapsed_ms,
+            probe.addr_source
         );
         for problem in &probe.problems {
             println!("problem={problem}");
@@ -243,6 +289,12 @@ impl Place {
             current_exe: env::current_exe().ok(),
             cwd: env::current_dir().ok(),
         }
+    }
+
+    /// The controller's record of the service's address, in the state directory.
+    fn serve_bind_file(&self) -> Option<PathBuf> {
+        doctor::resolve_state_dir(self.home.as_deref(), self.state_dir_override.as_deref())
+            .map(|dir| dir.join(doctor::SERVE_BIND_FILE))
     }
 
     /// Resolve the keys as every command does, probe them live when asked, and run `f` on the

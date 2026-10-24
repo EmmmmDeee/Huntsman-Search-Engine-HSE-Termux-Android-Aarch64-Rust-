@@ -28,7 +28,7 @@ use crate::keys::{
 };
 use crate::ledger::load_chain;
 use crate::provider_credentials::{self, ProbeState, ProviderProbeStatus};
-use crate::serve_probe::{ServeProbe, ServeState};
+use crate::serve_probe::{AddrSource, ServeProbe, ServeState};
 
 /// The repository `install.sh` builds from.
 pub const REPOSITORY: &str =
@@ -42,6 +42,20 @@ pub const FIX: &str = "huntsman-recon fix";
 pub const PROVENANCE_FILE: &str = "installed-revision";
 /// The state directory under `$HOME` when `HUNTSMAN_HOME` is not set.
 pub const STATE_DIR: &str = ".huntsman";
+/// The address `huntsman start` recorded in the state directory when port 8080 was taken. The
+/// service's run script serves there, and `doctor` probes there.
+pub const SERVE_BIND_FILE: &str = "serve.bind";
+/// The runit service the installer sets up under `$PREFIX`, which the Termux controller manages.
+const TERMUX_SERVICE_DIR: &str = "var/service/huntsman-serve";
+
+/// The state directory: `$HUNTSMAN_HOME`, else `~/.huntsman`, as the installer, the controller
+/// and every command resolve it.
+#[must_use]
+pub fn resolve_state_dir(home: Option<&Path>, override_dir: Option<&Path>) -> Option<PathBuf> {
+    override_dir
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|home| home.join(STATE_DIR)))
+}
 /// Where `install.sh` keeps Cargo's build cache when `CARGO_TARGET_DIR` is not set.
 pub const BUILD_CACHE: &str = ".cache/huntsman-recon-target";
 /// The first line of the `CACHEDIR.TAG` Cargo writes into a target directory. A directory
@@ -217,9 +231,7 @@ impl Context<'_> {
     /// `$HUNTSMAN_HOME`, else `~/.huntsman`.
     #[must_use]
     pub fn state_dir(&self) -> Option<PathBuf> {
-        self.state_dir_override
-            .clone()
-            .or_else(|| self.home.as_ref().map(|home| home.join(STATE_DIR)))
+        resolve_state_dir(self.home.as_deref(), self.state_dir_override.as_deref())
     }
 
     fn env_file(&self) -> Option<PathBuf> {
@@ -837,11 +849,29 @@ fn serve(ctx: &Context<'_>) -> Check {
     const ID: &str = "serve";
     let probe = ctx.serve;
     let addr = &probe.addr;
-    let rebind = "huntsman-recon serve --bind 127.0.0.1:8081";
+    // Under the Termux service, runit restarts serve and `huntsman start` records the port it
+    // chose, so the controller's commands are the fixes: a serve started by hand would fight it.
+    let (start, restart, rebind) = if termux_service(ctx) {
+        (
+            "huntsman start",
+            "huntsman restart",
+            "huntsman start (it picks the next free port and records it)",
+        )
+    } else {
+        (
+            "huntsman-recon serve",
+            "stop the running serve (Ctrl-C where it runs), then huntsman-recon serve",
+            "huntsman-recon serve --bind 127.0.0.1:8081",
+        )
+    };
+    let recorded = match &probe.addr_source {
+        AddrSource::File(path) => format!(", the address recorded in {}", path.display()),
+        _ => String::new(),
+    };
     match probe.state {
         ServeState::NotRunning => Check::ok(
             ID,
-            format!("not running on {addr} (start it with huntsman-recon serve)"),
+            format!("not running on {addr}{recorded} (start it with {start})"),
         ),
         ServeState::Healthy => match probe.version.as_deref() {
             Some(version) if version != ctx.version => Check::warn(
@@ -850,7 +880,7 @@ fn serve(ctx: &Context<'_>) -> Check {
                     "{addr} runs version {version}, but this binary is {}: restart serve to use it",
                     ctx.version
                 ),
-                "stop the running serve (Ctrl-C where it runs), then huntsman-recon serve",
+                restart,
             ),
             _ => Check::ok(
                 ID,
@@ -869,7 +899,9 @@ fn serve(ctx: &Context<'_>) -> Check {
         ),
         ServeState::Foreign => Check::fail(
             ID,
-            format!("another program holds {addr}, so huntsman-recon serve cannot start there"),
+            format!(
+                "another program holds {addr}{recorded}, so huntsman-recon serve cannot start there"
+            ),
             rebind,
         ),
         ServeState::Degraded => Check::fail(
@@ -878,9 +910,18 @@ fn serve(ctx: &Context<'_>) -> Check {
                 "running on {addr} but broken: {}",
                 probe.problems.join("; ")
             ),
-            "stop the running serve (Ctrl-C where it runs), then huntsman-recon serve",
+            restart,
         ),
     }
+}
+
+/// Whether the installer set up the runit service the Termux controller manages.
+fn termux_service(ctx: &Context<'_>) -> bool {
+    ctx.termux == TermuxState::Detected
+        && ctx
+            .prefix
+            .as_ref()
+            .is_some_and(|prefix| prefix.join(TERMUX_SERVICE_DIR).is_dir())
 }
 
 fn mib(bytes: u64) -> u64 {
