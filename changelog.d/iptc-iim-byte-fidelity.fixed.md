@@ -1,0 +1,1 @@
+- Preserve undecodable IPTC IIM bytes as bounded hex evidence with full-value SHA-256 and byte count rather than silently replacing non-UTF-8 names and captions. Recognize the IIM 1:90 UTF-8 declaration and explicitly flag undecidable legacy character sets. Add deterministic encoding and malformed-byte regressions; no new dependencies or network access.
