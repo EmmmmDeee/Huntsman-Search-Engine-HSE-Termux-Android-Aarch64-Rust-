@@ -128,6 +128,28 @@ pub fn load() -> Result<Value, String> {
 
 fn field(out: &mut String, key: &str, value: &Value, ids: &BTreeSet<&str>) {
     let _ = write!(out, "<dt>{}</dt><dd>", escape(&readable(key)));
+    // Reference arrays must be traversed as JSON values: serializing the whole array
+    // first turns ["S01"] into a token that cannot match the validated id S01.
+    // Preserve the complete JSON representation, linking only exact known IDs.
+    if ["sources", "related", "links", "resolves", "left", "right"].contains(&key) {
+        if let Some(items) = value.as_array() {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                let serialized = item.to_string();
+                if let Some(id) = item.as_str().filter(|id| ids.contains(*id)) {
+                    let _ = write!(out, "<a href=\"#{id}\">{}</a>", escape(&serialized));
+                } else {
+                    out.push_str(&escape(&serialized));
+                }
+            }
+            out.push(']');
+            out.push_str("</dd>");
+            return;
+        }
+    }
     let value = value
         .as_str()
         .map_or_else(|| value.to_string(), str::to_owned);
@@ -262,6 +284,22 @@ mod tests {
         assert!(html.contains("checked"));
         assert!(html.contains("media_hashed"));
         assert!(html.contains("2 indexed records"));
+    }
+
+    #[test]
+    fn links_array_references_without_dropping_unknown_evidence() {
+        let mut doc = fixture();
+        doc["claims"][0]["sources"] = serde_json::json!([
+            "S01",
+            "S99",
+            {"external": "<unverified>"}
+        ]);
+        doc["claims"][0]["related"] = serde_json::json!(["E01"]);
+        let html = render(&doc).unwrap();
+        assert!(html.contains("href=\"#S01\">&quot;S01&quot;</a>"));
+        assert!(html.contains("href=\"#E01\">&quot;E01&quot;</a>"));
+        assert!(html.contains("&quot;S99&quot;"));
+        assert!(html.contains("&lt;unverified&gt;"));
     }
 
     #[test]
