@@ -19,8 +19,8 @@ fn fixture(label: &str, extension: &str) -> PathBuf {
 fn wigle_mixed_security_is_review_only() {
     let file = fixture("wigle", "jsonl");
     fs::write(&file, concat!(
-        "{\"type\":\"WIFI\",\"name\":\"LabNet\",\"network_id\":\"9C:05:D6:7A:9B:E1\",\"encryption\":\"WPA2\"}\n",
-        "{\"type\":\"WIFI\",\"name\":\"LabNet\",\"network_id\":\"C4:F1:74:6D:8F:E7\",\"encryption\":\"WPA3\"}\n",
+        "{\"type\":\"WIFI\",\"name\":\"LabNet\",\"network_id\":\"02:11:22:33:44:55\",\"encryption\":\"WPA2\"}\n",
+        "{\"type\":\"WIFI\",\"name\":\"LabNet\",\"network_id\":\"02:22:33:44:55:66\",\"encryption\":\"WPA3\"}\n",
         "{\"type\":\"BLE\",\"name\":\"ignored\",\"network_id\":\"10:11:22:33:44:55\"}\n"
     )).unwrap();
     let out = bin()
