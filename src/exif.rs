@@ -33,7 +33,7 @@ pub const EXIF_USAGE: &str = "usage: huntsman-recon exif IMAGE-FILE";
 
 pub const EXIF_HELP: &str = "\
 exif IMAGE-FILE
-Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG, TIFF, WebP and PNG images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved, up to 512 fields shared between the directories so none crowds out another (a file holding more says how many were not kept), each value shown up to 8 KiB and a long list of numbers as whole numbers with its count. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG, TIFF, WebP or PNG image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
+Read the EXIF metadata a camera embeds in a local image, keyless and offline: no network request and no key. JPEG, TIFF, WebP and PNG images are parsed; the EXIF image-file directories (IFD0, the Exif sub-IFD and the GPS IFD) are decoded and every tag is kept as evidence on a document entity for the file, so camera make and model, lens, timestamps, orientation, dimensions and every other field are preserved, up to 512 fields shared between the directories so none crowds out another (a file holding more says how many were not kept), each value shown up to 8 KiB (a longer text ends with a marker naming its whole length) and a long list of numbers as whole numbers with its count. When the GPS IFD holds a position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address -- with altitude and GPS timestamp when present. EXIF can be edited, so the position is the file's embedded claim, not an independently verified location. A file that is not a JPEG, TIFF, WebP or PNG image, or whose EXIF is malformed, is reported as such; a readable image with no EXIF is a clean result with the file's format and size.";
 
 /// The largest image read, in bytes. EXIF sits at the head of the file, but the whole file is read
 /// so a TIFF whose directories point deep into it still parses; a larger file is refused by name.
@@ -61,27 +61,70 @@ const MAX_EXIF_VALUE_BYTES: usize = 8192;
 pub(crate) const MAX_METADATA_FIELDS: usize = 512;
 
 /// Most bytes one field's displayed value may occupy, for both readers. A value rendered longer, such
-/// as an array of thousands of numbers, is truncated for display.
+/// as an array of thousands of numbers or a long text, is cut for display and ends with a marker
+/// saying so ([`cap_value`]), never cut silently.
 pub(crate) const MAX_METADATA_VALUE_BYTES: usize = 8192;
 
-/// `value` trimmed and cut on a char boundary so its rendering is at most
-/// [`MAX_METADATA_VALUE_BYTES`]: a character the report escapes ([`textnorm::is_escaped`]) counts at
-/// the length of its escape, so a value of control bytes cannot render several times the bound.
-/// **Pure.**
+/// `value` trimmed and, when its rendering would exceed [`MAX_METADATA_VALUE_BYTES`], cut on a char
+/// boundary and ended with ` … (N bytes, first M shown)`: `N` the value's whole length and `M` the
+/// bytes kept. The marker counts toward the bound, so a cut value still renders within it, and a cut
+/// is never silent. A character the report escapes ([`textnorm::is_escaped`]) counts at the length
+/// of its escape, so a value of control bytes cannot render several times the bound. **Pure.**
 pub(crate) fn cap_value(value: &str) -> String {
+    cap_value_cut(value).0
+}
+
+/// [`cap_value`], and whether it cut the value. **Pure.**
+pub(crate) fn cap_value_cut(value: &str) -> (String, bool) {
+    cap_value_within(value, value.len(), MAX_METADATA_VALUE_BYTES)
+}
+
+/// [`cap_value_cut`] against a rendering `bound`, for a value that may have been read short of its
+/// whole length `declared` (an EXIF tag's bytes are copied up to [`MAX_EXIF_VALUE_BYTES`]): the
+/// marker then names the declared length, and a short read is marked even when what was read fits.
+/// **Pure.**
+pub(crate) fn cap_value_within(value: &str, declared: usize, bound: usize) -> (String, bool) {
     let value = value.trim();
+    let total = declared.max(value.len());
+    let read_short = total > value.len();
+    if !read_short && rendered_width(value) <= bound {
+        return (value.to_owned(), false);
+    }
+    // The marker is longest when every byte was kept, so this room always leaves it space.
+    let room = bound.saturating_sub(cut_marker(total, total).len());
+    let mut kept = 0usize;
     let mut shown = 0usize;
     for (at, c) in value.char_indices() {
-        shown += if textnorm::is_escaped(c) {
-            c.escape_default().len()
-        } else {
-            c.len_utf8()
-        };
-        if shown > MAX_METADATA_VALUE_BYTES {
-            return value[..at].to_owned();
+        shown += rendered_len(c);
+        if shown > room {
+            break;
         }
+        kept = at + c.len_utf8();
     }
-    value.to_owned()
+    (
+        format!("{}{}", &value[..kept], cut_marker(total, kept)),
+        true,
+    )
+}
+
+/// The bytes `text` occupies in the report, each character at the length of its escape when the
+/// report escapes it. **Pure.**
+pub(crate) fn rendered_width(text: &str) -> usize {
+    text.chars().map(rendered_len).sum()
+}
+
+/// The bytes `c` occupies in the report: its escape when the report escapes it. **Pure.**
+fn rendered_len(c: char) -> usize {
+    if textnorm::is_escaped(c) {
+        c.escape_default().len()
+    } else {
+        c.len_utf8()
+    }
+}
+
+/// The marker a cut value ends with. **Pure.**
+fn cut_marker(total: usize, kept: usize) -> String {
+    format!(" \u{2026} ({total} bytes, first {kept} shown)")
 }
 
 pub type ExifRun = SourceRun<Report>;
@@ -490,6 +533,9 @@ struct Entry {
     typ: u16,
     /// The value bytes (inline or followed to their offset), capped at [`MAX_EXIF_VALUE_BYTES`].
     value: Vec<u8>,
+    /// The bytes the entry declares, which `value` falls short of when the cap applied; a rendering
+    /// of a short read says so rather than passing for the whole value.
+    declared: usize,
 }
 
 /// Decode a TIFF block (the whole TIFF file, or a JPEG's embedded Exif block) into a [`Parsed`].
@@ -598,27 +644,33 @@ fn read_ifd(tiff: &Tiff, offset: usize) -> Vec<Entry> {
         else {
             break;
         };
-        let Some(value) = read_value(tiff, typ, cnt, at + 8) else {
+        let Some((value, declared)) = read_value(tiff, typ, cnt, at + 8) else {
             continue;
         };
-        entries.push(Entry { tag, typ, value });
+        entries.push(Entry {
+            tag,
+            typ,
+            value,
+            declared,
+        });
     }
     entries
 }
 
 /// Copy a tag's value bytes, whether they sit inline in the 4-byte field at `field` or at the
-/// offset those 4 bytes hold. Capped at [`MAX_EXIF_VALUE_BYTES`]. **Pure.**
-fn read_value(tiff: &Tiff, typ: u16, count: u32, field: usize) -> Option<Vec<u8>> {
+/// offset those 4 bytes hold, capped at [`MAX_EXIF_VALUE_BYTES`], with the byte count the entry
+/// declares so a capped copy is known to be short. **Pure.**
+fn read_value(tiff: &Tiff, typ: u16, count: u32, field: usize) -> Option<(Vec<u8>, usize)> {
     let unit = type_size(typ)?;
-    let total = usize::try_from(count).ok()?.checked_mul(unit)?;
-    let total = total.min(MAX_EXIF_VALUE_BYTES);
+    let declared = usize::try_from(count).ok()?.checked_mul(unit)?;
+    let total = declared.min(MAX_EXIF_VALUE_BYTES);
     let bytes = if total <= 4 {
         tiff.slice(field, total)?
     } else {
         let offset = usize::try_from(tiff.u32(field)?).ok()?;
         tiff.slice(offset, total)?
     };
-    Some(bytes.to_vec())
+    Some((bytes.to_vec(), declared))
 }
 
 /// The byte width of one value of TIFF type `typ`, or `None` for an unknown type. **Pure.**
@@ -644,78 +696,114 @@ fn pointer(tiff: &Tiff, entry: &Entry) -> Option<usize> {
 
 // ── value formatting ─────────────────────────────────────────────────────────────────────
 
-/// A human-readable rendering of one entry's value. **Pure.**
+/// A human-readable rendering of one entry's value. A value read short of what the entry declares,
+/// or rendered past the value bound, ends with a marker counting the whole. **Pure.**
 fn named_value(tiff: &Tiff, entry: &Entry) -> String {
+    let declared = |width: usize| entry.declared / width;
     match entry.typ {
-        2 => ascii(&entry.value),
-        3 => numbers(&entry.value, 2, |b| u64::from(read_u16(tiff.endian, b))),
-        4 => numbers(&entry.value, 4, |b| u64::from(read_u32(tiff.endian, b))),
-        5 => rationals(tiff.endian, &entry.value, false),
-        10 => rationals(tiff.endian, &entry.value, true),
+        2 => ascii(&entry.value, entry.declared),
+        3 => numbers(&entry.value, 2, declared(2), |b| {
+            u64::from(read_u16(tiff.endian, b))
+        }),
+        4 => numbers(&entry.value, 4, declared(4), |b| {
+            u64::from(read_u32(tiff.endian, b))
+        }),
+        5 => rationals(tiff.endian, &entry.value, false, declared(8)),
+        10 => rationals(tiff.endian, &entry.value, true, declared(8)),
         // TIFF type 1 (BYTE), 7 (UNDEFINED) and any unknown type fall back to a hex rendering.
-        _ => bytes_hint(&entry.value),
+        _ => bytes_hint(&entry.value, entry.declared),
     }
 }
 
-/// An ASCII value: the bytes up to the first NUL, trimmed, as lossless UTF-8. **Pure.**
-fn ascii(bytes: &[u8]) -> String {
-    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..end]).trim().to_owned()
+/// An ASCII value: the bytes up to the first NUL, trimmed, as lossless UTF-8. When no NUL ends it
+/// and the bytes were read short of the `declared` length, the text ends with a marker naming
+/// that length, so a cut value never passes for the whole. **Pure.**
+fn ascii(bytes: &[u8], declared: usize) -> String {
+    let end = bytes.iter().position(|b| *b == 0);
+    let text = String::from_utf8_lossy(&bytes[..end.unwrap_or(bytes.len())]);
+    let whole = if end.is_none() && declared > bytes.len() {
+        // Every byte so far is text, so the declared byte count is the text's whole length.
+        declared
+    } else {
+        text.trim().len()
+    };
+    cap_value_within(&text, whole, MAX_METADATA_VALUE_BYTES).0
 }
 
-/// A fallback for byte and undefined values: a short hex rendering. **Pure.**
-fn bytes_hint(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .take(16)
-        .map(|b| format!("{b:02x}"))
-        .collect::<Vec<_>>()
-        .join(" ")
+/// A fallback for byte and undefined values: every byte in hex, as many as fit, ending with how
+/// many bytes the entry declares when not all are shown. **Pure.**
+fn bytes_hint(bytes: &[u8], declared: usize) -> String {
+    listed_with(
+        bytes.iter().map(|b| format!("{b:02x}")),
+        declared.max(bytes.len()),
+        " ",
+        "bytes",
+    )
 }
 
-/// A comma-joined list of fixed-width integers read by `read`. **Pure.**
-fn numbers(bytes: &[u8], width: usize, read: impl Fn(&[u8]) -> u64) -> String {
+/// A comma-joined list of fixed-width integers read by `read`, of which the entry declares
+/// `declared` (more than were read when the value cap applied). **Pure.**
+fn numbers(bytes: &[u8], width: usize, declared: usize, read: impl Fn(&[u8]) -> u64) -> String {
     listed(
         bytes
             .chunks_exact(width)
             .map(|chunk| read(chunk).to_string()),
+        declared,
     )
 }
 
 /// `items` joined with `", "`, as many whole ones as fit in [`MAX_METADATA_VALUE_BYTES`]; when some
-/// do not, the text ends with how many there are, so a value is never shown cut part way through.
-/// **Pure.**
-fn listed(items: impl ExactSizeIterator<Item = String>) -> String {
-    let total = items.len();
-    let more = format!(" \u{2026} ({total} values)");
+/// do not, or fewer than the `total` the file declares were read, the text ends with how many there
+/// are, so a value is never shown cut part way through or short without saying so. **Pure.**
+fn listed(items: impl ExactSizeIterator<Item = String>, total: usize) -> String {
+    listed_with(items, total, ", ", "values")
+}
+
+/// [`listed`] with the separator and the noun of the closing count. **Pure.**
+fn listed_with(
+    items: impl ExactSizeIterator<Item = String>,
+    total: usize,
+    separator: &str,
+    noun: &str,
+) -> String {
+    let read = items.len();
+    let total = total.max(read);
+    let more = format!(" \u{2026} ({total} {noun})");
     let mut out = String::new();
     for (at, item) in items.enumerate() {
-        let separator = if at == 0 { 0 } else { 2 };
+        let between = if at == 0 { 0 } else { separator.len() };
         let reserve = if at + 1 < total { more.len() } else { 0 };
-        if out.len() + separator + item.len() + reserve > MAX_METADATA_VALUE_BYTES {
+        if out.len() + between + item.len() + reserve > MAX_METADATA_VALUE_BYTES {
             out.push_str(&more);
             return out;
         }
-        if separator > 0 {
-            out.push_str(", ");
+        if between > 0 {
+            out.push_str(separator);
         }
         out.push_str(&item);
+    }
+    if read < total {
+        out.push_str(&more);
     }
     out
 }
 
-/// A comma-joined list of rationals, each `num/den` or its decimal when it divides evenly. **Pure.**
-fn rationals(endian: Endian, bytes: &[u8], signed: bool) -> String {
-    listed(bytes.chunks_exact(8).map(|chunk| {
-        let (num, den) = read_rational(endian, chunk, signed);
-        if den == 0 {
-            format!("{num}/0")
-        } else if num % den == 0 {
-            (num / den).to_string()
-        } else {
-            format!("{num}/{den}")
-        }
-    }))
+/// A comma-joined list of rationals, each `num/den` or its decimal when it divides evenly, of which
+/// the entry declares `declared`. **Pure.**
+fn rationals(endian: Endian, bytes: &[u8], signed: bool, declared: usize) -> String {
+    listed(
+        bytes.chunks_exact(8).map(|chunk| {
+            let (num, den) = read_rational(endian, chunk, signed);
+            if den == 0 {
+                format!("{num}/0")
+            } else if num % den == 0 {
+                (num / den).to_string()
+            } else {
+                format!("{num}/{den}")
+            }
+        }),
+        declared,
+    )
 }
 
 /// A single rational's numerator and denominator (as `i64` so signed and unsigned share a path).
@@ -770,14 +858,14 @@ fn decode_gps(tiff: &Tiff, offset: usize, fields: &mut Directory) -> Option<GpsF
     for entry in &entries {
         fields.push(gps_tag_name(entry.tag), &named_value(tiff, entry));
         match entry.tag {
-            0x0001 => lat_ref = Some(ascii(&entry.value)),
+            0x0001 => lat_ref = Some(ascii(&entry.value, entry.declared)),
             0x0002 => lat = degrees(tiff.endian, &entry.value, 90.0),
-            0x0003 => lon_ref = Some(ascii(&entry.value)),
+            0x0003 => lon_ref = Some(ascii(&entry.value, entry.declared)),
             0x0004 => lon = degrees(tiff.endian, &entry.value, 180.0),
             0x0005 => altitude_ref = entry.value.first().copied().unwrap_or(0),
             0x0006 => altitude = first_ratio(tiff.endian, &entry.value),
             0x0007 => time = gps_time(tiff.endian, &entry.value),
-            0x001D => date = Some(ascii(&entry.value)),
+            0x001D => date = Some(ascii(&entry.value, entry.declared)),
             _ => {}
         }
     }

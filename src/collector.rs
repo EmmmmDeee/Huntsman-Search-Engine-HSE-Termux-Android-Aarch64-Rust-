@@ -105,6 +105,8 @@ pub enum CollectorError {
     InvalidSelector(String),
     #[error("collection execution failed: {0}")]
     Execution(String),
+    #[error("request refused before sending: {0}")]
+    Refused(String),
     #[error("collector invariant failed: {0}")]
     Invariant(String),
 }

@@ -274,6 +274,15 @@ fn reply(status: u16, headers: &[(&str, &str)], body: &str) -> Response {
     }
 }
 
+/// A blocked egress is a refusal before sending (nothing left for the registry), not a
+/// transport failure like the unrouted registry above.
+#[test]
+fn a_blocked_request_is_refused_before_sending() {
+    let failure = lookup_domain(&crate::test_support::Refusing, "github.com", 1)
+        .expect_err("a blocked request");
+    assert_eq!(failure.kind, SourceOutcomeKind::RefusedBeforeSending);
+}
+
 /// A referral that ends in "not registered" names the registry that said so, not the one that
 /// referred.
 #[test]

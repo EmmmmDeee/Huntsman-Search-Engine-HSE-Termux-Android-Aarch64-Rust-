@@ -500,6 +500,37 @@ fn collect_for_lookup_with_key_runs_and_returns_entities_and_outcome() {
 }
 
 #[test]
+fn collect_for_lookup_over_a_blocked_egress_is_refused_before_sending() {
+    // A blocked egress sends nothing, so the SeekNow leg records a refusal-before-sending row,
+    // not the inconclusive "execution failed" it used to read as.
+    struct Blocked;
+    impl huntsman_recon::http::Transport for Blocked {
+        fn send(
+            &self,
+            _: &huntsman_recon::http::Request,
+        ) -> Result<huntsman_recon::http::Response, huntsman_recon::http::TransportFailure>
+        {
+            Err(huntsman_recon::http::TransportFailure {
+                kind: SourceOutcomeKind::ConnectFailure,
+                detail: "egress-policy: destination (0.0.0.0) is not publicly routable".into(),
+                blocked: true,
+            })
+        }
+    }
+    let leg = collect_for_lookup(&Blocked, EntityKind::Email, "ada@example.com", &keyed(), 1)
+        .expect("a configured, accepted selector runs the leg");
+    assert_eq!(leg.outcomes.len(), 1);
+    let row = &leg.outcomes[0];
+    assert_eq!(row.kind, SourceOutcomeKind::RefusedBeforeSending);
+    assert!(
+        row.reason()
+            .starts_with("seeknow: request refused before sending"),
+        "{}",
+        row.reason()
+    );
+}
+
+#[test]
 fn collect_for_lookup_runs_person_scan_selector() {
     // The headline `scan NAME` path routes to ScanKind::People, which maps to EntityKind::Person.
     // With the key set that selector must run SeekNow like email and username, not sit dead.

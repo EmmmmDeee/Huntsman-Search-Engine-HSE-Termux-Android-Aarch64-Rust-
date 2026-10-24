@@ -365,7 +365,7 @@ pub fn check(
     let read = crate::dns::ask_all(
         &asked,
         |feed| read_feed(transport, feeds.dir.as_deref(), feed, subjects, now_unix),
-        |result| matches!(result, Err((kind, _)) if unreachable(*kind)),
+        |result| matches!(result, Err((kind, _)) if kind.is_transport_failure()),
     );
     let mut entities = Vec::new();
     let mut said = Vec::new();
@@ -402,17 +402,6 @@ struct Read {
     downloaded: bool,
     /// What the row should say about the copy read: why it is old, or why it was not kept.
     note: Option<String>,
-}
-
-fn unreachable(kind: SourceOutcomeKind) -> bool {
-    matches!(
-        kind,
-        SourceOutcomeKind::ConnectFailure
-            | SourceOutcomeKind::DnsFailure
-            | SourceOutcomeKind::TlsFailure
-            | SourceOutcomeKind::TtfbTimeout
-            | SourceOutcomeKind::BodyTimeout
-    )
 }
 
 /// Read `feed` (its copy, or a download) and match `subjects` against it.
@@ -529,7 +518,8 @@ fn download(
         feed.source,
         now_unix,
     )
-    .map_err(|error| (SourceOutcomeKind::Inconclusive, error.to_string()))?;
+    // `fetch` errors only before anything is sent (a blocked egress, an unsendable URL).
+    .map_err(|error| (SourceOutcomeKind::RefusedBeforeSending, error.to_string()))?;
     match fetched.response {
         Some(response) if response.truncated => Err((
             SourceOutcomeKind::ProtocolDrift,
@@ -841,7 +831,12 @@ fn rows(said: &[(&Feed, Result<Read, Failure>)], now_unix: u64) -> Vec<SourceExe
                 .filter_map(|(_, result)| result.as_ref().ok())
                 .map(|read| read.matches.len())
                 .sum();
-            let failure = mine.iter().find_map(|(_, result)| result.as_ref().err());
+            // The source's row is refused only when every feed under it was refused, so take the
+            // first failure that was not a refusal, else the first.
+            let failures = || mine.iter().filter_map(|(_, result)| result.as_ref().err());
+            let failure = failures()
+                .find(|(kind, _)| *kind != SourceOutcomeKind::RefusedBeforeSending)
+                .or_else(|| failures().next());
             let answered = mine.iter().any(|(_, result)| result.is_ok());
             match (listed, failure) {
                 (0, Some((kind, _))) if !answered => {

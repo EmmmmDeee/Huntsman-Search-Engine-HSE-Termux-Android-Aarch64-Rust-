@@ -304,9 +304,12 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <p class="note" id="istatus" role="status">No file inspected.</p>
 <div id="iresult" hidden>
 <div class="panel"><div class="panel-heading">Entities <span class="badge" id="ientities-n"></span></div>
-<div class="table-wrap"><table class="sortable"><thead><tr><th>kind</th><th>value</th><th>Next step</th></tr></thead><tbody id="ientities"></tbody></table></div></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>kind</th><th>value</th><th>confidence</th><th>tags</th><th>observed</th><th>Next step</th></tr></thead><tbody id="ientities"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">What each reader said <span class="badge" id="iclaims-n"></span></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>source</th><th>claim</th><th>recorded</th></tr></thead><tbody id="iclaims"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Embedded fields <span class="badge" id="ifields-n"></span></div>
-<div class="table-wrap"><table class="sortable"><thead><tr><th>source</th><th>field</th><th>value</th></tr></thead><tbody id="ifields"></tbody></table></div></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>source</th><th>field</th><th>value</th><th>recorded</th></tr></thead><tbody id="ifields"></tbody></table></div></div>
+<details><summary>Full report</summary><pre id="ireport"></pre></details>
 </div>
 </section>
 <section id="view-scan" hidden>
@@ -332,7 +335,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel"><div class="panel-heading">Correlations</div><div class="counters"><div class="counter bad"><div class="lab">High</div><div class="val" id="chigh">?</div></div><div class="counter warn"><div class="lab">Medium</div><div class="val" id="cmedium">?</div></div><div class="counter info"><div class="lab">Low</div><div class="val" id="clow">?</div></div><div class="counter ok"><div class="lab">Info</div><div class="val" id="cinfo">?</div></div></div></div>
 </div>
 <div class="panel"><div class="panel-heading">Data Types <span class="badge" id="bars-n"></span></div><div class="bars" id="bars"></div></div>
-<div class="panel"><div class="panel-heading">Sources <span class="badge" id="srcs-n"></span></div><p class="help pad" id="srcs-coverage" role="status"></p><div class="table-wrap"><table class="sortable"><thead><tr><th>Source</th><th>Outcome</th><th>Detail</th></tr></thead><tbody id="srcs"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Sources <span class="badge" id="srcs-n"></span></div><p class="help pad" id="srcs-coverage" role="status"></p><div class="table-wrap"><table class="sortable"><thead><tr><th>Source</th><th>Outcome</th><th>Observed</th><th>Detail</th></tr></thead><tbody id="srcs"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Uncertainty register <span class="badge" id="unc-n"></span> <button class="btn" id="uncdownload" type="button">Save JSON</button> <button class="btn" id="rawdownload" type="button">Save full TXT</button></div><p class="help pad" id="uncnote" role="status"></p><div class="table-wrap"><table><thead><tr><th>Priority</th><th>Uncertainty / source</th><th>Evidence</th><th>Next verification</th></tr></thead><tbody id="uncrows"></tbody></table></div></div>
 </div>
 <div id="pane-correlations" hidden>
@@ -654,12 +657,15 @@ $('inspect').onsubmit=async ev=>{
   if(!file||file.size>64<<20){inspectFailed(file?'Over 64 MiB.':'Choose a file.');return}
   const run=$('irun');run.disabled=true;$('istatus').textContent='Reading…';
   try{
-    const r=await api('/api/inspect?name='+enc(file.name),{method:'POST',body:file}),fields=[],es=r.entities||[];
+    const r=await api('/api/inspect?name='+enc(file.name),{method:'POST',body:file}),fields=[],claims=[],es=r.entities||[];
     inspectLast=r;$('iresult').hidden=false;
-    fill('ientities',es,e=>[e.kind,e.value,e.kind==='coordinates'?button('Investigate',()=>prefill({target:e.value,name:'Location '+e.value,kind:'network',depth:0}),'btn-ghost'):'']);
-    for(const e of es)for(const x of e.evidence||[])for(const kv of Object.entries(x.attributes||{}))fields.push([x.provenance?.source,...kv]);
+    fill('ientities',es,e=>[e.kind,e.value,e.confidence==null?'':Number(e.confidence).toFixed(2),(e.tags||[]).join(' '),when(e.observed_at_unix*1000),e.kind==='coordinates'?button('Investigate',()=>prefill({target:e.value,name:'Location '+e.value,kind:'network',depth:0}),'btn-ghost'):'']);
+    // Every reader's one-line claim about the file, when it recorded it, and each field it kept.
+    for(const e of es)for(const x of e.evidence||[]){const src=x.provenance?.source,at=when(x.provenance?.recorded_at_unix*1000);claims.push([src,x.summary,at]);for(const kv of Object.entries(x.attributes||{}))fields.push([src,...kv,at])}
+    fill('iclaims',claims,c=>c);
     fill('ifields',fields,f=>f);
-    $('istatus').textContent=(r.outcomes||[]).map(o=>o.module+' '+o.kind+(o.detail?': '+o.detail:'')).join(' · ');
+    $('ireport').textContent=r.text||'';
+    $('istatus').textContent=(r.outcomes||[]).map(o=>o.module+' '+o.kind+(o.detail?': '+o.detail:'')+(o.observed_at_unix?' at '+when(o.observed_at_unix*1000):'')).join(' · ');
   }catch(e){inspectFailed(e.message)}
   finally{run.disabled=false}
 };
@@ -704,11 +710,12 @@ async function act1(action,ids){
   const what=ids.length===1?'this scan':ids.length+' scans';
   if(action==='delete'&&!confirm('Delete '+what+' and all of its data?'))return;
   if(action==='stop'&&!confirm('Stop '+what+'? What it found so far is kept.'))return;
-  const where=view==='scan'?'scerror':'serror';let next=null;
-  try{for(const id of ids){const r=await api('/api/scans/'+enc(id)+'/'+action,{method:'POST'});if(r&&r.id&&!next)next=r.id;picked.delete(id)}}
-  catch(e){fail(where,e.message)}
+  const where=view==='scan'?'scerror':'serror';let next=null;const failed=[];
+  // Every chosen scan is attempted; a refusal names its scan and the rest still go ahead.
+  for(const id of ids){try{const r=await api('/api/scans/'+enc(id)+'/'+action,{method:'POST'});if(r&&r.id&&!next)next=r.id;picked.delete(id)}catch(e){failed.push(((scans.find(s=>s.id===id)||{}).name||id)+': '+e.message)}}
+  if(failed.length)fail(where,(ids.length-failed.length)+' of '+ids.length+' done · failed: '+failed.join(' · '));
   if(action==='rerun'&&next&&ids.length===1)location.hash='#/scan/'+enc(next);
-  else if(view==='scan')action==='delete'?location.hash='#/scans':loadScan(true);
+  else if(view==='scan')action==='delete'&&!failed.length?location.hash='#/scans':loadScan(true);
   else loadScans();
 }
 $('sstop').onclick=()=>act1('stop',[...picked].filter(id=>scans.some(s=>s.id===id&&live(s.status))));
@@ -933,7 +940,7 @@ async function summary(){
   $('bars-n').textContent=types.length;
   const src=scan.sources||[];$('srcs-n').textContent=src.length;
   $('srcs-coverage').textContent=coverage(scan.source_execution_summary);
-  fill('srcs',src,o=>[o.module,'',why(o)]);
+  fill('srcs',src,o=>[o.module,'',when(o.observed_at_unix*1000),why(o)]);
   [...$('srcs').rows].forEach((tr,i)=>{const o=src[i];if(o)tr.cells[1].replaceChildren(el('span','label '+(tone[o.outcome]||'bad'),o.outcome))});
   const register=scan.uncertainty_register;
   const unresolved=register?.items||[];
@@ -943,8 +950,8 @@ async function summary(){
     'Uncertainty register unavailable in this scan response.';
   fill('uncrows',unresolved,i=>[
     'P'+i.priority,
-    (i.module?i.module+': ':'')+i.uncertainty,
-    i.evidence_path+(i.observations?' · '+i.observations+' observation(s)'+(i.last_observed_unix?' · last '+when(i.last_observed_unix*1000):''):''),
+    (i.module?i.module+': ':'')+i.uncertainty+(i.category?' · '+i.category:'')+(i.outcome?' · '+i.outcome:''),
+    i.evidence_path+(i.observations?' · '+i.observations+' observation(s)'+(i.first_observed_unix?' · first '+when(i.first_observed_unix*1000):'')+(i.last_observed_unix?' · last '+when(i.last_observed_unix*1000):''):''),
     i.next_action
   ]);
 }
@@ -1126,7 +1133,7 @@ function dropGraph(){stopLayout();if(G){G=null;$('gedges').replaceChildren();$('
 async function graph(){drawGraph(await get('graph',base()+'/graph'),'force')}
 function drawGraph(g,layout){
   stopLayout();
-  const nodes=(g.nodes||[]).map(n=>({id:n.id,type:n.type,data:n.data,x:0,y:0,vx:0,vy:0}));
+  const nodes=(g.nodes||[]).map(n=>({id:n.id,type:n.type,data:n.data,module:n.module,fp:!!n.fp,x:0,y:0,vx:0,vy:0}));
   const at=new Map(nodes.map(n=>[n.id,n])),counts=new Map();
   for(const n of nodes)counts.set(n.type,(counts.get(n.type)||0)+1);
   const types=[...counts.keys()].sort((a,b)=>counts.get(b)-counts.get(a)),cls=new Map(types.map((t,i)=>[t,'g'+i%10]));
@@ -1146,7 +1153,8 @@ function drawGraph(g,layout){
   G={nodes,edges,links,rim,ring,layers:[...layers.values()],k:1,tx:0,ty:0,sel:null};
   svg.setAttribute('aria-label','Graph of '+nodes.length+' data elements and '+edges.length+' links');
   const lg=$('glegend');lg.replaceChildren();
-  for(const t of types.slice(0,20)){const s=el('span'),i=el('i',cls.get(t));s.append(i,t+' ('+counts.get(t)+')');lg.append(s)}
+  for(const t of types){const s=el('span'),i=el('i',cls.get(t));s.append(i,t+' ('+counts.get(t)+')');lg.append(s)}
+  const flagged=nodes.filter(n=>n.fp).length;if(flagged)lg.append(el('span','',flagged+' flagged false positive'));
   $('ginfo').textContent=nodes.length?'Tap an element to see it. Drag to pan, pinch or scroll to zoom, drag an element to move it.':'Insufficient data to produce a graph.';
   arrange(layout);
 }
@@ -1229,7 +1237,7 @@ function pick(n){
   G.sel=n;ring();
   if(!n)return;
   const near=G.edges.filter(([a,b])=>a===n||b===n).length;
-  $('ginfo').textContent=n.type+': '+n.data+' · '+near+' link'+(near===1?'':'s');
+  $('ginfo').textContent=n.type+': '+n.data+(n.module?' · '+n.module:'')+(n.fp?' · false positive':'')+' · '+near+' link'+(near===1?'':'s');
 }
 {
   const pts=new Map();let drag=null,moved=false,pinch=null;

@@ -210,12 +210,12 @@ pub fn lookup<T: Transport + ?Sized>(
     Ok(answers)
 }
 
-/// The leg's entities, its outcome row and, when the lookup failed, why.
+/// The leg's entities and its outcome row. A failed leg's row carries the failure (its kind and
+/// detail), which the lookup reads through [`crate::source_outcome::SourceReach`].
 #[derive(Debug, Default)]
 pub struct Leg {
     pub entities: Vec<Entity>,
     pub outcome: Option<SourceExecutionOutcome>,
-    pub error: Option<LegError>,
 }
 
 /// Passive DNS for `domain`: every record on the domain, each public address its names answered
@@ -260,7 +260,6 @@ fn leg(
             return Leg {
                 entities: Vec::new(),
                 outcome: Some(err.outcome(&API, now_unix)),
-                error: Some(err),
             };
         }
     };
@@ -268,7 +267,6 @@ fn leg(
         return Leg {
             entities: Vec::new(),
             outcome: Some(SourceExecutionOutcome::valid_zero(SOURCE, now_unix)),
-            error: None,
         };
     }
     let mut entities = entities(&answers);
@@ -278,7 +276,6 @@ fn leg(
     Leg {
         entities,
         outcome: Some(outcome),
-        error: None,
     }
 }
 
