@@ -2,11 +2,15 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 use super::*;
+use crate::dehashed::DehashedClient;
+use crate::hibp::rate_limit::RateLimiter;
+use crate::hibp::{ApiKey, Auth, HibpClient, HibpConfig};
 use crate::http::{Request, Response, Transport, TransportFailure};
-use crate::keys::Keys;
+use crate::keys::{Keys, Secret};
 use crate::module::{module_of, reachable_modules, selection};
 use crate::module_selection::Selected;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
+use crate::test_support::{Attempt, Failing, Recording, Refusing, Silent};
 use crate::threat_feeds::Feeds;
 use crate::{
     asn_cli, crypto_cli, domain_cli, email_cli, environment, exposure_cli, ip_cli, netblock_cli,
@@ -111,86 +115,141 @@ fn keys() -> Keys {
     Keys::parse(&text.join("\n")).expect("key lines parse")
 }
 
-/// The rows `kind`'s lookup left over `net`, asking only what `chosen` runs, or why it printed no
-/// report.
+/// How a lookup ended, as `profiles::source_report` maps it to an exit status.
+#[derive(Debug)]
+enum Verdict {
+    /// It printed its report (exit 0), with every row it left.
+    Printed(Vec<SourceExecutionOutcome>),
+    /// A network refusal (`SourceRun::Network`, exit 77), with its reason.
+    Refused(String),
+    /// No usable response (`SourceRun::Failed`, exit 69), with its reason.
+    Unavailable(String),
+}
+
+/// The verdict of a lookup that ends as a [`SourceRun`], reading its report's rows with `rows`.
+fn ended<R>(run: SourceRun<R>, rows: impl FnOnce(R) -> Vec<SourceExecutionOutcome>) -> Verdict {
+    match run {
+        SourceRun::Printed { report, .. } => Verdict::Printed(rows(report)),
+        SourceRun::Network(why) => Verdict::Refused(why),
+        SourceRun::Failed(why) => Verdict::Unavailable(why),
+    }
+}
+
+/// How `kind`'s lookup of `target` ended over `net`, asking only what `chosen` runs, with a key
+/// for every keyed leg.
+fn verdict<N: Transport + Clone + Send + Sync + 'static>(
+    kind: ScanKind,
+    target: &str,
+    chosen: &Selection,
+    net: &N,
+) -> Verdict {
+    let transport = Selected::new(net.clone(), chosen.clone());
+    let feeds = Feeds::new(Box::new(Selected::new(net.clone(), chosen.clone())), None);
+    let keys = keys();
+    match kind {
+        ScanKind::Ip => ended(
+            ip_cli::run(&transport, &keys, &feeds, target, NOW),
+            |report| report.outcomes,
+        ),
+        ScanKind::Domain => ended(
+            domain_cli::run(&transport, &keys, &feeds, target, NOW),
+            |report| report.outcomes,
+        ),
+        ScanKind::Netblock => ended(
+            netblock_cli::run(&transport, &feeds, target, NOW),
+            |report| report.outcomes,
+        ),
+        ScanKind::Asn => ended(asn_cli::run(&transport, target, NOW), |report| {
+            report.outcomes
+        }),
+        ScanKind::Network => ended(
+            network_cli::run(Some((&transport, &keys)), target, NOW),
+            |report| report.outcomes,
+        ),
+        ScanKind::CryptoAddress => ended(crypto_cli::run(&transport, target, NOW), |report| {
+            report.outcomes
+        }),
+        ScanKind::Email => match email_cli::run_keyed(&transport, &keys, target, NOW) {
+            email_cli::EmailRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
+            email_cli::EmailRun::Network(why) => Verdict::Refused(why),
+            email_cli::EmailRun::Failed(why) => Verdict::Unavailable(why),
+        },
+        ScanKind::Username => match username_cli::run(&transport, &keys, target, NOW) {
+            username_cli::UsernameRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
+            username_cli::UsernameRun::Failed(why) => Verdict::Unavailable(why),
+        },
+        ScanKind::Phone => match phone_cli::run_keyed(&transport, &keys, target, NOW) {
+            phone_cli::PhoneRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
+            phone_cli::PhoneRun::Failed(why) => Verdict::Unavailable(why),
+        },
+        ScanKind::People => match people_cli::run(&transport, target, NOW) {
+            people_cli::PeopleRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
+            people_cli::PeopleRun::Network(why) => Verdict::Refused(why),
+            people_cli::PeopleRun::Failed(why) => Verdict::Unavailable(why),
+        },
+        ScanKind::Exposure => exposure(&transport, &keys, target, chosen, net),
+    }
+}
+
+/// The exposure lookup of `target` with every breach leg configured: HIBP and `DeHashed` over
+/// `net` with local pacing off, stolen.tax and `OathNet` over `transport`.
+fn exposure<N: Transport + Clone + Send + Sync + 'static>(
+    transport: &(dyn Transport + Sync),
+    keys: &Keys,
+    target: &str,
+    chosen: &Selection,
+    net: &N,
+) -> Verdict {
+    let key = ApiKey::new("0123456789abcdef0123456789abcdef").expect("a valid HIBP key");
+    let hibp = HibpClient::with_config(
+        Arc::new(net.clone()),
+        Auth::ApiKey(key),
+        HibpConfig::default(),
+        Arc::new(RateLimiter::per_minute(0)),
+    );
+    let secret = Secret::new("dh-test-key-0123456789").unwrap_or_else(|e| panic!("{e}"));
+    let dehashed =
+        DehashedClient::with_limiter(Arc::new(net.clone()), secret, RateLimiter::per_minute(0));
+    let sources = exposure_cli::Sources {
+        hibp: Some(&hibp),
+        stolen_tax: Some((transport, keys)),
+        oathnet: Some((transport, keys)),
+        dehashed: Some(&dehashed),
+        selection: Some(chosen),
+    };
+    match exposure_cli::run(sources, target, NOW) {
+        exposure_cli::ExposureRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
+        exposure_cli::ExposureRun::Network(why) => Verdict::Refused(why),
+        exposure_cli::ExposureRun::Failed(why) => Verdict::Unavailable(why),
+    }
+}
+
+/// The rows `kind`'s lookup of its [`target`] left over `net`, asking only what `chosen` runs, or
+/// why it printed no report.
 fn rows(
     kind: ScanKind,
     chosen: &Selection,
     net: &Everywhere,
 ) -> Result<Vec<SourceExecutionOutcome>, String> {
-    let transport = Selected::new(net.clone(), chosen.clone());
-    let feeds = Feeds::new(Box::new(Selected::new(net.clone(), chosen.clone())), None);
-    let keys = keys();
+    match verdict(kind, target(kind), chosen, net) {
+        Verdict::Printed(rows) => Ok(rows),
+        Verdict::Refused(why) | Verdict::Unavailable(why) => Err(why),
+    }
+}
+
+/// The selector each lookup kind's tests look up.
+const fn target(kind: ScanKind) -> &'static str {
     match kind {
-        ScanKind::Ip => match ip_cli::run(&transport, &keys, &feeds, "93.184.216.34", NOW) {
-            ip_cli::IpRun::Printed { report, .. } => Ok(report.outcomes),
-            ip_cli::IpRun::Network(why) | ip_cli::IpRun::Failed(why) => Err(why),
-        },
-        ScanKind::Domain => {
-            match domain_cli::run(&transport, &keys, &feeds, "huntsman-shop.net", NOW) {
-                domain_cli::DomainRun::Printed { report, .. } => Ok(report.outcomes),
-                domain_cli::DomainRun::Network(why) | domain_cli::DomainRun::Failed(why) => {
-                    Err(why)
-                }
-            }
-        }
-        ScanKind::Netblock => match netblock_cli::run(&transport, &feeds, "93.184.216.0/30", NOW) {
-            netblock_cli::NetblockRun::Printed { report, .. } => Ok(report.outcomes),
-            netblock_cli::NetblockRun::Network(why) | netblock_cli::NetblockRun::Failed(why) => {
-                Err(why)
-            }
-        },
-        ScanKind::Asn => match asn_cli::run(&transport, "AS15133", NOW) {
-            asn_cli::AsnRun::Printed { report, .. } => Ok(report.outcomes),
-            asn_cli::AsnRun::Network(why) | asn_cli::AsnRun::Failed(why) => Err(why),
-        },
-        ScanKind::Email => {
-            match email_cli::run_keyed(&transport, &keys, "ada@huntsman-shop.net", NOW) {
-                email_cli::EmailRun::Printed { report, .. } => Ok(report.outcomes),
-                email_cli::EmailRun::Network(why) | email_cli::EmailRun::Failed(why) => Err(why),
-            }
-        }
-        ScanKind::Username => match username_cli::run(&transport, &keys, "ada_lovelace", NOW) {
-            username_cli::UsernameRun::Printed { report, .. } => Ok(report.outcomes),
-            username_cli::UsernameRun::Failed(why) => Err(why),
-        },
-        ScanKind::Phone => match phone_cli::run_keyed(&transport, &keys, "+61412345678", NOW) {
-            phone_cli::PhoneRun::Printed { report, .. } => Ok(report.outcomes),
-            phone_cli::PhoneRun::Failed(why) => Err(why),
-        },
-        ScanKind::People => match people_cli::run(&transport, "Ada Lovelace", NOW) {
-            people_cli::PeopleRun::Printed { report, .. } => Ok(report.outcomes),
-            people_cli::PeopleRun::Network(why) | people_cli::PeopleRun::Failed(why) => Err(why),
-        },
-        ScanKind::Network => {
-            match network_cli::run(Some((&transport, &keys)), "00:11:22:33:44:55", NOW) {
-                network_cli::NetworkRun::Printed { report, .. } => Ok(report.outcomes),
-                network_cli::NetworkRun::Network(why) | network_cli::NetworkRun::Failed(why) => {
-                    Err(why)
-                }
-            }
-        }
-        ScanKind::CryptoAddress => {
-            match crypto_cli::run(&transport, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", NOW) {
-                crypto_cli::CryptoRun::Printed { report, .. } => Ok(report.outcomes),
-                crypto_cli::CryptoRun::Network(why) | crypto_cli::CryptoRun::Failed(why) => {
-                    Err(why)
-                }
-            }
-        }
-        ScanKind::Exposure => {
-            let sources = exposure_cli::Sources {
-                stolen_tax: Some((&transport, &keys)),
-                oathnet: Some((&transport, &keys)),
-                selection: Some(chosen),
-                ..exposure_cli::Sources::default()
-            };
-            match exposure_cli::run(sources, "ada@huntsman-shop.net", NOW) {
-                exposure_cli::ExposureRun::Printed { report, .. } => Ok(report.outcomes),
-                exposure_cli::ExposureRun::Network(why)
-                | exposure_cli::ExposureRun::Failed(why) => Err(why),
-            }
-        }
+        ScanKind::Ip => "93.184.216.34",
+        ScanKind::Domain => "huntsman-shop.net",
+        ScanKind::Netblock => "93.184.216.0/30",
+        ScanKind::Asn => "AS15133",
+        ScanKind::Email | ScanKind::Exposure => "ada@huntsman-shop.net",
+        ScanKind::Username => "ada_lovelace",
+        ScanKind::Phone => "+61412345678",
+        ScanKind::People => "Ada Lovelace",
+        ScanKind::Network => "00:11:22:33:44:55",
+        ScanKind::CryptoAddress => "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
     }
 }
 
@@ -344,4 +403,273 @@ fn each_module_names_the_lookups_that_ask_it() {
     assert_eq!(lookups_asking("oathnet"), ["email", "exposure", "username"]);
     assert_eq!(lookups_asking("wigle"), ["network"]);
     assert!(lookups_asking("source_registry").is_empty());
+}
+
+/// The network a refusal contract case runs over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Net {
+    /// [`Refusing`]: the egress policy refuses every HTTP request and UDP exchange.
+    Refusing,
+    /// [`Silent`]: no HTTP response, no system resolver answer and no UDP answer.
+    Silent,
+    /// [`Failing`]: every source answers HTTP 500.
+    Failing,
+}
+
+/// The lookups the refusal contract holds. Each ends from its rows: a refusal (exit 77) when a
+/// chosen source was refused before anything was sent, unavailable (exit 69) when it got no
+/// response.
+const IN_SCOPE: [ScanKind; 8] = [
+    ScanKind::Ip,
+    ScanKind::Netblock,
+    ScanKind::Asn,
+    ScanKind::Domain,
+    ScanKind::Email,
+    ScanKind::Username,
+    ScanKind::Exposure,
+    ScanKind::Network,
+];
+
+/// The lookups that do not keep the contract over a network yet, as the first run found them. Each
+/// entry must still break it in at least one case, so the fix that makes a lookup keep it fails
+/// until its entry is deleted: the list only shrinks.
+const PENDING: &[(ScanKind, Net)] = &[
+    (ScanKind::Ip, Net::Refusing),
+    (ScanKind::Netblock, Net::Refusing),
+    (ScanKind::Asn, Net::Refusing),
+    (ScanKind::Domain, Net::Refusing),
+    (ScanKind::Email, Net::Refusing),
+    (ScanKind::Username, Net::Refusing),
+    (ScanKind::Exposure, Net::Refusing),
+    (ScanKind::Network, Net::Refusing),
+    (ScanKind::Ip, Net::Silent),
+    (ScanKind::Netblock, Net::Silent),
+    (ScanKind::Asn, Net::Silent),
+    (ScanKind::Domain, Net::Silent),
+    (ScanKind::Username, Net::Silent),
+    (ScanKind::Exposure, Net::Silent),
+    (ScanKind::Network, Net::Silent),
+];
+
+/// Modules that break the contract over a network for a reason outside their lookup: stolen.tax
+/// reports no response as a path failure that carries no transport kind. Held to the same rule as
+/// [`PENDING`].
+const KNOWN_GAPS: &[(ScanKind, &str, Net)] = &[(ScanKind::Exposure, "stolen_tax", Net::Silent)];
+
+/// The selectors the contract looks up for `kind`. A network lookup takes each selector form that
+/// asks a source; a BSSID is left out, because its OUI row always answers. `ada_lovelace` is no
+/// GitHub login or Bluesky handle, so a username lookup also takes `adalovelace`, which every
+/// profile source asks about.
+fn targets(kind: ScanKind) -> Vec<&'static str> {
+    match kind {
+        ScanKind::Network => vec!["ssid:Cafe Guest", "cell:505:01:17:91", "-27.47,153.02"],
+        ScanKind::Username => vec![target(kind), "adalovelace"],
+        _ => vec![target(kind)],
+    }
+}
+
+/// What `kind`'s lookup of `target` says before its reason when no source answered.
+fn lead(kind: ScanKind, target: &str) -> String {
+    match kind {
+        ScanKind::Ip => format!("no source answered for ip {target}"),
+        ScanKind::Netblock => format!("no source answered for netblock {target}"),
+        ScanKind::Domain => format!("no source answered for domain {target}"),
+        ScanKind::Network => "no source answered the network lookup".to_owned(),
+        _ => format!("no source answered for {target}"),
+    }
+}
+
+/// The module `why` names: past `lead` and its `": "` when it starts with them, the text before
+/// the first `':'`.
+fn named<'a>(why: &'a str, lead: &str) -> &'a str {
+    let why = why
+        .strip_prefix(lead)
+        .and_then(|rest| rest.strip_prefix(": "))
+        .unwrap_or(why);
+    why.split(':').next().unwrap_or(why)
+}
+
+/// One module chosen alone for one target: what it asked, and how its lookup ended.
+#[derive(Debug)]
+struct Case {
+    kind: ScanKind,
+    module: &'static str,
+    target: &'static str,
+    asked: Vec<Attempt>,
+    verdict: Verdict,
+}
+
+impl Case {
+    /// Whether `why` names this case's module, by [`module_of`], so `hibp_account` names `hibp`.
+    fn names_its_module(&self, why: &str) -> bool {
+        module_of(named(why, &lead(self.kind, self.target))) == self.module
+    }
+
+    fn refused_naming_it(&self) -> bool {
+        matches!(&self.verdict, Verdict::Refused(why) if self.names_its_module(why))
+    }
+
+    fn unavailable_naming_it(&self) -> bool {
+        matches!(&self.verdict, Verdict::Unavailable(why) if self.names_its_module(why))
+    }
+
+    const fn refused(&self) -> bool {
+        matches!(self.verdict, Verdict::Refused(_))
+    }
+
+    /// Whether the module sent anything the egress policy can refuse: an HTTP request or a UDP
+    /// exchange. The policy never refuses the system resolver.
+    fn sent(&self) -> bool {
+        self.asked
+            .iter()
+            .any(|attempt| matches!(attempt, Attempt::Http(_) | Attempt::Udp(_)))
+    }
+
+    /// The case on one line, with its first few attempts.
+    fn line(&self) -> String {
+        let first: Vec<&Attempt> = self.asked.iter().take(3).collect();
+        format!(
+            "{:?} {} {:?}: {:?} after {} attempts, first {first:?}",
+            self.kind,
+            self.module,
+            self.target,
+            self.verdict,
+            self.asked.len()
+        )
+    }
+}
+
+/// Close the pacing circuit of every host `asked` sent to. The breaker is shared by the whole
+/// process, so the cases' failures at real hosts would otherwise add up with other tests' and
+/// could pace a later request down.
+fn forget_pacing(asked: &[Attempt]) {
+    let hosts = asked.iter().filter_map(|attempt| match attempt {
+        Attempt::Http(url) => crate::circuit::host_of(url),
+        Attempt::SystemResolver(_) | Attempt::Udp(_) => None,
+    });
+    for host in hosts {
+        crate::circuit::record_success(&host);
+    }
+}
+
+/// Every case over `N`: each lookup in [`IN_SCOPE`], each module on its list that asks anything,
+/// chosen alone, for each of its [`targets`].
+fn cases<N: Transport + Clone + Default + Send + Sync + 'static>() -> Vec<Case> {
+    let mut cases = Vec::new();
+    for kind in IN_SCOPE {
+        for module in modules(kind).into_iter().filter(|module| !offline(module)) {
+            for target in targets(kind) {
+                let net = Recording::new(N::default());
+                let verdict = verdict(kind, target, &Selection::only([module]), &net);
+                let asked = net.attempts();
+                forget_pacing(&asked);
+                cases.push(Case {
+                    kind,
+                    module,
+                    target,
+                    asked,
+                    verdict,
+                });
+            }
+        }
+    }
+    cases
+}
+
+/// Hold every case over `net` to `keeps`, except the lookups [`PENDING`] and the modules
+/// [`KNOWN_GAPS`] list, and hold each entry listed for `net` to still breaking it in at least one
+/// case. On failure the message gives what this run calls for as Rust literals.
+fn ratchet(net: Net, cases: &[Case], keeps: impl Fn(&Case) -> bool) {
+    let broken: Vec<&Case> = cases.iter().filter(|case| !keeps(case)).collect();
+    let unexpected: Vec<String> = broken
+        .iter()
+        .filter(|case| {
+            !PENDING.contains(&(case.kind, net))
+                && !KNOWN_GAPS.contains(&(case.kind, case.module, net))
+        })
+        .map(|case| format!("  {}", case.line()))
+        .collect();
+    let stale_pending = PENDING
+        .iter()
+        .filter(|(kind, listed)| *listed == net && !broken.iter().any(|case| case.kind == *kind))
+        .map(|(kind, _)| format!("  PENDING (ScanKind::{kind:?}, Net::{net:?})"));
+    let stale_gaps = KNOWN_GAPS
+        .iter()
+        .filter(|(kind, module, listed)| {
+            *listed == net
+                && !broken
+                    .iter()
+                    .any(|case| case.kind == *kind && case.module == *module)
+        })
+        .map(|(kind, module, _)| {
+            format!("  KNOWN_GAPS (ScanKind::{kind:?}, {module:?}, Net::{net:?})")
+        });
+    let stale: Vec<String> = stale_pending.chain(stale_gaps).collect();
+    if unexpected.is_empty() && stale.is_empty() {
+        return;
+    }
+    let pending: Vec<String> = IN_SCOPE
+        .iter()
+        .filter(|kind| broken.iter().any(|case| case.kind == **kind))
+        .map(|kind| format!("    (ScanKind::{kind:?}, Net::{net:?}),"))
+        .collect();
+    let mut triples: Vec<String> = broken
+        .iter()
+        .map(|case| {
+            format!(
+                "    (ScanKind::{:?}, {:?}, Net::{net:?}),",
+                case.kind, case.module
+            )
+        })
+        .collect();
+    triples.dedup();
+    panic!(
+        "the refusal contract over Net::{net:?} ran {} cases.\n\
+         {} cases break it that neither PENDING nor KNOWN_GAPS lists:\n{}\n\
+         {} listed entries no case breaks any more; delete them:\n{}\n\
+         Every (kind, net) that breaks it over Net::{net:?}, as PENDING entries:\n&[\n{}\n]\n\
+         Every (kind, module, net) that breaks it over Net::{net:?}:\n&[\n{}\n]",
+        cases.len(),
+        unexpected.len(),
+        unexpected.join("\n"),
+        stale.len(),
+        stale.join("\n"),
+        pending.join("\n"),
+        triples.join("\n"),
+    );
+}
+
+/// A module chosen alone whose requests the egress policy refused is a refusal (exit 77) naming
+/// it. One that asked only the system resolver, which the policy never refuses, got no response
+/// (exit 69) and names it. One that asks nothing alone is never a refusal.
+#[test]
+fn a_module_chosen_alone_and_refused_is_a_refusal_naming_it() {
+    ratchet(Net::Refusing, &cases::<Refusing>(), |case| {
+        if case.asked.is_empty() {
+            !case.refused()
+        } else if case.sent() {
+            case.refused_naming_it()
+        } else {
+            case.unavailable_naming_it()
+        }
+    });
+}
+
+/// A module chosen alone that got no response is unavailable (exit 69) naming it, never a
+/// refusal. One that asks nothing alone is never a refusal.
+#[test]
+fn a_module_chosen_alone_without_a_response_is_unavailable_naming_it() {
+    ratchet(Net::Silent, &cases::<Silent>(), |case| {
+        if case.asked.is_empty() {
+            !case.refused()
+        } else {
+            case.unavailable_naming_it()
+        }
+    });
+}
+
+/// A source that answered, even with an error, was reached, so its lookup is never a refusal.
+#[test]
+fn a_module_whose_source_answered_with_an_error_is_never_a_refusal() {
+    ratchet(Net::Failing, &cases::<Failing>(), |case| !case.refused());
 }

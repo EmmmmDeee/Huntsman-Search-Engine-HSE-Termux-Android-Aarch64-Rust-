@@ -1036,6 +1036,7 @@ mod tests {
 
     use crate::http::{Request, Response, TransportFailure};
     use crate::relation::RelationKind;
+    use crate::test_support::Refusing;
 
     /// `example.com`'s documented IANA addresses: public, so they are real address entities.
     const IPV4: &str = "93.184.215.14";
@@ -1654,18 +1655,5 @@ mod tests {
             run(&zone, &Keys::default(), "example.gov.au", 1),
             DomainRun::Failed(_)
         ));
-    }
-
-    /// Every request refused by the egress policy, as for a host that resolves to 0.0.0.0.
-    struct Refusing;
-
-    impl Transport for Refusing {
-        fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
-            Err(TransportFailure {
-                kind: SourceOutcomeKind::ConnectFailure,
-                detail: "egress-policy: destination (0.0.0.0) is not publicly routable".into(),
-                blocked: true,
-            })
-        }
     }
 }
