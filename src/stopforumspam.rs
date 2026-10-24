@@ -13,6 +13,7 @@ use crate::api_leg::{self, Answer, Api, LegError};
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
+use crate::tags;
 
 pub const SOURCE: &str = "stopforumspam";
 pub const API: Api = Api {
@@ -131,7 +132,7 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
     .opt_attr("last_reported", last.as_deref())
     .opt_attr("confidence", confidence.as_deref())
     .tag("spam-reported")
-    .tag_if(entry.torexit == 1, "tor-exit")
+    .tag_if(entry.torexit == 1, tags::TOR_EXIT)
     .opt_attr("country", country.as_deref())
     .opt_attr("normalized", normalized.as_deref());
     if let Some(asn) = entry.asn.filter(|a| *a > 0) {
@@ -161,7 +162,7 @@ mod tests {
             f.summary,
             "StopForumSpam: the IP address has 91 spam reports, last on 2026-10-13 07:37:12"
         );
-        assert_eq!(f.tags, ["spam-reported", "tor-exit"]);
+        assert_eq!(f.tags, ["spam-reported", tags::TOR_EXIT]);
         assert!(
             f.attrs
                 .iter()

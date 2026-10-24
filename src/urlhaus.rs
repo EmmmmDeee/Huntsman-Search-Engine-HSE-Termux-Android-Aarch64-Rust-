@@ -1,12 +1,14 @@
-//! abuse.ch `URLhaus`: malware-distribution URLs hosted on one IP or domain.
+//! abuse.ch `URLhaus`: malware-distribution URLs hosted on one IPv4 address or domain.
 //!
 //! One lookup is one form `POST https://urlhaus-api.abuse.ch/v1/host/` with `host={indicator}` and
 //! the abuse.ch key in the `Auth-Key` header, run whenever `HUNTSMAN_ABUSECH_KEY` is set (the same
-//! free abuse.ch Auth-Key `ThreatFox` uses). `no_results` is a valid zero; any other status than
-//! `ok` is an error, never a zero. An `ok` answer must name the host it is about and list its URLs;
-//! one that does not is drift, never a finding. Everything an answer lists is kept: every hosted
-//! URL with its id, `URLhaus` page, status, threat, tags, reporter and dates, the host's page and
-//! every blocklist verdict, and the whole answer as `raw_answer`.
+//! free abuse.ch Auth-Key `ThreatFox` uses). The API reference defines `host` as an IPv4 address,
+//! host name or domain name, so the source answers for IPv4 addresses and domains only.
+//! `no_results` is a valid zero; any other status than `ok` is an error, never a zero. An `ok`
+//! answer must name the host it is about and list its URLs; one that does not is drift, never a
+//! finding. Everything an answer lists is kept: every hosted URL with its id, `URLhaus` page,
+//! status, threat, tags, reporter and dates, the host's page and every blocklist verdict, and the
+//! whole answer as `raw_answer`.
 
 use serde::Deserialize;
 
@@ -31,7 +33,7 @@ pub const API: Api = Api {
 };
 pub const INTEL: Source = Source {
     api: &API,
-    kinds: &[IndicatorKind::Ip, IndicatorKind::Domain],
+    kinds: &[IndicatorKind::Ipv4, IndicatorKind::Domain],
     lookup,
 };
 #[derive(Deserialize)]
@@ -130,12 +132,12 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
     let Some(urls) = body.urls else {
         return Err(LegError::Decode("an ok answer lists no urls".into()));
     };
-    let count = match &body.url_count {
-        Some(serde_json::Value::String(s)) => s.parse::<u64>().ok(),
-        Some(serde_json::Value::Number(n)) => n.as_u64(),
-        _ => None,
-    }
-    .unwrap_or(urls.len() as u64);
+    let count = body
+        .url_count
+        .as_ref()
+        .and_then(api_leg::scalar)
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(urls.len() as u64);
     let online = urls
         .iter()
         .filter(|u| u.url_status.as_deref() == Some("online"))
@@ -160,11 +162,11 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
         .flatten()
         .filter_map(|(list, verdict)| Some(format!("{list}: {}", verdict.as_str()?)))
         .collect();
-    let ids = distinct_owned(urls.iter().filter_map(|u| match u.id.as_ref()? {
-        serde_json::Value::String(id) => Some(id.clone()),
-        serde_json::Value::Number(id) => Some(id.to_string()),
-        _ => None,
-    }));
+    let id_text: Vec<String> = urls
+        .iter()
+        .filter_map(|u| u.id.as_ref().and_then(api_leg::scalar))
+        .collect();
+    let ids = distinct(id_text.iter().map(String::as_str));
     let first_added = urls.iter().filter_map(|u| u.date_added.as_deref()).min();
     let mut finding = Finding::new(format!("URLhaus: {count} malware URL(s), {online} online"))
         .attr("url_count", count.to_string())
@@ -195,16 +197,6 @@ pub fn decode(body: &[u8], indicator: Indicator<'_>) -> Result<Option<Finding>, 
     Ok(Some(finding.attr("raw_answer", whole.to_string())))
 }
 
-fn distinct_owned(values: impl Iterator<Item = String>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for value in values {
-        if !out.contains(&value) {
-            out.push(value);
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +214,25 @@ mod tests {
         assert!(f.attrs.contains(&("malware_tags", "doc,emotet".into())));
         assert!(f.attrs.contains(&("blocklists", "spamhaus_dbl".into())));
         assert_eq!(f.tags, [tags::MALICIOUS]);
+    }
+
+    #[test]
+    fn padded_and_blank_ids_and_a_padded_count_read_as_their_values() {
+        let body = r#"{"query_status":"ok","host":"vektorex.com","url_count":" 120 ","urls":[{"id":""},{"id":" 121320 "},{"id":121320}]}"#;
+        let f = decode(body.as_bytes(), Indicator::Domain("vektorex.com"))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("body must decode"));
+        assert!(
+            f.attrs.contains(&("url_ids", "121320".into())),
+            "{:?}",
+            f.attrs
+        );
+        assert!(
+            f.attrs.contains(&("url_count", "120".into())),
+            "{:?}",
+            f.attrs
+        );
     }
 
     #[test]
