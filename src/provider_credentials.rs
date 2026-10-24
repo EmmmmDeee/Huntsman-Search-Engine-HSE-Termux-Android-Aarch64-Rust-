@@ -390,19 +390,6 @@ pub(crate) const SLOT_FALLBACKS: &[(&str, &str)] = &[(
     crate::environment::HIBP_API_KEY_ENV,
 )];
 
-/// A single abuse.ch Auth-Key works for both `ThreatFox` and `URLhaus`.
-/// Each explicitly configured slot takes precedence over its peer.
-const SHARED_AUTH_KEY_FALLBACKS: &[(&str, &str)] = &[
-    (
-        crate::environment::THREATFOX_KEY_ENV,
-        crate::environment::ABUSECH_KEY_ENV,
-    ),
-    (
-        crate::environment::ABUSECH_KEY_ENV,
-        crate::environment::THREATFOX_KEY_ENV,
-    ),
-];
-
 /// Stored credential alone does not establish a runnable lookup integration.
 const CREDENTIAL_ONLY_PROVIDERS: &[&str] = &[
     "Brave Search",
@@ -431,10 +418,9 @@ const UNWIRED_SLOTS: &[&str] = &[
 /// `HIBP_API_KEY` entry, HIBP's own name for the same key.
 #[must_use]
 pub fn secret_for_slot(keys: &Keys, slot: &str) -> Option<Secret> {
-    keys.get(slot).or_else(|| {
+    keys.provider_key(slot).or_else(|| {
         SLOT_FALLBACKS
             .iter()
-            .chain(SHARED_AUTH_KEY_FALLBACKS)
             .find(|(fallback, _)| *fallback == slot)
             .and_then(|(_, alias)| keys.get(alias))
     })
