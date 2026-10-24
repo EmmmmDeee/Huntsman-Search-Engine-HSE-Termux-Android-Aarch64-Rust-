@@ -70,7 +70,9 @@ pub fn decode(body: &[u8]) -> Result<Vec<String>, LegError> {
         .and_then(Value::as_array)
         .ok_or_else(|| LegError::Decode("Exa results array missing".into()))?;
     if results.len() > MAX_RESULTS {
-        return Err(LegError::Decode("Exa returned more results than requested".into()));
+        return Err(LegError::Decode(
+            "Exa returned more results than requested".into(),
+        ));
     }
     let mut seen = BTreeSet::new();
     let mut hits = Vec::with_capacity(results.len());
@@ -112,7 +114,10 @@ mod tests {
 
     impl Transport for Fixed {
         fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-            self.requests.lock().expect("requests").push(request.clone());
+            self.requests
+                .lock()
+                .expect("requests")
+                .push(request.clone());
             Ok(Response {
                 status: self.status,
                 headers: vec![("content-type".into(), "application/json".into())],
@@ -145,7 +150,10 @@ mod tests {
         let requests = transport.requests.lock().expect("requests");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].url, URL);
-        assert_eq!(requests[0].header_value("x-api-key"), Some("TEST_ONLY_EXA_TOKEN"));
+        assert_eq!(
+            requests[0].header_value("x-api-key"),
+            Some("TEST_ONLY_EXA_TOKEN")
+        );
         assert!(String::from_utf8_lossy(&requests[0].body).contains("\"numResults\":5"));
         assert!(!String::from_utf8_lossy(&requests[0].body).contains("TEST_ONLY_EXA_TOKEN"));
     }
