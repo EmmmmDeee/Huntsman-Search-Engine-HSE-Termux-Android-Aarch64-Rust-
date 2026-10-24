@@ -32,7 +32,10 @@ code{font-size:.9em;overflow-wrap:anywhere}small,.muted{color:#c5d1dc}
 
 const GROUPS: [(&str, &str); 6] = [
     ("claims", "Evidence claims"),
-    ("cross_source_correlation", "Correlations and contradictions"),
+    (
+        "cross_source_correlation",
+        "Correlations and contradictions",
+    ),
     ("uncertainties", "Uncertainties and blockers"),
     ("hypotheses", "Competing hypotheses"),
     ("actions", "Verification actions"),
@@ -60,7 +63,9 @@ fn readable(key: &str) -> String {
 
 /// Verify shape and duplicate identifiers without eliminating unknown fields or unmatched leads.
 pub fn validate(document: &Value) -> Result<usize, String> {
-    let object = document.as_object().ok_or("dossier root must be a JSON object")?;
+    let object = document
+        .as_object()
+        .ok_or("dossier root must be a JSON object")?;
     let mut ids = BTreeSet::new();
     let mut total = 0_usize;
     for (key, _) in GROUPS {
