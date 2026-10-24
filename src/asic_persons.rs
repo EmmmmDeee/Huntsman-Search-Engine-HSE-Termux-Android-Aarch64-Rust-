@@ -108,7 +108,9 @@ pub fn lookup<T: Transport + ?Sized>(
                         now_unix,
                         detail.as_str(),
                     ),
-                    _ => SourceExecutionOutcome::inconclusive(spec.module, now_unix, err.to_string()),
+                    _ => {
+                        SourceExecutionOutcome::inconclusive(spec.module, now_unix, err.to_string())
+                    }
                 };
                 hard_failure.get_or_insert(err);
                 (failure, Vec::new())
@@ -146,8 +148,9 @@ pub fn lookup<T: Transport + ?Sized>(
                         .with_http_status(status)
                 }
             } else {
-                let mut found = SourceExecutionOutcome::success(spec.module, now_unix, matched.len())
-                    .with_http_status(status);
+                let mut found =
+                    SourceExecutionOutcome::success(spec.module, now_unix, matched.len())
+                        .with_http_status(status);
                 if let Some(note) = partial {
                     found = found.with_detail(note);
                 }
