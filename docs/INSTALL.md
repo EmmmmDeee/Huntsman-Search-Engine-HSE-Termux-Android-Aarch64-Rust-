@@ -274,7 +274,9 @@ installer now removes that file, and a loopback server ignores
 Port 8080 is also the default of other servers people run in Termux, such as
 code-server and File Browser. When another program holds it, `huntsman start`
 picks the next free port, says which, and keeps using it (it is stored in
-`~/.huntsman/serve.bind`) until 8080 is free again. If the port is taken while
+`~/.huntsman/serve.bind`) until 8080 is free again. `huntsman doctor` reads the
+same file, so it probes the port the service runs on unless `--bind` or
+`HSE_BIND` says otherwise. If the port is taken while
 the service runs, `serve` exits 69 and the service waits a minute before trying
 again instead of retrying every second. To run the server by hand instead, stop
 the service and pass `--bind`:

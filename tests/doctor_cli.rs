@@ -152,6 +152,111 @@ fn doctor_serve_reports_a_real_server_healthy_and_a_stopped_one_not_running() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// `huntsman start` records the port it chose in `~/.huntsman/serve.bind` when 8080 is taken,
+/// and the service runs there. `doctor` reads the same file, so it probes the address the phone
+/// serves on; `--bind` and `HSE_BIND` still win, and `HUNTSMAN_HOME` moves the file with the
+/// state directory.
+#[test]
+fn doctor_serve_reads_the_address_the_termux_controller_recorded() {
+    let home = scratch("serve-bind");
+    let serve = start_serve(&home, "127.0.0.1:0", None);
+    let bind_file = home.join(".huntsman").join("serve.bind");
+    fs::create_dir_all(bind_file.parent().unwrap()).unwrap();
+    fs::write(&bind_file, format!("{}\n", serve.addr)).unwrap();
+    let out = bin(&home).args(["doctor", "serve"]).output().unwrap();
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    assert!(
+        text.starts_with(&format!("serve=healthy addr={} ", serve.addr)),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(" bind={}\n", bind_file.display())),
+        "{text}"
+    );
+
+    // The JSON names the file too.
+    let out = bin(&home)
+        .args(["doctor", "serve", "--json"])
+        .output()
+        .unwrap();
+    let probe: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(probe["addr"], serve.addr, "{probe}");
+    assert_eq!(
+        probe["addr_source"],
+        bind_file.display().to_string(),
+        "{probe}"
+    );
+
+    // HUNTSMAN_HOME moves the state directory, and the file with it.
+    let alt = home.join("alt");
+    fs::create_dir_all(&alt).unwrap();
+    fs::write(alt.join("serve.bind"), format!("{}\n", serve.addr)).unwrap();
+    let out = bin(&home)
+        .env("HUNTSMAN_HOME", &alt)
+        .args(["doctor", "serve"])
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&out).contains(&format!(" bind={}\n", alt.join("serve.bind").display())),
+        "{}",
+        stdout(&out)
+    );
+
+    // --bind and HSE_BIND win over the file. Port 1 on loopback refuses, so it is not running.
+    let out = bin(&home)
+        .args(["doctor", "serve", "--bind", "127.0.0.1:1"])
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&out).starts_with("serve=not_running addr=127.0.0.1:1 ")
+            && stdout(&out).contains(" bind=--bind\n"),
+        "{}",
+        stdout(&out)
+    );
+    let out = bin(&home)
+        .env("HSE_BIND", "127.0.0.1:1")
+        .args(["doctor", "serve"])
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&out).contains(" addr=127.0.0.1:1 ") && stdout(&out).contains(" bind=HSE_BIND\n"),
+        "{}",
+        stdout(&out)
+    );
+
+    // The full report says where the address came from once the server is gone.
+    drop(serve);
+    let out = bin(&home).args(["doctor", "--json"]).output().unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let serve_check = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["id"] == "serve")
+        .unwrap();
+    assert_eq!(serve_check["status"], "ok", "{serve_check}");
+    assert!(
+        serve_check["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("recorded in {}", bind_file.display())),
+        "{serve_check}"
+    );
+
+    // A recorded line that is not HOST:PORT is a configuration error naming the file, exit 78.
+    fs::write(&bind_file, "nonsense\n").unwrap();
+    let out = bin(&home).args(["doctor", "serve"]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(78), "{err}");
+    assert!(
+        err.contains(&bind_file.display().to_string()) && err.contains("huntsman start"),
+        "{err}"
+    );
+    assert_eq!(stdout(&out), "");
+    let _ = fs::remove_dir_all(&home);
+}
+
 /// The phone's service still exports the token an earlier installer wrote. A loopback server
 /// started with it needs none, so `doctor serve` finds it healthy from a shell without it.
 #[test]
