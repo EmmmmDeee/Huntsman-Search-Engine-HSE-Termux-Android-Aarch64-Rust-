@@ -372,14 +372,22 @@ fn reserve_resolver_worker(
     active: &'static std::sync::atomic::AtomicUsize,
     capacity: usize,
 ) -> Option<ResolverWorkerSlot> {
-    active
-        .fetch_update(
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-            |count| (count < capacity).then_some(count + 1),
-        )
-        .ok()
-        .map(|_| ResolverWorkerSlot(active))
+    use std::sync::atomic::Ordering;
+    let mut count = active.load(Ordering::Acquire);
+    loop {
+        if count >= capacity {
+            return None;
+        }
+        match active.compare_exchange_weak(
+            count,
+            count + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return Some(ResolverWorkerSlot(active)),
+            Err(observed) => count = observed,
+        }
+    }
 }
 
 /// Ask the native resolver on a bounded worker thread. Timed-out workers continue to
