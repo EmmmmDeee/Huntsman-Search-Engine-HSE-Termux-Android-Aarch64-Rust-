@@ -60,7 +60,7 @@ pub fn automatic_clusters(
  *
  * Stored resolutions are deserializable and their outcome fields can be altered.
  * Recompute decisions using the existing lineage authority before accepting an
- * AutoMerge; never promote an originally held candidate. Invalid inputs yield
+ * `AutoMerge`; never promote an originally held candidate. Invalid inputs yield
  * singleton clusters rather than unverified unions.
  */
 #[must_use]
