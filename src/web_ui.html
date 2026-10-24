@@ -316,7 +316,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <p class="crumbs"><a class="link" href="#/scans">Scans</a><span aria-hidden="true">›</span><span id="sccrumb"></span></p>
 <div class="head"><h1 id="scname">Scan</h1><span class="label" id="scstatus"></span><span class="spin" id="scspin" hidden></span></div>
 <p class="when" id="scmeta"></p>
-<nav class="tabs" id="sctabs" aria-label="Scan sections"><a class="tab" data-tab="summary">Summary</a><a class="tab" data-tab="correlations">Correlations</a><a class="tab" data-tab="browse">Browse</a><a class="tab" data-tab="graph">Graph</a><a class="tab" data-tab="settings">Scan Settings</a><a class="tab" data-tab="log">Log</a></nav>
+<nav class="tabs" id="sctabs" aria-label="Scan sections"><a class="tab" data-tab="summary">Summary</a><a class="tab" data-tab="correlations">Correlations</a><a class="tab" data-tab="browse">Browse</a><a class="tab" data-tab="graph">Graph</a><a class="tab" data-tab="analysis">Analysis</a><a class="tab" data-tab="settings">Scan Settings</a><a class="tab" data-tab="log">Log</a></nav>
 <div class="toolbar">
 <button class="btn" id="screfresh" type="button">Refresh</button>
 <details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="xlsx">Excel</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button><button type="button" data-format="html">Report</button></div></details>
@@ -356,6 +356,14 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="graph"><svg id="gsvg" role="img" aria-label="Graph of the scan's data elements"><g id="gview"><g id="gedges"></g><g id="gnodes"></g></g></svg></div>
 <p class="when" id="ginfo" role="status"></p>
 <div class="legend" id="glegend"></div>
+</div>
+<div id="pane-analysis" hidden>
+<p class="help" id="anote" role="status"></p>
+<div class="grid2">
+<div class="panel"><div class="panel-heading">Counts</div><dl class="kv" id="acounts"></dl></div>
+<div class="panel"><div class="panel-heading">Limitations</div><dl class="kv" id="alimits"></dl></div>
+</div>
+<div class="panel"><div class="panel-heading">Analysis report</div><p class="help pad">Offline, over the saved entities only: the relations, pivots and coverage derived from what the scan kept, as the server returns them. Refused while the scan runs or once an element is flagged a false positive.</p><div id="areport"></div></div>
 </div>
 <div id="pane-settings" hidden>
 <div class="panel"><div class="panel-heading">Meta Information</div><dl class="kv" id="meta"></dl></div>
@@ -815,7 +823,7 @@ $('newscan').onsubmit=async ev=>{
 };
 // One scan: Spiderfoot's sections over the scan API. Answers are cached for the scan and dropped
 // at each poll while it runs, so a section shows what the scan has found so far.
-const TABS=['summary','correlations','browse','graph','settings','log'];
+const TABS=['summary','correlations','browse','graph','analysis','settings','log'];
 let sid='',scan=null,tab='summary',btype='',cache={},bmode='full',blist=[],polls=0;const fpsel=new Set();
 const base=()=>'/api/scans/'+enc(sid);
 function get(key,path){if(!(key in cache))cache[key]=api(path).catch(e=>{delete cache[key];throw e});return cache[key]}
@@ -854,6 +862,7 @@ async function pane(){
     else if(tab==='correlations')await correlations();
     else if(tab==='browse')await(btype?browseType():browseTypes());
     else if(tab==='graph')await graph();
+    else if(tab==='analysis')await analysis();
     else if(tab==='settings')scanSettings();
     else await logView();
   }catch(e){fail('scerror',e.message)}
@@ -969,7 +978,18 @@ function rawView(x){
   if(x.entity)meta.push('entity '+show(x.entity));
   b.append(el('p','ent-m',meta.join(' · ')),value(x.raw));
   if(PIVOT.has(x.type))b.append(button('New Scan of this',()=>pivot(x),'pivot'));
+  if(x.entity){const a=button('Source attribution',async()=>{a.disabled=true;try{await assess(x,b)}catch(e){a.disabled=false;fail('scerror',e.message)}});b.append(a)}
   return b;
+}
+// /reality for one saved entity: which source families asserted each attribute and with what
+// status, the values that compete, and the server's own limitation statements, verbatim.
+async function assess(x,into){
+  const r=await api(base()+'/reality?uid='+enc(x.entity)),e=r.entity||{},b=el('div','ent-b');
+  b.append(el('p','ent-m',[e.public_label,e.identity_status,e.omitted_assertions?e.omitted_assertions+' assertion(s) omitted':'',e.omitted_evidence?e.omitted_evidence+' evidence record(s) omitted':''].filter(Boolean).join(' · ')));
+  b.append(table(['Attribute','Value','Reported by','Status'],e.assertions||[],a=>{const tr=el('tr');put(tr,'Attribute',a.attribute);put(tr,'Value',el('span','data',a.value));put(tr,'Reported by',(a.reported_source_families||[]).join(', '));put(tr,'Status',a.status);return tr},'No attributed assertions.'));
+  for(const c of e.competing_values||[])b.append(el('p','ent-m',c.attribute+': '+(c.values||[]).join(' vs ')+' · '+c.interpretation));
+  for(const l of [...(e.limitations||[]),r.provider_coverage&&'provider coverage: '+r.provider_coverage,r.independent_source_proof&&'independent source proof: '+r.independent_source_proof,r.source_authenticity&&'source authenticity: '+r.source_authenticity].filter(Boolean))b.append(el('p','help',l));
+  into.append(b);
 }
 function elemRow(x,withType,select){
   const tr=el('tr'),d=el('details','raw'),sum=el('summary');
@@ -1331,6 +1351,16 @@ const clone=s=>s&&prefill({...s.options,name:s.name||s.target,target:s.target,ki
 // Launch a follow-up scan from a typed pivot, preserving depth/use case.
 const PIVOT=new Set(['INTERNET_NAME','DOMAIN_NAME','DOMAIN_NAME_PARENT','AFFILIATE_INTERNET_NAME','AFFILIATE_DOMAIN_NAME','CO_HOSTED_SITE','CO_HOSTED_SITE_DOMAIN','SIMILARDOMAIN','IP_ADDRESS','IPV6_ADDRESS','AFFILIATE_IPADDR','AFFILIATE_IPV6_ADDRESS','NETBLOCK_OWNER','NETBLOCKV6_OWNER','NETBLOCK_MEMBER','NETBLOCKV6_MEMBER','BGP_AS_OWNER','BGP_AS_MEMBER','EMAILADDR','EMAILADDR_GENERIC','AFFILIATE_EMAILADDR','PHONE_NUMBER','USERNAME','HUMAN_NAME','HSE_MAC_ADDRESS','BITCOIN_ADDRESS']);
 const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:'auto',usecase:o.usecase,depth:o.depth})};
+// Spiderfoot has no offline analysis of a saved scan; this is Huntsman's /analyze over the saved
+// entities, shown whole: every count, every stated limitation, and the report as returned. Not
+// cached: a false-positive flag set since must turn it into the server's refusal.
+async function analysis(){
+  const r=await api(base()+'/analyze');
+  $('anote').textContent='Source: '+show(r.source)+' · scan '+show(r.scan&&r.scan.status);
+  kv('acounts',Object.entries(r.counts||{}));
+  kv('alimits',Object.entries(r.limitations||{}).map(([k,v])=>[k,String(v)]));
+  $('areport').replaceChildren(value(r.report));
+}
 function scanSettings(){
   const s=scan,o=s.options||{},list=v=>Array.isArray(v)?v.join(', '):v;
   kv('meta',[['Name',s.name],['Internal ID',s.id],['Target',s.target],['Target type',s.target_type],['Lookup',s.kind],['Created',when(s.created)],['Started',when(s.started)],['Completed',when(s.ended)],['Status',s.status],['Data elements',s.elements]]);
