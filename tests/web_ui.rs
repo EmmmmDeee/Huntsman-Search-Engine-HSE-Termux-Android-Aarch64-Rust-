@@ -1,8 +1,9 @@
 //! The serve page's contracts that hold without a browser: its colours meet WCAG AA in both
 //! themes (text 4.5:1, the graph's node colours 3:1), its light theme follows the system until the
 //! toggle picks one, every scan call carries the lookup header, provider text reaches the page only
-//! as text, it keeps nothing of a scan in the browser, a returning tab asks only for health unless
-//! a scan is running, and it stays within its weight budget. CI also drives the page in a
+//! as text, the outcome labels it colours are the wire labels, it keeps nothing of a scan in the
+//! browser, a returning tab asks only for health unless a scan is running, and it stays within its
+//! weight budget. CI also drives the page in a
 //! phone-sized browser (`tools/web-ui-check`), and the last test here keeps that job in place.
 
 use std::collections::BTreeMap;
@@ -805,6 +806,33 @@ fn a_returning_tab_asks_only_for_health_unless_a_scan_is_running() {
     assert_eq!(health.matches("/api/command").count(), 1, "{health}");
     assert!(health.contains("call('/api/command',{},{method:'HEAD'})"));
     assert!(script.contains("else if(v==='about'&&!detailed)details();"));
+}
+
+#[test]
+fn every_outcome_label_the_page_colours_is_a_wire_label() {
+    let start = PAGE.find("const tone={").expect("the outcome tone map") + "const tone={".len();
+    let end = PAGE[start..].find("};").expect("tone map end") + start;
+    let mut tones = BTreeMap::new();
+    for entry in PAGE[start..end].split(',') {
+        let (label, tone) = entry.split_once(':').expect("label:tone");
+        let tone = tone.trim_matches('\'');
+        assert!(
+            ["ok", "info", "warn"].contains(&tone),
+            "{label}: {tone} (an unlisted label is already 'bad')"
+        );
+        // An unknown label reads as `inconclusive`, so a misspelt key would not read as itself.
+        let kind: SourceOutcomeKind =
+            serde_json::from_value(serde_json::Value::String(label.to_owned()))
+                .expect("a label reads");
+        assert_eq!(kind.as_str(), label, "{label} is not a wire label");
+        tones.insert(label, tone);
+    }
+    assert_eq!(tones.get("success"), Some(&"ok"));
+    // A refused request is the operator's network or guard, not a failed source.
+    assert_eq!(
+        tones.get(SourceOutcomeKind::RefusedBeforeSending.as_str()),
+        Some(&"warn")
+    );
 }
 
 #[test]

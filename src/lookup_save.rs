@@ -631,6 +631,7 @@ mod tests {
             SourceOutcomeKind::SemanticDrift,
             SourceOutcomeKind::ZeroYieldAnomaly,
             SourceOutcomeKind::ConfirmedDead,
+            SourceOutcomeKind::RefusedBeforeSending,
             SourceOutcomeKind::Inconclusive,
         ]
         .map(|kind| serde_json::to_value(kind).unwrap());
@@ -661,6 +662,7 @@ mod tests {
                 "semantic_drift",
                 "zero_yield_anomaly",
                 "confirmed_dead",
+                "refused_before_sending",
                 "inconclusive",
             ]
         );
