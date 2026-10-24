@@ -262,7 +262,12 @@ mod tests {
         assert_eq!(result.status, AssessmentStatus::InsufficientEvidence);
         assert_eq!(result.independent_origins, 0);
         assert!(result.evidence_refs.is_empty());
-        assert!(result.limitations.iter().any(|item| item.contains("Conflicting")));
+        assert!(
+            result
+                .limitations
+                .iter()
+                .any(|item| item.contains("Conflicting"))
+        );
     }
 
     #[test]
