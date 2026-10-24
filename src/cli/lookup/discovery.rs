@@ -9,10 +9,10 @@ use huntsman_recon::clock;
 use huntsman_recon::entity;
 use huntsman_recon::error::Error;
 use huntsman_recon::exa;
-use huntsman_recon::keys::Keys;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::http::{TransportConfig, UreqTransport};
+use huntsman_recon::keys::Keys;
 use huntsman_recon::lookup_report::{entity_row, evidence_rows};
 use huntsman_recon::search::{Document, load_dir, search, tokenize};
 use huntsman_recon::sf_compat::{self, SF_USAGE, SfAction, SfArgs};
@@ -89,7 +89,11 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
         let transport = UreqTransport::new(&TransportConfig::default());
         return match exa::search(&transport, &keys, &query, clock::unix_now()) {
             Ok(urls) => {
-                let outcome = if urls.is_empty() { "valid_zero" } else { "success" };
+                let outcome = if urls.is_empty() {
+                    "valid_zero"
+                } else {
+                    "success"
+                };
                 println!("engine=exa\toutcome={outcome}\tfound={}", urls.len());
                 for url in &urls {
                     println!("exa\t{}\tlead_only", escape_controls(url));
