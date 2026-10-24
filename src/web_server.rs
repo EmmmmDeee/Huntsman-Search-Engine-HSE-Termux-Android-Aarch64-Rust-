@@ -35,7 +35,7 @@ use serde::Serialize;
 use crate::base64;
 use crate::cell_radar::CellScan;
 use crate::engineering_command;
-use crate::entity::Entity;
+use crate::entity::{Entity, EntityKind};
 use crate::error::Error;
 use crate::key_import;
 use crate::keys::{self, Keys};
@@ -44,7 +44,7 @@ use crate::provider_credentials::PROVIDERS;
 use crate::radar::TrackReport;
 use crate::scan_api::ScanApi;
 use crate::scan_route::{self, ScanKind};
-use crate::scan_service::{ScanRequest, ScanService};
+use crate::scan_service::{INSPECT_KIND, LookupOutput, ScanRequest, ScanService, stamp_scan_id};
 use crate::scan_store::{LogLevel, ScanStatus};
 use crate::sha256::sha256;
 use crate::source_outcome::SourceExecutionOutcome;
@@ -1412,7 +1412,7 @@ fn route(
         TRACK_PATH => sensor_response(parsed, routes.track.as_ref(), "radar track", Method::Post),
         "/api/analyze" => analyze_response(parsed, routes.analyze.as_ref()),
         KEYS_PATH => keys_response(parsed, routes.keys_home.as_deref()),
-        INSPECT_PATH => inspect_response(parsed, upload, routes.inspect.as_ref()),
+        INSPECT_PATH => inspect_response(parsed, upload, routes),
         INVESTIGATE_PATH => investigate_response(parsed, routes.investigate.as_ref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
@@ -2016,9 +2016,9 @@ fn investigate_response(
 fn inspect_response(
     parsed: &ParsedRequest<'_>,
     upload: Option<&Upload>,
-    inspect: Option<&Inspect>,
+    routes: &Routes,
 ) -> String {
-    let Some(inspect) = inspect else {
+    let Some(inspect) = routes.inspect.as_ref() else {
         return json_error(404, "file inspection is not enabled on this server");
     };
     if parsed.method != Method::Post {
@@ -2051,12 +2051,18 @@ fn inspect_response(
     };
     let handler = &inspect.handler;
     let body = upload.body.as_slice();
+    let service = routes.scans.as_deref().map(ScanApi::service);
     let outcome = thread::scope(|scope| {
         thread::Builder::new()
             .name("serve-inspect".into())
             .stack_size(INSPECT_STACK_BYTES)
             .spawn_scoped(scope, || {
-                catch_unwind(AssertUnwindSafe(|| handler(&label, body)))
+                catch_unwind(AssertUnwindSafe(|| {
+                    handler(&label, body).map(|report| match service {
+                        Some(service) => keep_inspection(service, &label, report),
+                        None => report,
+                    })
+                }))
             })
             .map(thread::ScopedJoinHandle::join)
     });
@@ -2069,6 +2075,36 @@ fn inspect_response(
         Ok(Ok(Err(_)) | Err(_)) => json_error(500, "inspection failed unexpectedly"),
         Err(_) => json_error(503, "could not start an inspection worker"),
     }
+}
+
+/// The inspection kept as a `FINISHED` scan of the file, named in the report's `scan` and
+/// `status`, with every entity stamped with that scan's id so its provenance names a scan
+/// `/api/scans/ID` reads again. When the store refuses, the report is answered whole all the same,
+/// with a `scans` outcome saying why it was not kept: a full store never costs the file's findings.
+fn keep_inspection(service: &ScanService, label: &str, mut report: LookupReport) -> LookupReport {
+    let found = LookupOutput {
+        text: report.text.clone(),
+        entities: report.entities.clone(),
+        outcomes: report.outcomes.clone(),
+    };
+    match service.keep(
+        label,
+        crate::sf_types::base_type(&EntityKind::Document),
+        INSPECT_KIND,
+        found,
+    ) {
+        Ok(record) => {
+            stamp_scan_id(&mut report.entities, &record.id);
+            report.scan = Some(record.id);
+            report.status = Some(record.status.as_str());
+        }
+        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
+            "scans",
+            crate::clock::unix_now(),
+            format!("not kept as a saved scan: {error}"),
+        )),
+    }
+    report
 }
 
 /// The report label for an upload: the `name` query value, reduced to a file name (no directory),
@@ -4900,6 +4936,136 @@ mod tests {
             let _ = server.run(|_| {});
         });
         (addr, calls)
+    }
+
+    /// With saved scans on, an inspection is kept as a `FINISHED` scan of the file, named in the
+    /// report with every entity stamped with its id: the file's fields are the target's own raw
+    /// evidence, its GPS position the target's child, and the same server's scans API reads it
+    /// back and refuses to run it again, since the bytes were not kept. Without saved scans the
+    /// report says nothing of a scan.
+    #[test]
+    fn an_inspection_with_saved_scans_is_kept_as_a_finished_scan_of_the_file() {
+        use crate::scan_store::ScanStore;
+        let dir =
+            std::env::temp_dir().join(format!("hse-serve-inspect-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lookup: crate::scan_service::ScanLookup = Arc::new(|_, _, _| Err("no lookup".into()));
+        let api = Arc::new(ScanApi::new(
+            ScanService::new(ScanStore::open(&dir).unwrap(), lookup),
+            None,
+        ));
+        let server = Server::bind(ServeConfig::parse("127.0.0.1:0", None).unwrap())
+            .unwrap()
+            .with_inspect(Arc::new(|label: &str, _: &[u8]| Ok(inspected(label))))
+            .with_scans(Arc::clone(&api));
+        let addr = server.local_addr().unwrap();
+        thread::spawn(move || {
+            let _ = server.run(|_| {});
+        });
+        let answer = upload(
+            addr,
+            &inspect_head("holiday.jpg", 4, HEADER),
+            b"\xff\xd8\xff\xd9",
+        );
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        let id = scan_of(&answer);
+        let body: serde_json::Value =
+            serde_json::from_str(&answer[answer.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(body["status"], "FINISHED", "{body}");
+        for entity in body["entities"].as_array().unwrap() {
+            assert_eq!(entity["scan_id"], id, "{entity}");
+            for evidence in entity["evidence"].as_array().unwrap() {
+                assert_eq!(evidence["provenance"]["scan_id"], id, "{evidence}");
+            }
+        }
+        let record = api.service().store().get(&id).unwrap();
+        assert_eq!(
+            (
+                record.status,
+                record.target.as_str(),
+                record.target_type.as_str(),
+                record.kind.as_str()
+            ),
+            (
+                ScanStatus::Finished,
+                "holiday.jpg",
+                "HSE_DOCUMENT",
+                INSPECT_KIND
+            )
+        );
+        assert_eq!(record.modules_run, ["exif"]);
+        let results = api.service().store().results(&id).unwrap().unwrap();
+        let kinds: Vec<(&str, &str)> = results
+            .elements
+            .iter()
+            .map(|element| (element.kind.as_str(), element.data.as_str()))
+            .collect();
+        for wanted in [
+            ("ROOT", "holiday.jpg"),
+            ("HSE_DOCUMENT", "holiday.jpg"),
+            ("PHYSICAL_COORDINATES", "48.850000,2.333333"),
+        ] {
+            assert!(kinds.contains(&wanted), "{wanted:?} in {kinds:?}");
+        }
+        let file = results
+            .elements
+            .iter()
+            .find(|element| element.kind == "HSE_DOCUMENT")
+            .unwrap();
+        assert!(
+            file.raw.to_string().contains("Fixture Camera 2"),
+            "the file's fields are its raw evidence: {}",
+            file.raw
+        );
+        let rerun = upload(
+            addr,
+            &format!(
+                "POST /api/scans/{id}/rerun HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: 0\r\n\r\n"
+            ),
+            b"",
+        );
+        assert!(
+            rerun.starts_with("HTTP/1.1 400") && rerun.contains("inspect the file again"),
+            "{rerun}"
+        );
+        let (plain, _) = inspect_server(None, "127.0.0.1:0");
+        let answer = upload(plain, &inspect_head("a", 1, HEADER), b"x");
+        assert!(
+            answer.starts_with("HTTP/1.1 200") && !answer.contains("\"scan\""),
+            "{answer}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// What `exif` reads from a photo, as the inspection handler answers it.
+    fn inspected(label: &str) -> LookupReport {
+        let provenance = || crate::entity::EvidenceProvenance::new("exif");
+        let document = Entity::builder(crate::entity::EntityKind::Document, label, 0.9, "exif")
+            .evidence(
+                crate::entity::Evidence::new(provenance(), format!("{label} with 2 fields"))
+                    .with_attr("Make", "Fixture Camera 2")
+                    .with_attr("file_sha256", "ab"),
+            )
+            .build();
+        let position = Entity::builder(
+            crate::entity::EntityKind::Coordinates,
+            "48.850000,2.333333",
+            0.9,
+            "exif",
+        )
+        .evidence(
+            crate::entity::Evidence::new(provenance(), "GPS position")
+                .with_attr("GPSLatitude", "48.85"),
+        )
+        .build();
+        LookupReport {
+            route: "inspect",
+            text: format!("{label}: 2 entities\n"),
+            entities: vec![document, position],
+            outcomes: vec![SourceExecutionOutcome::success("exif", 1, 2)],
+            scan: None,
+            status: None,
+        }
     }
 
     /// Send `head` then `body` on one connection and read the whole answer.

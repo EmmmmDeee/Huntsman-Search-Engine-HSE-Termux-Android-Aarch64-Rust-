@@ -1061,3 +1061,24 @@ fn scan_modes_disclose_uncertain_coverage_and_passive_visibility() {
     assert!(!PAGE.contains("every possible piece of information about the target is obtained"));
     assert!(!PAGE.contains("don't want the target to even suspect"));
 }
+
+/// An inspected file is kept as a saved scan when the server keeps scans: the page names that scan
+/// with its status and opens it; when the server keeps none, or refused to keep this one, it says
+/// so rather than nothing.
+#[test]
+fn an_inspected_file_names_the_scan_it_was_kept_as() {
+    let script = inline("script");
+    assert!(PAGE.contains(r#"<p class="note" id="ikept" role="status" hidden></p>"#));
+    assert!(script.contains(
+        "const kept=$('ikept'),refused=(r.outcomes||[]).find(o=>o.module==='scans');kept.hidden=false;kept.replaceChildren();"
+    ));
+    assert!(script.contains(
+        "if(r.scan)kept.append('Kept as scan '+r.scan+(r.status?' ('+r.status+')':'')+' · ',button('Open scan',()=>{location.hash='#/scan/'+enc(r.scan)+'/summary'},'btn-ghost'));"
+    ));
+    assert!(script.contains(
+        "else if(refused)kept.textContent='Not kept as a saved scan: '+(refused.detail||refused.kind);"
+    ));
+    assert!(script.contains(
+        "else kept.textContent='Not kept as a saved scan: this server keeps none (set HOME or HUNTSMAN_HOME).';"
+    ));
+}
