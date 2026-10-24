@@ -9,19 +9,23 @@ use huntsman_recon::mitm_guard::{self, Baseline, Report};
 use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::wifi_radar;
 
-pub(super) const USAGE: &str =
-    "mitm audit [--file WIFI_JSON_OR_WIGLE_JSONL] [--baseline TRUSTED_JSON] [--json]\nWithout --file, read the existing rootless Termux OS-cached Wi-Fi radar; offline --file accepts a Termux scan JSON array or Huntsman-normalized WiGLE JSONL. Baseline JSON format: {\"networks\":[{\"ssid\":\"Office\",\"bssids\":[\"3c:5a:b4:11:22:33\"],\"minimum_security\":\"WPA3\"}]}. This tool only reports unconfirmed indicators; it never forcibly disconnects networks. Remediation requires verifying the authorised access point and making manual Android network settings changes.";
+pub(super) const USAGE: &str = "mitm audit [--file WIFI_JSON_OR_WIGLE_JSONL] [--baseline TRUSTED_JSON] [--json]\nWithout --file, read the existing rootless Termux OS-cached Wi-Fi radar; offline --file accepts a Termux scan JSON array or Huntsman-normalized WiGLE JSONL. Baseline JSON format: {\"networks\":[{\"ssid\":\"Office\",\"bssids\":[\"3c:5a:b4:11:22:33\"],\"minimum_security\":\"WPA3\"}]}. This tool only reports unconfirmed indicators; it never forcibly disconnects networks. Remediation requires verifying the authorised access point and making manual Android network settings changes.";
 
 fn print_text(report: &Report) {
     println!(
         "mitm\tsource={}\tstatus={}\taccess_points={}\trejected={}\tbaseline_supplied={}\tconfirmed={}",
-        report.source, report.status, report.evaluated_access_points,
-        report.rejected_records, report.trusted_baseline_supplied, report.mitm_confirmed
+        report.source,
+        report.status,
+        report.evaluated_access_points,
+        report.rejected_records,
+        report.trusted_baseline_supplied,
+        report.mitm_confirmed
     );
     for finding in &report.findings {
         println!(
             "finding\tseverity={}\tcode={}\tssid={}\tbssid={}\tevidence={}\tresolution={}",
-            finding.severity, finding.code,
+            finding.severity,
+            finding.code,
             escape_controls(&finding.ssid),
             finding.bssid.as_deref().unwrap_or("none"),
             escape_controls(&finding.evidence),

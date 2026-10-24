@@ -82,8 +82,8 @@ pub fn parse_baseline(bytes: &[u8]) -> Result<Baseline, String> {
     if bytes.len() > MAX_BASELINE_BYTES as usize {
         return Err("baseline exceeds 128 KiB".into());
     }
-    let baseline: Baseline = serde_json::from_slice(bytes)
-        .map_err(|e| format!("invalid baseline JSON: {e}"))?;
+    let baseline: Baseline =
+        serde_json::from_slice(bytes).map_err(|e| format!("invalid baseline JSON: {e}"))?;
     if baseline.networks.len() > 512 {
         return Err("baseline contains too many SSIDs".into());
     }
@@ -92,7 +92,8 @@ pub fn parse_baseline(bytes: &[u8]) -> Result<Baseline, String> {
         if n.ssid.is_empty() || n.ssid.len() > 32 || !ssids.insert(n.ssid.as_str()) {
             return Err("baseline SSIDs must be unique and 1..32 bytes".into());
         }
-        if n.bssids.is_empty() || n.bssids.len() > 256
+        if n.bssids.is_empty()
+            || n.bssids.len() > 256
             || n.bssids.iter().any(|s| !valid_wifi_bssid(s))
         {
             return Err("baseline requires 1..256 valid individual BSSIDs per SSID".into());
@@ -141,7 +142,11 @@ pub fn assess(
         if ap.ssid.is_empty() || ap.ssid.len() > 32 || !valid_wifi_bssid(&ap.bssid) {
             continue;
         }
-        by_ssid.entry(&ap.ssid).or_default().entry(&ap.bssid).or_insert(ap);
+        by_ssid
+            .entry(&ap.ssid)
+            .or_default()
+            .entry(&ap.bssid)
+            .or_insert(ap);
     }
     let accepted = by_ssid.values().map(BTreeMap::len).sum::<usize>();
     let mut findings = Vec::new();
@@ -153,8 +158,12 @@ pub fn assess(
         if let Some(policy) = trusted.get(ssid) {
             let minimum = Security::parse(&policy.minimum_security).ordinal();
             for ap in aps.values() {
-                let enrolled = policy.bssids.iter().any(|b| b.eq_ignore_ascii_case(&ap.bssid));
-                let downgrade = minimum.zip(ap.security.ordinal())
+                let enrolled = policy
+                    .bssids
+                    .iter()
+                    .any(|b| b.eq_ignore_ascii_case(&ap.bssid));
+                let downgrade = minimum
+                    .zip(ap.security.ordinal())
                     .is_some_and(|(min, current)| current < min);
                 if downgrade {
                     findings.push(Finding {
@@ -199,8 +208,11 @@ pub fn assess(
 
     // Deterministic ordering makes reports diffable and reproducible.
     findings.sort_by(|a, b| {
-        (a.ssid.as_str(), a.code, a.bssid.as_deref())
-            .cmp(&(b.ssid.as_str(), b.code, b.bssid.as_deref()))
+        (a.ssid.as_str(), a.code, a.bssid.as_deref()).cmp(&(
+            b.ssid.as_str(),
+            b.code,
+            b.bssid.as_deref(),
+        ))
     });
     let status = if accepted == 0 {
         "inconclusive"
@@ -230,13 +242,19 @@ pub fn from_wifi_scan(scan: &WifiScan, baseline: Option<&Baseline>) -> Report {
     // Only an OS-cached observation with a verified boot-relative age may
     // contribute to a current MITM warning; historical WiGLE replay remains
     // available separately and explicitly unverified.
-    let observations: Vec<_> = scan.observations.iter()
+    let observations: Vec<_> = scan
+        .observations
+        .iter()
         .filter(|row| row.freshness == "os_cached")
         .map(|row| AccessPoint {
             ssid: row.sighting.name.clone().unwrap_or_default(),
             bssid: row.sighting.network_id.clone(),
-            security: Security::parse(row.capabilities.as_deref()
-                .or(row.sighting.encryption.as_deref()).unwrap_or("")),
+            security: Security::parse(
+                row.capabilities
+                    .as_deref()
+                    .or(row.sighting.encryption.as_deref())
+                    .unwrap_or(""),
+            ),
             frequency_mhz: row.frequency_mhz,
         })
         .collect();
@@ -267,8 +285,14 @@ pub fn from_wigle_jsonl(bytes: &[u8], baseline: Option<&Baseline>) -> Result<Rep
         if value.get("type").and_then(serde_json::Value::as_str) != Some("WIFI") {
             continue;
         }
-        let name = value.get("name").and_then(serde_json::Value::as_str).unwrap_or("");
-        let bssid = value.get("network_id").and_then(serde_json::Value::as_str).unwrap_or("");
+        let name = value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let bssid = value
+            .get("network_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
         if name.len() > 32 || !valid_wifi_bssid(bssid) {
             rejected += 1;
             continue;
@@ -276,12 +300,23 @@ pub fn from_wigle_jsonl(bytes: &[u8], baseline: Option<&Baseline>) -> Result<Rep
         observations.push(AccessPoint {
             ssid: name.to_owned(),
             bssid: bssid.to_ascii_lowercase(),
-            security: Security::parse(value.get("encryption")
-                .and_then(serde_json::Value::as_str).unwrap_or("")),
-            frequency_mhz: value.get("frequency_mhz").and_then(serde_json::Value::as_i64),
+            security: Security::parse(
+                value
+                    .get("encryption")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(""),
+            ),
+            frequency_mhz: value
+                .get("frequency_mhz")
+                .and_then(serde_json::Value::as_i64),
         });
     }
-    Ok(assess(&observations, baseline, "wigle_jsonl_unverified", rejected))
+    Ok(assess(
+        &observations,
+        baseline,
+        "wigle_jsonl_unverified",
+        rejected,
+    ))
 }
 
 #[cfg(test)]
@@ -289,15 +324,25 @@ mod tests {
     use super::*;
 
     fn ap(ssid: &str, bssid: &str, security: Security) -> AccessPoint {
-        AccessPoint { ssid: ssid.into(), bssid: bssid.into(), security, frequency_mhz: Some(2412) }
+        AccessPoint {
+            ssid: ssid.into(),
+            bssid: bssid.into(),
+            security,
+            frequency_mhz: Some(2412),
+        }
     }
 
     #[test]
     fn mixed_security_is_review_not_proof() {
-        let r = assess(&[
-            ap("Aspley Carsel", "9c:05:d6:7a:9b:e1", Security::Wpa2),
-            ap("Aspley Carsel", "c4:f1:74:6d:8f:e7", Security::Wpa3),
-        ], None, "fixture", 0);
+        let r = assess(
+            &[
+                ap("Aspley Carsel", "9c:05:d6:7a:9b:e1", Security::Wpa2),
+                ap("Aspley Carsel", "c4:f1:74:6d:8f:e7", Security::Wpa3),
+            ],
+            None,
+            "fixture",
+            0,
+        );
         assert!(!r.mitm_confirmed);
         assert_eq!(r.findings.len(), 1);
         assert_eq!(r.findings[0].code, "unverified_ssid_security_variation");
@@ -306,19 +351,29 @@ mod tests {
 
     #[test]
     fn duplicate_name_same_security_is_not_evil_twin() {
-        let r = assess(&[
-            ap("Pretty Fly for a Wifi", "58:04:4f:d9:df:0e", Security::Wpa2),
-            ap("Pretty Fly for a Wifi", "cc:ba:bd:e0:43:56", Security::Wpa2),
-        ], None, "fixture", 0);
+        let r = assess(
+            &[
+                ap("Pretty Fly for a Wifi", "58:04:4f:d9:df:0e", Security::Wpa2),
+                ap("Pretty Fly for a Wifi", "cc:ba:bd:e0:43:56", Security::Wpa2),
+            ],
+            None,
+            "fixture",
+            0,
+        );
         assert!(r.findings.is_empty());
     }
 
     #[test]
     fn trusted_floor_and_unknown_bssid_trigger_findings() {
         let baseline = parse_baseline(br#"{"networks":[{"ssid":"Corp","bssids":["3c:5a:b4:11:22:33"],"minimum_security":"WPA3"}]}"#).unwrap();
-        let r = assess(&[ap("Corp","3c:5a:b4:22:33:44",Security::Wpa2)],Some(&baseline),"fixture",0);
-        assert_eq!(r.findings.len(),1);
-        assert_eq!(r.findings[0].severity,"high");
+        let r = assess(
+            &[ap("Corp", "3c:5a:b4:22:33:44", Security::Wpa2)],
+            Some(&baseline),
+            "fixture",
+            0,
+        );
+        assert_eq!(r.findings.len(), 1);
+        assert_eq!(r.findings[0].severity, "high");
         assert!(!r.mitm_confirmed);
     }
 
@@ -327,8 +382,9 @@ mod tests {
         assert_eq!(Security::parse("Unknown"), Security::Unknown);
         assert_eq!(Security::parse("[ESS]"), Security::Open);
         assert_eq!(Security::parse("[WPA2-PSK][ESS]"), Security::Wpa2);
-        let r = from_wigle_jsonl(br#"{"type":"BLE","network_id":"3c:5a:b4:11:22:33"}"#,None).unwrap();
-        assert_eq!(r.status,"inconclusive");
+        let r =
+            from_wigle_jsonl(br#"{"type":"BLE","network_id":"3c:5a:b4:11:22:33"}"#, None).unwrap();
+        assert_eq!(r.status, "inconclusive");
     }
 
     #[test]
@@ -340,9 +396,9 @@ mod tests {
     #[test]
     fn wigle_data_is_filtered_and_validated() {
         let raw = b"{\"type\":\"WIFI\",\"name\":\"Cafe\",\"network_id\":\"3C:5A:B4:11:22:33\",\"encryption\":\"WPA2\"}\n{\"type\":\"LTE\",\"network_id\":\"cell\"}\n";
-        let r = from_wigle_jsonl(raw,None).unwrap();
-        assert_eq!(r.evaluated_access_points,1);
-        assert_eq!(r.rejected_records,0);
+        let r = from_wigle_jsonl(raw, None).unwrap();
+        assert_eq!(r.evaluated_access_points, 1);
+        assert_eq!(r.rejected_records, 0);
     }
 
     #[test]
@@ -366,8 +422,8 @@ mod tests {
 
     #[test]
     fn no_derived_finding_proves_mitm() {
-        let r = assess(&[],None,"fixture",0);
-        assert_eq!(r.status,"inconclusive");
+        let r = assess(&[], None, "fixture", 0);
+        assert_eq!(r.status, "inconclusive");
         assert!(r.findings.is_empty());
         assert!(!r.mitm_confirmed);
     }
