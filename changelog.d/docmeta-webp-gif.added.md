@@ -1,0 +1,1 @@
+- `docmeta` now recognises WebP and GIF containers by their magic bytes and names them, where both were previously reported as an unknown format, and reads a GIF's Comment Extension blocks as `gif:Comment` provenance fields, keyless and offline with no decompression.

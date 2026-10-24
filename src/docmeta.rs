@@ -4,8 +4,8 @@
 //! the provenance a file carries without anyone meaning to ship it: every XMP metadata packet (the
 //! uncompressed `<x:xmpmeta>` XML block that PDFs, JPEG, TIFF and PNG embed; a PDF carries one for
 //! the document and one per embedded image that kept its own), for a PDF the `/Info` dictionary its
-//! trailer names, and for a PNG its uncompressed textual chunks (`tEXt`, `iTXt`) and modification
-//! time (`tIME`). Author, creator tool, create and modify timestamps, document and instance
+//! trailer names, for a PNG its uncompressed textual chunks (`tEXt`, `iTXt`) and modification
+//! time (`tIME`), and for a GIF its Comment Extension blocks (`gif:Comment`). Author, creator tool, create and modify timestamps, document and instance
 //! identifiers, the edit history (`xmpMM:History` events: action, software agent, time), the
 //! documents a file was derived from (`xmpMM:DerivedFrom`), producer and title are kept as evidence on
 //! a [`EntityKind::Document`] entity for the file, so nothing the metadata states is dropped: a
@@ -15,7 +15,9 @@
 //! `lat,lon` the `geocode` command
 //! reverse-geocodes into an address.
 //!
-//! This complements the `exif` command, which decodes the binary EXIF block; `docmeta` reads the
+//! A WebP or GIF is recognised by its container magic and named as such even when it carries only an
+//! embedded XMP packet (found the same byte-scanned way as in any other container) or, for a GIF, a
+//! comment. This complements the `exif` command, which decodes the binary EXIF block; `docmeta` reads the
 //! XMP packet and PDF dictionary, which `exif` does not. Metadata is editable, so every field is the
 //! file's embedded claim, not an independently verified fact. The scanner is bounds-checked and
 //! allocation-bounded: it searches for the uncompressed metadata only, never decompresses, and caps
@@ -51,7 +53,7 @@ pub const DOCMETA_USAGE: &str = "usage: huntsman-recon docmeta FILE";
 
 pub const DOCMETA_HELP: &str = "\
 docmeta FILE
-Read the metadata a document embeds in itself, keyless and offline: no network request and no key. Every uncompressed XMP metadata packet (the <x:xmpmeta> XML block PDFs, JPEG, TIFF and PNG carry) is flattened field by field, including structured properties such as the xmpMM:History edit events and the xmpMM:DerivedFrom source document, and the /Info dictionary a PDF's trailer names (Title, Author, Subject, Keywords, Creator, Producer, CreationDate, ModDate) is read too, and for a PNG its uncompressed textual chunks (tEXt and iTXt) and modification time (tIME) become png:* fields (compressed chunks and the binary EXIF block, left to the exif command, are not read); an outline bookmark's title is never mistaken for the document's, an encrypted PDF's /Info strings are flagged rather than shown as ciphertext, and when an incremental update replaced or removed an /Info value, the superseded value still stored in the file is reported as info-prior:KEY with pdf:InfoRevisions counting the revisions. Every field is kept as evidence on a document entity for the file, so author, creator tool, create/modify timestamps, edit history, document and instance identifiers and title are preserved; a property stated more than once keeps each distinct value. When the XMP holds a GPS position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address. Metadata is editable, so each field is the file's embedded claim, not an independently verified fact. This complements the exif command, which decodes the binary EXIF block; docmeta reads the XMP packet and PDF dictionary instead. A file with no embedded metadata is a clean result naming its format and size. Office Open XML (.docx, .xlsx, .pptx) keeps its core properties in a deflate-compressed part, which is not read; an embedded XMP packet in such a file is.";
+Read the metadata a document embeds in itself, keyless and offline: no network request and no key. Every uncompressed XMP metadata packet (the <x:xmpmeta> XML block PDFs, JPEG, TIFF and PNG carry) is flattened field by field, including structured properties such as the xmpMM:History edit events and the xmpMM:DerivedFrom source document, and the /Info dictionary a PDF's trailer names (Title, Author, Subject, Keywords, Creator, Producer, CreationDate, ModDate) is read too, and for a PNG its uncompressed textual chunks (tEXt and iTXt) and modification time (tIME) become png:* fields (compressed chunks and the binary EXIF block, left to the exif command, are not read), and a GIF's Comment Extension blocks become gif:Comment fields; an outline bookmark's title is never mistaken for the document's, an encrypted PDF's /Info strings are flagged rather than shown as ciphertext, and when an incremental update replaced or removed an /Info value, the superseded value still stored in the file is reported as info-prior:KEY with pdf:InfoRevisions counting the revisions. Every field is kept as evidence on a document entity for the file, so author, creator tool, create/modify timestamps, edit history, document and instance identifiers and title are preserved; a property stated more than once keeps each distinct value. When the XMP holds a GPS position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address. Metadata is editable, so each field is the file's embedded claim, not an independently verified fact. This complements the exif command, which decodes the binary EXIF block; docmeta reads the XMP packet and PDF dictionary instead. A file with no embedded metadata is a clean result naming its format and size. Office Open XML (.docx, .xlsx, .pptx) keeps its core properties in a deflate-compressed part, which is not read; an embedded XMP packet in such a file is.";
 
 /// The largest file read, in bytes. The whole file is read because a PDF's `/Info` and the XMP
 /// packet can sit anywhere in it; a larger file is refused by name.
@@ -87,6 +89,10 @@ const MAX_INFO_DICT_BYTES: usize = 256 * 1024;
 /// long revision history whole, while a file of countless unclosed `trailer <<` costs at most this
 /// many dictionary scans of [`MAX_INFO_DICT_BYTES`]. A bare word that opens nothing takes no place.
 const MAX_PDF_TRAILERS: usize = 64;
+
+/// Most blocks walked in one GIF's block stream, and most sub-blocks read from one of them. A GIF of
+/// countless empty blocks or an unterminated sub-block chain costs at most this many steps.
+const MAX_GIF_BLOCKS: usize = 4096;
 
 /// The XMP list containers whose `rdf:li` items make up one property's value, with their close tags.
 const XMP_CONTAINERS: [(&str, &str); 3] = [
@@ -163,6 +169,9 @@ pub fn parse(data: &[u8]) -> Parsed {
     }
     if format == "PNG" {
         extract_png_text(data, &mut fields);
+    }
+    if format == "GIF" {
+        extract_gif_comments(data, &mut fields);
     }
     extract_xmp(&xmp_source(data), &mut fields);
     let fields = fields.list;
@@ -324,6 +333,10 @@ fn detect_format(data: &[u8]) -> String {
         "TIFF".to_owned()
     } else if data.starts_with(PNG_SIGNATURE) {
         "PNG".to_owned()
+    } else if data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP") {
+        "WebP".to_owned()
+    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        "GIF".to_owned()
     } else if data.starts_with(b"PK\x03\x04") {
         "ZIP/OOXML".to_owned()
     } else {
@@ -1329,6 +1342,134 @@ fn push_png_field(fields: &mut Fields, keyword: &str, text: String) {
 /// Decode Latin-1 bytes, each byte one code point, to a `String`. **Pure.**
 fn latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| char::from(b)).collect()
+}
+
+// ── GIF ────────────────────────────────────────────────────────────────────────────────────
+
+/// A GIF's Comment Extensions, read keyless and offline: each `0x21 0xFE` block's text becomes a
+/// `gif:Comment` field. Image data is LZW-compressed and is skipped, not inflated; other extensions
+/// and colour tables carry no document metadata and are stepped over. **Pure.**
+fn extract_gif_comments(data: &[u8], fields: &mut Fields) {
+    for comment in gif_comments(data) {
+        if fields.list.len() >= MAX_METADATA_FIELDS {
+            break;
+        }
+        fields.push("gif:Comment", comment);
+    }
+}
+
+/// Every Comment Extension in a GIF's block stream, as Latin-1 text. The header, logical screen
+/// descriptor and optional global colour table are stepped over; each later block is skipped by its
+/// own structure (an image descriptor's local colour table and sub-blocks, an extension's
+/// sub-blocks) so a `0x21 0xFE` inside compressed image data is never mistaken for a comment. A
+/// malformed, truncated or unknown block ends the walk. Bounded by [`MAX_GIF_BLOCKS`]. **Pure.**
+fn gif_comments(data: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    // Header (6 bytes) then the logical screen descriptor (7 bytes); its packed field is byte 10.
+    let Some(packed) = data.get(10).copied() else {
+        return out;
+    };
+    let mut cursor = 13usize;
+    if packed & 0x80 != 0 {
+        cursor += 3 * gif_color_table_entries(packed);
+    }
+    for _ in 0..MAX_GIF_BLOCKS {
+        match data.get(cursor).copied() {
+            // Extension: introducer, label, then a sub-block chain. Only a Comment Extension's bytes
+            // are collected; any other extension is skipped without copying its payload.
+            Some(0x21) => {
+                let label = data.get(cursor + 1).copied();
+                if label == Some(0xFE) {
+                    let (text, next) = gif_sub_blocks(data, cursor + 2);
+                    // A comment is surfaced only when its chain reached the zero-length terminator;
+                    // a chain that ran off the end of the file is truncated evidence, not a complete
+                    // field, so it is dropped rather than promoted.
+                    let Some(next) = next else { break };
+                    if let Some(bytes) = text {
+                        out.push(latin1(&bytes));
+                    }
+                    cursor = next;
+                } else {
+                    let Some(next) = gif_skip_sub_blocks(data, cursor + 2) else {
+                        break;
+                    };
+                    cursor = next;
+                }
+            }
+            // Image descriptor: 9 fixed bytes, a packed byte, an optional local colour table, the
+            // LZW minimum-code-size byte, then an image-data sub-block chain. The compressed image
+            // data is skipped by its lengths, never copied.
+            Some(0x2C) => {
+                let Some(local) = data.get(cursor + 9).copied() else {
+                    break;
+                };
+                let mut at = cursor + 10;
+                if local & 0x80 != 0 {
+                    at += 3 * gif_color_table_entries(local);
+                }
+                at += 1;
+                let Some(next) = gif_skip_sub_blocks(data, at) else {
+                    break;
+                };
+                cursor = next;
+            }
+            // The trailer (0x3B), a malformed byte, or the end of the stream all stop the walk.
+            _ => break,
+        }
+    }
+    out
+}
+
+/// The entry count of a GIF colour table from its owner's packed field: `2^(size+1)`, the low three
+/// bits giving `size`. **Pure.**
+fn gif_color_table_entries(packed: u8) -> usize {
+    1usize << (u32::from(packed & 0x07) + 1)
+}
+
+/// Walk a GIF sub-block chain from `from`: a length byte then that many data bytes, repeating until a
+/// zero-length block. Returns the concatenated data, when any, and the index one past the terminator,
+/// or `None` for the index when the chain is truncated. Bounded by [`MAX_GIF_BLOCKS`]. **Pure.**
+fn gif_sub_blocks(data: &[u8], from: usize) -> (Option<Vec<u8>>, Option<usize>) {
+    let mut cursor = from;
+    let mut collected: Option<Vec<u8>> = None;
+    for _ in 0..MAX_GIF_BLOCKS {
+        let Some(len) = data.get(cursor).copied() else {
+            return (collected, None);
+        };
+        if len == 0 {
+            return (collected, Some(cursor + 1));
+        }
+        let start = cursor + 1;
+        let end = start + usize::from(len);
+        let Some(chunk) = data.get(start..end) else {
+            return (collected, None);
+        };
+        collected
+            .get_or_insert_with(Vec::new)
+            .extend_from_slice(chunk);
+        cursor = end;
+    }
+    (collected, None)
+}
+
+/// Advance past a GIF sub-block chain from `from` without collecting it, used for image data and
+/// non-comment extensions so a frame's compressed bytes are never copied. Returns the index one past
+/// the zero-length terminator, or `None` when the chain runs off the end of the file. Bounded by
+/// [`MAX_GIF_BLOCKS`]. **Pure.**
+fn gif_skip_sub_blocks(data: &[u8], from: usize) -> Option<usize> {
+    let mut cursor = from;
+    for _ in 0..MAX_GIF_BLOCKS {
+        let len = data.get(cursor).copied()?;
+        if len == 0 {
+            return Some(cursor + 1);
+        }
+        cursor = cursor + 1 + usize::from(len);
+        // A sub-block whose data extends past the end of the file is a truncated chain.
+        if cursor > data.len() {
+            return None;
+        }
+    }
+    None
 }
 
 // ── bytes ──────────────────────────────────────────────────────────────────────────────────
