@@ -181,6 +181,44 @@ pub struct Report {
     pub limitations: Vec<&'static str>,
 }
 
+type Decision = (&'static str, &'static str, &'static str);
+
+/// Map a single observed network to a bounded advisory; no binary attack verdict.
+fn classify_deviation(
+    anchors: &BTreeMap<&str, Security>,
+    bssid: &str,
+    observed: Security,
+) -> Option<Decision> {
+    match anchors.get(bssid) {
+        Some(_) if observed == Security::Unknown => Some((
+            "security_unavailable",
+            "review",
+            "Inspect the access point's current security configuration from its trusted management interface.",
+        )),
+        Some(expected) if expected.protected() && !observed.protected() => Some((
+            "security_downgrade",
+            "high",
+            "Avoid joining this SSID until the approved router configuration and BSSID are verified.",
+        )),
+        Some(expected) if **expected != observed => Some((
+            "security_changed",
+            "review",
+            "Verify whether the network administrator changed its authentication or transition-mode configuration.",
+        )),
+        Some(_) => None,
+        None if observed == Security::Open && anchors.values().any(|s| s.protected()) => Some((
+            "unrecognized_open_ap",
+            "high",
+            "Do not join the open network with this name; confirm the BSSID with the trusted network administrator.",
+        )),
+        None => Some((
+            "unrecognized_bssid",
+            "review",
+            "Compare the BSSID to the approved access-point inventory; mesh nodes or new radios may be legitimate.",
+        )),
+    }
+}
+
 /// Check only exact SSID matches. One scan is NOT a time-series, and
 /// unrecognised BSSIDs in enterprise/mesh networks are commonplace.
 /// Never classify a network as a confirmed MITM from these observations.
@@ -216,46 +254,11 @@ pub fn assess(scan: &WifiScan, baseline: &TrustedBaseline) -> Result<Report, Str
         seen.entry(bssid.clone())
             .or_default()
             .insert(format!("{observed:?}"));
-        let (kind, severity, action) = match anchors.get(bssid.as_str()) {
-            Some(expected) => {
-                trusted_seen.insert(bssid.clone());
-                if observed == Security::Unknown {
-                    (
-                        "security_unavailable",
-                        "review",
-                        "Inspect the access point's current security configuration from its trusted management interface.",
-                    )
-                } else if expected.protected() && !observed.protected() {
-                    (
-                        "security_downgrade",
-                        "high",
-                        "Avoid joining this SSID until the approved router configuration and BSSID are verified.",
-                    )
-                } else if expected != &observed {
-                    (
-                        "security_changed",
-                        "review",
-                        "Verify whether the network administrator changed its authentication or transition-mode configuration.",
-                    )
-                } else {
-                    continue;
-                }
-            }
-            None => {
-                if observed == Security::Open && anchors.values().any(|s| s.protected()) {
-                    (
-                        "unrecognized_open_ap",
-                        "high",
-                        "Do not join the open network with this name; confirm the BSSID with the trusted network administrator.",
-                    )
-                } else {
-                    (
-                        "unrecognized_bssid",
-                        "review",
-                        "Compare the BSSID to the approved access-point inventory; mesh nodes or new radios may be legitimate.",
-                    )
-                }
-            }
+        if anchors.contains_key(bssid.as_str()) {
+            trusted_seen.insert(bssid.clone());
+        }
+        let Some((kind, severity, action)) = classify_deviation(&anchors, &bssid, observed) else {
+            continue;
         };
         findings.push(Finding {
             kind,
