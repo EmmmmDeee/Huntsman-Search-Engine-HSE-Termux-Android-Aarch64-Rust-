@@ -1216,6 +1216,8 @@ fn route(
             | "/api/command"
             | "/api/lookup"
             | "/api/analyze"
+            | "/api/evidence"
+            | "/evidence"
             | "/api/radar/wifi"
             | KEYS_PATH
             | INSPECT_PATH
@@ -1264,6 +1266,8 @@ fn route(
         "/api/lookup" => lookup_response(parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
         "/api/radar/wifi" => radar_response(parsed, routes.radar.as_ref()),
         "/api/analyze" => analyze_response(parsed, routes.analyze.as_ref()),
+        "/evidence" => dossier_page_response(parsed, config),
+        "/api/evidence" => dossier_json_response(parsed, config),
         KEYS_PATH => keys_response(parsed, routes.keys_home.as_deref()),
         INSPECT_PATH => inspect_response(parsed, upload, routes.inspect.as_ref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
@@ -1271,6 +1275,47 @@ fn route(
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
     };
     text.into_bytes()
+}
+
+
+/** Render the complete case dossier on loopback only; never expose local case material on a public bind. */
+fn dossier_page_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> String {
+    let head = parsed.method == Method::Head;
+    if !config.bind.ip().is_loopback() {
+        return json_error(403, "local evidence is available only on a loopback bind");
+    }
+    if !parsed.query.is_empty() {
+        return json_error(400, "evidence page takes no query parameters");
+    }
+    match crate::dossier_view::load().and_then(|document| crate::dossier_view::render(&document)) {
+        Ok(html) => response(200, "text/html; charset=utf-8; hse=dossier", &html, head),
+        Err(message) => {
+            let code = if message.contains("exceeds") { 413 }
+                else if message.contains("cannot open") { 404 } else { 422 };
+            response(code, "text/plain; charset=utf-8", &format!("{message}\n"), head)
+        }
+    }
+}
+
+/// Return the complete source register, preserving all fields and records.
+fn dossier_json_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> String {
+    if !config.bind.ip().is_loopback() {
+        return json_error(403, "local evidence is available only on a loopback bind");
+    }
+    if !parsed.query.is_empty() {
+        return json_error(400, "evidence API takes no query parameters");
+    }
+    match crate::dossier_view::load() {
+        Ok(document) => match serde_json::to_string(&document) {
+            Ok(json) => json_ok(&json, parsed.method == Method::Head),
+            Err(_) => json_error(500, "dossier serialization failed"),
+        },
+        Err(message) => {
+            let code = if message.contains("exceeds") { 413 }
+                else if message.contains("cannot open") { 404 } else { 422 };
+            json_error(code, &message)
+        }
+    }
 }
 
 /// The answer to a protected request without the server's token. It names the remedy, because the
@@ -1965,6 +2010,14 @@ static PAGE_POLICY: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// Dedicated, script-free CSP for locally rendered dossier pages.
+static DOSSIER_POLICY: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "default-src 'none'; script-src 'none'; style-src '{}'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        hash_source(crate::dossier_view::STYLE)
+    )
+});
+
 /// Every other response loads nothing and may not be framed.
 const OTHER_POLICY: &str = "default-src 'none'; frame-ancestors 'none'";
 
@@ -2037,7 +2090,9 @@ fn response_head(status: u16, content_type: &str, content_length: usize, extra: 
         401 => "WWW-Authenticate: Bearer realm=\"huntsman-recon\"\r\n",
         _ => "",
     };
-    let policy = if content_type.starts_with("text/html") {
+    let policy = if content_type.ends_with("; hse=dossier") {
+        DOSSIER_POLICY.as_str()
+    } else if content_type.starts_with("text/html") {
         PAGE_POLICY.as_str()
     } else {
         OTHER_POLICY

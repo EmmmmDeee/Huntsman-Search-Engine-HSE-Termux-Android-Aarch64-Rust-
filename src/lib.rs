@@ -76,6 +76,7 @@ pub mod environment;
 pub mod error;
 pub mod evidence_ancestry;
 pub mod evidence_register;
+pub mod dossier_view;
 pub mod exif;
 pub mod exit;
 pub mod exposure;
