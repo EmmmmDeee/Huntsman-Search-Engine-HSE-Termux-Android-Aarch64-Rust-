@@ -31,6 +31,8 @@ pub struct WifiObservation {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WifiScan {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mitm_assessment: Option<crate::mitm_guard::Report>,
     pub source: &'static str,
     pub acquisition: &'static str,
     pub status: &'static str,
@@ -188,14 +190,18 @@ pub fn parse_scan(bytes: &[u8], uptime_secs: Option<f64>) -> Result<WifiScan, Er
     } else {
         "freshness_unknown"
     };
-    Ok(WifiScan {
+    let mut scan = WifiScan {
+        mitm_assessment: None,
         source: "termux-wifi-scaninfo",
         acquisition: "android_cached_scan_results_not_active_scan",
         status,
         observed: observations.len(),
         rejected,
         observations,
-    })
+    };
+    let report = crate::mitm_guard::from_wifi_scan(&scan, None);
+    scan.mitm_assessment = Some(report);
+    Ok(scan)
 }
 
 #[must_use]
