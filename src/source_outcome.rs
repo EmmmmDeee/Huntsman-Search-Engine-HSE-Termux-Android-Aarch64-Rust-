@@ -41,6 +41,12 @@ pub enum SourceOutcomeKind {
     SemanticDrift,
     ZeroYieldAnomaly,
     ConfirmedDead,
+    /// Huntsman's guarded request path sent nothing: the egress policy dropped every address of
+    /// the destination, or the URL, a redirect target or the credential's origin binding could not
+    /// be sent safely (fetch's `Error::Network`, `LegError::Refused`). It says nothing about the
+    /// selector. [`SourceReach`] reads a lookup with no accepted row and one of these as a refusal
+    /// (exit 77).
+    RefusedBeforeSending,
     /// The run completed without a verdict. A kind label this build does not know, read back
     /// from a saved scan or report written by a newer build, reads as this kind, which is never
     /// accepted, so an older build can still open that scan and treats the row as unresolved.
@@ -77,6 +83,7 @@ impl SourceOutcomeKind {
             Self::SemanticDrift => "semantic_drift",
             Self::ZeroYieldAnomaly => "zero_yield_anomaly",
             Self::ConfirmedDead => "confirmed_dead",
+            Self::RefusedBeforeSending => "refused_before_sending",
             Self::Inconclusive => "inconclusive",
         }
     }
@@ -91,6 +98,13 @@ impl SourceOutcomeKind {
     #[must_use]
     pub const fn is_not_configured(self) -> bool {
         matches!(self, Self::NotConfigured)
+    }
+
+    /// Whether Huntsman's guarded request path refused the request, so nothing was sent. It is
+    /// never accepted and never a transport failure: the source was not asked at all.
+    #[must_use]
+    pub const fn is_refused_before_sending(self) -> bool {
+        matches!(self, Self::RefusedBeforeSending)
     }
 
     #[must_use]
@@ -225,6 +239,105 @@ impl SourceExecutionOutcome {
         self.retry_after_secs = Some(seconds);
         self
     }
+
+    /// A request Huntsman's guarded path refused, so nothing was sent
+    /// ([`SourceOutcomeKind::RefusedBeforeSending`]). `detail` keeps the exact cause.
+    #[must_use]
+    pub fn refused_before_sending(
+        module: impl Into<String>,
+        observed_at_unix: u64,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self::failed(
+            module,
+            observed_at_unix,
+            SourceOutcomeKind::RefusedBeforeSending,
+            None,
+            detail,
+        )
+    }
+
+    /// `module: detail`, without repeating the module when `detail` already starts
+    /// `"{module}: "` (the `api_leg`, crt.sh, `WiGLE` and stolen.tax details do), and
+    /// `module: <kind label>` when there is no detail. Presentation only, never classification.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        let detail = self.detail.as_deref().unwrap_or(self.kind.as_str());
+        let repeats = detail
+            .strip_prefix(self.module.as_str())
+            .is_some_and(|rest| rest.starts_with(": "));
+        if repeats {
+            detail.to_owned()
+        } else {
+            format!("{}: {detail}", self.module)
+        }
+    }
+}
+
+/// How far a lookup's sources got, read from its outcome rows in order, and so whether a lookup
+/// with no accepted row was refused (exit 77) or got no response (exit 69):
+///
+/// - any accepted row is `Answered`;
+/// - otherwise the first [`SourceOutcomeKind::RefusedBeforeSending`] row is `Refused`;
+/// - otherwise the first transport-failure row is `NoResponse`;
+/// - otherwise `Failed`, with the first row that is not `NotConfigured`, else the first row, else
+///   nothing.
+///
+/// Each reason is that row's [`SourceExecutionOutcome::reason`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceReach {
+    Answered,
+    Refused(String),
+    NoResponse(String),
+    Failed(Option<String>),
+}
+
+impl SourceReach {
+    #[must_use]
+    pub fn of(outcomes: &[SourceExecutionOutcome]) -> Self {
+        if outcomes.iter().any(|o| o.kind.is_accepted()) {
+            return Self::Answered;
+        }
+        let first = |pick: fn(SourceOutcomeKind) -> bool| {
+            outcomes
+                .iter()
+                .find(|o| pick(o.kind))
+                .map(SourceExecutionOutcome::reason)
+        };
+        if let Some(why) = first(SourceOutcomeKind::is_refused_before_sending) {
+            return Self::Refused(why);
+        }
+        if let Some(why) = first(SourceOutcomeKind::is_transport_failure) {
+            return Self::NoResponse(why);
+        }
+        Self::Failed(
+            first(|kind| !kind.is_not_configured())
+                .or_else(|| outcomes.first().map(SourceExecutionOutcome::reason)),
+        )
+    }
+
+    /// Stops only for a refusal ([`SourceRun::Network`], exit 77) or no response
+    /// ([`SourceRun::Failed`] led by `lead`, exit 69); sources that answered with errors print
+    /// (`None`).
+    #[must_use]
+    pub fn stopped<R>(&self, lead: &str) -> Option<SourceRun<R>> {
+        match self {
+            Self::Refused(why) => Some(SourceRun::Network(why.clone())),
+            Self::NoResponse(why) => Some(SourceRun::Failed(format!("{lead}: {why}"))),
+            Self::Answered | Self::Failed(_) => None,
+        }
+    }
+
+    /// As [`Self::stopped`], and a lookup with no accepted row always fails (exit 69). With no
+    /// row at all the message is `lead` alone.
+    #[must_use]
+    pub fn unanswered<R>(&self, lead: &str) -> Option<SourceRun<R>> {
+        match self {
+            Self::Failed(Some(why)) => Some(SourceRun::Failed(format!("{lead}: {why}"))),
+            Self::Failed(None) => Some(SourceRun::Failed(lead.to_owned())),
+            other => other.stopped(lead),
+        }
+    }
 }
 
 /// The result of one single-source CLI run: the rendered report, a network refusal, or a failure
@@ -301,7 +414,8 @@ pub const fn recommended_action(kind: SourceOutcomeKind) -> SourceHealthAction {
         | SourceOutcomeKind::Inconclusive => SourceHealthAction::Retry,
         SourceOutcomeKind::EntitlementDenied
         | SourceOutcomeKind::TlsFailure
-        | SourceOutcomeKind::Upstream4xx => SourceHealthAction::Investigate,
+        | SourceOutcomeKind::Upstream4xx
+        | SourceOutcomeKind::RefusedBeforeSending => SourceHealthAction::Investigate,
         SourceOutcomeKind::RedirectChanged
         | SourceOutcomeKind::ProtocolDrift
         | SourceOutcomeKind::InteractionDrift
@@ -497,7 +611,7 @@ mod tests {
     fn labels_are_the_serde_wire_names() {
         use SourceHealthAction as A;
         use SourceOutcomeKind as K;
-        const KINDS: [SourceOutcomeKind; 25] = [
+        const KINDS: [SourceOutcomeKind; 26] = [
             K::Success,
             K::ValidZero,
             K::AuthRequired,
@@ -522,6 +636,7 @@ mod tests {
             K::SemanticDrift,
             K::ZeroYieldAnomaly,
             K::ConfirmedDead,
+            K::RefusedBeforeSending,
             K::Inconclusive,
         ];
         const ACTIONS: [SourceHealthAction; 7] = [
@@ -560,11 +675,24 @@ mod tests {
                 | K::SemanticDrift
                 | K::ZeroYieldAnomaly
                 | K::ConfirmedDead
+                | K::RefusedBeforeSending
                 | K::Inconclusive => {}
             }
             let wire = serde_json::to_value(kind).expect("a kind serialises");
             assert_eq!(wire.as_str(), Some(kind.as_str()), "{kind:?}");
+            // Every known label reads back as itself, never as the `Inconclusive` fallback.
+            let back: SourceOutcomeKind =
+                serde_json::from_value(wire).expect("a known label reads");
+            assert_eq!(back, kind, "{kind:?}");
         }
+        assert_eq!(
+            serde_json::to_string(&K::RefusedBeforeSending).expect("serialises"),
+            "\"refused_before_sending\""
+        );
+        assert_eq!(
+            serde_json::from_str::<SourceOutcomeKind>("\"refused_before_sending\"").expect("reads"),
+            K::RefusedBeforeSending
+        );
         for action in ACTIONS {
             match action {
                 A::Accept
@@ -629,6 +757,167 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&failed).expect("serialises"),
             r#"{"module":"rdap","kind":"connect_failure","observed_at_unix":7,"http_status":null,"found":null,"retry_after_secs":null,"detail":"no route"}"#
+        );
+    }
+
+    fn row(module: &str, kind: SourceOutcomeKind, detail: &str) -> SourceExecutionOutcome {
+        SourceExecutionOutcome::failed(module, 7, kind, None, detail)
+    }
+
+    fn refused(module: &str) -> SourceExecutionOutcome {
+        SourceExecutionOutcome::refused_before_sending(
+            module,
+            7,
+            format!("{module}: request refused before sending: network: egress-policy"),
+        )
+    }
+
+    type Run = SourceRun<()>;
+
+    #[test]
+    fn a_refused_row_is_neither_accepted_nor_a_transport_failure_and_is_investigated() {
+        let kind = SourceOutcomeKind::RefusedBeforeSending;
+        assert!(kind.is_refused_before_sending());
+        assert!(!kind.is_accepted());
+        assert!(!kind.is_transport_failure());
+        assert!(!kind.is_not_configured());
+        assert_eq!(recommended_action(kind), SourceHealthAction::Investigate);
+        for other in [
+            SourceOutcomeKind::ConnectFailure,
+            SourceOutcomeKind::EntitlementDenied,
+            SourceOutcomeKind::Inconclusive,
+        ] {
+            assert!(!other.is_refused_before_sending(), "{other:?}");
+        }
+
+        let row = SourceExecutionOutcome::refused_before_sending("rdap", 7, "network: egress");
+        assert_eq!(row.module, "rdap");
+        assert_eq!(row.kind, kind);
+        assert_eq!(row.observed_at_unix, 7);
+        assert_eq!(row.http_status, None);
+        assert_eq!(row.found, None);
+        assert_eq!(row.retry_after_secs, None);
+        assert_eq!(row.detail.as_deref(), Some("network: egress"));
+    }
+
+    #[test]
+    fn a_reason_names_the_module_once() {
+        let kept = row(
+            "mnemonic",
+            SourceOutcomeKind::ConnectFailure,
+            "mnemonic: no response (ConnectFailure)",
+        );
+        assert_eq!(kept.reason(), "mnemonic: no response (ConnectFailure)");
+        let longer = row(
+            "mnemonic",
+            SourceOutcomeKind::ConnectFailure,
+            "mnemonicx: y",
+        );
+        assert_eq!(longer.reason(), "mnemonic: mnemonicx: y");
+        let unspaced = row("mnemonic", SourceOutcomeKind::ConnectFailure, "mnemonic:y");
+        assert_eq!(unspaced.reason(), "mnemonic: mnemonic:y");
+        let mut bare = row("mnemonic", SourceOutcomeKind::ConnectFailure, "");
+        bare.detail = None;
+        assert_eq!(bare.reason(), "mnemonic: connect_failure");
+    }
+
+    #[test]
+    fn no_row_at_all_fails_with_the_lead_alone_and_never_stops_a_printing_lookup() {
+        let reach = SourceReach::of(&[]);
+        assert_eq!(reach, SourceReach::Failed(None));
+        assert_eq!(reach.unanswered::<()>("L"), Some(Run::Failed("L".into())));
+        assert_eq!(reach.stopped::<()>("L"), None);
+    }
+
+    #[test]
+    fn an_accepted_row_answers_beside_a_refused_one() {
+        let zero = SourceExecutionOutcome::valid_zero("internetdb", 7);
+        for rows in [
+            vec![zero.clone(), refused("rdap")],
+            vec![refused("rdap"), zero.clone()],
+        ] {
+            let reach = SourceReach::of(&rows);
+            assert_eq!(reach, SourceReach::Answered, "{rows:?}");
+            assert_eq!(reach.unanswered::<()>("L"), None);
+            assert_eq!(reach.stopped::<()>("L"), None);
+        }
+    }
+
+    #[test]
+    fn a_refused_row_outranks_a_transport_failure_in_either_order() {
+        let silent = row(
+            "rdap",
+            SourceOutcomeKind::ConnectFailure,
+            "rdap: no route to host",
+        );
+        let why = "ripestat: request refused before sending: network: egress-policy".to_owned();
+        for rows in [
+            vec![silent.clone(), refused("ripestat")],
+            vec![refused("ripestat"), silent.clone()],
+        ] {
+            let reach = SourceReach::of(&rows);
+            assert_eq!(reach, SourceReach::Refused(why.clone()), "{rows:?}");
+            assert_eq!(reach.stopped::<()>("L"), Some(Run::Network(why.clone())));
+            assert_eq!(reach.unanswered::<()>("L"), Some(Run::Network(why.clone())));
+        }
+    }
+
+    #[test]
+    fn two_refused_rows_give_the_first_reason() {
+        let reach = SourceReach::of(&[refused("rdap"), refused("ripestat")]);
+        assert_eq!(
+            reach,
+            SourceReach::Refused(
+                "rdap: request refused before sending: network: egress-policy".into()
+            )
+        );
+    }
+
+    #[test]
+    fn a_transport_failure_after_an_unresolved_row_is_no_response_with_its_reason() {
+        let rows = [
+            row("mnemonic", SourceOutcomeKind::Inconclusive, "no verdict"),
+            row(
+                "rdap",
+                SourceOutcomeKind::TtfbTimeout,
+                "no response (TtfbTimeout)",
+            ),
+        ];
+        let reach = SourceReach::of(&rows);
+        let why = "rdap: no response (TtfbTimeout)";
+        assert_eq!(reach, SourceReach::NoResponse(why.into()));
+        let failed = Some(Run::Failed(format!("L: {why}")));
+        assert_eq!(reach.stopped::<()>("L"), failed);
+        assert_eq!(reach.unanswered::<()>("L"), failed);
+    }
+
+    #[test]
+    fn a_failure_reason_skips_a_not_configured_row_unless_it_is_all_there_is() {
+        let skipped = row(
+            "greynoise",
+            SourceOutcomeKind::NotConfigured,
+            "no key configured",
+        );
+        let reach = SourceReach::of(&[
+            skipped.clone(),
+            row("rdap", SourceOutcomeKind::Upstream5xx, "HTTP 503"),
+        ]);
+        assert_eq!(reach, SourceReach::Failed(Some("rdap: HTTP 503".into())));
+        assert_eq!(reach.stopped::<()>("L"), None);
+        assert_eq!(
+            reach.unanswered::<()>("L"),
+            Some(Run::Failed("L: rdap: HTTP 503".into()))
+        );
+
+        let only = SourceReach::of(&[skipped]);
+        assert_eq!(
+            only,
+            SourceReach::Failed(Some("greynoise: no key configured".into()))
+        );
+        assert_eq!(only.stopped::<()>("L"), None);
+        assert_eq!(
+            only.unanswered::<()>("L"),
+            Some(Run::Failed("L: greynoise: no key configured".into()))
         );
     }
 

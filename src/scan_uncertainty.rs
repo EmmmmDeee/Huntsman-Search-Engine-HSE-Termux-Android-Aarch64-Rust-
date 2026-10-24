@@ -88,6 +88,14 @@ fn provider_issue(
             "A transport failure left provider coverage unresolved.",
             "Verify connectivity and retry with bounded timeouts.",
         ),
+        K::RefusedBeforeSending => (
+            2,
+            "refused_before_sending",
+            "Huntsman's egress policy or request guard refused the request before it was sent; \
+             the source was not asked.",
+            "Check DNS filtering, a captive portal or proxy, or the credential's origin binding, \
+             then rerun this source.",
+        ),
         K::Upstream4xx | K::Upstream5xx => (
             2,
             "upstream_failure",
@@ -398,6 +406,44 @@ mod tests {
                 .iter()
                 .any(|i| i.id == "scan:termination:request_budget")
         );
+    }
+
+    #[test]
+    fn a_refused_row_is_its_own_issue_and_not_a_transport_failure() {
+        let results = saved(vec![
+            SourceExecutionOutcome::refused_before_sending(
+                "rdap",
+                11,
+                "network: egress-policy: destination (0.0.0.0) is not publicly routable",
+            ),
+            SourceExecutionOutcome::failed(
+                "ripestat",
+                12,
+                SourceOutcomeKind::ConnectFailure,
+                None,
+                "no route",
+            ),
+        ]);
+        let register = derive(&record(ScanStatus::Finished), Some(&results));
+        assert_eq!(register.unresolved_executions, 2);
+        let refused = register
+            .items
+            .iter()
+            .find(|i| i.module.as_deref() == Some("rdap"))
+            .expect("the refused row is an issue");
+        assert_eq!(refused.category, "refused_before_sending");
+        assert_eq!(
+            refused.outcome,
+            Some(SourceOutcomeKind::RefusedBeforeSending)
+        );
+        assert_eq!(refused.priority, 2);
+        assert!(refused.uncertainty.ends_with("the source was not asked."));
+        let silent = register
+            .items
+            .iter()
+            .find(|i| i.module.as_deref() == Some("ripestat"))
+            .expect("the transport failure is an issue");
+        assert_eq!(silent.category, "transport_failure");
     }
 
     #[test]
