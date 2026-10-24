@@ -221,11 +221,7 @@ pub fn render(document: &Value) -> Result<String, String> {
     out.push_str("<section id=\"context\"><h2>Additional provenance, media and audit data</h2>");
     for (key, value) in root {
         if !GROUPS.iter().any(|(group, _)| *group == key.as_str()) {
-            let _ = write!(
-                out,
-                "<article><h3>{}</h3><dl>",
-                escape(&readable(key))
-            );
+            let _ = write!(out, "<article><h3>{}</h3><dl>", escape(&readable(key)));
             field(&mut out, key, value, &ids);
             out.push_str("</dl></article>");
         }
