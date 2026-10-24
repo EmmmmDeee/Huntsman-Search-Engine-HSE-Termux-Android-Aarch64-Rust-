@@ -1493,11 +1493,34 @@ impl ScanService {
         );
         if !options.types.is_empty() {
             let keep: BTreeSet<&str> = options.types.iter().map(String::as_str).collect();
-            elements.retain(|element| {
-                element.kind == "ROOT"
-                    || element.kind == plan.target_type
-                    || keep.contains(element.kind.as_str())
-            });
+            // A kept element keeps the chain it was found through, whatever those elements' types:
+            // Spiderfoot's type filter never removes an event's source chain, and a parent dropped
+            // here would leave the Source Data Element, the graph edge and the discovery path
+            // dangling, with nothing to recover them from later.
+            let by_id: std::collections::HashMap<&str, &sf_elements::DataElement> = elements
+                .iter()
+                .map(|element| (element.id.as_str(), element))
+                .collect();
+            let mut retained = std::collections::HashSet::new();
+            for element in &elements {
+                if element.kind != "ROOT"
+                    && element.kind != plan.target_type
+                    && !keep.contains(element.kind.as_str())
+                {
+                    continue;
+                }
+                let mut cursor = Some(element);
+                while let Some(found) = cursor {
+                    if !retained.insert(found.id.clone()) {
+                        break;
+                    }
+                    cursor = found
+                        .source
+                        .as_deref()
+                        .and_then(|source| by_id.get(source).copied());
+                }
+            }
+            elements.retain(|element| retained.contains(&element.id));
         }
         let (correlations, risks) = self.correlate_all(id, &found.entities, &elements);
         let modules_run: Vec<String> = found
@@ -2239,6 +2262,67 @@ mod tests {
             kinds,
             BTreeSet::from(["IP_ADDRESS", "ROOT", "TCP_PORT_OPEN"])
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ticking only `COUNTRY_NAME` keeps the `GEOINFO` element the country was found from, so no saved
+    /// element points at a source that was not saved: the Source Data Element, the graph edge and
+    /// the discovery path stay whole.
+    #[test]
+    fn requested_types_keep_each_kept_elements_ancestry() {
+        let (service, dir) = with_lookup(
+            "types-ancestry",
+            Arc::new(|_: ScanKind, selector: &str, _: &Selection| {
+                let evidence = Evidence::new(EvidenceProvenance::for_scan("pulsedive", "s"), "geo")
+                    .with_attr("city", "Sydney")
+                    .with_attr("country", "AU");
+                Ok(LookupOutput {
+                    text: format!("ip {selector}\n"),
+                    entities: vec![
+                        Entity::builder(EntityKind::IpAddress, selector, 0.9, "s")
+                            .evidence(evidence)
+                            .build(),
+                    ],
+                    outcomes: vec![SourceExecutionOutcome::success("pulsedive", 1, 1)],
+                })
+            }),
+        );
+        let record = service
+            .run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                options: ScanOptions {
+                    types: vec!["COUNTRY_NAME".into()],
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        let kinds: BTreeSet<&str> = results
+            .elements
+            .iter()
+            .map(|element| element.kind.as_str())
+            .collect();
+        assert_eq!(
+            kinds,
+            BTreeSet::from(["COUNTRY_NAME", "GEOINFO", "IP_ADDRESS", "ROOT"]),
+            "the country keeps the GEOINFO it was found from"
+        );
+        let ids: BTreeSet<&str> = results
+            .elements
+            .iter()
+            .map(|element| element.id.as_str())
+            .collect();
+        for element in &results.elements {
+            if let Some(source) = &element.source {
+                assert!(
+                    ids.contains(source.as_str()),
+                    "{} {} points at an unsaved source",
+                    element.kind,
+                    element.data
+                );
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

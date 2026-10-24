@@ -973,7 +973,7 @@ function elemRow(x,withType,select){
   const pick=el('span','pick');
   if(select)pick.append(tick('Select '+x.data,select.has(x.id),on=>{if(on)select.add(x.id);else select.delete(x.id)}));
   pick.append(d);put(tr,'Data Element',pick).classList.add('wide');
-  put(tr,'Source Data Element',el('span','data',x.source_data));put(tr,'Source Module',x.module);put(tr,'Identified',when(x.created)).className='nw';
+  put(tr,'Source Data Element',x.source_missing?el('span','none','source element not saved'):el('span','data',x.source_data));put(tr,'Source Module',x.module);put(tr,'Identified',when(x.created)).className='nw';
   return tr;
 }
 // Rows arrive 200 at a time, so a scan with thousands of elements stays quick on a phone.
