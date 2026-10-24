@@ -34,7 +34,10 @@ verified. ARP/DNS/TLS and mobile-network MITM are outside this sensor's scope.";
 const MAX_BASELINE_BYTES: u64 = 32 * 1024;
 
 /// Parse key/value arguments without silently accepting repeated/unknown flags.
-fn path_options(args: &[String], allow_confirm: bool) -> Result<(Option<&str>, Option<&str>, bool), String> {
+fn path_options(
+    args: &[String],
+    allow_confirm: bool,
+) -> Result<(Option<&str>, Option<&str>, bool), String> {
     let mut file = None;
     let mut output = None;
     let mut confirmed = false;
@@ -42,12 +45,22 @@ fn path_options(args: &[String], allow_confirm: bool) -> Result<(Option<&str>, O
     while let Some(word) = words.next() {
         match word.as_str() {
             "--file" if file.is_none() => {
-                file = Some(words.next().filter(|s| !s.starts_with("--"))
-                    .ok_or("missing --file path")?.as_str());
+                file = Some(
+                    words
+                        .next()
+                        .filter(|s| !s.starts_with("--"))
+                        .ok_or("missing --file path")?
+                        .as_str(),
+                );
             }
             "--output" if output.is_none() => {
-                output = Some(words.next().filter(|s| !s.starts_with("--"))
-                    .ok_or("missing --output path")?.as_str());
+                output = Some(
+                    words
+                        .next()
+                        .filter(|s| !s.starts_with("--"))
+                        .ok_or("missing --output path")?
+                        .as_str(),
+                );
             }
             "--confirmed" if allow_confirm && !confirmed => confirmed = true,
             _ => return Err(format!("unexpected or repeated option: {word}")),
@@ -77,7 +90,10 @@ fn baseline_cmd(args: &[String]) -> ExitCode {
         Ok(options) => options,
         Err(message) => return fail(EX_USAGE, &message),
     }) else {
-        return fail(EX_USAGE, "baseline requires --file, --output and --confirmed");
+        return fail(
+            EX_USAGE,
+            "baseline requires --file, --output and --confirmed",
+        );
     };
     let scan = match scan_from_file(file) {
         Ok(scan) => scan,
@@ -101,7 +117,10 @@ fn baseline_cmd(args: &[String]) -> ExitCode {
         let _ = std::fs::remove_file(output);
         return fail(EX_UNAVAILABLE, &format!("cannot write baseline: {error}"));
     }
-    println!("saved verified-by-operator baseline for {ssid:?} ({} BSSIDs)", baseline.anchors.len());
+    println!(
+        "saved verified-by-operator baseline for {ssid:?} ({} BSSIDs)",
+        baseline.anchors.len()
+    );
     ExitCode::SUCCESS
 }
 
@@ -112,13 +131,19 @@ fn assess_cmd(args: &[String]) -> ExitCode {
     while let Some(word) = words.next() {
         match word.as_str() {
             "--baseline" if baseline_path.is_none() => {
-                baseline_path = words.next().filter(|s| !s.starts_with("--")).map(String::as_str);
+                baseline_path = words
+                    .next()
+                    .filter(|s| !s.starts_with("--"))
+                    .map(String::as_str);
                 if baseline_path.is_none() {
                     return fail(EX_USAGE, "missing --baseline path");
                 }
             }
             "--file" if file_path.is_none() => {
-                file_path = words.next().filter(|s| !s.starts_with("--")).map(String::as_str);
+                file_path = words
+                    .next()
+                    .filter(|s| !s.starts_with("--"))
+                    .map(String::as_str);
                 if file_path.is_none() {
                     return fail(EX_USAGE, "missing --file path");
                 }
