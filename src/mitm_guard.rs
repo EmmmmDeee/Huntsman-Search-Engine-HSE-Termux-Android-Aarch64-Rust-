@@ -37,7 +37,12 @@ impl Security {
             Self::Wpa
         } else if u.contains("WEP") {
             Self::Wep
-        } else if u.trim() == "OPEN" || (u.contains("[ESS]") && !u.contains("PSK") && !u.contains("RSN") && !u.contains("SAE")) {
+        } else if u.trim() == "OPEN"
+            || (u.contains("[ESS]")
+                && !u.contains("PSK")
+                && !u.contains("RSN")
+                && !u.contains("SAE"))
+        {
             Self::Open
         } else {
             // WiGLE's "Unknown", a missing capability field, and a hidden SSID
@@ -425,7 +430,10 @@ mod tests {
 
     #[test]
     fn transition_security_does_not_overstate_wpa3_only() {
-        assert_eq!(Security::parse("[WPA2-PSK-CCMP][RSN-SAE-CCMP][ESS]"), Security::Wpa2);
+        assert_eq!(
+            Security::parse("[WPA2-PSK-CCMP][RSN-SAE-CCMP][ESS]"),
+            Security::Wpa2
+        );
         assert_eq!(Security::parse("[RSN-SAE-CCMP][ESS]"), Security::Wpa3);
         assert_eq!(Security::parse("[RSN-PSK-CCMP][ESS]"), Security::Wpa);
         assert_eq!(Security::parse("[ESS]"), Security::Open);
