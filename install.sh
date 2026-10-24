@@ -425,6 +425,9 @@ setup_serve_service() {
   # `huntsman start` writes serve.bind when port 8080 is taken.
   write_file "$dir/run" 0700 "#!$sh
 # Written by install.sh. Keeps the CPU awake for Termux, then serves the web UI.
+# The state directory this install chose: the service, the huntsman command
+# and the commands it passes on keep one serve.bind and one scan store.
+export HUNTSMAN_HOME='$STATE_DIR'
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock >/dev/null 2>&1
 bind=\"\$(head -n 1 '$STATE_DIR/serve.bind' 2>/dev/null)\"
 exec \"$installed\" serve \${bind:+--bind \"\$bind\"} 2>&1
@@ -480,6 +483,7 @@ PROVENANCE_TMP="$STATE_DIR/.installed-revision.$$"
   printf 'revision=%s\n' "$install_rev"
   printf 'repository=%s\n' "$REPO"
   printf 'installed_from=%s\n' "$install_source"
+  printf 'state_dir=%s\n' "$STATE_DIR"
   if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
     printf 'cargo_target_dir=%s\n' "$CARGO_TARGET_DIR"
   fi

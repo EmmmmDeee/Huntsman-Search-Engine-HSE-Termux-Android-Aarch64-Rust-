@@ -474,3 +474,52 @@ fn continuous_settings_in_the_keys_file_are_recognised() {
     assert!(!text.contains("read by no provider"), "{text}");
     let _ = fs::remove_dir_all(&home);
 }
+
+/// A shell without `HUNTSMAN_HOME` resolves `~/.huntsman`, while the web UI service the installer
+/// set up keeps its state where the installer chose. `doctor` names the difference and the export
+/// that ends it, so the scans the page ran are never reported missing.
+#[test]
+fn doctor_names_a_state_dir_the_web_ui_service_keeps_elsewhere() {
+    let home = scratch("service-state");
+    let prefix = home.join("prefix");
+    let service = prefix.join("var/service/huntsman-serve");
+    fs::create_dir_all(&service).unwrap();
+    fs::create_dir_all(prefix.join("tmp")).unwrap();
+    let hunt = home.join("hunt");
+    fs::write(
+        service.join("run"),
+        format!(
+            "#!/bin/sh\nexport HUNTSMAN_HOME='{}'\nexec huntsman-recon serve\n",
+            hunt.display()
+        ),
+    )
+    .unwrap();
+    let bind = format!("127.0.0.1:{}", free_port());
+    let doctor = |home_env: Option<&Path>| {
+        let mut command = bin(&home);
+        command
+            .args(["doctor", "--bind", &bind])
+            .env("TERMUX_VERSION", "0.118.3")
+            .env("PREFIX", &prefix);
+        if let Some(dir) = home_env {
+            command.env("HUNTSMAN_HOME", dir);
+        }
+        stdout(&command.output().unwrap())
+    };
+    let text = doctor(None);
+    assert!(text.contains("warn state_dir"), "{text}");
+    assert!(
+        text.contains(
+            "~/.huntsman here, but the web UI service keeps its scans and serve.bind in ~/hunt"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("export HUNTSMAN_HOME=~/hunt, or run commands through huntsman"),
+        "{text}"
+    );
+    // The export the hint names ends the difference.
+    let text = doctor(Some(&hunt));
+    assert!(!text.contains("keeps its scans"), "{text}");
+    let _ = fs::remove_dir_all(&home);
+}

@@ -218,7 +218,12 @@ rm -f ~/.huntsman.env
 ```
 
 If you set `HUNTSMAN_HOME`, `HUNTSMAN_ENV_FILE` or `CARGO_TARGET_DIR` when
-installing, remove those locations instead.
+installing, remove those locations instead. `HUNTSMAN_HOME` is one decision
+for the whole install: the installer writes it into the service's run script,
+`huntsman` reads it from there, and the commands `huntsman` passes on inherit
+it, so the service, `huntsman start` and `huntsman scans list` share one
+`serve.bind` and one scan store even in a shell that does not export it. A
+bare `huntsman-recon` in such a shell still reads `~/.huntsman`.
 
 ## Keep serve running on Android
 
