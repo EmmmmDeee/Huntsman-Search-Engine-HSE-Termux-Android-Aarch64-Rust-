@@ -1267,7 +1267,7 @@ mod tests {
         let challenge = Response {
             status: 200,
             headers: vec![("content-type".into(), "text/html".into())],
-            body: b"<html>Just a moment... cf-browser-verification checking your browser</html>"
+            body: b"<html>Just a moment... checking your browser Cloudflare</html>"
                 .to_vec(),
             truncated: false,
         };
