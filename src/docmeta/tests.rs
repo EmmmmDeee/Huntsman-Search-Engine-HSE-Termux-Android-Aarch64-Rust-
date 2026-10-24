@@ -1172,3 +1172,93 @@ fn a_corrupted_document_is_read_never_a_panic() {
         }
     }
 }
+
+// ── GIF and WebP ───────────────────────────────────────────────────────────────────────────
+
+/// A `GIF89a` with a two-entry global colour table, the given already-encoded blocks, and the trailer.
+fn gif(blocks: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = b"GIF89a".to_vec();
+    // Logical screen descriptor: 1x1, packed 0x80 (global colour table present, size 0 => 2 entries).
+    out.extend_from_slice(&[1, 0, 1, 0, 0x80, 0, 0]);
+    // The two-entry global colour table (two RGB triples).
+    out.extend_from_slice(&[0, 0, 0, 255, 255, 255]);
+    for block in blocks {
+        out.extend_from_slice(block);
+    }
+    out.push(0x3B);
+    out
+}
+
+/// A Comment Extension (`0x21 0xFE`) carrying `text` as its sub-block chain.
+fn gif_comment(text: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x21, 0xFE];
+    out.extend(gif_sub_block_chain(text));
+    out
+}
+
+/// An Image Descriptor with no local colour table and `data` as its image-data sub-block chain.
+fn gif_image(data: &[u8]) -> Vec<u8> {
+    // Separator, left, top, width, height (1x1), packed (no local colour table).
+    let mut out = vec![0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0x00];
+    out.push(0x02); // LZW minimum code size.
+    out.extend(gif_sub_block_chain(data));
+    out
+}
+
+/// Encode `bytes` as a GIF sub-block chain: 255-byte runs each length-prefixed, then a terminator.
+fn gif_sub_block_chain(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for run in bytes.chunks(255) {
+        out.push(u8::try_from(run.len()).unwrap());
+        out.extend_from_slice(run);
+    }
+    out.push(0);
+    out
+}
+
+#[test]
+fn recognises_a_gif_and_reads_its_comment() {
+    let bytes = gif(&[
+        gif_comment(b"Made with Acme GIF"),
+        gif_image(b"\x01\x02\x03"),
+    ]);
+    let parsed = parse(&bytes);
+    assert_eq!(parsed.format, "GIF");
+    assert_eq!(field(&parsed, "gif:Comment"), Some("Made with Acme GIF"));
+}
+
+#[test]
+fn a_webp_is_recognised_by_its_riff_header() {
+    // The RIFF size and the payload past the WEBP form type do not matter to format detection.
+    let mut bytes = b"RIFF".to_vec();
+    bytes.extend_from_slice(&[0, 0, 0, 0]);
+    bytes.extend_from_slice(b"WEBPVP8 ");
+    assert_eq!(parse(&bytes).format, "WebP");
+    // "RIFF" without the WEBP form type is not a WebP.
+    assert_eq!(parse(b"RIFF\0\0\0\0WAVEfmt ").format, "unknown");
+}
+
+#[test]
+fn a_gif_comment_split_across_sub_blocks_is_reassembled() {
+    let text = "x".repeat(600); // Three sub-blocks: 255 + 255 + 90.
+    let bytes = gif(&[gif_comment(text.as_bytes())]);
+    assert_eq!(field(&parse(&bytes), "gif:Comment"), Some(text.as_str()));
+}
+
+#[test]
+fn a_comment_marker_inside_gif_image_data_is_not_read_as_a_comment() {
+    // Image data that happens to hold the 0x21 0xFE comment introducer is stepped over by its own
+    // sub-block lengths, so only the genuine Comment Extension is surfaced.
+    let image = gif_image(b"\x21\xFE\x0eHidden marker");
+    let bytes = gif(&[image, gif_comment(b"real")]);
+    assert_eq!(field(&parse(&bytes), "gif:Comment"), Some("real"));
+}
+
+#[test]
+fn every_truncation_of_a_gif_is_read_never_a_panic() {
+    let full = gif(&[gif_comment(b"note"), gif_image(b"\x01\x02")]);
+    for cut in 0..=full.len() {
+        let outcome = std::panic::catch_unwind(|| parse(&full[..cut]));
+        assert!(outcome.is_ok(), "cut {cut} panicked");
+    }
+}
