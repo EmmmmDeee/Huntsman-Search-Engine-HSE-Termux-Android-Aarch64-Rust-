@@ -1169,6 +1169,26 @@ mod tests {
     }
 
     #[test]
+    fn query_only_redirect_keeps_the_page_and_same_origin_credential() {
+        let credential = cred("tok-fixture-123456", AuthStyle::Bearer);
+        let transport = Fake::new(vec![
+            Ok(resp(302, &[("location", "?page=2")], "")),
+            Ok(resp(200, &[], "second page")),
+        ]);
+        let result = run(
+            &transport,
+            "https://a.example/v1/search?page=1",
+            Some(&credential),
+            5,
+        )
+        .expect("fetch");
+        assert_eq!(result.final_url, "https://a.example/v1/search?[redacted]");
+        let seen = transport.seen.borrow();
+        assert_eq!(seen[1].url, "https://a.example/v1/search?page=2");
+        assert!(seen[1].header_value("authorization").is_some());
+    }
+
+    #[test]
     fn caller_supplied_sensitive_headers_also_do_not_cross_origins() {
         let f = Fake::new(vec![
             Ok(resp(302, &[("location", "https://b.example/")], "")),
