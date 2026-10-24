@@ -159,7 +159,7 @@ pub fn decode(body: &[u8], domain: &str) -> Result<Search, LegError> {
         .filter_map(|e| {
             let email = canonical_email(&e.value)?;
             let host = email.rsplit_once('@')?.1;
-            let at_domain = host == domain || host.ends_with(&format!(".{domain}"));
+            let at_domain = crate::domains::is_or_subdomain_of(host, domain);
             if !at_domain {
                 return None;
             }
@@ -371,6 +371,14 @@ mod tests {
         assert_eq!(ciaran.sources, 2);
         assert_eq!(search.addresses[1].confidence, 100, "capped at 100");
         assert_eq!(search.addresses[1].name, None);
+    }
+
+    #[test]
+    fn an_address_below_the_domain_is_kept_and_one_at_a_lookalike_dropped() {
+        let body = r#"{"data":{"emails":[{"value":"ops@mail.intercom.com"},{"value":"ops@notintercom.com"},{"value":"ops@intercom.com.example"}]}}"#;
+        let search = decode(body.as_bytes(), "intercom.com").unwrap_or_else(|e| panic!("{e}"));
+        let emails: Vec<&str> = search.addresses.iter().map(|a| a.email.as_str()).collect();
+        assert_eq!(emails, ["ops@mail.intercom.com"]);
     }
 
     #[test]

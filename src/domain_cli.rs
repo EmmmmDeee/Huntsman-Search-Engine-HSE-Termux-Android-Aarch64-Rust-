@@ -752,7 +752,7 @@ impl<'a> ZoneFindings<'a> {
         let mailbox_domain = email.rsplit_once('@').map_or("", |(_, domain)| domain);
         let domain = self.domain.to_ascii_lowercase();
         canonical_domain(mailbox_domain).is_some()
-            && (mailbox_domain == domain || mailbox_domain.ends_with(&format!(".{domain}")))
+            && crate::domains::is_or_subdomain_of(mailbox_domain, &domain)
     }
 
     fn finish(self) -> Vec<Entity> {

@@ -177,13 +177,10 @@ impl Distinct {
         }
     }
 
-    /// A string, number or boolean urlscan.io gives, as text.
+    /// A value urlscan.io gives, read as [`api_leg::scalar`] reads it: a string cleaned, a
+    /// number or flag as written, anything else skipped.
     fn push_scalar(&mut self, value: Option<&Value>) {
-        match value {
-            Some(Value::String(s)) => self.push(Some(s)),
-            Some(v @ (Value::Number(_) | Value::Bool(_))) => self.push(Some(&v.to_string())),
-            _ => {}
-        }
+        self.push(value.and_then(api_leg::scalar).as_deref());
     }
 }
 
@@ -441,6 +438,17 @@ mod tests {
         assert_eq!(value(&f, "page_statuses"), Some("404"));
         assert_eq!(value(&f, "redirects"), None);
         assert!(!f.tags.contains(&"truncated"));
+    }
+
+    #[test]
+    fn a_redirect_given_as_a_flag_is_kept_as_text() {
+        let body = r#"{"results":[{"page":{"status":" 200 ","redirected":false}},{"page":{"status":[200],"redirected":true}}],"total":2}"#;
+        let f = decode(body.as_bytes(), Indicator::Ip("192.0.2.1"))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("scans with a flag for a redirect must decode"));
+        assert_eq!(value(&f, "page_statuses"), Some("200"));
+        assert_eq!(value(&f, "redirects"), Some("false,true"));
     }
 
     #[test]

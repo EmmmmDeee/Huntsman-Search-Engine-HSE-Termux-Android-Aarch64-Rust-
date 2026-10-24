@@ -11,10 +11,10 @@
 //! group (WHOIS, geo, DNS, TLS, HTTP, page meta, banners, cookies, DOM) is kept whole as JSON in
 //! a `raw_<group>` attribute, and the parts that name something else are read out: the position
 //! (a coordinates pivot), city, region and postcode; the origin AS (an ASN pivot); the network or
-//! registrant organisation (an organisation pivot), net name, route and registrar; the PTR host
-//! name, A, NS and MX records and TLS certificate names (domain and IP pivots); and the TLS
-//! subject, issuer, validity, fingerprints and JARM, the HTTP server and status, and the page
-//! title.
+//! registrant organisation (an organisation pivot, unless a privacy service's name stands in for
+//! the owner's), net name, route and registrar; the PTR host name, A, NS and MX records and TLS
+//! certificate names (domain and IP pivots); and the TLS subject, issuer, validity, fingerprints
+//! and JARM, the HTTP server and status, and the page title.
 //!
 //! Pulsedive writes an empty object as `[]` (`"attributes":[]` for an indicator with no
 //! attributes); that is read as empty, not as a different answer. A `404` with the body
@@ -28,6 +28,7 @@ use serde_json::Value;
 
 use crate::api_leg::{self, Answer, Api, KeyPlace, KeyUse, LegError};
 use crate::canonical::canonical_coordinates;
+use crate::domains::is_proxy_registrant;
 use crate::http::{Transport, percent_encode_component};
 use crate::indicator_sources::{Finding, Indicator, IndicatorKind, PivotKind, Source};
 use crate::keys::Keys;
@@ -190,16 +191,12 @@ fn labelled(items: &[Labelled], labels: fn(&Labelled) -> [Option<&str>; 2]) -> V
         .collect()
 }
 
-/// Every string a JSON value holds: itself, or each string or number in a list. **Pure.**
+/// Every scalar a JSON value holds as text: itself, or each string, number or flag in a list.
+/// **Pure.**
 fn strings(value: Option<&Value>) -> Vec<String> {
-    let one = |v: &Value| match v {
-        Value::String(s) => api_leg::clean(Some(s)),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    };
     match value {
-        Some(Value::Array(items)) => items.iter().filter_map(one).collect(),
-        Some(other) => one(other).into_iter().collect(),
+        Some(Value::Array(items)) => items.iter().filter_map(api_leg::scalar).collect(),
+        Some(other) => api_leg::scalar(other).into_iter().collect(),
         None => Vec::new(),
     }
 }
@@ -434,7 +431,11 @@ fn property_pivots(mut finding: Finding, properties: &BTreeMap<String, Value>) -
     for asn in asns {
         finding = finding.pivot(PivotKind::Asn, asn, "AS Pulsedive gives for the indicator");
     }
-    let organisation = first(whois, "org-name").or_else(|| first(whois, "registrant organization"));
+    // A privacy service's name stands in for the owner's on every domain it fronts.
+    let owner = |org: &String| !is_proxy_registrant(org, false);
+    let organisation = first(whois, "org-name")
+        .filter(owner)
+        .or_else(|| first(whois, "registrant organization").filter(owner));
     if let Some(organisation) = organisation {
         finding = finding.attr("organisation", &organisation).pivot(
             PivotKind::Organisation,
@@ -657,6 +658,38 @@ mod tests {
                 "Apache,Apache HTTP Server,DMARC,Font Awesome,Google Workspace,HSTS,Let's Encrypt,Open Graph,PHP,SPF"
             )
         );
+    }
+
+    #[test]
+    fn a_privacy_service_named_as_the_registrant_is_no_organisation() {
+        let proxied = DOMAIN.replace(
+            r#""registrant organization":"Pulsedive""#,
+            r#""registrant organization":"Domains By Proxy, LLC""#,
+        );
+        let f = finding(&proxied, Indicator::Domain("pulsedive.com"));
+        assert!(pivots(&f, PivotKind::Organisation).is_empty());
+        assert_eq!(attr(&f, "organisation"), None);
+        assert!(
+            attr(&f, "raw_whois").is_some_and(|w| w.contains("Domains By Proxy, LLC")),
+            "the raw group keeps what Pulsedive wrote"
+        );
+        let fronted = DOMAIN.replace(
+            r#""registrant organization":"Pulsedive""#,
+            r#""org-name":"Withheld for Privacy ehf","registrant organization":"Pulsedive""#,
+        );
+        let f = finding(&fronted, Indicator::Domain("pulsedive.com"));
+        assert_eq!(pivots(&f, PivotKind::Organisation), ["Pulsedive"]);
+        assert_eq!(attr(&f, "organisation"), Some("Pulsedive"));
+    }
+
+    #[test]
+    fn a_flag_in_a_named_attribute_list_is_kept_as_text() {
+        let body = IP.replace(
+            r#""hosttype":["Name Server"]"#,
+            r#""hosttype":["Name Server",true]"#,
+        );
+        let f = finding(&body, Indicator::Ip("1.1.1.1"));
+        assert_eq!(attr(&f, "host_types"), Some("Name Server,true"));
     }
 
     #[test]
