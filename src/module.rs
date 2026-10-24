@@ -317,6 +317,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "bounded local text search",
     },
     ReachableModule {
+        name: "exa",
+        command: "query --exa QUERY...",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Search,
+        attack_techniques: &["T1593.002"],
+        description: "explicit opt-in Exa search leads (5 results maximum; API credits)",
+    },
+    ReachableModule {
         name: "web_query",
         command: "query QUERY...",
         access: "keyless",

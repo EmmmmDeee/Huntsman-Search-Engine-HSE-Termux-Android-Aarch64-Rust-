@@ -28,7 +28,7 @@ still sends no request to either keyed provider.
 
 ## Credential slots without executable lookup integrations
 
-`credential-status` labels the existing Brave Search, Exa, OpenRouter,
+`credential-status` labels the existing Brave Search, OpenRouter,
 Google Gemini and Censys Legacy catalogued credential slots as
 `integration=credential_only`: they can be stored, but that does **not**
 mean that an appropriate lookup leg has been implemented or invoked.
@@ -77,3 +77,15 @@ performed by the operator.
 4. Explicit per-provider credentials take priority over fallback aliases.
 5. All public key status output contains names and states, never values.
 6. Rootless Android AArch64, pure Rust and default request budgets are unchanged.
+
+## Optional Exa web-search key
+
+`HUNTSMAN_EXA_KEY` is now used **only** by `huntsman-recon query --exa QUERY...`.
+This is an explicit, chargeable Exa `/search` request, never part of default or
+adaptive queries, scanning or continuous collection. It requests the Exa Lite
+search type (currently US$4 per 1,000 requests, compared with US$7 per 1,000
+for Auto); prices and free credits can change and are controlled by Exa. The API uses `x-api-key`,
+fixed HTTPS origin, no redirects, and at most five URL results per call. Hits
+are **lead_only**, not corroboration; no remote document content is downloaded.
+A free starter account may include monthly search credits subject to Exa's
+current pricing and limits; the operator manages those credits.

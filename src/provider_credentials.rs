@@ -399,7 +399,6 @@ pub(crate) const SLOT_FALLBACKS: &[(&str, &str)] = &[(
 /// Stored credential alone does not establish a runnable lookup integration.
 const CREDENTIAL_ONLY_PROVIDERS: &[&str] = &[
     "Brave Search",
-    "Exa",
     "OpenRouter",
     "Google Gemini",
     "Censys Legacy",
@@ -840,14 +839,15 @@ mod tests {
     }
 
     #[test]
-    fn declared_but_unwired_key_does_not_claim_active_integration() {
+    fn newly_wired_exa_is_active_but_reserved_intelx_is_not() {
         use crate::environment::{EXA_KEY_ENV, INTELX_KEY_ENV};
         let keys = Keys::parse(&format!(
             "{EXA_KEY_ENV}=TEST_ONLY_EXA\n{INTELX_KEY_ENV}=TEST_ONLY_INTELX\n"
         ))
         .expect("keys");
         let output = render(&keys);
-        assert!(output.contains("provider=Exa\tstate=configured\tintegration=credential_only"));
+        assert!(output.contains("provider=Exa\tstate=configured"));
+        assert!(!output.contains("provider=Exa\tstate=configured\tintegration=credential_only"));
         assert!(output.contains("unwired_slot=HUNTSMAN_INTELX_KEY\tstate=credential_only"));
         assert!(!output.contains("TEST_ONLY_EXA"));
         assert!(!output.contains("TEST_ONLY_INTELX"));
