@@ -1578,45 +1578,42 @@ fn parse_iptc_datasets(data: &[u8], fields: &mut Fields) {
         let Some(name) = iptc_field_name(record, dataset) else {
             continue;
         };
-        match std::str::from_utf8(value) {
-            Ok(text) => {
-                fields.push(format!("iptc:{name}"), text);
-                if !declared_utf8 && !value.is_ascii() {
-                    fields.push(
-                        format!("iptc:{name}Encoding"),
-                        "character set undeclared; UTF-8-compatible text is unverified",
-                    );
-                }
-            }
-            Err(_) => {
-                // Never replace unknown legacy bytes with U+FFFD and call that exact evidence.
-                // Keep a bounded hex preview plus a digest and length for full-byte provenance.
-                let shown = value.len().min(512);
-                let mut hex = String::with_capacity(shown * 2);
-                for &byte in &value[..shown] {
-                    hex.push(char::from(HEX[usize::from(byte >> 4)]));
-                    hex.push(char::from(HEX[usize::from(byte & 0x0f)]));
-                }
-                let suffix = if shown < value.len() {
-                    "; hex prefix only; original bytes retained in source file"
-                } else {
-                    ""
-                };
-                fields.push(
-                    format!("iptc:{name}"),
-                    format!("[undecoded IPTC bytes hex:{hex}{suffix}]"),
-                );
+        if let Ok(text) = std::str::from_utf8(value) {
+            fields.push(format!("iptc:{name}"), text);
+            if !declared_utf8 && !value.is_ascii() {
                 fields.push(
                     format!("iptc:{name}Encoding"),
-                    if declared_utf8 {
-                        "declared UTF-8; invalid byte sequence"
-                    } else {
-                        "character set undeclared; exact text decoding unavailable"
-                    },
+                    "character set undeclared; UTF-8-compatible text is unverified",
                 );
-                fields.push(format!("iptc:{name}RawSha256"), hex32(&sha256(value)));
-                fields.push(format!("iptc:{name}RawByteCount"), value.len().to_string());
             }
+        } else {
+            // Never replace unknown legacy bytes with U+FFFD and call that exact evidence.
+            // Keep a bounded hex preview plus a digest and length for full-byte provenance.
+            let shown = value.len().min(512);
+            let mut hex = String::with_capacity(shown * 2);
+            for &byte in &value[..shown] {
+                hex.push(char::from(HEX[usize::from(byte >> 4)]));
+                hex.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+            let suffix = if shown < value.len() {
+                "; hex prefix only; original bytes retained in source file"
+            } else {
+                ""
+            };
+            fields.push(
+                format!("iptc:{name}"),
+                format!("[undecoded IPTC bytes hex:{hex}{suffix}]"),
+            );
+            fields.push(
+                format!("iptc:{name}Encoding"),
+                if declared_utf8 {
+                    "declared UTF-8; invalid byte sequence"
+                } else {
+                    "character set undeclared; exact text decoding unavailable"
+                },
+            );
+            fields.push(format!("iptc:{name}RawSha256"), hex32(&sha256(value)));
+            fields.push(format!("iptc:{name}RawByteCount"), value.len().to_string());
         }
     }
 }
