@@ -92,9 +92,9 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Finding, LegError> {
         .pointer("/autonomous_system/asn")
         .and_then(Value::as_u64)
         .map(|number| format!("AS{number}"));
-    let organisation = string_at(&host, "/autonomous_system/name");
-    let country = string_at(&host, "/location/country");
-    let city = string_at(&host, "/location/city");
+    let organisation = string_at(host, "/autonomous_system/name");
+    let country = string_at(host, "/location/country");
+    let city = string_at(host, "/location/city");
     let mut finding = Finding::new(format!("Censys: {} services on {ip}", services.len()))
         .attr("service_count", services.len().to_string())
         .opt_attr("country", country)
