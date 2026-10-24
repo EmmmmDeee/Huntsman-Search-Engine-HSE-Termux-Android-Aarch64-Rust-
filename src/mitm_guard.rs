@@ -27,15 +27,17 @@ impl Security {
     #[must_use]
     pub fn parse(text: &str) -> Self {
         let u = text.to_ascii_uppercase();
-        if u.contains("WPA3") || u.contains("SAE") {
-            Self::Wpa3
-        } else if u.contains("WPA2") || u.contains("RSN") {
+        // Advertisements can expose mixed WPA2/WPA3 transition modes.
+        // A legacy WPA2 fallback still exists even when SAE is advertised.
+        if u.contains("WPA2") || (u.contains("RSN") && (u.contains("SAE") || u.contains("WPA3"))) {
             Self::Wpa2
-        } else if u.contains("WPA") {
+        } else if u.contains("WPA3") || u.contains("SAE") {
+            Self::Wpa3
+        } else if u.contains("WPA") || u.contains("PSK") || u.contains("RSN") {
             Self::Wpa
         } else if u.contains("WEP") {
             Self::Wep
-        } else if u.trim() == "OPEN" || (u.contains("[ESS]") && !u.contains("PSK")) {
+        } else if u.trim() == "OPEN" || (u.contains("[ESS]") && !u.contains("PSK") && !u.contains("RSN") && !u.contains("SAE")) {
             Self::Open
         } else {
             // WiGLE's "Unknown", a missing capability field, and a hidden SSID
@@ -399,6 +401,15 @@ mod tests {
         let r = from_wigle_jsonl(raw, None).unwrap();
         assert_eq!(r.evaluated_access_points, 1);
         assert_eq!(r.rejected_records, 0);
+    }
+
+    #[test]
+    fn transition_security_does_not_overstate_wpa3_only() {
+        assert_eq!(Security::parse("[WPA2-PSK-CCMP][RSN-SAE-CCMP][ESS]"), Security::Wpa2);
+        assert_eq!(Security::parse("[RSN-SAE-CCMP][ESS]"), Security::Wpa3);
+        assert_eq!(Security::parse("[RSN-PSK-CCMP][ESS]"), Security::Wpa);
+        assert_eq!(Security::parse("[ESS]"), Security::Open);
+        assert_eq!(Security::parse("Unknown"), Security::Unknown);
     }
 
     #[test]
