@@ -108,11 +108,7 @@ pub fn lookup<T: Transport + ?Sized>(
                         now_unix,
                         detail.as_str(),
                     ),
-                    _ => SourceExecutionOutcome::inconclusive(
-                        spec.module,
-                        now_unix,
-                        err.to_string(),
-                    ),
+                    _ => SourceExecutionOutcome::inconclusive(spec.module, now_unix, err.to_string()),
                 };
                 hard_failure.get_or_insert(err);
                 (failure, Vec::new())
@@ -150,12 +146,8 @@ pub fn lookup<T: Transport + ?Sized>(
                         .with_http_status(status)
                 }
             } else {
-                let mut found = SourceExecutionOutcome::success(
-                    spec.module,
-                    now_unix,
-                    matched.len(),
-                )
-                .with_http_status(status);
+                let mut found = SourceExecutionOutcome::success(spec.module, now_unix, matched.len())
+                    .with_http_status(status);
                 if let Some(note) = partial {
                     found = found.with_detail(note);
                 }
@@ -1170,14 +1162,15 @@ mod tests {
         let mut script = empty_script();
         script.insert(BANNED_RES.into(), Ok(json_ok(r#"{"success":false}"#)));
         let fake = Fake::new(script);
-        let report = lookup(&fake, "Bill Abbott", "scan", 1)
-            .expect("other two registers answered");
+        let report = lookup(&fake, "Bill Abbott", "scan", 1).expect("other two registers answered");
         assert_eq!(report.outcomes.len(), 3);
         assert_eq!(fake.seen.borrow().len(), 3);
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
-        assert!(report.outcomes[1..]
-            .iter()
-            .all(|o| o.kind == SourceOutcomeKind::ValidZero));
+        assert!(
+            report.outcomes[1..]
+                .iter()
+                .all(|o| o.kind == SourceOutcomeKind::ValidZero)
+        );
     }
 
     #[test]
@@ -1192,14 +1185,18 @@ mod tests {
             }),
         );
         let fake = Fake::new(script);
-        let report = lookup(&fake, "Bill Abbott", "scan", 1)
-            .expect("other two registers answered");
+        let report = lookup(&fake, "Bill Abbott", "scan", 1).expect("other two registers answered");
         assert_eq!(fake.seen.borrow().len(), 3);
         assert_eq!(report.outcomes.len(), 3);
-        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::RefusedBeforeSending);
-        assert!(report.outcomes[1..]
-            .iter()
-            .all(|o| o.kind == SourceOutcomeKind::ValidZero));
+        assert_eq!(
+            report.outcomes[0].kind,
+            SourceOutcomeKind::RefusedBeforeSending
+        );
+        assert!(
+            report.outcomes[1..]
+                .iter()
+                .all(|o| o.kind == SourceOutcomeKind::ValidZero)
+        );
     }
 
     #[test]
@@ -1210,10 +1207,12 @@ mod tests {
             .expect("other two registers answered");
         assert_eq!(report.outcomes.len(), 3);
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
-        assert!(report.outcomes[0]
-            .detail
-            .as_deref()
-            .is_some_and(|s| s.contains("no result envelope")));
+        assert!(
+            report.outcomes[0]
+                .detail
+                .as_deref()
+                .is_some_and(|s| s.contains("no result envelope"))
+        );
     }
 
     #[test]
@@ -1241,13 +1240,15 @@ mod tests {
             (ADVISER_RES.into(), Ok(empty.clone())),
             (CREDIT_RES.into(), Ok(empty)),
         ]));
-        let report = lookup(&fake, "Bill Abbott", "scan", 1)
-            .expect("healthy registers still answered");
+        let report =
+            lookup(&fake, "Bill Abbott", "scan", 1).expect("healthy registers still answered");
         assert_eq!(report.outcomes.len(), 3);
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ParserDrift);
-        assert!(report.outcomes[1..]
-            .iter()
-            .all(|o| o.kind == SourceOutcomeKind::ValidZero));
+        assert!(
+            report.outcomes[1..]
+                .iter()
+                .all(|o| o.kind == SourceOutcomeKind::ValidZero)
+        );
     }
 
     #[test]
@@ -1265,12 +1266,14 @@ mod tests {
             (ADVISER_RES.into(), Ok(empty.clone())),
             (CREDIT_RES.into(), Ok(empty)),
         ]));
-        let report = lookup(&fake, "Bill Abbott", "scan", 1)
-            .expect("healthy registers still answered");
+        let report =
+            lookup(&fake, "Bill Abbott", "scan", 1).expect("healthy registers still answered");
         assert_eq!(report.outcomes.len(), 3);
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
-        assert!(report.outcomes[1..]
-            .iter()
-            .all(|o| o.kind == SourceOutcomeKind::ValidZero));
+        assert!(
+            report.outcomes[1..]
+                .iter()
+                .all(|o| o.kind == SourceOutcomeKind::ValidZero)
+        );
     }
 }
