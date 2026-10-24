@@ -90,9 +90,9 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
         return match exa::search(&transport, &keys, &query, clock::unix_now()) {
             Ok(urls) => {
                 let outcome = if urls.is_empty() { "valid_zero" } else { "success" };
-                println!("engine=exa\\toutcome={outcome}\\tfound={}", urls.len());
+                println!("engine=exa\toutcome={outcome}\tfound={}", urls.len());
                 for url in &urls {
-                    println!("exa\\t{}\\tlead_only", escape_controls(url));
+                    println!("exa\t{}\tlead_only", escape_controls(url));
                 }
                 println!("hits={}", urls.len());
                 if urls.is_empty() {
@@ -103,7 +103,7 @@ pub(in crate::cli) fn query_cmd(args: &[String]) -> ExitCode {
             }
             Err(error) => {
                 eprintln!(
-                    "engine=exa\\toutcome={}\\tfound=none",
+                    "engine=exa\toutcome={}\tfound=none",
                     error.outcome_kind().as_str()
                 );
                 fail(EX_UNAVAILABLE, &error.to_string())
