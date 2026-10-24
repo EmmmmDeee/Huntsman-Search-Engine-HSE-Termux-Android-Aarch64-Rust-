@@ -12,7 +12,11 @@ fn valid_observation_date(value: &str) -> bool {
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
         return false;
     }
-    if !bytes.iter().enumerate().all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit()) {
+    if !bytes
+        .iter()
+        .enumerate()
+        .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
+    {
         return false;
     }
     let year = value[0..4].parse::<u32>().unwrap_or(0);
@@ -172,10 +176,8 @@ mod tests {
 
     #[test]
     fn oversized_observation_set_abstains_without_partial_assessment() {
-        let observations = vec![
-            observation(Indicator::WageWithholding, "publisher-a", "source-a");
-            10_001
-        ];
+        let observations =
+            vec![observation(Indicator::WageWithholding, "publisher-a", "source-a"); 10_001];
         let result = ReviewPolicy::default().assess(&observations);
         assert_eq!(result.status, AssessmentStatus::InsufficientEvidence);
         assert!(result.evidence_refs.is_empty());
