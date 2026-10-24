@@ -399,7 +399,6 @@ pub(crate) const SLOT_FALLBACKS: &[(&str, &str)] = &[(
 /// Stored credential alone does not establish a runnable lookup integration.
 const CREDENTIAL_ONLY_PROVIDERS: &[&str] = &[
     "Brave Search",
-    "Exa",
     "OpenRouter",
     "Google Gemini",
     "Censys Legacy",
