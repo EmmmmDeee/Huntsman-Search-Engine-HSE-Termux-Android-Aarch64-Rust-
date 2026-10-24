@@ -109,6 +109,7 @@ pub fn parse_replay(bytes: &[u8]) -> Result<WifiScan, Error> {
     let mut replay = parse_scan(bytes, None)?;
     replay.source = "unverified_json_file";
     replay.acquisition = "offline_replay_no_boot_provenance";
+    replay.mitm_assessment = Some(crate::mitm_guard::from_wifi_replay(&replay, None));
     Ok(replay)
 }
 
