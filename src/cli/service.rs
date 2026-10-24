@@ -180,7 +180,9 @@ fn web_track() -> Result<huntsman_recon::radar::TrackReport, LookupError> {
 /// scan's log. When there is no usable scan directory the server still
 /// starts, says why on stderr, and the scan routes answer `404`; lookups and analysis are
 /// unaffected.
-fn scan_api() -> Option<std::sync::Arc<ScanApi>> {
+/// The saved-scan API `serve` runs with, or `None` with the reason on stderr; its Global Settings
+/// carry `continuous`, what continuous normalisation was configured with.
+fn scan_api(continuous: &str) -> Option<std::sync::Arc<ScanApi>> {
     let Some(dir) = default_scan_dir() else {
         eprintln!(
             "serve: saved scans are off: set HOME or HUNTSMAN_HOME to an absolute path to keep them"
@@ -192,7 +194,11 @@ fn scan_api() -> Option<std::sync::Arc<ScanApi>> {
             for failure in api.service().rule_errors() {
                 eprintln!("{}", rule_error_line(failure));
             }
-            Some(std::sync::Arc::new(api))
+            Some(std::sync::Arc::new(api.with_global(
+                super::continuous::SETTING_KEY,
+                super::continuous::SETTING_DESCRIPTION,
+                continuous,
+            )))
         }
         Err(error) => {
             eprintln!("serve: saved scans are off: {}: {error}", dir.display());
@@ -312,7 +318,12 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     };
     let config_needs_token = config.needs_token();
     let analyze_history = history.clone();
-    let scans = scan_api();
+    // Read before anything binds, so a wrong setting ends serve before it announces an address.
+    let continuous = match super::continuous::configure(&super::credentials::lookup_keys()) {
+        Ok(config) => config,
+        Err(error) => return fail(EX_DATAERR, &format!("continuous: {error}")),
+    };
+    let scans = scan_api(&super::continuous::setting_value(continuous.as_ref()));
     let continuous_scans = scans.clone();
     let server = match Server::bind(config) {
         Ok(server) => {
@@ -341,7 +352,7 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
     if let Err(code) = report_started(&server, config_needs_token, token_supplied) {
         return code;
     }
-    if let Err(error) = super::continuous::launch(continuous_scans.as_ref()) {
+    if let Err(error) = super::continuous::launch(continuous, continuous_scans.as_ref()) {
         return fail(EX_DATAERR, &format!("continuous: {error}"));
     }
     // A plain write, not `eprintln!`: once stderr is closed or its reader has gone,

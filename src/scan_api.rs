@@ -213,12 +213,31 @@ impl Params {
 pub struct ScanApi {
     service: Arc<ScanService>,
     slots: Option<SlotCheck>,
+    /// Settings the binary adds to the page's Global Settings, after the store's own.
+    globals: Vec<Value>,
 }
 
 impl ScanApi {
     #[must_use]
     pub fn new(service: Arc<ScanService>, slots: Option<SlotCheck>) -> Self {
-        Self { service, slots }
+        Self {
+            service,
+            slots,
+            globals: Vec::new(),
+        }
+    }
+
+    /// Adds one entry to the Settings page's Global Settings: `key` names it in the API, the page
+    /// shows `description` as its label and `value` beside it. For what only the binary knows,
+    /// such as how `serve` was configured.
+    #[must_use]
+    pub fn with_global(mut self, key: &str, description: &str, value: impl Into<Value>) -> Self {
+        self.globals.push(json!({
+            "key": key,
+            "description": description,
+            "value": value.into(),
+        }));
+        self
     }
 
     #[must_use]
@@ -338,11 +357,7 @@ impl ScanApi {
                 })
             })
             .collect();
-        ok(
-            200,
-            &json!({
-                "modules": modules,
-                "global": [
+        let mut global = json!([
                     {
                         "key": "scan_dir",
                         "description": "where saved scans are kept",
@@ -363,7 +378,15 @@ impl ScanApi {
                         "description": "each source reads its key from the environment variable its key_env names; this page shows only whether each is set, never a value",
                         "value": "environment",
                     },
-                ],
+        ]);
+        if let Some(list) = global.as_array_mut() {
+            list.extend(self.globals.iter().cloned());
+        }
+        ok(
+            200,
+            &json!({
+                "modules": modules,
+                "global": global,
             }),
         )
     }
@@ -1357,6 +1380,32 @@ mod tests {
         ] {
             assert_eq!(configured(name), set, "{name}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A setting the binary adds follows the store's own in Global Settings, as given.
+    #[test]
+    fn a_global_setting_the_binary_adds_follows_the_stores_own() {
+        let (api, dir) = api_holding("settings-global", &[]);
+        let before = body(&api.handle("GET", "/api/settings", ""));
+        let before = before["global"].as_array().unwrap();
+        assert!(before.iter().all(|entry| entry["key"] != "continuous"));
+        let api = api.with_global(
+            "continuous",
+            "continuous normalisation while serve runs",
+            "off",
+        );
+        let settings = body(&api.handle("GET", "/api/settings", ""));
+        let global = settings["global"].as_array().unwrap();
+        assert_eq!(global.len(), before.len() + 1);
+        assert_eq!(&global[..before.len()], &before[..]);
+        let added = global.last().unwrap();
+        assert_eq!(added["key"], "continuous");
+        assert_eq!(
+            added["description"],
+            "continuous normalisation while serve runs"
+        );
+        assert_eq!(added["value"], "off");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

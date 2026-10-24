@@ -923,6 +923,8 @@ mod tests {
             crate::environment::HUNTSMAN_HOME_ENV,
             crate::environment::HUNTSMAN_ENV_FILE_ENV,
             crate::environment::CA_BUNDLE_ENV,
+            crate::environment::CONTINUOUS_TARGETS_ENV,
+            crate::environment::CONTINUOUS_INTERVAL_ENV,
             "HSE_PROVIDER_COST_SHODAN",
         ] {
             assert!(

@@ -11,7 +11,9 @@ use std::thread;
 use std::time::Duration;
 
 use huntsman_recon::clock;
+use huntsman_recon::environment::{CONTINUOUS_INTERVAL_ENV, CONTINUOUS_TARGETS_ENV};
 use huntsman_recon::fsio::{read_bounded, write_atomic_private};
+use huntsman_recon::keys::Keys;
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_service::{ScanRequest, plan};
 use huntsman_recon::scan_store::{MAX_RESULTS_BYTES, ScanOptions, ScanRecord, ScanStore};
@@ -26,11 +28,79 @@ const MAX_ANALYSIS_BYTES: u64 = 4 * 1024 * 1024;
 const TICK: Duration = Duration::from_secs(60);
 const RETRY: u64 = 15 * 60 * 1000;
 
-struct Config {
+/// What continuous normalisation runs with, from [`configure`].
+pub(super) struct Config {
     targets: Vec<ScanRequest>,
     cadence_ms: u64,
     normalised_dir: PathBuf,
     normalise_all: bool,
+}
+
+impl Config {
+    /// What the Settings page shows for this configuration: the cadence, every target with its
+    /// kind, and whether every saved target is re-normalised too.
+    fn summary(&self) -> String {
+        let mut parts: Vec<String> = self
+            .targets
+            .iter()
+            .map(|request| {
+                format!(
+                    "{} ({})",
+                    request.target,
+                    request.kind.as_deref().unwrap_or("auto")
+                )
+            })
+            .collect();
+        if self.normalise_all {
+            parts.push("every saved target, re-normalised only".to_owned());
+        }
+        format!(
+            "every {} minutes: {}",
+            self.cadence_ms / 60_000,
+            parts.join(", ")
+        )
+    }
+}
+
+/// The Global Settings entry's key and label for continuous normalisation.
+pub(super) const SETTING_KEY: &str = "continuous";
+pub(super) const SETTING_DESCRIPTION: &str = "continuous normalisation while serve runs";
+
+/// The Global Settings value for `config`: its summary, or that it is off and how to turn it on.
+pub(super) fn setting_value(config: Option<&Config>) -> String {
+    config.map_or_else(
+        || format!("off (set {CONTINUOUS_TARGETS_ENV} in ~/.huntsman.env or the environment)"),
+        Config::summary,
+    )
+}
+
+/// The configuration `keys` holds, read as every key is: [`CONTINUOUS_TARGETS_ENV`] and
+/// [`CONTINUOUS_INTERVAL_ENV`] from `~/.huntsman.env`, then the process environment. `None` when
+/// no targets are set, so the controller stays off; an error names the setting that is wrong.
+pub(super) fn configure(keys: &Keys) -> Result<Option<Config>, String> {
+    let Some((targets, minutes)) = settings(keys)? else {
+        return Ok(None);
+    };
+    let state = default_scan_dir()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .ok_or("continuous normalisation requires an absolute state directory")?;
+    config(&targets, &minutes, state.join("normalised")).map(Some)
+}
+
+/// The two settings as `keys` resolves them: the target list and the interval, `1440` when the
+/// interval is unset. A target list the environment holds as something other than UTF-8 is an
+/// error, not an unconfigured controller.
+fn settings(keys: &Keys) -> Result<Option<(String, String)>, String> {
+    let Some(targets) = keys.setting(CONTINUOUS_TARGETS_ENV) else {
+        if env::var_os(CONTINUOUS_TARGETS_ENV).is_some_and(|raw| raw.into_string().is_err()) {
+            return Err(format!("{CONTINUOUS_TARGETS_ENV} is not UTF-8"));
+        }
+        return Ok(None);
+    };
+    let minutes = keys
+        .setting(CONTINUOUS_INTERVAL_ENV)
+        .unwrap_or_else(|| "1440".to_owned());
+    Ok(Some((targets, minutes)))
 }
 
 /// Retry identities remain distinct even when target text contains separators.
@@ -57,14 +127,14 @@ impl RetryKey {
 fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, String> {
     if targets.len() > MAX_TARGET_CONFIG_BYTES {
         return Err(format!(
-            "HUNTSMAN_CONTINUOUS_TARGETS exceeds {MAX_TARGET_CONFIG_BYTES} bytes"
+            "{CONTINUOUS_TARGETS_ENV} exceeds {MAX_TARGET_CONFIG_BYTES} bytes"
         ));
     }
-    let minutes: u64 = minutes.parse().map_err(|_| {
-        "HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES must be an integer (60..=10080)".to_owned()
-    })?;
+    let minutes: u64 = minutes
+        .parse()
+        .map_err(|_| format!("{CONTINUOUS_INTERVAL_ENV} must be an integer (60..=10080)"))?;
     if !(60..=10_080).contains(&minutes) {
-        return Err("HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES must be 60..=10080".to_owned());
+        return Err(format!("{CONTINUOUS_INTERVAL_ENV} must be 60..=10080"));
     }
     let mut unique = BTreeMap::new();
     let mut normalise_all = false;
@@ -101,7 +171,9 @@ fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, St
         }
     }
     if unique.is_empty() && !normalise_all {
-        return Err("HUNTSMAN_CONTINUOUS_TARGETS contains no valid targets".to_owned());
+        return Err(format!(
+            "{CONTINUOUS_TARGETS_ENV} contains no valid targets"
+        ));
     }
     Ok(Config {
         targets: unique.into_values().collect(),
@@ -495,24 +567,15 @@ fn cycle(
     Ok(())
 }
 
-/// Start the controller only when explicitly configured; it shares the server's
-/// scan service, rate/worker admission and durable scan store.
-pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
-    let Some(raw) = env::var_os("HUNTSMAN_CONTINUOUS_TARGETS") else {
+/// Starts the controller [`configure`] described, if any; it shares the server's scan service,
+/// rate/worker admission and durable scan store, so it needs the saved scans to be on.
+pub(super) fn launch(config: Option<Config>, scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
+    let Some(config) = config else {
         return Ok(());
     };
-    let raw = raw
-        .into_string()
-        .map_err(|_| "continuous target list is not UTF-8")?;
     let Some(scans) = scans else {
         return Err("continuous normalisation requires an available scan store".to_owned());
     };
-    let state = default_scan_dir()
-        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
-        .ok_or("continuous normalisation requires an absolute state directory")?;
-    let minutes =
-        env::var("HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES").unwrap_or_else(|_| "1440".to_owned());
-    let config = config(&raw, &minutes, state.join("normalised"))?;
     let api = Arc::clone(scans);
     eprintln!(
         "continuous: enabled with {} canonical targets, interval={} minutes, normalise_all={}",
@@ -540,9 +603,11 @@ pub(super) fn launch(scans: Option<&Arc<ScanApi>>) -> Result<(), String> {
 mod tests {
     use super::{
         RetryKey, archive_previous, config, cycle, due, file_stamp, invalidate_saved,
-        normalised_path, prune_tracking_state, results_digest, source_revision,
+        normalised_path, prune_tracking_state, results_digest, setting_value, settings,
+        source_revision,
     };
     use huntsman_recon::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+    use huntsman_recon::keys::Keys;
     use huntsman_recon::scan_api::ScanApi;
     use huntsman_recon::scan_service::{LookupOutput, ScanLookup, ScanRequest, ScanService};
     use huntsman_recon::scan_store::{RiskCounts, ScanOptions, ScanRecord, ScanStatus, ScanStore};
@@ -550,6 +615,42 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::Arc;
+
+    /// Both settings come from the keys file, as every key does, with the interval defaulted; a
+    /// file without the target list leaves the controller off.
+    #[test]
+    fn settings_come_from_the_keys_file_with_the_interval_defaulted() {
+        let keys = Keys::parse(
+            "HUNTSMAN_CONTINUOUS_TARGETS=example.com;1.1.1.1\nHUNTSMAN_CONTINUOUS_INTERVAL_MINUTES=60\n",
+        )
+        .expect("keys");
+        assert_eq!(
+            settings(&keys).expect("read"),
+            Some(("example.com;1.1.1.1".to_owned(), "60".to_owned()))
+        );
+        let keys = Keys::parse("HUNTSMAN_CONTINUOUS_TARGETS=*\n").expect("keys");
+        assert_eq!(
+            settings(&keys).expect("read"),
+            Some(("*".to_owned(), "1440".to_owned()))
+        );
+        let keys = Keys::parse("HUNTSMAN_SHODAN_KEY=not-a-target-list-0123\n").expect("keys");
+        assert_eq!(settings(&keys).expect("read"), None);
+    }
+
+    /// The Settings page reads what `serve` collects and how often, or how to turn it on.
+    #[test]
+    fn the_settings_page_reads_what_serve_collects_or_how_to_turn_it_on() {
+        let configured = config("example.com;1.1.1.1;*", "60", PathBuf::from("/tmp/example"))
+            .expect("configured");
+        assert_eq!(
+            setting_value(Some(&configured)),
+            "every 60 minutes: example.com (domain), 1.1.1.1 (ip), every saved target, re-normalised only"
+        );
+        assert_eq!(
+            setting_value(None),
+            "off (set HUNTSMAN_CONTINUOUS_TARGETS in ~/.huntsman.env or the environment)"
+        );
+    }
 
     #[test]
     fn targets_are_canonical_and_deduplicated() {
