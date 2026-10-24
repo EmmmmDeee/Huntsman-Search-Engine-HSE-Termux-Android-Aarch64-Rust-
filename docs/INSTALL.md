@@ -184,6 +184,18 @@ existing executable. Reinstalling identical verified bytes keeps the existing
 live inode. A checksum detects transfer/corruption errors; review the release
 provenance and attestation if you need to verify publisher/build identity.
 
+For an **existing managed recon installation**, the standalone release installer
+also reconciles the accepted binary with the running service and install record.
+When the runit service is configured and enabled, it invokes the installed
+`huntsman` controller to restart it, then runs the current binary's reversible
+`fix` and `doctor --probe` gates. A service intentionally marked `down` is
+not started. `fix` backs up the previous install record before updating it;
+the backup retains the original install-origin information. If a post-install
+gate fails, the installer reports a nonzero status and the new binary remains
+installed for repair rather than silently reporting success. A bare standalone
+install does not create a new managed web service: use `install.sh` to set up
+the controller, state directory and service from scratch.
+
 ## Uninstall from Termux
 
 Stop and remove the web UI service and the `huntsman` command first:

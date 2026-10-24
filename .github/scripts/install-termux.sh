@@ -155,6 +155,39 @@ activate_staged_binary() {
   echo "Installed $dest (${TAG})"
 }
 
+# A release-only binary swap bypasses install.sh's provenance and service
+# integration. Reconcile an EXISTING managed installation after activation.
+# Do not start a deliberately disabled service, or configure a bare install.
+post_install_managed_recon() {
+  [[ "$CHANNEL" == recon ]] || return 0
+  local service="${SVDIR:-$PREFIX/var/service}/huntsman-serve"
+  local controller="$PREFIX/bin/huntsman"
+  local record="${HUNTSMAN_HOME:-${HOME:?}/.huntsman}/installed-revision"
+
+  if [[ -f "$service/run" ]]; then
+    [[ -x "$controller" ]] ||
+      die "binary installed, but managed service lacks huntsman controller; run the full install.sh"
+    if [[ ! -e "$service/down" ]]; then
+      HUNTSMAN_RECON="$dest" "$controller" restart ||
+        die "binary installed, but the web service restart failed; run huntsman restart"
+    fi
+    # The controller chooses the same HUNTSMAN_HOME as the service (including a
+    # custom directory) and explicitly runs the just-installed binary.
+    HUNTSMAN_RECON="$dest" "$controller" fix ||
+      die "binary installed, but metadata repair failed; run huntsman-recon fix"
+    HUNTSMAN_RECON="$dest" "$controller" doctor --probe ||
+      die "binary installed, but the managed service or metadata is not healthy"
+  elif [[ -f "$record" ]]; then
+    "$dest" fix ||
+      die "binary installed, but metadata repair failed; run huntsman-recon fix"
+    "$dest" doctor --probe ||
+      die "binary installed, but diagnostics still report a failure"
+  else
+    echo "Standalone binary installed; no existing managed service or provenance to update."
+  fi
+}
+
 stage_verified_download
 accept_staged_runtime
 activate_staged_binary
+post_install_managed_recon
