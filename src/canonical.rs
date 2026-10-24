@@ -651,6 +651,9 @@ mod tests {
             canonical_url("https://Example.com/?utm_source=x&b=2&a=1"),
             Some("https://example.com?a=1&b=2".into())
         );
+        assert!(is_tracking_param_key("UTM_Campaign"));
+        assert!(is_tracking_param_key("fbclid"));
+        assert!(!is_tracking_param_key("page"));
     }
 
     #[test]

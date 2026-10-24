@@ -982,3 +982,15 @@ fn a_module_whose_source_answered_with_an_error_is_never_a_refusal() {
     let _serial = CONTRACT.lock().unwrap_or_else(PoisonError::into_inner);
     hold(Net::Failing, &cases::<Failing>(), |case| !case.refused());
 }
+
+/// Every module the catalogue lists under `people NAME` is one the people lookup asks, so a
+/// source `people` stopped asking cannot stay listed as reachable through it.
+#[test]
+fn every_module_listed_under_people_is_one_it_asks() {
+    for module in reachable_modules()
+        .iter()
+        .filter(|module| module.command == "people NAME")
+    {
+        assert_eq!(lookups_asking(module.name), ["people"], "{}", module.name);
+    }
+}

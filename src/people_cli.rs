@@ -19,7 +19,7 @@ use crate::error::Error;
 use crate::http::Transport;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
 use crate::textnorm::name_tokens;
 
 pub const PEOPLE_USAGE: &str = "usage: huntsman-recon people NAME [--save FILE]";
@@ -66,12 +66,7 @@ impl PeopleArgs {
 }
 
 /// Result of one `people` invocation, before the binary maps it to an exit code.
-#[derive(Debug, Clone, PartialEq)]
-pub enum PeopleRun {
-    Printed { text: String, report: Report },
-    Network(String),
-    Failed(String),
-}
+pub type PeopleRun = SourceRun<Report>;
 
 /// Look up `name` over `transport` and render entities, outcomes, and lineage, asking each
 /// register only when the transport's lookup asks its module ([`Transport::runs_module`]).
@@ -91,20 +86,22 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
     let mut network = None;
     let mut failed = None;
 
-    if transport.runs_module("asic_persons") {
+    if transport.runs_module(asic_persons::SRC) {
         collect(
-            "asic_persons",
-            asic_persons::lookup(transport, &name, &scan_id, now_unix),
+            asic_persons::SRC,
+            asic_persons::lookup(transport, &name, &scan_id, now_unix)
+                .map(|found| (found.entities, found.outcomes)),
             now_unix,
             &mut report,
             &mut network,
             &mut failed,
         );
     }
-    if transport.runs_module("asic_director") {
+    if transport.runs_module(asic_director::SRC) {
         collect(
-            "asic_director",
-            asic_director::lookup(transport, &name, &scan_id, now_unix),
+            asic_director::SRC,
+            asic_director::lookup(transport, &name, &scan_id, now_unix)
+                .map(|found| (found.entities, found.outcomes)),
             now_unix,
             &mut report,
             &mut network,
@@ -132,21 +129,18 @@ pub fn run<T: Transport + ?Sized>(transport: &T, name: &str, now_unix: u64) -> P
     }
 }
 
-fn collect<R>(
+fn collect(
     module: &'static str,
-    result: Result<R, Error>,
+    result: Result<(Vec<Entity>, Vec<SourceExecutionOutcome>), Error>,
     now_unix: u64,
     report: &mut Report,
     network: &mut Option<String>,
     failed: &mut Option<String>,
-) where
-    R: IntoCollected,
-{
+) {
     match result {
-        Ok(got) => {
-            let got = got.into_collected();
-            report.entities.extend(got.entities);
-            report.outcomes.extend(got.outcomes);
+        Ok((entities, outcomes)) => {
+            report.entities.extend(entities);
+            report.outcomes.extend(outcomes);
         }
         Err(Error::Network(msg)) => {
             network.get_or_insert(msg.clone());
@@ -178,28 +172,6 @@ fn collect<R>(
                 None,
                 msg,
             ));
-        }
-    }
-}
-
-trait IntoCollected {
-    fn into_collected(self) -> Report;
-}
-
-impl IntoCollected for asic_persons::Report {
-    fn into_collected(self) -> Report {
-        Report {
-            entities: self.entities,
-            outcomes: self.outcomes,
-        }
-    }
-}
-
-impl IntoCollected for asic_director::Report {
-    fn into_collected(self) -> Report {
-        Report {
-            entities: self.entities,
-            outcomes: self.outcomes,
         }
     }
 }

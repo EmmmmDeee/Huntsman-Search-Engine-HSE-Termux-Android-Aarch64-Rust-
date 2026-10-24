@@ -189,24 +189,15 @@ const INFRA_MAIL_ONLY: &[&str] = &[
 ];
 
 pub const MULTI_LABEL_SUFFIXES: &[&str] = &[
-    "ac.in", "ac.jp", "ac.nz", "ac.uk", "asn.au", "co.id", "co.in", "co.jp", "co.nz", "co.uk",
-    "co.za", "com.au", "com.br", "com.cn", "com.sg", "edu.au", "edu.sg", "go.jp", "gov.au",
-    "gov.br", "gov.in", "gov.sg", "gov.uk", "govt.nz", "id.au", "me.uk", "ne.jp", "net.au",
-    "net.br", "net.nz", "net.sg", "or.jp", "org.au", "org.br", "org.nz", "org.sg", "org.uk",
-    "org.za", "sch.uk",
+    "ac.in", "ac.jp", "ac.nz", "ac.uk", "ac.vn", "asn.au", "biz.vn", "co.id", "co.in", "co.jp",
+    "co.nz", "co.uk", "co.za", "com.au", "com.br", "com.cn", "com.sg", "com.vn", "edu.au",
+    "edu.sg", "edu.vn", "go.jp", "gov.au", "gov.br", "gov.in", "gov.sg", "gov.uk", "gov.vn",
+    "govt.nz", "id.au", "me.uk", "name.vn", "ne.jp", "net.au", "net.br", "net.nz", "net.sg",
+    "net.vn", "or.jp", "org.au", "org.br", "org.nz", "org.sg", "org.uk", "org.vn", "org.za",
+    "sch.uk",
 ];
 
-#[must_use]
-pub fn is_absolute_http_url(s: &str) -> bool {
-    crate::http::parse_http_uri(s).is_ok()
-}
-
 pub use crate::value_syntax::{host_from_url, host_only, is_role_localpart};
-
-#[must_use]
-pub fn is_tracking_param_key(key: &str) -> bool {
-    crate::canonical::is_tracking_param_key(key)
-}
 
 #[must_use]
 pub fn registrable_domain(host: &str) -> Option<String> {
@@ -375,7 +366,6 @@ mod tests {
 
     #[test]
     fn url_helpers_match_contract() {
-        assert!(is_absolute_http_url("https://example.com"));
         assert_eq!(host_only("HTTPS://Up.Example.com/p"), "Up.Example.com");
         assert_eq!(host_only("https://example.com?x=1"), "example.com");
         assert_eq!(host_only("https://[2001:db8::1]?x=1"), "[2001:db8::1]");
@@ -383,9 +373,6 @@ mod tests {
             host_from_url("https://Example.com#frag"),
             Some("example.com".into())
         );
-        assert!(is_tracking_param_key("UTM_Campaign"));
-        assert!(is_tracking_param_key("fbclid"));
-        assert!(!is_tracking_param_key("page"));
     }
 
     #[test]
@@ -395,6 +382,13 @@ mod tests {
             Some("example.com.au")
         );
         assert_eq!(registrable_domain("a.b.co.uk").as_deref(), Some("b.co.uk"));
+        for host in ["example.com.vn", "mail.example.com.vn"] {
+            assert_eq!(
+                registrable_domain(host).as_deref(),
+                Some("example.com.vn"),
+                "{host}"
+            );
+        }
         assert!(looks_like_domain("a-zfastfitcentre.co.uk"));
         assert!(!looks_like_domain("192.168.0.1"));
         assert!(!looks_like_domain("com.facebook.katana"));
@@ -426,6 +420,15 @@ mod tests {
             Some("government")
         );
         assert_eq!(vn_domain_registrant("doctor.pro.vn"), None);
+        // A namespace whose holders are a class of registrant is a public suffix, so a name in
+        // it is registered one label below.
+        for (suffix, _, _) in VN_REGISTRANTS {
+            let suffix = suffix.trim_start_matches('.');
+            assert!(
+                MULTI_LABEL_SUFFIXES.binary_search(&suffix).is_ok(),
+                "{suffix}"
+            );
+        }
         assert_eq!(
             crate::dns::unescape_dns_label(r"hostmaster\.ops"),
             "hostmaster.ops"

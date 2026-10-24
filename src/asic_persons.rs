@@ -5,8 +5,7 @@
 //! and an injected [`crate::http::Transport`]. Challenge pages, truncated bodies,
 //! and `success: false` CKAN envelopes are never turned into evidence. The binary
 //! exposes `people NAME` through [`crate::people_cli`], which also runs
-//! `asic_director`, `au_people` and `au_electoral`. Tests use a fake transport;
-//! the live CKAN path is not run in CI.
+//! `asic_director`. Tests use a fake transport; the live CKAN path is not run in CI.
 
 use serde_json::{Map, Value};
 
@@ -21,7 +20,7 @@ use crate::postcode_au;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
 use crate::textnorm::{name_tokens, title_case, whole_word_token_match};
 
-const SRC: &str = "asic_persons";
+pub const SRC: &str = "asic_persons";
 const CKAN_BASE: &str = "https://data.gov.au/data/api/3/action";
 pub(crate) const BANNED_RES: &str = "741da9e3-7e0c-458e-830c-c518698e1788";
 pub(crate) const ADVISER_RES: &str = "91d80440-5787-46fc-99de-0c1d93e6cc9f";

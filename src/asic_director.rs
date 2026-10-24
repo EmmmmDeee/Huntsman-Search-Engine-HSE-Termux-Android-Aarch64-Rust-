@@ -21,7 +21,7 @@ use crate::postcode_au;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
 use crate::textnorm::{ascii_digits, decode_html_entities, name_tokens, whole_word_token_match};
 
-const SRC: &str = "asic_director";
+pub const SRC: &str = "asic_director";
 const SEARCH_BASE: &str =
     "https://connectonline.asic.gov.au/RegistrySearch/faces/landing/SearchRegisters.jspx";
 const DATASET: &str = "ASIC Connect Online";
