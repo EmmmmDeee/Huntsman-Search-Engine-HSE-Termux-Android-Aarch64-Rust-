@@ -35,7 +35,7 @@ use serde::Serialize;
 use crate::base64;
 use crate::cell_radar::CellScan;
 use crate::engineering_command;
-use crate::entity::Entity;
+use crate::entity::{Entity, EntityKind};
 use crate::error::Error;
 use crate::key_import;
 use crate::keys::{self, Keys};
@@ -44,7 +44,7 @@ use crate::provider_credentials::PROVIDERS;
 use crate::radar::TrackReport;
 use crate::scan_api::ScanApi;
 use crate::scan_route::{self, ScanKind};
-use crate::scan_service::{ScanRequest, ScanService};
+use crate::scan_service::{INSPECT_KIND, LookupOutput, ScanRequest, ScanService, stamp_scan_id};
 use crate::scan_store::{LogLevel, ScanStatus};
 use crate::sha256::sha256;
 use crate::source_outcome::SourceExecutionOutcome;
@@ -125,6 +125,10 @@ const KEYS_PATH: &str = "/api/settings/keys";
 const INSPECT_PATH: &str = "/api/inspect";
 /// The radar track route: a `POST`, as each call appends a sweep to the track log.
 const TRACK_PATH: &str = "/api/radar/track";
+/// Free text in (an advert, a message thread, a page), the actionable entities in it out: the
+/// `investigate` command for text pasted in the browser. The text is the body, read whole within
+/// [`MAX_FORM_BYTES`]; a longer text is for `investigate --file` in Termux.
+const INVESTIGATE_PATH: &str = "/api/investigate";
 /// The largest file `/api/inspect` reads: the bound the `exif` and `docmeta` commands read from
 /// disk, so the page reads what the commands read (64 MiB).
 const MAX_INSPECT_BYTES: usize = 64 * 1024 * 1024;
@@ -199,6 +203,11 @@ pub type AnalyzeHandler =
 pub type InspectHandler =
     Arc<dyn Fn(&str, &[u8]) -> Result<LookupReport, LookupError> + Send + Sync>;
 
+/// Investigates one pasted text: the entities the classifier finds in it, answered as a report
+/// like a lookup's, with no outcomes, as the command makes no request. Installed by the binary,
+/// which owns the `investigate` command.
+pub type InvestigateHandler = Arc<dyn Fn(&str) -> Result<LookupReport, LookupError> + Send + Sync>;
+
 #[derive(Clone)]
 struct Inspect {
     handler: InspectHandler,
@@ -250,6 +259,7 @@ struct Routes {
     track: Option<Sensor<TrackReport>>,
     analyze: Option<AnalyzeHandler>,
     inspect: Option<Inspect>,
+    investigate: Option<InvestigateHandler>,
     scans: Option<Arc<ScanApi>>,
     /// The home whose keys file every lookup reads, for [`KEYS_PATH`].
     keys_home: Option<PathBuf>,
@@ -394,6 +404,13 @@ impl Server {
             handler,
             live: Arc::new(AtomicUsize::new(0)),
         });
+        self
+    }
+
+    /// Serve `POST /api/investigate` through `handler`. Without this the route answers `404`.
+    #[must_use]
+    pub fn with_investigate(mut self, handler: InvestigateHandler) -> Self {
+        self.routes.investigate = Some(handler);
         self
     }
 
@@ -740,7 +757,7 @@ fn handle_stream_with(
 
     let deadline = Instant::now() + REQUEST_DEADLINE;
     let waiting = std::cell::Cell::new(waiting);
-    let (request, upload) = read_request_with(&mut stream, deadline, |head| {
+    let (request, upload, unread) = read_request_with(&mut stream, deadline, |head| {
         let admitted = inspect_admits(head, config, routes);
         if admitted.is_some() {
             // An admitted upload streams its body for up to INSPECT_DEADLINE: it is busy, and an
@@ -764,7 +781,41 @@ fn handle_stream_with(
     drop(place);
     stream
         .flush()
-        .map_err(|error| Error::Store(format!("serve flush: {error}")))
+        .map_err(|error| Error::Store(format!("serve flush: {error}")))?;
+    if unread > 0 {
+        drain_unread(&mut stream, unread);
+    }
+    Ok(())
+}
+
+/// A refusal written while the client is still sending its body: a `503` for the inspection place
+/// in use, a `413` for a file over the limit, a `408` for an upload that stalled, a `403` before
+/// any body. Closing then, with unread bytes in the receive queue, makes the kernel answer the
+/// client's next segment with RST instead of FIN, and a browser that meets the reset while
+/// uploading (Firefox for Android, for one; Chrome re-reads the answer) shows a network error in
+/// place of the status that explains the refusal. So the write side is shut, which sends the FIN
+/// right after the answer, and the rest of the announced body is read and discarded: at most
+/// [`MAX_INSPECT_BYTES`], so a lying length cannot hold the connection, within the
+/// [`INSPECT_DEADLINE`] an admitted upload would have had, each read within [`IO_TIMEOUT`], so a
+/// client that stops sending ends the drain at its first timed-out read. The inspection place, if
+/// one was held, was given back before this.
+fn drain_unread(stream: &mut TcpStream, unread: usize) {
+    let _ = stream.shutdown(Shutdown::Write);
+    let deadline = Instant::now() + INSPECT_DEADLINE;
+    let mut left = unread.min(MAX_INSPECT_BYTES);
+    let mut sink = vec![0_u8; 64 * 1024];
+    while left > 0 {
+        match read_step(stream, deadline, &mut sink) {
+            Ok(Step::Read(read)) => left = left.saturating_sub(read),
+            Ok(Step::Closed | Step::TimedOut) | Err(_) => break,
+        }
+    }
+}
+
+/// How much of an announced request (`announced` bytes, head and body) is still unread after
+/// `read` bytes of it came in; nothing when no length was announced.
+fn unread_after(announced: Option<usize>, read: usize) -> usize {
+    announced.map_or(0, |announced| announced.saturating_sub(read))
 }
 
 /// When a response of `len` bytes must be written by: [`REQUEST_DEADLINE`] to start, or
@@ -805,7 +856,7 @@ fn write_within(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> 
 
 #[cfg(test)]
 fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Error> {
-    read_request_with(stream, deadline, |_| None).map(|(request, _)| request)
+    read_request_with(stream, deadline, |_| None).map(|(request, _, _)| request)
 }
 
 /// One read from `stream` within the time left before `deadline`.
@@ -846,15 +897,19 @@ fn read_step(stream: &mut TcpStream, deadline: Instant, buffer: &mut [u8]) -> Re
 /// Read one request. Its head and form body come back as text; when `admit` takes the head as an
 /// inspection upload (its announced length and the place it holds), the body is read whole, as
 /// raw bytes, within [`INSPECT_DEADLINE`], and the text is the head alone.
+/// The count that comes back with them is how much of the body the head announced was left unread,
+/// which the caller drains after answering, so a refusal reaches a client that is still sending.
 fn read_request_with(
     stream: &mut TcpStream,
     mut deadline: Instant,
     admit: impl Fn(&str) -> Option<(usize, Slot)>,
-) -> Result<(String, Option<Upload>), Error> {
+) -> Result<(String, Option<Upload>, usize), Error> {
     let mut bytes = Vec::with_capacity(1024);
     let mut chunk = [0_u8; 1024];
     // Once the head is in: the whole request's length, the head and the form body it announces.
     let mut whole = None;
+    // Once the head is in: the head and the whole body it announced, read or not.
+    let mut announced = None;
     // Once an upload is admitted: where its body starts, and the place it holds.
     let mut upload: Option<(usize, Slot)> = None;
 
@@ -877,14 +932,26 @@ fn read_request_with(
                     bytes.truncate(start);
                     break;
                 }
-                Step::TimedOut => return Ok(("REQUEST_TIMEOUT".into(), None)),
+                Step::TimedOut => {
+                    return Ok((
+                        "REQUEST_TIMEOUT".into(),
+                        None,
+                        unread_after(announced, bytes.len()),
+                    ));
+                }
             }
             continue;
         }
         let read = match read_step(stream, deadline, &mut chunk)? {
             Step::Read(read) => read,
             Step::Closed => break,
-            Step::TimedOut => return Ok(("REQUEST_TIMEOUT".into(), None)),
+            Step::TimedOut => {
+                return Ok((
+                    "REQUEST_TIMEOUT".into(),
+                    None,
+                    unread_after(announced, bytes.len()),
+                ));
+            }
         };
         // Only the new bytes, and the three before them, can complete the blank line that ends
         // the head: scanning the whole buffer after every read was quadratic in its length.
@@ -903,8 +970,10 @@ fn read_request_with(
                     deadline = deadline.max(Instant::now() + INSPECT_DEADLINE);
                     upload = Some((head, place));
                     whole = Some(head + length);
+                    announced = whole;
                     continue;
                 }
+                announced = Some(head + announced_body_len(&bytes[..head]));
                 whole = Some(head + form_body_len(&bytes[..head]));
             }
         }
@@ -916,17 +985,22 @@ fn read_request_with(
     if let Some((head, place)) = upload {
         // The head is moved out and the body kept in place, so the file is held once, not twice.
         let text = String::from_utf8_lossy(&bytes[..head]).into_owned();
+        let unread = unread_after(announced, bytes.len());
         bytes.drain(..head);
-        return Ok((text, Some(Upload { body: bytes, place })));
+        return Ok((text, Some(Upload { body: bytes, place }), unread));
     }
 
     if bytes.len() >= MAX_REQUEST_BYTES && !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-        return Ok(("REQUEST_TOO_LARGE".into(), None));
+        return Ok(("REQUEST_TOO_LARGE".into(), None, 0));
     }
 
     // Header values may carry bytes outside ASCII (RFC 9110 obs-text). Decoding them lossily keeps
     // such a request answerable instead of refusing it with no reply.
-    Ok((String::from_utf8_lossy(&bytes).into_owned(), None))
+    Ok((
+        String::from_utf8_lossy(&bytes).into_owned(),
+        None,
+        unread_after(announced, bytes.len()),
+    ))
 }
 
 /// Whether a request head may upload a file to inspect: `POST /api/inspect` on a server that
@@ -955,7 +1029,11 @@ fn inspect_admits(head: &str, config: &ServeConfig, routes: &Routes) -> Option<(
 /// Only the scan API and the key save change state, so only they take POST, with the file
 /// inspection, whose upload is too large for a query string.
 fn takes_post(path: &str) -> bool {
-    ScanApi::handles(path) || path == KEYS_PATH || path == INSPECT_PATH || path == TRACK_PATH
+    ScanApi::handles(path)
+        || path == KEYS_PATH
+        || path == INSPECT_PATH
+        || path == TRACK_PATH
+        || path == INVESTIGATE_PATH
 }
 
 /// `none` is a typed URL or bookmark; `same-origin` is this page. Anything else came from another
@@ -1001,9 +1079,18 @@ fn host_allowed(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> bool {
 /// The body to read after a request's `head`: the `Content-Length` it announces, when that is at
 /// most [`MAX_FORM_BYTES`]. A larger body is not read; the route answers without it.
 fn form_body_len(head: &[u8]) -> usize {
+    let announced = announced_body_len(head);
+    if announced <= MAX_FORM_BYTES {
+        announced
+    } else {
+        0
+    }
+}
+
+/// The body a request's `head` announces, read or not: its `Content-Length`, or nothing.
+fn announced_body_len(head: &[u8]) -> usize {
     parse_request(&String::from_utf8_lossy(head))
         .and_then(|parsed| parsed.content_length)
-        .filter(|length| *length <= MAX_FORM_BYTES)
         .unwrap_or(0)
 }
 
@@ -1291,6 +1378,7 @@ fn route(
             | TRACK_PATH
             | KEYS_PATH
             | INSPECT_PATH
+            | INVESTIGATE_PATH
     ) || ScanApi::handles(parsed.path);
     if protected && !authorized(parsed, config) {
         return response(401, "application/json; charset=utf-8", UNAUTHORIZED, head).into_bytes();
@@ -1331,7 +1419,8 @@ fn route(
         "/evidence" => dossier_page_response(parsed, config),
         "/api/evidence" => dossier_json_response(parsed, config),
         KEYS_PATH => keys_response(parsed, routes.keys_home.as_deref()),
-        INSPECT_PATH => inspect_response(parsed, upload, routes.inspect.as_ref()),
+        INSPECT_PATH => inspect_response(parsed, upload, routes),
+        INVESTIGATE_PATH => investigate_response(parsed, routes.investigate.as_ref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
         _ => response(404, "text/plain; charset=utf-8", "not found\n", head),
@@ -1920,15 +2009,78 @@ fn analyze_response(parsed: &ParsedRequest<'_>, analyze: Option<&AnalyzeHandler>
     }
 }
 
+/// `POST /api/investigate`: the actionable entities in the text sent as the body, as a report like
+/// a lookup's. The text travels in the body, never the URL, which is kept in history and logs;
+/// it is read whole within [`MAX_FORM_BYTES`], as a key save is, so a longer text is refused with
+/// the command that reads one from a file in Termux.
+fn investigate_response(
+    parsed: &ParsedRequest<'_>,
+    handler: Option<&InvestigateHandler>,
+) -> String {
+    let Some(handler) = handler else {
+        return json_error(404, "text investigation is not enabled on this server");
+    };
+    if parsed.method != Method::Post {
+        return json_error(405, "investigation needs POST with the text as the body");
+    }
+    if let Some(refused) = page_refusal(parsed, "investigation", true) {
+        return refused;
+    }
+    if !parsed.query.is_empty() {
+        return json_error(
+            400,
+            "investigation takes no query string: send the text as the body",
+        );
+    }
+    let length = match parsed.content_length {
+        None | Some(0) => return json_error(400, "investigation needs the text as the body"),
+        Some(length) if length > MAX_FORM_BYTES => {
+            return json_error(
+                413,
+                &format!(
+                    "the text is longer than {MAX_FORM_BYTES} bytes; in Termux, investigate --file FILE reads a longer one"
+                ),
+            );
+        }
+        Some(length) => length,
+    };
+    let Some(body) = parsed.body else {
+        return json_error(400, "the request ended before its head did");
+    };
+    // The request was decoded lossily, so a byte that was not UTF-8 is U+FFFD by now and never
+    // fewer bytes than it was: a body shorter than it announced was cut.
+    if body.len() < length {
+        return json_error(400, "the text ended before the length it announced");
+    }
+    let text = body.to_owned();
+    let handler = Arc::clone(handler);
+    let worker = thread::Builder::new()
+        .name("serve-investigate".into())
+        .stack_size(ANALYZE_STACK_BYTES)
+        .spawn(move || handler(&text));
+    let outcome = match worker {
+        Ok(worker) => worker.join(),
+        Err(_) => return json_error(503, "could not start an investigation worker"),
+    };
+    match outcome {
+        Ok(Ok(report)) => match serde_json::to_string(&report) {
+            Ok(body) => json_ok(&body, false),
+            Err(_) => json_error(500, "the investigation could not be encoded"),
+        },
+        Ok(Err(error)) => json_error(error.status, &error.message),
+        Err(_) => json_error(500, "investigation failed unexpectedly"),
+    }
+}
+
 /// `POST /api/inspect?name=FILE`: the uploaded file's EXIF and embedded document metadata, as a
 /// report. The body is the file's raw bytes (`fetch` with a `File` as its body), read only once
 /// [`inspect_admits`] took the request; a request it did not take is answered why here.
 fn inspect_response(
     parsed: &ParsedRequest<'_>,
     upload: Option<&Upload>,
-    inspect: Option<&Inspect>,
+    routes: &Routes,
 ) -> String {
-    let Some(inspect) = inspect else {
+    let Some(inspect) = routes.inspect.as_ref() else {
         return json_error(404, "file inspection is not enabled on this server");
     };
     if parsed.method != Method::Post {
@@ -1961,12 +2113,18 @@ fn inspect_response(
     };
     let handler = &inspect.handler;
     let body = upload.body.as_slice();
+    let service = routes.scans.as_deref().map(ScanApi::service);
     let outcome = thread::scope(|scope| {
         thread::Builder::new()
             .name("serve-inspect".into())
             .stack_size(INSPECT_STACK_BYTES)
             .spawn_scoped(scope, || {
-                catch_unwind(AssertUnwindSafe(|| handler(&label, body)))
+                catch_unwind(AssertUnwindSafe(|| {
+                    handler(&label, body).map(|report| match service {
+                        Some(service) => keep_inspection(service, &label, report),
+                        None => report,
+                    })
+                }))
             })
             .map(thread::ScopedJoinHandle::join)
     });
@@ -1979,6 +2137,36 @@ fn inspect_response(
         Ok(Ok(Err(_)) | Err(_)) => json_error(500, "inspection failed unexpectedly"),
         Err(_) => json_error(503, "could not start an inspection worker"),
     }
+}
+
+/// The inspection kept as a `FINISHED` scan of the file, named in the report's `scan` and
+/// `status`, with every entity stamped with that scan's id so its provenance names a scan
+/// `/api/scans/ID` reads again. When the store refuses, the report is answered whole all the same,
+/// with a `scans` outcome saying why it was not kept: a full store never costs the file's findings.
+fn keep_inspection(service: &ScanService, label: &str, mut report: LookupReport) -> LookupReport {
+    let found = LookupOutput {
+        text: report.text.clone(),
+        entities: report.entities.clone(),
+        outcomes: report.outcomes.clone(),
+    };
+    match service.keep(
+        label,
+        crate::sf_types::base_type(&EntityKind::Document),
+        INSPECT_KIND,
+        found,
+    ) {
+        Ok(record) => {
+            stamp_scan_id(&mut report.entities, &record.id);
+            report.scan = Some(record.id);
+            report.status = Some(record.status.as_str());
+        }
+        Err(error) => report.outcomes.push(SourceExecutionOutcome::inconclusive(
+            "scans",
+            crate::clock::unix_now(),
+            format!("not kept as a saved scan: {error}"),
+        )),
+    }
+    report
 }
 
 /// The report label for an upload: the `name` query value, reduced to a file name (no directory),
@@ -2408,6 +2596,7 @@ mod tests {
                     track: None,
                     analyze: echo_seeds().analyze,
                     inspect: None,
+                    investigate: None,
                     scans: None,
                     keys_home: None,
                 };
@@ -2659,6 +2848,35 @@ mod tests {
                 &Routes::default(),
             ));
             assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+        }
+    }
+
+    /// The Radar table shows every field the OS cache gives for a network, not only the coarse
+    /// band: the exact frequency, the channel width, the security capabilities and the OS clock the
+    /// age is computed from, which before reached only the exported JSON.
+    #[test]
+    fn the_radar_table_shows_every_observation_field() {
+        for needed in [
+            "o.frequency_mhz??''",
+            "o.channel_bandwidth_mhz??''",
+            "o.capabilities||o.sighting?.encryption||''",
+            "o.os_timestamp_us??''",
+            "<th>MHz</th><th>Width (MHz)</th><th>Security</th><th>OS clock (µs)</th>",
+        ] {
+            assert!(INDEX_HTML.contains(needed), "the page lacks {needed}");
+        }
+    }
+
+    /// A correlation rule file that did not load is named on the Settings panel with its reason,
+    /// and a rules listing that failed for any reason but a missing scan API is shown, not hidden.
+    #[test]
+    fn the_settings_panel_names_rules_that_did_not_load() {
+        for needed in [
+            "if(r.error){put(tr,'',el('div','alert','Not loaded: '+(r.id||'')+' · '+r.error))",
+            "rules.filter(r=>!r.error).length",
+            "if(/^HTTP 404/.test(String(e&&e.message||e)))$('rules-p').hidden=true;else fail('gerror'",
+        ] {
+            assert!(INDEX_HTML.contains(needed), "the page lacks {needed}");
         }
     }
 
@@ -3405,6 +3623,7 @@ mod tests {
             track: None,
             analyze: None,
             inspect: None,
+            investigate: None,
             scans: None,
             keys_home: None,
         };
@@ -3581,6 +3800,7 @@ mod tests {
             track: None,
             analyze: None,
             inspect: None,
+            investigate: None,
             scans: Some(Arc::new(api)),
             keys_home: None,
         };
@@ -3887,9 +4107,128 @@ mod tests {
             track: None,
             analyze: Some(Arc::new(handler)),
             inspect: None,
+            investigate: None,
             scans: None,
             keys_home: None,
         }
+    }
+
+    fn investigations(
+        handler: impl Fn(&str) -> Result<LookupReport, LookupError> + Send + Sync + 'static,
+    ) -> Routes {
+        Routes {
+            investigate: Some(Arc::new(handler)),
+            ..Routes::default()
+        }
+    }
+
+    /// One `POST /api/investigate` with `body` as the text, as the page sends it.
+    fn investigate(body: &str, extra: &str, routes: &Routes) -> String {
+        text(respond(
+            &format!(
+                "POST {INVESTIGATE_PATH} HTTP/1.1\r\nHost: localhost\r\n{HEADER}{extra}Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+            &test_config(loopback_bind(), None),
+            routes,
+        ))
+    }
+
+    /// `POST /api/investigate` hands the body to the installed handler as text and answers its
+    /// report like a lookup's. The text never travels in a URL; a `GET`, a query string, a missing
+    /// body or a text longer than a form body is refused, the last naming the command that reads
+    /// a longer one; and the route answers 404 until the binary installs it.
+    #[test]
+    fn a_pasted_text_is_investigated_from_the_body() {
+        let routes = investigations(|text| {
+            let entities: Vec<Entity> = text
+                .split_whitespace()
+                .filter(|word| word.contains('@'))
+                .map(|word| Entity::new(crate::entity::EntityKind::Email, word, 0.9, "investigate"))
+                .collect();
+            Ok(LookupReport {
+                route: "investigate",
+                text: format!("entities={}\n", entities.len()),
+                entities,
+                outcomes: Vec::new(),
+                scan: None,
+                status: None,
+            })
+        });
+        let answer = investigate("call ada@example.com now", "", &routes);
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        let body: serde_json::Value =
+            serde_json::from_str(answer.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["route"], "investigate");
+        assert_eq!(body["text"], "entities=1\n");
+        assert_eq!(body["entities"].as_array().map(Vec::len), Some(1), "{body}");
+        assert_eq!(body["outcomes"], serde_json::json!([]));
+        assert!(body.get("scan").is_none() && body.get("status").is_none());
+
+        let config = test_config(loopback_bind(), None);
+        let ask = |request: String, routes: &Routes| text(respond(&request, &config, routes));
+        let none = ask(
+            format!(
+                "POST {INVESTIGATE_PATH} HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: 1\r\n\r\nx"
+            ),
+            &Routes::default(),
+        );
+        assert!(none.starts_with("HTTP/1.1 404"), "{none}");
+        let get = ask(
+            format!("GET {INVESTIGATE_PATH} HTTP/1.1\r\nHost: localhost\r\n{HEADER}\r\n"),
+            &routes,
+        );
+        assert!(get.starts_with("HTTP/1.1 405"), "{get}");
+        let in_url = ask(
+            format!(
+                "POST {INVESTIGATE_PATH}?text=a HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: 1\r\n\r\nx"
+            ),
+            &routes,
+        );
+        assert!(
+            in_url.starts_with("HTTP/1.1 400") && in_url.contains("send the text as the body"),
+            "{in_url}"
+        );
+        let empty = investigate("", "", &routes);
+        assert!(
+            empty.starts_with("HTTP/1.1 400") && empty.contains("needs the text as the body"),
+            "{empty}"
+        );
+        let long = ask(
+            format!(
+                "POST {INVESTIGATE_PATH} HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: {}\r\n\r\n",
+                MAX_FORM_BYTES + 1
+            ),
+            &routes,
+        );
+        assert!(
+            long.starts_with("HTTP/1.1 413") && long.contains("investigate --file FILE"),
+            "{long}"
+        );
+        let short = ask(
+            format!(
+                "POST {INVESTIGATE_PATH} HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: 9\r\n\r\nab"
+            ),
+            &routes,
+        );
+        assert!(
+            short.starts_with("HTTP/1.1 400") && short.contains("ended before the length"),
+            "{short}"
+        );
+        let failed = investigate(
+            "x",
+            "",
+            &investigations(|_| {
+                Err(LookupError {
+                    status: 422,
+                    message: "no text".into(),
+                })
+            }),
+        );
+        assert!(
+            failed.starts_with("HTTP/1.1 422") && failed.contains("no text"),
+            "{failed}"
+        );
     }
 
     /// Answers with the seeds it was given, so a test can see exactly what reached the spine.
@@ -4690,6 +5029,136 @@ mod tests {
         (addr, calls)
     }
 
+    /// With saved scans on, an inspection is kept as a `FINISHED` scan of the file, named in the
+    /// report with every entity stamped with its id: the file's fields are the target's own raw
+    /// evidence, its GPS position the target's child, and the same server's scans API reads it
+    /// back and refuses to run it again, since the bytes were not kept. Without saved scans the
+    /// report says nothing of a scan.
+    #[test]
+    fn an_inspection_with_saved_scans_is_kept_as_a_finished_scan_of_the_file() {
+        use crate::scan_store::ScanStore;
+        let dir =
+            std::env::temp_dir().join(format!("hse-serve-inspect-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lookup: crate::scan_service::ScanLookup = Arc::new(|_, _, _| Err("no lookup".into()));
+        let api = Arc::new(ScanApi::new(
+            ScanService::new(ScanStore::open(&dir).unwrap(), lookup),
+            None,
+        ));
+        let server = Server::bind(ServeConfig::parse("127.0.0.1:0", None).unwrap())
+            .unwrap()
+            .with_inspect(Arc::new(|label: &str, _: &[u8]| Ok(inspected(label))))
+            .with_scans(Arc::clone(&api));
+        let addr = server.local_addr().unwrap();
+        thread::spawn(move || {
+            let _ = server.run(|_| {});
+        });
+        let answer = upload(
+            addr,
+            &inspect_head("holiday.jpg", 4, HEADER),
+            b"\xff\xd8\xff\xd9",
+        );
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        let id = scan_of(&answer);
+        let body: serde_json::Value =
+            serde_json::from_str(&answer[answer.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(body["status"], "FINISHED", "{body}");
+        for entity in body["entities"].as_array().unwrap() {
+            assert_eq!(entity["scan_id"], id, "{entity}");
+            for evidence in entity["evidence"].as_array().unwrap() {
+                assert_eq!(evidence["provenance"]["scan_id"], id, "{evidence}");
+            }
+        }
+        let record = api.service().store().get(&id).unwrap();
+        assert_eq!(
+            (
+                record.status,
+                record.target.as_str(),
+                record.target_type.as_str(),
+                record.kind.as_str()
+            ),
+            (
+                ScanStatus::Finished,
+                "holiday.jpg",
+                "HSE_DOCUMENT",
+                INSPECT_KIND
+            )
+        );
+        assert_eq!(record.modules_run, ["exif"]);
+        let results = api.service().store().results(&id).unwrap().unwrap();
+        let kinds: Vec<(&str, &str)> = results
+            .elements
+            .iter()
+            .map(|element| (element.kind.as_str(), element.data.as_str()))
+            .collect();
+        for wanted in [
+            ("ROOT", "holiday.jpg"),
+            ("HSE_DOCUMENT", "holiday.jpg"),
+            ("PHYSICAL_COORDINATES", "48.850000,2.333333"),
+        ] {
+            assert!(kinds.contains(&wanted), "{wanted:?} in {kinds:?}");
+        }
+        let file = results
+            .elements
+            .iter()
+            .find(|element| element.kind == "HSE_DOCUMENT")
+            .unwrap();
+        assert!(
+            file.raw.to_string().contains("Fixture Camera 2"),
+            "the file's fields are its raw evidence: {}",
+            file.raw
+        );
+        let rerun = upload(
+            addr,
+            &format!(
+                "POST /api/scans/{id}/rerun HTTP/1.1\r\nHost: localhost\r\n{HEADER}Content-Length: 0\r\n\r\n"
+            ),
+            b"",
+        );
+        assert!(
+            rerun.starts_with("HTTP/1.1 400") && rerun.contains("inspect the file again"),
+            "{rerun}"
+        );
+        let (plain, _) = inspect_server(None, "127.0.0.1:0");
+        let answer = upload(plain, &inspect_head("a", 1, HEADER), b"x");
+        assert!(
+            answer.starts_with("HTTP/1.1 200") && !answer.contains("\"scan\""),
+            "{answer}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// What `exif` reads from a photo, as the inspection handler answers it.
+    fn inspected(label: &str) -> LookupReport {
+        let provenance = || crate::entity::EvidenceProvenance::new("exif");
+        let document = Entity::builder(crate::entity::EntityKind::Document, label, 0.9, "exif")
+            .evidence(
+                crate::entity::Evidence::new(provenance(), format!("{label} with 2 fields"))
+                    .with_attr("Make", "Fixture Camera 2")
+                    .with_attr("file_sha256", "ab"),
+            )
+            .build();
+        let position = Entity::builder(
+            crate::entity::EntityKind::Coordinates,
+            "48.850000,2.333333",
+            0.9,
+            "exif",
+        )
+        .evidence(
+            crate::entity::Evidence::new(provenance(), "GPS position")
+                .with_attr("GPSLatitude", "48.85"),
+        )
+        .build();
+        LookupReport {
+            route: "inspect",
+            text: format!("{label}: 2 entities\n"),
+            entities: vec![document, position],
+            outcomes: vec![SourceExecutionOutcome::success("exif", 1, 2)],
+            scan: None,
+            status: None,
+        }
+    }
+
     /// Send `head` then `body` on one connection and read the whole answer.
     fn upload(addr: SocketAddr, head: &str, body: &[u8]) -> String {
         let mut client = TcpStream::connect(addr).unwrap();
@@ -4736,6 +5205,58 @@ mod tests {
     /// A request the inspection would refuse is refused before its body is read, so no other
     /// page, no tokenless caller and no oversized file makes the server hold a file in memory, and
     /// the handler never runs.
+    /// A refusal written while the browser is still sending its file reaches the browser as the
+    /// answer, not as a reset. The second upload here is larger than any socket buffer, so its
+    /// writes block until the server reads or resets: the server drains the refused body after
+    /// answering, every write succeeds, and the `503` is read whole. Before, the server closed with
+    /// the body unread, the kernel answered the next segment with RST, and a browser without
+    /// Chrome's re-read of an answer after a reset showed a network error with no status.
+    #[test]
+    fn a_refusal_during_an_upload_is_read_not_reset() {
+        let (addr, calls) = inspect_server(None, "127.0.0.1:0");
+        // The one inspection place is held by an upload that has sent one byte of its ten.
+        let mut holder = TcpStream::connect(addr).unwrap();
+        holder
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        holder
+            .write_all(inspect_head("a", 10, HEADER).as_bytes())
+            .unwrap();
+        holder.write_all(&[1]).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        let file = vec![9_u8; 32 * 1024 * 1024];
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        client
+            .write_all(inspect_head("b", file.len(), HEADER).as_bytes())
+            .unwrap();
+        // The refusal is on the wire before the body starts.
+        thread::sleep(Duration::from_millis(200));
+        for chunk in file.chunks(64 * 1024) {
+            client
+                .write_all(chunk)
+                .expect("the server drains the refused upload instead of resetting");
+        }
+        client.shutdown(Shutdown::Write).unwrap();
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).unwrap();
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.starts_with("HTTP/1.1 503"), "{answer}");
+        assert!(answer.contains("already running"), "{answer}");
+        // The held place was never touched: its upload completes and is inspected.
+        holder.write_all(&[2; 9]).unwrap();
+        let mut done = Vec::new();
+        let _ = holder.read_to_end(&mut done);
+        let done = String::from_utf8_lossy(&done);
+        assert!(done.starts_with("HTTP/1.1 200"), "{done}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn an_inspection_is_refused_before_its_body_is_read() {
         // Each refused head announces the largest upload and is sent alone, its write side left
@@ -4910,6 +5431,12 @@ mod tests {
                 handler: Arc::new(refuse),
                 live: Arc::new(AtomicUsize::new(0)),
             }),
+            investigate: Some(Arc::new(|_: &str| {
+                Err(LookupError {
+                    status: 422,
+                    message: "unused".into(),
+                })
+            })),
             scans: scan_routes("guard").0.scans,
             keys_home: Some(home.clone()),
         };
@@ -4935,6 +5462,7 @@ mod tests {
             ("GET", KEYS_PATH, "key request", true),
             ("GET", "/api/analyze?seeds=a", "analysis", false),
             ("POST", "/api/inspect?name=a", "inspection", true),
+            ("POST", INVESTIGATE_PATH, "investigation", true),
         ] {
             for site in ["cross-site", "same-site"] {
                 let answer = ask(

@@ -687,6 +687,73 @@ fn transport_failures_are_path_failures_with_the_key_scrubbed() {
     assert!(!first.reason.contains(KEY));
 }
 
+/// Each path failure carries the kind the fetch saw, so the exposure lookup tells a path that got
+/// no response (a transport failure, exit 69 upstream) from one the source answered with an error
+/// without reading the diagnostic text. Before, `PathFailure` carried only the text, and every
+/// stolen.tax failure reached the exposure row as `Inconclusive`.
+#[test]
+fn a_path_failure_carries_the_kind_the_fetch_saw() {
+    // No response on every path, nothing collected: the lookup's error is the first failure, and
+    // its kind is the transport failure.
+    let transport = Paths {
+        answers: vec![
+            ("snusbase", Err(SourceOutcomeKind::DnsFailure)),
+            ("osintcat", Err(SourceOutcomeKind::DnsFailure)),
+            ("hudsonrock", Err(SourceOutcomeKind::DnsFailure)),
+        ],
+        seen: RefCell::new(Vec::new()),
+    };
+    let StolenTaxError::Failed(first) = go(&transport, "user@example.com").unwrap_err() else {
+        panic!("expected a path failure");
+    };
+    assert_eq!(first.path, "snusbase");
+    assert_eq!(first.kind, SourceOutcomeKind::DnsFailure);
+    assert!(first.kind.is_transport_failure());
+    // The cascade's first request was capped at `TIMEOUT` less the microseconds already spent,
+    // which shortened nothing the note could show: the reason is the failure alone, never
+    // `request capped at 120.0s, the rest of the 120s lookup budget`.
+    assert_eq!(first.reason, "no response (DnsFailure)");
+
+    // Evidence from one path while the others fail each in its own way: the source answered
+    // 503 on one (`Upstream5xx`) and a 2xx that is no usable envelope on the other
+    // (`Inconclusive`). Neither is a transport failure.
+    let snusbase = r#"{"success":true,"data":{"took":0.5,"size":1,"results":{"A":[{"email":"e@example.com"}]}}}"#;
+    let transport = Paths {
+        answers: vec![
+            ("snusbase", Ok((200, snusbase.to_owned()))),
+            ("osintcat", Ok((503, "busy".to_owned()))),
+            (
+                "hudsonrock",
+                Ok((
+                    200,
+                    r#"{"success":false,"data":null,"error":"database temporarily unavailable"}"#
+                        .to_owned(),
+                )),
+            ),
+        ],
+        seen: RefCell::new(Vec::new()),
+    };
+    let report = go(&transport, "user@example.com").unwrap();
+    let kinds: Vec<(&str, SourceOutcomeKind)> = report
+        .failed_paths
+        .iter()
+        .map(|failure| (failure.path, failure.kind))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("osintcat", SourceOutcomeKind::Upstream5xx),
+            ("hudsonrock", SourceOutcomeKind::Inconclusive),
+        ]
+    );
+    assert!(
+        report
+            .failed_paths
+            .iter()
+            .all(|failure| !failure.kind.is_transport_failure())
+    );
+}
+
 #[test]
 fn v2_wire_json_deserialises_snusbase_results_map() {
     let data = decode(
@@ -1167,6 +1234,7 @@ fn a_retry_with_no_budget_left_is_not_sent_or_counted() {
             skipped: vec!["osintcat", "hudsonrock"],
             failed: vec![PathFailure {
                 path: "snusbase",
+                kind: SourceOutcomeKind::RateLimited,
                 reason: "HTTP 429 (RateLimited) after 1 of 3 attempts; the 120s lookup budget ran out before the next one".into(),
             }],
         }

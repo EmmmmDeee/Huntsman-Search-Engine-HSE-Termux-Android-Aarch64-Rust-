@@ -428,6 +428,7 @@ fn modules_lists_only_reachable_catalog_entries() {
     let stdout = String::from_utf8(text.stdout).unwrap();
     for name in [
         "phone_intl",
+        "phone_nanp",
         "github_user",
         "gravatar",
         "duolingo",

@@ -15,7 +15,7 @@ use huntsman_recon::module_selection::Selection;
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_route::ScanKind;
 use huntsman_recon::scan_service::{LookupOutput, ScanRequest, ScanService};
-use huntsman_recon::scan_store::{Risk, ScanCorrelation, ScanOptions, ScanStore};
+use huntsman_recon::scan_store::{Risk, ScanCorrelation, ScanOptions, ScanStatus, ScanStore};
 use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use huntsman_recon::termination::TerminationReason;
 use huntsman_recon::{sf_compat, sf_types};
@@ -33,8 +33,10 @@ const PAGE: &str = include_str!("../src/web_ui.html");
 /// reader's claim with its recording time and the full report, and bulk actions that name their
 /// failures instead of stopping at the first. Raised to 124 KiB for the Analysis tab and the
 /// Source attribution view: two read-only routes the server already answered that the page had
-/// no control for, so a phone user could not reach them.
-const PAGE_BUDGET: usize = 128 * 1024;
+/// no control for, so a phone user could not reach them. Raised to 132 KiB for the Analyze tab's
+/// Extract seeds control: the `investigate` command's text extraction, which only a Termux shell
+/// could reach before; the browser check's timings for the page are in its metrics.
+const PAGE_BUDGET: usize = 132 * 1024;
 /// WCAG 2.2 AA for text under 18.66 px bold or 24 px: the page has none larger.
 const AA: f64 = 4.5;
 /// WCAG 2.2 AA for a graphical object a reader must see (1.4.11), such as a graph node.
@@ -852,6 +854,90 @@ fn scans_live_on_the_server_and_only_the_analysis_is_kept_for_the_tab() {
     }
 }
 
+/// The page's idea of a live scan is the store's: every status the API calls active is one the
+/// page polls and offers Stop for, and no settled one is, so Stop shows exactly while a scan can
+/// be stopped, polling runs on through `ABORT-REQUESTED` until the scan settles, and every Stop
+/// button posts to the scan's `stop` route.
+#[test]
+fn stop_is_offered_exactly_while_the_api_calls_a_scan_active() {
+    let script = inline("script");
+    let active = script
+        .split("const ACTIVE=[")
+        .nth(1)
+        .and_then(|rest| rest.split("];").next())
+        .unwrap_or_else(|| panic!("no ACTIVE list"));
+    let active: Vec<&str> = active
+        .split(',')
+        .map(|status| status.trim().trim_matches('\''))
+        .collect();
+    for status in [
+        ScanStatus::Created,
+        ScanStatus::Starting,
+        ScanStatus::Running,
+        ScanStatus::AbortRequested,
+        ScanStatus::Aborted,
+        ScanStatus::Finished,
+        ScanStatus::ErrorFailed,
+    ] {
+        assert_eq!(
+            active.contains(&status.as_str()),
+            status.is_active(),
+            "{} in {active:?}",
+            status.as_str()
+        );
+    }
+    assert!(script.contains("const live=s=>ACTIVE.includes(s);"));
+    // The scan page: Stop while live, Delete once settled, and polling while live.
+    assert!(
+        script.contains("$('scstop').hidden=!live(s.status);$('scdelete').hidden=live(s.status);")
+    );
+    assert!(script.contains("$('scstop').onclick=()=>act1('stop',[sid]);"));
+    assert!(script.contains(
+        "const was=scan&&scan.status,running=live(s.status),ended=!!was&&live(was)&&!running;"
+    ));
+    assert!(script.contains("if(running)later(()=>loadScan(false),"));
+    // The scans list: a Stop button per live row, the bulk Stop over the live rows picked, and
+    // polling while any row is live.
+    assert!(script.contains(
+        "live(s.status)?button('Stop',()=>act1('stop',[s.id])):button('Delete',()=>act1('delete',[s.id]))"
+    ));
+    assert!(script.contains(
+        "$('sstop').onclick=()=>act1('stop',[...picked].filter(id=>scans.some(s=>s.id===id&&live(s.status))));"
+    ));
+    assert!(script.contains("if(scans.some(s=>live(s.status)))later(loadScans);else resume=null;"));
+    // Every action, Stop included, is one POST to the scan's own route.
+    assert!(
+        script.contains("const r=await api('/api/scans/'+enc(id)+'/'+action,{method:'POST'});")
+    );
+}
+
+/// The Analyze tab extracts seeds from pasted text through `POST /api/investigate`, the
+/// `investigate` command's route: the text goes in the body (never a URL), what is found joins
+/// the seeds textarea without duplicates, and each entity is listed with the signal that found it.
+#[test]
+fn the_analyze_tab_extracts_seeds_from_pasted_text() {
+    let script = inline("script");
+    assert!(PAGE.contains(r#"<form class="row" id="investigate">"#));
+    assert!(PAGE.contains(r#"<textarea id="txtext" rows="4" maxlength="20000""#));
+    assert!(
+        PAGE.contains(r#"<button class="btn" id="txrun" type="submit">Extract seeds</button>"#)
+    );
+    assert!(PAGE.contains(r#"<tbody id="txentities"></tbody>"#));
+    assert!(script.contains(
+        "const r=await api('/api/investigate',{method:'POST',body:text}),es=r.entities||[];"
+    ));
+    assert!(script.contains(
+        "const have=new Set($('seeds').value.split('\\n').map(s=>s.trim()).filter(Boolean));"
+    ));
+    assert!(script.contains("for(const e of es)have.add(e.value);"));
+    assert!(script.contains("$('seeds').value=[...have].join('\\n');"));
+    assert!(script.contains("fill('txentities',es,e=>[e.kind,e.value,e.confidence==null?'':Number(e.confidence).toFixed(2),(e.evidence||[]).map(x=>x.attributes&&x.attributes.signal||'').filter(Boolean).join(' ')]);"));
+    assert!(
+        !script.contains("/api/investigate?"),
+        "the text must not travel in a URL"
+    );
+}
+
 #[test]
 fn a_returning_tab_asks_only_for_health_unless_a_scan_is_running() {
     let script = inline("script");
@@ -901,6 +987,20 @@ fn every_outcome_label_the_page_colours_is_a_wire_label() {
         tones.get(SourceOutcomeKind::RefusedBeforeSending.as_str()),
         Some(&"warn")
     );
+}
+
+/// An analysis the server cut short says so in its summary instead of reading as complete, every
+/// link shows how sure the spine is of it and what it rests on, and every pivot its closeness: the
+/// fields `/api/analyze` answers that the page used to drop.
+#[test]
+fn the_analysis_shows_what_was_cut_and_how_sure_each_link_is() {
+    let script = inline("script");
+    assert!(script.contains("+(body.truncated?' · TRUNCATED: a bound cut this analysis short, so these results are incomplete':'');"));
+    assert!(script.contains("$('astatus').classList.toggle('alert',!!body.truncated);"));
+    assert!(PAGE.contains("<th>from</th><th>relation</th><th>to</th><th>confidence</th><th>evidence</th></tr></thead><tbody id=\"arelations\">"));
+    assert!(script.contains("fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind)+(x.label?' · '+x.label:''),who(x.to_uid),Number(x.confidence).toFixed(2),(x.evidence||[]).map(e=>((e.provenance&&e.provenance.source)||'')+(e.summary?': '+e.summary:'')).join(' · ')||'none: derived from the seeds alone']);"));
+    assert!(PAGE.contains("<th>entity</th><th>links</th><th>reach</th><th>closeness</th><th>cut point</th></tr></thead><tbody id=\"apivots\">"));
+    assert!(script.contains("fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,Number(p.closeness).toFixed(2),p.articulation?'yes':'']);"));
 }
 
 #[test]
@@ -960,4 +1060,25 @@ fn scan_modes_disclose_uncertain_coverage_and_passive_visibility() {
     );
     assert!(!PAGE.contains("every possible piece of information about the target is obtained"));
     assert!(!PAGE.contains("don't want the target to even suspect"));
+}
+
+/// An inspected file is kept as a saved scan when the server keeps scans: the page names that scan
+/// with its status and opens it; when the server keeps none, or refused to keep this one, it says
+/// so rather than nothing.
+#[test]
+fn an_inspected_file_names_the_scan_it_was_kept_as() {
+    let script = inline("script");
+    assert!(PAGE.contains(r#"<p class="note" id="ikept" role="status" hidden></p>"#));
+    assert!(script.contains(
+        "const kept=$('ikept'),refused=(r.outcomes||[]).find(o=>o.module==='scans');kept.hidden=false;kept.replaceChildren();"
+    ));
+    assert!(script.contains(
+        "if(r.scan)kept.append('Kept as scan '+r.scan+(r.status?' ('+r.status+')':'')+' · ',button('Open scan',()=>{location.hash='#/scan/'+enc(r.scan)+'/summary'},'btn-ghost'));"
+    ));
+    assert!(script.contains(
+        "else if(refused)kept.textContent='Not kept as a saved scan: '+(refused.detail||refused.kind);"
+    ));
+    assert!(script.contains(
+        "else kept.textContent='Not kept as a saved scan: this server keeps none (set HOME or HUNTSMAN_HOME).';"
+    ));
 }

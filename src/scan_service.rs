@@ -68,6 +68,9 @@ pub const MAX_NAME_BYTES: usize = 200;
 const WAIT_SLICE: Duration = Duration::from_millis(250);
 /// The use cases Spiderfoot offers.
 pub const USE_CASES: [&str; 4] = ["all", "footprint", "investigate", "passive"];
+/// The `kind` of a scan kept from `/api/inspect`: the command that read the file, not a lookup the
+/// service can run again, since the file's bytes are not kept with the scan.
+pub const INSPECT_KIND: &str = "inspect";
 
 /// What one lookup found.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -175,6 +178,11 @@ pub fn plan(target: &str, kind: Option<&str>) -> Result<ScanPlan, ServiceError> 
             kind
         }
         Some(word) => {
+            if word.eq_ignore_ascii_case(INSPECT_KIND) {
+                return Err(ServiceError::BadRequest(
+                    "an inspected file is kept as a scan but its bytes are not; inspect the file again to read it anew".into(),
+                ));
+            }
             let kind = parse_kind(&word.to_ascii_lowercase())
                 .map_err(|_| ServiceError::BadRequest(format!("unknown scan kind {word}")))?;
             if kind == ScanKind::People && !explicit_people_is_name(&selector) {
@@ -581,10 +589,17 @@ impl SelectorCollector for ScanCollector<'_> {
             lineage: progress.edges.to_vec(),
             termination: None,
         };
-        if let Err(error) =
-            self.service
-                .save(self.id, self.plan, self.options, found, self.errors, crawl)
-        {
+        if let Err(error) = self.service.save(
+            self.id,
+            Target {
+                value: &self.plan.target,
+                kind: self.plan.target_type,
+            },
+            self.options,
+            found,
+            self.errors,
+            crawl,
+        ) {
             self.service.log(
                 self.id,
                 "huntsman",
@@ -1440,7 +1455,17 @@ impl ScanService {
             lineage: report.edges,
             termination: Some(report.termination),
         };
-        let saved = self.save(id, plan, &options, found, errors, crawl);
+        let saved = self.save(
+            id,
+            Target {
+                value: &plan.target,
+                kind: plan.target_type,
+            },
+            &options,
+            found,
+            errors,
+            crawl,
+        );
         let status = if self.aborted(id) {
             ScanStatus::Aborted
         } else if ran == 0 {
@@ -1575,7 +1600,7 @@ impl ScanService {
     fn save(
         &self,
         id: &str,
-        plan: &ScanPlan,
+        target: Target<'_>,
         options: &ScanOptions,
         found: LookupOutput,
         errors: usize,
@@ -1584,10 +1609,6 @@ impl ScanService {
         let mut found = found;
         stamp_scan_id(&mut found.entities, id);
         let now = clock::unix_now_millis();
-        let target = Target {
-            value: &plan.target,
-            kind: plan.target_type,
-        };
         let mut elements = sf_elements::elements_with_lineage(
             target,
             &found.entities,
@@ -1607,7 +1628,7 @@ impl ScanService {
             let mut retained = std::collections::HashSet::new();
             for element in &elements {
                 if element.kind != "ROOT"
-                    && element.kind != plan.target_type
+                    && element.kind != target.kind
                     && !keep.contains(element.kind.as_str())
                 {
                     continue;
@@ -1671,6 +1692,112 @@ impl ScanService {
         record.modules_run = modules_run;
         self.store.update(&record)?;
         Ok(())
+    }
+
+    /// Keep a report made outside the service's lookups as a `FINISHED` scan of `target`: the
+    /// reading of a file uploaded to `/api/inspect`, whose bytes the server does not keep, so the
+    /// scan is the one place its findings and their provenance outlive the answer. `target_type`
+    /// is the target's Spiderfoot type and `kind` the command that made the report, which a re-run
+    /// is refused by. The row is written `RUNNING` before the results and `FINISHED` after them,
+    /// so a failure between leaves an `ERROR_FAILED` row with the reason in its log, never a scan
+    /// that claims results it has not got.
+    ///
+    /// # Errors
+    /// [`ServiceError::BadRequest`] for an empty or over-long target; [`ServiceError::Store`] when
+    /// the store is full or cannot be written.
+    pub fn keep(
+        &self,
+        target: &str,
+        target_type: &str,
+        kind: &str,
+        found: LookupOutput,
+    ) -> Result<ScanRecord, ServiceError> {
+        let target = target.trim();
+        if target.is_empty() {
+            return Err(ServiceError::BadRequest(
+                "a kept report needs a target".into(),
+            ));
+        }
+        if target.len() > MAX_TARGET_BYTES {
+            return Err(ServiceError::BadRequest(format!(
+                "the target is longer than {MAX_TARGET_BYTES} bytes"
+            )));
+        }
+        let now = clock::unix_now_millis();
+        let (owner, owner_started) = crate::scan_store::this_process();
+        let record = ScanRecord {
+            format_version: FORMAT_VERSION,
+            id: new_id(
+                target,
+                clock::unix_now_nanos(),
+                self.sequence.fetch_add(1, Ordering::Relaxed),
+            ),
+            name: target.to_owned(),
+            target: target.to_owned(),
+            target_type: target_type.to_owned(),
+            kind: kind.to_owned(),
+            options: ScanOptions::default(),
+            status: ScanStatus::Running,
+            created: now,
+            started: Some(now),
+            ended: None,
+            elements: 0,
+            unique: 0,
+            correlations: RiskCounts::default(),
+            errors: 0,
+            modules_run: Vec::new(),
+            owner: Some(owner),
+            owner_started,
+        };
+        self.store.create(&record)?;
+        let id = record.id.clone();
+        self.log(
+            &id,
+            "huntsman",
+            LogLevel::Info,
+            format!(
+                "scan created: {target_type} target {target} kept from the {kind} command's report"
+            ),
+        );
+        let errors = found
+            .outcomes
+            .iter()
+            .filter(|outcome| is_error_outcome(outcome.kind))
+            .count();
+        let (entities, outcomes) = (found.entities.len(), found.outcomes.len());
+        let crawl = Crawl {
+            lineage: Vec::new(),
+            termination: Some(TerminationReason::FixedPoint),
+        };
+        let kept = self.save(
+            &id,
+            Target {
+                value: target,
+                kind: target_type,
+            },
+            &record.options,
+            found,
+            errors,
+            crawl,
+        );
+        if let Err(error) = kept {
+            self.log(
+                &id,
+                "huntsman",
+                LogLevel::Error,
+                format!("could not save the results: {error}"),
+            );
+            let _ = self.set_status(&id, ScanStatus::ErrorFailed, Some(clock::unix_now_millis()));
+            return Err(error);
+        }
+        self.set_status(&id, ScanStatus::Finished, Some(clock::unix_now_millis()))?;
+        self.log(
+            &id,
+            "huntsman",
+            LogLevel::Info,
+            format!("scan finished: {entities} entities and {outcomes} source outcomes kept"),
+        );
+        Ok(self.store.get(&id)?)
     }
 
     /// Ask a running or waiting scan to stop.
@@ -1852,7 +1979,7 @@ fn outcome_line(outcome: &SourceExecutionOutcome) -> String {
 /// record's provenance and on every observation a merge kept, and a kept observation that then
 /// differs from the record's own in nothing is dropped, as [`crate::entity::merge_by_uid`] would
 /// have dropped it.
-fn stamp_scan_id(entities: &mut [Entity], id: &str) {
+pub(crate) fn stamp_scan_id(entities: &mut [Entity], id: &str) {
     for entity in entities {
         id.clone_into(&mut entity.scan_id);
         for evidence in &mut entity.evidence {
@@ -1892,6 +2019,147 @@ mod tests {
             std::env::temp_dir().join(format!("hse-scan-service-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// A report kept from outside the lookups is a `FINISHED` scan of its target: its row, log,
+    /// elements (the target carrying the report's fields as raw evidence, its findings as children)
+    /// and module list are a scan's, every entity names the scan, and running it again is refused
+    /// because nothing can run it.
+    #[test]
+    fn a_kept_report_is_a_finished_scan_that_cannot_be_rerun() {
+        let (service, dir) = with_lookup("kept", Arc::new(|_, _, _| Err("no lookup".into())));
+        let provenance = || EvidenceProvenance::new("exif");
+        let document = Entity::builder(EntityKind::Document, "holiday.jpg", 0.9, "exif")
+            .evidence(
+                Evidence::new(provenance(), "holiday.jpg with 2 fields")
+                    .with_attr("Make", "Fixture")
+                    .with_attr("file_sha256", "ab"),
+            )
+            .build();
+        let position = Entity::builder(EntityKind::Coordinates, "48.850000,2.333333", 0.9, "exif")
+            .evidence(Evidence::new(provenance(), "GPS position"))
+            .build();
+        let found = LookupOutput {
+            text: "holiday.jpg: 2 entities\n".into(),
+            entities: vec![document, position],
+            outcomes: vec![
+                SourceExecutionOutcome::success("exif", 1, 2),
+                SourceExecutionOutcome::failed(
+                    "docmeta",
+                    1,
+                    SourceOutcomeKind::ParserDrift,
+                    None,
+                    "not a PDF",
+                ),
+            ],
+        };
+        let record = service
+            .keep("holiday.jpg", "HSE_DOCUMENT", INSPECT_KIND, found)
+            .unwrap();
+        assert_eq!(
+            (
+                record.status,
+                record.target.as_str(),
+                record.target_type.as_str(),
+                record.kind.as_str(),
+                record.name.as_str()
+            ),
+            (
+                ScanStatus::Finished,
+                "holiday.jpg",
+                "HSE_DOCUMENT",
+                "inspect",
+                "holiday.jpg"
+            )
+        );
+        assert!(
+            record.started.is_some() && record.ended >= record.started,
+            "{record:?}"
+        );
+        assert_eq!(record.errors, 1, "{record:?}");
+        assert_eq!(record.modules_run, ["docmeta", "exif"]);
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        assert_eq!(record.elements, results.elements.len() - 1, "{record:?}");
+        assert_eq!(results.termination, Some(TerminationReason::FixedPoint));
+        assert!(results.lineage.is_empty(), "{:?}", results.lineage);
+        assert_kept_elements(&results, &record.id);
+        let log = service.store().log(&record.id).unwrap();
+        let messages: Vec<&str> = log.iter().map(|entry| entry.message.as_str()).collect();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("kept from the inspect command's report"))
+                && messages.iter().any(|message| {
+                    message.contains("scan finished: 2 entities and 2 source outcomes kept")
+                }),
+            "{messages:?}"
+        );
+        let refused = service.rerun(&record.id).unwrap_err();
+        assert_eq!(
+            refused,
+            ServiceError::BadRequest(
+                "an inspected file is kept as a scan but its bytes are not; inspect the file again to read it anew"
+                    .into()
+            )
+        );
+        assert_eq!(service.store().list().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A kept report's elements: every entity and record names scan `id`; the target carries the
+    /// report's fields as its own raw evidence under the root; each finding is the target's child.
+    fn assert_kept_elements(results: &ScanResults, id: &str) {
+        for entity in &results.entities {
+            assert_eq!(entity.scan_id, id, "{entity:?}");
+            for evidence in &entity.evidence {
+                assert_eq!(
+                    evidence.provenance.scan_id.as_deref(),
+                    Some(id),
+                    "{evidence:?}"
+                );
+            }
+        }
+        let elements: Vec<(&str, &str, Option<&str>)> = results
+            .elements
+            .iter()
+            .map(|element| {
+                (
+                    element.kind.as_str(),
+                    element.data.as_str(),
+                    element.source.as_deref(),
+                )
+            })
+            .collect();
+        let root = results
+            .elements
+            .iter()
+            .find(|element| element.kind == "ROOT")
+            .unwrap();
+        let file = results
+            .elements
+            .iter()
+            .find(|element| element.kind == "HSE_DOCUMENT")
+            .unwrap();
+        assert_eq!(
+            file.source.as_deref(),
+            Some(root.id.as_str()),
+            "{elements:?}"
+        );
+        assert!(
+            file.raw.to_string().contains("Fixture"),
+            "the file's fields are its own raw evidence: {}",
+            file.raw
+        );
+        let position = results
+            .elements
+            .iter()
+            .find(|element| element.kind == "PHYSICAL_COORDINATES")
+            .unwrap();
+        assert_eq!(
+            position.source.as_deref(),
+            Some(file.id.as_str()),
+            "{elements:?}"
+        );
     }
 
     fn found(kind: ScanKind, selector: &str) -> LookupOutput {

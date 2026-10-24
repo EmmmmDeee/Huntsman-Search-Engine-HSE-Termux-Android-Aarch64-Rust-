@@ -111,13 +111,28 @@ pub fn run(phone: &str, now_unix: u64) -> PhoneRun {
 
     let mut outcomes = vec![SourceExecutionOutcome::success("phone_intl", now_unix, 1)];
 
+    // Every plan is consulted for every number and answers for its own, so a phone scan's Sources
+    // table names all three plans, and a plan that does not hold the number says so in its row
+    // instead of leaving none.
     if iso == "AU" {
         enrich_au(&canonical, &scan_id, &mut entity);
-        outcomes.push(SourceExecutionOutcome::success("phone_au", now_unix, 1));
+        outcomes.push(SourceExecutionOutcome::success(AU_SOURCE, now_unix, 1));
+    } else {
+        outcomes.push(
+            SourceExecutionOutcome::valid_zero(AU_SOURCE, now_unix).with_detail(format!(
+                "+{prefix} is not Australia's +61, so the Australian plan holds no reading of it"
+            )),
+        );
     }
     if let Some(nanp) = &nanp {
         enrich_nanp(nanp, &scan_id, &mut entity);
         outcomes.push(SourceExecutionOutcome::success(NANP_SOURCE, now_unix, 1));
+    } else {
+        outcomes.push(
+            SourceExecutionOutcome::valid_zero(NANP_SOURCE, now_unix).with_detail(format!(
+                "+{prefix} is not the North American Numbering Plan's +1, so the plan holds no reading of it"
+            )),
+        );
     }
 
     let report = Report {
@@ -149,12 +164,14 @@ pub fn run_keyed<T: Transport + ?Sized>(
     };
     let (canonical, scan_id) = (entity.raw_value.clone(), entity.scan_id.clone());
     let indicator = Indicator::Phone(&canonical);
-    let numverify_wanted = numverify::API.runs(transport, keys);
-    if !numverify_wanted && indicator_legs::planned(indicator, keys).is_empty() {
-        return match render(&report) {
-            Ok(text) => PhoneRun::Printed { text, report },
-            Err(message) => PhoneRun::Failed(message),
-        };
+    let numverify_asked = transport.runs_module(numverify::API.source);
+    let numverify_wanted = numverify_asked && numverify::API.wanted(keys);
+    if numverify_asked && !numverify_wanted {
+        // Asked without its key: no request, and the row that says so, as every keyed leg leaves.
+        report.outcomes.push(SourceExecutionOutcome::not_configured(
+            numverify::API.source,
+            now_unix,
+        ));
     }
     if numverify_wanted {
         let api = &numverify::API;
@@ -216,7 +233,7 @@ fn enrich_au(canonical: &str, scan_id: &str, entity: &mut Entity) {
     entity.tag("au-phone");
     entity.tag(format!("line:{}", line_type.slug()));
     let mut evidence = Evidence::new(
-        EvidenceProvenance::for_scan("phone_au", scan_id),
+        EvidenceProvenance::for_scan(AU_SOURCE, scan_id),
         format!("Australian numbering-plan classification: {label}"),
     )
     .with_attr("line_type", line_type.slug())
@@ -252,7 +269,11 @@ fn enrich_au(canonical: &str, scan_id: &str, entity: &mut Entity) {
 }
 
 /// Evidence source for the offline North American Numbering Plan reading.
-const NANP_SOURCE: &str = "phone_nanp";
+/// The label the Australian numbering-plan reading records its evidence and outcome under.
+pub const AU_SOURCE: &str = "phone_au";
+
+/// The label the North American Numbering Plan reading records its evidence and outcome under.
+pub const NANP_SOURCE: &str = "phone_nanp";
 
 /// What the North American Numbering Plan says about a `+1` number: its national and
 /// international forms, its class, its area code's country, and whether it is one of the
@@ -311,6 +332,7 @@ fn render(report: &Report) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_outcome::SourceOutcomeKind;
 
     #[test]
     fn parse_accepts_au_local_and_save() {
@@ -368,10 +390,25 @@ mod tests {
             PhoneRun::Printed { text, .. } => text,
             PhoneRun::Failed(message) => panic!("{message}"),
         };
+        // No key: the offline lookup, plus one row per keyed leg saying it was not asked, in the
+        // order the legs run (numverify, then the keyed indicator source for phones).
+        let unkeyed = text(run_keyed(&transport, &Keys::default(), "0412 345 678", 1));
+        let (skipped, rest): (Vec<&str>, Vec<&str>) = unkeyed
+            .lines()
+            .partition(|line| line.contains("\tnot_configured\t"));
+        let suffix = format!(
+            "\tnot_configured\tfound=none\tdetail={}",
+            crate::source_outcome::NO_KEY_DETAIL
+        );
         assert_eq!(
-            text(run_keyed(&transport, &Keys::default(), "0412 345 678", 1)),
+            skipped,
+            [format!("numverify{suffix}"), format!("ipqs{suffix}")],
+            "{unkeyed}"
+        );
+        assert_eq!(
+            rest.join("\n") + "\n",
             text(run("0412 345 678", 1)),
-            "no key: exactly the offline lookup"
+            "no key: the offline lookup and nothing else"
         );
         assert!(transport.response.borrow().is_some(), "no key: no request");
 
@@ -418,7 +455,28 @@ mod tests {
                 let entity = &report.entities[0];
                 assert!(entity.has_tag("country:GB"));
                 assert!(!entity.has_tag("au-phone"));
-                assert_eq!(report.outcomes.len(), 1);
+                // The plans that do not hold a British number still answer, each in its own row.
+                let rows: Vec<(&str, SourceOutcomeKind)> = report
+                    .outcomes
+                    .iter()
+                    .map(|outcome| (outcome.module.as_str(), outcome.kind))
+                    .collect();
+                assert_eq!(
+                    rows,
+                    [
+                        ("phone_intl", SourceOutcomeKind::Success),
+                        (AU_SOURCE, SourceOutcomeKind::ValidZero),
+                        (NANP_SOURCE, SourceOutcomeKind::ValidZero),
+                    ]
+                );
+                assert!(
+                    report.outcomes[1]
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.starts_with("+44 is not Australia's +61")),
+                    "{:?}",
+                    report.outcomes[1].detail
+                );
             }
             PhoneRun::Failed(message) => panic!("{message}"),
         }
@@ -439,7 +497,15 @@ mod tests {
         match run_keyed(&transport, &keys, "0412 345 678", 1) {
             PhoneRun::Printed { text, report } => {
                 assert!(text.contains("ipqs\tsuccess"), "{text}");
-                assert!(!text.contains("numverify"), "{text}");
+                // Numverify was asked and has no key: no request, and the row that says so.
+                assert!(text.contains("numverify\tnot_configured"), "{text}");
+                assert!(
+                    report.outcomes.iter().any(|o| o.module == "numverify"
+                        && o.kind == SourceOutcomeKind::NotConfigured
+                        && o.detail.as_deref() == Some(crate::source_outcome::NO_KEY_DETAIL)),
+                    "{:?}",
+                    report.outcomes
+                );
                 assert!(!text.contains("ipqs-test-key"));
                 assert_eq!(
                     report
@@ -455,6 +521,70 @@ mod tests {
             PhoneRun::Failed(message) => panic!("{message}"),
         }
         assert!(transport.response.borrow().is_none(), "one request made");
+    }
+
+    /// The plan's reading of a +1 number derives from the number itself, as `phone_intl`'s and
+    /// `phone_au`'s do, so it corroborates nothing: a NANP number is as unconfirmed as an
+    /// Australian one, and no view counts the plan as an independent source. The plan is also a
+    /// module the catalogue knows, so the Sources table, By Module and the ATT&CK coverage name it.
+    #[test]
+    fn the_numbering_plan_is_enrichment_not_an_independent_source() {
+        let PhoneRun::Printed {
+            report: toronto, ..
+        } = run("+1 (416) 555-0199", 1)
+        else {
+            panic!("a Toronto number prints");
+        };
+        let nanp = &toronto.entities[0];
+        assert!(
+            nanp.evidence
+                .iter()
+                .any(|evidence| evidence.provenance.source == NANP_SOURCE)
+        );
+        assert_eq!(
+            nanp.corroborating_sources(),
+            std::collections::BTreeSet::new()
+        );
+        let PhoneRun::Printed { report: sydney, .. } = run("+61 412 345 678", 1) else {
+            panic!("an Australian mobile prints");
+        };
+        let au = &sydney.entities[0];
+        assert_eq!(au.corroborating_sources(), nanp.corroborating_sources());
+        assert_eq!(au.source_count(), nanp.source_count());
+        // Each scan's Sources table names all three plans, the one that holds the number as a
+        // success and the other as a valid zero that says why.
+        let kinds = |report: &Report| -> Vec<(String, SourceOutcomeKind)> {
+            report
+                .outcomes
+                .iter()
+                .map(|outcome| (outcome.module.clone(), outcome.kind))
+                .collect()
+        };
+        assert_eq!(
+            kinds(&toronto),
+            [
+                ("phone_intl".to_owned(), SourceOutcomeKind::Success),
+                (AU_SOURCE.to_owned(), SourceOutcomeKind::ValidZero),
+                (NANP_SOURCE.to_owned(), SourceOutcomeKind::Success),
+            ]
+        );
+        assert_eq!(
+            kinds(&sydney),
+            [
+                ("phone_intl".to_owned(), SourceOutcomeKind::Success),
+                (AU_SOURCE.to_owned(), SourceOutcomeKind::Success),
+                (NANP_SOURCE.to_owned(), SourceOutcomeKind::ValidZero),
+            ]
+        );
+        assert!(
+            crate::module::reachable_modules()
+                .iter()
+                .any(|module| module.name == NANP_SOURCE && !module.network)
+        );
+        assert!(
+            crate::lookup_modules::offline_runs(crate::scan_route::ScanKind::Phone)
+                .contains(&NANP_SOURCE)
+        );
     }
 
     /// A +1 number gets `PhoneInfoga`'s fields and more: its national and international forms, its

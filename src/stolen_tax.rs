@@ -44,7 +44,10 @@
 //! Honest failure: a path that fails or is skipped while another produced evidence
 //! is reported in [`StolenTaxReport::failed_paths`] / [`StolenTaxReport::skipped_paths`]
 //! and [`StolenTaxReport::truncation`]; when nothing was collected and any path
-//! failed or was skipped, the lookup is an error, never a clean negative. A row that
+//! failed or was skipped, the lookup is an error, never a clean negative. Each
+//! [`PathFailure`] carries the [`SourceOutcomeKind`] the fetch saw, so a caller tells
+//! a path that got no response (a transport failure, exit 69 upstream) from one the
+//! source answered with an error, without reading the diagnostic text. A row that
 //! matched but names no breach or stealer host was collected too: it is counted in
 //! [`StolenTaxReport::unnamed_rows`], so a lookup whose only match is such a row, even
 //! one that only restates the query, is neither an error nor reported as not found. A
@@ -97,6 +100,11 @@ pub const ATTEMPTS_PER_PATH: u8 = 3;
 /// Longest pause between `429` attempts, and the pause when `Retry-After` is absent
 /// or unreadable.
 pub const RETRY_PAUSE_CAP: Duration = Duration::from_secs(4);
+/// A no-response failure notes the request's cap only when the cap shortened the request by
+/// at least this much: the tenth of a second the note prints. A cascade's first request is
+/// capped at [`TIMEOUT`] less the microseconds the lookup has already spent, and `capped at
+/// 120.0s, the rest of the 120s lookup budget` would be noise in a saved scan's log.
+const CAP_NOTE_RESOLUTION: Duration = Duration::from_millis(100);
 
 // Confidence tiers carried over from the monolith's `core::confidence`.
 const MEDIUM: f64 = 0.50;
@@ -135,6 +143,13 @@ pub enum StolenTaxError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathFailure {
     pub path: &'static str,
+    /// What the fetch saw: a transport failure kind when the path got no response
+    /// ([`SourceOutcomeKind::is_transport_failure`]), the kind of the error status when
+    /// the source answered with one (`Upstream5xx`, `RateLimited`, ...), and
+    /// [`SourceOutcomeKind::Inconclusive`] when it answered 2xx with a body that was
+    /// not a usable envelope. Never [`SourceOutcomeKind::RefusedBeforeSending`]: a
+    /// refusal aborts the cascade as [`StolenTaxError::Refused`] instead.
+    pub kind: SourceOutcomeKind,
     /// Diagnostic text with the key scrubbed. Never a response body.
     pub reason: String,
 }
@@ -241,7 +256,7 @@ fn lookup_within<T: Transport + ?Sized>(
             &deadline,
         )? {
             PathOutcome::Data(chunk) => merge_data(&mut merged, chunk),
-            PathOutcome::Failed(reason) => failures.push(PathFailure { path, reason }),
+            PathOutcome::Failed(failure) => failures.push(failure),
             PathOutcome::NotSent => skipped.push(path),
         }
     }
@@ -259,8 +274,8 @@ fn credential(secret: Secret, now_unix: u64) -> Result<Credential, StolenTaxErro
 /// How one path ended.
 enum PathOutcome {
     Data(StolenTaxData),
-    /// Diagnostic text, key scrubbed.
-    Failed(String),
+    /// The kind the fetch saw and the diagnostic text, key scrubbed.
+    Failed(PathFailure),
     /// Not sent: the budget was spent before its first attempt went out.
     NotSent,
 }
@@ -279,11 +294,17 @@ fn query_path<T: Transport + ?Sized>(
     deadline: &Deadline<'_>,
 ) -> Result<PathOutcome, StolenTaxError> {
     let budget_secs = deadline.budget().as_secs();
+    let failed = |kind: SourceOutcomeKind, reason: String| {
+        PathOutcome::Failed(PathFailure { path, kind, reason })
+    };
     let ran_out = |attempts: u8, last: Option<SourceOutcomeKind>| match last {
         None => PathOutcome::NotSent,
-        Some(kind) => PathOutcome::Failed(format!(
-            "HTTP 429 ({kind:?}) after {attempts} of {ATTEMPTS_PER_PATH} attempts; the {budget_secs}s lookup budget ran out before the next one"
-        )),
+        Some(kind) => failed(
+            kind,
+            format!(
+                "HTTP 429 ({kind:?}) after {attempts} of {ATTEMPTS_PER_PATH} attempts; the {budget_secs}s lookup budget ran out before the next one"
+            ),
+        ),
     };
     let mut attempts = 0u8;
     let mut last_429 = None;
@@ -313,9 +334,12 @@ fn query_path<T: Transport + ?Sized>(
         match fetched.not_sent_hop {
             Some(1) => return Ok(ran_out(attempts, last_429)),
             Some(hop) => {
-                return Ok(PathOutcome::Failed(format!(
-                    "no response (TtfbTimeout); the {budget_secs}s lookup budget ran out before redirect hop {hop}"
-                )));
+                return Ok(failed(
+                    SourceOutcomeKind::TtfbTimeout,
+                    format!(
+                        "no response (TtfbTimeout); the {budget_secs}s lookup budget ran out before redirect hop {hop}"
+                    ),
+                ));
             }
             None => {}
         }
@@ -328,7 +352,7 @@ fn query_path<T: Transport + ?Sized>(
             return Ok(
                 match answer(path, fetched, secret, cap, deadline.budget()) {
                     Ok(data) => PathOutcome::Data(data),
-                    Err(reason) => PathOutcome::Failed(reason),
+                    Err(failure) => PathOutcome::Failed(failure),
                 },
             );
         }
@@ -351,10 +375,10 @@ fn query_path<T: Transport + ?Sized>(
                 pause.as_secs(),
             )
         };
-        return Ok(PathOutcome::Failed(format!(
-            "HTTP 429 ({:?}) {gave_up}",
-            fetched.outcome.kind
-        )));
+        return Ok(failed(
+            fetched.outcome.kind,
+            format!("HTTP 429 ({:?}) {gave_up}", fetched.outcome.kind),
+        ));
     }
 }
 
@@ -369,29 +393,36 @@ fn retry_pause(value: Option<&str>, now_unix: u64) -> Duration {
         })
 }
 
-/// What one fetched attempt means for its path.
+/// What one fetched attempt means for its path. A failure carries the kind the fetch
+/// saw: the transport failure when there was no response, the status's kind when the
+/// source answered with an error or a page that is no API answer, and `Inconclusive`
+/// for a 2xx whose body was over the limit or not a usable envelope.
 fn answer(
-    path: &str,
+    path: &'static str,
     fetched: Fetched,
     secret: &Secret,
     cap: Duration,
     budget: Duration,
-) -> Result<StolenTaxData, String> {
+) -> Result<StolenTaxData, PathFailure> {
     let scrub = |text: &str| scrub_secrets(text, &[secret.expose()]);
+    let kind = fetched.outcome.kind;
+    let failed = |kind: SourceOutcomeKind, reason: String| PathFailure { path, kind, reason };
     let Some(response) = fetched.response else {
-        let kind = fetched.outcome.kind;
-        return Err(if cap < TIMEOUT {
-            format!(
-                "no response ({kind:?}); request capped at {:.1}s, the rest of the {}s lookup budget",
-                cap.as_secs_f64(),
-                budget.as_secs()
-            )
-        } else {
-            format!("no response ({kind:?})")
-        });
+        return Err(failed(
+            kind,
+            if TIMEOUT.saturating_sub(cap) >= CAP_NOTE_RESOLUTION {
+                format!(
+                    "no response ({kind:?}); request capped at {:.1}s, the rest of the {}s lookup budget",
+                    cap.as_secs_f64(),
+                    budget.as_secs()
+                )
+            } else {
+                format!("no response ({kind:?})")
+            },
+        ));
     };
     if !(200..300).contains(&response.status) {
-        let mut reason = format!("HTTP {} ({:?})", response.status, fetched.outcome.kind);
+        let mut reason = format!("HTTP {} ({kind:?})", response.status);
         if let Some(why) = fetched.redirect_refused {
             reason.push_str("; ");
             reason.push_str(why);
@@ -401,18 +432,19 @@ fn answer(
                 "; redirect limit reached ({MAX_REDIRECTS} followed)"
             );
         }
-        return Err(reason);
+        return Err(failed(kind, reason));
     }
-    if fetched.outcome.kind != SourceOutcomeKind::Inconclusive {
-        return Err(format!(
-            "response is not an API answer ({:?})",
-            fetched.outcome.kind
+    if kind != SourceOutcomeKind::Inconclusive {
+        return Err(failed(
+            kind,
+            format!("response is not an API answer ({kind:?})"),
         ));
     }
     if response.truncated {
-        return Err("response exceeds the body limit".into());
+        return Err(failed(kind, "response exceeds the body limit".into()));
     }
-    decode_path_scrubbed(path, &response.body, &[secret.expose()]).map_err(|reason| scrub(&reason))
+    decode_path_scrubbed(path, &response.body, &[secret.expose()])
+        .map_err(|reason| failed(kind, scrub(&reason)))
 }
 
 /// Envelope → normalised rows for one path. A `success: false` envelope is a

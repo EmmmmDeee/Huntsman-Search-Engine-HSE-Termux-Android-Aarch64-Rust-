@@ -556,17 +556,13 @@ const IN_SCOPE: [ScanKind; 8] = [
 ];
 
 /// Every `(kind, module, net)` that breaks the refusal contract today: the module, chosen alone,
-/// breaks it over `net` for at least one of its [`targets`]. The run that seeded the list found
-/// exactly these; [`KNOWN_GAPS`] is kept apart. Each net's broken set, less `KNOWN_GAPS`, must
-/// equal its entries here exactly: a module that newly breaks the contract fails naming it, and
-/// so does an entry no case breaks any more. Each phase of the refusal-routing plan deletes
-/// exactly the triples it fixes, so the list only shrinks.
+/// breaks it over `net` for at least one of its [`targets`]. Each net's broken set must equal its
+/// entries here exactly: a module that newly breaks the contract fails naming it, and so does an
+/// entry no case breaks any more. The refusal-routing plan seeded 203 triples and deleted each
+/// one as it fixed it; the last, stolen.tax reporting no response as a path failure with no
+/// transport kind, left with [`crate::stolen_tax::PathFailure::kind`]. Empty is the contract
+/// held in full; an entry is a reviewed, named exception, never a second list.
 const BROKEN: &[(ScanKind, &str, Net)] = &[];
-
-/// Modules that break the contract over a network for a reason outside their lookup: stolen.tax
-/// reports no response as a path failure that carries no transport kind. Each entry must still
-/// break the contract, and an entry here is never also on [`BROKEN`].
-const KNOWN_GAPS: &[(ScanKind, &str, Net)] = &[(ScanKind::Exposure, "stolen_tax", Net::Silent)];
 
 /// Every `(kind, module, target)` case whose module, chosen alone, asks nothing: domain
 /// `dnsresolve` resolves only the hosts other sources found; the profile front-ends, not the
@@ -743,7 +739,7 @@ fn cases<N: Transport + Clone + Default + Send + Sync + 'static>() -> Vec<Case> 
     cases
 }
 
-/// `(kind, module, net)` as a [`BROKEN`] or [`KNOWN_GAPS`] entry, in Rust.
+/// `(kind, module, net)` as a [`BROKEN`] entry, in Rust.
 fn triple(kind: ScanKind, module: &str, net: Net) -> String {
     format!("(ScanKind::{kind:?}, {module:?}, Net::{net:?})")
 }
@@ -755,11 +751,10 @@ fn silent((kind, module, target): &(ScanKind, &str, &str)) -> String {
 
 /// Hold every case over `net` to the refusal contract:
 ///
-/// - a case that asked nothing is never a refusal, whatever [`BROKEN`] or [`KNOWN_GAPS`] lists;
+/// - a case that asked nothing is never a refusal, whatever [`BROKEN`] lists;
 /// - the cases that asked nothing are exactly [`ASKS_NOTHING`];
 /// - every case that asked something `keeps` the contract, except that the `(kind, module)` pairs
-///   it breaks for, less [`KNOWN_GAPS`], are exactly [`BROKEN`]'s entries for `net`;
-/// - each [`KNOWN_GAPS`] entry for `net` still breaks it.
+///   it breaks for are exactly [`BROKEN`]'s entries for `net`.
 ///
 /// On failure the message names each difference, says how many cases asked something, and gives
 /// `BROKEN`'s entries for `net` and the `ASKS_NOTHING` list as this run found them, in Rust.
@@ -805,12 +800,6 @@ fn hold(net: Net, cases: &[Case], keeps: impl Fn(&Case) -> bool) {
         .map(|case| (case.kind, case.module))
         .collect();
     broken.dedup();
-    let gap = |kind: ScanKind, module: &str| KNOWN_GAPS.contains(&(kind, module, net));
-    let expected: Vec<(ScanKind, &str)> = broken
-        .iter()
-        .copied()
-        .filter(|(kind, module)| !gap(*kind, module))
-        .collect();
     let listed: Vec<(ScanKind, &str)> = BROKEN
         .iter()
         .filter(|(_, _, listed)| *listed == net)
@@ -820,27 +809,16 @@ fn hold(net: Net, cases: &[Case], keeps: impl Fn(&Case) -> bool) {
         cases
             .iter()
             .filter(breaks)
-            .filter(|case| {
-                !gap(case.kind, case.module) && !listed.contains(&(case.kind, case.module))
-            })
+            .filter(|case| !listed.contains(&(case.kind, case.module)))
             .map(|case| format!("  new breakage, which BROKEN leaves out: {}", case.line())),
     );
     wrong.extend(
         listed
             .iter()
-            .filter(|pair| !expected.contains(pair))
+            .filter(|pair| !broken.contains(pair))
             .map(|(kind, module)| {
                 let entry = triple(*kind, module, net);
-                format!("  stale BROKEN entry, no case outside KNOWN_GAPS breaks it: {entry}")
-            }),
-    );
-    wrong.extend(
-        KNOWN_GAPS
-            .iter()
-            .filter(|(kind, module, listed)| *listed == net && !broken.contains(&(*kind, *module)))
-            .map(|(kind, module, _)| {
-                let entry = triple(*kind, module, net);
-                format!("  stale KNOWN_GAPS entry, no case breaks it: {entry}")
+                format!("  stale BROKEN entry, no case breaks it: {entry}")
             }),
     );
     if wrong.is_empty() {
@@ -848,7 +826,7 @@ fn hold(net: Net, cases: &[Case], keeps: impl Fn(&Case) -> bool) {
     }
 
     let asking = cases.iter().filter(|case| case.asked_any()).count();
-    let broken_now: Vec<String> = expected
+    let broken_now: Vec<String> = broken
         .iter()
         .map(|(kind, module)| format!("    {},", triple(*kind, module, net)))
         .collect();

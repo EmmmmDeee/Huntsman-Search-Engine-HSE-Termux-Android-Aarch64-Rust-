@@ -493,7 +493,7 @@ fn rules_listing(parsed: &Parsed) -> ExitCode {
         Some(dir) => sf_correlate::with_dir(&dir),
         None => (sf_correlate::shipped().to_vec(), Vec::new()),
     };
-    let rows = correlation_rules(&rules);
+    let rows = correlation_rules(&rules, &errors);
     if parsed.on("--json") {
         println!(
             "{}",
@@ -501,7 +501,13 @@ fn rules_listing(parsed: &Parsed) -> ExitCode {
         );
     } else {
         println!("ID\tRISK\tORIGIN\tNAME");
-        for row in rows.as_array().into_iter().flatten() {
+        // The table lists the rules that run; the errors follow on stderr, as they always have.
+        for row in rows
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|row| row.get("error").is_none())
+        {
             println!(
                 "{}\t{}\t{}\t{}",
                 one_line(row["id"].as_str().unwrap_or_default()),

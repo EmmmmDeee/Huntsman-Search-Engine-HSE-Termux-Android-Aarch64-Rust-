@@ -37,7 +37,7 @@ const bin = process.argv[2];
 if (!bin || !fs.existsSync(bin)) { process.stderr.write('usage: node check.cjs path/to/huntsman-recon\n'); process.exit(64); }
 const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true };
 // Two additional KiB accommodate the complete, lossless on-demand TXT exporter.
-const PAGE_BUDGET = 128 * 1024;
+const PAGE_BUDGET = 132 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -218,8 +218,9 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         source: 'termux-wifi-scaninfo', acquisition: 'android_cached_scan_results_not_active_scan',
         status: 'stale_only', observed: 1, rejected: 0,
         observations: [{
-          sighting: { network_id: '3c:5a:b4:11:22:33', name: 'fixture', signal_dbm: -58 },
-          band: '5GHz', age_secs: 900, freshness: 'stale'
+          sighting: { network_id: '3c:5a:b4:11:22:33', name: 'fixture', signal_dbm: -58, encryption: '[WPA2-PSK-CCMP][ESS]' },
+          band: '5GHz', frequency_mhz: 5180, channel_bandwidth_mhz: '80', capabilities: '[WPA2-PSK-CCMP][ESS]',
+          os_timestamp_us: 1234567890, age_secs: 900, freshness: 'stale'
         }]
       };
       let radarCalls = 0, lookupHeader = false;
@@ -242,6 +243,9 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         await page.isHidden('#rerror') && radarText.includes('3c:5a:b4:11:22:33') &&
         radarText.includes('900') && radarText.includes('stale') && await page.isEnabled('#rdownload'),
         radarText);
+      check(`${scheme}: Radar shows every observation field the adapter fills, not only the coarse band`,
+        radarText.includes('5180') && radarText.includes('80') && radarText.includes('[WPA2-PSK-CCMP][ESS]') &&
+        radarText.includes('1234567890'), radarText);
       const [radarDownload] = await Promise.all([
         page.waitForEvent('download', { timeout: 10000 }), page.click('#rdownload')
       ]);
@@ -361,6 +365,23 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         stamped.test(fieldsText) && stamped.test(entitiesText) && entitiesText.includes('docmeta') &&
         reportText.includes('holiday.jpg') && reportText.includes('Fixture Camera 2'),
         { claimsText, entitiesText: entitiesText.slice(0, 200), report: reportText.length });
+      // The file is kept as a saved scan: its fields outlive the answer, under Scans and in every export.
+      const keptText = await page.textContent('#ikept');
+      const keptId = (keptText.match(/Kept as scan ([0-9a-f]{16}) \(FINISHED\)/) || [])[1];
+      const keptScan = keptId ? await api(page, '/api/scans/' + keptId) : null;
+      const keptElements = keptId ? await api(page, '/api/scans/' + keptId + '/elements') : [];
+      const keptKinds = keptElements.map(e => e.type + ':' + e.data);
+      check(`${scheme}: an inspected file is kept as a FINISHED scan of the file holding its fields and GPS position`,
+        !!keptScan && keptScan.status === 'FINISHED' && keptScan.target === 'holiday.jpg' && keptScan.target_type === 'HSE_DOCUMENT' && keptScan.kind === 'inspect' &&
+        keptKinds.includes('HSE_DOCUMENT:holiday.jpg') && keptKinds.includes('PHYSICAL_COORDINATES:48.850000,2.333333') &&
+        keptElements.some(e => e.type === 'HSE_DOCUMENT' && JSON.stringify(e.raw || null).includes('Fixture Camera 2')),
+        { keptText, keptScan, keptKinds: keptKinds.slice(0, 8) });
+      await page.click('#ikept button');
+      await page.waitForSelector('#view-scan:not([hidden])', { timeout: 5000 }).catch(() => {});
+      const keptMeta = await page.textContent('#scmeta');
+      check(`${scheme}: Open scan reaches the kept scan`, keptMeta.includes('holiday.jpg') && keptMeta.includes('HSE_DOCUMENT'), keptMeta);
+      await page.evaluate(() => { location.hash = '#/inspect'; });
+      await page.waitForSelector('#view-inspect:not([hidden])', { timeout: 5000 });
       await audit(page, `${scheme} inspect result`);
       await page.setInputFiles('#ifile', []);
       await page.click('#irun');
@@ -669,9 +690,30 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await page.waitForSelector('#aresult:not([hidden])', { timeout: 20000 });
       metrics[`${scheme}AnalyzeMs`] = Date.now() - t;
       check(`${scheme}: analysis lists entities`, (await page.$$('#aentities tr')).length >= 6, 'too few rows');
+      // Seeds extracted from a pasted text join the seeds, without duplicates, each with its signal.
+      const seedsBefore = await page.inputValue('#seeds');
+      await page.fill('#txtext', 'Seller says call +61412345678 or write to ada.lovelace@example.net; the shop is at example.org and the same +61412345678 again.');
+      await page.click('#txrun');
+      await page.waitForSelector('#txresult:not([hidden])', { timeout: 10000 }).catch(() => {});
+      const extracted = await page.$$eval('#txentities tr', trs => trs.map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent)));
+      const seedsAfter = await page.inputValue('#seeds');
+      const seedLines = seedsAfter.split('\n');
+      check(`${scheme}: pasted text is extracted into seeds, once each, with the signal that found each`,
+        extracted.length >= 2 && extracted.every(row => row.length === 4 && row[3]) && seedsAfter.startsWith(seedsBefore) && seedLines.includes('ada.lovelace@example.net') && seedLines.filter(l => l === '+61412345678').length === 1,
+        { extracted, status: await page.textContent('#txstatus'), seedsAfter });
+      await page.fill('#seeds', SEEDS);
       await audit(page, `${scheme} analysis`);
       await page.reload({ waitUntil: 'networkidle' });
       check(`${scheme}: analysis survives a reload`, await page.evaluate(() => !document.getElementById('aresult').hidden), 'analysis hidden');
+      // Every link shows its confidence and evidence and every pivot its closeness; an analysis the
+      // server cut short says so in its summary instead of reading as complete.
+      const cells = async id => (await page.$$eval(id + ' tr', trs => trs.map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent)))).filter(row => row.length > 1);
+      const links = await cells('#arelations'), pivots = await cells('#apivots');
+      check(`${scheme}: every link shows its confidence and evidence`, links.length > 0 && links.every(row => row.length === 5 && /^\d\.\d\d$/.test(row[3]) && row[4]), links.slice(0, 3));
+      check(`${scheme}: every pivot shows its closeness`, pivots.length > 0 && pivots.every(row => row.length === 5 && /^\d\.\d\d$/.test(row[3])), pivots.slice(0, 3));
+      await page.evaluate(() => { const s = JSON.parse(sessionStorage.getItem('hse-analysis')); s.body.truncated = true; sessionStorage.setItem('hse-analysis', JSON.stringify(s)); });
+      await page.reload({ waitUntil: 'networkidle' });
+      check(`${scheme}: an analysis the server cut short says so`, /TRUNCATED/.test(await page.textContent('#astatus')) && await page.evaluate(() => document.getElementById('astatus').classList.contains('alert')), await page.textContent('#astatus'));
       await page.fill('#seeds', '0.0,179.99\n0.0,-179.99');
       await page.click('#arun');
       await page.waitForSelector('#aresult:not([hidden])', { timeout: 20000 });
@@ -955,13 +997,24 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
     }
 
     // A stopped server is named, with the command that starts it; its return is noticed without
-    // a reload, and the saved scans are all still there.
+    // a reload, and the saved scans are all still there. A scan the stopped server left RUNNING,
+    // as Android leaves one when it kills the server mid-scan, reads ABORTED after the restart
+    // and offers Delete, instead of a RUNNING row nobody can act on.
     {
       const ctx = await browser.newContext(PHONE);
       const page = await ctx.newPage();
       await page.goto(base + '/', { waitUntil: 'networkidle' });
       await page.waitForSelector('#scans tr');
       await stop();
+      const store = path.join(home, '.huntsman', 'scans');
+      const from = path.join(store, fs.readdirSync(store).find(name => /^[0-9a-f]{16}$/.test(name)));
+      const orphan = 'ab0ab0ab0ab0ab0a', orphanDir = path.join(store, orphan);
+      const row = JSON.parse(fs.readFileSync(path.join(from, 'scan.json'), 'utf8'));
+      Object.assign(row, { id: orphan, name: 'left running', status: 'RUNNING', ended: null });
+      delete row.owner;
+      delete row.owner_started;
+      fs.mkdirSync(orphanDir, { mode: 0o700 });
+      fs.writeFileSync(path.join(orphanDir, 'scan.json'), JSON.stringify(row), { mode: 0o600 });
       await page.click('#srefresh');
       await page.waitForSelector('#serror:not([hidden])', { timeout: 5000 }).catch(() => {});
       await page.waitForTimeout(300);
@@ -974,7 +1027,16 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check('a server started again on the same build does not ask to reload', await page.isHidden('#upgraded'), 'shown');
       await page.click('#srefresh');
       await page.waitForFunction(() => document.getElementById('serror').hidden, null, { timeout: 5000 }).catch(() => {});
-      check('saved scans survive a server restart', (await page.$$('#scans tr')).length === kept && kept > 0, `${(await page.$$('#scans tr')).length} of ${kept}`);
+      check('saved scans survive a server restart', (await page.$$('#scans tr')).length === kept + 1 && kept > 0, `${(await page.$$('#scans tr')).length} of ${kept + 1}`);
+      const left = (await api(page, '/api/scans')).find(s => s.id === orphan);
+      const shown = await page.$$eval('#scans tr', trs => trs.filter(tr => tr.textContent.includes('left running')).map(tr => ({
+        status: (tr.querySelector('td[data-label=Status]') || {}).textContent,
+        actions: [...tr.querySelectorAll('td[data-label=Action] button')].map(b => b.textContent),
+      })));
+      metrics.leftRunning = { left, shown };
+      check('a scan the stopped server left running reads ABORTED after the restart and offers Delete',
+        !!left && left.status === 'ABORTED' && left.ended > 0 && shown.length === 1 && shown[0].status === 'ABORTED' && shown[0].actions.includes('Delete') && !shown[0].actions.includes('Stop'),
+        { left, shown });
       await ctx.close();
     }
   } catch (error) {

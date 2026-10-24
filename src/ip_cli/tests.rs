@@ -185,6 +185,21 @@ fn outcome(report: &Report, source: &str) -> SourceOutcomeKind {
         .map_or_else(|| panic!("no outcome for {source}"), |o| o.kind)
 }
 
+/// The indicator sources that answer for an IP only with a key, which a run without keys skips.
+fn keyed_ip_sources_without_a_key() -> Vec<&'static str> {
+    crate::indicator_legs::SOURCES
+        .iter()
+        .filter(|source| {
+            source
+                .kinds
+                .iter()
+                .any(|kind| kind.covers(crate::indicator_sources::Indicator::Ip("1.1.1.1")))
+                && !source.api.wanted(&Keys::default())
+        })
+        .map(|source| source.api.source)
+        .collect()
+}
+
 #[test]
 fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
     let transport = keyless();
@@ -249,7 +264,22 @@ fn keyless_legs_run_without_keys_and_keyed_legs_send_nothing() {
             "{source}"
         );
     }
-    assert_eq!(report.outcomes.len(), 23, "an unkeyed leg reports nothing");
+    // The keyed legs with no key sent nothing (no host above is theirs), and each leaves the row
+    // saying it was not configured, as every other keyed leg does.
+    let unkeyed = keyed_ip_sources_without_a_key();
+    assert!(!unkeyed.is_empty());
+    for source in &unkeyed {
+        assert_eq!(
+            outcome(&report, source),
+            SourceOutcomeKind::NotConfigured,
+            "{source}"
+        );
+    }
+    assert_eq!(
+        report.outcomes.len(),
+        23 + unkeyed.len(),
+        "every keyless leg reports once and every keyed one that it was not configured"
+    );
 
     let ip = entity(&report, &EntityKind::IpAddress, "1.1.1.1");
     assert!(ip.has_tag(tags::VULNERABLE));

@@ -838,11 +838,17 @@ fn stolen_tax_leg(
             }
         }
         Err(err) => {
+            // The row keeps the kind the first failed path saw, so `SourceReach` reads a path
+            // that got no response as a no-response (exit 69) and a path the source answered
+            // with an error as reached, never as a refusal. A budget spent before any path was
+            // sent (no failure to name) is the lookup's own timeout.
             let kind = match &err {
                 StolenTaxError::MissingKey => SourceOutcomeKind::NotConfigured,
                 StolenTaxError::Refused(_) => SourceOutcomeKind::RefusedBeforeSending,
-                StolenTaxError::BudgetExhausted { .. } => SourceOutcomeKind::BodyTimeout,
-                StolenTaxError::Failed(_) => SourceOutcomeKind::Inconclusive,
+                StolenTaxError::BudgetExhausted { failed, .. } => failed
+                    .first()
+                    .map_or(SourceOutcomeKind::BodyTimeout, |first| first.kind),
+                StolenTaxError::Failed(first) => first.kind,
             };
             SourceExecutionOutcome::failed(STOLEN_TAX_SOURCE, now_unix, kind, None, err.to_string())
         }
@@ -2128,6 +2134,62 @@ mod tests {
             panic!("expected a network refusal");
         };
         assert!(why.contains(STOLEN_TAX_SOURCE), "{why}");
+    }
+
+    /// A stolen.tax lookup whose every path got no response is no usable response (exit 69)
+    /// naming it, never a refusal and never a report. Before, the leg mapped every path failure
+    /// to `Inconclusive`, so the lookup printed an empty report and exited 0 with the transport
+    /// failure surviving only as text; now the row keeps the kind the fetch saw.
+    #[test]
+    fn a_silent_stolen_tax_path_is_no_response_not_inconclusive() {
+        let keys = Keys::parse(&format!(
+            "{}=st-test-key-0123456789abcdef\n",
+            stolen_tax::KEY_SLOT
+        ))
+        .unwrap_or_else(|e| panic!("fixture keys: {e}"));
+        let silent = crate::test_support::Silent;
+        let sources = Sources {
+            stolen_tax: Some((&silent, &keys)),
+            ..Sources::default()
+        };
+        let ExposureRun::Failed(why) = run(sources, "ada.99", 7) else {
+            panic!("expected no usable response");
+        };
+        assert!(why.contains(STOLEN_TAX_SOURCE), "{why}");
+        assert!(why.contains("no response (DnsFailure)"), "{why}");
+    }
+
+    /// A stolen.tax source that answered every path with an error was reached, so the lookup
+    /// prints its row (exit 0) with the status's kind, not a transport failure and never a
+    /// refusal.
+    #[test]
+    fn a_failing_stolen_tax_path_is_reached_with_the_status_kind() {
+        let keys = Keys::parse(&format!(
+            "{}=st-test-key-0123456789abcdef\n",
+            stolen_tax::KEY_SLOT
+        ))
+        .unwrap_or_else(|e| panic!("fixture keys: {e}"));
+        let failing = crate::test_support::Failing;
+        let sources = Sources {
+            stolen_tax: Some((&failing, &keys)),
+            ..Sources::default()
+        };
+        let ExposureRun::Printed { report, .. } = run(sources, "ada.99", 7) else {
+            panic!("expected a printed report");
+        };
+        let Some(row) = report
+            .outcomes
+            .iter()
+            .find(|row| row.module == STOLEN_TAX_SOURCE)
+        else {
+            panic!("expected a stolen_tax row, got {:?}", report.outcomes);
+        };
+        assert_eq!(row.kind, SourceOutcomeKind::Upstream5xx);
+        assert!(!row.kind.is_transport_failure());
+        assert_eq!(
+            row.detail.as_deref(),
+            Some("stolen_tax: `snusbase` path failed: HTTP 500 (Upstream5xx)")
+        );
     }
 
     /// Runs `exposure` for one fixed address against a fake HIBP that answers `breaches`, with

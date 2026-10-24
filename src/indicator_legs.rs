@@ -126,6 +126,20 @@ pub fn run<T: Transport + ?Sized>(
             Err(err) => legs.outcomes.push(err.outcome(api, now_unix)),
         }
     }
+    // A source that answers for the indicator and that the lookup asks, but whose key slot is
+    // empty, made no request: it leaves the row that says so, as the exposure legs do, instead of
+    // leaving the Sources table to imply it was never a source.
+    for source in SOURCES {
+        if source.kinds.iter().any(|kind| kind.covers(indicator))
+            && !source.api.wanted(keys)
+            && transport.runs_module(source.api.source)
+        {
+            legs.outcomes.push(SourceExecutionOutcome::not_configured(
+                source.api.source,
+                now_unix,
+            ));
+        }
+    }
     legs
 }
 
@@ -257,6 +271,31 @@ mod tests {
             "s",
             1,
         );
+        // The keyed sources that answer for an IP address made no request and say so, after the
+        // sources that ran, each in SOURCES order.
+        let unkeyed: Vec<&str> = SOURCES
+            .iter()
+            .filter(|source| {
+                source
+                    .kinds
+                    .iter()
+                    .any(|kind| kind.covers(Indicator::Ip("1.1.1.1")))
+                    && !source.api.wanted(&Keys::default())
+            })
+            .map(|source| source.api.source)
+            .collect();
+        assert!(unkeyed.contains(&"shodan"), "{unkeyed:?}");
+        let (ran, skipped) = legs.outcomes.split_at(legs.outcomes.len() - unkeyed.len());
+        let said: Vec<&str> = skipped.iter().map(|o| o.module.as_str()).collect();
+        assert_eq!(said, unkeyed);
+        assert!(skipped.iter().all(|o| {
+            o.kind == SourceOutcomeKind::NotConfigured
+                && o.detail.as_deref() == Some(crate::source_outcome::NO_KEY_DETAIL)
+        }));
+        let legs = Legs {
+            entities: legs.entities,
+            outcomes: ran.to_vec(),
+        };
         let ran: Vec<&str> = legs.outcomes.iter().map(|o| o.module.as_str()).collect();
         assert_eq!(
             ran,
