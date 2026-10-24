@@ -12,6 +12,10 @@
 //! Nothing is capped: an AS that announces thousands of prefixes is reported with all of them.
 //!
 //! A reserved, private-use or documentation AS number is refused before any request.
+//!
+//! When no source answered, the lookup ends from its rows through
+//! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
+//! 77), otherwise no usable response (exit 69); any source that answered makes it print.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;

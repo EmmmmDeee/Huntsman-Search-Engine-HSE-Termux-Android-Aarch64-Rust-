@@ -18,6 +18,10 @@
 //! server, delegated SPF domain and report mailbox the domain publishes is one, tied to the
 //! domain, and the domain's own DNS evidence lists its addresses under `ip`, the attribute the
 //! resolution relation (and so the shared-hosting rule) reads.
+//!
+//! When it has no entity to show and no source answered, the lookup ends from its rows through
+//! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
+//! 77), otherwise no usable response (exit 69); any entity or answered source makes it print.
 
 use std::path::PathBuf;
 

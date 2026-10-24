@@ -46,6 +46,30 @@ const OUTCOME_OWNERS: [&str; 2] = ["src/source_outcome.rs", "src/fetch.rs"];
 /// the time, so each timestamp is taken the same way.
 const CLOCK_READER: [&str; 1] = ["src/clock.rs"];
 
+/// The lookups that end from their source rows through `source_outcome::SourceReach`, and the
+/// indicator legs below them. Each reads how far its sources got from the rows they recorded, so
+/// none names a typed refusal (`LegError::Refused`, `LegError::Transport`) or reads the
+/// `is_transport_failure` predicate at the call site, and none keeps a `refused`/`unanswered`/
+/// `no_response`/`network` side channel of type `Option<String>` beside those rows.
+const REFUSAL_ROUTED: [&str; 13] = [
+    "src/ip_cli.rs",
+    "src/ip_cli",
+    "src/netblock_cli.rs",
+    "src/netblock_cli",
+    "src/asn_cli.rs",
+    "src/domain_cli.rs",
+    "src/domain_cli",
+    "src/email_cli.rs",
+    "src/username_cli.rs",
+    "src/exposure_cli.rs",
+    "src/network_cli.rs",
+    "src/network_cli",
+    "src/indicator_legs.rs",
+];
+/// The side-channel field and parameter names a refusal-routed lookup must not keep beside its
+/// rows: the row's kind is the one authority `SourceReach` reads.
+const REASON_CHANNEL_NAMES: [&str; 4] = ["refused", "unanswered", "no_response", "network"];
+
 /// One production source file: its path relative to the crate root, and its text.
 struct Source {
     path: String,
@@ -454,4 +478,123 @@ fn the_scanner_sees_each_forbidden_form_and_ignores_the_rest() {
     ] {
         assert!(!names_a_credential_slot(text), "{text}");
     }
+}
+
+/// The production files under `scoped` whose tokens `matches`, the mirror of [`offenders`] for a
+/// rule that holds only within a set of files rather than everywhere outside one.
+fn scoped_offenders(scoped: &[&str], matches: fn(&[String]) -> bool) -> Vec<String> {
+    production_sources()
+        .into_iter()
+        .filter(|source| scoped.iter().any(|entry| under(&source.path, entry)))
+        .filter(|source| matches(&production_tokens(&source.text)))
+        .map(|source| source.path)
+        .collect()
+}
+
+/// Whether the tokens name a typed refusal (`LegError::Refused` or `LegError::Transport`) or read
+/// the `is_transport_failure` predicate — the forms a lookup would use to route a refusal or a
+/// no-response beside its rows instead of reading the rows themselves.
+fn routes_a_refusal(toks: &[String]) -> bool {
+    toks.windows(3).any(|w| {
+        w[0] == "LegError" && w[1] == "::" && matches!(w[2].as_str(), "Refused" | "Transport")
+    }) || toks.iter().any(|t| t == "is_transport_failure")
+}
+
+#[test]
+fn lookups_never_route_refusals_beside_their_rows() {
+    let found = scoped_offenders(&REFUSAL_ROUTED, routes_a_refusal);
+    assert!(
+        found.is_empty(),
+        "a refusal-routed lookup names LegError::Refused/Transport or reads is_transport_failure \
+         at the call site; end from the rows through source_outcome::SourceReach instead: {found:?}"
+    );
+}
+
+#[test]
+fn the_refusal_route_rule_sees_each_forbidden_form_and_ignores_the_rest() {
+    let code = production_tokens;
+    assert!(routes_a_refusal(&code(
+        "fn f() { if let LegError::Refused(m) = e {} }"
+    )));
+    assert!(routes_a_refusal(&code(
+        "fn f() { if let crate::api_leg::LegError::Transport(k) = e {} }"
+    )));
+    assert!(routes_a_refusal(&code(
+        "fn f() { if o.kind.is_transport_failure() {} }"
+    )));
+    // Reading the rows through SourceReach is the allowed form.
+    assert!(!routes_a_refusal(&code(
+        "fn f() { SourceReach::of(&report.outcomes).unanswered(lead); }"
+    )));
+    assert!(!routes_a_refusal(&code(
+        "// LegError::Refused in a comment"
+    )));
+    assert!(!routes_a_refusal(&code(
+        "fn f() { let s = \"is_transport_failure\"; }"
+    )));
+    assert!(!routes_a_refusal(&code(
+        "#[cfg(test)] mod t { fn f() { let _ = o.kind.is_transport_failure(); } }"
+    )));
+}
+
+/// Whether `rest` begins with `Option<String>`, optionally behind a `&mut`: the type of a reason
+/// side channel kept beside a lookup's rows.
+fn is_optional_string(rest: &[String]) -> bool {
+    let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
+    let core: &[&str] = match rest.as_slice() {
+        ["&", "mut", tail @ ..] => tail,
+        other => other,
+    };
+    matches!(core, ["Option", "<", "String", ">", ..])
+}
+
+/// Whether the tokens declare a field or parameter named for a reason side channel
+/// ([`REASON_CHANNEL_NAMES`]) of type `Option<String>` or `&mut Option<String>`.
+fn keeps_a_reason_channel(toks: &[String]) -> bool {
+    toks.iter().enumerate().any(|(i, t)| {
+        REASON_CHANNEL_NAMES.contains(&t.as_str())
+            && toks.get(i + 1).is_some_and(|c| c == ":")
+            && is_optional_string(&toks[i + 2..])
+    })
+}
+
+#[test]
+fn lookups_keep_no_reason_channel() {
+    let found = scoped_offenders(&REFUSAL_ROUTED, keeps_a_reason_channel);
+    assert!(
+        found.is_empty(),
+        "a refusal-routed lookup keeps a refused/unanswered/no_response/network reason channel of \
+         type Option<String>; the row's kind is the one authority, read by SourceReach: {found:?}"
+    );
+}
+
+#[test]
+fn the_reason_channel_rule_sees_each_channel_and_ignores_the_rest() {
+    let code = production_tokens;
+    for name in REASON_CHANNEL_NAMES {
+        assert!(
+            keeps_a_reason_channel(&code(&format!("struct S {{ {name}: Option<String> }}"))),
+            "{name} field"
+        );
+        assert!(
+            keeps_a_reason_channel(&code(&format!("fn f({name}: &mut Option<String>) {{}}"))),
+            "{name} parameter"
+        );
+    }
+    // A channel of another type, a local, a comment, or a test item is not a reason channel.
+    assert!(!keeps_a_reason_channel(&code(
+        "struct S { network: Option<IpAddr> }"
+    )));
+    assert!(!keeps_a_reason_channel(&code(
+        "struct S { outcomes: Vec<SourceExecutionOutcome> }"
+    )));
+    assert!(!keeps_a_reason_channel(&code(
+        "fn f() { let network = String::new(); }"
+    )));
+    assert!(!keeps_a_reason_channel(&code(
+        "// network: Option<String> in a comment"
+    )));
+    assert!(!keeps_a_reason_channel(&code(
+        "#[cfg(test)] mod t { struct S { network: Option<String> } }"
+    )));
 }

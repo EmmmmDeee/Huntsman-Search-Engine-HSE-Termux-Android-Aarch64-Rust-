@@ -15,6 +15,10 @@
 //!
 //! A private, loopback, documentation or otherwise non-public address is refused before any
 //! request: nothing public is known about it, and asking would only disclose it.
+//!
+//! When no source answered, the lookup ends from its rows through
+//! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
+//! 77), otherwise no usable response (exit 69); any source that answered makes it print.
 
 use std::net::IpAddr;
 use std::path::PathBuf;

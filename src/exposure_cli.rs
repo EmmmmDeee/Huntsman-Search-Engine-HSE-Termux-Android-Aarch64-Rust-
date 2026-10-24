@@ -29,6 +29,11 @@
 //! [`escape_controls`]. An incident describes a public breach, never the person:
 //! being listed is evidence, not a verdict. A fabricated or spam-list incident is
 //! flagged in the evidence, the entity tags and the text.
+//!
+//! When no breach source answered, the lookup ends from its rows through
+//! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
+//! 77), otherwise no usable response (exit 69); a source that answered, even with an error, and
+//! the seed alone, make it print.
 
 use std::path::PathBuf;
 
