@@ -410,7 +410,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
           if (start < 0 || end < 0) throw Error('Incomplete raw evidence section: ' + label);
           return JSON.parse(rawText.slice(start + startTag.length, end));
         };
-        check('Complete fenced TXT export retains all saved evidence and correlations',
+        check('Complete fenced TXT export retains saved evidence, correlations and logs',
           rawText.startsWith(String.fromCharCode(96).repeat(3) + 'text\n') &&
           rawText.includes('COVERAGE: UNKNOWN_BEYOND_RECORDED_SOURCES') &&
           rawText.includes('CONSISTENCY: NON_ATOMIC_ENDPOINT_SNAPSHOT') &&
@@ -418,7 +418,8 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
           JSON.stringify(rawSection('UNCERTAINTY_REGISTER')) === JSON.stringify(uncertainty) &&
           JSON.stringify(rawSection('DATA_ELEMENTS')) === JSON.stringify(elements) &&
           JSON.stringify(rawSection('CORRELATIONS')) === JSON.stringify(correlations) &&
-          JSON.stringify(rawSection('RELATIONSHIP_GRAPH')) === JSON.stringify(graph),
+          JSON.stringify(rawSection('RELATIONSHIP_GRAPH')) === JSON.stringify(graph) &&
+          JSON.stringify(rawSection('SCAN_LOG')) === JSON.stringify(log),
           { characters: rawText.length, elements: elements.length, correlations: correlations.length });
       }
       await audit(page, `${scheme} summary`);
