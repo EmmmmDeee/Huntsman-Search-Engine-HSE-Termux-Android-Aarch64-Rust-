@@ -47,7 +47,6 @@ pub enum AuthStyle {
 
 /// An operator-approved secret bound to the origin it may be sent to.
 pub struct Credential {
-    authority: AuthenticationAuthority,
     secret: Secret,
     style: AuthStyle,
     /// The one origin (`scheme://host:port`) the secret may go to. `None` binds it to
@@ -66,10 +65,14 @@ pub fn valid_param_name(name: &str) -> bool {
 }
 
 impl Credential {
+    /// A credential is built only from an operator's approval, which nothing needs once it is
+    /// built: a secret found in breach data has no `AuthenticationAuthority`, so it cannot
+    /// become one.
+    ///
     /// # Errors
     /// `Error::Invalid` when a custom header name is not a plain token.
     pub fn new(
-        authority: AuthenticationAuthority,
+        _authority: AuthenticationAuthority,
         secret: Secret,
         style: AuthStyle,
     ) -> Result<Self, Error> {
@@ -81,7 +84,6 @@ impl Credential {
             }
         }
         Ok(Self {
-            authority,
             secret,
             style,
             origin: None,
@@ -101,11 +103,6 @@ impl Credential {
     #[must_use]
     pub fn fingerprint(&self) -> CredentialFingerprint {
         self.secret.fingerprint()
-    }
-
-    #[must_use]
-    pub fn provider_id(&self) -> &str {
-        self.authority.provider_id()
     }
 
     /// `request` without this credential's header (and without any other header

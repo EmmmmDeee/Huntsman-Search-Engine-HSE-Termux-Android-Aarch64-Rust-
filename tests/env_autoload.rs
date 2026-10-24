@@ -11,6 +11,8 @@ use std::process::{Command, Output};
 use std::thread;
 use std::time::Duration;
 
+use huntsman_recon::credential_origin::CredentialFingerprint;
+
 const SLOT: &str = "HSE_AUTOLOAD_TEST_KEY";
 
 fn fake_home(name: &str) -> PathBuf {
@@ -146,6 +148,15 @@ fn private_default_file_is_auto_loaded() {
     assert!(
         request.contains("Bearer TEST_ONLY_VALUE_DEFAULT\r\n"),
         "credential from ~/.huntsman.env was not sent; {request}"
+    );
+    // The credential that was sent is named by its 12-hex prefix, never the full digest.
+    let fingerprint = CredentialFingerprint::of_secret("TEST_ONLY_VALUE_DEFAULT");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let expected = format!("credential={}", fingerprint.short());
+    assert!(stdout.lines().any(|line| line == expected), "{stdout}");
+    assert!(
+        !stdout.contains(fingerprint.as_str()),
+        "the full digest was printed: {stdout}"
     );
     std::fs::remove_dir_all(&home).unwrap();
 }
