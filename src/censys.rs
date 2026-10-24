@@ -151,7 +151,10 @@ mod tests {
 
     impl Transport for Recording {
         fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-            self.sent.lock().expect("recorded requests").push(request.clone());
+            self.sent
+                .lock()
+                .expect("recorded requests")
+                .push(request.clone());
             Ok(Response {
                 status: self.status,
                 headers: Vec::new(),
@@ -169,22 +172,46 @@ mod tests {
     fn host_enrichment_retains_service_ports_and_verified_pivots() {
         let finding = decode(HOST.as_bytes(), "1.1.1.1").expect("host");
         assert_eq!(finding.summary, "Censys: 2 services on 1.1.1.1");
-        assert!(finding.attrs.contains(&("services", "443/tcp,53/udp".into())));
+        assert!(
+            finding
+                .attrs
+                .contains(&("services", "443/tcp,53/udp".into()))
+        );
         assert!(finding.attrs.contains(&("country", "Australia".into())));
-        assert!(finding.pivots.iter().any(|p| p.kind == PivotKind::Asn && p.value == "AS13335"));
-        assert!(finding.pivots.iter().any(|p| p.kind == PivotKind::Domain && p.value == "one.one.one.one"));
+        assert!(
+            finding
+                .pivots
+                .iter()
+                .any(|p| p.kind == PivotKind::Asn && p.value == "AS13335")
+        );
+        assert!(
+            finding
+                .pivots
+                .iter()
+                .any(|p| p.kind == PivotKind::Domain && p.value == "one.one.one.one")
+        );
     }
 
     #[test]
     fn malformed_host_or_wrong_address_is_not_a_negative_result() {
         assert!(decode(br#"{"result":{}}"#, "1.1.1.1").is_err());
         assert!(decode(HOST.as_bytes(), "8.8.8.8").is_err());
-        assert!(decode(br#"{"result":{"resource":{"ip":"1.1.1.1","services":{}}}}"#, "1.1.1.1").is_err());
+        assert!(
+            decode(
+                br#"{"result":{"resource":{"ip":"1.1.1.1","services":{}}}}"#,
+                "1.1.1.1"
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn no_key_makes_no_request_and_valid_key_is_bearer_origin_bound() {
-        let recorder = Recording { status: 200, body: HOST, ..Recording::default() };
+        let recorder = Recording {
+            status: 200,
+            body: HOST,
+            ..Recording::default()
+        };
         assert!(!API.wanted(&Keys::default()));
         assert!(matches!(
             lookup(&recorder, &Keys::default(), Indicator::Ip("1.1.1.1"), 1),
@@ -205,9 +232,17 @@ mod tests {
     #[test]
     fn documented_404_is_zero_but_auth_and_quota_are_failures() {
         for (status, expected_zero) in [(404, true), (401, false), (403, false), (429, false)] {
-            let recorder = Recording { status, body: "{}", ..Recording::default() };
+            let recorder = Recording {
+                status,
+                body: "{}",
+                ..Recording::default()
+            };
             let result = lookup(&recorder, &keys(), Indicator::Ip("1.1.1.1"), 1);
-            assert_eq!(matches!(result, Ok(None)), expected_zero, "{status}: {result:?}");
+            assert_eq!(
+                matches!(result, Ok(None)),
+                expected_zero,
+                "{status}: {result:?}"
+            );
             if status != 404 {
                 assert!(result.is_err());
             }
