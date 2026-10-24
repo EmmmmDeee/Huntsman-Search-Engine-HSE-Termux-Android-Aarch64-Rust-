@@ -8,11 +8,13 @@
   breach: correlated with @ada_99" about itself, and the stolen.tax row's `found` count no longer
   includes it.
 - A stolen.tax row that matches the query but names no breach or stealer host (an osintcat row
-  with no corpus name, or a hudsonrock stealer with no host name but a clear login) mints no
-  marker, so the identity it carried was the only sign of the match. When that identity was the
-  query exactly as typed, the lookup read as not found (`entities=0`, or exit 69 when a path
-  failed or was not sent); spelled differently, it came back as an echo of the query. Such rows
-  are now counted: `recon stolen-tax` prints `unnamed_rows=N` before the `entities=` line, and in
-  `exposure`, `email` and `username` the stolen.tax row's detail says `N row(s) name no breach or
-  stealer host`. A lookup whose only match is such a row is reported as that match, marked
-  partial when a path failed or was not sent, instead of as not found.
+  with an email or username but no corpus name, or a hudsonrock stealer with no host name) mints
+  no marker, so any identity it carried was the only sign of the match, and a host-less stealer
+  whose logins are all masked left no sign at all. When the identity was the query as typed,
+  ignoring case, or there was none, the lookup read as not found (`entities=0`, or exit 69 when
+  a path failed or was not sent); spelled differently, it came back as an echo of the query.
+  Such rows are now counted: when there are any, `recon stolen-tax` prints `unnamed_rows=N`
+  before the `entities=` line, and in `exposure`, `email` and `username` the stolen.tax row's
+  detail says `N row(s) name no breach or stealer host`. A lookup whose only match is such a row
+  is reported as that match, marked partial when a path failed or was not sent, instead of as
+  not found.

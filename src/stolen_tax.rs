@@ -151,9 +151,10 @@ pub struct StolenTaxReport {
     /// Set when `failed_paths` or `skipped_paths` is non-empty: this answer is
     /// incomplete.
     pub truncation: Option<String>,
-    /// Rows that matched, carrying an email or username, but name no breach or stealer
-    /// host. Their identities are kept as pivots unless they are the query itself, but
-    /// no marker is minted.
+    /// Rows that matched but name no breach or stealer host: an osintcat row with an
+    /// email or username but no corpus name, or a hudsonrock stealer with no host name.
+    /// Their identities are kept as pivots unless they are the query itself, but no
+    /// marker is minted.
     pub unnamed_rows: usize,
 }
 
@@ -655,8 +656,8 @@ struct StolenTaxData {
     breaches: Vec<BreachRecord>,
     emails: Vec<String>,
     usernames: Vec<String>,
-    /// Rows that carry an identity but name no breach corpus or stealer host. Counted,
-    /// never given a stand-in marker.
+    /// Rows that matched but name no breach corpus or stealer host. Counted, never
+    /// given a stand-in marker.
     unnamed_rows: usize,
 }
 
@@ -721,7 +722,7 @@ fn normalize_snusbase(results: &BTreeMap<String, Vec<SnusbaseRow>>) -> StolenTax
 }
 
 /// osintcat rows. A row whose corpus is unnamed still contributes its identity
-/// pivots, and is counted in `unnamed_rows` when it has one, but mints no `breach:`
+/// pivots and, when it has one, is counted in `unnamed_rows`, but mints no `breach:`
 /// marker: a stand-in name would be a placeholder posing as a breach the provider
 /// never named. A row that is not an object is skipped. **Pure.**
 fn normalize_osintcat(breach_data: &[Value]) -> StolenTaxData {
@@ -743,6 +744,8 @@ fn normalize_osintcat(breach_data: &[Value]) -> StolenTaxData {
                 record_count: Some(1),
                 detail: Some("path=osintcat".into()),
             }),
+            // A row with neither a corpus nor an identity carries nothing that matched;
+            // the legacy output gave it no entity either.
             None if email.is_some() || user.is_some() => data.unnamed_rows += 1,
             None => {}
         }
@@ -768,21 +771,19 @@ fn clear_email_login(login: &str) -> Option<&str> {
 /// Stealer hits → clear-login emails plus a `stealer:{host}` marker per named
 /// host. No host name → no marker (`stealer:unknown` would be a placeholder that
 /// also merged every host-less hit into one entity); the clear logins are still
-/// emitted, and a host-less hit with one is counted in `unnamed_rows`. Absent OS / IP
-/// are omitted, never written as stand-ins. **Pure.**
+/// emitted, and every host-less hit is counted in `unnamed_rows`, since the provider
+/// matched it even when its logins are masked. Absent OS / IP are omitted, never
+/// written as stand-ins. **Pure.**
 fn normalize_hudsonrock(stealers: &[HudsonrockStealer]) -> StolenTaxData {
     let mut data = StolenTaxData::default();
     for stealer in stealers {
-        let logins_before = data.emails.len();
         for login in &stealer.top_logins {
             if let Some(email) = clear_email_login(login) {
                 data.emails.push(email.to_owned());
             }
         }
         let Some(host) = non_blank(stealer.computer_name.as_deref()) else {
-            if data.emails.len() > logins_before {
-                data.unnamed_rows += 1;
-            }
+            data.unnamed_rows += 1;
             continue;
         };
         let mut detail = String::from("path=hudsonrock");
