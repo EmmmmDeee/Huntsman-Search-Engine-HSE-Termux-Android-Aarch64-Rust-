@@ -88,13 +88,13 @@ fn existing_core_graph_exposes_only_documented_relationships() {
     let root = Entity::new(CoreEntityKind::Organisation, "Example Agency", 0.5, "scan");
     let record = Entity::new(CoreEntityKind::Document, "Published Record", 0.5, "scan");
     let unrelated = Entity::new(CoreEntityKind::Domain, "example.org", 0.5, "scan");
-    let documented = EntityRelation::new(
+    let mut documented = EntityRelation::new(
         root.uid.clone(),
         record.uid.clone(),
         RelationKind::MentionedWith,
         0.6,
-    )
-    .with_evidence(Evidence::new(
+    );
+    documented.evidence.push(Evidence::new(
         EvidenceProvenance::new("published-case-record"),
         "The public record mentions this organisation",
     ));
