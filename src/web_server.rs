@@ -2653,6 +2653,19 @@ mod tests {
         }
     }
 
+    /// A correlation rule file that did not load is named on the Settings panel with its reason,
+    /// and a rules listing that failed for any reason but a missing scan API is shown, not hidden.
+    #[test]
+    fn the_settings_panel_names_rules_that_did_not_load() {
+        for needed in [
+            "if(r.error){put(tr,'',el('div','alert','Not loaded: '+(r.id||'')+' · '+r.error))",
+            "rules.filter(r=>!r.error).length",
+            "if(/^HTTP 404/.test(String(e&&e.message||e)))$('rules-p').hidden=true;else fail('gerror'",
+        ] {
+            assert!(INDEX_HTML.contains(needed), "the page lacks {needed}");
+        }
+    }
+
     /// The Radar tab offers both reads and the sweep from the page, each only on a press, through
     /// the routes above.
     #[test]
