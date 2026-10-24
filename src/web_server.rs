@@ -1101,6 +1101,8 @@ struct Health<'a> {
     status: &'a str,
     name: &'a str,
     version: &'a str,
+    /// Immutable Git revision embedded in the running server, or "unknown".
+    build_sha: &'a str,
     /// The page this server serves, as [`PAGE_ID`]. A tab whose page names another was loaded
     /// from an earlier build and asks to be reloaded.
     page: &'a str,
@@ -1234,6 +1236,7 @@ fn route(
                 status: "ok",
                 name: "huntsman-recon",
                 version: env!("CARGO_PKG_VERSION"),
+                build_sha: crate::diagnostics::embedded_build_sha(),
                 page: &PAGE_ID,
                 auth: if config.bearer_token.is_some() {
                     "token"
@@ -2282,6 +2285,11 @@ mod tests {
         );
         assert!(health.starts_with("HTTP/1.1 200"));
         assert!(health.contains("\"status\": \"ok\""));
+
+        assert!(health.contains(&format!(
+            "\"build_sha\": \"{}\"",
+            crate::diagnostics::embedded_build_sha()
+        )));
 
         let denied = response_for_request(
             "GET /api/modules HTTP/1.1\r\n\r\n",
