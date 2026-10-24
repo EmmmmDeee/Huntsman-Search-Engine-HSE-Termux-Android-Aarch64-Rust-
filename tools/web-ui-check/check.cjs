@@ -688,6 +688,15 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await audit(page, `${scheme} analysis`);
       await page.reload({ waitUntil: 'networkidle' });
       check(`${scheme}: analysis survives a reload`, await page.evaluate(() => !document.getElementById('aresult').hidden), 'analysis hidden');
+      // Every link shows its confidence and evidence and every pivot its closeness; an analysis the
+      // server cut short says so in its summary instead of reading as complete.
+      const cells = async id => (await page.$$eval(id + ' tr', trs => trs.map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent)))).filter(row => row.length > 1);
+      const links = await cells('#arelations'), pivots = await cells('#apivots');
+      check(`${scheme}: every link shows its confidence and evidence`, links.length > 0 && links.every(row => row.length === 5 && /^\d\.\d\d$/.test(row[3]) && row[4]), links.slice(0, 3));
+      check(`${scheme}: every pivot shows its closeness`, pivots.length > 0 && pivots.every(row => row.length === 5 && /^\d\.\d\d$/.test(row[3])), pivots.slice(0, 3));
+      await page.evaluate(() => { const s = JSON.parse(sessionStorage.getItem('hse-analysis')); s.body.truncated = true; sessionStorage.setItem('hse-analysis', JSON.stringify(s)); });
+      await page.reload({ waitUntil: 'networkidle' });
+      check(`${scheme}: an analysis the server cut short says so`, /TRUNCATED/.test(await page.textContent('#astatus')) && await page.evaluate(() => document.getElementById('astatus').classList.contains('alert')), await page.textContent('#astatus'));
       await page.fill('#seeds', '0.0,179.99\n0.0,-179.99');
       await page.click('#arun');
       await page.waitForSelector('#aresult:not([hidden])', { timeout: 20000 });
