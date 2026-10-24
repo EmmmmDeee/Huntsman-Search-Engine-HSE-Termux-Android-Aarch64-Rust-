@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::base64;
+use crate::cell_radar::CellScan;
 use crate::engineering_command;
 use crate::entity::Entity;
 use crate::error::Error;
@@ -40,6 +41,7 @@ use crate::key_import;
 use crate::keys::{self, Keys};
 use crate::module::reachable_modules;
 use crate::provider_credentials::PROVIDERS;
+use crate::radar::TrackReport;
 use crate::scan_api::ScanApi;
 use crate::scan_route::{self, ScanKind};
 use crate::scan_service::{ScanRequest, ScanService};
@@ -121,6 +123,8 @@ const KEYS_PATH: &str = "/api/settings/keys";
 /// A local file's raw bytes in, its EXIF and embedded document metadata out: the `exif` and
 /// `docmeta` commands for a file picked in the browser.
 const INSPECT_PATH: &str = "/api/inspect";
+/// The radar track route: a `POST`, as each call appends a sweep to the track log.
+const TRACK_PATH: &str = "/api/radar/track";
 /// The largest file `/api/inspect` reads: the bound the `exif` and `docmeta` commands read from
 /// disk, so the page reads what the commands read (64 MiB).
 const MAX_INSPECT_BYTES: usize = 64 * 1024 * 1024;
@@ -211,17 +215,39 @@ struct Upload {
 /// Installed by the process boundary; the server library owns no sensor subprocess.
 pub type RadarHandler = Arc<dyn Fn() -> Result<WifiScan, LookupError> + Send + Sync>;
 
-#[derive(Clone)]
-struct Radar {
-    handler: RadarHandler,
+/// One bounded, no-root read of the cells Android reports, as `radar cells` reads them.
+pub type CellsHandler = Arc<dyn Fn() -> Result<CellScan, LookupError> + Send + Sync>;
+
+/// One sweep of this device recorded into the track log `radar track` keeps, answered with the
+/// log's report. Installed by the process boundary, which owns the sensors and the log's place.
+pub type TrackHandler = Arc<dyn Fn() -> Result<TrackReport, LookupError> + Send + Sync>;
+
+/// One sensor route: its handler and how many requests to it are running. Every sensor route
+/// (`/api/radar/wifi`, `/api/radar/cells`, `/api/radar/track`) takes the same guarded path, so the
+/// cells and the track log are read from the page under exactly the Wi-Fi radar's conditions.
+struct Sensor<T> {
+    handler: Arc<dyn Fn() -> Result<T, LookupError> + Send + Sync>,
     live: Arc<AtomicUsize>,
 }
+
+impl<T> Clone for Sensor<T> {
+    fn clone(&self) -> Self {
+        Self {
+            handler: Arc::clone(&self.handler),
+            live: Arc::clone(&self.live),
+        }
+    }
+}
+
+type Radar = Sensor<WifiScan>;
 
 /// The routes a binary installs. A route whose handler is absent answers `404`.
 #[derive(Clone, Default)]
 struct Routes {
     lookups: Option<Lookups>,
     radar: Option<Radar>,
+    cells: Option<Sensor<CellScan>>,
+    track: Option<Sensor<TrackReport>>,
     analyze: Option<AnalyzeHandler>,
     inspect: Option<Inspect>,
     scans: Option<Arc<ScanApi>>,
@@ -326,6 +352,28 @@ impl Server {
     #[must_use]
     pub fn with_radar(mut self, handler: RadarHandler) -> Self {
         self.routes.radar = Some(Radar {
+            handler,
+            live: Arc::new(AtomicUsize::new(0)),
+        });
+        self
+    }
+
+    /// Serve `GET /api/radar/cells` from the same Android telephony adapter as `radar cells`.
+    /// Nothing is read before an explicitly requested API call.
+    #[must_use]
+    pub fn with_radar_cells(mut self, handler: CellsHandler) -> Self {
+        self.routes.cells = Some(Sensor {
+            handler,
+            live: Arc::new(AtomicUsize::new(0)),
+        });
+        self
+    }
+
+    /// Serve `POST /api/radar/track` through `handler`, which records one sweep into the track
+    /// log `radar track` keeps and answers its report. Without this the route answers `404`.
+    #[must_use]
+    pub fn with_radar_track(mut self, handler: TrackHandler) -> Self {
+        self.routes.track = Some(Sensor {
             handler,
             live: Arc::new(AtomicUsize::new(0)),
         });
@@ -907,7 +955,7 @@ fn inspect_admits(head: &str, config: &ServeConfig, routes: &Routes) -> Option<(
 /// Only the scan API and the key save change state, so only they take POST, with the file
 /// inspection, whose upload is too large for a query string.
 fn takes_post(path: &str) -> bool {
-    ScanApi::handles(path) || path == KEYS_PATH || path == INSPECT_PATH
+    ScanApi::handles(path) || path == KEYS_PATH || path == INSPECT_PATH || path == TRACK_PATH
 }
 
 /// `none` is a typed URL or bookmark; `same-origin` is this page. Anything else came from another
@@ -1221,6 +1269,8 @@ fn route(
             | "/api/evidence"
             | "/evidence"
             | "/api/radar/wifi"
+            | "/api/radar/cells"
+            | TRACK_PATH
             | KEYS_PATH
             | INSPECT_PATH
     ) || ScanApi::handles(parsed.path);
@@ -1267,7 +1317,13 @@ fn route(
             ),
         },
         "/api/lookup" => lookup_response(parsed, routes.lookups.as_ref(), routes.scans.as_ref()),
-        "/api/radar/wifi" => radar_response(parsed, routes.radar.as_ref()),
+        "/api/radar/wifi" => {
+            sensor_response(parsed, routes.radar.as_ref(), "Wi-Fi radar", Method::Get)
+        }
+        "/api/radar/cells" => {
+            sensor_response(parsed, routes.cells.as_ref(), "cell radar", Method::Get)
+        }
+        TRACK_PATH => sensor_response(parsed, routes.track.as_ref(), "radar track", Method::Post),
         "/api/analyze" => analyze_response(parsed, routes.analyze.as_ref()),
         "/evidence" => dossier_page_response(parsed, config),
         "/api/evidence" => dossier_json_response(parsed, config),
@@ -1362,29 +1418,38 @@ fn json_ok(body: &str, head: bool) -> String {
     )
 }
 
-/// Read Android's OS-cached Wi-Fi scan only after an explicitly initiated,
-/// same-origin, lookup-header-bearing request. A missing sensor is an error,
-/// never a fabricated empty scan. Each worker is time- and concurrency-bounded.
-fn radar_response(parsed: &ParsedRequest<'_>, radar: Option<&Radar>) -> String {
-    let Some(radar) = radar else {
-        return json_error(404, "Wi-Fi radar is not enabled on this server");
+/// Read a sensor (Android's OS-cached Wi-Fi scan, or the cells it reports) or record one track
+/// sweep only after an explicitly initiated, same-origin, lookup-header-bearing request of the one
+/// `method` it takes. A missing sensor is an error, never a fabricated empty scan. Each worker is
+/// time- and concurrency-bounded, one request to a sensor at a time.
+fn sensor_response<T: serde::Serialize + Send + 'static>(
+    parsed: &ParsedRequest<'_>,
+    sensor: Option<&Sensor<T>>,
+    noun: &str,
+    method: Method,
+) -> String {
+    let Some(sensor) = sensor else {
+        return json_error(404, &format!("{noun} is not enabled on this server"));
     };
-    if parsed.method != Method::Get {
-        return json_error(405, "Wi-Fi radar needs GET");
+    if parsed.method != method {
+        return json_error(405, &format!("{noun} needs {}", method.as_str()));
     }
-    if let Some(refused) = page_refusal(parsed, "Wi-Fi radar request", true) {
+    if let Some(refused) = page_refusal(parsed, &format!("{noun} request"), true) {
         return refused;
     }
     if !parsed.query.is_empty() {
-        return json_error(400, "Wi-Fi radar takes no query parameters");
+        return json_error(400, &format!("{noun} takes no query parameters"));
     }
-    let Some(slot) = Slot::take_of(&radar.live, MAX_RADAR_REQUESTS) else {
-        return json_error(503, "Wi-Fi radio request already in progress");
+    if parsed.has_body {
+        return json_error(400, &format!("{noun} takes no body"));
+    }
+    let Some(slot) = Slot::take_of(&sensor.live, MAX_RADAR_REQUESTS) else {
+        return json_error(503, &format!("{noun} request already in progress"));
     };
-    let handler = Arc::clone(&radar.handler);
+    let handler = Arc::clone(&sensor.handler);
     let (sender, receiver) = sync_channel(1);
     let worker = thread::Builder::new()
-        .name("serve-wifi-radar".into())
+        .name("serve-radar".into())
         .stack_size(LOOKUP_STACK_BYTES)
         .spawn(move || {
             let result = catch_unwind(AssertUnwindSafe(|| handler()));
@@ -1392,18 +1457,20 @@ fn radar_response(parsed: &ParsedRequest<'_>, radar: Option<&Radar>) -> String {
             let _ = sender.send(result);
         });
     if worker.is_err() {
-        return json_error(503, "could not start a Wi-Fi radar worker");
+        return json_error(503, &format!("could not start a {noun} worker"));
     }
     match receiver.recv_timeout(RADAR_WAIT) {
-        Ok(Ok(Ok(scan))) => match serde_json::to_string(&scan) {
+        Ok(Ok(Ok(report))) => match serde_json::to_string(&report) {
             Ok(body) => json_ok(&body, false),
-            Err(_) => json_error(500, "Wi-Fi observations could not be encoded"),
+            Err(_) => json_error(500, &format!("{noun} observations could not be encoded")),
         },
         Ok(Ok(Err(error))) => json_error(error.status, &error.message),
         Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
-            json_error(500, "Wi-Fi radar failed unexpectedly")
+            json_error(500, &format!("{noun} failed unexpectedly"))
         }
-        Err(RecvTimeoutError::Timeout) => json_error(504, "Wi-Fi radar did not answer in time"),
+        Err(RecvTimeoutError::Timeout) => {
+            json_error(504, &format!("{noun} did not answer in time"))
+        }
     }
 }
 
@@ -2334,6 +2401,8 @@ mod tests {
                 let routes = Routes {
                     lookups: Some(lookups.clone()),
                     radar: None,
+                    cells: None,
+                    track: None,
                     analyze: echo_seeds().analyze,
                     inspect: None,
                     scans: None,
@@ -2487,6 +2556,127 @@ mod tests {
         assert!(error.contains("Termux:API unavailable"));
     }
 
+    /// The cells Android reports and the track log are read from the page through the Wi-Fi
+    /// radar's own guards: the lookup header, same origin, one method, no parameters and no body,
+    /// and a refusal rather than an invented reading where no adapter is installed.
+    #[test]
+    fn cell_radar_and_track_sweeps_are_served_under_the_wifi_radar_guards() {
+        let config = ServeConfig::parse("127.0.0.1:8080", None).unwrap();
+        let cells: CellsHandler = Arc::new(|| {
+            crate::cell_radar::parse_cells(
+                br#"[{"type":"gsm","mcc":505,"mnc":1,"lac":17,"cid":91,"registered":true,"dbm":-83},{"type":"lte","mcc":505,"mnc":1,"tac":19,"ci":12345,"registered":false,"dbm":-101}]"#,
+            )
+            .map_err(|e| LookupError {
+                status: 422,
+                message: e.to_string(),
+            })
+        });
+        let track: TrackHandler = Arc::new(|| {
+            let sweeps: Vec<crate::radar::LoggedSweep> = (0..3)
+                .map(|i| {
+                    crate::radar::LoggedSweep::new(
+                        1_700_000_000 + i * 600,
+                        Some(format!("gsm:505-01-17-{i}")),
+                        [crate::radar::LoggedDevice {
+                            mac: "3c:5a:b4:11:22:33".into(),
+                            name: None,
+                        }],
+                    )
+                })
+                .collect();
+            Ok(crate::radar::track(&sweeps, 0))
+        });
+        let routes = Routes {
+            cells: Some(Sensor {
+                handler: cells,
+                live: Arc::new(AtomicUsize::new(0)),
+            }),
+            track: Some(Sensor {
+                handler: track,
+                live: Arc::new(AtomicUsize::new(0)),
+            }),
+            ..Routes::default()
+        };
+        let ask = |method: &str, path: &str, headers: &str| {
+            text(respond(
+                &format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\n{headers}\r\n"),
+                &config,
+                &routes,
+            ))
+        };
+        let lookup = "X-Huntsman-Lookup: 1\r\n";
+        assert!(ask("GET", "/api/radar/cells", "").starts_with("HTTP/1.1 403"));
+        assert!(ask("POST", "/api/radar/cells", lookup).starts_with("HTTP/1.1 405"));
+        assert!(ask("GET", "/api/radar/track", lookup).starts_with("HTTP/1.1 405"));
+        assert!(ask("POST", "/api/radar/track", "").starts_with("HTTP/1.1 403"));
+        assert!(
+            ask("GET", "/api/radar/cells?x=1", lookup).starts_with("HTTP/1.1 400"),
+            "parameters"
+        );
+        assert!(
+            ask(
+                "POST",
+                "/api/radar/track",
+                &format!("{lookup}Content-Length: 3\r\n")
+            )
+            .starts_with("HTTP/1.1 400"),
+            "body"
+        );
+
+        let answer = ask("GET", "/api/radar/cells", lookup);
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        let body: serde_json::Value =
+            serde_json::from_str(answer.split("\r\n\r\n").nth(1).unwrap_or_default()).unwrap();
+        assert_eq!(body["source"], "termux-telephony-cellinfo");
+        assert_eq!(body["observations"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            body["observations"][0]["sighting"]["network_id"],
+            "gsm:505-01-17-91"
+        );
+        assert_eq!(body["observations"][0]["mcc"], "505");
+        assert_eq!(body["observations"][0]["mnc"], "01");
+        assert_eq!(body["observations"][0]["registered"], true);
+        assert!(body["observations"][0]["sighting"]["latitude"].is_null());
+
+        let answer = ask("POST", "/api/radar/track", lookup);
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        let body: serde_json::Value =
+            serde_json::from_str(answer.split("\r\n\r\n").nth(1).unwrap_or_default()).unwrap();
+        assert_eq!(body["sweeps"], 3);
+        assert_eq!(body["located_sweeps"], 3);
+        assert_eq!(body["distinct_cells"], 3);
+        assert_eq!(body["followers"][0]["mac"], "3c:5a:b4:11:22:33");
+        assert_eq!(body["followers"][0]["distinct_cells"], 3);
+        assert_eq!(body["recurring"][0]["sweeps_seen"], 3);
+
+        for (method, path) in [("GET", "/api/radar/cells"), ("POST", "/api/radar/track")] {
+            let missing = text(respond(
+                &format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\n{lookup}\r\n"),
+                &config,
+                &Routes::default(),
+            ));
+            assert!(missing.starts_with("HTTP/1.1 404"), "{missing}");
+        }
+    }
+
+    /// The Radar tab offers both reads and the sweep from the page, each only on a press, through
+    /// the routes above.
+    #[test]
+    fn the_radar_tab_reads_cells_and_logs_sweeps_from_the_page() {
+        for needed in [
+            r#"id="rcread""#,
+            r#"id="rcrows""#,
+            r#"id="rtrack""#,
+            r#"id="rtrows""#,
+            r#"id="rrrows""#,
+            "api('/api/radar/cells')",
+            "api('/api/radar/track',{method:'POST'})",
+            "kind:'network',depth:0",
+        ] {
+            assert!(INDEX_HTML.contains(needed), "the page lacks {needed}");
+        }
+    }
+
     /// A tab open across an upgrade notices it: the page is served with the id of the page this
     /// build embeds, health names the same id, and filling it in leaves the policy's hashes valid.
     #[test]
@@ -2595,6 +2785,23 @@ mod tests {
     /// each Inspect reader's claim with its recording time and the full report, and a bulk action
     /// that names the scans it could not act on instead of stopping at the first refusal.
     #[test]
+    fn the_page_reaches_the_saved_scan_analysis_and_entity_assessment() {
+        // /analyze and /reality are read-only routes the server answered that the page offered no
+        // control for; a phone browser cannot add the lookup header to a typed URL, so they were
+        // unreachable from the UI.
+        let script = inline_block(INDEX_HTML, "script");
+        assert!(INDEX_HTML.contains("<a class=\"tab\" data-tab=\"analysis\">Analysis</a>"));
+        assert!(INDEX_HTML.contains("<div id=\"pane-analysis\" hidden>"));
+        assert!(script.contains(
+            "const TABS=['summary','correlations','browse','graph','analysis','settings','log'];"
+        ));
+        assert!(script.contains("else if(tab==='analysis')await analysis();"));
+        assert!(script.contains("const r=await api(base()+'/analyze');"));
+        assert!(script.contains("api(base()+'/reality?uid='+enc(x.entity))"));
+        assert!(script.contains("button('Source attribution'"));
+    }
+
+    #[test]
     fn the_page_shows_the_provenance_the_api_answers() {
         let script = inline_block(INDEX_HTML, "script");
         assert!(
@@ -2691,11 +2898,9 @@ mod tests {
             );
         }
         // Spiderfoot's sections of one scan, and the addresses an older page used.
-        assert!(
-            script.contains(
-                "const TABS=['summary','correlations','browse','graph','settings','log'];"
-            )
-        );
+        assert!(script.contains(
+            "const TABS=['summary','correlations','browse','graph','analysis','settings','log'];"
+        ));
         assert!(script.contains("({lookup:'newscan',status:'about'})[parts[0]]"));
         let style = inline_block(INDEX_HTML, "style");
         assert!(style.contains(".navbar{position:fixed;left:0;right:0;bottom:0;"));
@@ -3193,6 +3398,8 @@ mod tests {
         let routes = Routes {
             lookups: lookups.cloned(),
             radar: None,
+            cells: None,
+            track: None,
             analyze: None,
             inspect: None,
             scans: None,
@@ -3367,6 +3574,8 @@ mod tests {
                 ..echo_lookups()
             }),
             radar: None,
+            cells: None,
+            track: None,
             analyze: None,
             inspect: None,
             scans: Some(Arc::new(api)),
@@ -3671,6 +3880,8 @@ mod tests {
         Routes {
             lookups: None,
             radar: None,
+            cells: None,
+            track: None,
             analyze: Some(Arc::new(handler)),
             inspect: None,
             scans: None,
@@ -4664,6 +4875,19 @@ mod tests {
     /// Every browser-facing API route refuses a fetch another site started, and each route that
     /// needs the page's header refuses a request without it, through the one [`page_refusal`]
     /// guard, in the same words. The upload gate refuses the same requests before reading a body.
+    /// A sensor route whose handler is never reached: the guard refuses first.
+    fn unused_sensor<T>() -> Sensor<T> {
+        Sensor {
+            handler: Arc::new(|| {
+                Err(LookupError {
+                    status: 422,
+                    message: "unused".into(),
+                })
+            }),
+            live: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
     #[test]
     fn every_page_route_refuses_other_sites_through_one_guard() {
         let refuse = |_: &str, _: &[u8]| -> Result<LookupReport, LookupError> {
@@ -4675,15 +4899,9 @@ mod tests {
         let home = key_home("guard");
         let routes = Routes {
             lookups: Some(echo_lookups()),
-            radar: Some(Radar {
-                handler: Arc::new(|| {
-                    Err(LookupError {
-                        status: 422,
-                        message: "unused".into(),
-                    })
-                }),
-                live: Arc::new(AtomicUsize::new(0)),
-            }),
+            radar: Some(unused_sensor()),
+            cells: Some(unused_sensor()),
+            track: Some(unused_sensor()),
             analyze: echo_seeds().analyze,
             inspect: Some(Inspect {
                 handler: Arc::new(refuse),
@@ -4708,6 +4926,8 @@ mod tests {
         for (method, target, noun, needs_header) in [
             ("GET", "/api/lookup?q=a", "lookup", true),
             ("GET", "/api/radar/wifi", "Wi-Fi radar request", true),
+            ("GET", "/api/radar/cells", "cell radar request", true),
+            ("POST", "/api/radar/track", "radar track request", true),
             ("GET", "/api/scans", "scan request", true),
             ("GET", KEYS_PATH, "key request", true),
             ("GET", "/api/analyze?seeds=a", "analysis", false),

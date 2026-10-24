@@ -10,8 +10,9 @@
 //! WHOIS when their keys are configured.
 //!
 //! A source that fails, one the egress policy refuses included, is its own failed row and the rest
-//! still run. A lookup no source answered is not printed: it fails with the first reason (exit 69),
-//! or is a refusal (exit 77) when the egress policy refused a source.
+//! still run. A lookup no source answered is not printed: it ends from its rows through
+//! `source_outcome::SourceReach` — a refusal (exit 77) when a source was refused before sending,
+//! else no usable response (exit 69) — and the address's own derivations never keep it from failing.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -30,7 +31,7 @@ use crate::indicator_sources::Indicator;
 use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
 use crate::textnorm::upper_first;
 use crate::{duolingo, openpgp_keys};
 
@@ -68,12 +69,10 @@ impl EmailArgs {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum EmailRun {
-    Printed { text: String, report: Report },
-    Network(String),
-    Failed(String),
-}
+/// How an email lookup ended. A lookup no source answered ends through [`SourceReach`]: a refusal
+/// is [`EmailRun::Network`] (exit 77), no response is [`EmailRun::Failed`] (exit 69); otherwise it
+/// prints. The address's own derivations are not a finding, so they never keep it from failing.
+pub type EmailRun = SourceRun<Report>;
 
 type Collected = Result<(Vec<Entity>, SourceExecutionOutcome), Error>;
 type Source<T> = (&'static str, fn(&T, &str, &str, u64) -> Collected);
@@ -94,58 +93,36 @@ fn sources<T: Transport + ?Sized>() -> [Source<T>; 3] {
     ]
 }
 
-/// What one lookup gathered, the first source the egress policy refused, and the first that got
-/// no response.
+/// What one lookup gathered: the address, and the report whose rows say how each source ended.
 struct Gathered {
     email: String,
     report: Report,
-    refused: Option<String>,
-    unanswered: Option<String>,
 }
 
 impl Gathered {
-    /// Record one source's outcome; one that got no response is remembered as the reason.
+    /// Record one source's outcome. Its row carries how the source ended, read like any other.
     fn outcome(&mut self, outcome: SourceExecutionOutcome) {
-        if outcome.kind.is_transport_failure() {
-            let detail = outcome.detail.as_deref().unwrap_or("no response");
-            self.unanswered
-                .get_or_insert_with(|| format!("{}: {detail}", outcome.module));
-        }
         self.report.outcomes.push(outcome);
     }
 
     /// Record a source the guarded path refused to send to: a row that says nothing was sent.
     fn refused(&mut self, module: &str, now_unix: u64, message: String) {
-        self.refused
-            .get_or_insert_with(|| format!("{module}: {message}"));
         self.outcome(SourceExecutionOutcome::refused_before_sending(
             module, now_unix, message,
         ));
     }
 
-    /// The printed lookup once any source answered. When none did, the address's own
-    /// derivations are not a finding: [`EmailRun::Network`] (exit 77) when the egress policy
-    /// refused a source, otherwise [`EmailRun::Failed`] (exit 69) with the first reason.
+    /// The printed lookup once any source answered. When none did, the lookup ends from its rows:
+    /// the address's own derivations are not a finding, so [`SourceReach`] gives a refusal
+    /// ([`EmailRun::Network`], exit 77) when a source was refused before sending, else no usable
+    /// response ([`EmailRun::Failed`], exit 69).
     fn finish(self) -> EmailRun {
-        let Self {
-            email,
-            mut report,
-            refused,
-            unanswered,
-        } = self;
+        let Self { email, mut report } = self;
         merge_by_uid(&mut report.entities);
-        if !report.outcomes.iter().any(|o| o.kind.is_accepted()) {
-            if let Some(message) = refused {
-                return EmailRun::Network(message);
-            }
-            let why = unanswered
-                .or_else(|| {
-                    report.outcomes.first().map(|o| {
-                        format!("{}: {}", o.module, o.detail.as_deref().unwrap_or("failed"))
-                    })
-                })
-                .unwrap_or_else(|| "no source ran".into());
-            return EmailRun::Failed(format!("no source answered for {email}: {why}"));
+        if let Some(run) =
+            SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {email}"))
+        {
+            return run;
         }
         match lookup_report::render(&report.entities, &report.outcomes) {
             Ok(text) => EmailRun::Printed { text, report },
@@ -167,8 +144,6 @@ fn gather<T: Transport + ?Sized>(transport: &T, email: &str, now_unix: u64) -> O
             outcomes: Vec::new(),
         },
         email,
-        refused: None,
-        unanswered: None,
     };
     for (module, source) in sources::<T>() {
         if !transport.runs_module(module) {
@@ -225,7 +200,6 @@ pub fn run_keyed<T: Transport + ?Sized>(
         );
         gathered.report.entities.extend(legs.entities);
         gathered.report.outcomes.extend(legs.outcomes);
-        gathered.unanswered = gathered.unanswered.or(legs.network);
     }
     gathered.finish()
 }

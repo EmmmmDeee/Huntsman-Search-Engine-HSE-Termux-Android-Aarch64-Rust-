@@ -1274,19 +1274,63 @@ pub fn spiderfoot_names(module: &str) -> Vec<String> {
 /// (`asic_persons.banned`) the module. **Pure.**
 #[must_use]
 pub fn module_of(label: &str) -> &str {
-    match label {
+    let module = label.split_once('.').map_or(label, |(module, _)| module);
+    match module {
         "hibp_account" => "hibp",
         "wigle_bluetooth" => "wigle",
-        _ => label.split_once('.').map_or(label, |(module, _)| module),
+        _ => module,
     }
 }
 
+/// Whether a New Scan use case runs modules of `category`, as Spiderfoot's use-case flags choose
+/// modules. `all` and `passive` run every module: passive is a policy on the lookups (it skips an
+/// email's keyed breach lookup and follows no email it finds), not a module set. `footprint` learns
+/// what the target exposes and leaves out the threat, blocklist and reputation sources.
+/// `investigate` suspects the target: the threat sources with the basic footprint (names and
+/// addresses, infrastructure, breach exposure, the target's own data), without the social, search,
+/// web, people and corporate sources that widen a footprint. **Pure.**
+#[must_use]
+pub fn use_case_runs(usecase: &str, category: ModuleCategory) -> bool {
+    match usecase {
+        "footprint" => category != ModuleCategory::Threat,
+        "investigate" => !matches!(
+            category,
+            ModuleCategory::Social
+                | ModuleCategory::Search
+                | ModuleCategory::Web
+                | ModuleCategory::People
+                | ModuleCategory::Corporate
+        ),
+        _ => true,
+    }
+}
+
+/// The selection a scan runs: the modules `chosen` names, kept to the ones `usecase` runs. A use
+/// case that runs every module keeps `chosen` as it is, so a scan that chose no module still runs
+/// every one; a use case never adds a module `chosen` left out. **Pure.**
+#[must_use]
+pub fn use_case_selection(usecase: &str, chosen: &Selection) -> Selection {
+    if REACHABLE_MODULES
+        .iter()
+        .all(|module| use_case_runs(usecase, module.category))
+    {
+        return chosen.clone();
+    }
+    Selection::only(
+        REACHABLE_MODULES
+            .iter()
+            .filter(|module| use_case_runs(usecase, module.category) && chosen.runs(module.name))
+            .map(|module| module.name),
+    )
+}
+
 /// The selection a scan's chosen `names` make. Each name is a module [`reachable_modules`] lists,
+/// a label a Sources table shows for one (`hibp_account`, `wigle_bluetooth`, see [`module_of`]),
 /// or a Spiderfoot module (`sfp_spamhaus`, `sfp_dnsresolve`) standing for every module that does
 /// its work, in any case. No name chooses every module.
 ///
 /// # Errors
-/// Every name that is neither, in the order given.
+/// Every name that is none of those, in the order given.
 pub fn selection(names: &[String]) -> Result<Selection, String> {
     let names: Vec<String> = names
         .iter()
@@ -1299,10 +1343,13 @@ pub fn selection(names: &[String]) -> Result<Selection, String> {
     let mut chosen = Vec::new();
     let mut unknown = Vec::new();
     for name in &names {
+        let wanted = module_of(name);
         let modules: Vec<&str> = REACHABLE_MODULES
             .iter()
             .map(|module| module.name)
-            .filter(|module| module == name || spiderfoot_names(module).iter().any(|sf| sf == name))
+            .filter(|module| {
+                *module == wanted || spiderfoot_names(module).iter().any(|sf| sf == name)
+            })
             .collect();
         if modules.is_empty() {
             unknown.push(name.as_str());
@@ -1512,5 +1559,61 @@ mod tests {
             env_cost_per_request("definitely_missing_provider_xyz"),
             None
         );
+    }
+
+    #[test]
+    fn use_cases_choose_modules_by_category() {
+        let all = Selection::all();
+        assert!(use_case_selection("all", &all).is_all());
+        assert!(use_case_selection("passive", &all).is_all());
+        for module in REACHABLE_MODULES {
+            assert!(use_case_runs("all", module.category), "{}", module.name);
+            assert!(use_case_runs("passive", module.category), "{}", module.name);
+        }
+        // Footprint: what the target exposes, without the threat, blocklist and reputation sources.
+        let footprint = use_case_selection("footprint", &all);
+        for runs in [
+            "rdap",
+            "internetdb",
+            "gravatar",
+            "github_user",
+            "hibp",
+            "asic_persons",
+        ] {
+            assert!(footprint.runs(runs), "footprint runs {runs}");
+        }
+        for skipped in ["spamhaus", "virustotal", "shodan", "abuseipdb"] {
+            assert!(!footprint.runs(skipped), "footprint leaves out {skipped}");
+        }
+        // Investigate: the threat sources with the basic footprint, without social, search, people
+        // and corporate expansion.
+        let investigate = use_case_selection("investigate", &all);
+        for runs in [
+            "spamhaus",
+            "virustotal",
+            "rdap",
+            "internetdb",
+            "hibp",
+            "oathnet",
+        ] {
+            assert!(investigate.runs(runs), "investigate runs {runs}");
+        }
+        for skipped in [
+            "gravatar",
+            "github_user",
+            "asic_persons",
+            "asic_director",
+            "web_query",
+        ] {
+            assert!(
+                !investigate.runs(skipped),
+                "investigate leaves out {skipped}"
+            );
+        }
+        // A use case keeps the chosen modules to its own and never adds one.
+        let chosen = Selection::only(["spamhaus", "rdap"]);
+        let kept = use_case_selection("footprint", &chosen);
+        assert!(kept.runs("rdap") && !kept.runs("spamhaus") && !kept.runs("mnemonic"));
+        assert_eq!(use_case_selection("all", &chosen), chosen);
     }
 }

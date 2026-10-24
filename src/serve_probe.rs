@@ -11,8 +11,10 @@
 //! 3. `GET /api/analyze` on two fixture seeds returns `entities`, `relations` and `termination`.
 //!    It is offline on the server, so the probe spends no quota.
 
+use std::fmt;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -55,10 +57,44 @@ impl ServeState {
     }
 }
 
+/// Where the probed address came from. `doctor` resolves it as the phone runs the server:
+/// `--bind`, else `HSE_BIND`, else the address `huntsman start` recorded in the state directory
+/// when port 8080 was taken, else the default. Serialized and printed as one word or path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddrSource {
+    /// `--bind` on the command line.
+    Flag,
+    /// `HSE_BIND` in the environment.
+    Env,
+    /// The controller's `serve.bind`, at this path.
+    File(PathBuf),
+    /// Nothing chose one: the default bind.
+    Default,
+}
+
+impl fmt::Display for AddrSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Flag => f.write_str("--bind"),
+            Self::Env => f.write_str(crate::environment::SERVE_BIND_ENV),
+            Self::File(path) => write!(f, "{}", path.display()),
+            Self::Default => f.write_str("default"),
+        }
+    }
+}
+
+impl Serialize for AddrSource {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
 /// The probe's verdict. `problems` says what failed, in words with no response content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServeProbe {
     pub addr: String,
+    /// Where `addr` came from, so a report can say which setting to change.
+    pub addr_source: AddrSource,
     pub state: ServeState,
     /// The version `/api/health` reported, when Huntsman answered.
     pub version: Option<String>,
@@ -82,13 +118,20 @@ impl Response {
     }
 }
 
-/// Probe the server at `addr`. `token` is sent as a bearer token to the protected route.
+/// Probe the server at `addr`, chosen by `source`. `token` is sent as a bearer token to the
+/// protected route.
 #[must_use]
-pub fn probe(addr: SocketAddr, token: Option<&str>, timeout: Duration) -> ServeProbe {
+pub fn probe(
+    addr: SocketAddr,
+    token: Option<&str>,
+    timeout: Duration,
+    source: AddrSource,
+) -> ServeProbe {
     let started = Instant::now();
     let (state, version, problems) = run(addr, token, timeout);
     ServeProbe {
         addr: addr.to_string(),
+        addr_source: source,
         state,
         version,
         problems,
@@ -427,7 +470,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         drop(listener);
-        let found = probe(addr, None, Duration::from_secs(2));
+        let found = probe(addr, None, Duration::from_secs(2), AddrSource::Flag);
         assert_eq!(found.state, ServeState::NotRunning);
     }
 
@@ -441,7 +484,7 @@ mod tests {
             let _ = stream.read(&mut buf);
             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
         });
-        let found = probe(addr, None, Duration::from_secs(2));
+        let found = probe(addr, None, Duration::from_secs(2), AddrSource::Flag);
         server.join().expect("server");
         assert_eq!(found.state, ServeState::Foreign);
         assert_eq!(found.version, None);

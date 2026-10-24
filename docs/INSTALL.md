@@ -218,7 +218,12 @@ rm -f ~/.huntsman.env
 ```
 
 If you set `HUNTSMAN_HOME`, `HUNTSMAN_ENV_FILE` or `CARGO_TARGET_DIR` when
-installing, remove those locations instead.
+installing, remove those locations instead. `HUNTSMAN_HOME` is one decision
+for the whole install: the installer writes it into the service's run script,
+`huntsman` reads it from there, and the commands `huntsman` passes on inherit
+it, so the service, `huntsman start` and `huntsman scans list` share one
+`serve.bind` and one scan store even in a shell that does not export it. A
+bare `huntsman-recon` in such a shell still reads `~/.huntsman`.
 
 ## Keep serve running on Android
 
@@ -274,7 +279,9 @@ installer now removes that file, and a loopback server ignores
 Port 8080 is also the default of other servers people run in Termux, such as
 code-server and File Browser. When another program holds it, `huntsman start`
 picks the next free port, says which, and keeps using it (it is stored in
-`~/.huntsman/serve.bind`) until 8080 is free again. If the port is taken while
+`~/.huntsman/serve.bind`) until 8080 is free again. `huntsman doctor` reads the
+same file, so it probes the port the service runs on unless `--bind` or
+`HSE_BIND` says otherwise. If the port is taken while
 the service runs, `serve` exits 69 and the service waits a minute before trying
 again instead of retrying every second. To run the server by hand instead, stop
 the service and pass `--bind`:

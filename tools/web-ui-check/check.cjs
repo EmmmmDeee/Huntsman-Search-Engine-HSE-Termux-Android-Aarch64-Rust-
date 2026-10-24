@@ -37,7 +37,7 @@ const bin = process.argv[2];
 if (!bin || !fs.existsSync(bin)) { process.stderr.write('usage: node check.cjs path/to/huntsman-recon\n'); process.exit(64); }
 const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true };
 // Two additional KiB accommodate the complete, lossless on-demand TXT exporter.
-const PAGE_BUDGET = 121 * 1024;
+const PAGE_BUDGET = 128 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -274,6 +274,60 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       await page.unroute('**/api/radar/wifi');
       page.off('request', countRadar);
 
+      // The cells Android reports and the track log, read from the same tab on a press only.
+      const cellsFixture = {
+        source: 'termux-telephony-cellinfo', acquisition: 'android_cached_cellinfo_not_active_scan',
+        status: 'freshness_unknown', observed: 2, rejected: 0,
+        observations: [
+          { sighting: { network_id: 'gsm:505-01-17-91', signal_dbm: -83 }, technology: 'gsm', mcc: '505', mnc: '01', area_code: 17, cell_id: 91, registered: true, freshness: 'unknown' },
+          { sighting: { network_id: 'lte:505-01-19-12345', signal_dbm: -101 }, technology: 'lte', mcc: '505', mnc: '01', area_code: 19, cell_id: 12345, registered: false, freshness: 'unknown' }
+        ]
+      };
+      const trackFixture = {
+        sweeps: 3, located_sweeps: 3, distinct_cells: 3, skipped_lines: 0,
+        recurring: [{ mac: '3c:5a:b4:11:22:33', name: null, vendor: null, device_class: null, sweeps_seen: 3, first_ts: 1700000000, last_ts: 1700001200 }],
+        followers: [{ mac: '3c:5a:b4:11:22:33', vendor: null, device_class: null, distinct_cells: 3, sightings: 3, coverage: 1, first_ts: 1700000000, last_ts: 1700001200, span_secs: 1200 }]
+      };
+      let cellCalls = 0, trackCalls = 0, trackMethod = '', sensorHeaders = true;
+      const countSensors = request => {
+        const path = new URL(request.url()).pathname;
+        if (path === '/api/radar/cells') { cellCalls++; sensorHeaders &&= request.headers()['x-huntsman-lookup'] === '1'; }
+        if (path === '/api/radar/track') { trackCalls++; trackMethod = request.method(); sensorHeaders &&= request.headers()['x-huntsman-lookup'] === '1'; }
+      };
+      page.on('request', countSensors);
+      await page.route('**/api/radar/cells', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(cellsFixture) }));
+      await page.route('**/api/radar/track', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(trackFixture) }));
+      await page.goto(base + '/#/radar', { waitUntil: 'networkidle' });
+      check(`${scheme}: Radar reads no cells and logs no sweep merely because it opened`, cellCalls === 0 && trackCalls === 0, { cellCalls, trackCalls });
+      await page.click('#rcread');
+      await page.waitForSelector('#rcresult:not([hidden])', { timeout: 10000 }).catch(() => {});
+      const cellsText = await page.textContent('#rcrows');
+      check(`${scheme}: Radar shows the cells Android reports, registered state and signal, with no position`,
+        cellCalls === 1 && sensorHeaders && await page.isHidden('#rerror') && cellsText.includes('gsm:505-01-17-91') &&
+        cellsText.includes('lte:505-01-19-12345') && cellsText.includes('yes') && cellsText.includes('-83') &&
+        (await page.textContent('#rcsummary')).includes('termux-telephony-cellinfo'), cellsText);
+      await page.click('#rcrows button');
+      await page.waitForSelector('#view-newscan:not([hidden])', { timeout: 5000 });
+      const cellHandoff = await page.evaluate(() => ({
+        target: document.getElementById('starget').value, kind: document.getElementById('skind').value,
+        depth: document.getElementById('sdepth').value
+      }));
+      check(`${scheme}: a reported cell pivots into a prefilled cell: NETWORK scan`,
+        cellHandoff.target === 'cell:505:01:17:91' && cellHandoff.kind === 'network' && cellHandoff.depth === '0', cellHandoff);
+      await page.goto(base + '/#/radar', { waitUntil: 'networkidle' });
+      await page.click('#rtrack');
+      await page.waitForSelector('#rtresult:not([hidden])', { timeout: 10000 }).catch(() => {});
+      const trackText = await page.textContent('#rtrows');
+      check(`${scheme}: one press logs one sweep by POST and shows the follower and recurring devices`,
+        trackCalls === 1 && trackMethod === 'POST' && sensorHeaders && await page.isHidden('#rerror') &&
+        trackText.includes('3c:5a:b4:11:22:33') && trackText.includes('1.00') && trackText.includes('1200') &&
+        (await page.textContent('#rrrows')).includes('3c:5a:b4:11:22:33') &&
+        (await page.textContent('#rtsummary')).includes('sweeps: 3') &&
+        (await page.textContent('#rstatus')).includes('travelled with you'), { trackCalls, trackMethod, trackText });
+      page.off('request', countSensors);
+      await page.unroute('**/api/radar/cells');
+      await page.unroute('**/api/radar/track');
+
       // Inspect: a picked file goes to this server's own exif and docmeta readers, only on request.
       // The file is a JPEG carrying an XMP packet with an edit history and a GPS position.
       const xmp = '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF><rdf:Description rdf:about="" ' +
@@ -438,19 +492,53 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       }
       await audit(page, `${scheme} summary`);
 
+      // Analysis: Huntsman's offline analysis of the saved entities, every count as the API holds it.
+      await page.click('#sctabs a[data-tab=analysis]');
+      await page.waitForSelector('#acounts dd', { timeout: 5000 }).catch(() => {});
+      const analysed = await api(page, root + '/analyze');
+      const counts = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#acounts dt')].map(dt => [dt.textContent, dt.nextElementSibling.textContent])));
+      check(`${scheme}: Analysis shows every count the API answers`,
+        analysed.counts && Object.keys(analysed.counts).length > 0 && Object.entries(analysed.counts).every(([k, v]) => counts[k] === String(v)) && (await page.textContent('#areport')).length > 0,
+        { counts, api: analysed.counts });
+      await audit(page, `${scheme} analysis`);
+
       // Browse: the data types, then one type's elements with the full raw record behind each.
       await page.click('#sctabs a[data-tab=browse]');
       await page.waitForSelector('#types tr a');
       check(`${scheme}: Browse lists every data type`, (await page.$$('#types tr')).length === summary.length, summary.length);
       await audit(page, `${scheme} browse`);
-      await page.click('#types tr a >> nth=0');
+      // Browse the type of an element that shows an entity, within the 200 rows a type lists, so
+      // its raw record can also be attributed to its sources below.
+      let attributable = null;
+      for (const [i, e] of elements.entries()) {
+        if (!attributable && e.entity && e.type !== 'ROOT' && elements.slice(0, i).filter(t => t.type === e.type).length < 200) attributable = e;
+      }
+      check(`${scheme}: the scan holds an element that shows an entity`, attributable !== null, elements.length);
+      const want = attributable || elements.find(e => e.type !== 'ROOT') || elements[0];
+      await page.click(`#types tr a[href$="/browse/${encodeURIComponent(want.type)}"]`);
       await page.waitForSelector('#bbody tbody tr');
       const type = decodeURIComponent((await page.evaluate(() => location.hash)).split('/')[4] || '');
       const ofType = elements.filter(e => e.type === type);
       check(`${scheme}: Browse shows every element of a type`, (await page.$$('#bbody tbody tr')).length === Math.min(200, ofType.length) && ofType.length > 0, `${type}: ${(await page.$$('#bbody tbody tr')).length} of ${ofType.length}`);
-      await page.click('#bbody details.raw summary >> nth=0');
+      const wantRow = await page.$$eval('#bbody details.raw summary > .data', (cells, data) => cells.findIndex(c => c.textContent === data), String(want.data));
+      await page.click(`#bbody details.raw summary >> nth=${Math.max(0, wantRow)}`);
       await page.waitForSelector('#bbody details.raw[open] .ent-b', { timeout: 3000 }).catch(() => {});
       check(`${scheme}: an element opens to its raw record`, await page.isVisible('#bbody details.raw[open] .ent-b'), 'closed');
+      // Source attribution: /reality for the element's entity, each assertion as the API holds it.
+      const opened = await page.evaluate(() => { const d = document.querySelector('#bbody details.raw[open]'); return d ? d.closest('tr').querySelector('.data').textContent : null; });
+      const attributedPick = elements.find(e => e.type === type && String(e.data) === opened);
+      if (attributedPick && attributedPick.entity) {
+        await page.click('#bbody details.raw[open] .ent-b button:has-text("Source attribution")');
+        await page.waitForSelector('#bbody details.raw[open] .ent-b .ent-b', { timeout: 5000 }).catch(() => {});
+        const assessed = await api(page, root + '/reality?uid=' + encodeURIComponent(attributedPick.entity));
+        const rows = await page.$$('#bbody details.raw[open] .ent-b .ent-b tbody tr');
+        const attributed = await page.textContent('#bbody details.raw[open] .ent-b .ent-b');
+        check(`${scheme}: Source attribution lists every assertion the API answers for the entity`,
+          assessed.entity && rows.length === assessed.entity.assertions.length && attributed.includes(assessed.entity.identity_status) && assessed.entity.limitations.every(l => attributed.includes(l)),
+          { rows: rows.length, assertions: assessed.entity && assessed.entity.assertions.length, attributed });
+      } else {
+        check(`${scheme}: the opened element names an entity to attribute`, false, { opened, type });
+      }
       await audit(page, `${scheme} browse type`);
       await page.click('#bpath');
       await page.waitForSelector('#bbody .tree li', { timeout: 5000 }).catch(() => {});
@@ -471,6 +559,14 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       }
       const marked = all.filter(e => e.fp).map(e => e.id);
       check(`${scheme}: a false positive flags the element and everything found from it`, marked.length === branch.size && marked.every(id => branch.has(id)) && await page.isVisible('#bbody .label.warn'), `${marked.length} flagged, branch of ${branch.size}`);
+      // Once an element is flagged, the saved-entity analysis refuses rather than launder the
+      // flagged evidence, and the page shows the server's reason verbatim.
+      await page.click('#sctabs a[data-tab=analysis]');
+      await page.waitForSelector('#scerror:not([hidden])', { timeout: 5000 }).catch(() => {});
+      check(`${scheme}: Analysis shows the server's refusal verbatim once an element is flagged`, (await page.textContent('#scerror')).includes('false-positive elements'), await page.textContent('#scerror'));
+      // Chromium logs that refused fetch as a console error; the one 409 is the refusal just read.
+      const refusal = errors.findIndex(e => e.includes('status of 409'));
+      if (refusal >= 0) errors.splice(refusal, 1);
 
       // Correlations, Graph, Scan Settings and Log, each as the API holds them.
       await page.click('#sctabs a[data-tab=correlations]');

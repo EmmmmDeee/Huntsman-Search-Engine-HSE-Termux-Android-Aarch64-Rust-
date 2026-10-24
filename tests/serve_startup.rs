@@ -8,7 +8,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use huntsman_recon::exit::EX_UNAVAILABLE;
+use huntsman_recon::exit::{EX_DATAERR, EX_UNAVAILABLE};
 
 /// `serve` with `args`, with no inherited bind, token, external host or Termux setting, plus `envs`.
 fn serve(args: &[&str], envs: &[(&str, &str)]) -> Command {
@@ -20,6 +20,8 @@ fn serve(args: &[&str], envs: &[(&str, &str)]) -> Command {
         "PORT",
         "TERMUX_VERSION",
         "PREFIX",
+        "HUNTSMAN_CONTINUOUS_TARGETS",
+        "HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES",
     ] {
         command.env_remove(name);
     }
@@ -50,6 +52,18 @@ fn startup(envs: &[(&str, &str)]) -> (String, String) {
 
 /// [`startup`] on `bind`.
 fn startup_on(bind: &str, envs: &[(&str, &str)]) -> (String, String) {
+    let (first, stderr, _) = startup_asking(bind, envs, "/api/health", "");
+    (first, stderr)
+}
+
+/// Starts `serve` on `bind` with `envs` and asks it `GET path` with `headers`; returns its first
+/// stdout line, everything it wrote to stderr before it answered, and the answer's body.
+fn startup_asking(
+    bind: &str,
+    envs: &[(&str, &str)],
+    path: &str,
+    headers: &str,
+) -> (String, String, String) {
     let mut child = serve(&["--bind", bind], envs)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -68,10 +82,18 @@ fn startup_on(bind: &str, envs: &[(&str, &str)]) -> (String, String) {
         .unwrap_or_else(|| panic!("no serving= line: {first:?}"))
         .to_owned();
     let mut stream = TcpStream::connect(&addr).unwrap();
-    write!(stream, "GET /api/health HTTP/1.1\r\nHost: {addr}\r\n\r\n").unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\n{headers}\r\n"
+    )
+    .unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_owned())
+        .unwrap_or_default();
     child.kill().unwrap();
     child.wait().unwrap();
     let mut stderr = String::new();
@@ -81,7 +103,7 @@ fn startup_on(bind: &str, envs: &[(&str, &str)]) -> (String, String) {
         .unwrap()
         .read_to_string(&mut stderr)
         .unwrap();
-    (first, stderr)
+    (first, stderr, body)
 }
 
 /// A leftover deployment environment may export `PORT` and a retired provider
@@ -232,4 +254,94 @@ fn on_a_public_bind_serve_says_the_page_needs_the_token_without_printing_it() {
         !stderr.contains(value) && !first.contains(value),
         "{stderr}"
     );
+}
+
+/// The phone's service reads `~/.huntsman.env`, so continuous normalisation set there starts with
+/// `serve` and the Settings page says what it does; set nowhere, the page says it is off and how
+/// to turn it on; set wrong, `serve` ends before it binds, naming the setting.
+#[test]
+fn continuous_normalisation_is_read_from_the_keys_file_and_shown_in_settings() {
+    let home = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("serve-continuous-home");
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).unwrap();
+    let keys = home.join(".huntsman.env");
+    fs::write(
+        &keys,
+        "HUNTSMAN_CONTINUOUS_TARGETS=*\nHUNTSMAN_CONTINUOUS_INTERVAL_MINUTES=60\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&keys, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let home_text = home.to_str().unwrap();
+    let continuous = |body: &str| {
+        let settings: serde_json::Value = serde_json::from_str(body).unwrap();
+        settings["global"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["key"] == "continuous")
+            .cloned()
+            .expect("a continuous global setting")
+    };
+    let header = "X-Huntsman-Lookup: 1\r\n";
+
+    let (first, stderr, body) = startup_asking(
+        "127.0.0.1:0",
+        &[("HOME", home_text), ("PREFIX", "/usr")],
+        "/api/settings",
+        header,
+    );
+    assert!(first.starts_with("serving=http://127.0.0.1:"), "{first}");
+    assert!(
+        stderr.contains(
+            "continuous: enabled with 0 canonical targets, interval=60 minutes, normalise_all=true"
+        ),
+        "{stderr}"
+    );
+    let on = continuous(&body);
+    assert_eq!(
+        on["description"],
+        "continuous normalisation while serve runs"
+    );
+    assert_eq!(
+        on["value"],
+        "every 60 minutes: every saved target, re-normalised only"
+    );
+
+    let (_, stderr, body) = startup_asking(
+        "127.0.0.1:0",
+        &[("HOME", env!("CARGO_TARGET_TMPDIR")), ("PREFIX", "/usr")],
+        "/api/settings",
+        header,
+    );
+    assert!(!stderr.contains("continuous:"), "{stderr}");
+    assert_eq!(
+        continuous(&body)["value"],
+        "off (set HUNTSMAN_CONTINUOUS_TARGETS in ~/.huntsman.env or the environment)"
+    );
+
+    let out = serve(
+        &["--bind", "127.0.0.1:0"],
+        &[
+            ("HOME", env!("CARGO_TARGET_TMPDIR")),
+            ("HUNTSMAN_CONTINUOUS_TARGETS", "*"),
+            ("HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES", "5"),
+        ],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(out.status.code(), Some(i32::from(EX_DATAERR)));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "",
+        "serve must refuse before it announces an address"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "continuous: HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES must be 60..=10080\n"
+    );
+    let _ = fs::remove_dir_all(&home);
 }

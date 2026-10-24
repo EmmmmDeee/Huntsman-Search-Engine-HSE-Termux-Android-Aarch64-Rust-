@@ -542,19 +542,18 @@ fn fetch_hops_inner<T: Transport + ?Sized>(
             }
         };
 
-        let next = match redirect_target(&current, &response) {
-            Ok(next) => next,
-            // The monolith's client did not follow a Location it could not parse
-            // into an http(s) URL with a host; the 3xx was the answer.
-            Err(_) if matches!(options.redirect_policy, RedirectPolicy::SameSite { .. }) => {
-                let refusal = Refusal {
-                    why: "redirect refused: unusable Location",
-                    redirects,
-                    sent,
-                };
-                return Ok(refusal.finish(module, now_unix, &current, response, &scrub));
-            }
-            Err(e) => return Err(e),
+        // A `Location` that cannot be parsed into an http(s) URL with a host is not followed,
+        // under any redirect policy: the 3xx response was received, so it is the answer (the
+        // monolith's client treated it the same way), never a request refused before sending.
+        // Returning it as an error here would make a caller read a sent-and-answered request as
+        // "nothing reached the network".
+        let Ok(next) = redirect_target(&current, &response) else {
+            let refusal = Refusal {
+                why: "redirect refused: unusable Location",
+                redirects,
+                sent,
+            };
+            return Ok(refusal.finish(module, now_unix, &current, response, &scrub));
         };
         if let Some(next) = next {
             if redirects >= options.max_redirects {
@@ -1214,13 +1213,25 @@ mod tests {
     }
 
     #[test]
-    fn redirect_to_a_non_http_scheme_is_refused() {
+    fn redirect_to_a_non_http_scheme_keeps_the_3xx_as_the_answer() {
+        // An unfollowable Location is not a request refused before sending: the 3xx was received,
+        // so it is the answer (classified `RedirectChanged`) with the refused redirect recorded —
+        // never an error a caller would read as "nothing reached the network". The target is still
+        // not fetched.
         let f = Fake::new(vec![Ok(resp(
             302,
             &[("location", "file:///etc/passwd")],
             "",
         ))]);
-        assert!(run(&f, "https://a.example/", None, 5).is_err());
+        let r =
+            run(&f, "https://a.example/", None, 5).expect("the 3xx is the answer, not an error");
+        assert_eq!(r.outcome.kind, SourceOutcomeKind::RedirectChanged);
+        assert!(r.response.is_some(), "the 302 response is kept");
+        assert!(
+            r.redirect_refused.is_some(),
+            "the unusable redirect is recorded: {:?}",
+            r.redirect_refused
+        );
         assert_eq!(f.seen.borrow().len(), 1);
     }
 

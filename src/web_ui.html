@@ -256,7 +256,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <label class="fl" for="starget">Scan Target</label>
 <input id="starget" class="mono" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" placeholder="The target of your scan.">
 <label class="fl" for="skind">Target type</label>
-<select id="skind"><option value="auto">Detect from the target</option><option value="domain">Domain name</option><option value="ip">IP address</option><option value="netblock">Address block (CIDR)</option><option value="asn">AS number</option><option value="email">E-mail address</option><option value="exposure">E-mail breach exposure</option><option value="phone">Phone number</option><option value="username">Username</option><option value="people">Human name</option><option value="network">Wi-Fi BSSID or location</option><option value="crypto">Bitcoin address</option></select>
+<select id="skind"><option value="auto">Detect from the target</option><option value="domain">Domain name</option><option value="ip">IP address</option><option value="netblock">Address block (CIDR)</option><option value="asn">AS number</option><option value="email">E-mail address</option><option value="exposure">E-mail breach exposure</option><option value="phone">Phone number</option><option value="username">Username</option><option value="people">Human name</option><option value="network">Wi-Fi BSSID or location</option><option value="crypto">Bitcoin address</option><option value="geocode">Place, address or LAT,LON</option></select>
 <label class="fl" for="sdepth">Recursion depth</label>
 <input id="sdepth" type="number" min="0" step="1" value="0" inputmode="numeric" aria-describedby="sdepth-h">
 <p class="help" id="sdepth-h">How many hops the scan follows what it finds, as Spiderfoot feeds each finding to the modules that take it: every email, username, domain, phone, IP address and BSSID found is looked up in turn. 0 looks up the target only.</p>
@@ -274,8 +274,8 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="toolbar" id="nselectors" hidden><button class="btn" id="nall" type="button">Select All</button><button class="btn" id="nnone" type="button">De-Select All</button></div>
 <div class="panel" id="np-usecase" role="tabpanel" aria-labelledby="nt-usecase"><table class="uc"><tbody>
 <tr><td><label class="cb"><input type="radio" name="usecase" value="all" id="uc-all" checked></label></td><td><label for="uc-all"><b>All</b>Run every eligible module for the selected scan type. Results depend on provider availability, credentials, quotas and coverage; review the recorded source outcomes for gaps.</label></td></tr>
-<tr><td><label class="cb"><input type="radio" name="usecase" value="footprint" id="uc-footprint"></label></td><td><label for="uc-footprint"><b>Footprint</b>Understand what information this target exposes to the Internet: its network perimeter, associated identities and other information found through web crawling and search engines.</label></td></tr>
-<tr><td><label class="cb"><input type="radio" name="usecase" value="investigate" id="uc-investigate"></label></td><td><label for="uc-investigate"><b>Investigate</b>Best for when you suspect the target to be malicious but need more information. Some basic footprinting is done, and blacklists and other sources that may know of the target's maliciousness are queried.</label></td></tr>
+<tr><td><label class="cb"><input type="radio" name="usecase" value="footprint" id="uc-footprint"></label></td><td><label for="uc-footprint"><b>Footprint</b>Understand what information this target exposes to the Internet: its network perimeter, associated identities and other information found through web crawling and search engines. Every source but the threat, blocklist and reputation ones.</label></td></tr>
+<tr><td><label class="cb"><input type="radio" name="usecase" value="investigate" id="uc-investigate"></label></td><td><label for="uc-investigate"><b>Investigate</b>Best for when you suspect the target to be malicious but need more information. Some basic footprinting is done, and blacklists and other sources that may know of the target's maliciousness are queried. The threat sources with names, addresses, infrastructure and breach exposure; no social, search, people or corporate sources.</label></td></tr>
 <tr><td><label class="cb"><input type="radio" name="usecase" value="passive" id="uc-passive"></label></td><td><label for="uc-passive"><b>Passive</b>Select modules classified as passive. Third-party requests may still be observable; this mode cannot guarantee that the target or its affiliates will not learn of a lookup.</label></td></tr>
 </tbody></table></div>
 <div class="panel" id="np-types" role="tabpanel" aria-labelledby="nt-types" hidden><div class="panel-body"><div class="checks" id="typelist"></div></div></div>
@@ -285,15 +285,27 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 </form>
 </section>
 <section id="view-radar" hidden>
-<h1>Wi-Fi Radar</h1>
-<p class="help">Reads Android's last cached Wi-Fi scan through Termux:API; it does not trigger an active scan. No root or provider key required. Observations may be old, and signal strength does not establish a device's location.</p>
-<div class="toolbar"><button class="btn btn-primary" id="rread" type="button">Read OS scan cache</button><button class="btn" id="rdownload" type="button" disabled>Export JSON</button></div>
+<h1>Radar</h1>
+<p class="help">Reads Android's last cached Wi-Fi scan and the cells it reports through Termux:API; nothing here triggers an active scan. No root or provider key required. Observations may be old, and signal strength does not establish a device's location. Log a sweep now and then as you move to notice a device that moves with you.</p>
+<div class="toolbar"><button class="btn btn-primary" id="rread" type="button">Read OS scan cache</button><button class="btn" id="rcread" type="button">Read cells</button><button class="btn" id="rtrack" type="button">Log a sweep</button><button class="btn" id="rdownload" type="button" disabled>Export JSON</button></div>
 <p class="alert" id="rerror" role="alert" hidden></p>
 <p class="note" id="rstatus" role="status">No observations requested. Termux:API and Android location permission are required on the phone.</p>
 <div class="panel" id="rresult" hidden>
 <div class="panel-heading">OS-cached observations <span class="badge" id="rrows-n"></span></div>
 <p class="note" id="rsummary"></p>
 <div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>Age (s)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rrows"></tbody></table></div>
+</div>
+<div class="panel" id="rcresult" hidden>
+<div class="panel-heading">Cells Android reports <span class="badge" id="rcrows-n"></span></div>
+<p class="note" id="rcsummary"></p>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>Cell</th><th>Type</th><th>Registered</th><th>Signal (dBm)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rcrows"></tbody></table></div>
+</div>
+<div class="panel" id="rtresult" hidden>
+<div class="panel-heading">Devices that moved with you <span class="badge" id="rtrows-n"></span></div>
+<p class="note" id="rtsummary"></p>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>Vendor</th><th>Cells</th><th>Coverage</th><th>Sightings</th><th>Span (s)</th><th>Next step</th></tr></thead><tbody id="rtrows"></tbody></table></div>
+<div class="panel-heading">Heard in two or more sweeps <span class="badge" id="rrrows-n"></span></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>Vendor</th><th>Sweeps</th><th>First</th><th>Last</th></tr></thead><tbody id="rrrows"></tbody></table></div>
 </div>
 </section>
 <section id="view-inspect" hidden>
@@ -316,7 +328,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <p class="crumbs"><a class="link" href="#/scans">Scans</a><span aria-hidden="true">›</span><span id="sccrumb"></span></p>
 <div class="head"><h1 id="scname">Scan</h1><span class="label" id="scstatus"></span><span class="spin" id="scspin" hidden></span></div>
 <p class="when" id="scmeta"></p>
-<nav class="tabs" id="sctabs" aria-label="Scan sections"><a class="tab" data-tab="summary">Summary</a><a class="tab" data-tab="correlations">Correlations</a><a class="tab" data-tab="browse">Browse</a><a class="tab" data-tab="graph">Graph</a><a class="tab" data-tab="settings">Scan Settings</a><a class="tab" data-tab="log">Log</a></nav>
+<nav class="tabs" id="sctabs" aria-label="Scan sections"><a class="tab" data-tab="summary">Summary</a><a class="tab" data-tab="correlations">Correlations</a><a class="tab" data-tab="browse">Browse</a><a class="tab" data-tab="graph">Graph</a><a class="tab" data-tab="analysis">Analysis</a><a class="tab" data-tab="settings">Scan Settings</a><a class="tab" data-tab="log">Log</a></nav>
 <div class="toolbar">
 <button class="btn" id="screfresh" type="button">Refresh</button>
 <details class="menu" id="scexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-format="csv">CSV</button><button type="button" data-format="xlsx">Excel</button><button type="button" data-format="json">JSON</button><button type="button" data-format="gexf">GEXF</button><button type="button" data-format="tsv">TSV</button><button type="button" data-format="html">Report</button></div></details>
@@ -356,6 +368,14 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="graph"><svg id="gsvg" role="img" aria-label="Graph of the scan's data elements"><g id="gview"><g id="gedges"></g><g id="gnodes"></g></g></svg></div>
 <p class="when" id="ginfo" role="status"></p>
 <div class="legend" id="glegend"></div>
+</div>
+<div id="pane-analysis" hidden>
+<p class="help" id="anote" role="status"></p>
+<div class="grid2">
+<div class="panel"><div class="panel-heading">Counts</div><dl class="kv" id="acounts"></dl></div>
+<div class="panel"><div class="panel-heading">Limitations</div><dl class="kv" id="alimits"></dl></div>
+</div>
+<div class="panel"><div class="panel-heading">Analysis report</div><p class="help pad">Offline, over the saved entities only: the relations, pivots and coverage derived from what the scan kept, as the server returns them. Refused while the scan runs or once an element is flagged a false positive.</p><div id="areport"></div></div>
 </div>
 <div id="pane-settings" hidden>
 <div class="panel"><div class="panel-heading">Meta Information</div><dl class="kv" id="meta"></dl></div>
@@ -648,6 +668,41 @@ $('rread').onclick=async()=>{
   finally{button.disabled=false}
 };
 $('rdownload').onclick=()=>{if(radarLast)save(radarLast,'huntsman-wifi-radar')};
+// Cells and sweeps are read on a press too, through the same guarded path as the Wi-Fi cache.
+let cellsLast=null;
+function cellPivot(o){
+  if(!o.mcc||!o.mnc)return '';
+  const t='cell:'+o.mcc+':'+o.mnc+':'+o.area_code+':'+o.cell_id;
+  return button('Investigate',()=>prefill({target:t,name:'Cell '+t,kind:'network',depth:0}),'btn-ghost');
+}
+$('rcread').onclick=async()=>{
+  const b=$('rcread');b.disabled=true;$('rerror').hidden=true;$('rstatus').textContent='Reading the cells Android reports…';
+  try{
+    const scan=await api('/api/radar/cells');cellsLast=scan;$('rcresult').hidden=false;
+    fill('rcrows',Array.isArray(scan.observations)?scan.observations:[],o=>[o.sighting?.network_id||'',o.technology||'',o.registered==null?'unknown':o.registered?'yes':'no',o.sighting?.signal_dbm??'unknown',o.freshness||'unknown',cellPivot(o)]);
+    $('rcsummary').textContent='Requested at '+new Date().toLocaleString()+' (browser clock; no capture time is reported) · Source: '+scan.source+' · status: '+scan.status+' · records: '+scan.observed+' · rejected: '+scan.rejected;
+    $('rstatus').textContent=scan.status==='inconclusive'
+      ?'Android returned no cells. Cellular service may still exist; this is not evidence that no cell site is near.'
+      :'Cells as Android reports them: no tower position, time or capture age is inferred. A registered cell is the phone\'s coarse place.';
+  }catch(e){
+    $('rstatus').textContent=cellsLast?'Refresh failed. The cells table shows a PREVIOUS read.':'No cell observations available.';
+    fail('rerror',e.message);
+  }
+  finally{b.disabled=false}
+};
+$('rtrack').onclick=async()=>{
+  const b=$('rtrack');b.disabled=true;$('rerror').hidden=true;$('rstatus').textContent='Logging one sweep: the cached Wi-Fi scan, placed at the registered cell…';
+  try{
+    const r=await api('/api/radar/track',{method:'POST'});$('rtresult').hidden=false;
+    fill('rtrows',r.followers||[],f=>[f.mac,f.vendor||'unknown',f.distinct_cells,Number(f.coverage).toFixed(2),f.sightings,f.span_secs,radarPivot({sighting:{network_id:f.mac}})]);
+    fill('rrrows',r.recurring||[],d=>[d.mac,d.name||'(hidden)',d.vendor||'unknown',d.sweeps_seen,when(d.first_ts*1000),when(d.last_ts*1000)]);
+    $('rtsummary').textContent='Sweep logged at '+new Date().toLocaleString()+' · sweeps: '+r.sweeps+' · placed: '+r.located_sweeps+' · cells: '+r.distinct_cells+' · followers: '+(r.followers||[]).length+' · recurring: '+(r.recurring||[]).length+(r.skipped_lines?' · unreadable log lines: '+r.skipped_lines:'');
+    $('rstatus').textContent=(r.followers||[]).length
+      ?'A follower was heard in three or more of your places over ten minutes or more: something travelled with you. It does not identify an owner.'
+      :'Nothing has followed you across your logged places yet. The log keeps the newest 256 sweeps; log one now and then as you move.';
+  }catch(e){$('rstatus').textContent='The sweep was not logged.';fail('rerror',e.message)}
+  finally{b.disabled=false}
+};
 // Inspect reads a picked file only when asked; a GPS lead is prefilled, never started.
 let inspectLast=null;
 // Every failed attempt, refused here or by the server, says the tables are the previous file's.
@@ -773,7 +828,8 @@ async function loadMods(){
       i.type='checkbox';i.value=m.name;i.id='mod-'+m.name;i.checked=open;i.disabled=!open;i.dataset.names=(m.spiderfoot||[m.name]).join(' ');text.htmlFor=i.id;
       if(m.access==='operator_key')name.append(' ',el('span','label warn','key'));
       text.append(name,m.description);
-      if(asks)text.append(el('span','help',asks.length?'Asked by: '+asks.map(k=>kinds[k]||k).join(', ')+(m.configured===false?'. Its key is not set, so it is skipped until one is.':''):'Runs as its own command'+(m.command?' (huntsman '+m.command+')':'')+'; no scan lookup asks it.'));
+      const offline=m.offline_in||[];
+      if(asks)text.append(el('span','help',asks.length?'Asked by: '+asks.map(k=>kinds[k]||k).join(', ')+(m.configured===false?'. Its key is not set, so it is skipped until one is.':''):offline.length?'Always runs offline in: '+offline.map(k=>kinds[k]||k).join(', ')+'. It reads the target itself and asks nothing, so it is not a choice; its rows appear under Sources.':'Runs as its own command'+(m.command?' (huntsman '+m.command+')':'')+'; no scan lookup asks it.'));
       box.append(i);put(tr,'',box);put(tr,'',text);tb.append(tr);
     }
     loaded.modules=true;
@@ -816,7 +872,7 @@ $('newscan').onsubmit=async ev=>{
 };
 // One scan: Spiderfoot's sections over the scan API. Answers are cached for the scan and dropped
 // at each poll while it runs, so a section shows what the scan has found so far.
-const TABS=['summary','correlations','browse','graph','settings','log'];
+const TABS=['summary','correlations','browse','graph','analysis','settings','log'];
 let sid='',scan=null,tab='summary',btype='',cache={},bmode='full',blist=[],polls=0;const fpsel=new Set();
 const base=()=>'/api/scans/'+enc(sid);
 function get(key,path){if(!(key in cache))cache[key]=api(path).catch(e=>{delete cache[key];throw e});return cache[key]}
@@ -855,6 +911,7 @@ async function pane(){
     else if(tab==='correlations')await correlations();
     else if(tab==='browse')await(btype?browseType():browseTypes());
     else if(tab==='graph')await graph();
+    else if(tab==='analysis')await analysis();
     else if(tab==='settings')scanSettings();
     else await logView();
   }catch(e){fail('scerror',e.message)}
@@ -970,7 +1027,18 @@ function rawView(x){
   if(x.entity)meta.push('entity '+show(x.entity));
   b.append(el('p','ent-m',meta.join(' · ')),value(x.raw));
   if(PIVOT.has(x.type))b.append(button('New Scan of this',()=>pivot(x),'pivot'));
+  if(x.entity){const a=button('Source attribution',async()=>{a.disabled=true;try{await assess(x,b)}catch(e){a.disabled=false;fail('scerror',e.message)}});b.append(a)}
   return b;
+}
+// /reality for one saved entity: which source families asserted each attribute and with what
+// status, the values that compete, and the server's own limitation statements, verbatim.
+async function assess(x,into){
+  const r=await api(base()+'/reality?uid='+enc(x.entity)),e=r.entity||{},b=el('div','ent-b');
+  b.append(el('p','ent-m',[e.public_label,e.identity_status,e.omitted_assertions?e.omitted_assertions+' assertion(s) omitted':'',e.omitted_evidence?e.omitted_evidence+' evidence record(s) omitted':''].filter(Boolean).join(' · ')));
+  b.append(table(['Attribute','Value','Reported by','Status'],e.assertions||[],a=>{const tr=el('tr');put(tr,'Attribute',a.attribute);put(tr,'Value',el('span','data',a.value));put(tr,'Reported by',(a.reported_source_families||[]).join(', '));put(tr,'Status',a.status);return tr},'No attributed assertions.'));
+  for(const c of e.competing_values||[])b.append(el('p','ent-m',c.attribute+': '+(c.values||[]).join(' vs ')+' · '+c.interpretation));
+  for(const l of [...(e.limitations||[]),r.provider_coverage&&'provider coverage: '+r.provider_coverage,r.independent_source_proof&&'independent source proof: '+r.independent_source_proof,r.source_authenticity&&'source authenticity: '+r.source_authenticity].filter(Boolean))b.append(el('p','help',l));
+  into.append(b);
 }
 function elemRow(x,withType,select){
   const tr=el('tr'),d=el('details','raw'),sum=el('summary');
@@ -981,7 +1049,7 @@ function elemRow(x,withType,select){
   const pick=el('span','pick');
   if(select)pick.append(tick('Select '+x.data,select.has(x.id),on=>{if(on)select.add(x.id);else select.delete(x.id)}));
   pick.append(d);put(tr,'Data Element',pick).classList.add('wide');
-  put(tr,'Source Data Element',el('span','data',x.source_data));put(tr,'Source Module',x.module);put(tr,'Identified',when(x.created)).className='nw';
+  put(tr,'Source Data Element',x.source_missing?el('span','none','source element not saved'):el('span','data',x.source_data));put(tr,'Source Module',x.module);put(tr,'Identified',when(x.created)).className='nw';
   return tr;
 }
 // Rows arrive 200 at a time, so a scan with thousands of elements stays quick on a phone.
@@ -1330,8 +1398,18 @@ async function prefill(f){
 }
 const clone=s=>s&&prefill({...s.options,name:s.name||s.target,target:s.target,kind:s.kind});
 // Launch a follow-up scan from a typed pivot, preserving depth/use case.
-const PIVOT=new Set(['INTERNET_NAME','DOMAIN_NAME','DOMAIN_NAME_PARENT','AFFILIATE_INTERNET_NAME','AFFILIATE_DOMAIN_NAME','CO_HOSTED_SITE','CO_HOSTED_SITE_DOMAIN','SIMILARDOMAIN','IP_ADDRESS','IPV6_ADDRESS','AFFILIATE_IPADDR','AFFILIATE_IPV6_ADDRESS','NETBLOCK_OWNER','NETBLOCKV6_OWNER','NETBLOCK_MEMBER','NETBLOCKV6_MEMBER','BGP_AS_OWNER','BGP_AS_MEMBER','EMAILADDR','EMAILADDR_GENERIC','AFFILIATE_EMAILADDR','PHONE_NUMBER','USERNAME','HUMAN_NAME','HSE_MAC_ADDRESS','BITCOIN_ADDRESS']);
-const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:'auto',usecase:o.usecase,depth:o.depth})};
+const PIVOT=new Set(['INTERNET_NAME','DOMAIN_NAME','DOMAIN_NAME_PARENT','AFFILIATE_INTERNET_NAME','AFFILIATE_DOMAIN_NAME','CO_HOSTED_SITE','CO_HOSTED_SITE_DOMAIN','SIMILARDOMAIN','IP_ADDRESS','IPV6_ADDRESS','AFFILIATE_IPADDR','AFFILIATE_IPV6_ADDRESS','NETBLOCK_OWNER','NETBLOCKV6_OWNER','NETBLOCK_MEMBER','NETBLOCKV6_MEMBER','BGP_AS_OWNER','BGP_AS_MEMBER','EMAILADDR','EMAILADDR_GENERIC','AFFILIATE_EMAILADDR','PHONE_NUMBER','USERNAME','HUMAN_NAME','HSE_MAC_ADDRESS','BITCOIN_ADDRESS','PHYSICAL_ADDRESS','PHYSICAL_COORDINATES']);
+const pivot=x=>{const o=scan&&scan.options||{};prefill({name:String(x.data),target:String(x.data),kind:x.type==='PHYSICAL_ADDRESS'?'geocode':'auto',usecase:o.usecase,depth:o.depth})};
+// Spiderfoot has no offline analysis of a saved scan; this is Huntsman's /analyze over the saved
+// entities, shown whole: every count, every stated limitation, and the report as returned. Not
+// cached: a false-positive flag set since must turn it into the server's refusal.
+async function analysis(){
+  const r=await api(base()+'/analyze');
+  $('anote').textContent='Source: '+show(r.source)+' · scan '+show(r.scan&&r.scan.status);
+  kv('acounts',Object.entries(r.counts||{}));
+  kv('alimits',Object.entries(r.limitations||{}).map(([k,v])=>[k,String(v)]));
+  $('areport').replaceChildren(value(r.report));
+}
 function scanSettings(){
   const s=scan,o=s.options||{},list=v=>Array.isArray(v)?v.join(', '):v;
   kv('meta',[['Name',s.name],['Internal ID',s.id],['Target',s.target],['Target type',s.target_type],['Lookup',s.kind],['Created',when(s.created)],['Started',when(s.started)],['Completed',when(s.ended)],['Status',s.status],['Data elements',s.elements]]);

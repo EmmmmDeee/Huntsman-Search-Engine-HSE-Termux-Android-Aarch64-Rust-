@@ -9,7 +9,9 @@
 //! A scan's status is one of Spiderfoot's: `CREATED`, `STARTING`, `RUNNING`, `ABORT-REQUESTED`,
 //! `ABORTED`, `FINISHED`, `ERROR-FAILED`. A server that stops while a scan runs cannot finish it,
 //! so [`ScanStore::recover`] marks every scan a previous process left active as `ABORTED`, with
-//! a log entry saying why; Spiderfoot leaves such a scan `RUNNING` forever.
+//! a log entry saying why; Spiderfoot leaves such a scan `RUNNING` forever. A running scan saves
+//! its results after each wave of lookups, so the aborted scan keeps what it had found by its last
+//! checkpoint, and the log entry says how much that was.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
@@ -754,24 +756,78 @@ impl ScanStore {
                 continue;
             }
             let was = record.status;
-            record.status = ScanStatus::Aborted;
-            record.ended = Some(now_ms);
-            self.update(&record)?;
-            self.append_log(
-                &record.id,
-                &LogEntry {
-                    time: now_ms,
-                    component: "huntsman".into(),
-                    level: LogLevel::Warning,
-                    message: format!(
-                        "the server stopped while this scan was {}; marked ABORTED",
-                        was.as_str()
-                    ),
-                },
+            self.abort(
+                &mut record,
+                now_ms,
+                &format!(
+                    "the server stopped while this scan was {}; marked ABORTED",
+                    was.as_str()
+                ),
             )?;
             recovered += 1;
         }
         Ok(recovered)
+    }
+
+    /// Mark `record` `ABORTED`, ended at `now_ms`, with a log entry naming the owner, when it is
+    /// active and the other process that owned it is gone; returns whether it did. A row this
+    /// process owns, one another live process is running, and one with no owner recorded are left
+    /// as they are. Reads reconcile with it so a scan whose process Android stopped while the
+    /// server stayed up never reads `RUNNING` for ever, un-stoppable and un-deletable;
+    /// [`Self::recover`] is the start-up sweep over every row.
+    ///
+    /// # Errors
+    /// [`StoreError::Io`] when the row or its log cannot be saved.
+    pub fn reconcile(&self, record: &mut ScanRecord, now_ms: u64) -> Result<bool, StoreError> {
+        let Some(owner) = record.owner else {
+            return Ok(false);
+        };
+        if !record.status.is_active()
+            || owner == std::process::id()
+            || other_process_alive(owner, record.owner_started)
+        {
+            return Ok(false);
+        }
+        let was = record.status;
+        self.abort(
+            record,
+            now_ms,
+            &format!(
+                "the process running this scan (pid {owner}) stopped while it was {}; marked ABORTED",
+                was.as_str()
+            ),
+        )?;
+        Ok(true)
+    }
+
+    /// Save `record` as `ABORTED`, ended at `now_ms`, and log `message` against it, followed by
+    /// what the scan had saved by its last checkpoint, so the log says whether the aborted scan
+    /// shows findings or none.
+    fn abort(&self, record: &mut ScanRecord, now_ms: u64, message: &str) -> Result<(), StoreError> {
+        record.status = ScanStatus::Aborted;
+        record.ended = Some(now_ms);
+        self.update(record)?;
+        let kept = match self.results(&record.id) {
+            Ok(Some(results)) => format!(
+                "; what it had found by its last checkpoint is kept ({} data elements)",
+                results
+                    .elements
+                    .iter()
+                    .filter(|element| element.kind != "ROOT")
+                    .count()
+            ),
+            Ok(None) => "; it had saved nothing yet".to_owned(),
+            Err(error) => format!("; its saved results could not be read: {error}"),
+        };
+        self.append_log(
+            &record.id,
+            &LogEntry {
+                time: now_ms,
+                component: "huntsman".into(),
+                level: LogLevel::Warning,
+                message: format!("{message}{kept}"),
+            },
+        )
     }
 }
 
@@ -1301,6 +1357,119 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    #[test]
+    fn an_active_row_whose_owner_is_gone_reconciles_to_aborted_on_read() {
+        let dir = scratch("reconcile");
+        let store = ScanStore::open(&dir).unwrap();
+        // No process has this pid, so the owner that recorded it is gone.
+        let mut orphan = record(&new_id("g", 11, 0), 11_000, ScanStatus::Running);
+        orphan.owner = Some(u32::MAX);
+        store.create(&orphan).unwrap();
+        assert!(store.reconcile(&mut orphan, 12_000).unwrap());
+        assert_eq!(orphan.status, ScanStatus::Aborted);
+        assert_eq!(orphan.ended, Some(12_000));
+        let saved = store.get(&orphan.id).unwrap();
+        assert_eq!(saved.status, ScanStatus::Aborted);
+        let log = store.log(&orphan.id).unwrap();
+        assert!(
+            log[0].message.contains(&format!("pid {}", u32::MAX))
+                && log[0].message.contains("RUNNING"),
+            "{}",
+            log[0].message
+        );
+        // Settled rows are not touched again.
+        assert!(!store.reconcile(&mut orphan, 13_000).unwrap());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reconciling_leaves_rows_this_process_owns_another_live_process_runs_or_nobody_claimed() {
+        let dir = scratch("reconcile-live");
+        let store = ScanStore::open(&dir).unwrap();
+        let mut ours = record(&new_id("o", 12, 0), 12_000, ScanStatus::Running);
+        ours.owner = Some(std::process::id());
+        let mut theirs = record(&new_id("t", 13, 0), 13_000, ScanStatus::Starting);
+        theirs.owner = Some(std::os::unix::process::parent_id());
+        let mut unclaimed = record(&new_id("u", 14, 0), 14_000, ScanStatus::Running);
+        unclaimed.owner = None;
+        for row in [&ours, &theirs, &unclaimed] {
+            store.create(row).unwrap();
+        }
+        for row in [&mut ours, &mut theirs, &mut unclaimed] {
+            let was = row.status;
+            assert!(!store.reconcile(row, 15_000).unwrap());
+            assert_eq!(row.status, was);
+            assert_eq!(store.get(&row.id).unwrap().status, was);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recovery_keeps_a_checkpointed_scan_s_results_and_says_how_much() {
+        // A scan that saved a checkpoint before its process died recovers ABORTED with that
+        // checkpoint in place, and its log says how many data elements survived; one that had
+        // saved nothing says so too, rather than leaving the reader to guess.
+        let dir = scratch("recover-checkpoint");
+        let store = ScanStore::open(&dir).unwrap();
+        let element = |kind: &str, data: &str| DataElement {
+            id: format!("{kind}:{data}"),
+            kind: kind.to_owned(),
+            data: data.to_owned(),
+            source: None,
+            module: "test".into(),
+            confidence: 100,
+            created: 0,
+            fp: false,
+            entity: None,
+            raw: serde_json::Value::Null,
+        };
+        let saved = record(&new_id("ck", 9, 0), 9_000, ScanStatus::Running);
+        store.create(&saved).unwrap();
+        store
+            .save_results(&ScanResults {
+                format_version: FORMAT_VERSION,
+                scan_id: saved.id.clone(),
+                text: "so far".into(),
+                entities: Vec::new(),
+                outcomes: Vec::new(),
+                elements: vec![
+                    element("ROOT", "example.com"),
+                    element("IP_ADDRESS", "1.1.1.1"),
+                    element("IP_ADDRESS", "8.8.8.8"),
+                ],
+                correlations: Vec::new(),
+                lineage: Vec::new(),
+                termination: None,
+            })
+            .unwrap();
+        let empty = record(&new_id("ck", 9, 1), 9_000, ScanStatus::Starting);
+        store.create(&empty).unwrap();
+        assert_eq!(store.recover(10_000).unwrap(), 2);
+        assert_eq!(store.get(&saved.id).unwrap().status, ScanStatus::Aborted);
+        assert_eq!(
+            store.results(&saved.id).unwrap().unwrap().elements.len(),
+            3,
+            "recovery leaves the checkpoint in place"
+        );
+        let log = store.log(&saved.id).unwrap();
+        let kept = &log.last().unwrap().message;
+        assert!(
+            kept.ends_with(
+                "RUNNING; marked ABORTED; what it had found by its last checkpoint is kept (2 data elements)"
+            ),
+            "{kept}"
+        );
+        let log = store.log(&empty.id).unwrap();
+        let none = &log.last().unwrap().message;
+        assert!(
+            none.ends_with("STARTING; marked ABORTED; it had saved nothing yet"),
+            "{none}"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn recovery_leaves_a_scan_another_live_process_is_running() {
         let dir = scratch("owner");

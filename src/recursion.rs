@@ -48,6 +48,20 @@ pub struct Step {
     pub outcomes: Vec<SourceExecutionOutcome>,
 }
 
+/// Everything the crawl holds after one wave of lookups: what a checkpoint of a running scan
+/// saves, so a process that dies mid-crawl loses at most the wave in flight. The entities of the
+/// current generation are not yet merged by uid (that happens when the generation ends), so a
+/// reader that needs one record per entity merges a copy.
+pub struct CrawlProgress<'a> {
+    pub entities: &'a [Entity],
+    pub edges: &'a [PivotEdge],
+    pub outcomes: &'a [SourceExecutionOutcome],
+    /// The generation whose wave just completed.
+    pub generation: u32,
+    /// Lookups dispatched so far, this wave included.
+    pub dispatches: usize,
+}
+
 /// Performs one live lookup. The driver owns the recursion; the collector owns the I/O.
 pub trait SelectorCollector {
     fn collect(&mut self, target: &Target) -> Step;
@@ -76,6 +90,11 @@ pub trait SelectorCollector {
     fn cancelled(&self) -> bool {
         false
     }
+
+    /// Called after each wave of lookups is reduced into the crawl, with everything found so far.
+    /// A collector that persists scans checkpoints here, so what a crawl has found survives the
+    /// process dying before the crawl ends. The default keeps nothing.
+    fn progressed(&mut self, _progress: &CrawlProgress<'_>) {}
 }
 
 /// Bounds for one recursive crawl. Defaults are the shared [`PipelineLimits`], so the recursion
@@ -531,7 +550,7 @@ impl CrawlState {
                     self.entities.push(entity);
                 }
             }
-            stopped |= self.record_post_batch_stop(collector, remaining.by_ref(), &mut next);
+            stopped |= self.batch_done(collector, generation, remaining.by_ref(), &mut next);
             if stopped {
                 break;
             }
@@ -544,6 +563,25 @@ impl CrawlState {
             entities_after: self.entities.len(),
         });
         (next.into_queue(), stopped)
+    }
+
+    /// After a wave is reduced into the crawl: let the collector checkpoint what the crawl holds,
+    /// then record a stop requested meanwhile.
+    fn batch_done<C: SelectorCollector>(
+        &mut self,
+        collector: &mut C,
+        generation: u32,
+        remaining: impl Iterator<Item = Target>,
+        next: &mut Frontier,
+    ) -> bool {
+        collector.progressed(&CrawlProgress {
+            entities: &self.entities,
+            edges: &self.edges,
+            outcomes: &self.outcomes,
+            generation,
+            dispatches: self.dispatches,
+        });
+        self.record_post_batch_stop(collector, remaining, next)
     }
 
     /// Record cancellation after a batch even when no further dispatch remains.

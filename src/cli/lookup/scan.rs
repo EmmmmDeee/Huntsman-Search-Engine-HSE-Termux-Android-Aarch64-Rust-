@@ -19,8 +19,8 @@ use huntsman_recon::scan_route::{
 use huntsman_recon::textnorm::escape_controls;
 
 use super::profiles::{
-    Refused, asn_cmd, collect, crypto_cmd, domain_cmd, email_cmd, exposure_cmd, ip_cmd,
-    netblock_cmd, network_cmd, people_cmd, phone_cmd, username_cmd,
+    Refused, asn_cmd, collect, crypto_cmd, domain_cmd, email_cmd, exposure_cmd, geocode_cmd,
+    ip_cmd, netblock_cmd, network_cmd, people_cmd, phone_cmd, username_cmd,
 };
 use huntsman_recon::analysis::{self, InvestigationReport};
 use huntsman_recon::clock;
@@ -213,7 +213,7 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
     let Some(selector) = forwarded.first() else {
         return fail(
             EX_USAGE,
-            "usage: huntsman-recon scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network] [--save FILE] | scan --input-file FILE [-k KIND] [--save-dir DIR]",
+            "usage: huntsman-recon scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save FILE] | scan --input-file FILE [-k KIND] [--save-dir DIR]",
         );
     };
     // A leading space must not hide an option from this check, or the selector would be judged
@@ -268,6 +268,7 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
         ScanKind::Network => network_cmd(&forwarded),
         ScanKind::People => people_cmd(&forwarded),
         ScanKind::CryptoAddress => crypto_cmd(&forwarded),
+        ScanKind::Place => geocode_cmd(&forwarded),
     }
 }
 

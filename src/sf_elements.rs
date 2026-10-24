@@ -698,7 +698,8 @@ fn raw_of(evidence: &Evidence, entity: &Entity) -> Value {
 
 struct Builder {
     out: Vec<DataElement>,
-    seen: BTreeSet<String>,
+    /// Each element's index in `out`, by id.
+    seen: BTreeMap<String, usize>,
 }
 
 impl Builder {
@@ -715,19 +716,39 @@ impl Builder {
         raw: Value,
     ) -> String {
         let id = element_id(kind, &data, source, module);
-        if self.seen.insert(id.clone()) {
-            self.out.push(DataElement {
-                id: id.clone(),
-                kind: kind.to_owned(),
-                data,
-                source: source.map(str::to_owned),
-                module: module.to_owned(),
-                confidence,
-                created,
-                fp: false,
-                entity: entity.map(str::to_owned),
-                raw,
-            });
+        match self.seen.get(&id) {
+            None => {
+                self.seen.insert(id.clone(), self.out.len());
+                self.out.push(DataElement {
+                    id: id.clone(),
+                    kind: kind.to_owned(),
+                    data,
+                    source: source.map(str::to_owned),
+                    module: module.to_owned(),
+                    confidence,
+                    created,
+                    fp: false,
+                    entity: entity.map(str::to_owned),
+                    raw,
+                });
+            }
+            // A second record of the same source about the same data is the same element, as
+            // Spiderfoot keys an event, but it is still a record the operator can read: the
+            // element keeps every record, and is created when the earliest was recorded.
+            Some(&at) => {
+                let element = &mut self.out[at];
+                element.created = element.created.min(created);
+                if !raw.is_null() {
+                    match &mut element.raw {
+                        Value::Null => element.raw = raw,
+                        Value::Array(records) => records.push(raw),
+                        first => {
+                            let first = std::mem::take(first);
+                            element.raw = Value::Array(vec![first, raw]);
+                        }
+                    }
+                }
+            }
         }
         id
     }
@@ -809,7 +830,7 @@ impl<'a> Walk<'a> {
         let now_ms = now_unix.saturating_mul(1000);
         let mut builder = Builder {
             out: Vec::new(),
-            seen: BTreeSet::new(),
+            seen: BTreeMap::new(),
         };
         let target_value = target.value.trim().to_owned();
         let root = builder.push(
@@ -1161,6 +1182,49 @@ mod tests {
         value: "example.com",
         kind: "INTERNET_NAME",
     };
+
+    /// Two records from one source about one host are one element, as Spiderfoot keys an event,
+    /// but both stay readable: the element's raw lists each record, and the element is created
+    /// when the earliest was recorded.
+    #[test]
+    fn a_second_record_from_the_same_source_joins_the_element_instead_of_vanishing() {
+        let mut first = Evidence::new(
+            EvidenceProvenance::for_scan("crtsh", "scan"),
+            "certificate 1",
+        )
+        .with_attr("unmapped_detail", "v1-first");
+        first.provenance.recorded_at_unix = 1_700_000_100;
+        let mut second = Evidence::new(
+            EvidenceProvenance::for_scan("crtsh", "scan"),
+            "certificate 2",
+        )
+        .with_attr("unmapped_detail", "v2-second");
+        second.provenance.recorded_at_unix = 1_700_000_000;
+        let host = Entity::builder(EntityKind::Domain, "www.example.com", 0.8, "scan")
+            .evidence(first)
+            .evidence(second)
+            .build();
+        let found = elements(DOMAIN, &[host], 1_700_000_200);
+        let names: Vec<&DataElement> = of_type(&found, "INTERNET_NAME")
+            .into_iter()
+            .filter(|element| element.data == "www.example.com")
+            .collect();
+        assert_eq!(names.len(), 1, "{names:?}");
+        let element = names[0];
+        assert_eq!(element.created, 1_700_000_000_000);
+        let records = element.raw.as_array().expect("every record of the element");
+        assert_eq!(records.len(), 2, "{records:?}");
+        let details: Vec<&str> = records
+            .iter()
+            .map(|record| {
+                record["evidence"]["attributes"]["unmapped_detail"]
+                    .as_str()
+                    .unwrap_or("")
+            })
+            .collect();
+        assert_eq!(details, ["v1-first", "v2-second"]);
+        assert_eq!(records[1]["evidence"]["summary"], "certificate 2");
+    }
 
     #[test]
     fn a_lookalike_domain_is_a_similar_domain_not_an_affiliate() {

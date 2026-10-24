@@ -36,11 +36,16 @@ pub enum ScanKind {
     /// own: a bare base58 or bech32 string is ambiguous against usernames and other selectors, so
     /// a crypto route is asked for explicitly.
     CryptoAddress,
+    /// A place name, street address or `LAT,LON` point, geocoded through OpenStreetMap's
+    /// Nominatim, keyless: Spiderfoot's `PHYSICAL_ADDRESS` and `PHYSICAL_COORDINATES` targets.
+    /// Not inferred as a kind of its own: free text is a person's name to `scan` and a bare
+    /// coordinate pair is a `WiFi` area, so a geocode is asked for explicitly.
+    Place,
 }
 
 impl ScanKind {
     /// Every kind, in the order the CLI usage and the Web UI list them.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::People,
         Self::Email,
         Self::Exposure,
@@ -52,6 +57,7 @@ impl ScanKind {
         Self::Asn,
         Self::Network,
         Self::CryptoAddress,
+        Self::Place,
     ];
 
     #[must_use]
@@ -68,6 +74,7 @@ impl ScanKind {
             Self::Asn => "asn",
             Self::Network => "network",
             Self::CryptoAddress => "crypto",
+            Self::Place => "geocode",
         }
     }
 }
@@ -221,6 +228,7 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
         "asn" | "as" | "bgp" => Ok(ScanKind::Asn),
         "network" | "wifi" | "bssid" | "ssid" | "wigle" => Ok(ScanKind::Network),
         "crypto" | "bitcoin" | "btc" => Ok(ScanKind::CryptoAddress),
+        "geocode" | "place" | "location" => Ok(ScanKind::Place),
         other => Err(other),
     }
 }
@@ -240,6 +248,8 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
         ScanKind::Asn => canonical_asn(raw),
         ScanKind::Network => network_selector(raw),
         ScanKind::CryptoAddress => crate::canonical::canonical_bitcoin_address(raw),
+        // The query as the geocode keys on it; a `lat,lon` point is read by the lookup itself.
+        ScanKind::Place => crate::nominatim_cli::canonical_query(raw).ok(),
         // The people command owns the two-token rule and its offline skip path;
         // here only an empty name is non-canonical.
         ScanKind::People => {
@@ -470,6 +480,26 @@ mod tests {
             infer_kind("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"),
             ScanKind::CryptoAddress
         );
+    }
+
+    #[test]
+    fn a_place_route_takes_free_text_or_a_point_and_is_explicit_only() {
+        for alias in ["geocode", "place", "location"] {
+            assert_eq!(parse_kind(alias), Ok(ScanKind::Place), "{alias}");
+        }
+        assert_eq!(
+            canonical_selector(ScanKind::Place, "  Eiffel Tower, Paris ").as_deref(),
+            Some("Eiffel Tower, Paris")
+        );
+        assert_eq!(
+            canonical_selector(ScanKind::Place, "48.8584,2.2945").as_deref(),
+            Some("48.8584,2.2945")
+        );
+        assert_eq!(canonical_selector(ScanKind::Place, " \t"), None);
+        assert_eq!(canonical_selector(ScanKind::Place, "Paris\u{7}"), None);
+        // Free text stays a name and a coordinate pair a WiFi area: a geocode is asked for.
+        assert_eq!(infer_kind("Eiffel Tower"), ScanKind::People);
+        assert_eq!(infer_kind("48.8584,2.2945"), ScanKind::Network);
     }
 
     #[test]

@@ -12,6 +12,10 @@
 //!
 //! A block whose first address is private, loopback, documentation or otherwise non-public is
 //! refused before any request, as the `ip` lookup refuses such an address.
+//!
+//! When no source answered, the lookup ends from its rows through
+//! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
+//! 77), otherwise no usable response (exit 69); any source that answered makes it print.
 
 use std::fmt::Write as _;
 use std::net::IpAddr;

@@ -4,18 +4,22 @@
 //! The query is read as a point when it is `lat,lon` and as free text otherwise, so one command
 //! both forward-geocodes a place or address and reverse-geocodes a point. Keyless.
 
+use std::path::PathBuf;
+
 use crate::canonical::canonical_coordinates;
 use crate::entity::{Entity, merge_by_uid};
 use crate::error::Error;
 use crate::http::Transport;
+use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::nominatim;
 use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
-pub const GEOCODE_USAGE: &str = "usage: huntsman-recon geocode PLACE-OR-ADDRESS | geocode LAT,LON";
+pub const GEOCODE_USAGE: &str =
+    "usage: huntsman-recon geocode PLACE-OR-ADDRESS [--save FILE] | geocode LAT,LON [--save FILE]";
 pub const GEOCODE_HELP: &str = "\
-geocode QUERY
-Geocode one query through OpenStreetMap's Nominatim, keyless. A `lat,lon` point is reverse-geocoded to the address at that spot; any other text is a place name or street address, forward-geocoded to the coordinates and address of each match (at most ten). Each match becomes a coordinates entity for its point and an address entity for its written address, with every field Nominatim returns -- each separate address component included -- kept as evidence. Makes network requests. Nominatim permits one request per second across the application. Data © OpenStreetMap contributors, ODbL 1.0. Configure HUNTSMAN_NOMINATIM_BASE_URL to select an operator-managed HTTPS service.";
+geocode QUERY [--save FILE]
+Geocode one query through OpenStreetMap's Nominatim, keyless. A `lat,lon` point is reverse-geocoded to the address at that spot; any other text is a place name or street address, forward-geocoded to the coordinates and address of each match (at most ten). Each match becomes a coordinates entity for its point and an address entity for its written address, with every field Nominatim returns -- each separate address component included -- kept as evidence. --save FILE writes an unverified ledger that verify can reload. The same lookup is the geocode scan kind: scan QUERY -k geocode, scans run QUERY -k geocode and the web UI's Place target type run it and save it as a scan, whose written addresses are PHYSICAL_ADDRESS elements and whose points are PHYSICAL_COORDINATES; no target is routed to it on its own, since free text is a name and LAT,LON a WiFi area to scan. Makes network requests. Nominatim permits one request per second across the application. Data © OpenStreetMap contributors, ODbL 1.0. Configure HUNTSMAN_NOMINATIM_BASE_URL to select an operator-managed HTTPS service.";
 
 /// The longest query a geocode takes, in bytes. A longer string is not an address a gazetteer
 /// would match.
@@ -24,18 +28,18 @@ const MAX_QUERY_BYTES: usize = 256;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeocodeArgs {
     pub query: String,
+    pub save: Option<PathBuf>,
 }
 
 impl GeocodeArgs {
     /// # Errors
-    /// [`Error::Invalid`] for a missing or extra argument, [`Error::InvalidValue`] for a query
-    /// that is empty, too long, or holds a control character.
+    /// [`Error::Invalid`] for a missing or extra argument or a bad `--save`, [`Error::InvalidValue`]
+    /// for a query that is empty, too long, or holds a control character.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let [raw] = args else {
-            return Err(Error::Invalid("geocode needs exactly one query".into()));
-        };
+        let (raw, save) = LookupTokens::single(args, "geocode needs exactly one query")?;
         Ok(Self {
-            query: canonical_query(raw)?,
+            query: canonical_query(&raw)?,
+            save,
         })
     }
 }
@@ -127,6 +131,21 @@ mod tests {
     fn parses_one_trimmed_query() {
         let parsed = GeocodeArgs::parse(&["  Eiffel Tower  ".into()]).unwrap();
         assert_eq!(parsed.query, "Eiffel Tower");
+        assert_eq!(parsed.save, None);
+    }
+
+    #[test]
+    fn a_save_path_rides_along_as_every_lookup_takes_it() {
+        let parsed =
+            GeocodeArgs::parse(&["-33.86,151.21".into(), "--save".into(), "out.json".into()])
+                .unwrap();
+        assert_eq!(parsed.query, "-33.86,151.21");
+        assert_eq!(
+            parsed.save.as_deref(),
+            Some(std::path::Path::new("out.json"))
+        );
+        assert!(GeocodeArgs::parse(&["Paris".into(), "--save".into()]).is_err());
+        assert!(GeocodeArgs::parse(&["Paris".into(), "--json".into()]).is_err());
     }
 
     #[test]

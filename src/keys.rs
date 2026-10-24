@@ -312,6 +312,24 @@ impl Keys {
         None
     }
 
+    /// A runtime setting kept beside the keys, by the chain [`Self::get`] reads: the file's value,
+    /// else the environment's when this `Keys` reads it. A setting is not a credential, so the
+    /// environment's text is returned as it is, however it is shaped; only a value that is not
+    /// UTF-8 is `None`.
+    #[must_use]
+    pub fn setting(&self, slot: &str) -> Option<String> {
+        if !valid_slot(slot) {
+            return None;
+        }
+        if let Some(value) = self.entries.get(slot) {
+            return Some(value.expose().to_owned());
+        }
+        if self.use_env {
+            return environment::variable(slot);
+        }
+        None
+    }
+
     /// Slot names present in the file (never values), for `doctor`-style listings.
     #[must_use]
     pub fn slots(&self) -> Vec<&str> {
@@ -720,6 +738,23 @@ mod tests {
         );
         assert!(Secret::new("insert_key_here").is_err());
         assert!(Secret::new("a\r\nX-Evil: 1").is_err(), "header injection");
+    }
+
+    /// A runtime setting rides in the keys file beside the keys and is read by the same chain,
+    /// but as text, not as a credential.
+    #[test]
+    fn a_setting_is_read_from_the_file_as_text() {
+        let keys = Keys::parse("HUNTSMAN_CONTINUOUS_TARGETS=example.com;1.1.1.1\n").expect("keys");
+        assert_eq!(
+            keys.setting("HUNTSMAN_CONTINUOUS_TARGETS").as_deref(),
+            Some("example.com;1.1.1.1")
+        );
+        assert_eq!(
+            keys.setting("HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES"),
+            None,
+            "unset, and a parsed file does not read the environment"
+        );
+        assert_eq!(keys.setting("not a slot"), None);
     }
 
     #[test]

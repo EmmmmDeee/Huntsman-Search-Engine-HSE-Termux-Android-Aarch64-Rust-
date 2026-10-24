@@ -38,6 +38,28 @@ pub struct CellScan {
     pub observations: Vec<CellObservation>,
 }
 
+impl CellScan {
+    /// The place this report says the phone is: its registered serving cell as an opaque bucket
+    /// (`technology:MCC-MNC-AREA-CELL`, a `?` for a code CDMA has none of), or `None` when the
+    /// phone is registered to no cell, so a sweep is kept but not placed. **Pure.**
+    #[must_use]
+    pub fn serving_cell(&self) -> Option<String> {
+        self.observations
+            .iter()
+            .find(|cell| cell.registered == Some(true))
+            .map(|cell| {
+                format!(
+                    "{}:{}-{}-{}-{}",
+                    cell.technology,
+                    cell.mcc.as_deref().unwrap_or("?"),
+                    cell.mnc.as_deref().unwrap_or("?"),
+                    cell.area_code,
+                    cell.cell_id
+                )
+            })
+    }
+}
+
 fn digit_string(value: Option<&Value>, min_len: usize, max_len: usize) -> Option<String> {
     let value = match value? {
         Value::String(s) => s.trim().to_owned(),

@@ -4,7 +4,7 @@ Huntsman can reconcile configured targets for as long as its serve process remai
 
 ## Configuration
 
-Set HUNTSMAN_CONTINUOUS_TARGETS to a semicolon- or newline-separated list of selectors; for example: example.com;1.1.1.1. Configure HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES=1440 for daily collection. Start the usual huntsman-recon serve command.
+Set HUNTSMAN_CONTINUOUS_TARGETS to a semicolon- or newline-separated list of selectors; for example: example.com;1.1.1.1. Configure HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES=1440 for daily collection. Both are read the way every key is: from ~/.huntsman.env first, then from the environment, so two lines in that file configure the Termux service without exporting anything, and `doctor` and `credential-status` recognise the two names. Start the usual huntsman-recon serve command; a wrong setting ends it before it binds, naming the setting. The Settings tab's Global Settings shows what serve collects and how often ("Continuous normalisation while serve runs"), or that it is off and how to turn it on; the same entry is the `continuous` global of /api/settings.
 
 If targets are not configured, the controller stays off and does not collect remotely. Set HUNTSMAN_CONTINUOUS_TARGETS='*' to continuously re-normalise the most recent saved scan of every canonical target already present in the scan store, without initiating any new network scans. The wildcard may also accompany specific targets, which alone are eligible for recurring collection; people-name targets are refused. At most 32 explicit canonical targets (8192 config bytes) are accepted. Collection interval may be 60 to 10080 minutes, default 1440. Reconciliation wakes every 60 seconds.
 

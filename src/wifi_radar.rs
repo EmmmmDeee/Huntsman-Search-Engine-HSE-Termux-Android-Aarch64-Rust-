@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::error::Error;
+use crate::radar::{LoggedDevice, LoggedSweep};
 use crate::rf::{RadioKind, RfSighting, RfSource, band, is_mac};
 use crate::textnorm::escape_controls;
 
@@ -36,6 +37,27 @@ pub struct WifiScan {
     pub observed: usize,
     pub rejected: usize,
     pub observations: Vec<WifiObservation>,
+}
+
+impl WifiScan {
+    /// One sweep of this device at `ts` for the track log: this scan's fresh observations, placed
+    /// at `cell`, the registered serving cell as [`crate::cell_radar::CellScan::serving_cell`]
+    /// names it, or unplaced when Android withheld one. A stale observation is not what the
+    /// phone hears now, so it is left out. **Pure.**
+    #[must_use]
+    pub fn logged_sweep(&self, ts: u64, cell: Option<String>) -> LoggedSweep {
+        LoggedSweep::new(
+            ts,
+            cell,
+            self.observations
+                .iter()
+                .filter(|observation| observation.freshness != "stale")
+                .map(|observation| LoggedDevice {
+                    mac: observation.sighting.network_id.clone(),
+                    name: observation.sighting.name.clone(),
+                }),
+        )
+    }
 }
 
 fn optional_string(value: Option<&serde_json::Value>) -> Option<String> {

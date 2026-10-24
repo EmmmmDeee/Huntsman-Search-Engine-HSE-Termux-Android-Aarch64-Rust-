@@ -24,7 +24,7 @@ use serde_json::json;
 
 use crate::clock;
 use crate::correlator::evaluate_rules;
-use crate::entity::Entity;
+use crate::entity::{Entity, merge_by_uid};
 use crate::graph_exec::{
     ExecutionPolicy, GraphDefinition, GraphExecutor, HandlerRegistry, TaskContext, TaskFailure,
     TaskOutput, TaskRole, TaskSpec, TaskState, ValueSchema, VerificationRecord, VerificationState,
@@ -32,7 +32,7 @@ use crate::graph_exec::{
 use crate::lookup_modules;
 use crate::module_selection::Selection;
 use crate::recursion::{
-    self, PivotEdge, RecursionPolicy, RecursionReport, SelectorCollector, Step,
+    self, CrawlProgress, PivotEdge, RecursionPolicy, RecursionReport, SelectorCollector, Step,
     Target as CrawlTarget,
 };
 use crate::scan_route::{
@@ -239,7 +239,8 @@ fn validate_options(options: &ScanOptions) -> Result<ScanOptions, ServiceError> 
 
 /// The modules a scan with `options` asks: the ones it chose, else every one.
 fn chosen(options: &ScanOptions) -> Result<Selection, ServiceError> {
-    crate::module::selection(&options.modules).map_err(ServiceError::BadRequest)
+    let named = crate::module::selection(&options.modules).map_err(ServiceError::BadRequest)?;
+    Ok(crate::module::use_case_selection(&options.usecase, &named))
 }
 
 /// Shared, cancellation-aware admission for all lookups started by this service.
@@ -305,7 +306,9 @@ struct State {
 /// What following a scan's findings produced beside the findings themselves.
 struct Crawl {
     lineage: Vec<PivotEdge>,
-    termination: TerminationReason,
+    /// Why the crawl stopped; `None` while it is still running, so a checkpoint saved mid-crawl
+    /// never claims a stop reason.
+    termination: Option<TerminationReason>,
 }
 
 /// The crawl's lookups: each one logged and run through the installed lookup asking only the
@@ -315,11 +318,16 @@ struct Crawl {
 struct ScanCollector<'a> {
     service: &'a ScanService,
     id: &'a str,
+    plan: &'a ScanPlan,
+    options: &'a ScanOptions,
     chosen: &'a Selection,
     text: String,
     ran: usize,
     errors: usize,
     breach_checked: BTreeSet<String>,
+    /// How many entities and source outcomes the last checkpoint saved, so a wave that added
+    /// nothing writes nothing.
+    checkpointed: (usize, usize),
 }
 
 /// Reject graph inputs with missing or mistyped scan target identifiers.
@@ -377,6 +385,30 @@ fn failed_lookup_step(
                 target.selector
             ),
         )],
+    }
+}
+
+impl<'a> ScanCollector<'a> {
+    /// A collector for scan `id` with nothing found yet.
+    fn new(
+        service: &'a ScanService,
+        id: &'a str,
+        plan: &'a ScanPlan,
+        options: &'a ScanOptions,
+        chosen: &'a Selection,
+    ) -> Self {
+        Self {
+            service,
+            id,
+            plan,
+            options,
+            chosen,
+            text: String::new(),
+            ran: 0,
+            errors: 0,
+            breach_checked: BTreeSet::new(),
+            checkpointed: (0, 0),
+        }
     }
 }
 
@@ -525,6 +557,44 @@ impl SelectorCollector for ScanCollector<'_> {
             LookupDispatch::Cancelled => {}
         }
         self.finish_lookup(target, found)
+    }
+
+    /// Save what the crawl has found so far. A process that dies before the crawl ends (Android
+    /// stopping Termux, the phone's memory killer, a swiped-away session) then leaves a scan that
+    /// shows its findings, not an empty `ABORTED` row, and the Scans list counts elements while
+    /// the scan runs. A wave that added nothing is not written. A checkpoint that cannot be saved
+    /// is logged and the crawl goes on: the final save decides the scan's outcome.
+    fn progressed(&mut self, progress: &CrawlProgress<'_>) {
+        let seen = (progress.entities.len(), progress.outcomes.len());
+        if seen == self.checkpointed {
+            return;
+        }
+        self.checkpointed = seen;
+        let mut entities = progress.entities.to_vec();
+        merge_by_uid(&mut entities);
+        let found = LookupOutput {
+            text: self.text.clone(),
+            entities,
+            outcomes: progress.outcomes.to_vec(),
+        };
+        let crawl = Crawl {
+            lineage: progress.edges.to_vec(),
+            termination: None,
+        };
+        if let Err(error) =
+            self.service
+                .save(self.id, self.plan, self.options, found, self.errors, crawl)
+        {
+            self.service.log(
+                self.id,
+                "huntsman",
+                LogLevel::Warning,
+                format!(
+                    "could not save what the scan has found so far, after {} lookups in generation {}: {error}",
+                    progress.dispatches, progress.generation
+                ),
+            );
+        }
     }
 
     fn may_batch(&self, selected: &[CrawlTarget], next: &CrawlTarget) -> bool {
@@ -803,7 +873,31 @@ impl ScanService {
         })
     }
 
-    #[must_use]
+    /// The saved row for `id`, reconciled with its owner's liveness: a scan whose owning process
+    /// is gone reads `ABORTED`, saved and logged so, rather than `RUNNING` for ever.
+    ///
+    /// # Errors
+    /// [`ServiceError::NotFound`] for an unknown id; a store failure as [`ServiceError::Store`].
+    pub fn record(&self, id: &str) -> Result<ScanRecord, ServiceError> {
+        let mut record = self.store.get(id)?;
+        self.store
+            .reconcile(&mut record, clock::unix_now_millis())?;
+        Ok(record)
+    }
+
+    /// Every saved row, each reconciled as [`Self::record`] does.
+    ///
+    /// # Errors
+    /// A store failure as [`ServiceError::Store`].
+    pub fn records(&self) -> Result<Vec<ScanRecord>, ServiceError> {
+        let now = clock::unix_now_millis();
+        let mut records = self.store.list()?;
+        for record in &mut records {
+            self.store.reconcile(record, now)?;
+        }
+        Ok(records)
+    }
+
     pub fn store(&self) -> &ScanStore {
         &self.store
     }
@@ -922,12 +1016,22 @@ impl ScanService {
         let plan = plan(&request.target, request.kind.as_deref())?;
         let options = validate_options(&request.options)?;
         if !lookup_modules::asks_any(plan.kind, &chosen(&options)?) {
-            return Err(ServiceError::BadRequest(format!(
-                "none of the chosen modules ({}) looks up the target: the {} lookup asks {}",
-                options.modules.join(", "),
-                plan.kind.command(),
-                lookup_modules::modules(plan.kind).join(", ")
-            )));
+            let asks = lookup_modules::modules(plan.kind).join(", ");
+            let why = if options.modules.is_empty() {
+                format!(
+                    "the {} use case runs none of the modules the {} lookup asks ({asks}); choose \
+                     all or another use case",
+                    options.usecase,
+                    plan.kind.command()
+                )
+            } else {
+                format!(
+                    "none of the chosen modules ({}) looks up the target: the {} lookup asks {asks}",
+                    options.modules.join(", "),
+                    plan.kind.command()
+                )
+            };
+            return Err(ServiceError::BadRequest(why));
         }
         let name = request
             .name
@@ -1323,15 +1427,7 @@ impl ScanService {
             expose_emails: !passive,
             ..RecursionPolicy::default()
         };
-        let mut collector = ScanCollector {
-            service: self,
-            id,
-            chosen: &chosen,
-            text: String::new(),
-            ran: 0,
-            errors: 0,
-            breach_checked: BTreeSet::new(),
-        };
+        let mut collector = ScanCollector::new(self, id, plan, &options, &chosen);
         let report = recursion::run_targets(targets, &policy, &mut collector);
         let (ran, errors) = (collector.ran, collector.errors);
         self.log_crawl(id, &options, &report);
@@ -1342,7 +1438,7 @@ impl ScanService {
         };
         let crawl = Crawl {
             lineage: report.edges,
-            termination: report.termination,
+            termination: Some(report.termination),
         };
         let saved = self.save(id, plan, &options, found, errors, crawl);
         let status = if self.aborted(id) {
@@ -1471,6 +1567,11 @@ impl ScanService {
         }
     }
 
+    /// Save `found` as scan `id`'s results and bring its row's counts up to date. With a stop
+    /// reason in `crawl` this is the crawl's final save, and the correlation rules are evaluated;
+    /// without one it is a checkpoint of a crawl still running, written so a killed process keeps
+    /// what it had found, and correlations wait for the end so the rules run once, not once per
+    /// wave.
     fn save(
         &self,
         id: &str,
@@ -1480,6 +1581,8 @@ impl ScanService {
         errors: usize,
         crawl: Crawl,
     ) -> Result<(), ServiceError> {
+        let mut found = found;
+        stamp_scan_id(&mut found.entities, id);
         let now = clock::unix_now_millis();
         let target = Target {
             value: &plan.target,
@@ -1493,13 +1596,41 @@ impl ScanService {
         );
         if !options.types.is_empty() {
             let keep: BTreeSet<&str> = options.types.iter().map(String::as_str).collect();
-            elements.retain(|element| {
-                element.kind == "ROOT"
-                    || element.kind == plan.target_type
-                    || keep.contains(element.kind.as_str())
-            });
+            // A kept element keeps the chain it was found through, whatever those elements' types:
+            // Spiderfoot's type filter never removes an event's source chain, and a parent dropped
+            // here would leave the Source Data Element, the graph edge and the discovery path
+            // dangling, with nothing to recover them from later.
+            let by_id: std::collections::HashMap<&str, &sf_elements::DataElement> = elements
+                .iter()
+                .map(|element| (element.id.as_str(), element))
+                .collect();
+            let mut retained = std::collections::HashSet::new();
+            for element in &elements {
+                if element.kind != "ROOT"
+                    && element.kind != plan.target_type
+                    && !keep.contains(element.kind.as_str())
+                {
+                    continue;
+                }
+                let mut cursor = Some(element);
+                while let Some(found) = cursor {
+                    if !retained.insert(found.id.clone()) {
+                        break;
+                    }
+                    cursor = found
+                        .source
+                        .as_deref()
+                        .and_then(|source| by_id.get(source).copied());
+                }
+            }
+            elements.retain(|element| retained.contains(&element.id));
         }
-        let (correlations, risks) = self.correlate_all(id, &found.entities, &elements);
+        let (correlations, risks) = if crawl.termination.is_some() {
+            let (correlations, risks) = self.correlate_all(id, &found.entities, &elements);
+            (correlations, Some(risks))
+        } else {
+            (Vec::new(), None)
+        };
         let modules_run: Vec<String> = found
             .outcomes
             .iter()
@@ -1526,14 +1657,16 @@ impl ScanService {
             elements,
             correlations,
             lineage: crawl.lineage,
-            termination: Some(crawl.termination),
+            termination: crawl.termination,
         })?;
         // A stop and a result-count update must not write stale copies of the same row.
         let _state = self.state();
         let mut record = self.store.get(id)?;
         record.elements = total;
         record.unique = unique;
-        record.correlations = risks;
+        if let Some(risks) = risks {
+            record.correlations = risks;
+        }
         record.errors = errors;
         record.modules_run = modules_run;
         self.store.update(&record)?;
@@ -1550,6 +1683,13 @@ impl ScanService {
         // Otherwise a stop could read RUNNING and replace a newly FINISHED row.
         let mut state = self.state();
         let mut record = self.store.get(id)?;
+        // A scan whose process is gone has nothing left to signal: marking it ABORTED is the stop.
+        if self
+            .store
+            .reconcile(&mut record, clock::unix_now_millis())?
+        {
+            return Ok(record);
+        }
         if !record.status.is_active() {
             return Err(ServiceError::Conflict(format!(
                 "scan {id} is {}, not running",
@@ -1589,7 +1729,7 @@ impl ScanService {
     /// # Errors
     /// [`ServiceError::NotFound`] for no such scan, [`ServiceError::Conflict`] while it runs.
     pub fn delete(&self, id: &str) -> Result<(), ServiceError> {
-        let record = self.store.get(id).or_else(|error| match error {
+        let mut record = self.store.get(id).or_else(|error| match error {
             // A scan this service still runs keeps its directory however unreadable its row: its
             // worker still writes there, and deleting it would lose what the scan finds.
             StoreError::Io(reason) if self.owned().contains(id) => {
@@ -1605,6 +1745,9 @@ impl ScanService {
             }),
             other => Err(other.into()),
         })?;
+        // A scan whose process is gone is settled first, so it can be deleted like any ended scan.
+        self.store
+            .reconcile(&mut record, clock::unix_now_millis())?;
         if record.status.is_active() {
             return Err(ServiceError::Conflict(format!(
                 "scan {id} is {}; stop it before deleting it",
@@ -1701,6 +1844,31 @@ fn outcome_line(outcome: &SourceExecutionOutcome) -> String {
         line.push_str(detail);
     }
     line
+}
+
+/// Every observation saved under scan `id` is this scan's. Each lookup front-end mints a private
+/// id for the entities it builds, which names no saved scan, so a raw record read on the page or
+/// in an export led nowhere. The saved scan's id replaces it on every entity, on every evidence
+/// record's provenance and on every observation a merge kept, and a kept observation that then
+/// differs from the record's own in nothing is dropped, as [`crate::entity::merge_by_uid`] would
+/// have dropped it.
+fn stamp_scan_id(entities: &mut [Entity], id: &str) {
+    for entity in entities {
+        id.clone_into(&mut entity.scan_id);
+        for evidence in &mut entity.evidence {
+            evidence.provenance.scan_id = Some(id.to_owned());
+            let mut kept = vec![evidence.provenance.clone()];
+            evidence.merged_provenance.retain_mut(|observation| {
+                observation.scan_id = Some(id.to_owned());
+                if kept.contains(observation) {
+                    false
+                } else {
+                    kept.push(observation.clone());
+                    true
+                }
+            });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1897,6 +2065,76 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Footprint and Investigate choose modules by category, as the New Scan page describes them,
+    /// so they spend less than All and differ from each other; a use case never widens a choice.
+    #[test]
+    fn a_use_case_keeps_the_scan_to_its_modules() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&calls);
+        let (service, dir) = with_lookup(
+            "usecase",
+            Arc::new(move |kind: ScanKind, selector: &str, chosen: &Selection| {
+                let asked: Vec<&str> = ["rdap", "spamhaus", "github_user", "oathnet"]
+                    .into_iter()
+                    .filter(|module| chosen.runs(module))
+                    .collect();
+                seen.lock().unwrap().push(format!(
+                    "{} {selector} asks {}",
+                    kind.command(),
+                    asked.join(",")
+                ));
+                Ok(found(kind, selector))
+            }),
+        );
+        let scan = |usecase: &str, modules: &[&str]| {
+            service.run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                options: ScanOptions {
+                    usecase: usecase.into(),
+                    modules: modules.iter().map(|module| (*module).to_owned()).collect(),
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+        };
+        let asked = || {
+            let asked = calls.lock().unwrap().clone();
+            calls.lock().unwrap().clear();
+            asked
+        };
+        let all = scan("all", &[]).unwrap();
+        assert_eq!(all.status, ScanStatus::Finished);
+        assert_eq!(
+            asked(),
+            ["ip 1.1.1.1 asks rdap,spamhaus,github_user,oathnet"]
+        );
+        assert_eq!(scan("footprint", &[]).unwrap().options.usecase, "footprint");
+        assert_eq!(asked(), ["ip 1.1.1.1 asks rdap,github_user,oathnet"]);
+        scan("Investigate", &[]).unwrap();
+        assert_eq!(asked(), ["ip 1.1.1.1 asks rdap,spamhaus,oathnet"]);
+        scan("investigate", &["rdap", "github_user"]).unwrap();
+        assert_eq!(asked(), ["ip 1.1.1.1 asks rdap"]);
+        // A use case that leaves the chosen modules nothing to ask is refused before the scan is
+        // saved, naming the modules as they were chosen.
+        let refused = service
+            .run(&ScanRequest {
+                target: "ada@example.com".into(),
+                kind: Some("exposure".into()),
+                options: ScanOptions {
+                    usecase: "footprint".into(),
+                    modules: vec!["spamhaus".into()],
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap_err();
+        assert!(
+            matches!(&refused, ServiceError::BadRequest(why) if why.starts_with("none of the chosen modules (spamhaus) looks up the target: the exposure lookup asks hibp,")),
+            "{refused:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_scan_asks_only_the_modules_chosen_and_skips_lookups_that_ask_none() {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -2069,6 +2307,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A lookup mints a private scan id for what it builds. Saved, every observation names the
+    /// saved scan instead, so a raw record's provenance leads to a scan in the list, and an
+    /// observation a merge kept that differed only by that private id is not kept twice.
+    #[test]
+    fn saved_observations_name_the_saved_scan_not_the_lookups_private_id() {
+        let (service, dir) = with_lookup(
+            "stamp",
+            Arc::new(|kind: ScanKind, selector: &str, _: &Selection| {
+                let mut output = found(kind, selector);
+                let evidence = &mut output.entities[0].evidence[0];
+                let mut again = evidence.provenance.clone();
+                again.scan_id = Some("t".into());
+                evidence.merged_provenance.push(again);
+                let mut other_source = evidence.provenance.clone();
+                other_source.source = "greynoise".into();
+                other_source.scan_id = Some("u".into());
+                evidence.merged_provenance.push(other_source);
+                Ok(output)
+            }),
+        );
+        let record = service
+            .run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        assert_eq!(record.status, ScanStatus::Finished);
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        assert!(!results.entities.is_empty());
+        for entity in &results.entities {
+            assert_eq!(entity.scan_id, record.id, "{}", entity.uid);
+            for evidence in &entity.evidence {
+                assert_eq!(
+                    evidence.provenance.scan_id.as_deref(),
+                    Some(record.id.as_str())
+                );
+                for observation in &evidence.merged_provenance {
+                    assert_eq!(observation.scan_id.as_deref(), Some(record.id.as_str()));
+                    assert_ne!(observation, &evidence.provenance);
+                }
+            }
+        }
+        let merged = &results.entities[0].evidence[0].merged_provenance;
+        assert_eq!(merged.len(), 1, "{merged:?}");
+        assert_eq!(merged[0].source, "greynoise");
+        assert!(
+            !serde_json::to_string(&results)
+                .unwrap()
+                .contains("\"scan_id\":\"s\""),
+            "no private lookup id survives in what is saved"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_run_saves_elements_counts_log_and_finishes() {
         let (service, dir) = with_lookup(
@@ -2238,6 +2530,112 @@ mod tests {
         assert_eq!(
             kinds,
             BTreeSet::from(["IP_ADDRESS", "ROOT", "TCP_PORT_OPEN"])
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ticking only `COUNTRY_NAME` keeps the `GEOINFO` element the country was found from, so no saved
+    /// element points at a source that was not saved: the Source Data Element, the graph edge and
+    /// the discovery path stay whole.
+    #[test]
+    fn requested_types_keep_each_kept_elements_ancestry() {
+        let (service, dir) = with_lookup(
+            "types-ancestry",
+            Arc::new(|_: ScanKind, selector: &str, _: &Selection| {
+                let evidence = Evidence::new(EvidenceProvenance::for_scan("pulsedive", "s"), "geo")
+                    .with_attr("city", "Sydney")
+                    .with_attr("country", "AU");
+                Ok(LookupOutput {
+                    text: format!("ip {selector}\n"),
+                    entities: vec![
+                        Entity::builder(EntityKind::IpAddress, selector, 0.9, "s")
+                            .evidence(evidence)
+                            .build(),
+                    ],
+                    outcomes: vec![SourceExecutionOutcome::success("pulsedive", 1, 1)],
+                })
+            }),
+        );
+        let record = service
+            .run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                options: ScanOptions {
+                    types: vec!["COUNTRY_NAME".into()],
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let results = service.store().results(&record.id).unwrap().unwrap();
+        let kinds: BTreeSet<&str> = results
+            .elements
+            .iter()
+            .map(|element| element.kind.as_str())
+            .collect();
+        assert_eq!(
+            kinds,
+            BTreeSet::from(["COUNTRY_NAME", "GEOINFO", "IP_ADDRESS", "ROOT"]),
+            "the country keeps the GEOINFO it was found from"
+        );
+        let ids: BTreeSet<&str> = results
+            .elements
+            .iter()
+            .map(|element| element.id.as_str())
+            .collect();
+        for element in &results.elements {
+            if let Some(source) = &element.source {
+                assert!(
+                    ids.contains(source.as_str()),
+                    "{} {} points at an unsaved source",
+                    element.kind,
+                    element.data
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scan whose process Android stopped while the server stayed up: Stop succeeds (the row
+    /// reads ABORTED), Delete succeeds, and reading it says ABORTED with the owner named in its log,
+    /// instead of a RUNNING row that answers 409 to both until the next restart.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_scan_whose_process_died_can_be_stopped_deleted_and_reads_aborted() {
+        let (service, dir) = with_lookup(
+            "dead-owner",
+            Arc::new(|_, _, _| Ok(LookupOutput::default())),
+        );
+        let orphan = |tag: &str| {
+            let mut row = placeholder(&new_id(tag, 1, 0));
+            row.status = ScanStatus::Running;
+            // No process has this pid, so the owner that recorded it is gone.
+            row.owner = Some(u32::MAX);
+            service.store().create(&row).unwrap();
+            row.id
+        };
+        let stopped = orphan("stop");
+        assert_eq!(service.stop(&stopped).unwrap().status, ScanStatus::Aborted);
+        assert_eq!(
+            service.store().get(&stopped).unwrap().status,
+            ScanStatus::Aborted
+        );
+        let deleted = orphan("delete");
+        service.delete(&deleted).unwrap();
+        assert!(service.store().get(&deleted).is_err());
+        let read = orphan("read");
+        assert_eq!(service.record(&read).unwrap().status, ScanStatus::Aborted);
+        assert!(
+            service
+                .records()
+                .unwrap()
+                .iter()
+                .all(|row| row.status == ScanStatus::Aborted)
+        );
+        let log = service.store().log(&read).unwrap();
+        assert!(
+            log.iter()
+                .any(|entry| entry.message.contains(&format!("pid {}", u32::MAX))),
+            "{log:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2493,7 +2891,12 @@ mod tests {
             })
             .unwrap();
         record.status = ScanStatus::Running;
-        record.owner = Some(std::process::id().wrapping_add(1));
+        // The test runner's parent is alive for as long as this test runs, so the owner is a
+        // live foreign process, not one whose death reconciles the row to ABORTED. Its recorded
+        // start time must be that process's own, or the row reads as a reused pid.
+        let parent = std::os::unix::process::parent_id();
+        record.owner = Some(parent);
+        record.owner_started = crate::scan_store::process_start_ticks(parent);
         service.store().update(&record).unwrap();
         let controller = ScanService::new(service.store().clone(), Arc::clone(&service.lookup));
         let cancellation = controller.graph_cancellation(&record.id);
@@ -2644,6 +3047,111 @@ mod tests {
         ));
         service.delete(&record.id).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_running_scan_checkpoints_what_it_has_found_before_the_next_wave() {
+        // A depth-1 crawl: the domain lookup answers at once with three addresses and every
+        // address lookup blocks. While they block, the scan must already have saved the domain
+        // wave's findings, so a process that dies now leaves a scan that shows them. Baseline:
+        // nothing is written until the whole crawl ends, and a killed scan recovers empty.
+        let (entered_tx, entered_rx) = mpsc::channel::<String>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let entered_tx = Mutex::new(entered_tx);
+        let release_rx = Mutex::new(release_rx);
+        let (service, dir) = with_lookup(
+            "checkpoint",
+            Arc::new(move |kind: ScanKind, selector: &str, _: &Selection| {
+                if kind == ScanKind::Domain {
+                    let evidence = Evidence::new(
+                        EvidenceProvenance::for_scan("test", "seed"),
+                        "discovered address",
+                    );
+                    return Ok(LookupOutput {
+                        text: "domain report".into(),
+                        entities: ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
+                            .into_iter()
+                            .map(|ip| {
+                                Entity::builder(EntityKind::IpAddress, ip, 0.95, "test")
+                                    .evidence(evidence.clone())
+                                    .build()
+                            })
+                            .collect(),
+                        outcomes: vec![SourceExecutionOutcome::success("crtsh", 1, 3)],
+                    });
+                }
+                entered_tx
+                    .lock()
+                    .unwrap()
+                    .send(selector.to_owned())
+                    .unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+                Ok(LookupOutput {
+                    text: format!("completed-{selector}"),
+                    ..LookupOutput::default()
+                })
+            }),
+        );
+        let record = service
+            .start(&ScanRequest {
+                target: "example.org".into(),
+                kind: Some("domain".into()),
+                options: ScanOptions {
+                    depth: 1,
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let _entered = entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        // The address lookups are blocked: the scan runs, and generation 0 is on disk.
+        let row = service.store().get(&record.id).unwrap();
+        assert_eq!(row.status, ScanStatus::Running);
+        let partial = service
+            .store()
+            .results(&record.id)
+            .unwrap()
+            .expect("the domain wave is saved before the address wave runs");
+        assert_eq!(
+            partial.termination, None,
+            "a checkpoint claims no stop reason"
+        );
+        let addresses: BTreeSet<&str> = partial
+            .elements
+            .iter()
+            .filter(|element| element.kind == "IP_ADDRESS")
+            .map(|element| element.data.as_str())
+            .collect();
+        assert_eq!(addresses, BTreeSet::from(["1.1.1.1", "8.8.8.8", "9.9.9.9"]));
+        assert_eq!(partial.text, "domain report");
+        assert_eq!(partial.outcomes.len(), 1);
+        assert!(
+            partial.correlations.is_empty(),
+            "the rules run once, when the crawl ends"
+        );
+        let shown = partial
+            .elements
+            .iter()
+            .filter(|element| element.kind != "ROOT")
+            .count();
+        assert!(shown >= 3, "{shown} elements shown for three addresses");
+        assert_eq!(
+            (row.elements, row.modules_run.as_slice()),
+            (shown, ["crtsh".to_owned()].as_slice()),
+            "the row counts the checkpoint while the scan runs"
+        );
+        // Every address lookup finishes: the final save supersedes the checkpoint.
+        for _ in 0..3 {
+            release_tx.send(()).unwrap();
+        }
+        let done = service
+            .wait(&record.id, Instant::now() + Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(done.status, ScanStatus::Finished);
+        let whole = service.store().results(&record.id).unwrap().unwrap();
+        assert!(whole.termination.is_some(), "the final save names the stop");
+        assert!(whole.text.contains("completed-1.1.1.1"), "{}", whole.text);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2892,16 +3400,16 @@ mod tests {
             "batch-admission",
             Arc::new(|_, _, _| Ok(LookupOutput::default())),
         );
-        let selection = chosen(&ScanOptions::default()).unwrap();
-        let collector = ScanCollector {
-            service: &service,
-            id: "batch-admission",
-            chosen: &selection,
-            text: String::new(),
-            ran: 0,
-            errors: 0,
-            breach_checked: BTreeSet::new(),
-        };
+        let options = ScanOptions::default();
+        let selection = chosen(&options).unwrap();
+        let scan_plan = plan("jane@example.org", Some("email")).unwrap();
+        let collector = ScanCollector::new(
+            &service,
+            "batch-admission",
+            &scan_plan,
+            &options,
+            &selection,
+        );
         let email = CrawlTarget {
             kind: ScanKind::Email,
             selector: "jane@example.org".into(),
@@ -3122,20 +3630,15 @@ mod tests {
                 ..ScanRequest::default()
             })
             .unwrap();
-        let selection = chosen(&ScanOptions::default()).unwrap();
+        let options = ScanOptions::default();
+        let selection = chosen(&options).unwrap();
+        let scan_plan = plan("example.org", Some("domain")).unwrap();
         let target = CrawlTarget {
             kind: ScanKind::Ip,
             selector: "1.1.1.1".into(),
         };
-        let mut collector = ScanCollector {
-            service: &service,
-            id: &record.id,
-            chosen: &selection,
-            text: String::new(),
-            ran: 0,
-            errors: 0,
-            breach_checked: BTreeSet::new(),
-        };
+        let mut collector =
+            ScanCollector::new(&service, &record.id, &scan_plan, &options, &selection);
         service.state().aborts.insert(record.id.clone());
         let cancelled = crate::graph_exec::TaskRecord {
             state: TaskState::Cancelled,

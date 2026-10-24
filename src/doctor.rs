@@ -22,13 +22,13 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::diagnostics::{TERMUX_APP_DATA, TermuxState, normalized_build_sha};
-use crate::fsio::write_atomic_private;
+use crate::fsio::{read_bounded, write_atomic_private};
 use crate::keys::{
     DEFAULT_KEYS_FILE, DefaultFileRefusal, Keys, MAX_KEYS_FILE_BYTES, read_private_file,
 };
 use crate::ledger::load_chain;
 use crate::provider_credentials::{self, ProbeState, ProviderProbeStatus};
-use crate::serve_probe::{ServeProbe, ServeState};
+use crate::serve_probe::{AddrSource, ServeProbe, ServeState};
 
 /// The repository `install.sh` builds from.
 pub const REPOSITORY: &str =
@@ -42,6 +42,22 @@ pub const FIX: &str = "huntsman-recon fix";
 pub const PROVENANCE_FILE: &str = "installed-revision";
 /// The state directory under `$HOME` when `HUNTSMAN_HOME` is not set.
 pub const STATE_DIR: &str = ".huntsman";
+/// The address `huntsman start` recorded in the state directory when port 8080 was taken. The
+/// service's run script serves there, and `doctor` probes there.
+pub const SERVE_BIND_FILE: &str = "serve.bind";
+/// The runit service the installer sets up under `$PREFIX`, which the Termux controller manages.
+const TERMUX_SERVICE_DIR: &str = "var/service/huntsman-serve";
+/// The most of the service's run script `doctor` reads to find the state directory it exports.
+const MAX_RUN_SCRIPT_BYTES: u64 = 64 * 1024;
+
+/// The state directory: `$HUNTSMAN_HOME`, else `~/.huntsman`, as the installer, the controller
+/// and every command resolve it.
+#[must_use]
+pub fn resolve_state_dir(home: Option<&Path>, override_dir: Option<&Path>) -> Option<PathBuf> {
+    override_dir
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|home| home.join(STATE_DIR)))
+}
 /// Where `install.sh` keeps Cargo's build cache when `CARGO_TARGET_DIR` is not set.
 pub const BUILD_CACHE: &str = ".cache/huntsman-recon-target";
 /// The first line of the `CACHEDIR.TAG` Cargo writes into a target directory. A directory
@@ -217,9 +233,7 @@ impl Context<'_> {
     /// `$HUNTSMAN_HOME`, else `~/.huntsman`.
     #[must_use]
     pub fn state_dir(&self) -> Option<PathBuf> {
-        self.state_dir_override
-            .clone()
-            .or_else(|| self.home.as_ref().map(|home| home.join(STATE_DIR)))
+        resolve_state_dir(self.home.as_deref(), self.state_dir_override.as_deref())
     }
 
     fn env_file(&self) -> Option<PathBuf> {
@@ -348,6 +362,8 @@ struct Provenance {
     repository: Option<String>,
     rustc: Option<String>,
     cargo_target_dir: Option<String>,
+    /// The state directory the installer chose, as `install.sh` records it.
+    state_dir: Option<String>,
 }
 
 enum ProvenanceRead {
@@ -392,6 +408,7 @@ fn parse_provenance(text: &str) -> Provenance {
             "repository" => record.repository = value,
             "rustc" => record.rustc = value,
             "cargo_target_dir" => record.cargo_target_dir = value,
+            "state_dir" => record.state_dir = value,
             _ => {}
         }
     }
@@ -405,6 +422,7 @@ fn render_provenance(record: &Provenance) -> String {
         ("repository", &record.repository),
         ("rustc", &record.rustc),
         ("cargo_target_dir", &record.cargo_target_dir),
+        ("state_dir", &record.state_dir),
     ] {
         if let Some(value) = value {
             let _ = writeln!(out, "{key}={value}");
@@ -503,6 +521,20 @@ fn state_dir(ctx: &Context<'_>) -> Check {
         );
     };
     let shown = ctx.show(&dir);
+    // The installer wrote the state directory it chose into the web UI service's run script. A
+    // shell that resolves another one reads scans and a serve.bind the service never writes.
+    if let Some(service) = service_state_dir(ctx).filter(|service| *service != dir) {
+        let service_shown = ctx.show(&service);
+        return Check::warn(
+            ID,
+            format!(
+                "{shown} here, but the web UI service keeps its scans and serve.bind in {service_shown}"
+            ),
+            format!(
+                "export HUNTSMAN_HOME={service_shown}, or run commands through huntsman, which does"
+            ),
+        );
+    }
     match fs::metadata(&dir) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Check::warn(
             ID,
@@ -837,11 +869,29 @@ fn serve(ctx: &Context<'_>) -> Check {
     const ID: &str = "serve";
     let probe = ctx.serve;
     let addr = &probe.addr;
-    let rebind = "huntsman-recon serve --bind 127.0.0.1:8081";
+    // Under the Termux service, runit restarts serve and `huntsman start` records the port it
+    // chose, so the controller's commands are the fixes: a serve started by hand would fight it.
+    let (start, restart, rebind) = if termux_service(ctx) {
+        (
+            "huntsman start",
+            "huntsman restart",
+            "huntsman start (it picks the next free port and records it)",
+        )
+    } else {
+        (
+            "huntsman-recon serve",
+            "stop the running serve (Ctrl-C where it runs), then huntsman-recon serve",
+            "huntsman-recon serve --bind 127.0.0.1:8081",
+        )
+    };
+    let recorded = match &probe.addr_source {
+        AddrSource::File(path) => format!(", the address recorded in {}", path.display()),
+        _ => String::new(),
+    };
     match probe.state {
         ServeState::NotRunning => Check::ok(
             ID,
-            format!("not running on {addr} (start it with huntsman-recon serve)"),
+            format!("not running on {addr}{recorded} (start it with {start})"),
         ),
         ServeState::Healthy => match probe.version.as_deref() {
             Some(version) if version != ctx.version => Check::warn(
@@ -850,7 +900,7 @@ fn serve(ctx: &Context<'_>) -> Check {
                     "{addr} runs version {version}, but this binary is {}: restart serve to use it",
                     ctx.version
                 ),
-                "stop the running serve (Ctrl-C where it runs), then huntsman-recon serve",
+                restart,
             ),
             _ => Check::ok(
                 ID,
@@ -869,7 +919,9 @@ fn serve(ctx: &Context<'_>) -> Check {
         ),
         ServeState::Foreign => Check::fail(
             ID,
-            format!("another program holds {addr}, so huntsman-recon serve cannot start there"),
+            format!(
+                "another program holds {addr}{recorded}, so huntsman-recon serve cannot start there"
+            ),
             rebind,
         ),
         ServeState::Degraded => Check::fail(
@@ -878,9 +930,36 @@ fn serve(ctx: &Context<'_>) -> Check {
                 "running on {addr} but broken: {}",
                 probe.problems.join("; ")
             ),
-            "stop the running serve (Ctrl-C where it runs), then huntsman-recon serve",
+            restart,
         ),
     }
+}
+
+/// The state directory the installer wrote into the web UI service's run script, as
+/// `export HUNTSMAN_HOME='…'`, when the service is set up and its run script says.
+fn service_state_dir(ctx: &Context<'_>) -> Option<PathBuf> {
+    if !termux_service(ctx) {
+        return None;
+    }
+    let run = ctx.prefix.as_ref()?.join(TERMUX_SERVICE_DIR).join("run");
+    let text = read_bounded(&run, MAX_RUN_SCRIPT_BYTES).ok()?;
+    String::from_utf8_lossy(&text).lines().find_map(|line| {
+        let value = line.strip_prefix("export HUNTSMAN_HOME=")?;
+        let value = value
+            .strip_prefix('\'')
+            .and_then(|rest| rest.strip_suffix('\''))
+            .unwrap_or(value);
+        (!value.is_empty()).then(|| PathBuf::from(value))
+    })
+}
+
+/// Whether the installer set up the runit service the Termux controller manages.
+fn termux_service(ctx: &Context<'_>) -> bool {
+    ctx.termux == TermuxState::Detected
+        && ctx
+            .prefix
+            .as_ref()
+            .is_some_and(|prefix| prefix.join(TERMUX_SERVICE_DIR).is_dir())
 }
 
 fn mib(bytes: u64) -> u64 {
@@ -1194,6 +1273,10 @@ fn record_install(ctx: &Context<'_>, host: &dyn Host) -> (String, Result<(), Str
                     .as_ref()
                     .map(|home| home.join(BUILD_CACHE).display().to_string())
             }),
+            // The record lives in the state directory it names.
+            state_dir: old
+                .state_dir
+                .or_else(|| path.parent().map(|dir| dir.display().to_string())),
         };
         write_atomic_private(
             &path,

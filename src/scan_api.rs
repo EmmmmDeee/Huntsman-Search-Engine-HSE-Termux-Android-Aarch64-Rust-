@@ -213,12 +213,31 @@ impl Params {
 pub struct ScanApi {
     service: Arc<ScanService>,
     slots: Option<SlotCheck>,
+    /// Settings the binary adds to the page's Global Settings, after the store's own.
+    globals: Vec<Value>,
 }
 
 impl ScanApi {
     #[must_use]
     pub fn new(service: Arc<ScanService>, slots: Option<SlotCheck>) -> Self {
-        Self { service, slots }
+        Self {
+            service,
+            slots,
+            globals: Vec::new(),
+        }
+    }
+
+    /// Adds one entry to the Settings page's Global Settings: `key` names it in the API, the page
+    /// shows `description` as its label and `value` beside it. For what only the binary knows,
+    /// such as how `serve` was configured.
+    #[must_use]
+    pub fn with_global(mut self, key: &str, description: &str, value: impl Into<Value>) -> Self {
+        self.globals.push(json!({
+            "key": key,
+            "description": description,
+            "value": value.into(),
+        }));
+        self
     }
 
     #[must_use]
@@ -331,15 +350,14 @@ impl ScanApi {
                     "key_env": key_env,
                     "configured": configured,
                     "lookups": crate::lookup_modules::lookups_asking(module.name),
+                    // The lookups that run an offline module over the target itself, so the
+                    // page can say so instead of "no scan lookup asks it".
+                    "offline_in": crate::lookup_modules::lookups_running_offline(module.name),
                     "spiderfoot": crate::module::spiderfoot_names(module.name),
                 })
             })
             .collect();
-        ok(
-            200,
-            &json!({
-                "modules": modules,
-                "global": [
+        let mut global = json!([
                     {
                         "key": "scan_dir",
                         "description": "where saved scans are kept",
@@ -360,15 +378,23 @@ impl ScanApi {
                         "description": "each source reads its key from the environment variable its key_env names; this page shows only whether each is set, never a value",
                         "value": "environment",
                     },
-                ],
+        ]);
+        if let Some(list) = global.as_array_mut() {
+            list.extend(self.globals.iter().cloned());
+        }
+        ok(
+            200,
+            &json!({
+                "modules": modules,
+                "global": global,
             }),
         )
     }
 
     fn list(&self) -> ApiResponse {
-        match self.service.store().list() {
+        match self.service.records() {
             Ok(records) => ok(200, &json!(records)),
-            Err(failure) => service_error(&failure.into()),
+            Err(failure) => service_error(&failure),
         }
     }
 
@@ -413,9 +439,8 @@ impl ScanApi {
 
     fn record(&self, id: &str) -> Result<ScanRecord, ApiResponse> {
         self.service
-            .store()
-            .get(id)
-            .map_err(|failure| service_error(&failure.into()))
+            .record(id)
+            .map_err(|failure| service_error(&failure))
     }
 
     fn results(&self, id: &str) -> Result<(ScanRecord, Option<ScanResults>), ApiResponse> {
@@ -688,7 +713,7 @@ impl ScanApi {
         value["report"] = results.map_or(Value::Null, |results| Value::String(results.text));
         // What the runner does with each New Scan option, so the page never shows a dead control.
         value["honoured"] = json!({
-            "usecase": "passive skips the keyed breach lookup of every email; the other use cases run every source of each lookup",
+            "usecase": true,
             "types": true,
             "modules": true,
             "depth": true,
@@ -1193,7 +1218,9 @@ fn event_types() -> ApiResponse {
 }
 
 /// Elements as `/elements` answers them: each as saved, with its type's description and the data
-/// of the element it was found from in `results`.
+/// of the element it was found from in `results`. An element whose source was not saved (a scan a
+/// `types` filter trimmed before the ancestry was kept) says so with `source_missing`, rather than
+/// passing an empty source off as the root.
 fn element_rows<'a>(
     results: &ScanResults,
     chosen: impl IntoIterator<Item = &'a DataElement>,
@@ -1205,11 +1232,13 @@ fn element_rows<'a>(
             let source_data = element
                 .source
                 .as_deref()
-                .and_then(|source| sources.get(source).copied())
-                .unwrap_or("");
+                .map(|source| sources.get(source).copied());
             let mut row = json!(element);
             row["description"] = Value::String(sf_types::describe(&element.kind).to_owned());
-            row["source_data"] = Value::String(source_data.to_owned());
+            row["source_data"] = Value::String(source_data.flatten().unwrap_or("").to_owned());
+            if source_data == Some(None) {
+                row["source_missing"] = Value::Bool(true);
+            }
             row
         })
         .collect()
@@ -1276,6 +1305,56 @@ mod tests {
         serde_json::from_slice(&response.body).unwrap()
     }
 
+    /// A scan whose process is gone reads ABORTED from the list and the scan page, and Stop
+    /// answers 202 rather than 409, so the page never shows a RUNNING row nobody can act on.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_scan_whose_process_died_lists_as_aborted_and_can_be_stopped() {
+        let (api, dir) = api("dead-owner-api");
+        let finished = api
+            .service()
+            .run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let mut orphan = api.service().store().get(&finished.id).unwrap();
+        orphan.status = ScanStatus::Running;
+        orphan.ended = None;
+        // No process has this pid, so the owner that recorded it is gone.
+        orphan.owner = Some(u32::MAX);
+        orphan.owner_started = None;
+        api.service().store().update(&orphan).unwrap();
+        let listed = body(&api.handle("GET", "/api/scans", ""));
+        assert_eq!(listed[0]["status"], "ABORTED", "{listed}");
+        let shown = body(&api.handle("GET", &format!("/api/scans/{}", finished.id), ""));
+        assert_eq!(shown["status"], "ABORTED", "{shown}");
+        let log = body(&api.handle("GET", &format!("/api/scans/{}/log", finished.id), ""));
+        assert!(
+            log.as_array().unwrap().iter().any(|entry| {
+                entry["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains(&format!("pid {}", u32::MAX)))
+            }),
+            "{log}"
+        );
+        // A second orphan: Stop settles it instead of refusing it.
+        let mut again = api.service().store().get(&finished.id).unwrap();
+        again.status = ScanStatus::Running;
+        again.ended = None;
+        again.owner = Some(u32::MAX);
+        api.service().store().update(&again).unwrap();
+        let stopped = api.handle("POST", &format!("/api/scans/{}/stop", finished.id), "");
+        assert_eq!(
+            stopped.status,
+            202,
+            "{}",
+            String::from_utf8_lossy(&stopped.body)
+        );
+        assert_eq!(body(&stopped)["status"], "ABORTED");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The Settings page reads a module as set by [`slots_set`]: `WiGLE`'s two modules need both
     /// of its slots, HIBP's two may be set through `HIBP_API_KEY` alone.
     #[test]
@@ -1301,6 +1380,32 @@ mod tests {
         ] {
             assert_eq!(configured(name), set, "{name}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A setting the binary adds follows the store's own in Global Settings, as given.
+    #[test]
+    fn a_global_setting_the_binary_adds_follows_the_stores_own() {
+        let (api, dir) = api_holding("settings-global", &[]);
+        let before = body(&api.handle("GET", "/api/settings", ""));
+        let before = before["global"].as_array().unwrap();
+        assert!(before.iter().all(|entry| entry["key"] != "continuous"));
+        let api = api.with_global(
+            "continuous",
+            "continuous normalisation while serve runs",
+            "off",
+        );
+        let settings = body(&api.handle("GET", "/api/settings", ""));
+        let global = settings["global"].as_array().unwrap();
+        assert_eq!(global.len(), before.len() + 1);
+        assert_eq!(&global[..before.len()], &before[..]);
+        let added = global.last().unwrap();
+        assert_eq!(added["key"], "continuous");
+        assert_eq!(
+            added["description"],
+            "continuous normalisation while serve runs"
+        );
+        assert_eq!(added["value"], "off");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1700,14 +1805,34 @@ mod tests {
             body(&started)["options"]["modules"],
             json!(["sfp_ripe", "rdap"])
         );
-        let id = body(&started)["id"].as_str().unwrap().to_owned();
+        // The label a Sources table shows for a module's leg chooses that module: hibp_account
+        // is HIBP's account search, wigle_bluetooth WiGLE's Bluetooth search.
+        let by_label = api.handle(
+            "POST",
+            "/api/scans",
+            "target=ada@example.com&modules=hibp_account",
+        );
+        assert_eq!(by_label.status, 202, "{}", by_label.text());
+        let bluetooth = api.handle(
+            "POST",
+            "/api/scans",
+            "target=00:11:22:33:44:55&modules=wigle_bluetooth",
+        );
+        assert_eq!(bluetooth.status, 202, "{}", bluetooth.text());
+        let ids: Vec<String> = [&started, &by_label, &bluetooth]
+            .iter()
+            .map(|response| body(response)["id"].as_str().unwrap().to_owned())
+            .collect();
         for _ in 0..200 {
-            if !api.service().store().get(&id).unwrap().status.is_active() {
+            if ids
+                .iter()
+                .all(|id| !api.service().store().get(id).unwrap().status.is_active())
+            {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        let shown = body(&api.handle("GET", &format!("/api/scans/{id}"), ""));
+        let shown = body(&api.handle("GET", &format!("/api/scans/{}", ids[0]), ""));
         assert_eq!(shown["honoured"]["modules"], true);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1971,6 +2096,8 @@ mod tests {
             target["raw"][0]["evidence"]["attributes"]["ports"],
             "22,443"
         );
+        // The raw record's provenance names the scan it is read from, not the lookup's private id.
+        assert_eq!(target["raw"][0]["evidence"]["provenance"]["scan_id"], id);
         let graph = body(&api.handle("GET", &format!("/api/scans/{id}/graph"), ""));
         assert_eq!(
             graph["edges"].as_array().unwrap().len() + 1,
@@ -2279,6 +2406,15 @@ mod tests {
             ripestat.unwrap()["lookups"],
             json!(["ip", "netblock", "asn"])
         );
+        // An offline module no lookup asks still names the lookups that run it over the target,
+        // as the Sources table of a phone scan shows phone_intl and phone_au.
+        let phone_intl = modules
+            .iter()
+            .find(|module| module["name"] == "phone_intl")
+            .unwrap();
+        assert_eq!(phone_intl["lookups"], json!([]));
+        assert_eq!(phone_intl["offline_in"], json!(["phone"]));
+        assert_eq!(ripestat.unwrap()["offline_in"], json!([]));
         // And every name a scan may choose it by, so Clone can restore a scan that chose a
         // Spiderfoot module: `sfp_whois` stands for both RDAP and Whoxy.
         assert_eq!(

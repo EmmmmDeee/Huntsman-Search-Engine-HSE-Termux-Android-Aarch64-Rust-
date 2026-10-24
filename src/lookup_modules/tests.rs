@@ -14,7 +14,7 @@ use crate::test_support::{Attempt, Failing, Recording, Refusing, Silent};
 use crate::threat_feeds::Feeds;
 use crate::{
     asn_cli, crypto_cli, domain_cli, email_cli, environment, exposure_cli, ip_cli, netblock_cli,
-    network_cli, people_cli, phone_cli, stolen_tax, username_cli,
+    network_cli, nominatim_cli, people_cli, phone_cli, stolen_tax, username_cli,
 };
 
 const NOW: u64 = 1_760_000_000;
@@ -23,8 +23,12 @@ const NOW: u64 = 1_760_000_000;
 const RIPESTAT: &[u8] =
     br#"{"status":"ok","data":{"announced":false,"prefixes":[],"neighbours":[],"resources":[]}}"#;
 
+/// One Nominatim place, as its forward search lists it and its reverse search returns it.
+const PLACE: &[u8] = br#"{"osm_type":"way","osm_id":1,"lat":"48.8584","lon":"2.2945","category":"tourism","type":"attraction","place_rank":30,"importance":0.5,"addresstype":"tourism","name":"Eiffel Tower","display_name":"Eiffel Tower, Paris, France","address":{"tourism":"Eiffel Tower","city":"Paris","country":"France","country_code":"fr"}}"#;
+const PLACES: &[u8] = br#"[{"osm_type":"way","osm_id":1,"lat":"48.8584","lon":"2.2945","category":"tourism","type":"attraction","place_rank":30,"importance":0.5,"addresstype":"tourism","name":"Eiffel Tower","display_name":"Eiffel Tower, Paris, France","address":{"tourism":"Eiffel Tower","city":"Paris","country":"France","country_code":"fr"}}]"#;
+
 /// A network that answers each threat feed with one unlisted address, `RIPEstat` and the CKAN
-/// registers with empty data, and everything else "not found"; resolves every name to nothing;
+/// registers with empty data, Nominatim with one place, and everything else "not found"; resolves every name to nothing;
 /// answers no UDP; and keeps everything it was asked. Each lookup then has a leg that answers, so
 /// it prints its report, and its every row, instead of failing.
 #[derive(Clone, Default)]
@@ -61,6 +65,15 @@ impl Transport for Everywhere {
             (
                 200,
                 br#"{"success":true,"result":{"records":[],"total":0}}"#,
+            )
+        } else if url.contains("nominatim") {
+            (
+                200,
+                if url.contains("/reverse?") {
+                    PLACE
+                } else {
+                    PLACES
+                },
             )
         } else {
             (404, b"{}")
@@ -170,6 +183,9 @@ fn verdict<N: Transport + Clone + Send + Sync + 'static>(
         ScanKind::CryptoAddress => ended(crypto_cli::run(&transport, target, now), |report| {
             report.outcomes
         }),
+        ScanKind::Place => ended(nominatim_cli::run(&transport, target, now), |report| {
+            report.outcomes
+        }),
         ScanKind::Email => match email_cli::run_keyed(&transport, &keys, target, now) {
             email_cli::EmailRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
             email_cli::EmailRun::Network(why) => Verdict::Refused(why),
@@ -177,6 +193,7 @@ fn verdict<N: Transport + Clone + Send + Sync + 'static>(
         },
         ScanKind::Username => match username_cli::run(&transport, &keys, target, now) {
             username_cli::UsernameRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
+            username_cli::UsernameRun::Network(why) => Verdict::Refused(why),
             username_cli::UsernameRun::Failed(why) => Verdict::Unavailable(why),
         },
         ScanKind::Phone => match phone_cli::run_keyed(&transport, &keys, target, now) {
@@ -252,6 +269,7 @@ const fn target(kind: ScanKind) -> &'static str {
         ScanKind::People => "Ada Lovelace",
         ScanKind::Network => "00:11:22:33:44:55",
         ScanKind::CryptoAddress => "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+        ScanKind::Place => "Eiffel Tower",
     }
 }
 
@@ -322,11 +340,12 @@ fn anchor(kind: ScanKind) -> Option<&'static str> {
         ScanKind::Asn => Some(ripestat::SOURCE),
         ScanKind::Email => Some(gravatar::SRC),
         ScanKind::People => Some("asic_persons"),
-        ScanKind::Username
-        | ScanKind::Phone
+        ScanKind::Username => Some(keybase::SRC),
+        ScanKind::Phone
         | ScanKind::Network
         | ScanKind::Exposure
-        | ScanKind::CryptoAddress => None,
+        | ScanKind::CryptoAddress
+        | ScanKind::Place => None,
     }
 }
 
@@ -398,6 +417,30 @@ fn a_spiderfoot_name_chooses_every_module_that_does_its_work() {
     assert!(error.contains("sfp_spider, nope"), "{error}");
 }
 
+/// Each use case leaves every lookup a module to ask, so no target is refused for its use case
+/// alone, and Footprint and Investigate are each narrower than All.
+#[test]
+fn every_use_case_leaves_each_lookup_a_module_to_ask() {
+    for usecase in crate::scan_service::USE_CASES {
+        let chosen = crate::module::use_case_selection(usecase, &Selection::all());
+        for kind in ScanKind::ALL {
+            assert!(
+                asks_any(kind, &chosen),
+                "{usecase} leaves the {kind:?} lookup nothing to ask"
+            );
+        }
+    }
+    for usecase in ["footprint", "investigate"] {
+        let chosen = crate::module::use_case_selection(usecase, &Selection::all());
+        assert!(
+            ScanKind::ALL
+                .iter()
+                .any(|kind| modules(*kind).iter().any(|module| !chosen.runs(module))),
+            "{usecase} runs every module, so it is All under another name"
+        );
+    }
+}
+
 #[test]
 fn each_module_names_the_lookups_that_ask_it() {
     assert_eq!(lookups_asking("spamhaus"), ["domain", "ip"]);
@@ -405,6 +448,86 @@ fn each_module_names_the_lookups_that_ask_it() {
     assert_eq!(lookups_asking("oathnet"), ["email", "exposure", "username"]);
     assert_eq!(lookups_asking("wigle"), ["network"]);
     assert!(lookups_asking("source_registry").is_empty());
+    // The labels a Sources table shows for a module's legs name the module's lookups too.
+    assert_eq!(lookups_asking("hibp_account"), ["email", "exposure"]);
+    assert_eq!(lookups_asking("wigle_bluetooth"), ["network"]);
+    assert_eq!(lookups_asking("asic_persons.banned"), ["people"]);
+}
+
+/// A name the Sources table shows chooses the module whose leg it labels, so a scan can be re-run
+/// with just that source by the name the page showed.
+#[test]
+fn a_source_label_chooses_its_module() {
+    let hibp = selection(&["hibp_account".to_owned()]).expect("hibp_account names hibp");
+    assert!(hibp.runs("hibp") && !hibp.runs("oathnet"));
+    assert!(asks_any(ScanKind::Email, &hibp) && asks_any(ScanKind::Exposure, &hibp));
+    let bluetooth =
+        selection(&["WiGLE_Bluetooth".to_owned()]).expect("wigle_bluetooth names wigle");
+    assert!(bluetooth.runs("wigle"));
+    assert!(asks_any(ScanKind::Network, &bluetooth));
+    let part = selection(&["asic_persons.banned".to_owned()]).expect("a part names its module");
+    assert!(part.runs("asic_persons"));
+    let leg_part = selection(&["hibp_account.breach".to_owned()]).expect("a leg's part names it");
+    assert!(leg_part.runs("hibp"));
+    let error = selection(&["nonesuch.part".to_owned()]).expect_err("an unknown part is refused");
+    assert!(error.contains("nonesuch.part"), "{error}");
+}
+
+/// The offline modules a lookup runs over the target itself are reachable modules no lookup asks,
+/// and every offline row a lookup leaves is one of them, so the page can say "always runs offline
+/// in" for exactly the modules a scan's Sources table shows without a network leg.
+#[test]
+fn offline_modules_a_lookup_runs_are_named_and_asked_by_none() {
+    for kind in ScanKind::ALL {
+        let runs = offline_runs(kind);
+        for module in &runs {
+            assert!(
+                offline(module),
+                "{kind:?} runs {module}, which is not an offline module"
+            );
+            assert!(
+                !modules(kind).contains(module),
+                "{kind:?} lists {module}, which asks nothing"
+            );
+            assert!(
+                lookups_asking(module).is_empty(),
+                "{module} is asked by a lookup"
+            );
+            assert!(
+                lookups_running_offline(module).contains(&kind.command()),
+                "{module} does not name {kind:?}"
+            );
+        }
+        let net = Everywhere::default();
+        let rows = rows(kind, &Selection::all(), &net)
+            .unwrap_or_else(|why| panic!("{kind:?} printed no report: {why}"));
+        let left: Vec<&str> = rows
+            .iter()
+            .map(|row| module_of(&row.module))
+            .filter(|module| offline(module))
+            .collect();
+        for module in &left {
+            assert!(
+                runs.contains(module),
+                "{kind:?} left an offline row for {module}, which offline_runs leaves out"
+            );
+        }
+        if matches!(kind, ScanKind::Phone | ScanKind::Network) {
+            let mut left = left;
+            left.sort_unstable();
+            left.dedup();
+            let mut runs = runs;
+            runs.sort_unstable();
+            assert_eq!(
+                left, runs,
+                "{kind:?} runs other offline modules than it names"
+            );
+        }
+    }
+    assert_eq!(lookups_running_offline("phone_au"), ["phone"]);
+    assert_eq!(lookups_running_offline("oui"), ["network"]);
+    assert!(lookups_running_offline("rdap").is_empty());
+    assert!(lookups_running_offline("exif").is_empty());
 }
 
 /// The network a refusal contract case runs over.
@@ -438,103 +561,7 @@ const IN_SCOPE: [ScanKind; 8] = [
 /// equal its entries here exactly: a module that newly breaks the contract fails naming it, and
 /// so does an entry no case breaks any more. Each phase of the refusal-routing plan deletes
 /// exactly the triples it fixes, so the list only shrinks.
-const BROKEN: &[(ScanKind, &str, Net)] = &[
-    (ScanKind::Domain, "certspotter", Net::Refusing),
-    (ScanKind::Domain, "dns", Net::Refusing),
-    (ScanKind::Domain, "rdap", Net::Refusing),
-    (ScanKind::Domain, "mnemonic", Net::Refusing),
-    (ScanKind::Domain, "spamhaus", Net::Refusing),
-    (ScanKind::Domain, "surbl", Net::Refusing),
-    (ScanKind::Domain, "adguard_dns", Net::Refusing),
-    (ScanKind::Domain, "cleanbrowsing", Net::Refusing),
-    (ScanKind::Domain, "cloudflaredns", Net::Refusing),
-    (ScanKind::Domain, "comodo", Net::Refusing),
-    (ScanKind::Domain, "dns_for_family", Net::Refusing),
-    (ScanKind::Domain, "opendns", Net::Refusing),
-    (ScanKind::Domain, "quad9", Net::Refusing),
-    (ScanKind::Domain, "yandexdns", Net::Refusing),
-    (ScanKind::Domain, "virustotal", Net::Refusing),
-    (ScanKind::Domain, "hunter", Net::Refusing),
-    (ScanKind::Domain, "shodan", Net::Refusing),
-    (ScanKind::Domain, "pulsedive", Net::Refusing),
-    (ScanKind::Domain, "netlas", Net::Refusing),
-    (ScanKind::Domain, "otx", Net::Refusing),
-    (ScanKind::Domain, "urlscan", Net::Refusing),
-    (ScanKind::Domain, "robtex", Net::Refusing),
-    (ScanKind::Domain, "hackertarget", Net::Refusing),
-    (ScanKind::Domain, "submd", Net::Refusing),
-    (ScanKind::Domain, "maltiverse", Net::Refusing),
-    (ScanKind::Domain, "leakix", Net::Refusing),
-    (ScanKind::Domain, "threatfox", Net::Refusing),
-    (ScanKind::Domain, "urlhaus", Net::Refusing),
-    (ScanKind::Domain, "whoxy", Net::Refusing),
-    (ScanKind::Domain, "securitytrails", Net::Refusing),
-    (ScanKind::Domain, "hudsonrock", Net::Refusing),
-    (ScanKind::Domain, "abusech", Net::Refusing),
-    (ScanKind::Domain, "alienvaultiprep", Net::Refusing),
-    (ScanKind::Domain, "blocklistde", Net::Refusing),
-    (ScanKind::Domain, "botvrij", Net::Refusing),
-    (ScanKind::Domain, "cinsscore", Net::Refusing),
-    (ScanKind::Domain, "cleantalk", Net::Refusing),
-    (ScanKind::Domain, "coinblocker", Net::Refusing),
-    (ScanKind::Domain, "cybercrimetracker", Net::Refusing),
-    (ScanKind::Domain, "emergingthreats", Net::Refusing),
-    (ScanKind::Domain, "greensnow", Net::Refusing),
-    (ScanKind::Domain, "openphish", Net::Refusing),
-    (ScanKind::Domain, "phishtank", Net::Refusing),
-    (ScanKind::Domain, "stevenblack_hosts", Net::Refusing),
-    (ScanKind::Domain, "torexits", Net::Refusing),
-    (ScanKind::Domain, "voipbl", Net::Refusing),
-    (ScanKind::Domain, "vxvault", Net::Refusing),
-    (ScanKind::Email, "stopforumspam", Net::Refusing),
-    (ScanKind::Email, "kickbox", Net::Refusing),
-    (ScanKind::Email, "xposed_or_not", Net::Refusing),
-    (ScanKind::Email, "ipqs", Net::Refusing),
-    (ScanKind::Email, "whoxy", Net::Refusing),
-    (ScanKind::Email, "hunter", Net::Refusing),
-    (ScanKind::Username, "github_user", Net::Refusing),
-    (ScanKind::Username, "bluesky_user", Net::Refusing),
-    (ScanKind::Username, "keybase", Net::Refusing),
-    (ScanKind::Username, "wikipedia", Net::Refusing),
-    (ScanKind::Username, "mastodon_user", Net::Refusing),
-    (ScanKind::Exposure, "hibp", Net::Refusing),
-    (ScanKind::Exposure, "stolen_tax", Net::Refusing),
-    (ScanKind::Exposure, "oathnet", Net::Refusing),
-    (ScanKind::Domain, "spamhaus", Net::Silent),
-    (ScanKind::Domain, "surbl", Net::Silent),
-    (ScanKind::Domain, "adguard_dns", Net::Silent),
-    (ScanKind::Domain, "cleanbrowsing", Net::Silent),
-    (ScanKind::Domain, "cloudflaredns", Net::Silent),
-    (ScanKind::Domain, "comodo", Net::Silent),
-    (ScanKind::Domain, "dns_for_family", Net::Silent),
-    (ScanKind::Domain, "opendns", Net::Silent),
-    (ScanKind::Domain, "quad9", Net::Silent),
-    (ScanKind::Domain, "yandexdns", Net::Silent),
-    (ScanKind::Domain, "abusech", Net::Silent),
-    (ScanKind::Domain, "alienvaultiprep", Net::Silent),
-    (ScanKind::Domain, "blocklistde", Net::Silent),
-    (ScanKind::Domain, "botvrij", Net::Silent),
-    (ScanKind::Domain, "cinsscore", Net::Silent),
-    (ScanKind::Domain, "cleantalk", Net::Silent),
-    (ScanKind::Domain, "coinblocker", Net::Silent),
-    (ScanKind::Domain, "cybercrimetracker", Net::Silent),
-    (ScanKind::Domain, "emergingthreats", Net::Silent),
-    (ScanKind::Domain, "greensnow", Net::Silent),
-    (ScanKind::Domain, "openphish", Net::Silent),
-    (ScanKind::Domain, "phishtank", Net::Silent),
-    (ScanKind::Domain, "stevenblack_hosts", Net::Silent),
-    (ScanKind::Domain, "torexits", Net::Silent),
-    (ScanKind::Domain, "voipbl", Net::Silent),
-    (ScanKind::Domain, "vxvault", Net::Silent),
-    (ScanKind::Username, "github_user", Net::Silent),
-    (ScanKind::Username, "bluesky_user", Net::Silent),
-    (ScanKind::Username, "keybase", Net::Silent),
-    (ScanKind::Username, "wikipedia", Net::Silent),
-    (ScanKind::Username, "mastodon_user", Net::Silent),
-    (ScanKind::Exposure, "hibp", Net::Silent),
-    (ScanKind::Exposure, "oathnet", Net::Silent),
-    (ScanKind::Exposure, "dehashed", Net::Silent),
-];
+const BROKEN: &[(ScanKind, &str, Net)] = &[];
 
 /// Modules that break the contract over a network for a reason outside their lookup: stolen.tax
 /// reports no response as a path failure that carries no transport kind. Each entry must still

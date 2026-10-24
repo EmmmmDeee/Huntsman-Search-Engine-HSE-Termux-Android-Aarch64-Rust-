@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::serve_probe::{ServeProbe, ServeState};
+use crate::serve_probe::{AddrSource, ServeProbe, ServeState};
 
 const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 const OTHER_SHA: &str = "89abcdef0123456789abcdef0123456789abcdef";
@@ -141,6 +141,7 @@ fn not_running() -> ServeProbe {
         version: None,
         problems: Vec::new(),
         elapsed_ms: 1,
+        addr_source: AddrSource::Flag,
     }
 }
 
@@ -670,6 +671,7 @@ fn each_serve_state_maps_to_its_check() {
         version: version.map(str::to_owned),
         problems: vec!["/ does not call /api/analyze".into()],
         elapsed_ms: 3,
+        addr_source: AddrSource::Flag,
     };
     let healthy = serve_report(&scratch, &probe(ServeState::Healthy, Some("9.9.9")));
     assert_eq!(healthy.status, Status::Ok);
@@ -690,6 +692,80 @@ fn each_serve_state_maps_to_its_check() {
     let broken = serve_report(&scratch, &probe(ServeState::Degraded, Some("9.9.9")));
     assert_eq!(broken.status, Status::Fail);
     assert!(broken.message.contains("/api/analyze"), "{broken:?}");
+}
+
+/// On the phone the installer sets up the runit service and `huntsman start` records the port it
+/// chose, so the fixes are the controller's commands and the report names the recorded file.
+#[test]
+fn under_the_termux_service_the_controller_s_commands_are_the_serve_fixes() {
+    let scratch = Scratch::new("termux-service");
+    let prefix = scratch.path("usr");
+    fs::create_dir_all(prefix.join("var/service/huntsman-serve")).expect("service");
+    let bind_file = scratch.path(".huntsman/serve.bind");
+    let probe = |state| ServeProbe {
+        addr: "127.0.0.1:8081".into(),
+        state,
+        version: Some("9.9.9".into()),
+        problems: vec!["/ does not call /api/analyze".into()],
+        elapsed_ms: 3,
+        addr_source: AddrSource::File(bind_file.clone()),
+    };
+    let report = |probe: &ServeProbe, termux: TermuxState| {
+        scratch.with_ctx(SHA, |ctx| {
+            let ctx = Context {
+                serve: probe,
+                termux,
+                prefix: Some(prefix.clone()),
+                ..clone_ctx(ctx)
+            };
+            examine(&ctx, &FakeHost::default())
+                .get("serve")
+                .cloned()
+                .expect("serve")
+        })
+    };
+    let recorded = format!("recorded in {}", bind_file.display());
+    let off = report(&probe(ServeState::NotRunning), TermuxState::Detected);
+    assert_eq!(off.status, Status::Ok);
+    assert!(
+        off.message.contains(&recorded) && off.message.ends_with("(start it with huntsman start)"),
+        "{off:?}"
+    );
+    assert_eq!(
+        report(&probe(ServeState::Degraded), TermuxState::Detected)
+            .fix
+            .as_deref(),
+        Some("huntsman restart")
+    );
+    let taken = report(&probe(ServeState::Foreign), TermuxState::Detected);
+    assert!(taken.message.contains(&recorded), "{taken:?}");
+    assert_eq!(
+        taken.fix.as_deref(),
+        Some("huntsman start (it picks the next free port and records it)")
+    );
+    // Without the service, serve by hand stays the fix, and the file is still named.
+    let bare = report(&probe(ServeState::NotRunning), TermuxState::NotDetected);
+    assert!(
+        bare.message.contains(&recorded)
+            && bare
+                .message
+                .ends_with("(start it with huntsman-recon serve)"),
+        "{bare:?}"
+    );
+    assert_eq!(
+        report(&probe(ServeState::Degraded), TermuxState::NotDetected)
+            .fix
+            .as_deref(),
+        Some("stop the running serve (Ctrl-C where it runs), then huntsman-recon serve")
+    );
+    // Termux without the service (the installer found no termux-services) is the same.
+    let _ = fs::remove_dir_all(prefix.join("var"));
+    assert_eq!(
+        report(&probe(ServeState::Degraded), TermuxState::Detected)
+            .fix
+            .as_deref(),
+        Some("stop the running serve (Ctrl-C where it runs), then huntsman-recon serve")
+    );
 }
 
 fn tag_cache(dir: &Path) {
@@ -1026,4 +1102,22 @@ fn a_regular_cache_tag_with_signature_is_accepted() {
     fs::create_dir_all(&cache).expect("cache");
     fs::write(cache.join("CACHEDIR.TAG"), CACHEDIR_SIGNATURE).expect("tag");
     assert!(tagged_cache(&cache));
+}
+
+/// `install.sh` records the state directory it chose; the record keeps it through `fix`.
+#[test]
+fn the_install_record_keeps_the_state_dir_the_installer_chose() {
+    let record = parse_provenance(
+        "revision=0123456789abcdef0123456789abcdef01234567\nstate_dir=/data/data/com.termux/files/home/hunt\n",
+    );
+    assert_eq!(
+        record.state_dir.as_deref(),
+        Some("/data/data/com.termux/files/home/hunt")
+    );
+    assert!(
+        render_provenance(&record).contains("state_dir=/data/data/com.termux/files/home/hunt\n"),
+        "{}",
+        render_provenance(&record)
+    );
+    assert_eq!(parse_provenance("revision=abc\n").state_dir, None);
 }

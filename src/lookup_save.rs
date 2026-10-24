@@ -278,6 +278,20 @@ pub const CRYPTO_POLICY: SavePolicy = SavePolicy {
     entity_provenance: crypto_provenance,
 };
 
+fn place_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        "nominatim" => ("nominatim", "src/nominatim.rs"),
+        _ => (source, "src/nominatim_cli.rs"),
+    }
+}
+
+pub const PLACE_POLICY: SavePolicy = SavePolicy {
+    default_source: "nominatim",
+    does_not_show: "a geocoded place is where a name or address resolves on the map, not that anyone is or was there",
+    outcome_provenance: place_provenance,
+    entity_provenance: place_provenance,
+};
+
 /// Persist one lookup report as a fresh unverified hash chain.
 ///
 /// # Errors

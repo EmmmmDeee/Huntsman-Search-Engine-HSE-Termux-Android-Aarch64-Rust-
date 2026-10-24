@@ -19,6 +19,11 @@
 //! [`NetworkRun::Failed`] (exit 69), as the CLI's exit codes say. A search `WiGLE` answered
 //! with an error (a rate limit, a rejected key) or that had no credentials to send is a row of
 //! the printed report.
+//!
+//! When no source answered, the lookup ends from its rows through
+//! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
+//! 77), otherwise no usable response (exit 69); a source that answered, even with an error, makes
+//! it print.
 
 use std::path::PathBuf;
 
