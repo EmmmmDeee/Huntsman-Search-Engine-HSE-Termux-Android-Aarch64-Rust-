@@ -133,6 +133,9 @@ pub struct SourceExecutionOutcome {
     pub detail: Option<String>,
 }
 
+/// What a keyed source's row says when its key slot is empty.
+pub const NO_KEY_DETAIL: &str = "no operator key configured; no request made";
+
 impl SourceExecutionOutcome {
     fn new(
         module: impl Into<String>,
@@ -204,6 +207,19 @@ impl SourceExecutionOutcome {
         detail: impl Into<String>,
     ) -> Self {
         Self::observed(module, observed_at_unix, kind, http_status, None, detail)
+    }
+
+    /// The row a keyed source leaves when a lookup asks it and its key slot is empty: no request
+    /// was made, and the Sources table says so instead of leaving no row, as every keyed leg does.
+    #[must_use]
+    pub fn not_configured(module: impl Into<String>, observed_at_unix: u64) -> Self {
+        Self::failed(
+            module,
+            observed_at_unix,
+            SourceOutcomeKind::NotConfigured,
+            None,
+            NO_KEY_DETAIL,
+        )
     }
 
     /// The run completed without a verdict. `detail` says why.

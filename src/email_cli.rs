@@ -190,17 +190,17 @@ pub fn run_keyed<T: Transport + ?Sized>(
         return EmailRun::Failed("email lookup produced no entity".into());
     };
     let (email, scan_id) = (seed.raw_value.clone(), seed.scan_id.clone());
-    if !indicator_legs::planned(Indicator::Email(&email), keys).is_empty() {
-        let legs = indicator_legs::run(
-            transport,
-            keys,
-            Indicator::Email(&email),
-            &scan_id,
-            now_unix,
-        );
-        gathered.report.entities.extend(legs.entities);
-        gathered.report.outcomes.extend(legs.outcomes);
-    }
+    // Every indicator source the lookup asks is run; one whose key is not set makes no request
+    // and leaves the row that says so.
+    let legs = indicator_legs::run(
+        transport,
+        keys,
+        Indicator::Email(&email),
+        &scan_id,
+        now_unix,
+    );
+    gathered.report.entities.extend(legs.entities);
+    gathered.report.outcomes.extend(legs.outcomes);
     gathered.finish()
 }
 
@@ -842,6 +842,9 @@ mod tests {
                 ("kickbox", SourceOutcomeKind::ValidZero),
                 ("xposed_or_not", SourceOutcomeKind::ValidZero),
                 ("whoxy", SourceOutcomeKind::Success),
+                // The keyed indicator legs with no key: asked, skipped, and each says so.
+                ("ipqs", SourceOutcomeKind::NotConfigured),
+                ("hunter", SourceOutcomeKind::NotConfigured),
             ]
         );
         assert!(
