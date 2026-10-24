@@ -95,7 +95,7 @@ pub struct TrustedNetwork {
 /// An operator-maintained baseline must never be silently learned from an
 /// untrusted capture. A poisoned baseline could suppress real warnings.
 pub fn parse_baseline(bytes: &[u8]) -> Result<Baseline, String> {
-    if bytes.len() > MAX_BASELINE_BYTES as usize {
+    if usize::try_from(MAX_BASELINE_BYTES).is_ok_and(|limit| bytes.len() > limit) {
         return Err("baseline exceeds 128 KiB".into());
     }
     let baseline: Baseline =
@@ -145,6 +145,16 @@ pub struct Report {
     pub mitm_confirmed: bool,
     pub findings: Vec<Finding>,
     pub capability_limit: &'static str,
+}
+
+fn assess_status(accepted: usize, findings: &[Finding]) -> &'static str {
+    if accepted == 0 {
+        "inconclusive"
+    } else if findings.is_empty() {
+        "no_specific_indicators_observed"
+    } else {
+        "unconfirmed_indicators"
+    }
 }
 
 /// Based on MITM/evil-twin literature, but these are conservative heuristics,
@@ -247,13 +257,7 @@ pub fn assess(
             b.bssid.as_deref(),
         ))
     });
-    let status = if accepted == 0 {
-        "inconclusive"
-    } else if findings.is_empty() {
-        "no_specific_indicators_observed"
-    } else {
-        "unconfirmed_indicators"
-    };
+    let status = assess_status(accepted, &findings);
     Report {
         source,
         status,
@@ -325,10 +329,10 @@ pub fn from_wifi_replay(scan: &WifiScan, baseline: Option<&Baseline>) -> Report 
     report
 }
 
-/// Reads the normalized WiGLE JSONL export without treating Bluetooth/cell
+/// Reads the normalized `WiGLE` JSONL export without treating Bluetooth/cell
 /// records as Wi-Fi. Bounded input is enforced here and again at the CLI.
 pub fn from_wigle_jsonl(bytes: &[u8], baseline: Option<&Baseline>) -> Result<Report, String> {
-    if bytes.len() > MAX_IMPORT_BYTES as usize {
+    if usize::try_from(MAX_IMPORT_BYTES).is_ok_and(|limit| bytes.len() > limit) {
         return Err("WiGLE JSONL exceeds 8 MiB".into());
     }
     let content = std::str::from_utf8(bytes).map_err(|_| "WiGLE JSONL must be UTF-8")?;
