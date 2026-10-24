@@ -41,6 +41,10 @@ pub enum SourceOutcomeKind {
     SemanticDrift,
     ZeroYieldAnomaly,
     ConfirmedDead,
+    /// The run completed without a verdict. A kind label this build does not know, read back
+    /// from a saved scan or report written by a newer build, reads as this kind, which is never
+    /// accepted, so an older build can still open that scan and treats the row as unresolved.
+    #[serde(other)]
     Inconclusive,
 }
 
@@ -574,6 +578,58 @@ mod tests {
             let wire = serde_json::to_value(action).expect("an action serialises");
             assert_eq!(wire.as_str(), Some(action.as_str()), "{action:?}");
         }
+    }
+
+    #[test]
+    fn an_unknown_kind_label_reads_as_inconclusive() {
+        let unknown: SourceOutcomeKind =
+            serde_json::from_str("\"some_future_kind\"").expect("an unknown label reads");
+        assert_eq!(unknown, SourceOutcomeKind::Inconclusive);
+        assert_eq!(
+            serde_json::to_string(&SourceOutcomeKind::Inconclusive).expect("serialises"),
+            "\"inconclusive\""
+        );
+        // A known label is never swallowed by the fallback.
+        for kind in [
+            SourceOutcomeKind::Success,
+            SourceOutcomeKind::ValidZero,
+            SourceOutcomeKind::NotConfigured,
+            SourceOutcomeKind::ConnectFailure,
+            SourceOutcomeKind::ConfirmedDead,
+        ] {
+            let wire = serde_json::to_string(&kind).expect("serialises");
+            assert_eq!(
+                serde_json::from_str::<SourceOutcomeKind>(&wire).expect("reads"),
+                kind
+            );
+        }
+        // A whole saved row with a newer kind still reads, as an unresolved row.
+        let row: SourceExecutionOutcome = serde_json::from_str(
+            r#"{"module":"rdap","kind":"some_future_kind","observed_at_unix":7,"http_status":null,"found":null,"retry_after_secs":null,"detail":"x"}"#,
+        )
+        .expect("a row with an unknown kind reads");
+        assert_eq!(row.kind, SourceOutcomeKind::Inconclusive);
+        assert!(!row.kind.is_accepted());
+    }
+
+    #[test]
+    fn a_plain_row_serialises_byte_for_byte() {
+        let found = SourceExecutionOutcome::success("rdap", 7, 2).with_http_status(200);
+        assert_eq!(
+            serde_json::to_string(&found).expect("serialises"),
+            r#"{"module":"rdap","kind":"success","observed_at_unix":7,"http_status":200,"found":2,"retry_after_secs":null,"detail":null}"#
+        );
+        let failed = SourceExecutionOutcome::failed(
+            "rdap",
+            7,
+            SourceOutcomeKind::ConnectFailure,
+            None,
+            "no route",
+        );
+        assert_eq!(
+            serde_json::to_string(&failed).expect("serialises"),
+            r#"{"module":"rdap","kind":"connect_failure","observed_at_unix":7,"http_status":null,"found":null,"retry_after_secs":null,"detail":"no route"}"#
+        );
     }
 
     #[test]
