@@ -100,6 +100,11 @@ pub const ATTEMPTS_PER_PATH: u8 = 3;
 /// Longest pause between `429` attempts, and the pause when `Retry-After` is absent
 /// or unreadable.
 pub const RETRY_PAUSE_CAP: Duration = Duration::from_secs(4);
+/// A no-response failure notes the request's cap only when the cap shortened the request by
+/// at least this much: the tenth of a second the note prints. A cascade's first request is
+/// capped at [`TIMEOUT`] less the microseconds the lookup has already spent, and `capped at
+/// 120.0s, the rest of the 120s lookup budget` would be noise in a saved scan's log.
+const CAP_NOTE_RESOLUTION: Duration = Duration::from_millis(100);
 
 // Confidence tiers carried over from the monolith's `core::confidence`.
 const MEDIUM: f64 = 0.50;
@@ -405,7 +410,7 @@ fn answer(
     let Some(response) = fetched.response else {
         return Err(failed(
             kind,
-            if cap < TIMEOUT {
+            if TIMEOUT.saturating_sub(cap) >= CAP_NOTE_RESOLUTION {
                 format!(
                     "no response ({kind:?}); request capped at {:.1}s, the rest of the {}s lookup budget",
                     cap.as_secs_f64(),
