@@ -393,13 +393,23 @@ pub(crate) const SLOT_FALLBACKS: &[(&str, &str)] = &[(
 /// A single abuse.ch Auth-Key works for both ThreatFox and URLhaus.
 /// Each explicitly configured slot takes precedence over its peer.
 const SHARED_AUTH_KEY_FALLBACKS: &[(&str, &str)] = &[
-    (crate::environment::THREATFOX_KEY_ENV, crate::environment::ABUSECH_KEY_ENV),
-    (crate::environment::ABUSECH_KEY_ENV, crate::environment::THREATFOX_KEY_ENV),
+    (
+        crate::environment::THREATFOX_KEY_ENV,
+        crate::environment::ABUSECH_KEY_ENV,
+    ),
+    (
+        crate::environment::ABUSECH_KEY_ENV,
+        crate::environment::THREATFOX_KEY_ENV,
+    ),
 ];
 
 /// Stored credential alone does not establish a runnable lookup integration.
 const CREDENTIAL_ONLY_PROVIDERS: &[&str] = &[
-    "Brave Search", "Exa", "OpenRouter", "Google Gemini", "Censys",
+    "Brave Search",
+    "Exa",
+    "OpenRouter",
+    "Google Gemini",
+    "Censys",
 ];
 
 /// Declared key slots without a currently implemented lookup leg.
@@ -824,11 +834,15 @@ mod tests {
         ))
         .expect("keys");
         assert_eq!(
-            secret_for_slot(&both, ABUSECH_KEY_ENV).expect("explicit key").expose(),
+            secret_for_slot(&both, ABUSECH_KEY_ENV)
+                .expect("explicit key")
+                .expose(),
             "TEST_ONLY_URLHAUS"
         );
         assert_eq!(
-            secret_for_slot(&both, THREATFOX_KEY_ENV).expect("explicit key").expose(),
+            secret_for_slot(&both, THREATFOX_KEY_ENV)
+                .expect("explicit key")
+                .expose(),
             "TEST_ONLY_THREATFOX"
         );
     }
