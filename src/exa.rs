@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn invalid_response_is_never_a_zero() {
         for body in [
-            r#"{}"#,
+            r"{}",
             r#"{"results":{}}"#,
             r#"{"results":[{"url":"file:///etc/passwd"}]}"#,
             r#"{"results":[{}]}"#,
