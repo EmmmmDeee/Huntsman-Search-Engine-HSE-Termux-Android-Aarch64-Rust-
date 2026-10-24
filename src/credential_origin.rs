@@ -127,6 +127,11 @@ impl AuthenticationAuthority {
             approval_provenance: format!("operator configured {slot}"),
         })
     }
+
+    #[must_use]
+    pub fn provider_id(&self) -> &str {
+        &self.0.provider_id
+    }
 }
 
 #[cfg(test)]
@@ -145,10 +150,8 @@ mod tests {
 
     #[test]
     fn auth_authority_requires_operator_reference_with_provenance() {
-        assert_eq!(
-            AuthenticationAuthority::operator_approved(reference("operator")),
-            Ok(AuthenticationAuthority(reference("operator")))
-        );
+        let authority = AuthenticationAuthority::operator_approved(reference("operator")).unwrap();
+        assert_eq!(authority.provider_id(), "example");
         assert!(AuthenticationAuthority::operator_approved(reference("  ")).is_err());
     }
 
