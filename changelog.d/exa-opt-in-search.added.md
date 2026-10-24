@@ -1,1 +1,2 @@
-Add operator-explicit `query --exa QUERY` to retrieve at most five canonical URLs as lead-only results from Exa Search, using a privately configured API key. Default and adaptive searches remain keyless and never consume Exa credits.
+- Add opt-in `query --exa QUERY` with up to five lead-only URLs from the Exa Search API, using the private `HUNTSMAN_EXA_KEY` slot.
+- Keep default and adaptive queries keyless; no background or automatic Exa credit spending.
