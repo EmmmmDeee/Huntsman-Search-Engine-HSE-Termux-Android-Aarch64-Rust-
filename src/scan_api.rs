@@ -1193,7 +1193,9 @@ fn event_types() -> ApiResponse {
 }
 
 /// Elements as `/elements` answers them: each as saved, with its type's description and the data
-/// of the element it was found from in `results`.
+/// of the element it was found from in `results`. An element whose source was not saved (a scan a
+/// `types` filter trimmed before the ancestry was kept) says so with `source_missing`, rather than
+/// passing an empty source off as the root.
 fn element_rows<'a>(
     results: &ScanResults,
     chosen: impl IntoIterator<Item = &'a DataElement>,
@@ -1205,11 +1207,13 @@ fn element_rows<'a>(
             let source_data = element
                 .source
                 .as_deref()
-                .and_then(|source| sources.get(source).copied())
-                .unwrap_or("");
+                .map(|source| sources.get(source).copied());
             let mut row = json!(element);
             row["description"] = Value::String(sf_types::describe(&element.kind).to_owned());
-            row["source_data"] = Value::String(source_data.to_owned());
+            row["source_data"] = Value::String(source_data.flatten().unwrap_or("").to_owned());
+            if source_data == Some(None) {
+                row["source_missing"] = Value::Bool(true);
+            }
             row
         })
         .collect()
