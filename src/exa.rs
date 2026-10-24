@@ -17,7 +17,7 @@ pub const SOURCE: &str = "exa";
 pub const URL: &str = "https://api.exa.ai/search";
 /// Keep the low-cost Exa Lite request within the first base-priced result batch.
 pub const MAX_RESULTS: usize = 5;
-pub const MAX_QUERY_BYTES: usize = 512;
+pub const EXA_MAX_QUERY_BYTES: usize = 512;
 
 pub const API: Api = Api {
     source: SOURCE,
@@ -42,7 +42,7 @@ pub fn search<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<Vec<String>, LegError> {
     if query.trim().is_empty()
-        || query.len() > MAX_QUERY_BYTES
+        || query.len() > EXA_MAX_QUERY_BYTES
         || query.chars().any(char::is_control)
     {
         return Err(LegError::Decode(
