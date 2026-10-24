@@ -879,3 +879,17 @@ fn ci_drives_the_page_in_a_phone_browser() {
         );
     }
 }
+
+#[test]
+fn scan_modes_disclose_uncertain_coverage_and_passive_visibility() {
+    assert!(
+        PAGE.contains("Results depend on provider availability, credentials, quotas and coverage;"),
+        "All must not imply complete external discovery"
+    );
+    assert!(
+        PAGE.contains("this mode cannot guarantee that the target or its affiliates will not learn of a lookup."),
+        "Passive classification must not promise undetectability"
+    );
+    assert!(!PAGE.contains("every possible piece of information about the target is obtained"));
+    assert!(!PAGE.contains("don't want the target to even suspect"));
+}
