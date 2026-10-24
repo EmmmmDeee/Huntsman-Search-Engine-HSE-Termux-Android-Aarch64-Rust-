@@ -1374,10 +1374,7 @@ fn declared_iptc_utf8_is_decoded_even_if_declaration_follows_text() {
 
 #[test]
 fn invalid_declared_iptc_utf8_remains_a_verifiable_byte_claim() {
-    let parsed = parse(&jpeg_with_iptc(&[
-        (1, 90, b"\x1b%G"),
-        (2, 80, b"Ren\xE9"),
-    ]));
+    let parsed = parse(&jpeg_with_iptc(&[(1, 90, b"\x1b%G"), (2, 80, b"Ren\xE9")]));
     assert_eq!(
         field(&parsed, "iptc:Byline"),
         Some("[undecoded IPTC bytes hex:52656ee9]")
