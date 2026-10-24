@@ -48,6 +48,7 @@ impl Default for ReviewPolicy {
 }
 
 impl ReviewPolicy {
+    #[allow(clippy::too_many_lines)]
     #[must_use]
     pub fn assess(self, observations: &[Observation]) -> Assessment {
         // Fail closed: never silently assess a truncated subset of observations.
