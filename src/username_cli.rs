@@ -14,7 +14,7 @@ use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::mastodon_user;
-use crate::source_outcome::SourceExecutionOutcome;
+use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
 use crate::username_variants::{VARIANT_CONFIDENCE, variants};
 use crate::validation::{ValueKind, is_placeholder_entity};
 use crate::wikipedia;
@@ -49,11 +49,10 @@ impl UsernameArgs {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum UsernameRun {
-    Printed { text: String, report: Report },
-    Failed(String),
-}
+/// How a username lookup ended. A lookup no profile source answered ends through
+/// [`SourceReach`]: a refusal is [`UsernameRun::Network`] (exit 77), no response is
+/// [`UsernameRun::Failed`] (exit 69); otherwise it prints.
+pub type UsernameRun = SourceRun<Report>;
 
 /// Run deterministic variants and the keyless public-profile sources, each when the transport's
 /// lookup asks its module ([`Transport::runs_module`]), all at once.
@@ -144,6 +143,14 @@ pub fn run<T: Transport + Sync + ?Sized>(
     }
     merge_by_uid(&mut report.entities);
 
+    // When no profile source answered, the lookup ends from its rows: a request refused before
+    // sending is a refusal (exit 77), else no usable response (exit 69). The handle's own derived
+    // variants are not a finding, so they do not keep such a lookup from failing.
+    if let Some(run) =
+        SourceReach::of(&report.outcomes).unanswered(&format!("no source answered for {username}"))
+    {
+        return run;
+    }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(text) => UsernameRun::Printed { text, report },
         Err(message) => UsernameRun::Failed(message),
@@ -292,40 +299,26 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_transport_refuses_the_profile_legs_that_reach_the_network() {
-        let UsernameRun::Printed { report, .. } = run(
+    fn a_blocked_transport_refuses_the_whole_username_lookup() {
+        // Every profile leg builds a request that the blocked egress refuses before sending, so no
+        // source answered and the lookup refuses (exit 77) from its rows, naming the first refused
+        // leg, rather than printing an empty report. The reason carries the egress refusal
+        // (`network: …`), never a reached-but-silent transport failure.
+        let UsernameRun::Network(why) = run(
             &crate::test_support::Refusing,
             &Keys::default(),
             "janedoe",
             1,
         ) else {
-            panic!("a blocked username lookup did not print its rows");
+            panic!("a fully-blocked username lookup did not refuse");
         };
-        let kind = |module: &str| {
-            report
-                .outcomes
-                .iter()
-                .find(|o| o.module == module)
-                .unwrap_or_else(|| panic!("no {module} row in {:?}", report.outcomes))
-                .kind
-        };
-        // A leg that builds a request gets `Error::Network` from the blocked egress, so its row is
-        // refused before sending, not an inconclusive "no response".
-        for module in [github_user::SRC, bluesky_user::SRC, wikipedia::SRC] {
-            assert_eq!(
-                kind(module),
-                SourceOutcomeKind::RefusedBeforeSending,
-                "{module}"
-            );
-        }
-        // A refusal is never read as a reached-but-silent source.
         assert!(
-            report
-                .outcomes
-                .iter()
-                .all(|o| !o.kind.is_transport_failure()),
-            "{:?}",
-            report.outcomes
+            why.starts_with(&format!("{}: ", github_user::SRC)),
+            "the refusal names the first profile leg: {why}"
+        );
+        assert!(
+            why.contains("network:"),
+            "the refusal is an egress refusal, not a transport failure: {why}"
         );
     }
 
@@ -360,7 +353,7 @@ mod tests {
                         .any(|entity| entity.kind == EntityKind::Email)
                 );
             }
-            other @ UsernameRun::Failed(_) => panic!("{other:?}"),
+            other => panic!("{other:?}"),
         }
     }
 
@@ -431,7 +424,7 @@ mod tests {
                         .any(|entity| entity.has_tag("bluesky"))
                 );
             }
-            other @ UsernameRun::Failed(_) => panic!("{other:?}"),
+            other => panic!("{other:?}"),
         }
     }
 

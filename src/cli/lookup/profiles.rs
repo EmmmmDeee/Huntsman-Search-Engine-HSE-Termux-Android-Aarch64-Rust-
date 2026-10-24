@@ -429,6 +429,9 @@ fn compose_username(
                 policies.1,
             ))
         }
+        UsernameRun::Network(m) => {
+            legs_beside("username", Refused::Network(m), seeknow, exposure, policies)
+        }
         UsernameRun::Failed(m) => legs_beside(
             "username",
             Refused::Unavailable(m),
