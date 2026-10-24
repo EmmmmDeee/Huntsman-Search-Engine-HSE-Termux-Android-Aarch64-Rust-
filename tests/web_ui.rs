@@ -989,6 +989,20 @@ fn every_outcome_label_the_page_colours_is_a_wire_label() {
     );
 }
 
+/// An analysis the server cut short says so in its summary instead of reading as complete, every
+/// link shows how sure the spine is of it and what it rests on, and every pivot its closeness: the
+/// fields `/api/analyze` answers that the page used to drop.
+#[test]
+fn the_analysis_shows_what_was_cut_and_how_sure_each_link_is() {
+    let script = inline("script");
+    assert!(script.contains("+(body.truncated?' · TRUNCATED: a bound cut this analysis short, so these results are incomplete':'');"));
+    assert!(script.contains("$('astatus').classList.toggle('alert',!!body.truncated);"));
+    assert!(PAGE.contains("<th>from</th><th>relation</th><th>to</th><th>confidence</th><th>evidence</th></tr></thead><tbody id=\"arelations\">"));
+    assert!(script.contains("fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind)+(x.label?' · '+x.label:''),who(x.to_uid),Number(x.confidence).toFixed(2),(x.evidence||[]).map(e=>((e.provenance&&e.provenance.source)||'')+(e.summary?': '+e.summary:'')).join(' · ')||'none: derived from the seeds alone']);"));
+    assert!(PAGE.contains("<th>entity</th><th>links</th><th>reach</th><th>closeness</th><th>cut point</th></tr></thead><tbody id=\"apivots\">"));
+    assert!(script.contains("fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,Number(p.closeness).toFixed(2),p.articulation?'yes':'']);"));
+}
+
 #[test]
 fn the_page_stays_within_its_budget() {
     assert!(

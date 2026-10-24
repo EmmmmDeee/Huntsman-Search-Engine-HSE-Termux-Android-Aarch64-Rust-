@@ -432,13 +432,13 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel"><div class="panel-heading">Entities <span class="badge" id="aentities-n"></span></div>
 <div class="table-wrap"><table class="sortable"><thead><tr><th>kind</th><th>value</th><th>confidence</th></tr></thead><tbody id="aentities"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Links <span class="badge" id="arelations-n"></span></div>
-<div class="table-wrap"><table><thead><tr><th>from</th><th>relation</th><th>to</th></tr></thead><tbody id="arelations"></tbody></table></div></div>
+<div class="table-wrap"><table><thead><tr><th>from</th><th>relation</th><th>to</th><th>confidence</th><th>evidence</th></tr></thead><tbody id="arelations"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">GEOINT distances <span class="badge" id="ageo-n"></span></div>
 <p class="help pad">Great-circle distances between entered coordinates. Not evidence of identity, simultaneous presence or independent corroboration.</p>
 <div class="table-wrap"><table><thead><tr><th>point A</th><th>point B</th><th>metres</th></tr></thead><tbody id="ageo"></tbody></table></div>
 <p class="note" id="ageonote"></p></div>
 <div class="panel"><div class="panel-heading">Next pivots <span class="badge" id="apivots-n"></span></div>
-<div class="table-wrap"><table><thead><tr><th>entity</th><th>links</th><th>reach</th><th>cut point</th></tr></thead><tbody id="apivots"></tbody></table></div></div>
+<div class="table-wrap"><table><thead><tr><th>entity</th><th>links</th><th>reach</th><th>closeness</th><th>cut point</th></tr></thead><tbody id="apivots"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Correlations <span class="badge" id="acorrelations-n"></span></div>
 <div class="table-wrap"><table><thead><tr><th>rule</th><th>severity</th><th>finding</th><th>entities</th></tr></thead><tbody id="acorrelations"></tbody></table></div><p class="note" id="anote"></p></div>
 <div class="panel"><div class="panel-heading">Saved scans <span class="badge" id="ascans-n"></span></div>
@@ -1603,12 +1603,15 @@ function showAnalysis(saved){
   const who=uid=>names.get(uid)||uid;
   $('aseeds').textContent=body.accepted.length;$('aentities-c').textContent=body.entities.length;
   $('alinks').textContent=body.relations.length;$('alinked').textContent=body.gaps.linked_seeds+' / '+body.gaps.total_seeds;
-  $('astatus').textContent=body.accepted.length+' seeds · '+body.entities.length+' entities · '+body.relations.length+' links · '+show(body.termination)+' · '+new Date(saved.at).toLocaleTimeString();
+  // The server says when a bound cut the analysis short (a snapshot, report or export limit while bridging the saved scans); the summary must not read as complete then.
+  $('astatus').textContent=body.accepted.length+' seeds · '+body.entities.length+' entities · '+body.relations.length+' links · '+show(body.termination)+' · '+new Date(saved.at).toLocaleTimeString()+(body.truncated?' · TRUNCATED: a bound cut this analysis short, so these results are incomplete':'');
+  $('astatus').classList.toggle('alert',!!body.truncated);
   fill('aentities',body.entities,e=>[show(e.kind),e.value,Number(e.confidence).toFixed(2)]);
-  fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind),who(x.to_uid)]);
+  // Each link with how sure the spine is of it and what it rests on, so a weak inference never reads like a strong one.
+  fill('arelations',body.relations,x=>[who(x.from_uid),show(x.kind)+(x.label?' · '+x.label:''),who(x.to_uid),Number(x.confidence).toFixed(2),(x.evidence||[]).map(e=>((e.provenance&&e.provenance.source)||'')+(e.summary?': '+e.summary:'')).join(' · ')||'none: derived from the seeds alone']);
   fill('ageo',body.geo_distances||[],p=>[p.left,p.right,Number(p.meters).toFixed(1)]);
   $('ageonote').textContent=body.geo_truncated?'Distances limited to the first 16 distinct coordinate seeds.':'';
-  fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,p.articulation?'yes':'']);
+  fill('apivots',body.pivots,p=>[who(p.uid),p.degree,p.reachable,Number(p.closeness).toFixed(2),p.articulation?'yes':'']);
   fill('acorrelations',body.correlations,c=>[c.rule_id+' '+c.rule_name,show(c.severity),c.description,c.entity_uids.map(who).join(', ')]);
   $('anote').textContent=body.correlations.length?'Correlations over entered seeds describe the links derived from them; each stays a hypothesis until a source corroborates it.':'No correlation: the seeds share no derived link.';
   const cross=body.cross_scan;
