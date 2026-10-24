@@ -396,6 +396,30 @@ fn a_spiderfoot_name_chooses_every_module_that_does_its_work() {
     assert!(error.contains("sfp_spider, nope"), "{error}");
 }
 
+/// Each use case leaves every lookup a module to ask, so no target is refused for its use case
+/// alone, and Footprint and Investigate are each narrower than All.
+#[test]
+fn every_use_case_leaves_each_lookup_a_module_to_ask() {
+    for usecase in crate::scan_service::USE_CASES {
+        let chosen = crate::module::use_case_selection(usecase, &Selection::all());
+        for kind in ScanKind::ALL {
+            assert!(
+                asks_any(kind, &chosen),
+                "{usecase} leaves the {kind:?} lookup nothing to ask"
+            );
+        }
+    }
+    for usecase in ["footprint", "investigate"] {
+        let chosen = crate::module::use_case_selection(usecase, &Selection::all());
+        assert!(
+            ScanKind::ALL
+                .iter()
+                .any(|kind| modules(*kind).iter().any(|module| !chosen.runs(module))),
+            "{usecase} runs every module, so it is All under another name"
+        );
+    }
+}
+
 #[test]
 fn each_module_names_the_lookups_that_ask_it() {
     assert_eq!(lookups_asking("spamhaus"), ["domain", "ip"]);
