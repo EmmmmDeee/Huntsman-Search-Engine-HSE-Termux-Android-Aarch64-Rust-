@@ -500,7 +500,6 @@ const BROKEN: &[(ScanKind, &str, Net)] = &[
     (ScanKind::Exposure, "hibp", Net::Refusing),
     (ScanKind::Exposure, "stolen_tax", Net::Refusing),
     (ScanKind::Exposure, "oathnet", Net::Refusing),
-    (ScanKind::Network, "opencellid", Net::Refusing),
     (ScanKind::Domain, "spamhaus", Net::Silent),
     (ScanKind::Domain, "surbl", Net::Silent),
     (ScanKind::Domain, "adguard_dns", Net::Silent),
@@ -535,7 +534,6 @@ const BROKEN: &[(ScanKind, &str, Net)] = &[
     (ScanKind::Exposure, "hibp", Net::Silent),
     (ScanKind::Exposure, "oathnet", Net::Silent),
     (ScanKind::Exposure, "dehashed", Net::Silent),
-    (ScanKind::Network, "opencellid", Net::Silent),
 ];
 
 /// Modules that break the contract over a network for a reason outside their lookup: stolen.tax
