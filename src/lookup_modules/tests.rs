@@ -561,14 +561,7 @@ const IN_SCOPE: [ScanKind; 8] = [
 /// equal its entries here exactly: a module that newly breaks the contract fails naming it, and
 /// so does an entry no case breaks any more. Each phase of the refusal-routing plan deletes
 /// exactly the triples it fixes, so the list only shrinks.
-const BROKEN: &[(ScanKind, &str, Net)] = &[
-    (ScanKind::Exposure, "hibp", Net::Refusing),
-    (ScanKind::Exposure, "stolen_tax", Net::Refusing),
-    (ScanKind::Exposure, "oathnet", Net::Refusing),
-    (ScanKind::Exposure, "hibp", Net::Silent),
-    (ScanKind::Exposure, "oathnet", Net::Silent),
-    (ScanKind::Exposure, "dehashed", Net::Silent),
-];
+const BROKEN: &[(ScanKind, &str, Net)] = &[];
 
 /// Modules that break the contract over a network for a reason outside their lookup: stolen.tax
 /// reports no response as a path failure that carries no transport kind. Each entry must still

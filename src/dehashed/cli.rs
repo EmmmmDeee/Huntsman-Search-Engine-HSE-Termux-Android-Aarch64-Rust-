@@ -61,6 +61,7 @@ impl From<DehashedError> for Failure {
             | DehashedError::Server(_)
             | DehashedError::Unexpected(_)
             | DehashedError::Transport(_)
+            | DehashedError::Refused
             | DehashedError::NotAnAnswer(_)
             | DehashedError::Decode(_) => EX_UNAVAILABLE,
         };

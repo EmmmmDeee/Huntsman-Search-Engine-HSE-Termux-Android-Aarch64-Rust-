@@ -56,15 +56,19 @@ pub enum HibpError {
     /// Invalid input rejected before any request (bad prefix, empty email…).
     #[error("hibp: invalid input: {0}")]
     InvalidInput(String),
-    /// Transport failure: no response.
+    /// Transport failure: the request was sent (or attempted) but no response came back.
     #[error("hibp: transport error: {message}")]
     Transport {
         /// What failed, without the URL, the identifier or any secret.
         message: String,
-        /// The cause the fetch observed (DNS, connect, TLS, a timeout), or `ConnectFailure` for
-        /// a request refused before it was sent.
+        /// The cause the fetch observed (DNS, connect, TLS, a timeout).
         kind: SourceOutcomeKind,
     },
+    /// The guarded egress refused the request before it was sent: the policy dropped every address
+    /// of the destination, or the endpoint URL could not be parsed into a sendable https request.
+    /// Nothing reached the network, so it says nothing about the identifier.
+    #[error("hibp: request refused before sending")]
+    Refused,
     /// A 2xx that is not an API answer: a challenge page served in its place.
     #[error("hibp: response is not an API answer ({0:?})")]
     NotAnAnswer(SourceOutcomeKind),

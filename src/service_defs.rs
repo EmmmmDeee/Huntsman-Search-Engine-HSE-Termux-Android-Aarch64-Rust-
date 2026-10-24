@@ -639,9 +639,10 @@ mod tests {
 
     #[test]
     fn a_redirect_to_an_unusable_location_is_no_answer() {
-        // `fetch` reads the `Location` before it stops at the redirect limit, so a 3xx whose
-        // `Location` does not resolve to an http(s) URL with a host is an error, not an
-        // indeterminate answer.
+        // A 3xx whose `Location` does not resolve to an http(s) URL with a host is not followed —
+        // the target is never fetched — but the 3xx response was received, so it is the answer,
+        // read like any other redirect: not a recognizable probe answer, hence indeterminate, not
+        // an error that would read as "nothing reached the network".
         let fake = FakeTransport {
             response: Response {
                 status: 302,
@@ -651,11 +652,9 @@ mod tests {
             },
             seen: RefCell::new(Vec::new()),
         };
-        assert!(matches!(
-            probe_service(&fake, "shodan", &test_key()),
-            Err(Error::Network(_))
-        ));
-        assert_eq!(fake.seen.borrow().len(), 1);
+        let result = probe_service(&fake, "shodan", &test_key()).expect("probe");
+        assert_eq!(result.verdict, ProbeVerdict::Indeterminate);
+        assert_eq!(fake.seen.borrow().len(), 1, "the redirect is not followed");
     }
 
     #[test]

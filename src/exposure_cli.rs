@@ -36,7 +36,7 @@ use crate::breach_hybrid::{self, BreachLeg};
 use crate::canonical::{canonical_email, canonical_url};
 use crate::concurrent::{self, Job};
 use crate::dehashed::{
-    self, DehashedClient, DehashedError,
+    self, DehashedClient,
     exposure::{ExposureBreach, ExposureSearch},
 };
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
@@ -50,7 +50,7 @@ use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::module_selection::Selection;
 use crate::oathnet::{self, OathnetError};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceReach, SourceRun};
 use crate::stolen_tax::{self, StolenTaxError};
 use crate::tags;
 use crate::textnorm::{decode_html_entities, escape_controls, is_escaped};
@@ -434,12 +434,10 @@ impl ExposureArgs {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ExposureRun {
-    Printed { text: String, report: Report },
-    Network(String),
-    Failed(String),
-}
+/// How an exposure lookup ended. A lookup no breach source answered ends through [`SourceReach`]:
+/// a refusal is [`ExposureRun::Network`] (exit 77), no response is [`ExposureRun::Failed`] (exit
+/// 69); a source that answered, even with an error, still prints, as does the seed alone.
+pub type ExposureRun = SourceRun<Report>;
 
 /// The selector an exposure lookup is keyed on: a canonical email address, else a username by
 /// the `username` command's rule. An address always wins, so `a@b.com` is never a handle.
@@ -470,8 +468,6 @@ pub fn run(sources: Sources<'_>, selector: &str, now_unix: u64) -> ExposureRun {
         oathnet: None,
         dehashed: None,
     };
-    let mut network = None;
-
     let seed = (&kind, value.as_str());
     let jobs: Vec<Job<'_, Option<LegRun>>> = breach_hybrid::exposure_order(true)
         .into_iter()
@@ -482,28 +478,25 @@ pub fn run(sources: Sources<'_>, selector: &str, now_unix: u64) -> ExposureRun {
                 as Job<'_, Option<LegRun>>
         })
         .collect();
-    // Folded in the legs' order, so the entities, outcomes and the first network failure are the
-    // ones the legs gave when they ran one after another.
+    // Folded in the legs' order, so the entities and outcomes are the ones the legs gave when they
+    // ran one after another.
     for ran in concurrent::all(jobs).into_iter().flatten() {
-        let LegRun {
-            outcome,
-            found,
-            network: failed,
-        } = ran;
+        let LegRun { outcome, found } = ran;
         report.entities.extend(found.entities);
         report.incidents = report.incidents.or(found.incidents);
         report.oathnet = report.oathnet.or(found.oathnet);
         report.dehashed = report.dehashed.or(found.dehashed);
-        if let Some(message) = failed {
-            network.get_or_insert(message);
-        }
         report.outcomes.push(outcome);
     }
     merge_by_uid(&mut report.entities);
 
-    let collected = report.outcomes.iter().any(|o| o.kind.is_accepted());
-    if let (false, Some(msg)) = (collected, network) {
-        return ExposureRun::Network(msg);
+    // No breach source answered: the lookup ends from its rows. A request refused before sending
+    // is a refusal (exit 77); a source reached but silent is no usable response (exit 69); a
+    // source that answered with an error still prints, as does the seed alone.
+    if let Some(run) =
+        SourceReach::of(&report.outcomes).stopped(&format!("no source answered for {value}"))
+    {
+        return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(mut text) => {
@@ -516,12 +509,11 @@ pub fn run(sources: Sources<'_>, selector: &str, now_unix: u64) -> ExposureRun {
     }
 }
 
-/// What one leg gave: its outcome row, what it found (entities and its own section), and the
-/// transport failure that stopped it, if one did.
+/// What one leg gave: its outcome row, and what it found (entities and its own section). How the
+/// leg ended is read from its `outcome` row, like every other front-end's.
 struct LegRun {
     outcome: SourceExecutionOutcome,
     found: Report,
-    network: Option<String>,
 }
 
 /// Whether `leg` is run for a selector of `kind`. The keyless legs are not keyed on a selector,
@@ -554,11 +546,10 @@ fn run_leg(
     now_unix: u64,
 ) -> Option<LegRun> {
     let mut found = Report::default();
-    let mut network = None;
     let outcome = match leg {
         BreachLeg::HibpAccount => match sources.hibp {
             None => missing_key(SOURCE, now_unix),
-            Some(client) => hibp_leg(client, seed.1, scan_id, now_unix, &mut found, &mut network),
+            Some(client) => hibp_leg(client, seed.1, scan_id, now_unix, &mut found),
         },
         BreachLeg::StolenTax => match sources.stolen_tax {
             None => missing_key(STOLEN_TAX_SOURCE, now_unix),
@@ -568,29 +559,17 @@ fn run_leg(
         },
         BreachLeg::OathNet => match sources.oathnet {
             None => missing_key(OATHNET_SOURCE, now_unix),
-            Some((transport, keys)) => oathnet_leg(
-                transport,
-                keys,
-                seed,
-                scan_id,
-                now_unix,
-                &mut found,
-                &mut network,
-            ),
+            Some((transport, keys)) => {
+                oathnet_leg(transport, keys, seed, scan_id, now_unix, &mut found)
+            }
         },
         BreachLeg::DeHashed => match sources.dehashed {
             None => missing_key(DEHASHED_SOURCE, now_unix),
-            Some(client) => {
-                dehashed_leg(client, seed.1, scan_id, now_unix, &mut found, &mut network)
-            }
+            Some(client) => dehashed_leg(client, seed.1, scan_id, now_unix, &mut found),
         },
         BreachLeg::PwnedPasswords | BreachLeg::HibpCatalog => return None,
     };
-    Some(LegRun {
-        outcome,
-        found,
-        network,
-    })
+    Some(LegRun { outcome, found })
 }
 
 /// The incidents section that follows the lookup report. The first line is `incidents=N`, or
@@ -769,7 +748,6 @@ fn hibp_leg(
     scan_id: &str,
     now_unix: u64,
     report: &mut Report,
-    network: &mut Option<String>,
 ) -> SourceExecutionOutcome {
     let options = BreachedAccountOptions::full_model();
     match client.breached_account(email, &options) {
@@ -801,9 +779,6 @@ fn hibp_leg(
             outcome
         }
         Err(err) => {
-            if let HibpError::Transport { message, .. } = &err {
-                network.get_or_insert_with(|| message.clone());
-            }
             let outcome = SourceExecutionOutcome::failed(
                 SOURCE,
                 now_unix,
@@ -876,7 +851,6 @@ fn oathnet_leg(
     scan_id: &str,
     now_unix: u64,
     report: &mut Report,
-    network: &mut Option<String>,
 ) -> SourceExecutionOutcome {
     let query = if *seed.0 == EntityKind::Email {
         oathnet::Query::Email(seed.1)
@@ -909,9 +883,6 @@ fn oathnet_leg(
             }
         }
         Err(err) => {
-            if let OathnetError::Transport(_) = &err {
-                network.get_or_insert_with(|| err.to_string());
-            }
             let outcome = SourceExecutionOutcome::failed(
                 OATHNET_SOURCE,
                 now_unix,
@@ -1009,7 +980,6 @@ fn dehashed_leg(
     scan_id: &str,
     now_unix: u64,
     report: &mut Report,
-    network: &mut Option<String>,
 ) -> SourceExecutionOutcome {
     match dehashed::exposure::search_email(client, email) {
         Ok(search) => {
@@ -1036,12 +1006,7 @@ fn dehashed_leg(
                 outcome.with_detail(notes.join("; "))
             }
         }
-        Err(err) => {
-            if matches!(err, DehashedError::Transport(_)) {
-                network.get_or_insert_with(|| err.to_string());
-            }
-            err.outcome(DEHASHED_SOURCE, now_unix)
-        }
+        Err(err) => err.outcome(DEHASHED_SOURCE, now_unix),
     }
 }
 
@@ -1101,6 +1066,7 @@ fn outcome_kind(err: &HibpError) -> SourceOutcomeKind {
         }
         HibpError::Decode(_) => SourceOutcomeKind::SchemaDrift,
         HibpError::Transport { kind, .. } | HibpError::NotAnAnswer(kind) => *kind,
+        HibpError::Refused => SourceOutcomeKind::RefusedBeforeSending,
         HibpError::InvalidInput(_) | HibpError::OAuth(_) => SourceOutcomeKind::Inconclusive,
     }
 }
@@ -2138,10 +2104,11 @@ mod tests {
         );
     }
 
-    /// A stolen.tax path the egress refuses before sending is a refused row, not the transport
-    /// failure (`connect_failure`) it used to read as.
+    /// A stolen.tax path the egress refuses before sending now makes the exposure lookup a refusal
+    /// (exit 77) naming it, where before it printed an empty report and exited 0 because only a
+    /// transport failure, through the old `network` side channel, could stop the lookup.
     #[test]
-    fn a_refused_stolen_tax_path_is_refused_before_sending() {
+    fn a_refused_stolen_tax_path_is_a_refusal() {
         let keys = Keys::parse(&format!(
             "{}=st-test-key-0123456789abcdef\n",
             stolen_tax::KEY_SLOT
@@ -2152,15 +2119,10 @@ mod tests {
             stolen_tax: Some((&refusing, &keys)),
             ..Sources::default()
         };
-        let ExposureRun::Printed { report, .. } = run(sources, "ada.99", 7) else {
-            panic!("expected a printed report");
+        let ExposureRun::Network(why) = run(sources, "ada.99", 7) else {
+            panic!("expected a network refusal");
         };
-        let row = report
-            .outcomes
-            .iter()
-            .find(|o| o.module == STOLEN_TAX_SOURCE)
-            .unwrap_or_else(|| panic!("no stolen.tax row in {:?}", report.outcomes));
-        assert_eq!(row.kind, SourceOutcomeKind::RefusedBeforeSending);
+        assert!(why.contains(STOLEN_TAX_SOURCE), "{why}");
     }
 
     /// Runs `exposure` for one fixed address against a fake HIBP that answers `breaches`, with
@@ -3042,6 +3004,8 @@ mod tests {
             SourceOutcomeKind::TlsFailure,
             SourceOutcomeKind::TtfbTimeout,
         ] {
+            // A real no-response (the request was attempted, so `blocked` is false): the leg's row
+            // keeps the cause the fetch saw, which `SourceReach` reads as a no-response (exit 69).
             let failure = || {
                 Err(crate::http::TransportFailure {
                     kind,
@@ -3049,45 +3013,74 @@ mod tests {
                     blocked: false,
                 })
             };
-            let mut network = None;
             let hibp = hibp_leg(
                 &hibp_answering(failure()),
                 "ada@example.com",
                 "scan-1",
                 7,
                 &mut Report::default(),
-                &mut network,
             );
             assert_eq!(hibp.kind, kind, "{hibp:?}");
-            assert_eq!(network.as_deref(), Some("request failed"));
-            let mut network = None;
             let dehashed = dehashed_leg(
                 &dehashed_answering(failure()),
                 "ada@example.com",
                 "scan-1",
                 7,
                 &mut Report::default(),
-                &mut network,
             );
             assert_eq!(dehashed.kind, kind, "{dehashed:?}");
-            assert_eq!(
-                network.as_deref(),
-                Some("dehashed: transport error: request failed")
-            );
         }
+    }
+
+    #[test]
+    fn a_blocked_keyed_leg_is_refused_before_sending() {
+        // The egress policy refused the request before it was sent (`blocked` is true): the leg's
+        // row is `RefusedBeforeSending`, which `SourceReach` reads as a refusal (exit 77), never a
+        // reached-but-silent transport failure.
+        let blocked = || {
+            Err(crate::http::TransportFailure {
+                kind: SourceOutcomeKind::ConnectFailure,
+                detail: "ada@example.com".into(),
+                blocked: true,
+            })
+        };
+        let hibp = hibp_leg(
+            &hibp_answering(blocked()),
+            "ada@example.com",
+            "scan-1",
+            7,
+            &mut Report::default(),
+        );
+        assert_eq!(
+            hibp.kind,
+            SourceOutcomeKind::RefusedBeforeSending,
+            "{hibp:?}"
+        );
+        assert!(!hibp.kind.is_transport_failure(), "{hibp:?}");
+        let dehashed = dehashed_leg(
+            &dehashed_answering(blocked()),
+            "ada@example.com",
+            "scan-1",
+            7,
+            &mut Report::default(),
+        );
+        assert_eq!(
+            dehashed.kind,
+            SourceOutcomeKind::RefusedBeforeSending,
+            "{dehashed:?}"
+        );
+        assert!(!dehashed.kind.is_transport_failure(), "{dehashed:?}");
     }
 
     #[test]
     fn a_challenge_page_is_a_wall_on_a_keyed_leg_not_a_network_failure() {
         let page = || Ok(crate::test_support::html_ok(CHALLENGE));
-        let mut network = None;
         let hibp = hibp_leg(
             &hibp_answering(page()),
             "ada@example.com",
             "scan-1",
             7,
             &mut Report::default(),
-            &mut network,
         );
         assert_eq!(hibp.kind, SourceOutcomeKind::BotWaf, "{hibp:?}");
         let dehashed = dehashed_leg(
@@ -3096,13 +3089,8 @@ mod tests {
             "scan-1",
             7,
             &mut Report::default(),
-            &mut network,
         );
         assert_eq!(dehashed.kind, SourceOutcomeKind::BotWaf, "{dehashed:?}");
-        assert_eq!(
-            network, None,
-            "a page answered, so the network did not fail"
-        );
     }
 
     #[test]
@@ -3117,7 +3105,6 @@ mod tests {
                 "scan-1",
                 7,
                 &mut Report::default(),
-                &mut None,
             );
             assert_eq!(
                 (outcome.kind, outcome.http_status, outcome.retry_after_secs),
@@ -3155,7 +3142,6 @@ mod tests {
                 "scan-1",
                 7,
                 &mut Report::default(),
-                &mut None,
             );
             let batch = dehashed::collect(
                 &client,
