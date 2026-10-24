@@ -359,6 +359,150 @@ fn a_value_is_capped_and_fields_are_bounded() {
         "len {}",
         rights.len()
     );
+    let (shown, marker) = rights
+        .rsplit_once(" \u{2026} ")
+        .expect("a cut value says so");
+    assert_eq!(
+        marker,
+        format!("({} bytes, first {} shown)", huge.len(), shown.len())
+    );
+}
+
+/// A `tEXt` chunk: `keyword NUL text`.
+fn text_chunk(keyword: &str, text: &str) -> Vec<u8> {
+    let mut body = keyword.as_bytes().to_vec();
+    body.push(0);
+    body.extend_from_slice(text.as_bytes());
+    png_chunk(b"tEXt", &body)
+}
+
+#[test]
+fn fields_past_the_bound_are_counted_never_dropped_silently() {
+    // 600 distinct keywords: 512 are kept and the file says 88 more were not, in the attribute, the
+    // summary and the rendered report alike.
+    let chunks: Vec<Vec<u8>> = (0..600)
+        .map(|i| text_chunk(&format!("k{i:03}"), "v"))
+        .collect();
+    let data = png(&chunks);
+    let parsed = parse(&data);
+    assert_eq!(parsed.fields.len(), crate::exif::MAX_METADATA_FIELDS);
+    assert_eq!(parsed.omitted, 600 - crate::exif::MAX_METADATA_FIELDS);
+    assert_eq!(parsed.values_omitted, 0);
+    let DocmetaRun::Printed { report, text } = run(&data, "many.png", 1) else {
+        panic!("docmeta reads any PNG");
+    };
+    let document = report
+        .entities
+        .iter()
+        .find(|entity| entity.kind == EntityKind::Document)
+        .expect("a document entity");
+    let evidence = &document.evidence[0];
+    assert_eq!(
+        evidence
+            .attributes
+            .get("metadata_field_count")
+            .map(String::as_str),
+        Some("512")
+    );
+    assert_eq!(
+        evidence
+            .attributes
+            .get("metadata_fields_omitted")
+            .map(String::as_str),
+        Some("88")
+    );
+    assert!(
+        evidence
+            .summary
+            .contains("512 embedded metadata field(s) kept and 88 more not kept"),
+        "{}",
+        evidence.summary
+    );
+    assert!(text.contains("88 more not kept"), "{text}");
+}
+
+#[test]
+fn a_value_past_the_bound_is_cut_and_says_how_long_it_is() {
+    let big = "A".repeat(20_000);
+    let parsed = parse(&png(&[text_chunk("Big", &big)]));
+    let value = field(&parsed, "png:Big").expect("the cut field");
+    assert!(
+        value.len() <= crate::exif::MAX_METADATA_VALUE_BYTES,
+        "len {}",
+        value.len()
+    );
+    let (shown, marker) = value
+        .rsplit_once(" \u{2026} ")
+        .expect("a cut value says so");
+    assert!(
+        shown.bytes().all(|b| b == b'A'),
+        "only the value's own bytes are shown"
+    );
+    assert_eq!(
+        marker,
+        format!("(20000 bytes, first {} shown)", shown.len())
+    );
+}
+
+#[test]
+fn repeated_values_past_the_bound_are_counted_never_dropped_silently() {
+    // 3000 distinct values of one property: those that fit are joined, the join says it was cut,
+    // and every value is either shown or counted as not kept.
+    let chunks: Vec<Vec<u8>> = (0..3000)
+        .map(|i| text_chunk("Hist", &format!("event{i}")))
+        .collect();
+    let data = png(&chunks);
+    let parsed = parse(&data);
+    let value = field(&parsed, "png:Hist").expect("the joined field");
+    assert!(value.len() <= crate::exif::MAX_METADATA_VALUE_BYTES);
+    assert!(parsed.values_omitted > 0);
+    let (shown, marker) = value
+        .rsplit_once(" \u{2026} ")
+        .expect("the joined value says values were not kept");
+    assert_eq!(
+        marker,
+        format!("({} more value(s) not kept)", parsed.values_omitted)
+    );
+    let shown: Vec<&str> = shown.split("; ").collect();
+    assert!(
+        shown
+            .iter()
+            .enumerate()
+            .all(|(i, v)| *v == format!("event{i}")),
+        "whole values only, in order: {shown:?}"
+    );
+    assert_eq!(shown.len() + parsed.values_omitted, 3000);
+    let DocmetaRun::Printed { report, .. } = run(&data, "history.png", 1) else {
+        panic!("docmeta reads any PNG");
+    };
+    let document = report
+        .entities
+        .iter()
+        .find(|entity| entity.kind == EntityKind::Document)
+        .expect("a document entity");
+    assert_eq!(
+        document.evidence[0]
+            .attributes
+            .get("metadata_values_omitted")
+            .map(String::as_str),
+        Some(parsed.values_omitted.to_string().as_str())
+    );
+}
+
+#[test]
+fn a_long_pdf_string_is_read_whole_so_the_marker_names_its_true_length() {
+    // A 20000-byte /Title: the decoder reads it all, so the cut names 20000 bytes, not the bound.
+    let title = "T".repeat(20_000);
+    let parsed = parse(&pdf(&format!("<< /Title ({title}) >>"), "", "1 0 R"));
+    let value = field(&parsed, "info:Title").expect("the cut title");
+    assert!(value.len() <= crate::exif::MAX_METADATA_VALUE_BYTES);
+    let (shown, marker) = value
+        .rsplit_once(" \u{2026} ")
+        .expect("a cut value says so");
+    assert_eq!(
+        marker,
+        format!("(20000 bytes, first {} shown)", shown.len())
+    );
 }
 
 #[test]
@@ -1359,4 +1503,9 @@ fn every_truncation_of_a_jpeg_iptc_block_is_read_never_a_panic() {
         let outcome = std::panic::catch_unwind(|| parse(&full[..cut]));
         assert!(outcome.is_ok(), "cut {cut} panicked");
     }
+}
+
+#[test]
+fn the_values_marker_always_fits_its_reserve() {
+    assert!(super::values_marker(usize::MAX).len() <= super::VALUES_MARKER_RESERVE);
 }

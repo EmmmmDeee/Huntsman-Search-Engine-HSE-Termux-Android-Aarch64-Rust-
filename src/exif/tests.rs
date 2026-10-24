@@ -448,6 +448,73 @@ fn a_value_of_control_bytes_renders_within_the_bound() {
 }
 
 #[test]
+fn a_long_text_value_is_cut_and_says_how_long_it_is() {
+    // A 10000-byte ImageDescription: the tag's bytes are read up to the bound and the text says the
+    // whole is 10000 bytes, so the first 8 KiB never pass for all of it.
+    let mut tiff = b"II*\0".to_vec();
+    tiff.extend_from_slice(&8_u32.to_le_bytes());
+    tiff.extend_from_slice(&1_u16.to_le_bytes());
+    push_entry(&mut tiff, 0x010E, 2, 10_000, le32(8 + 2 + 12 + 4)); // ImageDescription
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    tiff.resize(tiff.len() + 10_000, b'A');
+    let parsed = parse(&tiff).expect("a readable TIFF");
+    let (name, value) = &parsed.fields[0];
+    assert_eq!(name, "ImageDescription");
+    assert!(value.len() <= crate::exif::MAX_METADATA_VALUE_BYTES);
+    let (shown, marker) = value.rsplit_once(" \u{2026} ").expect("a cut text says so");
+    assert!(shown.bytes().all(|b| b == b'A'), "{shown}");
+    assert_eq!(
+        marker,
+        format!("(10000 bytes, first {} shown)", shown.len())
+    );
+}
+
+#[test]
+fn a_number_array_read_short_counts_what_the_tag_declares() {
+    // 10000 SHORT values declared, of which the value bound reads 4096: the count names 10000.
+    let mut tiff = b"II*\0".to_vec();
+    tiff.extend_from_slice(&8_u32.to_le_bytes());
+    tiff.extend_from_slice(&1_u16.to_le_bytes());
+    push_entry(&mut tiff, 0x0111, 3, 10_000, le32(8 + 2 + 12 + 4)); // StripOffsets
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    for _ in 0..10_000 {
+        tiff.extend_from_slice(&le16(7));
+    }
+    let parsed = parse(&tiff).expect("a readable TIFF");
+    let (_, value) = &parsed.fields[0];
+    assert!(value.len() <= crate::exif::MAX_METADATA_VALUE_BYTES);
+    let (shown, count) = value
+        .rsplit_once(" \u{2026} ")
+        .expect("a short read says so");
+    assert_eq!(count, "(10000 values)");
+    assert!(shown.split(", ").all(|number| number == "7"), "{shown}");
+}
+
+#[test]
+fn a_byte_value_shows_every_byte_read_and_counts_the_rest() {
+    // An UNDEFINED tag of 9000 bytes: the hex rendering shows as many as fit and names 9000.
+    let mut tiff = b"II*\0".to_vec();
+    tiff.extend_from_slice(&8_u32.to_le_bytes());
+    tiff.extend_from_slice(&1_u16.to_le_bytes());
+    push_entry(&mut tiff, 0x9286, 7, 9_000, le32(8 + 2 + 12 + 4)); // UserComment
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    tiff.resize(tiff.len() + 9_000, 0xAB);
+    let parsed = parse(&tiff).expect("a readable TIFF");
+    let (_, value) = &parsed.fields[0];
+    assert!(value.len() <= crate::exif::MAX_METADATA_VALUE_BYTES);
+    let (shown, count) = value
+        .rsplit_once(" \u{2026} ")
+        .expect("a short read says so");
+    assert_eq!(count, "(9000 bytes)");
+    assert!(
+        shown.split(' ').count() > 16,
+        "more than the old 16-byte hint: {}",
+        shown.len()
+    );
+    assert!(shown.split(' ').all(|byte| byte == "ab"), "{shown}");
+}
+
+#[test]
 fn a_long_number_array_shows_whole_numbers_and_how_many_there_are() {
     // A 4096-value SHORT array renders past the value bound: only whole numbers are shown, then
     // the count, never a number cut part way through.
