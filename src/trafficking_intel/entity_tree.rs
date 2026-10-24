@@ -233,6 +233,19 @@ mod tests {
         }
     }
     #[test]
+    fn documented_traversal_excludes_alleged_edges_without_changing_legacy_view() {
+        let mut g = graph();
+        g.edges[0].alleged = true;
+        assert_eq!(g.expand("company", 1, 10).unwrap().len(), 2);
+        assert_eq!(g.expand_documented("company", 1, 10).unwrap().len(), 1);
+        g.edges[0].alleged = false;
+        g.edges[0].kind = RelationshipKind::AllegedAssociation;
+        assert_eq!(g.expand_documented("company", 1, 10).unwrap().len(), 1);
+        g.edges[0].kind = RelationshipKind::MentionedIn;
+        assert_eq!(g.expand_documented("company", 1, 10).unwrap().len(), 2);
+    }
+
+    #[test]
     fn validates_supported_graph() {
         assert!(graph().validate().is_ok());
     }
