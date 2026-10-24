@@ -252,8 +252,7 @@ pub fn lookup<T: Transport + ?Sized>(
 /// not `ok`.
 pub fn decode(body: &[u8]) -> Result<Routing, LegError> {
     let raw: Value = api_leg::decode(body)?;
-    let envelope = Envelope::<Data>::deserialize(&raw)
-        .map_err(|e| LegError::Decode(format!("unexpected response shape: {e}")))?;
+    let envelope: Envelope<Data> = api_leg::decode_value(&raw)?;
     if envelope.status != "ok" {
         return Err(LegError::Decode(format!(
             "status is {}",
@@ -789,6 +788,15 @@ pub(crate) mod tests {
     fn a_status_other_than_ok_is_an_error() {
         assert!(decode(br#"{"status":"error","data":null}"#).is_err());
         assert!(decode(br#"{"status":"ok"}"#).is_err());
+    }
+
+    #[test]
+    fn a_mis_shaped_answer_names_no_body_value() {
+        let detail = match decode(br#"{"status":"ok","data":{"announced":"yes"}}"#) {
+            Err(error) => error.outcome(&API, 1).detail.unwrap_or_default(),
+            Ok(found) => panic!("decoded {found:?}"),
+        };
+        assert_eq!(detail, "ripestat: unexpected response shape: data error");
     }
 
     /// Recorded from `RIPEstat` for `AS13335` on 2026-10-15 (envelope fields trimmed).
