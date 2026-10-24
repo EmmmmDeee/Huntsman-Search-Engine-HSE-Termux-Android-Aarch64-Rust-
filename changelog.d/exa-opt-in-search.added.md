@@ -1,0 +1,1 @@
+Add operator-explicit `query --exa QUERY` to retrieve at most five canonical URLs as lead-only results from Exa Search, using a privately configured API key. Default and adaptive searches remain keyless and never consume Exa credits.
