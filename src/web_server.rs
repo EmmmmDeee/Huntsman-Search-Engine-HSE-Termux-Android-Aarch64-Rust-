@@ -740,7 +740,7 @@ fn handle_stream_with(
 
     let deadline = Instant::now() + REQUEST_DEADLINE;
     let waiting = std::cell::Cell::new(waiting);
-    let (request, upload) = read_request_with(&mut stream, deadline, |head| {
+    let (request, upload, unread) = read_request_with(&mut stream, deadline, |head| {
         let admitted = inspect_admits(head, config, routes);
         if admitted.is_some() {
             // An admitted upload streams its body for up to INSPECT_DEADLINE: it is busy, and an
@@ -764,7 +764,41 @@ fn handle_stream_with(
     drop(place);
     stream
         .flush()
-        .map_err(|error| Error::Store(format!("serve flush: {error}")))
+        .map_err(|error| Error::Store(format!("serve flush: {error}")))?;
+    if unread > 0 {
+        drain_unread(&mut stream, unread);
+    }
+    Ok(())
+}
+
+/// A refusal written while the client is still sending its body: a `503` for the inspection place
+/// in use, a `413` for a file over the limit, a `408` for an upload that stalled, a `403` before
+/// any body. Closing then, with unread bytes in the receive queue, makes the kernel answer the
+/// client's next segment with RST instead of FIN, and a browser that meets the reset while
+/// uploading (Firefox for Android, for one; Chrome re-reads the answer) shows a network error in
+/// place of the status that explains the refusal. So the write side is shut, which sends the FIN
+/// right after the answer, and the rest of the announced body is read and discarded: at most
+/// [`MAX_INSPECT_BYTES`], so a lying length cannot hold the connection, within the
+/// [`INSPECT_DEADLINE`] an admitted upload would have had, each read within [`IO_TIMEOUT`], so a
+/// client that stops sending ends the drain at its first timed-out read. The inspection place, if
+/// one was held, was given back before this.
+fn drain_unread(stream: &mut TcpStream, unread: usize) {
+    let _ = stream.shutdown(Shutdown::Write);
+    let deadline = Instant::now() + INSPECT_DEADLINE;
+    let mut left = unread.min(MAX_INSPECT_BYTES);
+    let mut sink = vec![0_u8; 64 * 1024];
+    while left > 0 {
+        match read_step(stream, deadline, &mut sink) {
+            Ok(Step::Read(read)) => left = left.saturating_sub(read),
+            Ok(Step::Closed | Step::TimedOut) | Err(_) => break,
+        }
+    }
+}
+
+/// How much of an announced request (`announced` bytes, head and body) is still unread after
+/// `read` bytes of it came in; nothing when no length was announced.
+fn unread_after(announced: Option<usize>, read: usize) -> usize {
+    announced.map_or(0, |announced| announced.saturating_sub(read))
 }
 
 /// When a response of `len` bytes must be written by: [`REQUEST_DEADLINE`] to start, or
@@ -805,7 +839,7 @@ fn write_within(stream: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> 
 
 #[cfg(test)]
 fn read_request(stream: &mut TcpStream, deadline: Instant) -> Result<String, Error> {
-    read_request_with(stream, deadline, |_| None).map(|(request, _)| request)
+    read_request_with(stream, deadline, |_| None).map(|(request, _, _)| request)
 }
 
 /// One read from `stream` within the time left before `deadline`.
@@ -846,15 +880,19 @@ fn read_step(stream: &mut TcpStream, deadline: Instant, buffer: &mut [u8]) -> Re
 /// Read one request. Its head and form body come back as text; when `admit` takes the head as an
 /// inspection upload (its announced length and the place it holds), the body is read whole, as
 /// raw bytes, within [`INSPECT_DEADLINE`], and the text is the head alone.
+/// The count that comes back with them is how much of the body the head announced was left unread,
+/// which the caller drains after answering, so a refusal reaches a client that is still sending.
 fn read_request_with(
     stream: &mut TcpStream,
     mut deadline: Instant,
     admit: impl Fn(&str) -> Option<(usize, Slot)>,
-) -> Result<(String, Option<Upload>), Error> {
+) -> Result<(String, Option<Upload>, usize), Error> {
     let mut bytes = Vec::with_capacity(1024);
     let mut chunk = [0_u8; 1024];
     // Once the head is in: the whole request's length, the head and the form body it announces.
     let mut whole = None;
+    // Once the head is in: the head and the whole body it announced, read or not.
+    let mut announced = None;
     // Once an upload is admitted: where its body starts, and the place it holds.
     let mut upload: Option<(usize, Slot)> = None;
 
@@ -877,14 +915,26 @@ fn read_request_with(
                     bytes.truncate(start);
                     break;
                 }
-                Step::TimedOut => return Ok(("REQUEST_TIMEOUT".into(), None)),
+                Step::TimedOut => {
+                    return Ok((
+                        "REQUEST_TIMEOUT".into(),
+                        None,
+                        unread_after(announced, bytes.len()),
+                    ));
+                }
             }
             continue;
         }
         let read = match read_step(stream, deadline, &mut chunk)? {
             Step::Read(read) => read,
             Step::Closed => break,
-            Step::TimedOut => return Ok(("REQUEST_TIMEOUT".into(), None)),
+            Step::TimedOut => {
+                return Ok((
+                    "REQUEST_TIMEOUT".into(),
+                    None,
+                    unread_after(announced, bytes.len()),
+                ));
+            }
         };
         // Only the new bytes, and the three before them, can complete the blank line that ends
         // the head: scanning the whole buffer after every read was quadratic in its length.
@@ -903,8 +953,10 @@ fn read_request_with(
                     deadline = deadline.max(Instant::now() + INSPECT_DEADLINE);
                     upload = Some((head, place));
                     whole = Some(head + length);
+                    announced = whole;
                     continue;
                 }
+                announced = Some(head + announced_body_len(&bytes[..head]));
                 whole = Some(head + form_body_len(&bytes[..head]));
             }
         }
@@ -916,17 +968,22 @@ fn read_request_with(
     if let Some((head, place)) = upload {
         // The head is moved out and the body kept in place, so the file is held once, not twice.
         let text = String::from_utf8_lossy(&bytes[..head]).into_owned();
+        let unread = unread_after(announced, bytes.len());
         bytes.drain(..head);
-        return Ok((text, Some(Upload { body: bytes, place })));
+        return Ok((text, Some(Upload { body: bytes, place }), unread));
     }
 
     if bytes.len() >= MAX_REQUEST_BYTES && !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-        return Ok(("REQUEST_TOO_LARGE".into(), None));
+        return Ok(("REQUEST_TOO_LARGE".into(), None, 0));
     }
 
     // Header values may carry bytes outside ASCII (RFC 9110 obs-text). Decoding them lossily keeps
     // such a request answerable instead of refusing it with no reply.
-    Ok((String::from_utf8_lossy(&bytes).into_owned(), None))
+    Ok((
+        String::from_utf8_lossy(&bytes).into_owned(),
+        None,
+        unread_after(announced, bytes.len()),
+    ))
 }
 
 /// Whether a request head may upload a file to inspect: `POST /api/inspect` on a server that
@@ -1001,9 +1058,18 @@ fn host_allowed(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> bool {
 /// The body to read after a request's `head`: the `Content-Length` it announces, when that is at
 /// most [`MAX_FORM_BYTES`]. A larger body is not read; the route answers without it.
 fn form_body_len(head: &[u8]) -> usize {
+    let announced = announced_body_len(head);
+    if announced <= MAX_FORM_BYTES {
+        announced
+    } else {
+        0
+    }
+}
+
+/// The body a request's `head` announces, read or not: its `Content-Length`, or nothing.
+fn announced_body_len(head: &[u8]) -> usize {
     parse_request(&String::from_utf8_lossy(head))
         .and_then(|parsed| parsed.content_length)
-        .filter(|length| *length <= MAX_FORM_BYTES)
         .unwrap_or(0)
 }
 
@@ -4645,6 +4711,58 @@ mod tests {
     /// A request the inspection would refuse is refused before its body is read, so no other
     /// page, no tokenless caller and no oversized file makes the server hold a file in memory, and
     /// the handler never runs.
+    /// A refusal written while the browser is still sending its file reaches the browser as the
+    /// answer, not as a reset. The second upload here is larger than any socket buffer, so its
+    /// writes block until the server reads or resets: the server drains the refused body after
+    /// answering, every write succeeds, and the `503` is read whole. Before, the server closed with
+    /// the body unread, the kernel answered the next segment with RST, and a browser without
+    /// Chrome's re-read of an answer after a reset showed a network error with no status.
+    #[test]
+    fn a_refusal_during_an_upload_is_read_not_reset() {
+        let (addr, calls) = inspect_server(None, "127.0.0.1:0");
+        // The one inspection place is held by an upload that has sent one byte of its ten.
+        let mut holder = TcpStream::connect(addr).unwrap();
+        holder
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        holder
+            .write_all(inspect_head("a", 10, HEADER).as_bytes())
+            .unwrap();
+        holder.write_all(&[1]).unwrap();
+        thread::sleep(Duration::from_millis(100));
+        let file = vec![9_u8; 32 * 1024 * 1024];
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        client
+            .write_all(inspect_head("b", file.len(), HEADER).as_bytes())
+            .unwrap();
+        // The refusal is on the wire before the body starts.
+        thread::sleep(Duration::from_millis(200));
+        for chunk in file.chunks(64 * 1024) {
+            client
+                .write_all(chunk)
+                .expect("the server drains the refused upload instead of resetting");
+        }
+        client.shutdown(Shutdown::Write).unwrap();
+        let mut answer = Vec::new();
+        client.read_to_end(&mut answer).unwrap();
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.starts_with("HTTP/1.1 503"), "{answer}");
+        assert!(answer.contains("already running"), "{answer}");
+        // The held place was never touched: its upload completes and is inspected.
+        holder.write_all(&[2; 9]).unwrap();
+        let mut done = Vec::new();
+        let _ = holder.read_to_end(&mut done);
+        let done = String::from_utf8_lossy(&done);
+        assert!(done.starts_with("HTTP/1.1 200"), "{done}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn an_inspection_is_refused_before_its_body_is_read() {
         // Each refused head announces the largest upload and is sent alone, its write side left
