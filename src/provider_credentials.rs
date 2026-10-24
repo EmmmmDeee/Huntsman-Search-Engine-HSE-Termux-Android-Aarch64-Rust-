@@ -372,9 +372,15 @@ pub const PROVIDERS: &[Provider] = &[
         slots: &[crate::environment::OPENCELLID_KEY_ENV],
     },
     Provider {
-        name: "Censys",
-        get_key_url: "https://platform.censys.io/account/api",
-        free_tier: "free: 250 req/month",
+        name: "Censys Platform",
+        get_key_url: "https://platform.censys.io/",
+        free_tier: "free accounts: host lookup; v3 Personal Access Token, wallet limits apply",
+        slots: &[crate::environment::CENSYS_TOKEN_ENV],
+    },
+    Provider {
+        name: "Censys Legacy",
+        get_key_url: "https://platform.censys.io/",
+        free_tier: "legacy ID/secret only; not accepted by the v3 API",
         slots: &[
             crate::environment::CENSYS_ID_ENV,
             crate::environment::CENSYS_SECRET_ENV,
@@ -396,7 +402,7 @@ const CREDENTIAL_ONLY_PROVIDERS: &[&str] = &[
     "Exa",
     "OpenRouter",
     "Google Gemini",
-    "Censys",
+    "Censys Legacy",
 ];
 
 /// Declared key slots without a currently implemented lookup leg.
