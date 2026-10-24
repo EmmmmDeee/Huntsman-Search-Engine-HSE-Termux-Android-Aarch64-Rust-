@@ -709,11 +709,10 @@ fn a_path_failure_carries_the_kind_the_fetch_saw() {
     assert_eq!(first.path, "snusbase");
     assert_eq!(first.kind, SourceOutcomeKind::DnsFailure);
     assert!(first.kind.is_transport_failure());
-    assert!(
-        first.reason.starts_with("no response (DnsFailure)"),
-        "{}",
-        first.reason
-    );
+    // The cascade's first request was capped at `TIMEOUT` less the microseconds already spent,
+    // which shortened nothing the note could show: the reason is the failure alone, never
+    // `request capped at 120.0s, the rest of the 120s lookup budget`.
+    assert_eq!(first.reason, "no response (DnsFailure)");
 
     // Evidence from one path while the others fail each in its own way: the source answered
     // 503 on one (`Upstream5xx`) and a 2xx that is no usable envelope on the other
