@@ -460,10 +460,7 @@ fn distinct_long_values_with_identical_visible_prefixes_are_counted() {
     assert_eq!(parsed.values_omitted, 1);
     let shown = field(&parsed, "png:Hist").expect("one bounded field");
     assert!(shown.contains("12001 bytes"), "{shown}");
-    assert!(
-        shown.ends_with(" (1 more value(s) not kept)"),
-        "{shown}"
-    );
+    assert!(shown.ends_with(" (1 more value(s) not kept)"), "{shown}");
 }
 
 #[test]
