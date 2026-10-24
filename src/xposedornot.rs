@@ -177,6 +177,11 @@ mod tests {
             decode(br#"{"Error":"Not found","email":null}"#),
             Ok(None)
         ));
+        // Breaches beside a miss's `Error` are still breaches, never hidden as a miss.
+        assert!(matches!(
+            decode(br#"{"breaches":[["A"]],"Error":"Not found"}"#),
+            Ok(Some(f)) if f.tags == [tags::BREACH]
+        ));
         assert!(matches!(
             decode(br#"{"status":"x"}"#),
             Err(LegError::Decode(_))

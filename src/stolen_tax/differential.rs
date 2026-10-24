@@ -162,9 +162,10 @@ fn port_matches_the_legacy_stolen_tax_output_modulo_the_guard() {
         assert_eq!(failed, legacy_failed, "{name}: failed paths");
 
         let mut legacy_kept = Vec::new();
+        let mut case_drops = 0;
         for e in want["entities"].as_array().unwrap() {
             if guard_dropped(e) {
-                guard_drops += 1;
+                case_drops += 1;
                 continue;
             }
             let kind = kind_of(e["kind"].as_str().unwrap());
@@ -177,6 +178,10 @@ fn port_matches_the_legacy_stolen_tax_output_modulo_the_guard() {
                 ));
             }
         }
+        // In these fixtures each placeholder the guard drops stood for one row that
+        // carried an identity and named no corpus or host; the port counts that row.
+        assert_eq!(report.unnamed_rows, case_drops, "{name}: unnamed rows");
+        guard_drops += case_drops;
         let mut ported = Vec::new();
         for e in &report.entities {
             let mut tags = e.tags.clone();

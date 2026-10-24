@@ -263,6 +263,7 @@ fn a_host_is_a_canonical_name_and_never_a_reverse_zone_or_wildcard_name() {
         "a%b.example.com",
         "130.251.184.91.in-addr.arpa",
         "x.in-addr.ARPA.",
+        "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa",
         "arpa.",
         "com",
         "",

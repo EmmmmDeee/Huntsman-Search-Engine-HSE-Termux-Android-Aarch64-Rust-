@@ -840,9 +840,21 @@ fn stolen_tax_leg(
             let found = got.entities.len();
             report.entities.extend(got.entities);
             let outcome = SourceExecutionOutcome::success(STOLEN_TAX_SOURCE, now_unix, found);
-            match got.truncation {
-                Some(why) => outcome.with_detail(format!("partial: {why}")),
-                None => outcome,
+            let mut notes: Vec<String> = got
+                .truncation
+                .into_iter()
+                .map(|why| format!("partial: {why}"))
+                .collect();
+            if got.unnamed_rows > 0 {
+                notes.push(format!(
+                    "{} row(s) name no breach or stealer host",
+                    got.unnamed_rows
+                ));
+            }
+            if notes.is_empty() {
+                outcome
+            } else {
+                outcome.with_detail(notes.join("; "))
             }
         }
         Err(err) => {
@@ -2054,6 +2066,76 @@ mod tests {
                 .push(request.url.clone());
             Ok(crate::test_support::json_ok(&self.body))
         }
+    }
+
+    /// Gives stolen.tax's `snusbase` path no response and answers every other request with one
+    /// 200 JSON body.
+    struct SnusbaseDown(&'static str);
+
+    impl Transport for SnusbaseDown {
+        fn send(
+            &self,
+            request: &crate::http::Request,
+        ) -> Result<crate::http::Response, crate::http::TransportFailure> {
+            if request.url.ends_with("path=snusbase") {
+                return Err(crate::http::TransportFailure {
+                    kind: SourceOutcomeKind::ConnectFailure,
+                    detail: "no route".into(),
+                    blocked: false,
+                });
+            }
+            Ok(crate::test_support::json_ok(self.0))
+        }
+    }
+
+    /// A stolen.tax row that restates the searched handle and names no breach mints nothing,
+    /// but its row says stolen.tax matched, beside the partial note when a path failed.
+    #[test]
+    fn a_stolen_tax_row_that_names_no_breach_is_noted_on_its_row() {
+        let body = r#"{"success":true,"data":{"breach_data":[{"username":"ada_99"}]}}"#;
+        let keys = Keys::parse(&format!(
+            "{}=st-test-key-0123456789abcdef\n",
+            stolen_tax::KEY_SLOT
+        ))
+        .unwrap_or_else(|e| panic!("fixture keys: {e}"));
+        let row = |transport: &(dyn Transport + Sync)| {
+            let sources = Sources {
+                stolen_tax: Some((transport, &keys)),
+                ..Sources::default()
+            };
+            let ExposureRun::Printed { report, .. } = run(sources, "ada.99", 7) else {
+                panic!("expected a printed report");
+            };
+            report
+                .outcomes
+                .into_iter()
+                .find(|o| o.module == STOLEN_TAX_SOURCE)
+                .unwrap_or_else(|| panic!("no stolen.tax row"))
+        };
+
+        let every_path = FakeHibp {
+            body: body.into(),
+            urls: std::sync::Mutex::default(),
+        };
+        let answered = row(&every_path);
+        assert_eq!(
+            (answered.kind, answered.found, answered.detail.as_deref()),
+            (
+                SourceOutcomeKind::Inconclusive,
+                Some(0),
+                Some("1 row(s) name no breach or stealer host")
+            )
+        );
+
+        let partial = row(&SnusbaseDown(body));
+        assert_eq!(partial.kind, SourceOutcomeKind::Inconclusive);
+        let detail = partial.detail.unwrap_or_default();
+        assert!(
+            detail.starts_with(
+                "partial: 0 retrieved — stopped by the stolen.tax `snusbase` path(s) failing"
+            ) && detail.ends_with("; 1 row(s) name no breach or stealer host"),
+            "{detail}"
+        );
     }
 
     /// Runs `exposure` for one fixed address against a fake HIBP that answers `breaches`, with

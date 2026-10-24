@@ -360,6 +360,14 @@ fn a_refused_key_is_reported_and_the_other_legs_still_answer() {
         outcome(&report, "virustotal"),
         SourceOutcomeKind::RateLimited
     );
+    // Mnemonic has no route here: its failure is one row, not one per way it is reported.
+    let mnemonic: Vec<_> = report
+        .outcomes
+        .iter()
+        .filter(|o| o.module == "mnemonic")
+        .collect();
+    assert_eq!(mnemonic.len(), 1, "{mnemonic:?}");
+    assert_eq!(mnemonic[0].kind, SourceOutcomeKind::ConnectFailure);
     assert!(!text.contains(ABUSE_KEY) && !text.contains(VT_KEY));
 }
 
