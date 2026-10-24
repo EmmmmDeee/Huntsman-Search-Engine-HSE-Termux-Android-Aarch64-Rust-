@@ -63,8 +63,6 @@ type Answer = Result<Option<Finding>, crate::api_leg::LegError>;
 pub struct Legs {
     pub entities: Vec<Entity>,
     pub outcomes: Vec<SourceExecutionOutcome>,
-    /// The first "no response" failure, for a front-end that got nothing else.
-    pub network: Option<String>,
 }
 
 /// The sources that run for `indicator` with `keys`, in order. **Pure.**
@@ -123,13 +121,9 @@ pub fn run<T: Transport + ?Sized>(
             Ok(None) => legs
                 .outcomes
                 .push(SourceExecutionOutcome::valid_zero(api.source, now_unix)),
-            Err(err) => {
-                if let crate::api_leg::LegError::Transport(_) = err {
-                    legs.network
-                        .get_or_insert_with(|| format!("{}: {err}", api.source));
-                }
-                legs.outcomes.push(err.outcome(api, now_unix));
-            }
+            // The failed row carries the cause (a refusal, a transport failure); the front-end
+            // reads it like any other row through `SourceReach`, so no side channel is kept.
+            Err(err) => legs.outcomes.push(err.outcome(api, now_unix)),
         }
     }
     legs
@@ -280,7 +274,11 @@ mod tests {
                 "phishstats"
             ]
         );
-        assert!(legs.network.is_some());
+        // Every leg failed without a response (`Offline`), and the cause is in the rows, where the
+        // front-end reads it through `SourceReach` — the deleted `network` side channel used to
+        // carry it.
+        assert!(legs.outcomes.iter().all(|o| !o.kind.is_accepted()));
+        assert!(legs.outcomes.iter().any(|o| o.kind.is_transport_failure()));
         assert_eq!(transport.0.lock().map_or(0, |v| v.len()), 11);
     }
 
