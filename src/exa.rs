@@ -15,6 +15,7 @@ use crate::keys::Keys;
 
 pub const SOURCE: &str = "exa";
 pub const URL: &str = "https://api.exa.ai/search";
+/// Keep the low-cost Exa Lite request within the first base-priced result batch.
 pub const MAX_RESULTS: usize = 5;
 pub const MAX_QUERY_BYTES: usize = 512;
 
@@ -50,7 +51,7 @@ pub fn search<T: Transport + ?Sized>(
     }
     let body = json!({
         "query": query.trim(),
-        "type": "auto",
+        "type": "lite",
         "numResults": MAX_RESULTS
     });
     match api_leg::post_json(transport, &API, keys, URL, &body, now_unix)? {
@@ -155,6 +156,7 @@ mod tests {
             Some("TEST_ONLY_EXA_TOKEN")
         );
         assert!(String::from_utf8_lossy(&requests[0].body).contains("\"numResults\":5"));
+        assert!(String::from_utf8_lossy(&requests[0].body).contains("\"type\":\"lite\""));
         assert!(!String::from_utf8_lossy(&requests[0].body).contains("TEST_ONLY_EXA_TOKEN"));
     }
 
