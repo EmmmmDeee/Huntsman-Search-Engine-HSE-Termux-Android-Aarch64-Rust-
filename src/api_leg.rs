@@ -88,7 +88,7 @@ impl Api {
             None => true,
             Some(key) => {
                 !key.required
-                    || crate::provider_credentials::secret_for_slot(keys, key.slot).is_some()
+                    || keys.provider_key(key.slot).is_some()
             }
         }
     }
@@ -272,7 +272,7 @@ fn send<T: Transport + ?Sized>(
 ) -> Result<Answer, LegError> {
     let secret = match api.key {
         None => None,
-        Some(key) => match crate::provider_credentials::secret_for_slot(keys, key.slot) {
+        Some(key) => match keys.provider_key(key.slot) {
             Some(secret) => Some((key, secret)),
             None if key.required => return Err(LegError::MissingKey(key.slot)),
             None => None,
