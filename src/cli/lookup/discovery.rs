@@ -18,6 +18,13 @@ use huntsman_recon::source_registry::routes_for;
 use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::web_query;
 
+/// The actionable entities in `text`, each with the classifier's evidence, as `investigate`
+/// prints them and `POST /api/investigate` answers them: one authority for both.
+pub(in crate::cli) fn investigate_entities(text: &str) -> Vec<entity::Entity> {
+    let scan_id = entity::scan_id("investigate", text);
+    classifier::extract_entities(text, &scan_id)
+}
+
 pub(in crate::cli) fn investigate_cmd(args: &[String]) -> ExitCode {
     if args.is_empty() {
         return fail(
@@ -47,8 +54,7 @@ pub(in crate::cli) fn investigate_cmd(args: &[String]) -> ExitCode {
         args.join(" ")
     };
 
-    let scan_id = entity::scan_id("investigate", &text);
-    let entities = classifier::extract_entities(&text, &scan_id);
+    let entities = investigate_entities(&text);
     println!("entities={}", entities.len());
     for entity in &entities {
         println!("{}", entity_row(entity, &entity.raw_value));

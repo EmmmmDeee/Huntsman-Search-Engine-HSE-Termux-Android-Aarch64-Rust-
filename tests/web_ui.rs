@@ -33,8 +33,10 @@ const PAGE: &str = include_str!("../src/web_ui.html");
 /// reader's claim with its recording time and the full report, and bulk actions that name their
 /// failures instead of stopping at the first. Raised to 124 KiB for the Analysis tab and the
 /// Source attribution view: two read-only routes the server already answered that the page had
-/// no control for, so a phone user could not reach them.
-const PAGE_BUDGET: usize = 128 * 1024;
+/// no control for, so a phone user could not reach them. Raised to 132 KiB for the Analyze tab's
+/// Extract seeds control: the `investigate` command's text extraction, which only a Termux shell
+/// could reach before; the browser check's timings for the page are in its metrics.
+const PAGE_BUDGET: usize = 132 * 1024;
 /// WCAG 2.2 AA for text under 18.66 px bold or 24 px: the page has none larger.
 const AA: f64 = 4.5;
 /// WCAG 2.2 AA for a graphical object a reader must see (1.4.11), such as a graph node.
@@ -906,6 +908,33 @@ fn stop_is_offered_exactly_while_the_api_calls_a_scan_active() {
     // Every action, Stop included, is one POST to the scan's own route.
     assert!(
         script.contains("const r=await api('/api/scans/'+enc(id)+'/'+action,{method:'POST'});")
+    );
+}
+
+/// The Analyze tab extracts seeds from pasted text through `POST /api/investigate`, the
+/// `investigate` command's route: the text goes in the body (never a URL), what is found joins
+/// the seeds textarea without duplicates, and each entity is listed with the signal that found it.
+#[test]
+fn the_analyze_tab_extracts_seeds_from_pasted_text() {
+    let script = inline("script");
+    assert!(PAGE.contains(r#"<form class="row" id="investigate">"#));
+    assert!(PAGE.contains(r#"<textarea id="txtext" rows="4" maxlength="20000""#));
+    assert!(
+        PAGE.contains(r#"<button class="btn" id="txrun" type="submit">Extract seeds</button>"#)
+    );
+    assert!(PAGE.contains(r#"<tbody id="txentities"></tbody>"#));
+    assert!(script.contains(
+        "const r=await api('/api/investigate',{method:'POST',body:text}),es=r.entities||[];"
+    ));
+    assert!(script.contains(
+        "const have=new Set($('seeds').value.split('\\n').map(s=>s.trim()).filter(Boolean));"
+    ));
+    assert!(script.contains("for(const e of es)have.add(e.value);"));
+    assert!(script.contains("$('seeds').value=[...have].join('\\n');"));
+    assert!(script.contains("fill('txentities',es,e=>[e.kind,e.value,e.confidence==null?'':Number(e.confidence).toFixed(2),(e.evidence||[]).map(x=>x.attributes&&x.attributes.signal||'').filter(Boolean).join(' ')]);"));
+    assert!(
+        !script.contains("/api/investigate?"),
+        "the text must not travel in a URL"
     );
 }
 
