@@ -56,10 +56,12 @@ pub fn automatic_clusters(
         .collect()
 }
 
-/** Project adjudicated lineage outcomes into deterministic identity clusters.
+/** Project lineage outcomes into deterministic identity clusters.
  *
- * This read-only projection does not re-evaluate or relax the lineage
- * independence gate. Held-only identities remain visible as singletons.
+ * Stored resolutions are deserializable and their outcome fields can be altered.
+ * Recompute decisions using the existing lineage authority before accepting an
+ * `AutoMerge`; never promote an originally held candidate. Invalid inputs yield
+ * singleton clusters rather than unverified unions.
  */
 #[must_use]
 pub fn clusters_from_lineage(resolution: &crate::lineage::Resolution) -> Vec<ResolutionCluster> {
@@ -80,10 +82,34 @@ pub fn clusters_from_lineage(resolution: &crate::lineage::Resolution) -> Vec<Res
         .enumerate()
         .map(|(i, id)| (*id, i))
         .collect::<std::collections::BTreeMap<_, _>>();
+    // Never trust an AutoMerge flag from a saved or caller-built Resolution.
+    // The existing lineage evaluator remains the only merge authority.
+    let adjudicated = crate::lineage::resolve_with_lineage(
+        resolution
+            .observations
+            .iter()
+            .map(|item| item.observation.clone())
+            .collect(),
+        resolution
+            .candidates
+            .iter()
+            .map(|item| item.decision.clone())
+            .collect(),
+        resolution.policy,
+    )
+    .ok();
     let mut uf = UnionFind::new(ids.len());
     let mut approved = Vec::new();
-    for candidate in &resolution.candidates {
-        if !matches!(candidate.outcome, crate::lineage::MergeOutcome::AutoMerge) {
+    for (position, candidate) in resolution.candidates.iter().enumerate() {
+        let independently_approved = adjudicated
+            .as_ref()
+            .and_then(|result| result.candidates.get(position))
+            .is_some_and(|checked| {
+                matches!(checked.outcome, crate::lineage::MergeOutcome::AutoMerge)
+            });
+        if !matches!(candidate.outcome, crate::lineage::MergeOutcome::AutoMerge)
+            || !independently_approved
+        {
             continue;
         }
         let left = index[candidate.decision.left_entity_uid.as_str()];
@@ -193,7 +219,34 @@ mod tests {
     }
 
     #[test]
-    fn lineage_projection_preserves_held_candidates() {
+    fn lineage_projection_retains_revalidated_approved_merge() {
+        use crate::entity::{Evidence, EvidenceProvenance};
+        use crate::lineage::{Observation, resolve_with_lineage};
+
+        let observation = Observation {
+            id: EvidenceNodeId("registry".into()),
+            evidence: Evidence::new(EvidenceProvenance::new("hibp"), "record")
+                .with_attr("breach", "Adobe"),
+        };
+        let mut candidate = decision("a", "b");
+        candidate.supporting = vec![EvidenceNodeId("registry".into())];
+        let policy = AutoMergePolicy {
+            min_independent_support_families: 1,
+            ..AutoMergePolicy::default()
+        };
+        let resolution = resolve_with_lineage(vec![observation], vec![candidate], policy).unwrap();
+        assert!(matches!(
+            resolution.candidates[0].outcome,
+            crate::lineage::MergeOutcome::AutoMerge
+        ));
+        let clusters = clusters_from_lineage(&resolution);
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].members, ["a", "b"]);
+        assert_eq!(clusters[0].decision_count, 1);
+    }
+
+    #[test]
+    fn lineage_projection_rejects_unsubstantiated_auto_merge() {
         use crate::lineage::{CandidateOutcome, MergeOutcome, Resolution};
         let accepted = CandidateOutcome {
             decision: decision("b", "a"),
@@ -213,10 +266,10 @@ mod tests {
             candidates: vec![held, accepted],
         };
         let clusters = clusters_from_lineage(&resolution);
-        assert_eq!(clusters.len(), 2);
-        assert_eq!(clusters[0].members, ["a", "b"]);
-        assert_eq!(clusters[0].decision_count, 1);
-        assert_eq!(clusters[1].members, ["c"]);
-        assert_eq!(clusters[1].decision_count, 0);
+        assert_eq!(clusters.len(), 3);
+        assert_eq!(clusters[0].members, ["a"]);
+        assert_eq!(clusters[1].members, ["b"]);
+        assert_eq!(clusters[2].members, ["c"]);
+        assert!(clusters.iter().all(|cluster| cluster.decision_count == 0));
     }
 }
