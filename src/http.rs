@@ -378,12 +378,7 @@ fn reserve_resolver_worker(
         if count >= capacity {
             return None;
         }
-        match active.compare_exchange_weak(
-            count,
-            count + 1,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
+        match active.compare_exchange_weak(count, count + 1, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => return Some(ResolverWorkerSlot(active)),
             Err(observed) => count = observed,
         }
