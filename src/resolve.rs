@@ -267,10 +267,9 @@ mod tests {
         };
         let clusters = clusters_from_lineage(&resolution);
         assert_eq!(clusters.len(), 3);
-        assert_eq!(
-            clusters.iter().map(|c| c.members.as_slice()).collect::<Vec<_>>(),
-            vec![&["a".to_owned()][..], &["b".to_owned()][..], &["c".to_owned()][..]]
-        );
+        assert_eq!(clusters[0].members, ["a"]);
+        assert_eq!(clusters[1].members, ["b"]);
+        assert_eq!(clusters[2].members, ["c"]);
         assert!(clusters.iter().all(|cluster| cluster.decision_count == 0));
     }
 }
