@@ -209,6 +209,28 @@ fn detail(rows: &[SourceExecutionOutcome], source: &str) -> String {
     row(rows, source).detail.clone().unwrap_or_default()
 }
 
+/// A blocked egress refuses every filter before sending, over `DoH` (`send`) and UDP
+/// (`exchange_udp`) alike: each row is `refused_before_sending`, not `valid_zero` or a transport
+/// failure, and the refusal never aborts the fan-out.
+#[test]
+fn a_blocked_egress_refuses_every_filter_before_sending() {
+    let net = crate::test_support::Refusing;
+    let (entities, rows) = check(
+        &net,
+        "example.com",
+        &Unfiltered::ask(&net, "example.com"),
+        "s",
+        1,
+    );
+    assert!(entities.is_empty());
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter()
+            .all(|row| row.kind == SourceOutcomeKind::RefusedBeforeSending),
+        "{rows:#?}"
+    );
+}
+
 const SECURITY: &str = "security.cloudflare-dns.com/dns-query";
 const FAMILY: &str = "family.cloudflare-dns.com/dns-query";
 const ADGUARD: &str = "dns.adguard-dns.com/dns-query";

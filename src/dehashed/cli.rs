@@ -306,6 +306,7 @@ fn save_artifact(
         CollectorError::UnsupportedSelector(_)
         | CollectorError::InvalidSelector(_)
         | CollectorError::Invariant(_)
+        | CollectorError::Refused(_)
         | CollectorError::Execution(_) => Failure {
             code: EX_DATAERR,
             message: format!("dehashed: {error}"),

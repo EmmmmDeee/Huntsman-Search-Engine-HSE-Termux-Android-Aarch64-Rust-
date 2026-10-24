@@ -26,7 +26,7 @@ use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::rdap_legs;
 use crate::ripestat::{self, AsOverview, Neighbours, Prefixes};
-use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
 
 pub const ASN_USAGE: &str = "usage: huntsman-recon asn AS-NUMBER [--save FILE]";
 pub const ASN_HELP: &str = "\
@@ -223,7 +223,14 @@ fn routing_entities(
         .find(|(_, error)| matches!(error, LegError::Transport(_)))
         .map(|(call, error)| format!("{} {call}: {error}", ripestat::SOURCE));
     let outcome = match failures.first() {
-        Some((_, error)) if failures.len() == 3 => {
+        Some(first) if failures.len() == 3 => {
+            // Every call failed: this one row is refused only when all three were refused, so it
+            // takes the first failure that was not a refusal, else the first. Reading the kind (not
+            // the `LegError` variant) is what the phase-5 token rule relies on.
+            let &(_, error) = failures
+                .iter()
+                .find(|(_, error)| error.outcome_kind() != SourceOutcomeKind::RefusedBeforeSending)
+                .unwrap_or(first);
             error.outcome(&ripestat::API, now_unix).with_detail(detail)
         }
         _ if found == 0 => SourceExecutionOutcome::valid_zero(ripestat::SOURCE, now_unix)

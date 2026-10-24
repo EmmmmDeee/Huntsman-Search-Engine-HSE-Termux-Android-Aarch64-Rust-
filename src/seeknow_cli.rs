@@ -196,6 +196,10 @@ fn run_search<T: Transport + ?Sized>(
             Err(crate::collector::CollectorError::UnsupportedSelector(_)) => {
                 return SeekNowCliRun::Usage;
             }
+            // A request refused before sending is a refusal (exit 77), not an unavailable source.
+            Err(crate::collector::CollectorError::Refused(message)) => {
+                return SeekNowCliRun::NoPerm(message);
+            }
             Err(error) => return SeekNowCliRun::Unavailable(error.to_string()),
         };
 
@@ -318,5 +322,43 @@ fn result_text_mut(result: &mut SeekNowCliRun) -> Option<&mut String> {
         | SeekNowCliRun::NoPerm(text)
         | SeekNowCliRun::Unavailable(text) => Some(text),
         SeekNowCliRun::Usage => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every HTTP send is refused before leaving the host.
+    struct Blocked;
+
+    impl Transport for Blocked {
+        fn send(
+            &self,
+            _: &crate::http::Request,
+        ) -> Result<crate::http::Response, crate::http::TransportFailure> {
+            Err(crate::http::TransportFailure {
+                kind: SourceOutcomeKind::ConnectFailure,
+                detail: "egress-policy: destination (0.0.0.0) is not publicly routable".into(),
+                blocked: true,
+            })
+        }
+    }
+
+    /// A `seeknow search` the egress refuses before sending is a permission failure (exit 77),
+    /// not the unavailable source (exit 69) it used to read as.
+    #[test]
+    fn a_search_refused_before_sending_is_a_permission_failure() {
+        let keys = Keys::parse("HUNTSMAN_SEEKNOW_KEY=dummy-seeknow-key-for-tests\n")
+            .unwrap_or_else(|error| panic!("fixture keys: {error}"));
+        let credential =
+            credential_from_keys(&keys, 1).unwrap_or_else(|error| panic!("credential: {error}"));
+        let args = ["email".to_owned(), "ada@example.com".to_owned()];
+        match run_search(&Blocked, &credential, &args, 1) {
+            SeekNowCliRun::NoPerm(message) => {
+                assert!(message.contains("egress-policy"), "{message}");
+            }
+            other => panic!("expected a refusal (NoPerm, exit 77), got {other:?}"),
+        }
     }
 }
