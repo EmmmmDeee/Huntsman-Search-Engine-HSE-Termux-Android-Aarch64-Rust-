@@ -11,8 +11,8 @@ use serde_json::Value;
 
 pub const MAX_DOSSIER_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Inline CSS hash is included in the dossier page's dedicated CSP by web_server.
-pub const STYLE: &str = r#"
+/// Inline CSS hash is included in the dossier page's dedicated CSP by `web_server`.
+pub const STYLE: &str = r"
 :root{color-scheme:dark light;font-family:system-ui,Arial,sans-serif;background:#0c1118;color:#e1e8ef}
 *{box-sizing:border-box}body{margin:0;line-height:1.55;font-size:15px}
 a{color:#64d1ff;overflow-wrap:anywhere}a:focus-visible{outline:2px solid #64d1ff}
@@ -28,7 +28,7 @@ code{font-size:.9em;overflow-wrap:anywhere}small,.muted{color:#c5d1dc}
 .warning{border-left:4px solid #e4b75c;padding:10px 14px;background:#29251a}
 @media(max-width:650px){header,main,footer{padding:12px}dl{display:block}dt{margin-top:9px}dd{padding-left:7px}article{padding:11px}}
 @media(prefers-color-scheme:light){:root{background:#f7f9fc;color:#162030}article{background:#fff;border-color:#b3c2d1}dt,small,.muted{color:#3d536b}h2,header{border-color:#c9d4df}a{color:#055b8a}.summary span{background:#eef3f9;border-color:#bdcddd}nav a{border-color:#a8b8ca}.warning{background:#fff4de}}
-"#;
+";
 
 const GROUPS: [(&str, &str); 6] = [
     ("claims", "Evidence claims"),
@@ -130,8 +130,7 @@ fn field(out: &mut String, key: &str, value: &Value, ids: &BTreeSet<&str>) {
     let _ = write!(out, "<dt>{}</dt><dd>", escape(&readable(key)));
     let value = value
         .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| value.to_string());
+        .map_or_else(|| value.to_string(), str::to_owned);
     if key == "url" && (value.starts_with("https://") || value.starts_with("http://")) {
         let val = escape(&value);
         let _ = write!(
