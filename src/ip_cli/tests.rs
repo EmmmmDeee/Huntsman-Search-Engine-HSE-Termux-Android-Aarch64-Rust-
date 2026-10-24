@@ -398,10 +398,11 @@ fn a_non_public_address_is_refused_before_any_request() {
 fn no_network_at_all_fails_and_a_refusal_is_a_network_refusal() {
     let transport = Routes::new(Vec::new());
     match run(&transport, &Keys::default(), "8.8.8.8", 1) {
-        IpRun::Failed(message) => assert_eq!(
-            message,
-            "no source answered for ip 8.8.8.8: mnemonic: no response (ConnectFailure)"
-        ),
+        // The reason is now the first transport-failure row in row order (PTR, then RDAP, then
+        // Mnemonic), read by SourceReach, not Mnemonic's as a side channel.
+        IpRun::Failed(message) => {
+            assert_eq!(message, "no source answered for ip 8.8.8.8: rdap: no route");
+        }
         IpRun::Network(message) => panic!("network: {message}"),
         IpRun::Printed { text, .. } => panic!("printed: {text}"),
     }
@@ -409,7 +410,7 @@ fn no_network_at_all_fails_and_a_refusal_is_a_network_refusal() {
     match run(&Refusing, &Keys::default(), "8.8.8.8", 1) {
         IpRun::Network(message) => {
             assert!(
-                message.starts_with("mnemonic: request refused"),
+                message.starts_with("dnsresolve: no resolver answered the PTR query: refused:"),
                 "{message}"
             );
         }

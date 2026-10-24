@@ -344,13 +344,14 @@ fn crtsh_leg<T: Transport + ?Sized>(
             format!("crtsh: {count} certificate-transparency entities")
         }
         Err(CrtShError::Refused(reason)) => {
-            found.refused(format!("crtsh: request refused: {reason}"));
+            let detail = format!("crtsh: request refused: {reason}");
+            found.refused(detail.clone());
             found.outcomes.push(SourceExecutionOutcome::failed(
                 CRTSH_SOURCE,
                 now_unix,
-                SourceOutcomeKind::EntitlementDenied,
+                SourceOutcomeKind::RefusedBeforeSending,
                 None,
-                &reason,
+                detail,
             ));
             format!("crtsh: refused ({reason})")
         }
@@ -467,10 +468,17 @@ fn resolver_failure(records: &DomainDns) -> Option<&dns::QueryFailure> {
     if !records.answers.is_empty() {
         return None;
     }
-    records
-        .failures
-        .iter()
-        .find(|failure| failure.error.kind != ResolveErrorKind::Empty)
+    // Among the failures that are not the zone's own "no record", the DNS leg is refused only when
+    // every one was refused, so take the first that was not refused, else the first.
+    let answered = || {
+        records
+            .failures
+            .iter()
+            .filter(|failure| failure.error.kind != ResolveErrorKind::Empty)
+    };
+    answered()
+        .find(|failure| failure.error.kind != ResolveErrorKind::Refused)
+        .or_else(|| answered().next())
 }
 
 /// The DNS leg's outcome. `found` counts the records the zone returned. A zone that answered
@@ -1612,6 +1620,32 @@ mod tests {
             DomainRun::Printed { text, .. } => panic!("printed: {text}"),
             DomainRun::Failed(message) => panic!("failed: {message}"),
         }
+    }
+
+    /// crt.sh refused before sending is a `refused_before_sending` row whose detail names the
+    /// refusal, not the `entitlement_denied` it used to read as.
+    #[test]
+    fn a_refused_crtsh_leg_is_a_refused_before_sending_row() {
+        let mut found = Found::default();
+        let line = crtsh_leg(&Refusing, "example.com", "scan", 1, &mut found);
+        assert!(line.starts_with("crtsh: refused ("), "{line}");
+        assert_eq!(found.outcomes.len(), 1);
+        assert_eq!(
+            found.outcomes[0].kind,
+            SourceOutcomeKind::RefusedBeforeSending
+        );
+        assert!(
+            found.outcomes[0]
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.starts_with("crtsh: request refused: ")),
+            "{:?}",
+            found.outcomes[0].detail
+        );
+        assert_eq!(
+            found.refused.as_deref(),
+            found.outcomes[0].detail.as_deref()
+        );
     }
 
     /// A name in a namespace with registrant rules carries them, offline, beside what the

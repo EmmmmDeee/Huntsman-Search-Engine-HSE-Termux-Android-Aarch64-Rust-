@@ -206,6 +206,61 @@ fn a_failed_call_is_named_and_the_rest_still_reported() {
     );
 }
 
+/// The one `ripestat` row is refused before sending only when every call was refused; a call that
+/// reached a server and then failed wins over a held refusal, so the source is not mislabelled as
+/// refused. This locks the first-non-refusal selection in `routing_entities`.
+#[test]
+fn the_ripestat_row_is_refused_only_when_every_call_was_refused() {
+    let refused =
+        || crate::api_leg::LegError::Refused("network: egress-policy: blocked".to_owned());
+
+    // Every call refused before sending: the one row is a refusal.
+    let all_refused = Routing {
+        overview: Err(refused()),
+        prefixes: Err(refused()),
+        neighbours: Err(refused()),
+    };
+    let mut report = Report::default();
+    routing_entities(&mut report, "AS13335", "scan", &all_refused, 1);
+    assert_eq!(report.outcomes.len(), 1);
+    assert_eq!(
+        report.outcomes[0].kind,
+        SourceOutcomeKind::RefusedBeforeSending
+    );
+
+    // One call reached a server (HTTP 503) beside two refusals: the row keeps the reached-server
+    // kind, because the source was reachable.
+    let mixed = Routing {
+        overview: Err(refused()),
+        prefixes: Err(crate::api_leg::LegError::Server(503)),
+        neighbours: Err(refused()),
+    };
+    let mut report = Report::default();
+    routing_entities(&mut report, "AS13335", "scan", &mixed, 1);
+    assert_eq!(report.outcomes.len(), 1);
+    assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Upstream5xx);
+}
+
+/// When no call answered, the lookup ends from its one ripestat row (and the RDAP row) through
+/// `SourceReach`: a request refused before sending is a refusal (exit 77), and no response at
+/// all is "no usable response" (exit 69) with the first reason in row order.
+#[test]
+fn no_source_answered_is_a_refusal_or_no_response_from_its_rows() {
+    match run(&crate::test_support::Refusing, "AS13335", 1) {
+        AsnRun::Network(message) => assert!(message.contains("egress-policy"), "{message}"),
+        AsnRun::Failed(message) => panic!("failed: {message}"),
+        AsnRun::Printed { text, .. } => panic!("printed: {text}"),
+    }
+    match run(&RoutedTransport::new(&[]), "AS13335", 1) {
+        AsnRun::Failed(message) => assert!(
+            message.starts_with("no source answered for AS13335: "),
+            "{message}"
+        ),
+        AsnRun::Network(message) => panic!("network: {message}"),
+        AsnRun::Printed { text, .. } => panic!("printed: {text}"),
+    }
+}
+
 /// Answers as [`registry`] does, except that the call whose path holds `.1` panics.
 struct PanicsOn(RoutedTransport, String);
 

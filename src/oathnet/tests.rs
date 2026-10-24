@@ -445,11 +445,16 @@ fn an_empty_success_is_a_zero_and_a_failure_envelope_is_not() {
         format!(r#"{{"success": false, "message": "Invalid API key {KEY}\u0007"}}"#).as_bytes(),
         &[KEY],
     );
-    let Err(OathnetError::Provider(words)) = refused else {
+    let Err(error @ OathnetError::Provider(_)) = refused else {
         panic!("expected a provider failure, got {refused:?}");
+    };
+    let OathnetError::Provider(words) = &error else {
+        unreachable!()
     };
     assert!(!words.contains(KEY), "{words}");
     assert!(!words.contains('\u{7}'), "{words}");
+    // A provider's own "no" answered the request, so it stays inconclusive, not a refusal.
+    assert_eq!(error.outcome_kind(), SourceOutcomeKind::Inconclusive);
 }
 
 #[test]
@@ -563,6 +568,29 @@ fn no_key_sends_nothing() {
         Err(OathnetError::MissingKey)
     );
     assert!(transport.sent().is_empty());
+}
+
+#[test]
+fn a_blocked_request_is_refused_before_sending() {
+    struct Blocked;
+    impl Transport for Blocked {
+        fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
+            Err(TransportFailure {
+                kind: SourceOutcomeKind::ConnectFailure,
+                detail: "egress-policy: destination (0.0.0.0) is not publicly routable".to_owned(),
+                blocked: true,
+            })
+        }
+    }
+    let error = match search(&Blocked, &keys(), Query::Email("user@example.com"), 7) {
+        Err(error) => error,
+        Ok(search) => panic!("a blocked search answered: {search:?}"),
+    };
+    assert!(matches!(error, OathnetError::Refused(_)), "{error:?}");
+    assert_eq!(
+        error.outcome_kind(),
+        SourceOutcomeKind::RefusedBeforeSending
+    );
 }
 
 #[test]

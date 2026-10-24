@@ -1,0 +1,1 @@
+- Include every saved scan log entry in the web UI's full TXT evidence export, alongside metadata, source outcomes, uncertainty records, elements, correlations and graph relations. Add an end-to-end browser assertion comparing the exported log to the scan API, without changing the storage schema or on-device dependencies.

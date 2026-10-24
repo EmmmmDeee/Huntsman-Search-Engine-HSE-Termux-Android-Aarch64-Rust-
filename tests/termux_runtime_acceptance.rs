@@ -38,6 +38,9 @@ fn termux_runtime_harness_targets_current_binary_and_api_contract() {
         "TERMUX_RUNTIME_ACCEPTANCE",
         "server lifecycle pass=2 (restart)",
         "saved scan survives server restart",
+        "verify_saved_scan_surfaces",
+        "saved scan surfaces, evidence register and element/summary counts agree",
+        "/evidence?format=json",
         "aarch64|arm64",
         "/data/data/com.termux/files/usr",
     ] {
@@ -74,8 +77,8 @@ fn scratch(tag: &str) -> PathBuf {
 /// Whether every command the harness needs is on PATH. CI must have them all.
 fn harness_tools_present() -> bool {
     let present = [
-        "bash", "timeout", "curl", "date", "grep", "chmod", "mktemp", "rm", "tee", "tail", "sleep",
-        "uname",
+        "bash", "timeout", "curl", "jq", "date", "grep", "chmod", "mktemp", "rm", "tee", "tail",
+        "sleep", "uname",
     ]
     .iter()
     .all(|tool| {

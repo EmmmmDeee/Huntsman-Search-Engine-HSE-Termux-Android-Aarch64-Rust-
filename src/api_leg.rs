@@ -154,7 +154,7 @@ impl LegError {
             Self::Server(_) => SourceOutcomeKind::Upstream5xx,
             Self::Transport(kind) | Self::NotAnAnswer(kind) => *kind,
             Self::Decode(_) | Self::TooLarge => SourceOutcomeKind::SchemaDrift,
-            Self::Refused(_) => SourceOutcomeKind::Inconclusive,
+            Self::Refused(_) => SourceOutcomeKind::RefusedBeforeSending,
         }
     }
 
@@ -680,6 +680,35 @@ mod tests {
         assert_eq!(
             LegError::TooLarge.outcome_kind(),
             SourceOutcomeKind::SchemaDrift
+        );
+    }
+
+    #[test]
+    fn a_refused_leg_records_refused_before_sending() {
+        struct Blocked;
+        impl Transport for Blocked {
+            fn send(&self, _: &Request) -> Result<Response, TransportFailure> {
+                Err(TransportFailure {
+                    kind: SourceOutcomeKind::ConnectFailure,
+                    detail: "egress-policy: destination (0.0.0.0) is not publicly routable"
+                        .to_owned(),
+                    blocked: true,
+                })
+            }
+        }
+        let err = match get(&Blocked, &KEYLESS, &Keys::default(), URL, 1) {
+            Err(err) => err,
+            Ok(answer) => panic!("a blocked leg answered: {answer:?}"),
+        };
+        assert!(matches!(err, LegError::Refused(_)), "{err:?}");
+        assert_eq!(err.outcome_kind(), SourceOutcomeKind::RefusedBeforeSending);
+        let outcome = err.outcome(&KEYLESS, 1);
+        assert_eq!(outcome.kind, SourceOutcomeKind::RefusedBeforeSending);
+        assert_eq!(
+            outcome.detail.as_deref(),
+            Some(
+                "fixture: request refused before sending: network: egress-policy: destination (0.0.0.0) is not publicly routable"
+            )
         );
     }
 

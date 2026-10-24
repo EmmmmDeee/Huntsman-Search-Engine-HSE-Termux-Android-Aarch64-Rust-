@@ -860,7 +860,7 @@ fn stolen_tax_leg(
         Err(err) => {
             let kind = match &err {
                 StolenTaxError::MissingKey => SourceOutcomeKind::NotConfigured,
-                StolenTaxError::Refused(_) => SourceOutcomeKind::ConnectFailure,
+                StolenTaxError::Refused(_) => SourceOutcomeKind::RefusedBeforeSending,
                 StolenTaxError::BudgetExhausted { .. } => SourceOutcomeKind::BodyTimeout,
                 StolenTaxError::Failed(_) => SourceOutcomeKind::Inconclusive,
             };
@@ -2136,6 +2136,31 @@ mod tests {
             ) && detail.ends_with("; 1 row(s) name no breach or stealer host"),
             "{detail}"
         );
+    }
+
+    /// A stolen.tax path the egress refuses before sending is a refused row, not the transport
+    /// failure (`connect_failure`) it used to read as.
+    #[test]
+    fn a_refused_stolen_tax_path_is_refused_before_sending() {
+        let keys = Keys::parse(&format!(
+            "{}=st-test-key-0123456789abcdef\n",
+            stolen_tax::KEY_SLOT
+        ))
+        .unwrap_or_else(|e| panic!("fixture keys: {e}"));
+        let refusing = crate::test_support::Refusing;
+        let sources = Sources {
+            stolen_tax: Some((&refusing, &keys)),
+            ..Sources::default()
+        };
+        let ExposureRun::Printed { report, .. } = run(sources, "ada.99", 7) else {
+            panic!("expected a printed report");
+        };
+        let row = report
+            .outcomes
+            .iter()
+            .find(|o| o.module == STOLEN_TAX_SOURCE)
+            .unwrap_or_else(|| panic!("no stolen.tax row in {:?}", report.outcomes));
+        assert_eq!(row.kind, SourceOutcomeKind::RefusedBeforeSending);
     }
 
     /// Runs `exposure` for one fixed address against a fake HIBP that answers `breaches`, with

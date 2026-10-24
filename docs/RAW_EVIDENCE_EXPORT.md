@@ -8,6 +8,7 @@ The scan **Summary → Uncertainty register → Save full TXT** control download
 - `DATA_ELEMENTS`: every element returned by the scan elements endpoint, not just the first 200 UI rows
 - `CORRELATIONS`: every correlation returned by the scan correlations endpoint
 - `RELATIONSHIP_GRAPH`: graph nodes and edges from the scan graph endpoint
+- `SCAN_LOG`: the saved scan's complete execution log, including recorded warnings and errors
 
 Each section is framed by `[START_NAME]` and `[END_NAME]`. JSON is not shortened, filtered, coalesced or paraphrased. The download is a **snapshot of recorded evidence** and explicitly says `COVERAGE: UNKNOWN_BEYOND_RECORDED_SOURCES`. Multiple endpoint reads are not transactional, so the dump declares `CONSISTENCY: NON_ATOMIC_ENDPOINT_SNAPSHOT`; prefer exporting a completed scan. A transport error aborts the export instead of silently omitting an unavailable section.
 

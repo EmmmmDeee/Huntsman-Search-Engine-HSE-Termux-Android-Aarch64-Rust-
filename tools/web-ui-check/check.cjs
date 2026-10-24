@@ -37,7 +37,7 @@ const bin = process.argv[2];
 if (!bin || !fs.existsSync(bin)) { process.stderr.write('usage: node check.cjs path/to/huntsman-recon\n'); process.exit(64); }
 const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true };
 // Two additional KiB accommodate the complete, lossless on-demand TXT exporter.
-const PAGE_BUDGET = 118 * 1024;
+const PAGE_BUDGET = 121 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -299,6 +299,14 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         fieldsText.includes('file_sha256') && fieldsText.includes('file_size_bytes') &&
         entitiesText.includes('holiday.jpg') && entitiesText.includes('48.850000,2.333333'),
         { inspectCalls, fieldsText, entitiesText, error: await page.textContent('#ierror') });
+      const claimsText = await page.textContent('#iclaims');
+      const reportText = await page.textContent('#ireport');
+      const stamped = /\d{4}-\d\d-\d\d \d\d:\d\d:\d\d/;
+      check(`${scheme}: Inspect shows each reader's claim, when it was recorded, and the whole report`,
+        claimsText.includes('holiday.jpg with') && claimsText.includes('docmeta') && stamped.test(claimsText) &&
+        stamped.test(fieldsText) && stamped.test(entitiesText) && entitiesText.includes('docmeta') &&
+        reportText.includes('holiday.jpg') && reportText.includes('Fixture Camera 2'),
+        { claimsText, entitiesText: entitiesText.slice(0, 200), report: reportText.length });
       await audit(page, `${scheme} inspect result`);
       await page.setInputFiles('#ifile', []);
       await page.click('#irun');
@@ -374,6 +382,12 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         sourceCoverage.includes(expectedCoverage.not_configured + ' not configured') &&
         sourceCoverage.includes('does not establish exhaustive source coverage'),
         { sourceCoverage, expectedCoverage });
+      const observedShown = await page.evaluate(() => [...document.querySelectorAll('#srcs tr')].map(tr => tr.cells[2] ? tr.cells[2].textContent : ''));
+      const observedWanted = await page.evaluate(sources => sources.map(o => when(o.observed_at_unix * 1000)), row.sources);
+      check(`${scheme}: Summary shows when each source was queried`,
+        row.sources.length > 0 && row.sources.every(o => o.observed_at_unix) &&
+        JSON.stringify(observedShown) === JSON.stringify(observedWanted),
+        { observedShown, observedWanted });
       const uncertainty = row.uncertainty_register;
       const shownUncertainty = await page.evaluate(() => ({
         total: document.getElementById('unc-n').textContent,
@@ -410,7 +424,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
           if (start < 0 || end < 0) throw Error('Incomplete raw evidence section: ' + label);
           return JSON.parse(rawText.slice(start + startTag.length, end));
         };
-        check('Complete fenced TXT export retains all saved evidence and correlations',
+        check('Complete fenced TXT export retains saved evidence, correlations and logs',
           rawText.startsWith(String.fromCharCode(96).repeat(3) + 'text\n') &&
           rawText.includes('COVERAGE: UNKNOWN_BEYOND_RECORDED_SOURCES') &&
           rawText.includes('CONSISTENCY: NON_ATOMIC_ENDPOINT_SNAPSHOT') &&
@@ -418,7 +432,8 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
           JSON.stringify(rawSection('UNCERTAINTY_REGISTER')) === JSON.stringify(uncertainty) &&
           JSON.stringify(rawSection('DATA_ELEMENTS')) === JSON.stringify(elements) &&
           JSON.stringify(rawSection('CORRELATIONS')) === JSON.stringify(correlations) &&
-          JSON.stringify(rawSection('RELATIONSHIP_GRAPH')) === JSON.stringify(graph),
+          JSON.stringify(rawSection('RELATIONSHIP_GRAPH')) === JSON.stringify(graph) &&
+          JSON.stringify(rawSection('SCAN_LOG')) === JSON.stringify(log),
           { characters: rawText.length, elements: elements.length, correlations: correlations.length });
       }
       await audit(page, `${scheme} summary`);
@@ -480,6 +495,16 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       const spot = await page.evaluate(() => { const p = document.querySelector('#gnodes path.groot'), [x, y] = p.getAttribute('d').slice(1).split('h')[0].split(' ').map(Number), m = p.getScreenCTM(); return { x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f }; });
       await page.touchscreen.tap(spot.x, spot.y);
       check(`${scheme}: tapping an element in the Graph says what it is`, (await page.textContent('#ginfo')).startsWith('ROOT: ' + TARGET), await page.textContent('#ginfo'));
+      // The graph as the page drew it now, after the false positive was flagged above.
+      const liveGraph = await api(page, root + '/graph');
+      const rootNode = liveGraph.nodes.find(n => n.type === 'ROOT');
+      const flaggedNodes = liveGraph.nodes.filter(n => n.fp).length;
+      const legend = await page.evaluate(() => [...document.querySelectorAll('#glegend span')].map(s => s.textContent));
+      check(`${scheme}: the Graph legend names every data type and counts the false positives`,
+        flaggedNodes > 0 && legend.length === new Set(liveGraph.nodes.map(n => n.type)).size + 1 &&
+        legend.includes(flaggedNodes + ' flagged false positive') &&
+        rootNode && rootNode.module && (await page.textContent('#ginfo')).includes(' · ' + rootNode.module),
+        { legend, types: new Set(liveGraph.nodes.map(n => n.type)).size, flaggedNodes, ginfo: await page.textContent('#ginfo') });
       await audit(page, `${scheme} graph`);
       // Save image keeps every element and how each is drawn, without the page's styles.
       const [image] = await Promise.all([page.waitForEvent('download', { timeout: 10000 }), page.click('#gsave')]);
@@ -796,7 +821,10 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       const results = JSON.parse(fs.readFileSync(path.join(from, 'results.json'), 'utf8'));
       const root = results.elements.find(e => !e.source);
       const eid = i => 'c' + i.toString(16).padStart(15, '0');
-      const kinds = ['INTERNET_NAME', 'IP_ADDRESS', 'EMAILADDR', 'LINKED_URL_INTERNAL', 'RAW_RIR_DATA'];
+      const kinds = ['INTERNET_NAME', 'IP_ADDRESS', 'EMAILADDR', 'LINKED_URL_INTERNAL', 'RAW_RIR_DATA', 'DOMAIN_NAME', 'IPV6_ADDRESS',
+        'RAW_DNS_RECORDS', 'PROVIDER_DNS', 'NETBLOCK_OWNER', 'BGP_AS_OWNER', 'SSL_CERTIFICATE_ISSUED', 'DOMAIN_WHOIS', 'DOMAIN_REGISTRAR',
+        'WEBSERVER_BANNER', 'TCP_PORT_OPEN', 'COUNTRY_NAME', 'GEOINFO', 'PROVIDER_HOSTING', 'CO_HOSTED_SITE', 'LINKED_URL_EXTERNAL',
+        'HTTP_CODE', 'SOFTWARE_USED', 'PHONE_NUMBER', 'USERNAME'];
       results.scan_id = id;
       results.elements = [root, ...Array.from({ length: BIG }, (_, i) => ({ id: eid(i), type: kinds[i % kinds.length], data: `host-${i}.example.com`, source: i < 3 ? root.id : eid(Math.floor(i / 3) - 1), module: 'check', confidence: 90, created: row.created + i, fp: false }))];
       Object.assign(row, { id, name: 'big graph', elements: BIG + 1, unique: BIG + 1 });
@@ -821,6 +849,8 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       const after = await frames(1000), remaining = await page.evaluate(() => document.querySelectorAll('#gnodes path').length);
       metrics.bigGraph = { nodes: BIG + 1, drawn, framesIn2s: arranging, logMs, framesIn1sAfter: after, nodesLeft: remaining };
       check('a big scan\'s Graph draws every node', drawn === BIG + 1, `${drawn} of ${BIG + 1}`);
+      const bigLegend = await page.evaluate(() => document.querySelectorAll('#glegend span').length);
+      check('a big scan\'s Graph legend names every one of its data types', bigLegend === kinds.length + 1, `${bigLegend} of ${kinds.length + 1}`);
       check('a big scan\'s Graph keeps the page answering while it arranges', arranging >= 30, `${arranging} frames in 2 s at 4x CPU throttling`);
       check('leaving a big scan\'s Graph stops its arranging and lets its nodes go', logMs < 3000 && after >= 30 && remaining === 0, metrics.bigGraph);
       check('no console errors on a big scan', errors.length === 0, errors);

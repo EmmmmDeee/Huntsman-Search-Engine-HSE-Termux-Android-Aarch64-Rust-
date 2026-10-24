@@ -11,6 +11,7 @@ use crate::collector::{
 };
 use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance};
+use crate::error::Error;
 use crate::fetch::{AuthStyle, Credential};
 use crate::http::Transport;
 use crate::keys::Keys;
@@ -112,8 +113,8 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
                     selector.kind
                 )));
             }
-            let result = search_deep(transport, credential, &search, now_unix)
-                .map_err(|error| CollectorError::Execution(error.to_string()))?;
+            let result =
+                search_deep(transport, credential, &search, now_unix).map_err(execution)?;
             append_result(&mut batch, selector, &result, limits, now_unix);
             batch.outcome = outcome_from_single(&batch.receipts[0]);
         }
@@ -124,15 +125,14 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
                     selector.kind
                 )));
             }
-            let fast = search_fast(transport, credential, &search, now_unix)
-                .map_err(|error| CollectorError::Execution(error.to_string()))?;
+            let fast = search_fast(transport, credential, &search, now_unix).map_err(execution)?;
             append_result(&mut batch, selector, &fast, limits, now_unix);
             batch.outcome = outcome_from_single(&batch.receipts[0]);
         }
         SeekNowCollectionMode::Adaptive => {
             if search.query_type.supports_search() {
-                let fast = search_fast(transport, credential, &search, now_unix)
-                    .map_err(|error| CollectorError::Execution(error.to_string()))?;
+                let fast =
+                    search_fast(transport, credential, &search, now_unix).map_err(execution)?;
                 let fast_kind = fast.outcome.kind;
                 append_result(&mut batch, selector, &fast, limits, now_unix);
 
@@ -140,8 +140,8 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
                     && search.query_type.supports_stealer()
                     && limits.max_requests >= 2
                 {
-                    let deep = search_deep(transport, credential, &search, now_unix)
-                        .map_err(|error| CollectorError::Execution(error.to_string()))?;
+                    let deep =
+                        search_deep(transport, credential, &search, now_unix).map_err(execution)?;
                     let deep_kind = deep.outcome.kind;
                     append_result(&mut batch, selector, &deep, limits, now_unix);
                     batch.outcome = match deep_kind {
@@ -153,8 +153,8 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
                     batch.outcome = outcome_from_single(&batch.receipts[0]);
                 }
             } else if search.query_type.supports_stealer() {
-                let deep = search_deep(transport, credential, &search, now_unix)
-                    .map_err(|error| CollectorError::Execution(error.to_string()))?;
+                let deep =
+                    search_deep(transport, credential, &search, now_unix).map_err(execution)?;
                 append_result(&mut batch, selector, &deep, limits, now_unix);
                 batch.outcome = outcome_from_single(&batch.receipts[0]);
             } else {
@@ -165,6 +165,16 @@ pub fn collect_with_credential<T: Transport + ?Sized>(
 
     batch.pivots.truncate(limits.max_pivots);
     Ok(batch)
+}
+
+/// Map a leg error to a collector error, keeping a request the guarded path refused before sending
+/// ([`Error::Network`]) distinct from a failure that reached `SeekNow`, so the `seeknow` command can
+/// end 77 (refusal) rather than 69 (no usable response). **Pure.**
+fn execution(error: Error) -> CollectorError {
+    match error {
+        Error::Network(message) => CollectorError::Refused(message),
+        other => CollectorError::Execution(other.to_string()),
+    }
 }
 
 /// Entities and source outcomes from running `SeekNow` as one leg of a lookup.
@@ -242,14 +252,23 @@ pub fn collect_for_lookup<T: Transport + ?Sized>(
                 .collect(),
             entities: batch.entities,
         }),
-        Err(error) => Some(LookupLeg {
-            entities: Vec::new(),
-            outcomes: vec![SourceExecutionOutcome::inconclusive(
-                COLLECTOR_ID,
-                now_unix,
-                error.to_string(),
-            )],
-        }),
+        Err(error) => {
+            let kind = if matches!(error, CollectorError::Refused(_)) {
+                SourceOutcomeKind::RefusedBeforeSending
+            } else {
+                SourceOutcomeKind::Inconclusive
+            };
+            Some(LookupLeg {
+                entities: Vec::new(),
+                outcomes: vec![SourceExecutionOutcome::failed(
+                    COLLECTOR_ID,
+                    now_unix,
+                    kind,
+                    None,
+                    error.to_string(),
+                )],
+            })
+        }
     }
 }
 

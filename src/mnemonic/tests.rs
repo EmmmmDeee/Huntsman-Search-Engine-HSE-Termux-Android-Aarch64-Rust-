@@ -239,12 +239,8 @@ fn nothing_held_is_a_valid_zero_and_a_failure_is_its_own_row() {
     );
     assert!(leg.entities.is_empty());
 
+    // A leg that got no response carries the failure on its own row; there is no side channel.
     let leg = domain(&Net::with(&[]), "example.net", "s", 1);
-    assert!(
-        matches!(leg.error, Some(LegError::Transport(_))),
-        "{:?}",
-        leg.error
-    );
     let outcome = leg.outcome.expect("a row");
     assert_eq!(outcome.kind, SourceOutcomeKind::ConnectFailure);
     assert!(leg.entities.is_empty());

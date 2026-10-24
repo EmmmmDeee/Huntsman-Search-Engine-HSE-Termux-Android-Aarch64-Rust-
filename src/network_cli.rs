@@ -33,7 +33,7 @@ use crate::lookup_report;
 use crate::opencellid;
 use crate::oui;
 use crate::scan_route::{CELL_PREFIX, NetworkSelector, network_selector};
-use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceRun};
+use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceReach, SourceRun};
 use crate::tags;
 use crate::textnorm::escape_controls;
 use crate::wigle::{self, Database, WigleError};
@@ -78,13 +78,6 @@ impl NetworkArgs {
     }
 }
 
-/// The first `WiGLE` search refused before sending, and the first that got no response.
-#[derive(Debug, Default)]
-struct Unanswered {
-    refused: Option<String>,
-    no_response: Option<String>,
-}
-
 pub type NetworkRun = SourceRun<Report>;
 
 /// Classify the selector and run each `WiGLE` search it calls for when `wigle` carries a
@@ -106,7 +99,6 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
             .outcomes
             .push(oui_leg(bssid, &scan_id, now_unix, &mut report.entities));
     }
-    let mut unanswered = Unanswered::default();
     for &database in Database::for_selector(&selector) {
         let outcome = match wigle {
             Some((transport, _)) if !transport.runs_module(wigle::SOURCE) => continue,
@@ -118,7 +110,6 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
                 &scan_id,
                 now_unix,
                 &mut report,
-                &mut unanswered,
             ),
             _ => SourceExecutionOutcome::failed(
                 database.source(),
@@ -169,13 +160,12 @@ pub fn run(wigle: Option<(&dyn Transport, &Keys)>, selector: &str, now_unix: u64
     }
     merge_by_uid(&mut report.entities);
 
-    if !report.outcomes.iter().any(|o| o.kind.is_accepted()) {
-        if let Some(message) = unanswered.refused {
-            return NetworkRun::Network(message);
-        }
-        if let Some(why) = unanswered.no_response {
-            return NetworkRun::Failed(format!("no source answered the network lookup: {why}"));
-        }
+    // A request refused before sending stops the network lookup (exit 77); no response is exit 69.
+    // A source that answered with an error still prints, as the network lookup always has.
+    if let Some(run) =
+        SourceReach::of(&report.outcomes).stopped("no source answered the network lookup")
+    {
+        return run;
     }
     match lookup_report::render(&report.entities, &report.outcomes) {
         Ok(mut text) => {
@@ -332,7 +322,6 @@ fn oui_leg(
     SourceExecutionOutcome::success(OUI_SOURCE, now_unix, 1)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn wigle_leg(
     transport: &dyn Transport,
     keys: &Keys,
@@ -341,7 +330,6 @@ fn wigle_leg(
     scan_id: &str,
     now_unix: u64,
     report: &mut Report,
-    unanswered: &mut Unanswered,
 ) -> SourceExecutionOutcome {
     let source = database.source();
     match wigle::search(transport, keys, database, selector, now_unix) {
@@ -373,14 +361,6 @@ fn wigle_leg(
             }
         }
         Err(err) => {
-            let first = match &err {
-                WigleError::Refused(_) => Some(&mut unanswered.refused),
-                WigleError::Transport(_) => Some(&mut unanswered.no_response),
-                _ => None,
-            };
-            if let Some(first) = first {
-                first.get_or_insert_with(|| err.to_string());
-            }
             let outcome = SourceExecutionOutcome::failed(
                 source,
                 now_unix,

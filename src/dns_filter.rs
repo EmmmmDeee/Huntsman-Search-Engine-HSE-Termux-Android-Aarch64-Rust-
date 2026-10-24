@@ -30,7 +30,7 @@ use crate::dns::{self, DomainDns, RecordType, ResolveErrorKind, ResolveQuery};
 use crate::dns_wire::{self, A, AAAA, Message, NOERROR, NXDOMAIN};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, push_entity};
 use crate::fetch::{FetchOptions, fetch};
-use crate::http::{Request, Transport};
+use crate::http::{Request, Transport, TransportFailure};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::tags;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -407,17 +407,7 @@ fn distrust_unwitnessed_udp(verdicts: &mut [(&Filter, Verdict)]) {
 /// Whether a verdict says the filter could not be reached at all, as when the network is down:
 /// enough of those before any answer and the rest are not asked (see [`dns::ask_all`]).
 fn unreachable(verdict: &Verdict) -> bool {
-    matches!(
-        verdict,
-        Verdict::Untrusted(
-            SourceOutcomeKind::ConnectFailure
-                | SourceOutcomeKind::DnsFailure
-                | SourceOutcomeKind::TlsFailure
-                | SourceOutcomeKind::TtfbTimeout
-                | SourceOutcomeKind::BodyTimeout,
-            _
-        )
-    )
+    matches!(verdict, Verdict::Untrusted(kind, _) if kind.is_transport_failure())
 }
 
 fn evidence(filter: &Filter, block: &Block, scan_id: &str) -> Evidence {
@@ -494,10 +484,17 @@ fn rows(
                 .iter()
                 .filter(|(_, verdict)| matches!(verdict, Verdict::Blocked(_)))
                 .count();
-            let untrusted = mine.iter().find_map(|(_, verdict)| match verdict {
-                Verdict::Untrusted(kind, _) => Some(*kind),
-                _ => None,
-            });
+            // The source's row is refused only when every server under it was refused, so take the
+            // first untrusted kind that was not a refusal, else the first.
+            let untrusted_kinds = || {
+                mine.iter().filter_map(|(_, verdict)| match verdict {
+                    Verdict::Untrusted(kind, _) => Some(*kind),
+                    _ => None,
+                })
+            };
+            let untrusted = untrusted_kinds()
+                .find(|kind| *kind != SourceOutcomeKind::RefusedBeforeSending)
+                .or_else(|| untrusted_kinds().next());
             let answered = mine
                 .iter()
                 .any(|(_, verdict)| !matches!(verdict, Verdict::Untrusted(..)));
@@ -605,7 +602,8 @@ fn doh<T: Transport + ?Sized>(
         filter.source,
         now_unix,
     )
-    .map_err(|error| (SourceOutcomeKind::Inconclusive, error.to_string()))?;
+    // `fetch` errors only before anything is sent (a blocked egress, an unsendable URL).
+    .map_err(|error| (SourceOutcomeKind::RefusedBeforeSending, error.to_string()))?;
     match fetched.response {
         Some(response) if response.status == 200 && !response.truncated => Ok(response.body),
         Some(response) => Err((fetched.outcome.kind, format!("HTTP {}", response.status))),
@@ -624,16 +622,30 @@ fn udp<T: Transport + ?Sized>(
     servers: [Ipv4Addr; 2],
     query: &[u8],
 ) -> Result<Vec<u8>, Failure> {
-    let mut last = None;
+    let mut last: Option<TransportFailure> = None;
     for server in servers {
         match transport.exchange_udp(SocketAddr::new(IpAddr::V4(server), 53), query) {
             Ok(body) => return Ok(body),
-            Err(failure) => last = Some(failure),
+            // Keep the last unblocked failure over a blocked one: the filter is refused only when
+            // every server asked was blocked before sending, so one server that answered the
+            // socket (and then timed out or the like) means it was reachable.
+            Err(failure) => {
+                if !failure.blocked || last.as_ref().is_none_or(|kept| kept.blocked) {
+                    last = Some(failure);
+                }
+            }
         }
     }
     Err(last.map_or_else(
         || (SourceOutcomeKind::ConnectFailure, "no server".to_owned()),
-        |failure| (failure.kind, format!("no answer ({})", failure.detail)),
+        |failure| {
+            let kind = if failure.blocked {
+                SourceOutcomeKind::RefusedBeforeSending
+            } else {
+                failure.kind
+            };
+            (kind, format!("no answer ({})", failure.detail))
+        },
     ))
 }
 
