@@ -6,6 +6,29 @@
 use super::{Assessment, AssessmentStatus, Indicator, Observation};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Accept only unambiguous ISO calendar dates; timestamps need separate validation.
+fn valid_observation_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    if !bytes.iter().enumerate().all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit()) {
+        return false;
+    }
+    let year = value[0..4].parse::<u32>().unwrap_or(0);
+    let month = value[5..7].parse::<u32>().unwrap_or(0);
+    let day = value[8..10].parse::<u32>().unwrap_or(0);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    year > 0 && day >= 1 && day <= max_day
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReviewPolicy {
     /// Minimum independent original sources per indicator. Values below two are clamped.
@@ -57,7 +80,7 @@ impl ReviewPolicy {
                     && !observation.source_id.trim().is_empty()
                     && !observation.origin_id.trim().is_empty()
                     && !observation.evidence_ref.trim().is_empty()
-                    && !observation.observed_at.trim().is_empty()
+                    && valid_observation_date(&observation.observed_at)
             })
             .collect();
 
