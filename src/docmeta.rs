@@ -24,7 +24,11 @@
 //! file's embedded claim, not an independently verified fact. The scanner is bounds-checked and
 //! allocation-bounded: it searches for the uncompressed metadata only, never decompresses, and caps
 //! the packets, the field count and each value, and scans in time linear in the packet, so a
-//! malformed or hostile file yields a clean result, never a panic or a runaway. Office Open XML
+//! malformed or hostile file yields a clean result, never a panic or a runaway. No bound cuts
+//! silently: a file holding more than 512 fields says how many were not kept
+//! (`metadata_fields_omitted`), a repeated property whose values no longer fit counts those not kept
+//! (`metadata_values_omitted`), and a value longer than 8 KiB ends with a marker naming its whole
+//! length and how much is shown. Office Open XML
 //! (`.docx`, `.xlsx`, `.pptx`) keeps its core properties
 //! in a deflate-compressed part, which is not read here; an embedded XMP packet in such a file is. A
 //! PNG's compressed text chunks (`zTXt`, compressed `iTXt`) are likewise not inflated, and its binary
@@ -40,8 +44,8 @@ use crate::entity::{
 };
 use crate::error::Error;
 use crate::exif::{
-    MAX_METADATA_FIELDS, MAX_METADATA_VALUE_BYTES, PNG_SIGNATURE, cap_value, jpeg_segments,
-    png_chunks,
+    MAX_METADATA_FIELDS, MAX_METADATA_VALUE_BYTES, PNG_SIGNATURE, cap_value_within, jpeg_segments,
+    png_chunks, rendered_width,
 };
 use crate::lookup_report;
 use crate::sha256::{hex32, sha256};
@@ -55,7 +59,7 @@ pub const DOCMETA_USAGE: &str = "usage: huntsman-recon docmeta FILE";
 
 pub const DOCMETA_HELP: &str = "\
 docmeta FILE
-Read the metadata a document embeds in itself, keyless and offline: no network request and no key. Every uncompressed XMP metadata packet (the <x:xmpmeta> XML block PDFs, JPEG, TIFF and PNG carry) is flattened field by field, including structured properties such as the xmpMM:History edit events and the xmpMM:DerivedFrom source document, and the /Info dictionary a PDF's trailer names (Title, Author, Subject, Keywords, Creator, Producer, CreationDate, ModDate) is read too, and for a PNG its uncompressed textual chunks (tEXt and iTXt) and modification time (tIME) become png:* fields (compressed chunks and the binary EXIF block, left to the exif command, are not read), and a GIF's Comment Extension blocks become gif:Comment fields, and a JPEG's IPTC IIM block (the legacy Photoshop APP13 record) becomes iptc:* fields (by-line, caption writer, credit, source, headline, caption, keywords and the named city/province/country location); an outline bookmark's title is never mistaken for the document's, an encrypted PDF's /Info strings are flagged rather than shown as ciphertext, and when an incremental update replaced or removed an /Info value, the superseded value still stored in the file is reported as info-prior:KEY with pdf:InfoRevisions counting the revisions. Every field is kept as evidence on a document entity for the file, so author, creator tool, create/modify timestamps, edit history, document and instance identifiers and title are preserved; a property stated more than once keeps each distinct value. When the XMP holds a GPS position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address. Metadata is editable, so each field is the file's embedded claim, not an independently verified fact. This complements the exif command, which decodes the binary EXIF block; docmeta reads the XMP packet and PDF dictionary instead. A file with no embedded metadata is a clean result naming its format and size. Office Open XML (.docx, .xlsx, .pptx) keeps its core properties in a deflate-compressed part, which is not read; an embedded XMP packet in such a file is.";
+Read the metadata a document embeds in itself, keyless and offline: no network request and no key. Every uncompressed XMP metadata packet (the <x:xmpmeta> XML block PDFs, JPEG, TIFF and PNG carry) is flattened field by field, including structured properties such as the xmpMM:History edit events and the xmpMM:DerivedFrom source document, and the /Info dictionary a PDF's trailer names (Title, Author, Subject, Keywords, Creator, Producer, CreationDate, ModDate) is read too, and for a PNG its uncompressed textual chunks (tEXt and iTXt) and modification time (tIME) become png:* fields (compressed chunks and the binary EXIF block, left to the exif command, are not read), and a GIF's Comment Extension blocks become gif:Comment fields, and a JPEG's IPTC IIM block (the legacy Photoshop APP13 record) becomes iptc:* fields (by-line, caption writer, credit, source, headline, caption, keywords and the named city/province/country location); an outline bookmark's title is never mistaken for the document's, an encrypted PDF's /Info strings are flagged rather than shown as ciphertext, and when an incremental update replaced or removed an /Info value, the superseded value still stored in the file is reported as info-prior:KEY with pdf:InfoRevisions counting the revisions. Every field is kept as evidence on a document entity for the file, so author, creator tool, create/modify timestamps, edit history, document and instance identifiers and title are preserved (up to 512 fields, a file holding more saying how many were not kept, and each value up to 8 KiB, a longer one ending with a marker naming its whole length); a property stated more than once keeps each distinct value. When the XMP holds a GPS position it also becomes a coordinates entity -- the same lat,lon the geocode command reverse-geocodes to an address. Metadata is editable, so each field is the file's embedded claim, not an independently verified fact. This complements the exif command, which decodes the binary EXIF block; docmeta reads the XMP packet and PDF dictionary instead. A file with no embedded metadata is a clean result naming its format and size. Office Open XML (.docx, .xlsx, .pptx) keeps its core properties in a deflate-compressed part, which is not read; an embedded XMP packet in such a file is.";
 
 /// The largest file read, in bytes. The whole file is read because a PDF's `/Info` and the XMP
 /// packet can sit anywhere in it; a larger file is refused by name.
@@ -163,6 +167,10 @@ impl DocmetaArgs {
 pub struct Parsed {
     pub format: String,
     pub fields: Vec<(String, String)>,
+    /// Fields the file holds past [`MAX_METADATA_FIELDS`], which are not kept.
+    pub omitted: usize,
+    /// Distinct values of a repeated field that did not fit within its value bound, not kept.
+    pub values_omitted: usize,
     pub gps: Option<(f64, f64)>,
 }
 
@@ -185,11 +193,13 @@ pub fn parse(data: &[u8]) -> Parsed {
         extract_iptc(data, &mut fields);
     }
     extract_xmp(&xmp_source(data), &mut fields);
-    let fields = fields.list;
+    let (fields, omitted, values_omitted) = fields.finish();
     let gps = xmp_gps(&fields);
     Parsed {
         format,
         fields,
+        omitted,
+        values_omitted,
         gps,
     }
 }
@@ -229,11 +239,18 @@ fn document_entity(
         summary(parsed, label),
     )
     .with_attr("format", parsed.format.as_str())
-    .with_attr("metadata_field_count", parsed.fields.len().to_string())
-    // Local observation over the exact bytes, independent of editable embedded metadata.
-    .with_attr("file_sha256", hex32(&sha256(data)))
-    .with_attr("file_size_bytes", data.len().to_string())
-    .with_attr("file_hash_scope", "exact_input_bytes");
+    .with_attr("metadata_field_count", parsed.fields.len().to_string());
+    if parsed.omitted > 0 {
+        evidence = evidence.with_attr("metadata_fields_omitted", parsed.omitted.to_string());
+    }
+    if parsed.values_omitted > 0 {
+        evidence = evidence.with_attr("metadata_values_omitted", parsed.values_omitted.to_string());
+    }
+    evidence = evidence
+        // Local observation over the exact bytes, independent of editable embedded metadata.
+        .with_attr("file_sha256", hex32(&sha256(data)))
+        .with_attr("file_size_bytes", data.len().to_string())
+        .with_attr("file_hash_scope", "exact_input_bytes");
     for (name, value) in &parsed.fields {
         evidence = evidence.with_attr(name.as_str(), value.as_str());
     }
@@ -272,10 +289,18 @@ fn gps_entity(entities: &mut Vec<Entity>, gps: Option<(f64, f64)>, label: &str, 
     );
 }
 
-/// The one-line summary for the document entity.
+/// The one-line summary for the document entity: how many fields were kept and, when the file held
+/// more than the bound, how many were not, so a bounded read never passes for the whole.
 fn summary(parsed: &Parsed, label: &str) -> String {
     if parsed.fields.is_empty() {
         format!("{} file {label} with no embedded metadata", parsed.format)
+    } else if parsed.omitted > 0 {
+        format!(
+            "{} file {label} with {} embedded metadata field(s) kept and {} more not kept",
+            parsed.format,
+            parsed.fields.len(),
+            parsed.omitted
+        )
     } else {
         format!(
             "{} file {label} with {} embedded metadata field(s)",
@@ -285,41 +310,85 @@ fn summary(parsed: &Parsed, label: &str) -> String {
     }
 }
 
+/// Room a field's rendering leaves for the count of values not kept that may close it
+/// ([`values_marker`]), so a field with that marker still renders within
+/// [`MAX_METADATA_VALUE_BYTES`].
+const VALUES_MARKER_RESERVE: usize = 52;
+
+/// Most bytes a field's values may render to before the marker: [`MAX_METADATA_VALUE_BYTES`] less
+/// [`VALUES_MARKER_RESERVE`].
+const VALUE_BOUND: usize = MAX_METADATA_VALUE_BYTES - VALUES_MARKER_RESERVE;
+
+/// The marker closing a field whose later values did not fit. **Pure.**
+fn values_marker(count: usize) -> String {
+    format!(" \u{2026} ({count} more value(s) not kept)")
+}
+
 /// The fields collected from one file, in first-seen order. A key stated more than once keeps each
 /// distinct value, joined with `; ` in the order stated, so a repeated property (one `stEvt:action`
-/// per history event, a second packet's `xmp:CreatorTool`) is never dropped.
+/// per history event, a second packet's `xmp:CreatorTool`) is never dropped while it fits. What does
+/// not fit is counted, never dropped silently: `omitted` new keys past [`MAX_METADATA_FIELDS`], and
+/// `more` the distinct values of each key that no longer fit within its value bound, which
+/// [`Fields::finish`] closes the field with.
 #[derive(Debug, Default)]
 struct Fields {
     list: Vec<(String, String)>,
     index: HashMap<String, usize>,
     seen: HashSet<(String, String)>,
+    /// Indexes into `list` whose value is cut or full and takes no more.
+    full: HashSet<usize>,
+    /// Per index into `list`, the distinct values not kept.
+    more: HashMap<usize, usize>,
+    omitted: usize,
 }
 
 impl Fields {
     /// Record `value` under `key`, capped, skipping an empty or already recorded value. A new key past
-    /// [`MAX_METADATA_FIELDS`] is not collected; a value is not appended to one already at the value cap.
+    /// [`MAX_METADATA_FIELDS`] is counted in `omitted`, not collected; a distinct value that no longer
+    /// fits a key's bound is counted against that key, never appended cut part way through.
     fn push(&mut self, key: impl Into<String>, value: impl Into<String>) {
         let key = key.into();
-        let value = cap_value(&value.into());
+        let (value, cut) = cap_value_within(&value.into(), 0, VALUE_BOUND);
         if value.is_empty() {
             return;
         }
         if let Some(&at) = self.index.get(&key) {
-            if self.list[at].1.len() >= MAX_METADATA_VALUE_BYTES
-                || self.seen.contains(&(key.clone(), value.clone()))
-            {
+            if self.seen.contains(&(key.clone(), value.clone())) {
                 return;
             }
-            let joined = format!("{}; {value}", self.list[at].1);
-            self.list[at].1 = cap_value(&joined);
+            let current = &self.list[at].1;
+            if self.full.contains(&at)
+                || rendered_width(current) + 2 + rendered_width(&value) > VALUE_BOUND
+            {
+                self.full.insert(at);
+                *self.more.entry(at).or_default() += 1;
+            } else {
+                self.list[at].1 = format!("{current}; {value}");
+            }
         } else {
             if self.list.len() >= MAX_METADATA_FIELDS {
+                self.omitted += 1;
                 return;
+            }
+            if cut {
+                self.full.insert(self.list.len());
             }
             self.index.insert(key.clone(), self.list.len());
             self.list.push((key.clone(), value.clone()));
         }
         self.seen.insert((key, value));
+    }
+
+    /// The fields, each whose later values did not fit closed with their count, with the keys not
+    /// kept and the values not kept in all.
+    fn finish(self) -> (Vec<(String, String)>, usize, usize) {
+        let mut list = self.list;
+        let mut values_omitted = 0;
+        for (at, count) in self.more {
+            list[at].1.push_str(&values_marker(count));
+            values_omitted += count;
+        }
+        (list, self.omitted, values_omitted)
     }
 }
 
@@ -1164,9 +1233,6 @@ fn read_pdf_literal(data: &[u8], start: usize) -> String {
             }
             other => out.push(other),
         }
-        if out.len() > MAX_METADATA_VALUE_BYTES {
-            break;
-        }
         i += 1;
     }
     decode_pdf_text(&out)
@@ -1201,9 +1267,6 @@ fn read_pdf_hex(data: &[u8], start: usize) -> String {
         }
         if let Some(value) = (byte as char).to_digit(16) {
             nibbles.push(u8::try_from(value).unwrap_or(0));
-        }
-        if nibbles.len() > MAX_METADATA_VALUE_BYTES * 2 {
-            break;
         }
         i += 1;
     }
@@ -1268,9 +1331,6 @@ fn pdf_doc_char(byte: u8) -> char {
 /// already reads it. A chunk that runs past the end of the file stops the walk. **Pure.**
 fn extract_png_text(data: &[u8], fields: &mut Fields) {
     for (kind, body) in png_chunks(data).map_while(Result::ok) {
-        if fields.list.len() >= MAX_METADATA_FIELDS {
-            break;
-        }
         match kind {
             b"tEXt" => png_text_chunk(body, fields),
             b"iTXt" => png_itxt_chunk(body, fields),
@@ -1362,9 +1422,6 @@ fn latin1(bytes: &[u8]) -> String {
 /// and colour tables carry no document metadata and are stepped over. **Pure.**
 fn extract_gif_comments(data: &[u8], fields: &mut Fields) {
     for comment in gif_comments(data) {
-        if fields.list.len() >= MAX_METADATA_FIELDS {
-            break;
-        }
         fields.push("gif:Comment", comment);
     }
 }
@@ -1504,9 +1561,6 @@ fn extract_iptc(data: &[u8], fields: &mut Fields) {
                 parse_iptc_datasets(block, fields);
             }
             irb = rest;
-        }
-        if fields.list.len() >= MAX_METADATA_FIELDS {
-            break;
         }
     }
 }
