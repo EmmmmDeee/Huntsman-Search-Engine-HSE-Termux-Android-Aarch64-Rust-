@@ -24,7 +24,7 @@ use serde_json::json;
 
 use crate::clock;
 use crate::correlator::evaluate_rules;
-use crate::entity::Entity;
+use crate::entity::{Entity, merge_by_uid};
 use crate::graph_exec::{
     ExecutionPolicy, GraphDefinition, GraphExecutor, HandlerRegistry, TaskContext, TaskFailure,
     TaskOutput, TaskRole, TaskSpec, TaskState, ValueSchema, VerificationRecord, VerificationState,
@@ -32,7 +32,7 @@ use crate::graph_exec::{
 use crate::lookup_modules;
 use crate::module_selection::Selection;
 use crate::recursion::{
-    self, PivotEdge, RecursionPolicy, RecursionReport, SelectorCollector, Step,
+    self, CrawlProgress, PivotEdge, RecursionPolicy, RecursionReport, SelectorCollector, Step,
     Target as CrawlTarget,
 };
 use crate::scan_route::{
@@ -305,7 +305,9 @@ struct State {
 /// What following a scan's findings produced beside the findings themselves.
 struct Crawl {
     lineage: Vec<PivotEdge>,
-    termination: TerminationReason,
+    /// Why the crawl stopped; `None` while it is still running, so a checkpoint saved mid-crawl
+    /// never claims a stop reason.
+    termination: Option<TerminationReason>,
 }
 
 /// The crawl's lookups: each one logged and run through the installed lookup asking only the
@@ -315,11 +317,16 @@ struct Crawl {
 struct ScanCollector<'a> {
     service: &'a ScanService,
     id: &'a str,
+    plan: &'a ScanPlan,
+    options: &'a ScanOptions,
     chosen: &'a Selection,
     text: String,
     ran: usize,
     errors: usize,
     breach_checked: BTreeSet<String>,
+    /// How many entities and source outcomes the last checkpoint saved, so a wave that added
+    /// nothing writes nothing.
+    checkpointed: (usize, usize),
 }
 
 /// Reject graph inputs with missing or mistyped scan target identifiers.
@@ -377,6 +384,30 @@ fn failed_lookup_step(
                 target.selector
             ),
         )],
+    }
+}
+
+impl<'a> ScanCollector<'a> {
+    /// A collector for scan `id` with nothing found yet.
+    fn new(
+        service: &'a ScanService,
+        id: &'a str,
+        plan: &'a ScanPlan,
+        options: &'a ScanOptions,
+        chosen: &'a Selection,
+    ) -> Self {
+        Self {
+            service,
+            id,
+            plan,
+            options,
+            chosen,
+            text: String::new(),
+            ran: 0,
+            errors: 0,
+            breach_checked: BTreeSet::new(),
+            checkpointed: (0, 0),
+        }
     }
 }
 
@@ -525,6 +556,44 @@ impl SelectorCollector for ScanCollector<'_> {
             LookupDispatch::Cancelled => {}
         }
         self.finish_lookup(target, found)
+    }
+
+    /// Save what the crawl has found so far. A process that dies before the crawl ends (Android
+    /// stopping Termux, the phone's memory killer, a swiped-away session) then leaves a scan that
+    /// shows its findings, not an empty `ABORTED` row, and the Scans list counts elements while
+    /// the scan runs. A wave that added nothing is not written. A checkpoint that cannot be saved
+    /// is logged and the crawl goes on: the final save decides the scan's outcome.
+    fn progressed(&mut self, progress: &CrawlProgress<'_>) {
+        let seen = (progress.entities.len(), progress.outcomes.len());
+        if seen == self.checkpointed {
+            return;
+        }
+        self.checkpointed = seen;
+        let mut entities = progress.entities.to_vec();
+        merge_by_uid(&mut entities);
+        let found = LookupOutput {
+            text: self.text.clone(),
+            entities,
+            outcomes: progress.outcomes.to_vec(),
+        };
+        let crawl = Crawl {
+            lineage: progress.edges.to_vec(),
+            termination: None,
+        };
+        if let Err(error) =
+            self.service
+                .save(self.id, self.plan, self.options, found, self.errors, crawl)
+        {
+            self.service.log(
+                self.id,
+                "huntsman",
+                LogLevel::Warning,
+                format!(
+                    "could not save what the scan has found so far, after {} lookups in generation {}: {error}",
+                    progress.dispatches, progress.generation
+                ),
+            );
+        }
     }
 
     fn may_batch(&self, selected: &[CrawlTarget], next: &CrawlTarget) -> bool {
@@ -1347,15 +1416,7 @@ impl ScanService {
             expose_emails: !passive,
             ..RecursionPolicy::default()
         };
-        let mut collector = ScanCollector {
-            service: self,
-            id,
-            chosen: &chosen,
-            text: String::new(),
-            ran: 0,
-            errors: 0,
-            breach_checked: BTreeSet::new(),
-        };
+        let mut collector = ScanCollector::new(self, id, plan, &options, &chosen);
         let report = recursion::run_targets(targets, &policy, &mut collector);
         let (ran, errors) = (collector.ran, collector.errors);
         self.log_crawl(id, &options, &report);
@@ -1366,7 +1427,7 @@ impl ScanService {
         };
         let crawl = Crawl {
             lineage: report.edges,
-            termination: report.termination,
+            termination: Some(report.termination),
         };
         let saved = self.save(id, plan, &options, found, errors, crawl);
         let status = if self.aborted(id) {
@@ -1495,6 +1556,11 @@ impl ScanService {
         }
     }
 
+    /// Save `found` as scan `id`'s results and bring its row's counts up to date. With a stop
+    /// reason in `crawl` this is the crawl's final save, and the correlation rules are evaluated;
+    /// without one it is a checkpoint of a crawl still running, written so a killed process keeps
+    /// what it had found, and correlations wait for the end so the rules run once, not once per
+    /// wave.
     fn save(
         &self,
         id: &str,
@@ -1546,7 +1612,12 @@ impl ScanService {
             }
             elements.retain(|element| retained.contains(&element.id));
         }
-        let (correlations, risks) = self.correlate_all(id, &found.entities, &elements);
+        let (correlations, risks) = if crawl.termination.is_some() {
+            let (correlations, risks) = self.correlate_all(id, &found.entities, &elements);
+            (correlations, Some(risks))
+        } else {
+            (Vec::new(), None)
+        };
         let modules_run: Vec<String> = found
             .outcomes
             .iter()
@@ -1573,14 +1644,16 @@ impl ScanService {
             elements,
             correlations,
             lineage: crawl.lineage,
-            termination: Some(crawl.termination),
+            termination: crawl.termination,
         })?;
         // A stop and a result-count update must not write stale copies of the same row.
         let _state = self.state();
         let mut record = self.store.get(id)?;
         record.elements = total;
         record.unique = unique;
-        record.correlations = risks;
+        if let Some(risks) = risks {
+            record.correlations = risks;
+        }
         record.errors = errors;
         record.modules_run = modules_run;
         self.store.update(&record)?;
@@ -2815,6 +2888,111 @@ mod tests {
     }
 
     #[test]
+    fn a_running_scan_checkpoints_what_it_has_found_before_the_next_wave() {
+        // A depth-1 crawl: the domain lookup answers at once with three addresses and every
+        // address lookup blocks. While they block, the scan must already have saved the domain
+        // wave's findings, so a process that dies now leaves a scan that shows them. Baseline:
+        // nothing is written until the whole crawl ends, and a killed scan recovers empty.
+        let (entered_tx, entered_rx) = mpsc::channel::<String>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let entered_tx = Mutex::new(entered_tx);
+        let release_rx = Mutex::new(release_rx);
+        let (service, dir) = with_lookup(
+            "checkpoint",
+            Arc::new(move |kind: ScanKind, selector: &str, _: &Selection| {
+                if kind == ScanKind::Domain {
+                    let evidence = Evidence::new(
+                        EvidenceProvenance::for_scan("test", "seed"),
+                        "discovered address",
+                    );
+                    return Ok(LookupOutput {
+                        text: "domain report".into(),
+                        entities: ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
+                            .into_iter()
+                            .map(|ip| {
+                                Entity::builder(EntityKind::IpAddress, ip, 0.95, "test")
+                                    .evidence(evidence.clone())
+                                    .build()
+                            })
+                            .collect(),
+                        outcomes: vec![SourceExecutionOutcome::success("crtsh", 1, 3)],
+                    });
+                }
+                entered_tx
+                    .lock()
+                    .unwrap()
+                    .send(selector.to_owned())
+                    .unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+                Ok(LookupOutput {
+                    text: format!("completed-{selector}"),
+                    ..LookupOutput::default()
+                })
+            }),
+        );
+        let record = service
+            .start(&ScanRequest {
+                target: "example.org".into(),
+                kind: Some("domain".into()),
+                options: ScanOptions {
+                    depth: 1,
+                    ..ScanOptions::default()
+                },
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        let _entered = entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        // The address lookups are blocked: the scan runs, and generation 0 is on disk.
+        let row = service.store().get(&record.id).unwrap();
+        assert_eq!(row.status, ScanStatus::Running);
+        let partial = service
+            .store()
+            .results(&record.id)
+            .unwrap()
+            .expect("the domain wave is saved before the address wave runs");
+        assert_eq!(
+            partial.termination, None,
+            "a checkpoint claims no stop reason"
+        );
+        let addresses: BTreeSet<&str> = partial
+            .elements
+            .iter()
+            .filter(|element| element.kind == "IP_ADDRESS")
+            .map(|element| element.data.as_str())
+            .collect();
+        assert_eq!(addresses, BTreeSet::from(["1.1.1.1", "8.8.8.8", "9.9.9.9"]));
+        assert_eq!(partial.text, "domain report");
+        assert_eq!(partial.outcomes.len(), 1);
+        assert!(
+            partial.correlations.is_empty(),
+            "the rules run once, when the crawl ends"
+        );
+        let shown = partial
+            .elements
+            .iter()
+            .filter(|element| element.kind != "ROOT")
+            .count();
+        assert!(shown >= 3, "{shown} elements shown for three addresses");
+        assert_eq!(
+            (row.elements, row.modules_run.as_slice()),
+            (shown, ["crtsh".to_owned()].as_slice()),
+            "the row counts the checkpoint while the scan runs"
+        );
+        // Every address lookup finishes: the final save supersedes the checkpoint.
+        for _ in 0..3 {
+            release_tx.send(()).unwrap();
+        }
+        let done = service
+            .wait(&record.id, Instant::now() + Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(done.status, ScanStatus::Finished);
+        let whole = service.store().results(&record.id).unwrap().unwrap();
+        assert!(whole.termination.is_some(), "the final save names the stop");
+        assert!(whole.text.contains("completed-1.1.1.1"), "{}", whole.text);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn stopping_active_graph_batch_signals_cancellation_and_retains_results() {
         let (entered_tx, entered_rx) = mpsc::channel::<String>();
         let (release_tx, release_rx) = mpsc::channel::<()>();
@@ -3060,16 +3238,16 @@ mod tests {
             "batch-admission",
             Arc::new(|_, _, _| Ok(LookupOutput::default())),
         );
-        let selection = chosen(&ScanOptions::default()).unwrap();
-        let collector = ScanCollector {
-            service: &service,
-            id: "batch-admission",
-            chosen: &selection,
-            text: String::new(),
-            ran: 0,
-            errors: 0,
-            breach_checked: BTreeSet::new(),
-        };
+        let options = ScanOptions::default();
+        let selection = chosen(&options).unwrap();
+        let scan_plan = plan("jane@example.org", Some("email")).unwrap();
+        let collector = ScanCollector::new(
+            &service,
+            "batch-admission",
+            &scan_plan,
+            &options,
+            &selection,
+        );
         let email = CrawlTarget {
             kind: ScanKind::Email,
             selector: "jane@example.org".into(),
@@ -3290,20 +3468,15 @@ mod tests {
                 ..ScanRequest::default()
             })
             .unwrap();
-        let selection = chosen(&ScanOptions::default()).unwrap();
+        let options = ScanOptions::default();
+        let selection = chosen(&options).unwrap();
+        let scan_plan = plan("example.org", Some("domain")).unwrap();
         let target = CrawlTarget {
             kind: ScanKind::Ip,
             selector: "1.1.1.1".into(),
         };
-        let mut collector = ScanCollector {
-            service: &service,
-            id: &record.id,
-            chosen: &selection,
-            text: String::new(),
-            ran: 0,
-            errors: 0,
-            breach_checked: BTreeSet::new(),
-        };
+        let mut collector =
+            ScanCollector::new(&service, &record.id, &scan_plan, &options, &selection);
         service.state().aborts.insert(record.id.clone());
         let cancelled = crate::graph_exec::TaskRecord {
             state: TaskState::Cancelled,
