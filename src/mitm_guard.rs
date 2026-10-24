@@ -404,8 +404,8 @@ mod tests {
     fn mixed_security_is_review_not_proof() {
         let r = assess(
             &[
-                ap("Aspley Carsel", "9c:05:d6:7a:9b:e1", Security::Wpa2),
-                ap("Aspley Carsel", "c4:f1:74:6d:8f:e7", Security::Wpa3),
+                ap("LabNet", "02:11:22:33:44:55", Security::Wpa2),
+                ap("LabNet", "02:22:33:44:55:66", Security::Wpa3),
             ],
             None,
             "fixture",
@@ -421,8 +421,8 @@ mod tests {
     fn duplicate_name_same_security_is_not_evil_twin() {
         let r = assess(
             &[
-                ap("Pretty Fly for a Wifi", "58:04:4f:d9:df:0e", Security::Wpa2),
-                ap("Pretty Fly for a Wifi", "cc:ba:bd:e0:43:56", Security::Wpa2),
+                ap("MeshLab", "02:33:44:55:66:77", Security::Wpa2),
+                ap("MeshLab", "02:44:55:66:77:88", Security::Wpa2),
             ],
             None,
             "fixture",
@@ -459,8 +459,8 @@ mod tests {
     fn unidentifiable_ssid_placeholder_is_not_a_shared_network() {
         let result = assess(
             &[
-                ap("(no SSID)", "9c:05:d6:7a:9b:e1", Security::Wpa2),
-                ap("(no SSID)", "c4:f1:74:6d:8f:e7", Security::Wpa3),
+                ap("(no SSID)", "02:11:22:33:44:55", Security::Wpa2),
+                ap("(no SSID)", "02:22:33:44:55:66", Security::Wpa3),
             ],
             None,
             "fixture",
