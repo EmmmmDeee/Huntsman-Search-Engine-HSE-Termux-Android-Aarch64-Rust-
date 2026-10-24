@@ -2168,6 +2168,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn local_evidence_cannot_be_read_from_a_public_bind_even_with_token() {
+        for path in ["/evidence", "/api/evidence"] {
+            let request = format!(
+                "GET {path} HTTP/1.1\r\nHost: public.example\r\nAuthorization: Bearer secret\r\n\r\n"
+            );
+            let answer = response_for_request(&request, Some("secret"), public_bind());
+            assert!(answer.starts_with("HTTP/1.1 403"), "{path}: {answer}");
+        }
+    }
+
+    #[test]
+    fn evidence_html_has_a_dedicated_script_free_policy() {
+        let headers = response_head(200, "text/html; charset=utf-8; hse=dossier", 10, "");
+        assert!(headers.contains("script-src 'none'; style-src 'sha256-"));
+        assert!(!headers.contains("unsafe-inline"));
+        assert!(headers.contains("frame-ancestors 'none'"));
+    }
+
     /// Running out of descriptors or memory must not end `serve`, and losing the pending
     /// connection must not even pause it; only a listener that can never accept again ends it.
     #[test]
