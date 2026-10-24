@@ -1277,3 +1277,86 @@ fn a_truncated_comment_chain_is_not_emitted_as_a_complete_comment() {
     let terminated = gif(&[gif_comment(b"note")]);
     assert_eq!(field(&parse(&terminated), "gif:Comment"), Some("note"));
 }
+
+// ── JPEG IPTC (Photoshop APP13) ──────────────────────────────────────────────────────────
+
+/// A JPEG whose only metadata is an IPTC IIM block carrying `datasets` (record, dataset, value),
+/// wrapped in a `8BIM` `0x0404` resource inside a `Photoshop 3.0` APP13 segment.
+fn jpeg_with_iptc(datasets: &[(u8, u8, &[u8])]) -> Vec<u8> {
+    let mut iptc = Vec::new();
+    for &(record, dataset, value) in datasets {
+        iptc.push(0x1C);
+        iptc.push(record);
+        iptc.push(dataset);
+        iptc.extend_from_slice(&u16::try_from(value.len()).unwrap().to_be_bytes());
+        iptc.extend_from_slice(value);
+    }
+    // 8BIM resource: signature, id 0x0404, empty Pascal name (length 0 padded to even), size, data.
+    let mut irb = b"8BIM".to_vec();
+    irb.extend_from_slice(&0x0404u16.to_be_bytes());
+    irb.extend_from_slice(&[0x00, 0x00]);
+    irb.extend_from_slice(&u32::try_from(iptc.len()).unwrap().to_be_bytes());
+    irb.extend_from_slice(&iptc);
+    if iptc.len() % 2 == 1 {
+        irb.push(0x00);
+    }
+    let mut payload = b"Photoshop 3.0\0".to_vec();
+    payload.extend_from_slice(&irb);
+    // JPEG: SOI, APP13 (marker + two-byte length covering itself), payload, EOI.
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xED];
+    jpeg.extend_from_slice(&u16::try_from(payload.len() + 2).unwrap().to_be_bytes());
+    jpeg.extend_from_slice(&payload);
+    jpeg.extend_from_slice(&[0xFF, 0xD9]);
+    jpeg
+}
+
+#[test]
+fn reads_jpeg_iptc_byline_caption_location_and_keywords() {
+    let jpeg = jpeg_with_iptc(&[
+        (2, 0, b"\x00\x02"), // record version: binary, must be ignored
+        (2, 80, b"Jane Doe"),
+        (2, 122, b"Ada Lovelace"),
+        (2, 120, b"Protest in the square"),
+        (2, 90, b"Kyiv"),
+        (2, 101, b"Ukraine"),
+        (2, 110, b"Reuters"),
+        (2, 25, b"protest"),
+        (2, 25, b"march"),
+    ]);
+    let parsed = parse(&jpeg);
+    assert_eq!(parsed.format, "JPEG");
+    assert_eq!(field(&parsed, "iptc:Byline"), Some("Jane Doe"));
+    assert_eq!(field(&parsed, "iptc:CaptionWriter"), Some("Ada Lovelace"));
+    assert_eq!(
+        field(&parsed, "iptc:Caption"),
+        Some("Protest in the square")
+    );
+    assert_eq!(field(&parsed, "iptc:City"), Some("Kyiv"));
+    assert_eq!(field(&parsed, "iptc:CountryName"), Some("Ukraine"));
+    assert_eq!(field(&parsed, "iptc:Credit"), Some("Reuters"));
+    // A repeated dataset keeps each value.
+    assert_eq!(field(&parsed, "iptc:Keywords"), Some("protest; march"));
+    // Exactly the seven mapped fields are surfaced; the binary record-version dataset leaks none.
+    let iptc = parsed
+        .fields
+        .iter()
+        .filter(|(k, _)| k.starts_with("iptc:"))
+        .count();
+    assert_eq!(iptc, 7);
+}
+
+#[test]
+fn a_jpeg_without_iptc_yields_no_iptc_fields() {
+    let parsed = parse(&jpeg_with_xmp());
+    assert_eq!(parsed.format, "JPEG");
+    assert!(parsed.fields.iter().all(|(k, _)| !k.starts_with("iptc:")));
+}
+
+#[test]
+fn every_truncation_of_a_jpeg_iptc_block_is_read_never_a_panic() {
+    let full = jpeg_with_iptc(&[(2, 80, b"Jane Doe"), (2, 120, b"a caption")]);
+    for cut in 0..=full.len() {
+        let outcome = std::panic::catch_unwind(|| parse(&full[..cut]));
+        assert!(outcome.is_ok(), "cut {cut} panicked");
+    }
+}
