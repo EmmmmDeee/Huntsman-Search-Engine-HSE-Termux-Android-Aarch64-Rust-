@@ -913,6 +913,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "Shodan host with every service banner, CVE and TLS detail, and DNS records (key; DNS spends a query credit)",
     },
     ReachableModule {
+        name: "censys",
+        command: "ip ADDRESS",
+        access: "operator_key",
+        network: true,
+        category: ModuleCategory::Threat,
+        attack_techniques: &["T1596.005"],
+        description: "Censys Platform v3 host ports, network, DNS and location (free-plan PAT)",
+    },
+    ReachableModule {
         name: "pulsedive",
         command: "ip ADDRESS | domain DOMAIN",
         access: "keyless",
