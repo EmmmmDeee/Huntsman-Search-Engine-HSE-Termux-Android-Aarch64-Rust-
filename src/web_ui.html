@@ -1497,12 +1497,15 @@ async function loadSettings(){
   try{keyslots=await api('/api/settings/keys')}catch(_){keyslots=null}
   kv('gopts',base.concat((settings.global||[]).map(g=>[g.description?g.description[0].toUpperCase()+g.description.slice(1):g.key,show(g.value)]),keyslots?[['Keys file',keyslots.file]]:[]));
   $('kimp').hidden=!keyslots;keyWarning();showMods();
-  try{showRules(await api('/api/correlationrules'))}catch(_){$('rules-p').hidden=true}
+  try{showRules(await api('/api/correlationrules'))}catch(e){if(/^HTTP 404/.test(String(e&&e.message||e)))$('rules-p').hidden=true;else fail('gerror',String(e&&e.message||e))}
 }
 function showRules(rules){
-  const tb=$('rules');tb.replaceChildren();$('rules-p').hidden=false;$('rules-n').textContent=rules.length;
+  const tb=$('rules');tb.replaceChildren();$('rules-p').hidden=false;$('rules-n').textContent=rules.filter(r=>!r.error).length;
   for(const r of rules){
-    const tr=el('tr'),d=el('details','corr');
+    const tr=el('tr');
+    // A rule file that did not load runs over no scan: it is named here, with the reason, where its results would have been.
+    if(r.error){put(tr,'',el('div','alert','Not loaded: '+(r.id||'')+' · '+r.error)).classList.add('wide');put(tr,'Risk','');put(tr,'Origin',r.origin||'not loaded');tb.append(tr);continue}
+    const d=el('details','corr');
     d.append(el('summary','',r.name||r.id));
     if(r.descr)d.append(el('p','ent-m',r.descr));
     d.append(el('p','ent-m mono',r.id));

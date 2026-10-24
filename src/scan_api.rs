@@ -48,7 +48,7 @@ use crate::scan_export;
 use crate::scan_search;
 use crate::scan_service::{MAX_RUNNING, ScanRequest, ScanService, ServiceError};
 use crate::scan_store::{LogLevel, Risk, ScanOptions, ScanRecord, ScanResults, ScanStatus};
-use crate::sf_correlate::Rule;
+use crate::sf_correlate::{Rule, RuleError};
 use crate::sf_elements::{self, DataElement};
 use crate::sf_types;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
@@ -921,7 +921,10 @@ impl ScanApi {
     }
 
     fn correlation_rules(&self) -> ApiResponse {
-        ok(200, &correlation_rules(self.service.rules()))
+        ok(
+            200,
+            &correlation_rules(self.service.rules(), self.service.rule_errors()),
+        )
     }
 
     fn log(&self, id: &str, level: Option<&str>) -> ApiResponse {
@@ -1146,8 +1149,12 @@ fn unflag_blocked<'a>(
 /// Spiderfoot's `correlationrules` (id, name, descr, risk) for every rule a scan runs:
 /// Huntsman's own, then `rules`, each with where it came from and, for those, the rule as
 /// written (`logic`).
+/// After them, each rule that did not load (see [`sf_correlate::with_dir`]): a row whose `origin`
+/// is `not loaded`, whose `id` and `name` are the file, whose `descr` and `error` are the reason,
+/// with no risk and no logic, so the Settings panel and `scans rules --json` show a broken rule
+/// where its results would have been instead of leaving it to the service's log.
 #[must_use]
-pub fn correlation_rules(rules: &[Rule]) -> Value {
+pub fn correlation_rules(rules: &[Rule], errors: &[RuleError]) -> Value {
     let mut rows: Vec<Value> = rule_catalog()
         .into_iter()
         .map(|rule| {
@@ -1169,6 +1176,17 @@ pub fn correlation_rules(rules: &[Rule]) -> Value {
             "risk": rule.risk.as_str(),
             "origin": rule.origin,
             "logic": rule.yaml,
+        })
+    }));
+    rows.extend(errors.iter().map(|failure| {
+        json!({
+            "id": failure.rule,
+            "name": failure.rule,
+            "descr": failure.reason,
+            "risk": "",
+            "origin": "not loaded",
+            "logic": "",
+            "error": failure.reason,
         })
     }));
     Value::Array(rows)
@@ -1684,6 +1702,53 @@ mod tests {
             .status,
             405
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rule file that did not load is in the rules answer, after the rules that did, as a row
+    /// named by the id its file would have given it, whose origin is `not loaded` and whose error
+    /// is the reason, so the Settings panel can show it where its results would have been; the
+    /// loaded rules are unchanged by it.
+    #[test]
+    fn a_rule_that_did_not_load_is_named_in_the_rules_answer() {
+        let dir = scratch("broken-rule");
+        let rules_dir = dir.join("correlations");
+        std::fs::create_dir_all(&rules_dir).unwrap();
+        std::fs::write(
+            rules_dir.join("broken.yaml"),
+            "id: broken\nversion: 1\nmeta:\n  name: [unterminated\n",
+        )
+        .unwrap();
+        let (rules, errors) = crate::sf_correlate::with_dir(&rules_dir);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        let lookup = Arc::new(|_kind: ScanKind, selector: &str, _: &Selection| {
+            Ok(LookupOutput {
+                text: "report".into(),
+                entities: vec![Entity::builder(EntityKind::IpAddress, selector, 0.9, "s").build()],
+                outcomes: vec![SourceExecutionOutcome::success("internetdb", 1, 1)],
+            })
+        });
+        let service = ScanService::with_rules(
+            ScanStore::open(&dir.join("scans")).unwrap(),
+            lookup,
+            rules,
+            errors,
+        );
+        let api = ScanApi::new(service, None);
+        let answer = body(&api.handle("GET", "/api/correlationrules", ""));
+        let rows = answer.as_array().unwrap();
+        let (broken, loaded): (Vec<&Value>, Vec<&Value>) =
+            rows.iter().partition(|row| row["origin"] == "not loaded");
+        assert_eq!(loaded.len(), rule_catalog().len() + 37);
+        assert!(loaded.iter().all(|row| row.get("error").is_none()));
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        let broken = broken[0];
+        assert_eq!(broken["id"], "broken", "{broken}");
+        assert_eq!(broken["name"], broken["id"]);
+        assert!(!broken["error"].as_str().unwrap().is_empty(), "{broken}");
+        assert_eq!(broken["descr"], broken["error"]);
+        assert_eq!(broken["risk"], "");
+        assert_eq!(broken["logic"], "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
