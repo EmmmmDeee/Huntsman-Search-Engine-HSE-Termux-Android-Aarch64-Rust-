@@ -153,6 +153,24 @@ mod tests {
     }
 
     #[test]
+    fn invalid_dates_cannot_supply_corroboration() {
+        let mut invalid = observation(Indicator::WageWithholding, "publisher-a", "a");
+        invalid.observed_at = "2026-02-30".into();
+        let valid = observation(Indicator::WageWithholding, "publisher-b", "b");
+        let result = ReviewPolicy::default().assess(&[invalid, valid]);
+        assert_eq!(result.status, AssessmentStatus::InsufficientEvidence);
+        assert_eq!(result.independent_origins, 1);
+    }
+
+    #[test]
+    fn leap_year_dates_are_checked() {
+        assert!(valid_observation_date("2024-02-29"));
+        assert!(!valid_observation_date("2026-02-29"));
+        assert!(!valid_observation_date("2026-13-01"));
+        assert!(!valid_observation_date("2026-01-01T00:00:00Z"));
+    }
+
+    #[test]
     fn oversized_observation_set_abstains_without_partial_assessment() {
         let observations = vec![
             observation(Indicator::WageWithholding, "publisher-a", "source-a");
