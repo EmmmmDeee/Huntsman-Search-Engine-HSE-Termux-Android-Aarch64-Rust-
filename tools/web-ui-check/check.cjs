@@ -218,8 +218,9 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         source: 'termux-wifi-scaninfo', acquisition: 'android_cached_scan_results_not_active_scan',
         status: 'stale_only', observed: 1, rejected: 0,
         observations: [{
-          sighting: { network_id: '3c:5a:b4:11:22:33', name: 'fixture', signal_dbm: -58 },
-          band: '5GHz', age_secs: 900, freshness: 'stale'
+          sighting: { network_id: '3c:5a:b4:11:22:33', name: 'fixture', signal_dbm: -58, encryption: '[WPA2-PSK-CCMP][ESS]' },
+          band: '5GHz', frequency_mhz: 5180, channel_bandwidth_mhz: '80', capabilities: '[WPA2-PSK-CCMP][ESS]',
+          os_timestamp_us: 1234567890, age_secs: 900, freshness: 'stale'
         }]
       };
       let radarCalls = 0, lookupHeader = false;
@@ -242,6 +243,9 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         await page.isHidden('#rerror') && radarText.includes('3c:5a:b4:11:22:33') &&
         radarText.includes('900') && radarText.includes('stale') && await page.isEnabled('#rdownload'),
         radarText);
+      check(`${scheme}: Radar shows every observation field the adapter fills, not only the coarse band`,
+        radarText.includes('5180') && radarText.includes('80') && radarText.includes('[WPA2-PSK-CCMP][ESS]') &&
+        radarText.includes('1234567890'), radarText);
       const [radarDownload] = await Promise.all([
         page.waitForEvent('download', { timeout: 10000 }), page.click('#rdownload')
       ]);
