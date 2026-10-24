@@ -197,7 +197,7 @@ pub fn assess(scan: &WifiScan, baseline: &TrustedBaseline) -> Result<Report, Str
     let mut inspected = 0;
     let mut any_unknown = false;
     for obs in &scan.observations {
-        if obs.freshness == "stale" || obs.sighting.name.as_deref() != Some(&baseline.ssid) {
+        if obs.freshness == "stale" || obs.sighting.name.as_deref() != Some(baseline.ssid.as_str()) {
             continue;
         }
         let bssid = obs.sighting.network_id.to_ascii_lowercase();
