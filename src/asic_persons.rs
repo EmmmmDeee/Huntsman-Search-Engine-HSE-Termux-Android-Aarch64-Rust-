@@ -1267,8 +1267,7 @@ mod tests {
         let challenge = Response {
             status: 200,
             headers: vec![("content-type".into(), "text/html".into())],
-            body: b"<html>Just a moment... checking your browser Cloudflare</html>"
-                .to_vec(),
+            body: b"<html>Just a moment... checking your browser Cloudflare</html>".to_vec(),
             truncated: false,
         };
         let empty = json_ok(r#"{"success":true,"result":{"records":[]}}"#);
