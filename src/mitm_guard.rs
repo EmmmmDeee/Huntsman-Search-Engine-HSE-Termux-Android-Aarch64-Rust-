@@ -1,10 +1,11 @@
 //! Evidence-gated, advisory MITM/evil-twin Wi-Fi assessment for rootless Android.
 //! Only scans and operator-supplied baselines are used; no packet injection,
 //! deauthentication, raw monitor mode, forced disconnect, or credential collection.
-//! Research: arxiv.org/abs/2406.01927 (rogue AP positioning),
-//! arxiv.org/abs/2108.09062 (ARP anomaly evidence), and
-//! arxiv.org/abs/2601.22770 (Android TLS validation vulnerabilities).
-//! These motivate evidence gates only; no paper classifier is reproduced.
+//! Research basis: arxiv.org/abs/1903.05843 (evil-twin fingerprints),
+//! 2203.00579 (multi-channel MITM review), 2302.00338 (802.1X certificates),
+//! 2110.04259 (WPA3 IDS), 2512.10470 (rogue AP NIDS blind spots), and
+//! 2601.22770 (Android TLS validation).
+//! Research methods need additional sensors; no paper classifier is reproduced.
 //! A scan cannot establish interception: all output is explicitly unconfirmed.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,16 +31,21 @@ impl Security {
     #[must_use]
     pub fn parse(text: &str) -> Self {
         let u = text.to_ascii_uppercase();
-        // Advertisements can expose mixed WPA2/WPA3 transition modes.
-        // A legacy WPA2 fallback still exists even when SAE is advertised.
-        if u.contains("WPA2") || (u.contains("RSN") && (u.contains("SAE") || u.contains("WPA3"))) {
+        // Classify the weakest advertised mode: transition-mode SAE/PSK
+        // can still accept WPA2 and mixed WPA/WPA2 can accept legacy WPA.
+        // RSN-PSK is WPA2, not WPA1. Preserve Unknown for absent metadata.
+        if u.contains("WEP") {
+            Self::Wep
+        } else if u.contains("[WPA-") || u.contains("WPA1") {
+            Self::Wpa
+        } else if u.contains("WPA2") || (u.contains("RSN") && u.contains("PSK")) {
             Self::Wpa2
         } else if u.contains("WPA3") || u.contains("SAE") {
             Self::Wpa3
-        } else if u.contains("WPA") || u.contains("PSK") || u.contains("RSN") {
+        } else if u.contains("RSN") {
+            Self::Wpa2
+        } else if u.contains("WPA") {
             Self::Wpa
-        } else if u.contains("WEP") {
-            Self::Wep
         } else if u.trim() == "OPEN"
             || (u.contains("[ESS]")
                 && !u.contains("PSK")
@@ -108,7 +114,10 @@ pub fn parse_baseline(bytes: &[u8]) -> Result<Baseline, String> {
         {
             return Err("baseline requires 1..256 valid individual BSSIDs per SSID".into());
         }
-        if Security::parse(&n.minimum_security).ordinal().is_none() {
+        if !matches!(
+            n.minimum_security.trim().to_ascii_uppercase().as_str(),
+            "OPEN" | "WEP" | "WPA" | "WPA2" | "WPA3"
+        ) {
             return Err("baseline minimum_security must be OPEN, WEP, WPA, WPA2, or WPA3".into());
         }
     }
@@ -180,7 +189,16 @@ pub fn assess(
                 let downgrade = minimum
                     .zip(ap.security.ordinal())
                     .is_some_and(|(min, current)| current < min);
-                if downgrade {
+                if ap.security == Security::Unknown {
+                    findings.push(Finding {
+                        code: "trusted_ssid_security_unverified",
+                        severity: "review",
+                        ssid: (*ssid).to_owned(),
+                        bssid: Some(ap.bssid.clone()),
+                        evidence: "Observed security capabilities are unavailable; this does not prove a downgrade or confirm baseline compliance.".into(),
+                        resolution: "Verify the selected network's security and certificate configuration in Android settings or with the network administrator.",
+                    });
+                } else if downgrade {
                     findings.push(Finding {
                         code: "security_below_trusted_floor",
                         severity: "high",
@@ -274,6 +292,24 @@ pub fn from_wifi_scan(scan: &WifiScan, baseline: Option<&Baseline>) -> Report {
         })
         .collect();
     assess(&observations, baseline, scan.source, scan.rejected)
+}
+
+/// Offline Termux replay is useful for historical comparisons, but never
+/// treated as evidence of a *currently nearby* adversary.
+#[must_use]
+pub fn from_wifi_replay(scan: &WifiScan, baseline: Option<&Baseline>) -> Report {
+    let observations: Vec<_> = scan.observations.iter().map(|row| AccessPoint {
+        ssid: row.sighting.name.clone().unwrap_or_default(),
+        bssid: row.sighting.network_id.clone(),
+        security: Security::parse(row.capabilities.as_deref()
+            .or(row.sighting.encryption.as_deref()).unwrap_or("")),
+        frequency_mhz: row.frequency_mhz,
+    }).collect();
+    let mut report = assess(&observations, baseline, "termux_wifi_replay_unverified", scan.rejected);
+    if report.status == "unconfirmed_indicators" {
+        report.status = "historical_unconfirmed_indicators";
+    }
+    report
 }
 
 /// Reads the normalized WiGLE JSONL export without treating Bluetooth/cell
@@ -460,6 +496,29 @@ mod tests {
         let result = from_wifi_scan(&current, Some(&baseline));
         assert_eq!(result.status, "unconfirmed_indicators");
         assert_eq!(result.findings.len(), 1);
+    }
+
+    #[test]
+    fn rsn_psk_is_not_legacy_wpa_and_unknown_security_is_review_only() {
+        assert_eq!(Security::parse("[RSN-PSK-CCMP][ESS]"), Security::Wpa2);
+        assert_eq!(Security::parse("[WPA-PSK][WPA2-PSK][ESS]"), Security::Wpa);
+        let baseline = parse_baseline(br#"{"networks":[{"ssid":"Corp","bssids":["3c:5a:b4:11:22:33"],"minimum_security":"WPA3"}]}"#).unwrap();
+        let report = assess(&[ap("Corp", "3c:5a:b4:11:22:33", Security::Unknown)], Some(&baseline), "fixture", 0);
+        assert_eq!(report.findings[0].code, "trusted_ssid_security_unverified");
+        assert_eq!(report.findings[0].severity, "review");
+        assert!(!report.mitm_confirmed);
+        assert!(parse_baseline(br#"{"networks":[{"ssid":"Corp","bssids":["3c:5a:b4:11:22:33"],"minimum_security":"WPA3+OPEN"}]}"#).is_err());
+    }
+
+    #[test]
+    fn replay_is_historical_not_a_live_warning() {
+        let raw = br#"[{"bssid":"3c:5a:b4:11:22:33","ssid":"Corp","rssi":-40,"capabilities":"[ESS]"}]"#;
+        let baseline = parse_baseline(br#"{"networks":[{"ssid":"Corp","bssids":["3c:5a:b4:11:22:33"],"minimum_security":"WPA3"}]}"#).unwrap();
+        let scan = crate::wifi_radar::parse_replay(raw).unwrap();
+        let report = from_wifi_replay(&scan, Some(&baseline));
+        assert_eq!(report.status, "historical_unconfirmed_indicators");
+        assert_eq!(report.findings[0].code, "security_below_trusted_floor");
+        assert!(!report.mitm_confirmed);
     }
 
     #[test]
