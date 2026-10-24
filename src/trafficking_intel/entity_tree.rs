@@ -139,17 +139,9 @@ impl EntityTree {
         max_depth: usize,
         max_nodes: usize,
     ) -> Result<Vec<TreeEntry>, GraphError> {
-        self.validate()?;
-        let filtered = Self {
-            nodes: self.nodes.clone(),
-            edges: self
-                .edges
-                .iter()
-                .filter(|edge| !edge.alleged && edge.kind != RelationshipKind::AllegedAssociation)
-                .cloned()
-                .collect(),
-        };
-        filtered.expand(root, max_depth, max_nodes)
+        self.expand_filtered(root, max_depth, max_nodes, |edge| {
+            !edge.alleged && edge.kind != RelationshipKind::AllegedAssociation
+        })
     }
 
     /// Bounded breadth-first expansion for a simple, cycle-safe entity tree.
@@ -160,13 +152,28 @@ impl EntityTree {
         max_depth: usize,
         max_nodes: usize,
     ) -> Result<Vec<TreeEntry>, GraphError> {
-        let adj = self.adjacency()?;
-        if !adj.contains_key(root) {
+        self.expand_filtered(root, max_depth, max_nodes, |_| true)
+    }
+
+    fn expand_filtered(
+        &self,
+        root: &str,
+        max_depth: usize,
+        max_nodes: usize,
+        include: impl Fn(&EntityEdge) -> bool,
+    ) -> Result<Vec<TreeEntry>, GraphError> {
+        self.validate()?;
+        if !self.nodes.iter().any(|node| node.id == root) {
             return Err(GraphError::UnknownEndpoint(root.to_owned()));
         }
         let limit = max_nodes.min(10_000);
         if limit == 0 {
             return Ok(Vec::new());
+        }
+        let mut adj: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for edge in self.edges.iter().filter(|edge| include(edge)) {
+            adj.entry(&edge.from).or_default().insert(&edge.to);
+            adj.entry(&edge.to).or_default().insert(&edge.from);
         }
         let mut visited = BTreeSet::new();
         let mut queue = std::collections::VecDeque::new();
@@ -192,9 +199,9 @@ impl EntityTree {
                     if visited.len() >= limit {
                         break;
                     }
-                    if visited.insert(neighbour.clone()) {
+                    if visited.insert((*neighbour).to_owned()) {
                         queue.push_back(TreeEntry {
-                            id: neighbour.clone(),
+                            id: (*neighbour).to_owned(),
                             depth: depth + 1,
                             parent: Some(parent_id.clone()),
                         });
