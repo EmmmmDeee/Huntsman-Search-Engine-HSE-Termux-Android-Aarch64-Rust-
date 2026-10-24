@@ -1,0 +1,28 @@
+name: Temporary MITM formatter extraction
+on:
+  pull_request:
+    paths:
+      - "src/mitm.rs"
+      - "src/cli/mitm.rs"
+      - "tests/mitm_cli.rs"
+      - ".github/workflows/mitm-format-helper.yml"
+permissions:
+  contents: read
+jobs:
+  emit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned
+        with:
+          toolchain: "1.99"
+      - name: Format and emit source for extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          for path in src/mitm.rs src/cli/mitm.rs tests/mitm_cli.rs; do
+            printf 'HSE_FORMAT_BEGIN:%s\n' "$path"
+            base64 -w0 "$path"
+            printf '\nHSE_FORMAT_END:%s\n' "$path"
+          done
