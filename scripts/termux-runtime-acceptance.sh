@@ -77,7 +77,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-for cmd in timeout curl date grep cmp chmod mktemp rm tee tail sleep uname; do
+for cmd in timeout curl jq date grep cmp chmod mktemp rm tee tail sleep uname; do
   command -v "$cmd" >/dev/null 2>&1 || fail "required Termux command not found: $cmd"
 done
 
@@ -197,6 +197,48 @@ wait_for_health() {
   return 1
 }
 
+# End-to-end parity: one saved offline scan, all major read-only web surfaces.
+# The API returns whole JSON arrays; the UI alone paginates visible rows. Fail on
+# invalid JSON, missing evidence, mismatched totals or an over-limit export.
+verify_saved_scan_surfaces() {
+  local base="$1" scan="$2" root="$base/api/scans/$scan"
+  local endpoint file
+
+  for endpoint in summary elements correlations graph log; do
+    file="$WORK_DIR/saved-$endpoint.json"
+    curl --fail --silent --show-error --max-time 10 -H 'X-Huntsman-Lookup: 1' \
+      "$root/$endpoint" -o "$file" || return 1
+    jq -e . "$file" >/dev/null || return 1
+  done
+
+  for endpoint in summary elements correlations log; do
+    jq -e 'type == "array"' "$WORK_DIR/saved-$endpoint.json" >/dev/null || return 1
+  done
+  jq -e '(.nodes | type == "array") and (.edges | type == "array")' \
+    "$WORK_DIR/saved-graph.json" >/dev/null || return 1
+
+  # A pagination/serialization regression must not pass merely because each
+  # independently truncated array remains syntactically valid JSON.
+  local actual expected
+  actual="$(jq 'length' "$WORK_DIR/saved-elements.json")" || return 1
+  expected="$(jq '[.[].total] | add // 0' "$WORK_DIR/saved-summary.json")" || return 1
+  [ "$actual" -eq "$expected" ] || {
+    note "saved element mismatch: API elements=$actual summary total=$expected"
+    return 1
+  }
+
+  curl --fail --silent --show-error --max-time 10 -H 'X-Huntsman-Lookup: 1' \
+    "$root/evidence?format=json" -o "$WORK_DIR/saved-evidence.json" || return 1
+  jq -e '.status == "FULL_REGISTER" and (.records | type == "array" and length > 0)' \
+    "$WORK_DIR/saved-evidence.json" >/dev/null || return 1
+
+  jq -e '(.sources | type == "array") and
+    (.source_execution_summary.unit == "source_execution") and
+    (.uncertainty_register.items | type == "array")' \
+    "$WORK_DIR/lookup-scan.json" >/dev/null || return 1
+  pass "saved scan surfaces, evidence register and element/summary counts agree"
+}
+
 verify_api() {
   local base="$1"
   local modules="$WORK_DIR/modules.json"
@@ -236,6 +278,7 @@ verify_api() {
   curl --fail --silent --show-error --max-time 5 -H 'X-Huntsman-Lookup: 1' \
     "$base/api/scans/$scan" -o "$WORK_DIR/lookup-scan.json" || return 1
   grep -q '"status":"FINISHED"' "$WORK_DIR/lookup-scan.json" || return 1
+  verify_saved_scan_surfaces "$base" "$scan" || return 1
   # Without the header the lookup must be refused, so a page on another site cannot run one.
   [ "$(curl --silent --max-time 5 -o /dev/null -w '%{http_code}' "$base/api/lookup?kind=phone&q=%2B61412345678")" = 403 ] || return 1
   if [ -z "$PERSISTED_SCAN" ]; then PERSISTED_SCAN="$scan"; fi
