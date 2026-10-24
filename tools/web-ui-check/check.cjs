@@ -365,6 +365,23 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         stamped.test(fieldsText) && stamped.test(entitiesText) && entitiesText.includes('docmeta') &&
         reportText.includes('holiday.jpg') && reportText.includes('Fixture Camera 2'),
         { claimsText, entitiesText: entitiesText.slice(0, 200), report: reportText.length });
+      // The file is kept as a saved scan: its fields outlive the answer, under Scans and in every export.
+      const keptText = await page.textContent('#ikept');
+      const keptId = (keptText.match(/Kept as scan ([0-9a-f]{16}) \(FINISHED\)/) || [])[1];
+      const keptScan = keptId ? await api(page, '/api/scans/' + keptId) : null;
+      const keptElements = keptId ? await api(page, '/api/scans/' + keptId + '/elements') : [];
+      const keptKinds = keptElements.map(e => e.type + ':' + e.data);
+      check(`${scheme}: an inspected file is kept as a FINISHED scan of the file holding its fields and GPS position`,
+        !!keptScan && keptScan.status === 'FINISHED' && keptScan.target === 'holiday.jpg' && keptScan.target_type === 'HSE_DOCUMENT' && keptScan.kind === 'inspect' &&
+        keptKinds.includes('HSE_DOCUMENT:holiday.jpg') && keptKinds.includes('PHYSICAL_COORDINATES:48.850000,2.333333') &&
+        keptElements.some(e => e.type === 'HSE_DOCUMENT' && JSON.stringify(e.raw || null).includes('Fixture Camera 2')),
+        { keptText, keptScan, keptKinds: keptKinds.slice(0, 8) });
+      await page.click('#ikept button');
+      await page.waitForSelector('#view-scan:not([hidden])', { timeout: 5000 }).catch(() => {});
+      const keptMeta = await page.textContent('#scmeta');
+      check(`${scheme}: Open scan reaches the kept scan`, keptMeta.includes('holiday.jpg') && keptMeta.includes('HSE_DOCUMENT'), keptMeta);
+      await page.evaluate(() => { location.hash = '#/inspect'; });
+      await page.waitForSelector('#view-inspect:not([hidden])', { timeout: 5000 });
       await audit(page, `${scheme} inspect result`);
       await page.setInputFiles('#ifile', []);
       await page.click('#irun');

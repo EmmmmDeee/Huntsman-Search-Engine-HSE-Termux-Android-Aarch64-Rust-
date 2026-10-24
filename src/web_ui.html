@@ -314,6 +314,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <form class="toolbar" id="inspect"><input type="file" id="ifile" class="grow" aria-label="File to inspect"><button class="btn btn-primary" id="irun" type="submit">Inspect</button></form>
 <p class="alert" id="ierror" role="alert" hidden></p>
 <p class="note" id="istatus" role="status">No file inspected.</p>
+<p class="note" id="ikept" role="status" hidden></p>
 <div id="iresult" hidden>
 <div class="panel"><div class="panel-heading">Entities <span class="badge" id="ientities-n"></span></div>
 <div class="table-wrap"><table class="sortable"><thead><tr><th>kind</th><th>value</th><th>confidence</th><th>tags</th><th>observed</th><th>Next step</th></tr></thead><tbody id="ientities"></tbody></table></div></div>
@@ -731,6 +732,11 @@ $('inspect').onsubmit=async ev=>{
     fill('iclaims',claims,c=>c);
     fill('ifields',fields,f=>f);
     $('ireport').textContent=r.text||'';
+    // The server keeps the file as a saved scan when it keeps scans: its fields then outlive this answer under Scans and in every export.
+    const kept=$('ikept'),refused=(r.outcomes||[]).find(o=>o.module==='scans');kept.hidden=false;kept.replaceChildren();
+    if(r.scan)kept.append('Kept as scan '+r.scan+(r.status?' ('+r.status+')':'')+' · ',button('Open scan',()=>{location.hash='#/scan/'+enc(r.scan)+'/summary'},'btn-ghost'));
+    else if(refused)kept.textContent='Not kept as a saved scan: '+(refused.detail||refused.kind);
+    else kept.textContent='Not kept as a saved scan: this server keeps none (set HOME or HUNTSMAN_HOME).';
     $('istatus').textContent=(r.outcomes||[]).map(o=>o.module+' '+o.kind+(o.detail?': '+o.detail:'')+(o.observed_at_unix?' at '+when(o.observed_at_unix*1000):'')).join(' · ');
   }catch(e){inspectFailed(e.message)}
   finally{run.disabled=false}

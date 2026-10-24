@@ -134,6 +134,7 @@ impl Target<'_> {
             EntityKind::MacAddress => self.kind == "HSE_MAC_ADDRESS",
             EntityKind::Ssid => self.kind == "HSE_WIFI_SSID",
             EntityKind::Coordinates => self.kind == "PHYSICAL_COORDINATES",
+            EntityKind::Document => self.kind == "HSE_DOCUMENT",
             _ => false,
         };
         let value = self.value.trim().trim_start_matches(['A', 'S', 'a', 's']);
