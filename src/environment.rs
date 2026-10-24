@@ -42,6 +42,12 @@ pub const SERVE_BIND_ENV: &str = "HSE_BIND";
 pub const CA_BUNDLE_ENV: &str = "HUNTSMAN_CA_BUNDLE";
 /// Optional operator-managed Nominatim-compatible HTTPS origin, without URL path.
 pub const NOMINATIM_BASE_URL_ENV: &str = "HUNTSMAN_NOMINATIM_BASE_URL";
+/// The selectors `serve` collects and re-normalises for as long as it runs: `;`- or
+/// newline-separated, `*` for every saved target (`docs/CONTINUOUS_NORMALISATION.md`). Read as
+/// every key is, from `~/.huntsman.env` first, then the environment; unset, the controller is off.
+pub const CONTINUOUS_TARGETS_ENV: &str = "HUNTSMAN_CONTINUOUS_TARGETS";
+/// Minutes between collections of each continuous target, 60 to 10080; 1440 when unset.
+pub const CONTINUOUS_INTERVAL_ENV: &str = "HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES";
 
 // Credential slots: keys-file names that `keys::Keys::get` also reads from the environment.
 pub const ABUSECH_KEY_ENV: &str = "HUNTSMAN_ABUSECH_KEY";
@@ -111,6 +117,8 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     SERVE_BIND_ENV,
     CA_BUNDLE_ENV,
     NOMINATIM_BASE_URL_ENV,
+    CONTINUOUS_TARGETS_ENV,
+    CONTINUOUS_INTERVAL_ENV,
     ABUSECH_KEY_ENV,
     ABUSEIPDB_KEY_ENV,
     BRAVE_KEY_ENV,

@@ -448,3 +448,29 @@ fn doctor_and_fix_have_help() {
     }
     let _ = fs::remove_dir_all(&home);
 }
+
+/// The two continuous-normalisation settings live in `~/.huntsman.env` beside the keys, so
+/// `doctor` must not report them as keys no provider reads.
+#[test]
+fn continuous_settings_in_the_keys_file_are_recognised() {
+    let home = scratch("continuous");
+    let keys = home.join(".huntsman.env");
+    fs::write(
+        &keys,
+        "HUNTSMAN_CONTINUOUS_TARGETS=*\nHUNTSMAN_CONTINUOUS_INTERVAL_MINUTES=60\n",
+    )
+    .unwrap();
+    set_mode(&keys, 0o600);
+    let bind = format!("127.0.0.1:{}", free_port());
+    let out = bin(&home)
+        .args(["doctor", "--bind", &bind])
+        .output()
+        .unwrap();
+    let text = stdout(&out);
+    assert!(
+        text.contains("ok   env_file") && text.contains("2 slots set"),
+        "{text}"
+    );
+    assert!(!text.contains("read by no provider"), "{text}");
+    let _ = fs::remove_dir_all(&home);
+}
