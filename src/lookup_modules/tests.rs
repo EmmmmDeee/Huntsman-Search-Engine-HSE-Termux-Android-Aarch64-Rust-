@@ -437,12 +437,6 @@ const IN_SCOPE: [ScanKind; 8] = [
 /// so does an entry no case breaks any more. Each phase of the refusal-routing plan deletes
 /// exactly the triples it fixes, so the list only shrinks.
 const BROKEN: &[(ScanKind, &str, Net)] = &[
-    (ScanKind::Email, "stopforumspam", Net::Refusing),
-    (ScanKind::Email, "kickbox", Net::Refusing),
-    (ScanKind::Email, "xposed_or_not", Net::Refusing),
-    (ScanKind::Email, "ipqs", Net::Refusing),
-    (ScanKind::Email, "whoxy", Net::Refusing),
-    (ScanKind::Email, "hunter", Net::Refusing),
     (ScanKind::Exposure, "hibp", Net::Refusing),
     (ScanKind::Exposure, "stolen_tax", Net::Refusing),
     (ScanKind::Exposure, "oathnet", Net::Refusing),
