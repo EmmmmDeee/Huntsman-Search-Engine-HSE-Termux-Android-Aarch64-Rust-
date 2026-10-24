@@ -2507,6 +2507,23 @@ mod tests {
     /// each Inspect reader's claim with its recording time and the full report, and a bulk action
     /// that names the scans it could not act on instead of stopping at the first refusal.
     #[test]
+    fn the_page_reaches_the_saved_scan_analysis_and_entity_assessment() {
+        // /analyze and /reality are read-only routes the server answered that the page offered no
+        // control for; a phone browser cannot add the lookup header to a typed URL, so they were
+        // unreachable from the UI.
+        let script = inline_block(INDEX_HTML, "script");
+        assert!(INDEX_HTML.contains("<a class=\"tab\" data-tab=\"analysis\">Analysis</a>"));
+        assert!(INDEX_HTML.contains("<div id=\"pane-analysis\" hidden>"));
+        assert!(script.contains(
+            "const TABS=['summary','correlations','browse','graph','analysis','settings','log'];"
+        ));
+        assert!(script.contains("else if(tab==='analysis')await analysis();"));
+        assert!(script.contains("const r=await api(base()+'/analyze');"));
+        assert!(script.contains("api(base()+'/reality?uid='+enc(x.entity))"));
+        assert!(script.contains("button('Source attribution'"));
+    }
+
+    #[test]
     fn the_page_shows_the_provenance_the_api_answers() {
         let script = inline_block(INDEX_HTML, "script");
         assert!(
@@ -2603,11 +2620,9 @@ mod tests {
             );
         }
         // Spiderfoot's sections of one scan, and the addresses an older page used.
-        assert!(
-            script.contains(
-                "const TABS=['summary','correlations','browse','graph','settings','log'];"
-            )
-        );
+        assert!(script.contains(
+            "const TABS=['summary','correlations','browse','graph','analysis','settings','log'];"
+        ));
         assert!(script.contains("({lookup:'newscan',status:'about'})[parts[0]]"));
         let style = inline_block(INDEX_HTML, "style");
         assert!(style.contains(".navbar{position:fixed;left:0;right:0;bottom:0;"));
