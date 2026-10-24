@@ -141,7 +141,12 @@ pub fn assess(
 ) -> Report {
     let mut by_ssid: BTreeMap<&str, BTreeMap<&str, &AccessPoint>> = BTreeMap::new();
     for ap in observations {
-        if ap.ssid.is_empty() || ap.ssid.len() > 32 || !valid_wifi_bssid(&ap.bssid) {
+        if ap.ssid.is_empty()
+            || ap.ssid.len() > 32
+            || ap.ssid.eq_ignore_ascii_case("(no SSID)")
+            || ap.ssid.eq_ignore_ascii_case("(hidden)")
+            || !valid_wifi_bssid(&ap.bssid)
+        {
             continue;
         }
         by_ssid
@@ -387,6 +392,21 @@ mod tests {
         let r =
             from_wigle_jsonl(br#"{"type":"BLE","network_id":"3c:5a:b4:11:22:33"}"#, None).unwrap();
         assert_eq!(r.status, "inconclusive");
+    }
+
+    #[test]
+    fn unidentifiable_ssid_placeholder_is_not_a_shared_network() {
+        let result = assess(
+            &[
+                ap("(no SSID)", "9c:05:d6:7a:9b:e1", Security::Wpa2),
+                ap("(no SSID)", "c4:f1:74:6d:8f:e7", Security::Wpa3),
+            ],
+            None,
+            "fixture",
+            0,
+        );
+        assert!(result.findings.is_empty());
+        assert_eq!(result.status, "inconclusive");
     }
 
     #[test]
