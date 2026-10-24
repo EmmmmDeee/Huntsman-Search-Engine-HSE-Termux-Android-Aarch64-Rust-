@@ -65,6 +65,18 @@ pub enum GraphError {
 impl EntityTree {
     /// Rejects ambiguous nodes, unsupported links and accidental self-links.
     pub fn validate(&self) -> Result<(), GraphError> {
+        if self.nodes.len() > 100_000 || self.edges.len() > 200_000 {
+            return Err(GraphError::ResourceLimitExceeded);
+        }
+        const MAX_FIELD_BYTES: usize = 2_048;
+        if self.nodes.iter().any(|n| n.id.len() > MAX_FIELD_BYTES || n.label.len() > MAX_FIELD_BYTES)
+            || self.edges.iter().any(|e| e.from.len() > MAX_FIELD_BYTES
+                || e.to.len() > MAX_FIELD_BYTES
+                || e.evidence_refs.len() > 256
+                || e.evidence_refs.iter().any(|r| r.len() > MAX_FIELD_BYTES))
+        {
+            return Err(GraphError::ResourceLimitExceeded);
+        }
         let mut ids = BTreeSet::new();
         for node in &self.nodes {
             if node.id.trim().is_empty() || node.label.trim().is_empty() {
@@ -99,7 +111,7 @@ impl EntityTree {
         Ok(())
     }
 
-    /// A deterministic adjacency view, including both directions of each documented link.
+    /// Deterministic undirected adjacency for all links, including alleged ones.\n    /// Navigation does not establish the direction or factual validity of a relation.
     pub fn adjacency(&self) -> Result<BTreeMap<String, Vec<String>>, GraphError> {
         self.validate()?;
         let mut result: BTreeMap<String, BTreeSet<String>> = self
