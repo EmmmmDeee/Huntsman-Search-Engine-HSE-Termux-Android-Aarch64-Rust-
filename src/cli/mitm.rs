@@ -82,7 +82,7 @@ pub(super) fn mitm_cmd(args: &[String]) -> ExitCode {
             };
             if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'[') {
                 match wifi_radar::parse_replay(&bytes) {
-                    Ok(scan) => mitm_guard::from_wifi_scan(&scan, baseline.as_ref()),
+                    Ok(scan) => mitm_guard::from_wifi_replay(&scan, baseline.as_ref()),
                     Err(error) => return fail(EX_DATAERR, &error.to_string()),
                 }
             } else {
