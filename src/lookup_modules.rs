@@ -141,7 +141,7 @@ pub fn offline_runs(kind: ScanKind) -> Vec<&'static str> {
     match kind {
         ScanKind::Email => vec!["email_parse"],
         ScanKind::Username => vec!["username_variants"],
-        ScanKind::Phone => vec!["phone_intl", "phone_au"],
+        ScanKind::Phone => vec!["phone_intl", "phone_au", crate::phone_cli::NANP_SOURCE],
         ScanKind::Network => vec![crate::network_cli::OUI_SOURCE],
         ScanKind::Ip
         | ScanKind::Domain
