@@ -293,6 +293,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="panel" id="rresult" hidden>
 <div class="panel-heading">OS-cached observations <span class="badge" id="rrows-n"></span></div>
 <p class="note" id="rsummary"></p>
+<div id="rmitm" hidden><div class="panel-heading">MITM / evil-twin indicators (not confirmed attacks)</div><p class="note" id="rmitmstatus" role="status"></p><div class="table-wrap"><table><thead><tr><th>Severity</th><th>Indicator</th><th>SSID</th><th>BSSID</th><th>Evidence</th><th>Suggested action</th></tr></thead><tbody id="rmitmrows"></tbody></table></div></div>
 <div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>MHz</th><th>Width (MHz)</th><th>Security</th><th>OS clock (µs)</th><th>Age (s)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rrows"></tbody></table></div>
 </div>
 <div class="panel" id="rcresult" hidden>
@@ -661,6 +662,13 @@ $('rread').onclick=async()=>{
       o.freshness||'unknown',
       radarPivot(o)
     ]);
+    const mitm=scan.mitm_assessment;
+    $('rmitm').hidden=!mitm;
+    if(mitm){
+      const findings=Array.isArray(mitm.findings)?mitm.findings:[];
+      fill('rmitmrows',findings,f=>[f.severity,f.code,f.ssid,f.bssid||'',f.evidence,f.resolution]);
+      $('rmitmstatus').textContent='Evidence-only · '+mitm.status+' · '+findings.length+' findings · confirmed MITM: no. '+mitm.capability_limit;
+    }
     $('rsummary').textContent='Cache requested at '+radarReadAt.toLocaleString()+
       ' (browser clock; not observation time) · Source: '+scan.source+' · status: '+scan.status+
       ' · records: '+scan.observed+' · rejected: '+scan.rejected;
