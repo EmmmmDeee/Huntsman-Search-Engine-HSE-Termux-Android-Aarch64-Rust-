@@ -86,7 +86,10 @@ impl Api {
     pub fn wanted(&self, keys: &Keys) -> bool {
         match self.key {
             None => true,
-            Some(key) => !key.required || keys.get(key.slot).is_some(),
+            Some(key) => {
+                !key.required
+                    || crate::provider_credentials::secret_for_slot(keys, key.slot).is_some()
+            },
         }
     }
 
@@ -269,7 +272,7 @@ fn send<T: Transport + ?Sized>(
 ) -> Result<Answer, LegError> {
     let secret = match api.key {
         None => None,
-        Some(key) => match keys.get(key.slot) {
+        Some(key) => match crate::provider_credentials::secret_for_slot(keys, key.slot) {
             Some(secret) => Some((key, secret)),
             None if key.required => return Err(LegError::MissingKey(key.slot)),
             None => None,
@@ -589,6 +592,51 @@ mod tests {
         assert!(get(&transport, &OPTIONAL, &Keys::default(), URL, 1).is_ok());
         assert!(transport.sent()[0].headers.iter().all(|(n, _)| n != "Key"));
         assert!(KEYLESS.wanted(&Keys::default()));
+    }
+
+    #[test]
+    fn one_abuse_ch_key_authenticates_both_sources_with_origin_binding() {
+        use crate::environment::{ABUSECH_KEY_ENV, THREATFOX_KEY_ENV};
+        for slot in [ABUSECH_KEY_ENV, THREATFOX_KEY_ENV] {
+            let keys = Keys::parse(&format!("{slot}=TEST_ONLY_ABUSECH\n")).expect("keys");
+            assert!(crate::threatfox::API.wanted(&keys));
+            assert!(crate::urlhaus::API.wanted(&keys));
+            let recorder = Recorder::new(200, "{}");
+            let result = post_json(
+                &recorder,
+                &crate::threatfox::API,
+                &keys,
+                crate::threatfox::URL,
+                &serde_json::json!({"query":"search_ioc","search_term":"example.org"}),
+                1,
+            );
+            assert!(result.is_ok(), "{result:?}");
+            let second = post_form(
+                &recorder,
+                &crate::urlhaus::API,
+                &keys,
+                crate::urlhaus::URL,
+                &[("host", "example.org")],
+                1,
+            );
+            assert!(second.is_ok(), "{second:?}");
+            let sent = recorder.sent();
+            assert_eq!(sent.len(), 2);
+            assert_eq!(sent[0].url, crate::threatfox::URL);
+            assert_eq!(sent[1].url, crate::urlhaus::URL);
+            assert!(sent.iter().all(|req| req.header_value("Auth-Key") == Some("TEST_ONLY_ABUSECH")));
+        }
+    }
+
+    #[test]
+    fn shared_key_absence_keeps_both_sources_disabled() {
+        let keys = Keys::default();
+        assert!(!crate::threatfox::API.wanted(&keys));
+        assert!(!crate::urlhaus::API.wanted(&keys));
+        let recorder = Recorder::new(200, "{}");
+        let result = get(&recorder, &crate::threatfox::API, &keys, crate::threatfox::URL, 1);
+        assert!(matches!(result, Err(LegError::MissingKey(_))));
+        assert!(recorder.sent().is_empty());
     }
 
     #[test]
