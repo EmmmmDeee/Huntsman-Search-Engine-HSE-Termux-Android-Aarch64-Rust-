@@ -69,9 +69,8 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Finding, LegError> {
     let document: Value = api_leg::decode(body)?;
     let host = document
         .pointer("/result/resource")
-        .and_then(Value::as_object)
+        .filter(|value| value.is_object())
         .ok_or_else(|| LegError::Decode("Censys host envelope missing".into()))?;
-    let host = Value::Object(host.clone());
     if string_at(&host, "/ip") != Some(ip) {
         return Err(LegError::Decode("Censys answer names another host".into()));
     }
