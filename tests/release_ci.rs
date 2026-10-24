@@ -1231,21 +1231,23 @@ fn write_exec(path: &Path, body: &str) {
 /// Runs the installer for the recon channel with the given release assets.
 /// Returns (exit code, output, `$PREFIX/bin` entries).
 fn run_installer(name: &str, binary: &[u8], sha_line: &str) -> (Option<i32>, String, PathBuf) {
-    run_installer_with(name, binary, sha_line, false)
+    run_installer_with(name, binary, sha_line, false, false, false)
 }
 
-/// As `run_installer`; with `dest_is_dir` the destination path is a directory.
+/// As `run_installer`; also exercise a managed service and its disabled state.
 fn run_installer_with(
     name: &str,
     binary: &[u8],
     sha_line: &str,
     dest_is_dir: bool,
+    managed: bool,
+    service_down: bool,
 ) -> (Option<i32>, String, PathBuf) {
     let root = scratch(&format!("install-{name}"));
     let assets = root.join("assets");
     let fakes = root.join("fakes");
     let prefix = root.join("prefix");
-    for d in [&assets, &fakes, &prefix.join("bin"), &root.join("tmp")] {
+    for d in [&assets, &fakes, &prefix.join("bin"), &root.join("tmp"), &root.join("home")] {
         fs::create_dir_all(d).unwrap();
     }
     let asset = "huntsman-recon-aarch64-linux-android";
@@ -1261,6 +1263,21 @@ fn run_installer_with(
         "#!/usr/bin/env bash\nout=\"\"; url=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -o) out=\"$2\"; shift 2 ;;\n    --proto) shift 2 ;;\n    -*) shift ;;\n    *) url=\"$1\"; shift ;;\n  esac\ndone\ncp \"$FAKE_ASSETS/${url##*/}\" \"$out\"\n",
     );
     write_exec(&fakes.join("uname"), "#!/usr/bin/env bash\necho aarch64\n");
+    if managed {
+        let state = root.join("home/.huntsman");
+        let service = prefix.join("var/service/huntsman-serve");
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&service).unwrap();
+        fs::write(state.join("installed-revision"), "revision=ffffffffffffffffffffffffffffffffffffffff\n").unwrap();
+        fs::write(service.join("run"), "#!/bin/sh\n").unwrap();
+        if service_down {
+            fs::write(service.join("down"), "").unwrap();
+        }
+        write_exec(
+            &prefix.join("bin/huntsman"),
+            "#!/usr/bin/env bash\ncase \"$1\" in\n restart) echo restart >> \"$MOCK_LOG\" ;;\n fix) \"$HUNTSMAN_RECON\" fix ;;\n doctor) \"$HUNTSMAN_RECON\" doctor \"$2\" ;;\n *) exit 64 ;;\nesac\n",
+        );
+    }
     let path = format!(
         "{}:{}",
         fakes.display(),
@@ -1271,6 +1288,8 @@ fn run_installer_with(
         .env("PATH", path)
         .env("PREFIX", &prefix)
         .env("TMPDIR", root.join("tmp"))
+        .env("HOME", root.join("home"))
+        .env("MOCK_LOG", root.join("controller.log"))
         .env("FAKE_ASSETS", &assets)
         .env("HUNTSMAN_CHANNEL", "recon")
         .env("HUNTSMAN_RELEASE_TAG", "main-0a1b2c3")
@@ -1304,6 +1323,8 @@ case "$1" in
   build-sha) printf '%s\n' "${HUNTSMAN_TEST_BUILD_SHA:?}" ;;
   check) mkdir -p var; printf 'fixture-ledger\n' > var/ledger.json ;;
   verify) [ "$2" = var/ledger.json ] && [ -f "$2" ] ;;
+  fix) printf 'revision=%s\n' "${HUNTSMAN_TEST_BUILD_SHA:?}" > "$HOME/.huntsman/installed-revision" ;;
+  doctor) [ "$2" = --probe ] ;;
   *) exit 64 ;;
 esac
 "#;
@@ -1362,6 +1383,72 @@ fn installer_replaces_the_binary_atomically_and_only_after_verification() {
         );
     }
     assert_live_binary_only(&root);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn standalone_release_upgrade_reconciles_managed_install_and_restores_supervised_service() {
+    if !installer_tools_present() {
+        return;
+    }
+    let sha = installer_sha_line("managed", GOOD_RECON_FIXTURE);
+    let (code, output, root) =
+        run_installer_with("managed", GOOD_RECON_FIXTURE, &sha, false, true, false);
+    assert_eq!(code, Some(0), "{output}");
+    assert_eq!(
+        fs::read_to_string(root.join("home/.huntsman/installed-revision")).unwrap(),
+        "revision=0a1b2c3000000000000000000000000000000000\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("controller.log")).unwrap(),
+        "restart\n",
+        "active managed service must restart exactly once"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn standalone_release_upgrade_preserves_intentionally_stopped_service() {
+    if !installer_tools_present() {
+        return;
+    }
+    let sha = installer_sha_line("managed-down", GOOD_RECON_FIXTURE);
+    let (code, output, root) =
+        run_installer_with("managed-down", GOOD_RECON_FIXTURE, &sha, false, true, true);
+    assert_eq!(code, Some(0), "{output}");
+    assert!(
+        !root.join("controller.log").exists(),
+        "a deliberately stopped service must not be started"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("home/.huntsman/installed-revision")).unwrap(),
+        "revision=0a1b2c3000000000000000000000000000000000\n"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn standalone_release_upgrade_reports_postinstall_failure_instead_of_claiming_success() {
+    if !installer_tools_present() {
+        return;
+    }
+    let fixture = String::from_utf8(GOOD_RECON_FIXTURE.to_vec())
+        .unwrap()
+        .replace(
+            "fix) printf 'revision=%s\\n' \"${HUNTSMAN_TEST_BUILD_SHA:?}\" > \"$HOME/.huntsman/installed-revision\" ;;",
+            "fix) exit 9 ;;",
+        );
+    assert!(fixture.contains("fix) exit 9 ;;"));
+    let sha = installer_sha_line("managed-fail", fixture.as_bytes());
+    let (code, output, root) =
+        run_installer_with("managed-fail", fixture.as_bytes(), &sha, false, true, false);
+    assert_ne!(code, Some(0), "{output}");
+    assert!(output.contains("metadata repair failed"), "{output}");
+    assert_eq!(
+        fs::read_to_string(root.join("home/.huntsman/installed-revision")).unwrap(),
+        "revision=ffffffffffffffffffffffffffffffffffffffff\n",
+        "failed reconciliation must not silently falsify provenance"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -2786,7 +2873,7 @@ fn installer_refuses_a_directory_at_the_destination() {
     fs::write(probe.join("b"), new_build).unwrap();
     let good = format!("{}  {asset}\n", sha256_hex(&probe.join("b")));
     let _ = fs::remove_dir_all(&probe);
-    let (code, text, root) = run_installer_with("dest-dir", new_build, &good, true);
+    let (code, text, root) = run_installer_with("dest-dir", new_build, &good, true, false, false);
     assert_ne!(
         code,
         Some(0),
