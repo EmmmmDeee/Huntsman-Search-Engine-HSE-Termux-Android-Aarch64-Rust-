@@ -273,6 +273,23 @@ mod tests {
     }
 
     #[test]
+    fn oversized_graph_is_rejected_before_adjacency_build() {
+        let mut g = graph();
+        g.nodes = (0..100_001)
+            .map(|i| EntityNode {
+                id: format!("node-{i}"),
+                kind: EntityKind::Organisation,
+                label: "public record".into(),
+            })
+            .collect();
+        g.edges.clear();
+        assert_eq!(
+            g.expand_documented("node-0", 1, 10),
+            Err(GraphError::ResourceLimitExceeded)
+        );
+    }
+
+    #[test]
     fn validates_supported_graph() {
         assert!(graph().validate().is_ok());
     }
