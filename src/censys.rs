@@ -71,7 +71,11 @@ pub fn decode(body: &[u8], ip: &str) -> Result<Finding, LegError> {
         .pointer("/result/resource")
         .filter(|value| value.is_object())
         .ok_or_else(|| LegError::Decode("Censys host envelope missing".into()))?;
-    if string_at(&host, "/ip") != Some(ip) {
+    let requested = ip
+        .parse::<std::net::IpAddr>()
+        .map_err(|_| LegError::Decode("invalid requested host address".into()))?;
+    let returned = string_at(host, "/ip").and_then(|address| address.parse().ok());
+    if returned != Some(requested) {
         return Err(LegError::Decode("Censys answer names another host".into()));
     }
     let services = match host.get("services") {
@@ -202,6 +206,13 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn equivalent_ipv6_spellings_are_the_same_host() {
+        let body = br#"{"result":{"resource":{"ip":"2606:4700:4700:0:0:0:0:1111"}}}"#;
+        assert!(decode(body, "2606:4700:4700::1111").is_ok());
+        assert!(decode(body, "2606:4700:4700::1001").is_err());
     }
 
     #[test]
