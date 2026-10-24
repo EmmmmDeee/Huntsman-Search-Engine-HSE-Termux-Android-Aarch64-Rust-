@@ -1509,6 +1509,50 @@ fn reads_jpeg_iptc_byline_caption_location_and_keywords() {
 }
 
 #[test]
+fn legacy_iptc_bytes_are_preserved_without_replacement_characters() {
+    let parsed = parse(&jpeg_with_iptc(&[(2, 80, b"Ren\xE9")]));
+    assert_eq!(
+        field(&parsed, "iptc:Byline"),
+        Some("[undecoded IPTC bytes hex:52656ee9]")
+    );
+    assert_eq!(
+        field(&parsed, "iptc:BylineEncoding"),
+        Some("character set undeclared; exact text decoding unavailable")
+    );
+    assert_eq!(field(&parsed, "iptc:BylineRawByteCount"), Some("4"));
+    assert!(!format!("{:?}", parsed.fields).contains('�'));
+}
+
+#[test]
+fn declared_iptc_utf8_is_decoded_even_if_declaration_follows_text() {
+    let parsed = parse(&jpeg_with_iptc(&[
+        (2, 80, "René".as_bytes()),
+        (1, 90, b"\x1b%G"),
+        (2, 120, "Café".as_bytes()),
+    ]));
+    assert_eq!(field(&parsed, "iptc:Byline"), Some("René"));
+    assert_eq!(field(&parsed, "iptc:Caption"), Some("Café"));
+    assert_eq!(field(&parsed, "iptc:BylineEncoding"), None);
+}
+
+#[test]
+fn invalid_declared_iptc_utf8_remains_a_verifiable_byte_claim() {
+    let parsed = parse(&jpeg_with_iptc(&[(1, 90, b"\x1b%G"), (2, 80, b"Ren\xE9")]));
+    assert_eq!(
+        field(&parsed, "iptc:Byline"),
+        Some("[undecoded IPTC bytes hex:52656ee9]")
+    );
+    assert_eq!(
+        field(&parsed, "iptc:BylineEncoding"),
+        Some("declared UTF-8; invalid byte sequence")
+    );
+    assert_eq!(
+        field(&parsed, "iptc:BylineRawSha256"),
+        Some(crate::sha256::hex32(&crate::sha256::sha256(b"Ren\xE9")).as_str())
+    );
+}
+
+#[test]
 fn a_jpeg_without_iptc_yields_no_iptc_fields() {
     let parsed = parse(&jpeg_with_xmp());
     assert_eq!(parsed.format, "JPEG");

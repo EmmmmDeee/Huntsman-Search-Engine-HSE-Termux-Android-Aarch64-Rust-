@@ -1598,6 +1598,9 @@ fn photoshop_block(irb: &[u8]) -> Option<(u16, &[u8], &[u8])> {
 /// (rare, the high bit set) ends the walk rather than risk a misread. Bounded by
 /// [`MAX_IPTC_DATASETS`]. **Pure.**
 fn parse_iptc_datasets(data: &[u8], fields: &mut Fields) {
+    // Collect bounded borrowed slices first: record 1:90 can appear after a text field.
+    // This avoids interpreting the same bytes differently depending on dataset order.
+    let mut datasets = Vec::new();
     let mut at = 0usize;
     for _ in 0..MAX_IPTC_DATASETS {
         if data.get(at).copied() != Some(0x1C) {
@@ -1612,8 +1615,6 @@ fn parse_iptc_datasets(data: &[u8], fields: &mut Fields) {
         else {
             break;
         };
-        // An extended length (high bit set) counts length bytes rather than giving a length; it is
-        // not decoded here, so stop at it.
         if len & 0x8000 != 0 {
             break;
         }
@@ -1621,13 +1622,57 @@ fn parse_iptc_datasets(data: &[u8], fields: &mut Fields) {
         let Some(value) = data.get(at + 5..end) else {
             break;
         };
-        if let Some(name) = iptc_field_name(record, dataset) {
+        datasets.push((record, dataset, value));
+        at = end;
+    }
+
+    // IPTC IIM envelope 1:90, ESC % G, explicitly designates UTF-8.
+    // Without that declaration, even valid non-ASCII UTF-8 is only a tentative interpretation.
+    let declared_utf8 = datasets
+        .iter()
+        .any(|&(record, dataset, value)| record == 1 && dataset == 90 && value == b"\x1b%G");
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (record, dataset, value) in datasets {
+        let Some(name) = iptc_field_name(record, dataset) else {
+            continue;
+        };
+        if let Ok(text) = std::str::from_utf8(value) {
+            fields.push(format!("iptc:{name}"), text);
+            if !declared_utf8 && !value.is_ascii() {
+                fields.push(
+                    format!("iptc:{name}Encoding"),
+                    "character set undeclared; UTF-8-compatible text is unverified",
+                );
+            }
+        } else {
+            // Never replace unknown legacy bytes with U+FFFD and call that exact evidence.
+            // Keep a bounded hex preview plus a digest and length for full-byte provenance.
+            let shown = value.len().min(512);
+            let mut hex = String::with_capacity(shown * 2);
+            for &byte in &value[..shown] {
+                hex.push(char::from(HEX[usize::from(byte >> 4)]));
+                hex.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+            let suffix = if shown < value.len() {
+                "; hex prefix only; original bytes retained in source file"
+            } else {
+                ""
+            };
             fields.push(
                 format!("iptc:{name}"),
-                String::from_utf8_lossy(value).into_owned(),
+                format!("[undecoded IPTC bytes hex:{hex}{suffix}]"),
             );
+            fields.push(
+                format!("iptc:{name}Encoding"),
+                if declared_utf8 {
+                    "declared UTF-8; invalid byte sequence"
+                } else {
+                    "character set undeclared; exact text decoding unavailable"
+                },
+            );
+            fields.push(format!("iptc:{name}RawSha256"), hex32(&sha256(value)));
+            fields.push(format!("iptc:{name}RawByteCount"), value.len().to_string());
         }
-        at = end;
     }
 }
 
