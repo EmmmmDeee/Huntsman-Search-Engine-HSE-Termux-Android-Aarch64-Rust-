@@ -508,6 +508,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "Australian numbering-plan classification",
     },
     ReachableModule {
+        name: "phone_nanp",
+        command: "phone NUMBER",
+        access: "offline",
+        network: false,
+        category: ModuleCategory::Phone,
+        attack_techniques: &[],
+        description: "North American Numbering Plan reading of a +1 number: plan validity, local and international forms, line class, the area code's country and the 555-01XX fiction block",
+    },
+    ReachableModule {
         name: "numverify",
         command: "phone NUMBER",
         access: "operator_key",
@@ -1463,6 +1472,7 @@ mod tests {
             crate::virustotal::SOURCE,
             crate::hunter::SOURCE,
             crate::numverify::SOURCE,
+            crate::phone_cli::NANP_SOURCE,
             crate::gravatar::SRC,
             crate::duolingo::SRC,
             crate::openpgp_keys::SRC,
