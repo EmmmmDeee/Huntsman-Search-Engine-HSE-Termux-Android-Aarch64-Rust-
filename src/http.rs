@@ -453,6 +453,7 @@ pub fn redact_url(url: &str) -> String {
 /// # Errors
 /// `Error::Network` when either URL is not a valid http(s) URL.
 pub fn resolve_location(base: &str, location: &str) -> Result<String, Error> {
+    let base = base.split_once('#').map_or(base, |(url, _)| url);
     let location = location.trim();
     let location = location.split_once('#').map_or(location, |(l, _)| l);
     let base_uri = parse_http_uri(base)?;
@@ -466,13 +467,57 @@ pub fn resolve_location(base: &str, location: &str) -> Result<String, Error> {
         format!("{scheme}://{rest}")
     } else if location.starts_with('/') {
         format!("{scheme}://{authority}{location}")
+    } else if location.is_empty() {
+        base.to_owned()
+    } else if location.starts_with('?') {
+        format!("{scheme}://{authority}{}{location}", base_uri.path())
     } else {
         let path = base_uri.path();
         let dir = path.rfind('/').map_or("/", |i| &path[..=i]);
         format!("{scheme}://{authority}{dir}{location}")
     };
-    parse_http_uri(&joined)?;
-    Ok(joined)
+    let target = parse_http_uri(&joined)?;
+    let path = remove_dot_segments(target.path());
+    if path == target.path() {
+        return Ok(joined);
+    }
+    let authority = target
+        .authority()
+        .ok_or_else(|| Error::Network("redirect has no authority".into()))?;
+    let query = target.query().map_or_else(String::new, |q| format!("?{q}"));
+    Ok(format!(
+        "{}://{authority}{path}{query}",
+        target.scheme_str().unwrap_or(scheme)
+    ))
+}
+
+/// RFC 3986 section 5.2.4. Operate on raw path bytes, preserving empty
+/// segments and encoded octets; queries never pass through this function.
+fn remove_dot_segments(mut input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    while !input.is_empty() {
+        if let Some(rest) = input
+            .strip_prefix("../")
+            .or_else(|| input.strip_prefix("./"))
+        {
+            input = rest;
+        } else if input.starts_with("/./") {
+            input = &input[2..];
+        } else if input == "/." {
+            input = "/";
+        } else if input.starts_with("/../") || input == "/.." {
+            input = if input == "/.." { "/" } else { &input[3..] };
+            output.truncate(output.rfind('/').unwrap_or(0));
+        } else if matches!(input, "." | "..") {
+            input = "";
+        } else {
+            let start = usize::from(input.starts_with('/'));
+            let end = input[start..].find('/').map_or(input.len(), |i| start + i);
+            output.push_str(&input[..end]);
+            input = &input[end..];
+        }
+    }
+    output
 }
 
 /// RFC 3986 scheme prefix (`javascript:`, `mailto:`, `https:`), with or without `//`.
@@ -1074,6 +1119,82 @@ mod tests {
         assert!(resolve_location(base, "javascript:alert(1)").is_err());
         assert!(resolve_location(base, "ftp://a.example/x").is_err());
         assert!(resolve_location("not a url", "/x").is_err());
+    }
+
+    #[test]
+    fn redirect_reference_rfc_path_and_query_cases() {
+        let base = "http://a.example/b/c/d;p?q";
+        for (reference, expected) in [
+            ("", "/b/c/d;p?q"),
+            ("#fragment", "/b/c/d;p?q"),
+            ("?y", "/b/c/d;p?y"),
+            ("?", "/b/c/d;p?"),
+            ("g?y", "/b/c/g?y"),
+            ("./g", "/b/c/g"),
+            (".", "/b/c/"),
+            ("./", "/b/c/"),
+            ("..", "/b/"),
+            ("../", "/b/"),
+            ("../g", "/b/g"),
+            ("../..", "/"),
+            ("../../", "/"),
+            ("../../g", "/g"),
+            ("../../../g", "/g"),
+            ("../../../../g", "/g"),
+            ("/./g", "/g"),
+            ("/../g", "/g"),
+            ("./../g", "/b/g"),
+            ("./g/.", "/b/c/g/"),
+            ("g/./h", "/b/c/g/h"),
+            ("g/../h", "/b/c/h"),
+            ("g;x=1/../y", "/b/c/y"),
+            ("g?y/./x", "/b/c/g?y/./x"),
+            ("g?y/../x", "/b/c/g?y/../x"),
+            ("g//h", "/b/c/g//h"),
+            ("%2e/%2F", "/b/c/%2e/%2F"),
+            (".g/g./g../..g", "/b/c/.g/g./g../..g"),
+            (
+                "https://a.example/x/../z?q/../x",
+                "https://a.example/z?q/../x",
+            ),
+        ] {
+            let expected = if expected.starts_with("https:") {
+                expected.to_owned()
+            } else {
+                format!("http://a.example{expected}")
+            };
+            assert_eq!(
+                resolve_location(base, reference).expect("valid reference"),
+                expected,
+                "{reference:?}"
+            );
+        }
+        assert_eq!(
+            resolve_location("http://a.example/path?q#old", "#new").expect("base fragment"),
+            "http://a.example/path?q"
+        );
+    }
+
+    #[test]
+    fn path_normalization_is_idempotent_and_never_normalizes_query_data() {
+        for first in ["a", ".", "..", "", "%2e", "é"] {
+            for second in ["b", ".", "..", "", "%2F", "中"] {
+                for third in ["c", ".", "..", "", "%2e%2e", "x;y=1"] {
+                    let path = format!("/{first}/{second}/{third}");
+                    let normalized = remove_dot_segments(&path);
+                    assert_eq!(remove_dot_segments(&normalized), normalized);
+                    let resolved = resolve_location(
+                        "https://a.example/base",
+                        &format!("https://a.example{path}?x=/.././%2e"),
+                    )
+                    .expect("reference");
+                    let uri = parse_http_uri(&resolved).expect("valid target");
+                    assert_eq!(uri.path(), normalized);
+                    assert_eq!(uri.query(), Some("x=/.././%2e"));
+                    assert_eq!(origin_of(&resolved), Some("https://a.example:443".into()));
+                }
+            }
+        }
     }
 
     #[test]

@@ -14,8 +14,13 @@ use huntsman_recon::exit::{EX_DATAERR, EX_UNAVAILABLE};
 fn serve(args: &[&str], envs: &[(&str, &str)]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"));
     command.arg("serve").args(args);
+    command.env(
+        "HOME",
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("serve-startup-home"),
+    );
     for name in [
         "HSE_BIND",
+        "HUNTSMAN_HOME",
         "HSE_AUTH_TOKEN",
         "PORT",
         "TERMUX_VERSION",

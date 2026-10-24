@@ -425,13 +425,15 @@ impl ScanStore {
     /// Save a new scan's row without making the store impossible to list.
     ///
     /// # Errors
-    /// [`StoreError::Invalid`] when an id exists; [`StoreError::Capacity`] when full;
+    /// [`StoreError::Invalid`] when an id exists or the format is unsupported;
+    /// [`StoreError::Capacity`] when full;
     /// [`StoreError::Io`] on an enumeration or write failure.
     pub fn create(&self, record: &ScanRecord) -> Result<(), StoreError> {
         self.create_with_limit(record, MAX_SCANS)
     }
 
     fn create_with_limit(&self, record: &ScanRecord, max_scans: usize) -> Result<(), StoreError> {
+        Self::validate_row_format(record)?;
         let _guard = SCAN_CREATE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -473,9 +475,11 @@ impl ScanStore {
     /// Replace an existing scan's row without creating an unregistered scan.
     ///
     /// # Errors
+    /// [`StoreError::Invalid`] for an unsupported format;
     /// [`StoreError::NotFound`] when the scan has no persisted row; [`StoreError::Io`] for
     /// an unreadable or nonregular row, or a write failure.
     pub fn update(&self, record: &ScanRecord) -> Result<(), StoreError> {
+        Self::validate_row_format(record)?;
         let path = self.scan_dir(&record.id)?.join(ROW_FILE);
         match fs::symlink_metadata(&path) {
             Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => {}
@@ -493,7 +497,19 @@ impl ScanStore {
         self.write_row(record)
     }
 
-    /// Write an initial or replacement scan row; only `create` may use this before a row exists.
+    /// Reject records this build cannot read before a writer touches the filesystem.
+    fn validate_row_format(record: &ScanRecord) -> Result<(), StoreError> {
+        if record.format_version != FORMAT_VERSION {
+            return Err(StoreError::Invalid(format!(
+                "unsupported scan row format {} (expected {FORMAT_VERSION})",
+                record.format_version
+            )));
+        }
+        Ok(())
+    }
+
+    /// Write a format-validated initial or replacement row; only `create` may use this
+    /// before a row exists. Both callers validate the format before their filesystem work.
     fn write_row(&self, record: &ScanRecord) -> Result<(), StoreError> {
         let path = self.scan_dir(&record.id)?.join(ROW_FILE);
         let limit = usize::try_from(MAX_ROW_BYTES).unwrap_or(usize::MAX);
@@ -1203,6 +1219,48 @@ mod tests {
         store.create(&row).unwrap();
         store.save_results(&results).unwrap();
         assert_eq!(store.results(&id).unwrap(), Some(results));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unsupported_version_write_rejects_new_scan_without_creating_a_directory() {
+        let dir = scratch("row-version-create");
+        let store = ScanStore::open(&dir).unwrap();
+        let mut row = record(&new_id("unsupported-row", 306, 0), 306, ScanStatus::Created);
+        for version in [0, FORMAT_VERSION + 1, u32::MAX] {
+            row.format_version = version;
+            assert!(
+                matches!(store.create(&row), Err(StoreError::Invalid(_))),
+                "unsupported row version {version} must be rejected"
+            );
+            assert!(
+                !dir.join(&row.id).exists(),
+                "rejected scan must not create a directory"
+            );
+            assert!(store.list().unwrap().is_empty());
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unsupported_version_write_preserves_a_readable_scan_row() {
+        let dir = scratch("row-version-update");
+        let store = ScanStore::open(&dir).unwrap();
+        let original = record(&new_id("supported-row", 307, 0), 307, ScanStatus::Finished);
+        store.create(&original).unwrap();
+        let path = dir.join(&original.id).join(ROW_FILE);
+        let original_bytes = fs::read(&path).unwrap();
+        let mut replacement = original.clone();
+        replacement.name = "unsupported replacement".into();
+        for version in [0, FORMAT_VERSION + 1, u32::MAX] {
+            replacement.format_version = version;
+            assert!(
+                matches!(store.update(&replacement), Err(StoreError::Invalid(_))),
+                "unsupported row version {version} must not replace a readable row"
+            );
+            assert_eq!(fs::read(&path).unwrap(), original_bytes);
+            assert_eq!(store.get(&original.id).unwrap(), original);
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
