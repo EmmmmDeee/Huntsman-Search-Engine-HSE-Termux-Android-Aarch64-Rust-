@@ -106,7 +106,10 @@ fn field(out: &mut String, key: &str, value: &Value, ids: &BTreeSet<&str>) {
         .unwrap_or_else(|| value.to_string());
     if key == "url" && (value.starts_with("https://") || value.starts_with("http://")) {
         let val = escape(&value);
-        let _ = write!(out, "<a rel=\"noopener noreferrer\" referrerpolicy=\"no-referrer\" href=\"{val}\">{val}</a>");
+        let _ = write!(
+            out,
+            "<a rel=\"noopener noreferrer\" referrerpolicy=\"no-referrer\" href=\"{val}\">{val}</a>"
+        );
     } else if ["sources", "related", "links", "resolves", "left", "right"].contains(&key) {
         for word in value.split_whitespace() {
             if ids.contains(word) {
@@ -125,15 +128,31 @@ fn field(out: &mut String, key: &str, value: &Value, ids: &BTreeSet<&str>) {
 pub fn render(document: &Value) -> Result<String, String> {
     let count = validate(document)?;
     let root = document.as_object().expect("validate checked the root");
-    let ids: BTreeSet<&str> = GROUPS.iter().flat_map(|(key, _)| {
-        root[*key].as_array().into_iter().flatten().filter_map(|r| r["id"].as_str())
-    }).collect();
+    let ids: BTreeSet<&str> = GROUPS
+        .iter()
+        .flat_map(|(key, _)| {
+            root[*key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|r| r["id"].as_str())
+        })
+        .collect();
     let mut out = String::with_capacity(count * 650);
     out.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"referrer\" content=\"no-referrer\"><title>HUNTSMAN | Evidence dossier</title><style>");
     out.push_str(STYLE);
     out.push_str("</style></head><body><header><h1>HUNTSMAN — Evidence dossier</h1><p>Local, read-only, provenance-indexed. No results are hidden or paginated. <a href=\"/\">Return to Huntsman</a>.</p>");
     out.push_str("<p class=\"warning\">Recorded observations are not proof of source-device attribution, item authenticity, or substance identity. Absence of evidence is not evidence of absence.</p>");
-    let _ = write!(out, "<p class=\"muted\">{} indexed records · {} </p>",count,escape(root.get("updated_at").and_then(Value::as_str).unwrap_or("date not supplied")));
+    let _ = write!(
+        out,
+        "<p class=\"muted\">{} indexed records · {} </p>",
+        count,
+        escape(
+            root.get("updated_at")
+                .and_then(Value::as_str)
+                .unwrap_or("date not supplied")
+        )
+    );
     out.push_str("<nav aria-label=\"Evidence index\">");
     for (key, title) in GROUPS {
         let len = root[key].as_array().map_or(0, Vec::len);
@@ -142,15 +161,27 @@ pub fn render(document: &Value) -> Result<String, String> {
     out.push_str("</nav></header><main>");
     for (key, title) in GROUPS {
         let rows = root[key].as_array().expect("validate checked array");
-        let _ = write!(out, "<section id=\"{key}\"><h2>{title} — {} records</h2>",rows.len());
+        let _ = write!(
+            out,
+            "<section id=\"{key}\"><h2>{title} — {} records</h2>",
+            rows.len()
+        );
         for row in rows {
             let obj = row.as_object().expect("validate checked record");
             let id = obj["id"].as_str().expect("validate checked id");
-            let heading = ["finding", "topic", "claim", "task", "title", "result"].iter()
-                .find_map(|name| obj.get(*name).and_then(Value::as_str)).unwrap_or("Evidence record");
-            let _ = write!(out, "<article id=\"{id}\"><h3><code>{id}</code> — {}</h3><dl>",escape(heading));
+            let heading = ["finding", "topic", "claim", "task", "title", "result"]
+                .iter()
+                .find_map(|name| obj.get(*name).and_then(Value::as_str))
+                .unwrap_or("Evidence record");
+            let _ = write!(
+                out,
+                "<article id=\"{id}\"><h3><code>{id}</code> — {}</h3><dl>",
+                escape(heading)
+            );
             for (field_name, value) in obj {
-                if field_name != "id" {field(&mut out, field_name, value, &ids);}
+                if field_name != "id" {
+                    field(&mut out, field_name, value, &ids);
+                }
             }
             out.push_str("</dl></article>");
         }
