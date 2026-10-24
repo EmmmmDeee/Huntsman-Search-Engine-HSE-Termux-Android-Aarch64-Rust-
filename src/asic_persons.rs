@@ -91,14 +91,33 @@ pub fn lookup<T: Transport + ?Sized>(
             emit: emit_credit_rep,
         },
     ] {
-        let (mut outcome, records) = query_register(
+        // A failed or refused register must not skip independent registers.
+        let (mut outcome, records) = match query_register(
             transport,
             &options,
             spec.module,
             spec.resource,
             name,
             now_unix,
-        )?;
+        ) {
+            Ok(result) => result,
+            Err(err) => {
+                let failure = match &err {
+                    Error::Network(detail) => SourceExecutionOutcome::refused_before_sending(
+                        spec.module,
+                        now_unix,
+                        detail.as_str(),
+                    ),
+                    _ => SourceExecutionOutcome::inconclusive(
+                        spec.module,
+                        now_unix,
+                        err.to_string(),
+                    ),
+                };
+                hard_failure.get_or_insert(err);
+                (failure, Vec::new())
+            }
+        };
         if !outcome.kind.is_accepted() {
             let detail = outcome
                 .detail
@@ -112,16 +131,36 @@ pub fn lookup<T: Transport + ?Sized>(
             .take(MAX_HITS)
             .collect();
         if outcome.kind.is_accepted() {
-            // A partial page stays partial after the name filter: its note is kept.
+            // A partial page cannot prove absence when no locally read row matches.
+            // Positive matches still carry the partial-page qualification.
             let partial = outcome.detail.take();
+            let status = outcome.http_status.unwrap_or(200);
             outcome = if matched.is_empty() {
-                SourceExecutionOutcome::valid_zero(spec.module, now_unix)
-                    .with_http_status(outcome.http_status.unwrap_or(200))
+                if let Some(note) = partial {
+                    SourceExecutionOutcome::observed(
+                        spec.module,
+                        now_unix,
+                        SourceOutcomeKind::Inconclusive,
+                        Some(status),
+                        Some(0),
+                        note,
+                    )
+                } else {
+                    SourceExecutionOutcome::valid_zero(spec.module, now_unix)
+                        .with_http_status(status)
+                }
             } else {
-                SourceExecutionOutcome::success(spec.module, now_unix, matched.len())
-                    .with_http_status(outcome.http_status.unwrap_or(200))
+                let mut found = SourceExecutionOutcome::success(
+                    spec.module,
+                    now_unix,
+                    matched.len(),
+                )
+                .with_http_status(status);
+                if let Some(note) = partial {
+                    found = found.with_detail(note);
+                }
+                found
             };
-            outcome.detail = partial;
         }
         for rec in matched {
             (spec.emit)(rec, scan_id, &mut entities);
@@ -130,7 +169,9 @@ pub fn lookup<T: Transport + ?Sized>(
     }
 
     merge_by_uid(&mut entities);
-    if entities.is_empty() {
+    // Only a lookup without any accepted answer fails. Independent valid
+    // zero-result registers still contribute their own scope-limited evidence.
+    if entities.is_empty() && !outcomes.iter().any(|o| o.kind.is_accepted()) {
         if let Some(err) = hard_failure {
             return Err(err);
         }
@@ -207,9 +248,10 @@ fn parse_register(
             Some(response.status),
             Some(err.to_string()),
         ),
-        Ok(None) => (
-            SourceExecutionOutcome::valid_zero(module, now_unix).with_http_status(response.status),
-            Vec::new(),
+        Ok(None) => some_status(
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            Some("CKAN response had no result envelope".into()),
         ),
         Ok(Some(result)) => {
             let outcome = if result.records.is_empty() {
@@ -1078,7 +1120,7 @@ mod tests {
             .iter()
             .find(|o| o.module == "asic_persons.advisers")
             .expect("advisers outcome");
-        assert_eq!(advisers.kind, SourceOutcomeKind::ValidZero);
+        assert_eq!(advisers.kind, SourceOutcomeKind::Inconclusive);
         assert_eq!(advisers.found, Some(0));
         assert_eq!(
             advisers.detail.as_deref(),
@@ -1124,6 +1166,57 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_register_keeps_independent_valid_zeros() {
+        let mut script = empty_script();
+        script.insert(BANNED_RES.into(), Ok(json_ok(r#"{"success":false}"#)));
+        let fake = Fake::new(script);
+        let report = lookup(&fake, "Bill Abbott", "scan", 1)
+            .expect("other two registers answered");
+        assert_eq!(report.outcomes.len(), 3);
+        assert_eq!(fake.seen.borrow().len(), 3);
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
+        assert!(report.outcomes[1..]
+            .iter()
+            .all(|o| o.kind == SourceOutcomeKind::ValidZero));
+    }
+
+    #[test]
+    fn a_refused_register_does_not_skip_other_registers() {
+        let mut script = empty_script();
+        script.insert(
+            BANNED_RES.into(),
+            Err(TransportFailure {
+                kind: SourceOutcomeKind::ConnectFailure,
+                detail: "egress-policy: blocked".into(),
+                blocked: true,
+            }),
+        );
+        let fake = Fake::new(script);
+        let report = lookup(&fake, "Bill Abbott", "scan", 1)
+            .expect("other two registers answered");
+        assert_eq!(fake.seen.borrow().len(), 3);
+        assert_eq!(report.outcomes.len(), 3);
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::RefusedBeforeSending);
+        assert!(report.outcomes[1..]
+            .iter()
+            .all(|o| o.kind == SourceOutcomeKind::ValidZero));
+    }
+
+    #[test]
+    fn missing_result_envelope_is_not_a_clean_zero() {
+        let mut script = empty_script();
+        script.insert(BANNED_RES.into(), Ok(json_ok(r#"{"success":true}"#)));
+        let report = lookup(&Fake::new(script), "Bill Abbott", "scan", 1)
+            .expect("other two registers answered");
+        assert_eq!(report.outcomes.len(), 3);
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
+        assert!(report.outcomes[0]
+            .detail
+            .as_deref()
+            .is_some_and(|s| s.contains("no result envelope")));
+    }
+
+    #[test]
     fn ckan_success_false_is_not_empty_absence() {
         let fail = json_ok(r#"{"success":false}"#);
         let fake = Fake::new(HashMap::from([
@@ -1148,8 +1241,13 @@ mod tests {
             (ADVISER_RES.into(), Ok(empty.clone())),
             (CREDIT_RES.into(), Ok(empty)),
         ]));
-        let err = lookup(&fake, "Bill Abbott", "scan", 1).expect_err("truncated");
-        assert!(matches!(err, Error::Invalid(_)), "{err}");
+        let report = lookup(&fake, "Bill Abbott", "scan", 1)
+            .expect("healthy registers still answered");
+        assert_eq!(report.outcomes.len(), 3);
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ParserDrift);
+        assert!(report.outcomes[1..]
+            .iter()
+            .all(|o| o.kind == SourceOutcomeKind::ValidZero));
     }
 
     #[test]
@@ -1167,7 +1265,12 @@ mod tests {
             (ADVISER_RES.into(), Ok(empty.clone())),
             (CREDIT_RES.into(), Ok(empty)),
         ]));
-        let err = lookup(&fake, "Bill Abbott", "scan", 1).expect_err("waf");
-        assert!(matches!(err, Error::Invalid(_)), "{err}");
+        let report = lookup(&fake, "Bill Abbott", "scan", 1)
+            .expect("healthy registers still answered");
+        assert_eq!(report.outcomes.len(), 3);
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::BotWaf);
+        assert!(report.outcomes[1..]
+            .iter()
+            .all(|o| o.kind == SourceOutcomeKind::ValidZero));
     }
 }
