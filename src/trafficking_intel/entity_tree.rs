@@ -131,6 +131,27 @@ pub struct TreeEntry {
 }
 
 impl EntityTree {
+    /// Traverse only non-alleged relationships. This does not authenticate
+    /// caller-supplied evidence references or establish factual culpability.
+    pub fn expand_documented(
+        &self,
+        root: &str,
+        max_depth: usize,
+        max_nodes: usize,
+    ) -> Result<Vec<TreeEntry>, GraphError> {
+        self.validate()?;
+        let filtered = Self {
+            nodes: self.nodes.clone(),
+            edges: self
+                .edges
+                .iter()
+                .filter(|edge| !edge.alleged && edge.kind != RelationshipKind::AllegedAssociation)
+                .cloned()
+                .collect(),
+        };
+        filtered.expand(root, max_depth, max_nodes)
+    }
+
     /// Bounded breadth-first expansion for a simple, cycle-safe entity tree.
     /// The returned view is not an inference of ownership or criminal hierarchy.
     pub fn expand(
