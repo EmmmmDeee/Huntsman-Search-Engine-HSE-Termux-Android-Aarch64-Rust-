@@ -37,7 +37,7 @@ const bin = process.argv[2];
 if (!bin || !fs.existsSync(bin)) { process.stderr.write('usage: node check.cjs path/to/huntsman-recon\n'); process.exit(64); }
 const PHONE = { viewport: { width: 360, height: 740 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true };
 // Two additional KiB accommodate the complete, lossless on-demand TXT exporter.
-const PAGE_BUDGET = 124 * 1024;
+const PAGE_BUDGET = 128 * 1024;
 const TARGET = '+61412345678';
 const failures = [];
 const metrics = {};
@@ -273,6 +273,60 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       page.off('request', countScanPost);
       await page.unroute('**/api/radar/wifi');
       page.off('request', countRadar);
+
+      // The cells Android reports and the track log, read from the same tab on a press only.
+      const cellsFixture = {
+        source: 'termux-telephony-cellinfo', acquisition: 'android_cached_cellinfo_not_active_scan',
+        status: 'freshness_unknown', observed: 2, rejected: 0,
+        observations: [
+          { sighting: { network_id: 'gsm:505-01-17-91', signal_dbm: -83 }, technology: 'gsm', mcc: '505', mnc: '01', area_code: 17, cell_id: 91, registered: true, freshness: 'unknown' },
+          { sighting: { network_id: 'lte:505-01-19-12345', signal_dbm: -101 }, technology: 'lte', mcc: '505', mnc: '01', area_code: 19, cell_id: 12345, registered: false, freshness: 'unknown' }
+        ]
+      };
+      const trackFixture = {
+        sweeps: 3, located_sweeps: 3, distinct_cells: 3, skipped_lines: 0,
+        recurring: [{ mac: '3c:5a:b4:11:22:33', name: null, vendor: null, device_class: null, sweeps_seen: 3, first_ts: 1700000000, last_ts: 1700001200 }],
+        followers: [{ mac: '3c:5a:b4:11:22:33', vendor: null, device_class: null, distinct_cells: 3, sightings: 3, coverage: 1, first_ts: 1700000000, last_ts: 1700001200, span_secs: 1200 }]
+      };
+      let cellCalls = 0, trackCalls = 0, trackMethod = '', sensorHeaders = true;
+      const countSensors = request => {
+        const path = new URL(request.url()).pathname;
+        if (path === '/api/radar/cells') { cellCalls++; sensorHeaders &&= request.headers()['x-huntsman-lookup'] === '1'; }
+        if (path === '/api/radar/track') { trackCalls++; trackMethod = request.method(); sensorHeaders &&= request.headers()['x-huntsman-lookup'] === '1'; }
+      };
+      page.on('request', countSensors);
+      await page.route('**/api/radar/cells', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(cellsFixture) }));
+      await page.route('**/api/radar/track', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(trackFixture) }));
+      await page.goto(base + '/#/radar', { waitUntil: 'networkidle' });
+      check(`${scheme}: Radar reads no cells and logs no sweep merely because it opened`, cellCalls === 0 && trackCalls === 0, { cellCalls, trackCalls });
+      await page.click('#rcread');
+      await page.waitForSelector('#rcresult:not([hidden])', { timeout: 10000 }).catch(() => {});
+      const cellsText = await page.textContent('#rcrows');
+      check(`${scheme}: Radar shows the cells Android reports, registered state and signal, with no position`,
+        cellCalls === 1 && sensorHeaders && await page.isHidden('#rerror') && cellsText.includes('gsm:505-01-17-91') &&
+        cellsText.includes('lte:505-01-19-12345') && cellsText.includes('yes') && cellsText.includes('-83') &&
+        (await page.textContent('#rcsummary')).includes('termux-telephony-cellinfo'), cellsText);
+      await page.click('#rcrows button');
+      await page.waitForSelector('#view-newscan:not([hidden])', { timeout: 5000 });
+      const cellHandoff = await page.evaluate(() => ({
+        target: document.getElementById('starget').value, kind: document.getElementById('skind').value,
+        depth: document.getElementById('sdepth').value
+      }));
+      check(`${scheme}: a reported cell pivots into a prefilled cell: NETWORK scan`,
+        cellHandoff.target === 'cell:505:01:17:91' && cellHandoff.kind === 'network' && cellHandoff.depth === '0', cellHandoff);
+      await page.goto(base + '/#/radar', { waitUntil: 'networkidle' });
+      await page.click('#rtrack');
+      await page.waitForSelector('#rtresult:not([hidden])', { timeout: 10000 }).catch(() => {});
+      const trackText = await page.textContent('#rtrows');
+      check(`${scheme}: one press logs one sweep by POST and shows the follower and recurring devices`,
+        trackCalls === 1 && trackMethod === 'POST' && sensorHeaders && await page.isHidden('#rerror') &&
+        trackText.includes('3c:5a:b4:11:22:33') && trackText.includes('1.00') && trackText.includes('1200') &&
+        (await page.textContent('#rrrows')).includes('3c:5a:b4:11:22:33') &&
+        (await page.textContent('#rtsummary')).includes('sweeps: 3') &&
+        (await page.textContent('#rstatus')).includes('travelled with you'), { trackCalls, trackMethod, trackText });
+      page.off('request', countSensors);
+      await page.unroute('**/api/radar/cells');
+      await page.unroute('**/api/radar/track');
 
       // Inspect: a picked file goes to this server's own exif and docmeta readers, only on request.
       // The file is a JPEG carrying an XMP packet with an edit history and a GPS position.

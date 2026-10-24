@@ -34,7 +34,7 @@ const PAGE: &str = include_str!("../src/web_ui.html");
 /// failures instead of stopping at the first. Raised to 124 KiB for the Analysis tab and the
 /// Source attribution view: two read-only routes the server already answered that the page had
 /// no control for, so a phone user could not reach them.
-const PAGE_BUDGET: usize = 124 * 1024;
+const PAGE_BUDGET: usize = 128 * 1024;
 /// WCAG 2.2 AA for text under 18.66 px bold or 24 px: the page has none larger.
 const AA: f64 = 4.5;
 /// WCAG 2.2 AA for a graphical object a reader must see (1.4.11), such as a graph node.

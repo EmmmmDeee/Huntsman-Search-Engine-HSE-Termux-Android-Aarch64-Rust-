@@ -155,6 +155,23 @@ fn web_radar() -> Result<huntsman_recon::wifi_radar::WifiScan, LookupError> {
     })
 }
 
+/// Mobile radar reads exactly the same Termux cell report as `radar cells`.
+fn web_cells() -> Result<huntsman_recon::cell_radar::CellScan, LookupError> {
+    super::radar::capture_cells().map_err(|message| LookupError {
+        status: 503,
+        message,
+    })
+}
+
+/// Mobile radar records one sweep into the same track log `radar track` keeps.
+fn web_track() -> Result<huntsman_recon::radar::TrackReport, LookupError> {
+    let log = super::scans::default_radar_log().ok_or_else(|| LookupError {
+        status: 500,
+        message: "radar track: no log; set HUNTSMAN_HOME or HOME".into(),
+    })?;
+    super::radar::track_live(&log)
+}
+
 /// The saved scans `serve` shows and starts: the same store, runner, correlation rules and API
 /// router as `scans`, so a scan run from either shows in both. A scan a stopped server left running
 /// reads `ABORTED`, and each rule error [`huntsman_recon::sf_correlate::with_dir`] reports for
@@ -302,6 +319,8 @@ pub(super) fn serve_cmd(args: &[String]) -> ExitCode {
             let server = server
                 .with_lookup(std::sync::Arc::new(web_lookup))
                 .with_radar(std::sync::Arc::new(web_radar))
+                .with_radar_cells(std::sync::Arc::new(web_cells))
+                .with_radar_track(std::sync::Arc::new(web_track))
                 .with_inspect(std::sync::Arc::new(web_inspect))
                 .with_analyze(std::sync::Arc::new(move |seeds: &[String]| {
                     web_analyze(seeds, analyze_history.as_deref())

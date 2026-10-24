@@ -12,7 +12,8 @@ use super::{fail, terminal_json_pretty};
 use huntsman_recon::cell_radar;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
-use huntsman_recon::radar::{self, LoggedDevice, LoggedSweep, MAX_TRACK_LOG_BYTES};
+use huntsman_recon::radar;
+use huntsman_recon::web_server::LookupError;
 use huntsman_recon::wifi_radar::{self, MAX_SCAN_BYTES};
 
 const USAGE: &str = "usage: huntsman-recon radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE]";
@@ -155,6 +156,37 @@ fn collect_termux_cells() -> Result<Vec<u8>, String> {
 pub(super) fn capture_wifi() -> Result<wifi_radar::WifiScan, String> {
     let data = collect_termux_wifi()?;
     wifi_radar::parse_scan(&data, uptime_secs()).map_err(|e| e.to_string())
+}
+
+/// The cells Android reports, shared by the CLI and the mobile Web UI: no root, no modem scan.
+/// Missing or restricted Termux:API telephony is an explicit error.
+pub(super) fn capture_cells() -> Result<cell_radar::CellScan, String> {
+    let data = collect_termux_cells()?;
+    cell_radar::parse_cells(&data).map_err(|e| e.to_string())
+}
+
+/// One sweep of this device added to the track log at `log`, for the web UI's
+/// `POST /api/radar/track`: the cached Wi-Fi scan placed at the registered serving cell, as
+/// `radar track` records it with no replay. A missing sensor, or a cache that is empty or wholly
+/// stale, is `503` and logs nothing, since a sweep from it would read as having heard nothing; a
+/// log that cannot be kept is `500`. A cell report Android withholds leaves the sweep unplaced.
+pub(super) fn track_live(log: &Path) -> Result<radar::TrackReport, LookupError> {
+    let wifi = capture_wifi().map_err(|message| LookupError {
+        status: 503,
+        message,
+    })?;
+    if matches!(wifi.status, "inconclusive" | "stale_only") {
+        return Err(LookupError {
+            status: 503,
+            message: format!("the Wi-Fi scan is {}; nothing was logged", wifi.status),
+        });
+    }
+    let cell = capture_cells().ok().and_then(|scan| scan.serving_cell());
+    let sweep = wifi.logged_sweep(huntsman_recon::clock::unix_now(), cell);
+    radar::record_sweep(log, sweep).map_err(|error| LookupError {
+        status: 500,
+        message: format!("radar track: {error}"),
+    })
 }
 
 /// The options both radar sources take: `--json` for the report, and `--file PATH` to replay a
@@ -329,24 +361,6 @@ fn track_options(args: &[String]) -> Option<TrackOptions<'_>> {
     Some(options)
 }
 
-/// The place a cell scan says the phone is: its registered serving cell, as an opaque bucket.
-/// `None` when the phone is registered to none, so the sweep is kept but not placed.
-fn serving_cell(scan: &cell_radar::CellScan) -> Option<String> {
-    scan.observations
-        .iter()
-        .find(|cell| cell.registered == Some(true))
-        .map(|cell| {
-            format!(
-                "{}:{}-{}-{}-{}",
-                cell.technology,
-                cell.mcc.as_deref().unwrap_or("?"),
-                cell.mnc.as_deref().unwrap_or("?"),
-                cell.area_code,
-                cell.cell_id
-            )
-        })
-}
-
 /// Take one Wi-Fi sweep, place it at the serving cell, add it to the track log and report what
 /// the log shows: devices that keep recurring, and devices seen across several of the
 /// operator's places (a personal-safety signal that something moved with them). The log is
@@ -399,74 +413,35 @@ fn track_cmd(args: &[String]) -> ExitCode {
                     cell_radar::parse_replay(&raw).map_err(|error| (EX_DATAERR, error.to_string()))
                 });
             match parsed {
-                Ok(scan) => serving_cell(&scan),
+                Ok(scan) => scan.serving_cell(),
                 Err((code, error)) => return fail(code, &error),
             }
         }
         None => match collect_termux_cells()
             .and_then(|raw| cell_radar::parse_cells(&raw).map_err(|error| error.to_string()))
         {
-            Ok(scan) => serving_cell(&scan),
+            Ok(scan) => scan.serving_cell(),
             Err(error) => {
                 eprintln!("radar track: no serving cell, so this sweep is not placed: {error}");
                 None
             }
         },
     };
-    let sweep = LoggedSweep::new(
-        huntsman_recon::clock::unix_now(),
-        cell,
-        wifi.observations
-            .iter()
-            .filter(|observation| observation.freshness != "stale")
-            .map(|observation| LoggedDevice {
-                mac: observation.sighting.network_id.clone(),
-                name: observation.sighting.name.clone(),
-            }),
-    );
-    let existing = match std::fs::symlink_metadata(&log) {
-        Ok(_) => match read_bounded(&log, MAX_TRACK_LOG_BYTES) {
-            Ok(bytes) => bytes,
-            Err(error) => return fail(EX_DATAERR, &format!("radar track: {error}")),
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return fail(EX_NOINPUT, &format!("{}: {error}", log.display())),
+    let sweep = wifi.logged_sweep(huntsman_recon::clock::unix_now(), cell);
+    let report = match radar::record_sweep(&log, sweep) {
+        Ok(report) => report,
+        Err(radar::TrackLogError::Unreadable(why)) => {
+            return fail(EX_DATAERR, &format!("radar track: {why}"));
+        }
+        Err(radar::TrackLogError::Missing(why)) => return fail(EX_NOINPUT, &why),
+        Err(radar::TrackLogError::Unwritable(why)) => {
+            return fail(EX_UNAVAILABLE, &format!("radar track: {why}"));
+        }
     };
-    let (mut sweeps, skipped) = radar::parse_track_log(&existing);
-    let bytes = radar::append_track_log(sweeps.clone(), sweep.clone());
-    if let Err(error) = private_parent(&log).and_then(|()| {
-        huntsman_recon::fsio::write_atomic_private(&log, &bytes, MAX_TRACK_LOG_BYTES)
-            .map_err(|error| error.to_string())
-    }) {
-        return fail(EX_UNAVAILABLE, &format!("radar track: {error}"));
-    }
-    sweeps.push(sweep);
-    let report = radar::track(
-        &sweeps[sweeps.len().saturating_sub(radar::MAX_TRACK_SWEEPS)..],
-        skipped,
-    );
     match print_report(&report, options.json, render_track) {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => code,
     }
-}
-
-/// Create the log's directory when it is missing, private to the user.
-fn private_parent(log: &Path) -> Result<(), String> {
-    let Some(parent) = log.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
-        return Ok(());
-    };
-    if parent.is_dir() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-            .map_err(|error| format!("{}: {error}", parent.display()))?;
-    }
-    Ok(())
 }
 
 /// A track report as tab-separated text: a summary line, then each follower and each recurring

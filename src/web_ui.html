@@ -285,15 +285,27 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 </form>
 </section>
 <section id="view-radar" hidden>
-<h1>Wi-Fi Radar</h1>
-<p class="help">Reads Android's last cached Wi-Fi scan through Termux:API; it does not trigger an active scan. No root or provider key required. Observations may be old, and signal strength does not establish a device's location.</p>
-<div class="toolbar"><button class="btn btn-primary" id="rread" type="button">Read OS scan cache</button><button class="btn" id="rdownload" type="button" disabled>Export JSON</button></div>
+<h1>Radar</h1>
+<p class="help">Reads Android's last cached Wi-Fi scan and the cells it reports through Termux:API; nothing here triggers an active scan. No root or provider key required. Observations may be old, and signal strength does not establish a device's location. Log a sweep now and then as you move to notice a device that moves with you.</p>
+<div class="toolbar"><button class="btn btn-primary" id="rread" type="button">Read OS scan cache</button><button class="btn" id="rcread" type="button">Read cells</button><button class="btn" id="rtrack" type="button">Log a sweep</button><button class="btn" id="rdownload" type="button" disabled>Export JSON</button></div>
 <p class="alert" id="rerror" role="alert" hidden></p>
 <p class="note" id="rstatus" role="status">No observations requested. Termux:API and Android location permission are required on the phone.</p>
 <div class="panel" id="rresult" hidden>
 <div class="panel-heading">OS-cached observations <span class="badge" id="rrows-n"></span></div>
 <p class="note" id="rsummary"></p>
 <div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>RSSI (dBm)</th><th>Band</th><th>Age (s)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rrows"></tbody></table></div>
+</div>
+<div class="panel" id="rcresult" hidden>
+<div class="panel-heading">Cells Android reports <span class="badge" id="rcrows-n"></span></div>
+<p class="note" id="rcsummary"></p>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>Cell</th><th>Type</th><th>Registered</th><th>Signal (dBm)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rcrows"></tbody></table></div>
+</div>
+<div class="panel" id="rtresult" hidden>
+<div class="panel-heading">Devices that moved with you <span class="badge" id="rtrows-n"></span></div>
+<p class="note" id="rtsummary"></p>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>Vendor</th><th>Cells</th><th>Coverage</th><th>Sightings</th><th>Span (s)</th><th>Next step</th></tr></thead><tbody id="rtrows"></tbody></table></div>
+<div class="panel-heading">Heard in two or more sweeps <span class="badge" id="rrrows-n"></span></div>
+<div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>SSID</th><th>Vendor</th><th>Sweeps</th><th>First</th><th>Last</th></tr></thead><tbody id="rrrows"></tbody></table></div>
 </div>
 </section>
 <section id="view-inspect" hidden>
@@ -655,6 +667,41 @@ $('rread').onclick=async()=>{
   finally{button.disabled=false}
 };
 $('rdownload').onclick=()=>{if(radarLast)save(radarLast,'huntsman-wifi-radar')};
+// Cells and sweeps are read on a press too, through the same guarded path as the Wi-Fi cache.
+let cellsLast=null;
+function cellPivot(o){
+  if(!o.mcc||!o.mnc)return '';
+  const t='cell:'+o.mcc+':'+o.mnc+':'+o.area_code+':'+o.cell_id;
+  return button('Investigate',()=>prefill({target:t,name:'Cell '+t,kind:'network',depth:0}),'btn-ghost');
+}
+$('rcread').onclick=async()=>{
+  const b=$('rcread');b.disabled=true;$('rerror').hidden=true;$('rstatus').textContent='Reading the cells Android reports…';
+  try{
+    const scan=await api('/api/radar/cells');cellsLast=scan;$('rcresult').hidden=false;
+    fill('rcrows',Array.isArray(scan.observations)?scan.observations:[],o=>[o.sighting?.network_id||'',o.technology||'',o.registered==null?'unknown':o.registered?'yes':'no',o.sighting?.signal_dbm??'unknown',o.freshness||'unknown',cellPivot(o)]);
+    $('rcsummary').textContent='Requested at '+new Date().toLocaleString()+' (browser clock; no capture time is reported) · Source: '+scan.source+' · status: '+scan.status+' · records: '+scan.observed+' · rejected: '+scan.rejected;
+    $('rstatus').textContent=scan.status==='inconclusive'
+      ?'Android returned no cells. Cellular service may still exist; this is not evidence that no cell site is near.'
+      :'Cells as Android reports them: no tower position, time or capture age is inferred. A registered cell is the phone\'s coarse place.';
+  }catch(e){
+    $('rstatus').textContent=cellsLast?'Refresh failed. The cells table shows a PREVIOUS read.':'No cell observations available.';
+    fail('rerror',e.message);
+  }
+  finally{b.disabled=false}
+};
+$('rtrack').onclick=async()=>{
+  const b=$('rtrack');b.disabled=true;$('rerror').hidden=true;$('rstatus').textContent='Logging one sweep: the cached Wi-Fi scan, placed at the registered cell…';
+  try{
+    const r=await api('/api/radar/track',{method:'POST'});$('rtresult').hidden=false;
+    fill('rtrows',r.followers||[],f=>[f.mac,f.vendor||'unknown',f.distinct_cells,Number(f.coverage).toFixed(2),f.sightings,f.span_secs,radarPivot({sighting:{network_id:f.mac}})]);
+    fill('rrrows',r.recurring||[],d=>[d.mac,d.name||'(hidden)',d.vendor||'unknown',d.sweeps_seen,when(d.first_ts*1000),when(d.last_ts*1000)]);
+    $('rtsummary').textContent='Sweep logged at '+new Date().toLocaleString()+' · sweeps: '+r.sweeps+' · placed: '+r.located_sweeps+' · cells: '+r.distinct_cells+' · followers: '+(r.followers||[]).length+' · recurring: '+(r.recurring||[]).length+(r.skipped_lines?' · unreadable log lines: '+r.skipped_lines:'');
+    $('rstatus').textContent=(r.followers||[]).length
+      ?'A follower was heard in three or more of your places over ten minutes or more: something travelled with you. It does not identify an owner.'
+      :'Nothing has followed you across your logged places yet. The log keeps the newest 256 sweeps; log one now and then as you move.';
+  }catch(e){$('rstatus').textContent='The sweep was not logged.';fail('rerror',e.message)}
+  finally{b.disabled=false}
+};
 // Inspect reads a picked file only when asked; a GPS lead is prefilled, never started.
 let inspectLast=null;
 // Every failed attempt, refused here or by the server, says the tables are the previous file's.

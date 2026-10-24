@@ -2,8 +2,10 @@
 //! `core::radar_live`.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use super::oui;
+use crate::fsio::read_bounded;
 
 const DEPART_AFTER_MISSED_READS: u32 = 2;
 const DEFAULT_TRACK_CAPACITY: usize = 4_096;
@@ -689,6 +691,78 @@ pub fn track(sweeps: &[LoggedSweep], skipped_lines: usize) -> TrackReport {
         recurring: recurring_devices(&as_sweeps, 2),
         followers: follower_candidates(&sightings, FOLLOWER_MIN_CELLS, FOLLOWER_MIN_SPAN_SECS),
     }
+}
+
+/// Why a sweep could not be added to the track log. Nothing was written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrackLogError {
+    /// The log exists but could not be read whole.
+    Unreadable(String),
+    /// The log's place could not be examined.
+    Missing(String),
+    /// The log, or the private directory for it, could not be written.
+    Unwritable(String),
+}
+
+impl std::fmt::Display for TrackLogError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreadable(why) | Self::Missing(why) | Self::Unwritable(why) => f.write_str(why),
+        }
+    }
+}
+
+/// Add `sweep` to the track log at `log` and report what the log then shows. The log is written
+/// private to the user, in a directory created private when missing, keeps the newest
+/// [`MAX_TRACK_SWEEPS`] sweeps within [`MAX_TRACK_LOG_BYTES`], and a line of it that does not
+/// parse is skipped and counted. `radar track` and the web UI's `/api/radar/track` both record
+/// through here, so one log holds every sweep however it was taken.
+///
+/// # Errors
+/// [`TrackLogError`] when the log cannot be read or written.
+pub fn record_sweep(log: &Path, sweep: LoggedSweep) -> Result<TrackReport, TrackLogError> {
+    let existing = match std::fs::symlink_metadata(log) {
+        Ok(_) => read_bounded(log, MAX_TRACK_LOG_BYTES)
+            .map_err(|error| TrackLogError::Unreadable(error.to_string()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            return Err(TrackLogError::Missing(format!(
+                "{}: {error}",
+                log.display()
+            )));
+        }
+    };
+    let (mut sweeps, skipped) = parse_track_log(&existing);
+    let bytes = append_track_log(sweeps.clone(), sweep.clone());
+    private_parent(log)
+        .and_then(|()| {
+            crate::fsio::write_atomic_private(log, &bytes, MAX_TRACK_LOG_BYTES)
+                .map_err(|error| error.to_string())
+        })
+        .map_err(TrackLogError::Unwritable)?;
+    sweeps.push(sweep);
+    Ok(track(
+        &sweeps[sweeps.len().saturating_sub(MAX_TRACK_SWEEPS)..],
+        skipped,
+    ))
+}
+
+/// Create the log's directory when it is missing, private to the user.
+fn private_parent(log: &Path) -> Result<(), String> {
+    let Some(parent) = log.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    if parent.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
