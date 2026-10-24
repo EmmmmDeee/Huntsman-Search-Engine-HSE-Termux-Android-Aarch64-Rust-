@@ -549,6 +549,29 @@ mod tests {
     }
 
     #[test]
+    fn json_over_the_ceiling_is_refused_with_the_size_it_needs_and_not_written() {
+        let dir = scratch("json-bound");
+        let path = dir.join("session.json");
+        let value = serde_json::json!({ "note": "a".repeat(64) });
+        let needs = serde_json::to_vec_pretty(&value).unwrap().len();
+        let small_max = 16;
+        assert!(u64::try_from(needs).unwrap() > small_max);
+        match write_json_private(&path, &value, small_max) {
+            Err(Error::Store(message)) => assert_eq!(
+                message,
+                format!(
+                    "{}: exceeds {small_max} bytes (needs {needs})",
+                    path.display()
+                )
+            ),
+            other => panic!("a value over the ceiling must be refused, got {other:?}"),
+        }
+        assert!(!path.exists(), "a refused value must not be written");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "no temp file left");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn temp_collisions_are_retried_without_touching_existing_files() {
         let dir = scratch("collision");
         let name = std::ffi::OsStr::new("tokens.json");

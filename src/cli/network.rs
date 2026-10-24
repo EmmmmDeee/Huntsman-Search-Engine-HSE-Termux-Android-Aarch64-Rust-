@@ -1,13 +1,16 @@
 //! Binary adapter commands. Business logic stays in the library crate.
 
 use std::env;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
 use super::{RECON_USAGE, fail, usage_error};
 use huntsman_recon::canonical::{canonical_domain, canonical_email, canonical_url};
 use huntsman_recon::clock;
-use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
+use huntsman_recon::credential_origin::{
+    AuthenticationAuthority, CredentialFingerprint, OperatorCredentialRef,
+};
 use huntsman_recon::crtsh::{self, CrtShError};
 use huntsman_recon::dns;
 use huntsman_recon::egress::EgressPolicy;
@@ -22,7 +25,7 @@ use huntsman_recon::lookup_report::entity_row;
 use huntsman_recon::recon::ReconTargetKind;
 use huntsman_recon::seeknow_cli::{SEEKNOW_USAGE, SeekNowCliRun};
 use huntsman_recon::source_outcome::recommended_action;
-use huntsman_recon::stolen_tax::{self, StolenTaxError};
+use huntsman_recon::stolen_tax::{self, StolenTaxError, StolenTaxReport};
 use huntsman_recon::textnorm::escape_controls;
 
 pub(super) fn hibp_cmd(args: &[String]) -> ExitCode {
@@ -181,30 +184,16 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
     match stolen_tax::lookup(&transport, &keys, query, "cli", now) {
         Ok(report) => {
             print_entities(&report.entities);
-            for failure in &report.failed_paths {
-                println!(
-                    "failed_path={} reason={}",
-                    failure.path,
-                    escape_controls(&failure.reason)
-                );
-            }
-            for path in &report.skipped_paths {
-                println!(
-                    "skipped_path={path} reason=not sent, {}s lookup budget exhausted",
-                    stolen_tax::LOOKUP_BUDGET.as_secs()
-                );
-            }
-            if let Some(secret) = keys.get(stolen_tax::KEY_SLOT) {
-                println!("credential={}", secret.fingerprint().short());
-            }
-            println!(
-                "entities={} partial={}",
-                report.entities.len(),
-                report.truncation.is_some()
+            let fingerprint = keys
+                .get(stolen_tax::KEY_SLOT)
+                .map(|secret| secret.fingerprint());
+            print!(
+                "{}",
+                stolen_tax_summary(
+                    &report,
+                    fingerprint.as_ref().map(CredentialFingerprint::short)
+                )
             );
-            if let Some(note) = &report.truncation {
-                println!("truncation={note}");
-            }
             ExitCode::SUCCESS
         }
         Err(e @ StolenTaxError::MissingKey) => fail(EX_NOINPUT, &e.to_string()),
@@ -213,6 +202,44 @@ fn stolen_tax_cmd(query: &str, keys_file: Option<&String>) -> ExitCode {
             fail(EX_UNAVAILABLE, &e.to_string())
         }
     }
+}
+
+/// The lines `recon stolen-tax` prints after the entity rows: each failed and skipped path, the
+/// key's short fingerprint, the rows that matched but name no breach or stealer host, then the
+/// totals and any truncation note. **Pure.**
+fn stolen_tax_summary(report: &StolenTaxReport, credential: Option<&str>) -> String {
+    let mut text = String::new();
+    for failure in &report.failed_paths {
+        let _ = writeln!(
+            text,
+            "failed_path={} reason={}",
+            failure.path,
+            escape_controls(&failure.reason)
+        );
+    }
+    for path in &report.skipped_paths {
+        let _ = writeln!(
+            text,
+            "skipped_path={path} reason=not sent, {}s lookup budget exhausted",
+            stolen_tax::LOOKUP_BUDGET.as_secs()
+        );
+    }
+    if let Some(credential) = credential {
+        let _ = writeln!(text, "credential={credential}");
+    }
+    if report.unnamed_rows > 0 {
+        let _ = writeln!(text, "unnamed_rows={}", report.unnamed_rows);
+    }
+    let _ = writeln!(
+        text,
+        "entities={} partial={}",
+        report.entities.len(),
+        report.truncation.is_some()
+    );
+    if let Some(note) = &report.truncation {
+        let _ = writeln!(text, "truncation={note}");
+    }
+    text
 }
 
 pub(super) fn fetch_cmd(args: &[String]) -> ExitCode {
@@ -300,4 +327,51 @@ fn build_credential(args: &FetchArgs) -> Result<Option<Credential>, Error> {
         approval_provenance: "operator supplied --bearer/--header on the command line".into(),
     })?;
     Ok(Some(Credential::new(authority, secret, style.clone())?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stolen_tax_summary;
+    use huntsman_recon::entity::{Entity, EntityKind};
+    use huntsman_recon::stolen_tax::{PathFailure, StolenTaxReport};
+
+    #[test]
+    fn a_stolen_tax_row_that_names_no_breach_is_counted_before_the_totals() {
+        let report = StolenTaxReport {
+            entities: Vec::new(),
+            failed_paths: vec![PathFailure {
+                path: "snusbase",
+                reason: "no response (TtfbTimeout)".into(),
+            }],
+            skipped_paths: Vec::new(),
+            truncation: Some("0 retrieved".into()),
+            unnamed_rows: 2,
+        };
+        assert_eq!(
+            stolen_tax_summary(&report, Some("0123456789ab")),
+            "failed_path=snusbase reason=no response (TtfbTimeout)\n\
+             credential=0123456789ab\n\
+             unnamed_rows=2\n\
+             entities=0 partial=true\n\
+             truncation=0 retrieved\n"
+        );
+
+        // A report whose every row names its breach prints no count.
+        let named = StolenTaxReport {
+            entities: vec![Entity::new(
+                EntityKind::Credential,
+                "breach:DB",
+                0.65,
+                "cli",
+            )],
+            failed_paths: Vec::new(),
+            skipped_paths: Vec::new(),
+            truncation: None,
+            unnamed_rows: 0,
+        };
+        assert_eq!(
+            stolen_tax_summary(&named, None),
+            "entities=1 partial=false\n"
+        );
+    }
 }

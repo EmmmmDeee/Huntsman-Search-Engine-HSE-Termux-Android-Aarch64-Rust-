@@ -271,8 +271,9 @@ pub fn verdict(history: &[RunRecord], current: &RunRecord) -> Verdict {
 /// `test result: ok. 12 passed; 0 failed; 1 ignored; 0 measured; 3 filtered out`.
 /// A `cargo test --workspace` run prints many; this totals them. Returns `None`
 /// when no summary line is present, so an empty or unrelated input is an error
-/// at the call site rather than a silent zero, and when a total overflows `u64`,
-/// so an absurd input is refused rather than wrapped.
+/// at the call site rather than a silent zero, and when a single count or a total
+/// does not fit in `u64`, so an absurd input is refused rather than wrapped or
+/// skipped.
 #[must_use]
 pub fn parse_libtest_summary(output: &str) -> Option<(u64, u64)> {
     let mut passed = 0u64;
@@ -291,12 +292,17 @@ pub fn parse_libtest_summary(output: &str) -> Option<(u64, u64)> {
             // so scan for a <number> <label> pair rather than assuming position.
             let tokens: Vec<&str> = parts.by_ref().collect();
             for pair in tokens.windows(2) {
-                if let Ok(n) = pair[0].parse::<u64>() {
-                    match pair[1] {
-                        "passed" => line_passed = Some(n),
-                        "failed" => line_failed = Some(n),
-                        _ => {}
-                    }
+                let slot = match pair[1] {
+                    "passed" => &mut line_passed,
+                    "failed" => &mut line_failed,
+                    _ => continue,
+                };
+                match pair[0].parse::<u64>() {
+                    Ok(n) => *slot = Some(n),
+                    // A count that is all digits but too large for u64 is refused like a
+                    // total that overflows, not skipped so the other lines pass as the total.
+                    Err(_) if pair[0].bytes().all(|b| b.is_ascii_digit()) => return None,
+                    Err(_) => {}
                 }
             }
         }
@@ -497,6 +503,13 @@ test result: FAILED. 0 passed; 18446744073709551615 failed; 0 ignored; 0 measure
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
 ";
         assert_eq!(parse_libtest_summary(failed), None);
+        // A single count past u64::MAX does not parse, so its line used to be skipped and the
+        // other lines recorded as the whole total.
+        let single = "\
+test result: ok. 18446744073709551616 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+";
+        assert_eq!(parse_libtest_summary(single), None);
     }
 
     #[test]
@@ -519,20 +532,26 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
     fn a_complete_final_record_without_a_newline_survives_the_next_append() {
         // A record that lost only its newline (a crash after its last byte, or an editor that
         // saves without a final newline) is one load returns, so record measures its verdict
-        // against it. The next append used to truncate it as a torn tail and delete it.
+        // against it. The next append used to truncate it as a torn tail and delete it. An
+        // earlier terminated record comes first, so the append must judge only the fragment
+        // after the last newline, not the whole file.
         let path = scratch("unterminated");
+        let rec0 = serde_json::to_string(&run("unit", 8, 0)).unwrap();
         let first = serde_json::to_string(&run("unit", 10, 0)).unwrap();
-        std::fs::write(&path, &first).unwrap();
-        assert_eq!(load(&path).unwrap(), vec![run("unit", 10, 0)]);
+        std::fs::write(&path, format!("{rec0}\n{first}")).unwrap();
+        assert_eq!(
+            load(&path).unwrap(),
+            vec![run("unit", 8, 0), run("unit", 10, 0)]
+        );
         append(&path, &run("unit", 9, 0)).unwrap();
         assert_eq!(
             load(&path).unwrap(),
-            vec![run("unit", 10, 0), run("unit", 9, 0)]
+            vec![run("unit", 8, 0), run("unit", 10, 0), run("unit", 9, 0)]
         );
         let second = serde_json::to_string(&run("unit", 9, 0)).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            format!("{first}\n{second}\n"),
+            format!("{rec0}\n{first}\n{second}\n"),
             "each record must be its own terminated line"
         );
     }
@@ -981,6 +1000,43 @@ pub mod cli {
                     .contains("line 1 is malformed")
             );
             assert!(o.is_empty());
+        }
+
+        #[test]
+        fn record_keeps_the_write_failure_status_for_a_malformed_history() {
+            // Under record, 65 is the regression verdict, so a history it read but cannot parse
+            // exits 74 instead, and nothing is appended to it.
+            let file = scratch("record-malformed");
+            std::fs::write(&file, b"{not json}\n").unwrap();
+            let (mut o, mut e) = (Vec::new(), Vec::new());
+            let code = run(
+                &argv(&[
+                    "record",
+                    "--suite",
+                    "unit",
+                    "--passed",
+                    "1",
+                    "--failed",
+                    "0",
+                    "--file",
+                    file.to_str().unwrap(),
+                ]),
+                1,
+                &mut o,
+                &mut e,
+            );
+            assert_eq!(code, EX_IOERR, "{}", String::from_utf8_lossy(&e));
+            assert!(
+                String::from_utf8(e)
+                    .unwrap()
+                    .contains("line 1 is malformed")
+            );
+            assert!(o.is_empty());
+            assert_eq!(
+                std::fs::read(&file).unwrap(),
+                b"{not json}\n",
+                "record must not touch a history it cannot parse"
+            );
         }
 
         #[test]

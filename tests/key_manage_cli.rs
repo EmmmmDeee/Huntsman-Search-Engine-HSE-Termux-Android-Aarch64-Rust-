@@ -5,6 +5,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use huntsman_recon::credential_origin::CredentialFingerprint;
+
 const SLOT: &str = "HUNTSMAN_TEST_API_KEY";
 const SECRET: &str = "TEST_ONLY_VALUE_SAMPLE_4e2b9c";
 
@@ -66,6 +68,29 @@ fn piped_key_round_trips_in_private_file_without_leaking_to_output() {
             .unwrap()
             .get(SLOT)
             .is_none()
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn listing_a_keys_file_prints_each_slot_with_only_its_short_fingerprint() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = home("listing");
+    let path = dir.join("keys.env");
+    std::fs::write(&path, format!("HUNTSMAN_SHODAN_KEY={SECRET}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let output = command(&dir).arg("keys").arg(&path).output().unwrap();
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let fingerprint = CredentialFingerprint::of_secret(SECRET);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout,
+        format!("HUNTSMAN_SHODAN_KEY fingerprint={}\n", fingerprint.short())
+    );
+    assert!(
+        !stdout.contains(fingerprint.as_str()),
+        "the full digest was printed"
     );
     std::fs::remove_dir_all(dir).unwrap();
 }

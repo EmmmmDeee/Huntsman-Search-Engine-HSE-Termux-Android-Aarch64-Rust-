@@ -455,7 +455,7 @@ fn build_entities_deduplication() {
     let data = StolenTaxData {
         emails: vec!["a@example.com".into(), "a@example.com".into()],
         usernames: vec!["bob".into(), "bob".into()],
-        breaches: Vec::new(),
+        ..StolenTaxData::default()
     };
     let out = build_entities(&data, "q@example.com", "s");
     assert_eq!(out.len(), 2);
@@ -504,12 +504,107 @@ fn build_entities_excludes_a_canonically_equal_spelling_of_the_query() {
     assert_eq!(build_entities(&data, "user@example.com ", "s").len(), 0);
 }
 
+/// The canonical key lowers ASCII only, so a non-ASCII case variant of the query is
+/// excluded by the Unicode lower-case comparison alone.
+#[test]
+fn build_entities_excludes_a_non_ascii_case_variant_of_the_query() {
+    let data = StolenTaxData {
+        usernames: vec!["äda".into()],
+        ..StolenTaxData::default()
+    };
+    assert_eq!(build_entities(&data, "ÄDA", "s").len(), 0);
+}
+
+/// Only the email form of the query drops the domain's trailing dot.
+#[test]
+fn build_entities_compares_an_email_query_in_its_email_form() {
+    let data = StolenTaxData {
+        emails: vec!["user@example.com".into()],
+        ..StolenTaxData::default()
+    };
+    assert_eq!(build_entities(&data, "user@example.com.", "s").len(), 0);
+}
+
 #[test]
 fn a_lookup_for_a_prefixed_handle_does_not_echo_it_back_as_a_pivot() {
     let body = r#"{"success":true,"data":{"results":{"DB":[{"username":"ada_99"}]}}}"#;
     let report = go(&Paths::ok(&[("snusbase", body)]), "@ada_99").unwrap();
     assert_eq!(report.entities.len(), 1, "{:?}", report.entities);
     assert!(has(&report, &EntityKind::Credential, "breach:DB"));
+    assert_eq!(report.unnamed_rows, 0);
+}
+
+/// A row that matches the query but names no corpus mints nothing, and is counted
+/// rather than read as not found.
+#[test]
+fn an_unnamed_row_that_only_echoes_the_query_is_counted_not_a_clean_negative() {
+    let body = r#"{"success":true,"data":{"breach_data":[{"username":"ada_99"}]}}"#;
+    let report = go(&Paths::ok(&[("osintcat", body)]), "@ada_99").unwrap();
+    assert_eq!(report.entities.len(), 0, "{:?}", report.entities);
+    assert_eq!(report.unnamed_rows, 1);
+    assert!(report.failed_paths.is_empty() && report.truncation.is_none());
+
+    let hostless = r#"{"success":true,"data":{"stealers":[{"top_logins":["user@example.com"]}]}}"#;
+    let report = go(&Paths::ok(&[("hudsonrock", hostless)]), "user@example.com ").unwrap();
+    assert_eq!(report.entities.len(), 0, "{:?}", report.entities);
+    assert_eq!(report.unnamed_rows, 1);
+}
+
+/// With a path failed or not sent, an unnamed echo is still an answer, marked partial.
+#[test]
+fn an_unnamed_echo_beside_a_failed_or_skipped_path_is_a_partial_answer() {
+    let hostless = r#"{"success":true,"data":{"stealers":[{"top_logins":["user@example.com"]}]}}"#;
+    let transport = Paths {
+        answers: vec![
+            ("snusbase", Err(SourceOutcomeKind::TtfbTimeout)),
+            ("hudsonrock", Ok((200, hostless.into()))),
+        ],
+        seen: RefCell::new(Vec::new()),
+    };
+    let report = go(&transport, "User@Example.com ").unwrap();
+    assert_eq!(report.entities.len(), 0, "{:?}", report.entities);
+    assert_eq!(report.unnamed_rows, 1);
+    assert_eq!(report.failed_paths[0].path, "snusbase");
+    assert_eq!(
+        report.truncation.as_deref(),
+        Some(
+            "0 retrieved — stopped by the stolen.tax `snusbase` path(s) failing, and the provider did not report how many exist. Absence of a finding here is not evidence of absence."
+        )
+    );
+
+    let clock = FakeClock::new();
+    let echo = r#"{"success":true,"data":{"breach_data":[{"email":"user@example.com"}]}}"#;
+    let transport = Timed::new(&clock, &[("snusbase", 1, EMPTY), ("osintcat", 119, echo)]);
+    let report = timed(&clock, &transport).unwrap();
+    assert_eq!(report.unnamed_rows, 1);
+    assert_eq!(report.skipped_paths, ["hudsonrock"]);
+    assert!(report.truncation.is_some());
+}
+
+#[test]
+fn unnamed_rows_count_identities_without_a_corpus_or_host_across_paths() {
+    let osint = decode(
+        "osintcat",
+        r#"{"success":true,"data":{"breach_data":[
+            {"email":"a@example.com","source":"Named"},
+            {"email":"b@example.com","source":"  "},
+            {"username":"c_user"},
+            {"note":"no identity and no corpus"}
+        ]}}"#,
+    );
+    assert_eq!(osint.unnamed_rows, 2);
+    let hudson = decode(
+        "hudsonrock",
+        r#"{"success":true,"data":{"stealers":[
+            {"computer_name":"HOST-1","top_logins":["d@example.com"]},
+            {"top_logins":["e@example.com"]},
+            {"top_logins":["m***d@example.com",""]}
+        ]}}"#,
+    );
+    assert_eq!(hudson.unnamed_rows, 1);
+    let mut merged = osint;
+    merge_data(&mut merged, hudson);
+    assert_eq!(merged.unnamed_rows, 3);
 }
 
 #[test]

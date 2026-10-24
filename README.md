@@ -260,6 +260,8 @@ To notice a device that moves with you, run `huntsman-recon radar track` now and
 
 Exit codes: 64 usage, 65 bad data or broken ledger, 66 unreadable input or failed credential setup (unconfigured slot or unreadable keys file or a bad URL when `--bearer`/`--header` is given), 69 `fetch`/`recon`/`seeknow`/`email` got no usable response or `people` registers were unusable, 74 artifact or output write failure, 77 `fetch`/`recon`/`seeknow`/`email` refused the request (egress policy or malformed URL or redirect target; without a credential option a malformed URL lands here) or `people` encountered a network-policy refusal, 78 `doctor` or `fix` found a check that fails, 141 the reader of the output closed it before the command finished (128 + SIGPIPE as a shell reports it; a `--save` file is written before anything is printed). `check` uses 2–11 for its individual gates. Running the binary with no command prints the help and the usage line to standard error, exits 64 and writes nothing; `help`, `-h` and `--help` print them to standard output. `check` writes `var/*.json` into the current directory, so run it in a checkout or an empty directory.
 
+`run-history record` exits 0 for a baseline or held run, 65 for a regression or for `--from-stdin` input without usable `test result:` totals, 66 for a history it cannot read, and 74 for a malformed history, standard input that cannot be read as text or exceeds 16 MiB, or a failed write; `run-history show` exits 65 for a malformed history and 66 for one it cannot read, and both exit 64 on a usage error.
+
 `tests/readme.rs` runs every offline example above, checks that the examples and the CLI usage name the same commands, produces each documented exit code, and matches the gate range to the CLI composition sources under `src/cli/`. Network HIBP examples below are exercised through a fake transport by `tests/hibp_cli.rs` rather than against the internet in CI.
 
 `fetch URL` options (defaults in brackets):
@@ -341,7 +343,10 @@ snusbase, osintcat and hudsonrock paths share one 120-second budget. Requests
 use the key only for `https://stolen.tax:443`; same-site redirects are bounded,
 and the key is not reattached after leaving that origin. HTTP 429 is retried
 on the same key up to three attempts per path, with `Retry-After` capped at
-four seconds. Partial results name failed or skipped paths. The legacy
+four seconds. Partial results name failed or skipped paths. A row that
+matches the query but names no breach or stealer host mints no marker; it is
+counted on an `unnamed_rows=N` line before `entities=`, so such a match is not
+read as not found. The legacy
 persistent multi-key pool is deferred; paid lookups are never automatic.
 Differential fixtures record the legacy output, with blank-name/host placeholder
 markers intentionally suppressed.

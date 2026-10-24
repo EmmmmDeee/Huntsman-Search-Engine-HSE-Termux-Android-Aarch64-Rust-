@@ -44,8 +44,11 @@
 //! Honest failure: a path that fails or is skipped while another produced evidence
 //! is reported in [`StolenTaxReport::failed_paths`] / [`StolenTaxReport::skipped_paths`]
 //! and [`StolenTaxReport::truncation`]; when nothing was collected and any path
-//! failed or was skipped, the lookup is an error, never a clean negative. A paid
-//! source: nothing in this crate calls it automatically.
+//! failed or was skipped, the lookup is an error, never a clean negative. A row that
+//! matched but names no breach or stealer host was collected too: it is counted in
+//! [`StolenTaxReport::unnamed_rows`], so a lookup whose only match is such a row, even
+//! one that only restates the query, is neither an error nor reported as not found. A
+//! paid source: nothing in this crate calls it automatically.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -148,6 +151,10 @@ pub struct StolenTaxReport {
     /// Set when `failed_paths` or `skipped_paths` is non-empty: this answer is
     /// incomplete.
     pub truncation: Option<String>,
+    /// Rows that matched, carrying an email or username, but name no breach or stealer
+    /// host. Their identities are kept as pivots unless they are the query itself, but
+    /// no marker is minted.
+    pub unnamed_rows: usize,
 }
 
 /// Transport settings for stolen.tax: the 120 s per-request ceiling. The lookup
@@ -166,9 +173,9 @@ pub fn transport_config() -> TransportConfig {
 /// # Errors
 /// [`StolenTaxError::MissingKey`] before any request when no key is configured;
 /// [`StolenTaxError::Refused`] when the egress policy refused the destination;
-/// [`StolenTaxError::Failed`] when no evidence was collected and a path failed;
-/// [`StolenTaxError::BudgetExhausted`] when no evidence was collected and a path
-/// was not sent because the budget ran out.
+/// [`StolenTaxError::Failed`] when no evidence (no entity and no unnamed row) was
+/// collected and a path failed; [`StolenTaxError::BudgetExhausted`] when no evidence
+/// was collected and a path was not sent because the budget ran out.
 pub fn lookup<T: Transport + ?Sized>(
     transport: &T,
     keys: &Keys,
@@ -469,8 +476,8 @@ fn provider_words(message: &str, secrets: &[&str]) -> String {
     scrub_bounded(message, secrets, PROVIDER_WORDS_MAX_CHARS)
 }
 
-/// Merge the cascade into the report, or fail when there is nothing to report and a
-/// path failed or was skipped. **Pure.**
+/// Merge the cascade into the report, or fail when there is nothing to report (no
+/// entity and no unnamed row) and a path failed or was skipped. **Pure.**
 fn assemble(
     merged: &StolenTaxData,
     failures: Vec<PathFailure>,
@@ -479,22 +486,16 @@ fn assemble(
     scan_id: &str,
 ) -> Result<StolenTaxReport, StolenTaxError> {
     let entities = dedup(build_entities(merged, query, scan_id));
-    if entities.is_empty() {
+    if entities.is_empty() && merged.unnamed_rows == 0 {
         if !skipped.is_empty() {
             return Err(StolenTaxError::BudgetExhausted {
                 skipped,
                 failed: failures,
             });
         }
-        if let Some(first) = failures.into_iter().next() {
-            return Err(StolenTaxError::Failed(first));
+        if let Some(first) = failures.first() {
+            return Err(StolenTaxError::Failed(first.clone()));
         }
-        return Ok(StolenTaxReport {
-            entities,
-            failed_paths: Vec::new(),
-            skipped_paths: Vec::new(),
-            truncation: None,
-        });
     }
     let truncation = partial_note(entities.len(), &failures, &skipped);
     Ok(StolenTaxReport {
@@ -502,6 +503,7 @@ fn assemble(
         failed_paths: failures,
         skipped_paths: skipped,
         truncation,
+        unnamed_rows: merged.unnamed_rows,
     })
 }
 
@@ -653,6 +655,9 @@ struct StolenTaxData {
     breaches: Vec<BreachRecord>,
     emails: Vec<String>,
     usernames: Vec<String>,
+    /// Rows that carry an identity but name no breach corpus or stealer host. Counted,
+    /// never given a stand-in marker.
+    unnamed_rows: usize,
 }
 
 #[derive(Debug)]
@@ -670,6 +675,7 @@ fn merge_data(into: &mut StolenTaxData, from: StolenTaxData) {
     into.emails.extend(from.emails);
     into.usernames.extend(from.usernames);
     into.breaches.extend(from.breaches);
+    into.unnamed_rows += from.unnamed_rows;
 }
 
 /// `Some(trimmed)` for a present, non-blank provider field. **Pure.**
@@ -715,9 +721,9 @@ fn normalize_snusbase(results: &BTreeMap<String, Vec<SnusbaseRow>>) -> StolenTax
 }
 
 /// osintcat rows. A row whose corpus is unnamed still contributes its identity
-/// pivots but mints no `breach:` marker: a stand-in name would be a placeholder
-/// posing as a breach the provider never named. A row that is not an object is
-/// skipped. **Pure.**
+/// pivots, and is counted in `unnamed_rows` when it has one, but mints no `breach:`
+/// marker: a stand-in name would be a placeholder posing as a breach the provider
+/// never named. A row that is not an object is skipped. **Pure.**
 fn normalize_osintcat(breach_data: &[Value]) -> StolenTaxData {
     let mut data = StolenTaxData::default();
     for raw in breach_data {
@@ -728,18 +734,22 @@ fn normalize_osintcat(breach_data: &[Value]) -> StolenTaxData {
             .or_else(|| non_blank(row.name.as_deref()))
             .or_else(|| non_blank(row.database.as_deref()))
             .or_else(|| non_blank(row.breach.as_deref()));
-        if let Some(corpus) = corpus {
-            data.breaches.push(BreachRecord {
+        let email = non_blank(row.email.as_deref());
+        let user = non_blank(row.username.as_deref());
+        match corpus {
+            Some(corpus) => data.breaches.push(BreachRecord {
                 name: corpus.to_owned(),
                 date: row.date.clone(),
                 record_count: Some(1),
                 detail: Some("path=osintcat".into()),
-            });
+            }),
+            None if email.is_some() || user.is_some() => data.unnamed_rows += 1,
+            None => {}
         }
-        if let Some(email) = non_blank(row.email.as_deref()) {
+        if let Some(email) = email {
             data.emails.push(email.to_owned());
         }
-        if let Some(user) = non_blank(row.username.as_deref()) {
+        if let Some(user) = user {
             data.usernames.push(user.to_owned());
         }
     }
@@ -758,16 +768,21 @@ fn clear_email_login(login: &str) -> Option<&str> {
 /// Stealer hits → clear-login emails plus a `stealer:{host}` marker per named
 /// host. No host name → no marker (`stealer:unknown` would be a placeholder that
 /// also merged every host-less hit into one entity); the clear logins are still
-/// emitted. Absent OS / IP are omitted, never written as stand-ins. **Pure.**
+/// emitted, and a host-less hit with one is counted in `unnamed_rows`. Absent OS / IP
+/// are omitted, never written as stand-ins. **Pure.**
 fn normalize_hudsonrock(stealers: &[HudsonrockStealer]) -> StolenTaxData {
     let mut data = StolenTaxData::default();
     for stealer in stealers {
+        let logins_before = data.emails.len();
         for login in &stealer.top_logins {
             if let Some(email) = clear_email_login(login) {
                 data.emails.push(email.to_owned());
             }
         }
         let Some(host) = non_blank(stealer.computer_name.as_deref()) else {
+            if data.emails.len() > logins_before {
+                data.unnamed_rows += 1;
+            }
             continue;
         };
         let mut detail = String::from("path=hudsonrock");
