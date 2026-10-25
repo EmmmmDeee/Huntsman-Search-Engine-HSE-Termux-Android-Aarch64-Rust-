@@ -1,0 +1,1 @@
+- Reconcile rootless single-capture diagnostic counts with native Rust MITM eligibility, share SSID validation, and support opt-in strict CLI exit semantics while preserving older report compatibility.
