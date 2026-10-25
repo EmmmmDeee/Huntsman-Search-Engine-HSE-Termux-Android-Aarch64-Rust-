@@ -204,7 +204,9 @@ pub fn assess(
     source: &'static str,
     rejected: usize,
 ) -> Report {
-    let mut by_ssid: BTreeMap<&str, BTreeMap<&str, &AccessPoint>> = BTreeMap::new();
+    // SSIDs are byte-exact, but BSSIDs are hexadecimal, case-insensitive identifiers.
+    // Canonicalise once at this shared boundary even for direct library callers.
+    let mut by_ssid: BTreeMap<&str, BTreeMap<String, &AccessPoint>> = BTreeMap::new();
     for ap in observations {
         if ssid_exclusion(&ap.ssid).is_some() || !valid_wifi_bssid(&ap.bssid) {
             continue;
@@ -212,7 +214,7 @@ pub fn assess(
         by_ssid
             .entry(&ap.ssid)
             .or_default()
-            .entry(&ap.bssid)
+            .entry(ap.bssid.to_ascii_lowercase())
             .or_insert(ap);
     }
     let accepted = by_ssid.values().map(BTreeMap::len).sum::<usize>();
@@ -224,11 +226,11 @@ pub fn assess(
     for (ssid, aps) in &by_ssid {
         if let Some(policy) = trusted.get(ssid) {
             let minimum = Security::parse(&policy.minimum_security).ordinal();
-            for ap in aps.values() {
+            for (bssid, ap) in aps {
                 let enrolled = policy
                     .bssids
                     .iter()
-                    .any(|b| b.eq_ignore_ascii_case(&ap.bssid));
+                    .any(|b| b.eq_ignore_ascii_case(bssid));
                 let downgrade = minimum
                     .zip(ap.security.ordinal())
                     .is_some_and(|(min, current)| current < min);
@@ -237,7 +239,7 @@ pub fn assess(
                         code: "trusted_ssid_security_unverified",
                         severity: "review",
                         ssid: (*ssid).to_owned(),
-                        bssid: Some(ap.bssid.clone()),
+                        bssid: Some(bssid.clone()),
                         evidence: "Observed security capabilities are unavailable; this does not prove a downgrade or confirm baseline compliance.".into(),
                         resolution: "Verify the selected network's security and certificate configuration in Android settings or with the network administrator.",
                     });
@@ -246,7 +248,7 @@ pub fn assess(
                         code: "security_below_trusted_floor",
                         severity: "high",
                         ssid: (*ssid).to_owned(),
-                        bssid: Some(ap.bssid.clone()),
+                        bssid: Some(bssid.clone()),
                         evidence: format!(
                             "Observed {:?} below operator baseline {} (authorised BSSID: {}). Baseline authenticity must be independently verified.",
                             ap.security, policy.minimum_security, enrolled
@@ -258,7 +260,7 @@ pub fn assess(
                         code: "bssid_not_on_operator_allowlist",
                         severity: "review",
                         ssid: (*ssid).to_owned(),
-                        bssid: Some(ap.bssid.clone()),
+                        bssid: Some(bssid.clone()),
                         evidence: "SSID appears in the operator baseline but this BSSID is not authorised there; mesh expansion or equipment replacement is also possible.".into(),
                         resolution: "Verify the network inventory with its administrator before trusting or updating the allowlist.",
                     });
@@ -434,6 +436,40 @@ mod tests {
         assert_eq!(r.findings.len(), 1);
         assert_eq!(r.findings[0].code, "unverified_ssid_security_variation");
         assert_eq!(r.findings[0].severity, "review");
+    }
+
+    #[test]
+    fn direct_assessment_canonicalises_bssid_identity_and_findings() {
+        let baseline = parse_baseline(
+            br#"{"networks":[{"ssid":"Office","bssids":["3C:5A:B4:11:22:33"],"minimum_security":"WPA2"}]}"#,
+        )
+        .unwrap();
+        let lower = ap("Office", "3c:5a:b4:11:22:33", Security::Wpa2);
+        let upper = ap("Office", "3C:5A:B4:11:22:33", Security::Wpa2);
+
+        for candidates in [
+            [lower.clone(), upper.clone()],
+            [upper.clone(), lower.clone()],
+        ] {
+            let report = assess(&candidates, Some(&baseline), "fixture", 0);
+            assert_eq!(report.evaluated_access_points, 1);
+            assert_eq!(report.status, "no_specific_indicators_observed");
+            assert!(report.findings.is_empty());
+            assert!(!report.mitm_confirmed);
+        }
+
+        let downgraded = assess(
+            &[ap("Office", "3C:5A:B4:11:22:33", Security::Wpa)],
+            Some(&baseline),
+            "fixture",
+            0,
+        );
+        assert_eq!(downgraded.evaluated_access_points, 1);
+        assert_eq!(downgraded.findings[0].code, "security_below_trusted_floor");
+        assert_eq!(
+            downgraded.findings[0].bssid.as_deref(),
+            Some("3c:5a:b4:11:22:33")
+        );
     }
 
     #[test]
