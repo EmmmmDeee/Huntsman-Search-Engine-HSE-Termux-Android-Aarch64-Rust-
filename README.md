@@ -189,6 +189,8 @@ cargo run -- geocode "1600 Amphitheatre Parkway, Mountain View"  # keyless OpenS
 cargo run -- exif --help                  # keyless, offline EXIF metadata + GPS coordinates from a local image
 cargo run -- docmeta --help               # keyless, offline XMP packets + edit history + PDF /Info (with values an edit superseded) + embedded GPS from a local file
 cargo run -- radar --help                 # no root, explain Termux:API Wi-Fi cache acquisition; offline
+cargo run -- mitm audit --file docs/mitm-example.json --json  # synthetic offline Wi-Fi replay; advisory only
+cargo run -- mitm baseline --ssid LabNet --bssid 02:11:22:33:44:55 --minimum-security WPA2 --output trusted-wifi.json --confirmed  # explicit operator-supplied inventory; never auto-trust a scan
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
 cargo run -- plan ada@example.com example.com  # offline spine: entities, relations, planned routes; nothing fetched
@@ -201,6 +203,13 @@ cargo run -- modules --json               # only modules currently reachable fro
 cargo run -- attack status --json          # offline ATT&CK Reconnaissance capability posture
 cargo run -- recon crtsh https://example.com/
 ```
+
+
+The optional `mitm baseline` command creates a new mode-600 JSON inventory only from
+BSSIDs and minimum security independently verified with the network operator.
+`--confirmed` records the operator's assertion, not cryptographic verification.
+It rejects duplicate/invalid BSSIDs and refuses to overwrite existing files;
+never populate this baseline directly from an untrusted Wi-Fi capture.
 
 `attack status|coverage|gaps [--json]` restores the MITRE ATT&CK Reconnaissance reporting surface over currently reachable network modules. The TA0043 slice is reconciled through ATT&CK v19.2, including T1681 and T1682; the repository's complete embedded Enterprise matrix remains the older v17.1 baseline and is reported separately rather than mislabeled as current. `attack navigator` emits Reconnaissance Navigator JSON. Coverage is hierarchy-aware and evidence-backed: only module-mapped independent leaf techniques count as covered, parent techniques remain roll-ups, and coverage is not proof that a technique was executed or a measure of detection effectiveness.
 
@@ -251,6 +260,8 @@ by a key-management operation.
 The embedded mobile Web UI now has a **Radar** tab (`http://127.0.0.1:8080/#/radar`). Select **Read OS scan cache** to invoke the same bounded Termux:API acquisition path from the browser, inspect BSSID/SSID/RSSI/band/age/freshness and export the JSON. Each valid cached BSSID offers **Investigate**, which pre-fills an existing network-target scan (offline OUI plus optional keyed WiGLE lookup) without starting it. A failed refresh explicitly distinguishes the prior successful cached reading from the unsuccessful attempt. The scan is explicit, not automatic; results remain OS-cached and may be stale. The protected `/api/radar/wifi` endpoint requires `X-Huntsman-Lookup: 1` and refuses cross-site calls; non-loopback deployments additionally require their bearer token. Outside Termux the endpoint reports an unavailable sensor, rather than pretending to have observed radio signals. The same tab's **Read cells** (`GET /api/radar/cells`) shows the cells Android reports, as `radar cells` does, each cell with its codes offering **Investigate** into a prefilled `cell:` network scan, and **Log a sweep** (`POST /api/radar/track`) records one sweep into the track log `radar track` keeps and shows its followers and recurring devices; both routes take exactly the Wi-Fi route's guards, and a sweep is never logged by a visit, only by a press.
 
 For rootless Android Wi-Fi observations, run `huntsman-recon radar wifi --json` after installing the matching Termux:API Android app and `pkg install termux-api`, and granting location permission with location services enabled. This reads Android's **last cached Wi-Fi scan**, not an active scan. The Wi-Fi parser rejects non-individual BSSIDs, all-zero identities, broadcast/multicast addresses, and Android's `02:00:00:00:00:00` permission-redaction placeholder; these are counted as rejected inputs rather than real devices. Randomised locally administered **unicast** BSSIDs remain valid. It annotates age when `/proc/uptime` is available; entries older than five minutes are stale, and an empty cache does not prove no networks are nearby. To replay a raw Termux JSON capture: `huntsman-recon radar wifi --file scan.json --json`. **Replays have unverified source and boot provenance:** they report `source=unverified_json_file`, `acquisition=offline_replay_no_boot_provenance`, and `age_secs=null`/`freshness=unknown` even when the file contains an Android boot-relative timestamp. Never calculate an archived scan's age from the current handset's uptime. Rootless OS-cache collection needs no provider API key or network access. The same collection path is also available in the mobile Web UI's Radar tab; optional follow-up network investigations may use external providers and keys.
+
+The optional `mitm audit` command performs **advisory** Wi-Fi evil-twin and security-downgrade screening. The example `docs/mitm-example.json` contains only synthetic Termux-format Wi-Fi observations and makes no network request. Offline replay is historical with unverified capture provenance; an SSID/security mismatch is an unconfirmed indicator, not evidence of interception. On a permitted Termux handset, `huntsman-recon mitm audit --json` reads the OS-cached Wi-Fi results and filters out stale or unknown-age records; a trusted baseline must be explicitly supplied with `--baseline TRUSTED_JSON` and must not be silently learned from untrusted captures. The command never disconnects networks or changes Android settings.
 
 The Wi-Fi and cellular Termux subprocesses have bounded execution time, bounded stdout draining, and a four-reader cap to avoid indefinite hangs when a descendant inherits an open pipe. If the plugin never closes its output after exiting, the command fails explicitly instead of presenting partial observations. A missing `--file` argument is rejected as usage, not mistaken for a filename.
 

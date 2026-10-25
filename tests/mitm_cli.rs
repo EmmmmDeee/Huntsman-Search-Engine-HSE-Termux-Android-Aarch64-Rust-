@@ -1,136 +1,150 @@
-//! End-to-end acceptance for the local MITM Wi-Fi evidence gate.
-
-use std::{fs, path::PathBuf, process::Command};
-
-fn temp(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("huntsman-mitm-{}-{name}", std::process::id()))
-}
+//! MITM guard CLI regression tests use synthetic fixtures, never live radio.
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
 
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
 }
 
-#[test]
-fn baseline_requires_confirmation_and_assessment_is_evidence_gated() {
-    let good = temp("trusted-scan.json");
-    let suspect = temp("suspect-scan.json");
-    let baseline = temp("trusted-baseline.json");
-    let _ = fs::remove_file(&baseline);
-    fs::write(
-        &good,
-        r#"[{"bssid":"a0:11:22:33:44:55","ssid":"MyLab","rssi":-57,"capabilities":"[WPA2-PSK-CCMP][ESS]"}]"#,
-    )
-    .unwrap();
-    fs::write(
-        &suspect,
-        r#"[{"bssid":"a0:11:22:33:44:66","ssid":"MyLab","rssi":-41,"capabilities":"[ESS]"}]"#,
-    )
-    .unwrap();
-    let denied = bin()
-        .arg("mitm")
-        .arg("baseline")
-        .arg("MyLab")
-        .arg("--file")
-        .arg(&good)
-        .arg("--output")
-        .arg(&baseline)
-        .output()
-        .unwrap();
-    assert!(!denied.status.success());
-    assert!(!baseline.exists());
-
-    let enrolled = bin()
-        .arg("mitm")
-        .arg("baseline")
-        .arg("MyLab")
-        .arg("--file")
-        .arg(&good)
-        .arg("--output")
-        .arg(&baseline)
-        .arg("--confirmed")
-        .output()
-        .unwrap();
-    assert!(
-        enrolled.status.success(),
-        "{}",
-        String::from_utf8_lossy(&enrolled.stderr)
-    );
-    let repeated = bin()
-        .arg("mitm")
-        .arg("baseline")
-        .arg("MyLab")
-        .arg("--file")
-        .arg(&good)
-        .arg("--output")
-        .arg(&baseline)
-        .arg("--confirmed")
-        .output()
-        .unwrap();
-    assert!(!repeated.status.success());
-
-    let assessed = bin()
-        .arg("mitm")
-        .arg("assess")
-        .arg("--baseline")
-        .arg(&baseline)
-        .arg("--file")
-        .arg(&suspect)
-        .output()
-        .unwrap();
-    assert!(
-        assessed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&assessed.stderr)
-    );
-    let report: serde_json::Value = serde_json::from_slice(&assessed.stdout).unwrap();
-    assert_eq!(report["status"], "suspected");
-    assert_eq!(report["findings"][0]["kind"], "unrecognized_open_ap");
-    assert_eq!(report["source"], "unverified_json_file");
-
-    let _ = fs::remove_file(good);
-    let _ = fs::remove_file(suspect);
-    let _ = fs::remove_file(baseline);
+fn fixture(label: &str, extension: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "hse-mitm-{}-{}-{label}.{extension}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ))
 }
 
 #[test]
-fn empty_capture_is_inconclusive_not_proof_of_no_attack() {
-    let good = temp("trusted-empty-good.json");
-    let empty = temp("empty.json");
-    let baseline = temp("trusted-empty-baseline.json");
-    let _ = fs::remove_file(&baseline);
-    fs::write(
-        &good,
-        r#"[{"bssid":"a0:11:22:33:44:55","ssid":"Home","rssi":-45,"capabilities":"[WPA2-PSK][ESS]"}]"#,
-    )
-    .unwrap();
-    fs::write(&empty, "[]").unwrap();
-    assert!(
-        bin()
-            .arg("mitm")
-            .arg("baseline")
-            .arg("Home")
-            .arg("--file")
-            .arg(&good)
-            .arg("--output")
-            .arg(&baseline)
-            .arg("--confirmed")
-            .status()
-            .unwrap()
-            .success()
-    );
-    let report = bin()
-        .arg("mitm")
-        .arg("assess")
-        .arg("--baseline")
-        .arg(&baseline)
-        .arg("--file")
-        .arg(&empty)
+fn wigle_mixed_security_is_review_only() {
+    let file = fixture("wigle", "jsonl");
+    fs::write(&file, concat!(
+        "{\"type\":\"WIFI\",\"name\":\"LabNet\",\"network_id\":\"02:11:22:33:44:55\",\"encryption\":\"WPA2\"}\n",
+        "{\"type\":\"WIFI\",\"name\":\"LabNet\",\"network_id\":\"02:22:33:44:55:66\",\"encryption\":\"WPA3\"}\n",
+        "{\"type\":\"BLE\",\"name\":\"ignored\",\"network_id\":\"10:11:22:33:44:55\"}\n"
+    )).unwrap();
+    let out = bin()
+        .args(["mitm", "audit", "--json", "--file"])
+        .arg(&file)
         .output()
         .unwrap();
-    assert!(report.status.success());
-    let json: serde_json::Value = serde_json::from_slice(&report.stdout).unwrap();
-    assert_eq!(json["status"], "inconclusive");
-    let _ = fs::remove_file(good);
-    let _ = fs::remove_file(empty);
-    let _ = fs::remove_file(baseline);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["mitm_confirmed"], false);
+    assert_eq!(report["evaluated_access_points"], 2);
+    assert_eq!(
+        report["findings"][0]["code"],
+        "unverified_ssid_security_variation"
+    );
+    fs::remove_file(file).unwrap();
+}
+
+#[test]
+fn trusted_baseline_flags_unenrolled_and_downgraded_ap() {
+    let file = fixture("radar", "json");
+    let baseline = fixture("baseline", "json");
+    fs::write(&file, br#"[{"bssid":"3c:5a:b4:22:33:44","ssid":"Office","rssi":-42,"capabilities":"[WPA2-PSK][ESS]"}]"#).unwrap();
+    fs::write(&baseline, br#"{"networks":[{"ssid":"Office","bssids":["3c:5a:b4:11:22:33"],"minimum_security":"WPA3"}]}"#).unwrap();
+    let out = bin()
+        .args(["mitm", "audit", "--file"])
+        .arg(&file)
+        .args(["--baseline"])
+        .arg(&baseline)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["status"], "historical_unconfirmed_indicators");
+    assert_eq!(
+        report["findings"][0]["code"],
+        "security_below_trusted_floor"
+    );
+    assert_eq!(report["findings"][0]["severity"], "high");
+    assert_eq!(report["mitm_confirmed"], false);
+    fs::remove_file(file).unwrap();
+    fs::remove_file(baseline).unwrap();
+}
+
+#[test]
+fn invalid_baseline_is_rejected() {
+    let file = fixture("bad-scan", "json");
+    let baseline = fixture("bad-baseline", "json");
+    fs::write(&file, b"[]").unwrap();
+    fs::write(&baseline, br#"{"networks":[{"ssid":"Office","bssids":["02:00:00:00:00:00"],"minimum_security":"WPA3"}]}"#).unwrap();
+    let out = bin()
+        .args(["mitm", "audit", "--file"])
+        .arg(&file)
+        .args(["--baseline"])
+        .arg(&baseline)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_eq!(out.stdout, [] as [u8; 0]);
+    fs::remove_file(file).unwrap();
+    fs::remove_file(baseline).unwrap();
+}
+
+#[test]
+fn baseline_requires_explicit_confirmation_and_never_overwrites() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let output = fixture("operator-baseline", "json");
+    let path = output.to_str().expect("temporary path is UTF-8");
+    let args = [
+        "mitm", "baseline", "--ssid", "LabNet",
+        "--bssid", "02:11:22:33:44:55",
+        "--minimum-security", "WPA2", "--output", path,
+    ];
+    let missing_confirmation = bin().args(args).output().unwrap();
+    assert!(!missing_confirmation.status.success());
+    assert!(!output.exists());
+
+    let created = bin().args(args).arg("--confirmed").output().unwrap();
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let original = fs::read(&output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    assert_eq!(parsed["networks"][0]["ssid"], "LabNet");
+    assert_eq!(parsed["networks"][0]["bssids"][0], "02:11:22:33:44:55");
+    assert_eq!(parsed["networks"][0]["minimum_security"], "WPA2");
+    assert_eq!(fs::metadata(&output).unwrap().permissions().mode() & 0o777, 0o600);
+
+    let overwrite = bin().args(args).arg("--confirmed").output().unwrap();
+    assert!(!overwrite.status.success());
+    assert_eq!(fs::read(&output).unwrap(), original);
+    fs::remove_file(output).unwrap();
+}
+
+#[test]
+fn baseline_rejects_invalid_and_duplicate_operator_bssids() {
+    let output = fixture("invalid-operator-baseline", "json");
+    let path = output.to_str().expect("temporary path is UTF-8");
+    for bssid in ["00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff", "not-a-mac"] {
+        let result = bin().args([
+            "mitm", "baseline", "--ssid", "LabNet", "--bssid", bssid,
+            "--minimum-security", "WPA2", "--output", path, "--confirmed",
+        ]).output().unwrap();
+        assert!(!result.status.success(), "accepted invalid BSSID: {bssid}");
+        assert!(!output.exists());
+    }
+    let duplicate = bin().args([
+        "mitm", "baseline", "--ssid", "LabNet",
+        "--bssid", "02:11:22:33:44:55",
+        "--bssid", "02:11:22:33:44:55",
+        "--minimum-security", "WPA2", "--output", path, "--confirmed",
+    ]).output().unwrap();
+    assert!(!duplicate.status.success());
+    assert!(!output.exists());
 }

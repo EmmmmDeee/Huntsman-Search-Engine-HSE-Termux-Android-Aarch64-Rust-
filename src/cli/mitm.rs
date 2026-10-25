@@ -1,187 +1,200 @@
-//! Rootless passive MITM Wi-Fi audit adapter.
-//!
-//! Separate opt-in baseline enrollment from observational assessment.
-//! The user owns the trust decision: never silently trust the first AP seen.
-
+//! Operator-invoked, rootless Wi-Fi MITM/evil-twin assessment.
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::Write as _;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::ExitCode;
 
-use super::fail;
+use super::{fail, terminal_json_pretty};
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_UNAVAILABLE, EX_USAGE};
 use huntsman_recon::fsio::read_bounded;
-use huntsman_recon::mitm::{TrustedBaseline, assess};
-use huntsman_recon::wifi_radar::{self, MAX_SCAN_BYTES, WifiScan};
+use huntsman_recon::mitm_guard::{self, Baseline, Report};
+use huntsman_recon::textnorm::escape_controls;
+use huntsman_recon::wifi_radar;
 
-pub(super) const MITM_HELP: &str = "\
-mitm baseline SSID --file SCAN.json --output BASELINE.json --confirmed
-mitm assess --baseline BASELINE.json [--file SCAN.json]
+pub(super) const USAGE: &str = "mitm audit [--file WIFI_JSON_OR_WIGLE_JSONL] [--baseline TRUSTED_JSON] [--json]\nmitm baseline --ssid SSID --bssid MAC [--bssid MAC ...] --minimum-security OPEN|WEP|WPA|WPA2|WPA3 --output FILE --confirmed\nThe baseline command writes a private new file from independently verified operator input only; it never trusts a captured scan or overwrites an existing baseline. --confirmed records an operator assertion, not authentication.\nWithout --file, read the existing rootless Termux OS-cached Wi-Fi radar; offline --file accepts a Termux scan JSON array or Huntsman-normalized WiGLE JSONL. Baseline JSON format: {\"networks\":[{\"ssid\":\"Office\",\"bssids\":[\"3c:5a:b4:11:22:33\"],\"minimum_security\":\"WPA3\"}]}. This tool only reports unconfirmed indicators; it never forcibly disconnects networks. Remediation requires verifying the authorised access point and making manual Android network settings changes.";
 
-A passive Wi-Fi security audit. Requires independent confirmation of the
-network's authorised BSSIDs and security BEFORE creating a baseline.
-The --confirmed switch records operator confirmation; it cannot verify ownership.
-Assessment reads Android's OS-cached Wi-Fi results via Termux:API unless --file
-supplies a captured termux-wifi-scaninfo JSON array. Replay does NOT prove
-freshness. JSON output separates findings from limitations. No root, API keys,
-active probing, automatic disconnect, or OS network modification.
-
-No result from this command establishes an active MITM. For suspicious Wi-Fi,
-avoid joining unknown access points, compare BSSID/security with the trusted
-router administration interface, and use cellular data until independently
-verified. ARP/DNS/TLS and mobile-network MITM are outside this sensor's scope.";
-
-const MAX_BASELINE_BYTES: u64 = 32 * 1024;
-
-/// Parse key/value arguments without silently accepting repeated/unknown flags.
-fn path_options(
-    args: &[String],
-    allow_confirm: bool,
-) -> Result<(Option<&str>, Option<&str>, bool), String> {
-    let mut file = None;
-    let mut output = None;
-    let mut confirmed = false;
-    let mut words = args.iter();
-    while let Some(word) = words.next() {
-        match word.as_str() {
-            "--file" if file.is_none() => {
-                file = Some(
-                    words
-                        .next()
-                        .filter(|s| !s.starts_with("--"))
-                        .ok_or("missing --file path")?
-                        .as_str(),
-                );
-            }
-            "--output" if output.is_none() => {
-                output = Some(
-                    words
-                        .next()
-                        .filter(|s| !s.starts_with("--"))
-                        .ok_or("missing --output path")?
-                        .as_str(),
-                );
-            }
-            "--confirmed" if allow_confirm && !confirmed => confirmed = true,
-            _ => return Err(format!("unexpected or repeated option: {word}")),
-        }
+fn print_text(report: &Report) {
+    println!(
+        "mitm\tsource={}\tstatus={}\taccess_points={}\trejected={}\tbaseline_supplied={}\tconfirmed={}",
+        report.source,
+        report.status,
+        report.evaluated_access_points,
+        report.rejected_records,
+        report.trusted_baseline_supplied,
+        report.mitm_confirmed
+    );
+    for finding in &report.findings {
+        println!(
+            "finding\tseverity={}\tcode={}\tssid={}\tbssid={}\tevidence={}\tresolution={}",
+            finding.severity,
+            finding.code,
+            escape_controls(&finding.ssid),
+            finding.bssid.as_deref().unwrap_or("none"),
+            escape_controls(&finding.evidence),
+            finding.resolution
+        );
     }
-    Ok((file, output, confirmed))
-}
-
-fn scan_from_file(path: &str) -> Result<WifiScan, String> {
-    let raw = read_bounded(Path::new(path), MAX_SCAN_BYTES).map_err(|e| e.to_string())?;
-    wifi_radar::parse_replay(&raw).map_err(|e| e.to_string())
+    println!("limitation\t{}", report.capability_limit);
 }
 
 pub(super) fn mitm_cmd(args: &[String]) -> ExitCode {
-    match args.first().map(String::as_str) {
-        Some("baseline") => baseline_cmd(&args[1..]),
-        Some("assess") => assess_cmd(&args[1..]),
-        _ => fail(EX_USAGE, MITM_HELP),
+    if args.first().map(String::as_str) == Some("baseline") {
+        return baseline_cmd(&args[1..]);
     }
-}
-
-fn baseline_cmd(args: &[String]) -> ExitCode {
-    let Some(ssid) = args.first().filter(|s| !s.starts_with("--")) else {
-        return fail(EX_USAGE, MITM_HELP);
-    };
-    let (Some(file), Some(output), true) = (match path_options(&args[1..], true) {
-        Ok(options) => options,
-        Err(message) => return fail(EX_USAGE, &message),
-    }) else {
-        return fail(
-            EX_USAGE,
-            "baseline requires --file, --output and --confirmed",
-        );
-    };
-    let scan = match scan_from_file(file) {
-        Ok(scan) => scan,
-        Err(message) => return fail(EX_NOINPUT, &message),
-    };
-    let baseline = match TrustedBaseline::enroll(&scan, ssid) {
-        Ok(baseline) => baseline,
-        Err(message) => return fail(EX_DATAERR, &message),
-    };
-    let encoded = match serde_json::to_vec_pretty(&baseline) {
-        Ok(encoded) => encoded,
-        Err(error) => return fail(EX_DATAERR, &error.to_string()),
-    };
-    // Fail closed if a baseline already exists, including if the path is a symlink.
-    // Retaining the original is more important than a silent "update."
-    let mut out = match OpenOptions::new().write(true).create_new(true).open(output) {
-        Ok(out) => out,
-        Err(error) => return fail(EX_NOINPUT, &format!("cannot create new baseline: {error}")),
-    };
-    if let Err(error) = out.write_all(&encoded).and_then(|()| out.write_all(b"\n")) {
-        let _ = std::fs::remove_file(output);
-        return fail(EX_UNAVAILABLE, &format!("cannot write baseline: {error}"));
+    if args.first().map(String::as_str) != Some("audit") {
+        return fail(EX_USAGE, USAGE);
     }
-    println!(
-        "saved verified-by-operator baseline for {ssid:?} ({} BSSIDs)",
-        baseline.anchors.len()
-    );
+    let mut file = None;
+    let mut baseline_file = None;
+    let mut json = false;
+    let mut iter = args[1..].iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--json" if !json => json = true,
+            "--file" if file.is_none() => {
+                let Some(path) = iter.next().filter(|s| !s.starts_with("--")) else {
+                    return fail(EX_USAGE, USAGE);
+                };
+                file = Some(path);
+            }
+            "--baseline" if baseline_file.is_none() => {
+                let Some(path) = iter.next().filter(|s| !s.starts_with("--")) else {
+                    return fail(EX_USAGE, USAGE);
+                };
+                baseline_file = Some(path);
+            }
+            _ => return fail(EX_USAGE, USAGE),
+        }
+    }
+    let baseline: Option<Baseline> = match baseline_file {
+        Some(path) => {
+            let bytes = match read_bounded(Path::new(path), mitm_guard::MAX_BASELINE_BYTES) {
+                Ok(b) => b,
+                Err(e) => return fail(EX_NOINPUT, &e.to_string()),
+            };
+            match mitm_guard::parse_baseline(&bytes) {
+                Ok(b) => Some(b),
+                Err(e) => return fail(EX_DATAERR, &e),
+            }
+        }
+        None => None,
+    };
+    let report = if let Some(path) = file {
+        let bytes = match read_bounded(Path::new(path), mitm_guard::MAX_IMPORT_BYTES) {
+            Ok(b) => b,
+            Err(e) => return fail(EX_NOINPUT, &e.to_string()),
+        };
+        if bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'[') {
+            match wifi_radar::parse_replay(&bytes) {
+                Ok(scan) => mitm_guard::from_wifi_replay(&scan, baseline.as_ref()),
+                Err(error) => return fail(EX_DATAERR, &error.to_string()),
+            }
+        } else {
+            match mitm_guard::from_wigle_jsonl(&bytes, baseline.as_ref()) {
+                Ok(report) => report,
+                Err(error) => return fail(EX_DATAERR, &error),
+            }
+        }
+    } else {
+        let scan = match super::radar::capture_wifi() {
+            Ok(s) => s,
+            Err(error) => return fail(EX_UNAVAILABLE, &error),
+        };
+        mitm_guard::from_wifi_scan(&scan, baseline.as_ref())
+    };
+    if json {
+        match terminal_json_pretty(&report) {
+            Ok(value) => println!("{value}"),
+            Err(error) => return fail(EX_DATAERR, &error.to_string()),
+        }
+    } else {
+        print_text(&report);
+    }
     ExitCode::SUCCESS
 }
 
-fn assess_cmd(args: &[String]) -> ExitCode {
-    let mut baseline_path = None;
-    let mut file_path = None;
-    let mut words = args.iter();
-    while let Some(word) = words.next() {
-        match word.as_str() {
-            "--baseline" if baseline_path.is_none() => {
-                baseline_path = words
-                    .next()
-                    .filter(|s| !s.starts_with("--"))
-                    .map(String::as_str);
-                if baseline_path.is_none() {
-                    return fail(EX_USAGE, "missing --baseline path");
+/** Write a trusted inventory from explicitly entered, independently checked values.
+ * No scan-derived enrollment: a nearby rogue AP must not poison a baseline.
+ */
+fn baseline_cmd(args: &[String]) -> ExitCode {
+    let mut ssid = None;
+    let mut security = None;
+    let mut output = None;
+    let mut confirmed = false;
+    let mut bssids = BTreeSet::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--ssid" if ssid.is_none() => {
+                ssid = iter.next().filter(|s| !s.starts_with("--")).map(String::as_str);
+                if ssid.is_none() {
+                    return fail(EX_USAGE, USAGE);
                 }
             }
-            "--file" if file_path.is_none() => {
-                file_path = words
-                    .next()
-                    .filter(|s| !s.starts_with("--"))
-                    .map(String::as_str);
-                if file_path.is_none() {
-                    return fail(EX_USAGE, "missing --file path");
+            "--minimum-security" if security.is_none() => {
+                security = iter.next().filter(|s| !s.starts_with("--")).map(String::as_str);
+                if security.is_none() {
+                    return fail(EX_USAGE, USAGE);
                 }
             }
-            _ => return fail(EX_USAGE, MITM_HELP),
+            "--output" if output.is_none() => {
+                output = iter.next().filter(|s| !s.starts_with("--")).map(String::as_str);
+                if output.is_none() {
+                    return fail(EX_USAGE, USAGE);
+                }
+            }
+            "--bssid" if bssids.len() < 256 => {
+                let Some(bssid) = iter.next().filter(|s| !s.starts_with("--")) else {
+                    return fail(EX_USAGE, USAGE);
+                };
+                if !bssids.insert(bssid.to_ascii_lowercase()) {
+                    return fail(EX_DATAERR, "duplicate operator-supplied BSSID");
+                }
+            }
+            "--confirmed" if !confirmed => confirmed = true,
+            _ => return fail(EX_USAGE, USAGE),
         }
     }
-    let Some(baseline_path) = baseline_path else {
-        return fail(EX_USAGE, MITM_HELP);
+    let (Some(ssid), Some(security), Some(output), true) =
+        (ssid, security, output, confirmed)
+    else {
+        return fail(EX_USAGE, USAGE);
     };
-    let bytes = match read_bounded(Path::new(baseline_path), MAX_BASELINE_BYTES) {
-        Ok(bytes) => bytes,
-        Err(error) => return fail(EX_NOINPUT, &error.to_string()),
+    let value = serde_json::json!({
+        "networks": [{
+            "ssid": ssid,
+            "bssids": bssids.into_iter().collect::<Vec<_>>(),
+            "minimum_security": security.to_ascii_uppercase()
+        }]
+    });
+    let encoded = match serde_json::to_vec_pretty(&value) {
+        Ok(encoded) => encoded,
+        Err(error) => return fail(EX_DATAERR, &error.to_string()),
     };
-    let baseline: TrustedBaseline = match serde_json::from_slice(&bytes) {
-        Ok(value) => value,
-        Err(error) => return fail(EX_DATAERR, &format!("invalid baseline JSON: {error}")),
-    };
-    if let Err(error) = baseline.validate() {
+    if let Err(error) = mitm_guard::parse_baseline(&encoded) {
         return fail(EX_DATAERR, &error);
     }
-    let scan = match file_path {
-        Some(path) => scan_from_file(path),
-        None => super::radar::capture_wifi(),
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    let mut file = match options.open(output) {
+        Ok(file) => file,
+        Err(error) => return fail(EX_NOINPUT, &format!("baseline not created: {error}")),
     };
-    let scan = match scan {
-        Ok(scan) => scan,
-        Err(message) => return fail(EX_UNAVAILABLE, &message),
-    };
-    let report = match assess(&scan, &baseline) {
-        Ok(report) => report,
-        Err(message) => return fail(EX_DATAERR, &message),
-    };
-    match serde_json::to_string_pretty(&report) {
-        Ok(json) => {
-            println!("{json}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => fail(EX_DATAERR, &error.to_string()),
+    let result = file
+        .write_all(&encoded)
+        .and_then(|()| file.write_all(b"\n"))
+        .and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(output);
+        return fail(EX_UNAVAILABLE, &format!("baseline write failed: {error}"));
     }
+    println!(
+        "baseline\tstatus=operator_supplied_unverified\tssid={}\tpath={}",
+        escape_controls(ssid),
+        escape_controls(output)
+    );
+    ExitCode::SUCCESS
 }

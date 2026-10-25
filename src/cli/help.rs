@@ -108,7 +108,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "exif" => huntsman_recon::exif::EXIF_HELP,
         "docmeta" => huntsman_recon::docmeta::DOCMETA_HELP,
         "radar" => radar_help(),
-        "mitm" => super::mitm::MITM_HELP,
+        "mitm" => super::mitm::USAGE,
         "domain" => domain_help(),
         "ip" => huntsman_recon::ip_cli::IP_HELP,
         "netblock" => huntsman_recon::netblock_cli::NETBLOCK_HELP,

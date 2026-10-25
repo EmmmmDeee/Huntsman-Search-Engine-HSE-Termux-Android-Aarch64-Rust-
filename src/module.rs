@@ -1237,13 +1237,13 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "Termux:API Android OS-cached WiFi scan observations; cache age disclosed, no active scan",
     },
     ReachableModule {
-        name: "mitm_wifi",
-        command: "mitm baseline SSID --file SCAN --output BASELINE --confirmed | mitm assess --baseline BASELINE [--file SCAN]",
+        name: "mitm_guard",
+        command: "mitm audit [--file WIFI_JSON_OR_WIGLE_JSONL] [--baseline TRUSTED_JSON] [--json]",
         access: "local_sensor",
         network: false,
         category: ModuleCategory::Sensor,
         attack_techniques: &[],
-        description: "Rootless, baseline-gated Wi-Fi evil-twin screening with bounded passive observations; no interception claims",
+        description: "passive Wi-Fi MITM/evil-twin advisory, operator-verified BSSID/security baseline and mitigation instructions; not a confirmed intrusion detector",
     },
     ReachableModule {
         name: "cell_radar",
