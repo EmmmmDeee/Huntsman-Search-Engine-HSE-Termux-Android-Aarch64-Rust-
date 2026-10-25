@@ -164,6 +164,27 @@ pub struct Report {
     pub eligibility: Option<Eligibility>,
 }
 
+/// Shared SSID assessment policy. Length is measured in UTF-8 bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SsidExclusion {
+    Missing,
+    Oversized,
+    Hidden,
+}
+
+#[must_use]
+pub(crate) fn ssid_exclusion(ssid: &str) -> Option<SsidExclusion> {
+    if ssid.is_empty() {
+        Some(SsidExclusion::Missing)
+    } else if ssid.len() > 32 {
+        Some(SsidExclusion::Oversized)
+    } else if ssid.eq_ignore_ascii_case("(hidden)") || ssid.eq_ignore_ascii_case("(no SSID)") {
+        Some(SsidExclusion::Hidden)
+    } else {
+        None
+    }
+}
+
 fn assess_status(accepted: usize, findings: &[Finding]) -> &'static str {
     if accepted == 0 {
         "inconclusive"
@@ -185,12 +206,7 @@ pub fn assess(
 ) -> Report {
     let mut by_ssid: BTreeMap<&str, BTreeMap<&str, &AccessPoint>> = BTreeMap::new();
     for ap in observations {
-        if ap.ssid.is_empty()
-            || ap.ssid.len() > 32
-            || ap.ssid.eq_ignore_ascii_case("(no SSID)")
-            || ap.ssid.eq_ignore_ascii_case("(hidden)")
-            || !valid_wifi_bssid(&ap.bssid)
-        {
+        if ssid_exclusion(&ap.ssid).is_some() || !valid_wifi_bssid(&ap.bssid) {
             continue;
         }
         by_ssid

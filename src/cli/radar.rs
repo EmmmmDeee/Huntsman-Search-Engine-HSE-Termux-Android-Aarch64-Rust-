@@ -168,21 +168,25 @@ pub(super) fn capture_cells() -> Result<cell_radar::CellScan, String> {
 /// One sweep of this device added to the track log at `log`, for the web UI's
 /// `POST /api/radar/track`: the cached Wi-Fi scan placed at the registered serving cell, as
 /// `radar track` records it with no replay. A missing sensor, or a cache that is empty or wholly
-/// stale, is `503` and logs nothing, since a sweep from it would read as having heard nothing; a
-/// log that cannot be kept is `500`. A cell report Android withholds leaves the sweep unplaced.
+/// stale, or lacks any provably current Wi-Fi observation is `503` and logs nothing.
+/// A log that cannot be kept is `500`. Android's registered cell is a coarse
+/// association, never an independently verified tower location.
 pub(super) fn track_live(log: &Path) -> Result<radar::TrackReport, LookupError> {
     let wifi = capture_wifi().map_err(|message| LookupError {
         status: 503,
         message,
     })?;
-    if matches!(wifi.status, "inconclusive" | "stale_only") {
+    if !wifi.has_current_observations() {
         return Err(LookupError {
             status: 503,
-            message: format!("the Wi-Fi scan is {}; nothing was logged", wifi.status),
+            message: format!(
+                "the Wi-Fi scan is {} with no current-age observations; nothing was logged",
+                wifi.status
+            ),
         });
     }
     let cell = capture_cells().ok().and_then(|scan| scan.serving_cell());
-    let sweep = wifi.logged_sweep(huntsman_recon::clock::unix_now(), cell);
+    let sweep = wifi.logged_current_sweep(huntsman_recon::clock::unix_now(), cell);
     radar::record_sweep(log, sweep).map_err(|error| LookupError {
         status: 500,
         message: format!("radar track: {error}"),
@@ -392,13 +396,22 @@ fn track_cmd(args: &[String]) -> ExitCode {
         Ok(wifi) => wifi,
         Err(error) => return fail(EX_DATAERR, &error.to_string()),
     };
-    // An empty or wholly stale cache says nothing about what is here now, and a sweep logged
-    // from it would read as the operator having heard nothing.
-    if matches!(wifi.status, "inconclusive" | "stale_only") {
+    // Live recording requires current-age Wi-Fi observations. A replay remains
+    // an explicit historical/unverified fixture and retains prior semantics.
+    if !replay && !wifi.has_current_observations() {
         return fail(
             EX_UNAVAILABLE,
             &format!(
-                "radar track: the Wi-Fi scan is {}; nothing was logged",
+                "radar track: the Wi-Fi scan is {} with no current-age observations; nothing was logged",
+                wifi.status
+            ),
+        );
+    }
+    if replay && matches!(wifi.status, "inconclusive" | "stale_only") {
+        return fail(
+            EX_UNAVAILABLE,
+            &format!(
+                "radar track: replay status is {}; nothing was logged",
                 wifi.status
             ),
         );
@@ -427,7 +440,13 @@ fn track_cmd(args: &[String]) -> ExitCode {
             }
         },
     };
-    let sweep = wifi.logged_sweep(huntsman_recon::clock::unix_now(), cell);
+    let when = huntsman_recon::clock::unix_now();
+    let sweep = if replay {
+        // Historical file input remains supported but is not current proximity evidence.
+        wifi.logged_sweep(when, cell)
+    } else {
+        wifi.logged_current_sweep(when, cell)
+    };
     let report = match radar::record_sweep(&log, sweep) {
         Ok(report) => report,
         Err(radar::TrackLogError::Unreadable(why)) => {

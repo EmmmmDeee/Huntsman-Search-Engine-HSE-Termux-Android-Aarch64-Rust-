@@ -703,7 +703,7 @@ $('rcread').onclick=async()=>{
     $('rcsummary').textContent='Requested at '+new Date().toLocaleString()+' (browser clock; no capture time is reported) · Source: '+scan.source+' · status: '+scan.status+' · records: '+scan.observed+' · rejected: '+scan.rejected;
     $('rstatus').textContent=scan.status==='inconclusive'
       ?'Android returned no cells. Cellular service may still exist; this is not evidence that no cell site is near.'
-      :'Cells as Android reports them: no tower position, time or capture age is inferred. A registered cell is the phone\'s coarse place.';
+      :'Cells as Android reports them: no tower position, time or capture age is inferred. A registered cell is a network identifier, not a verified tower location or GPS coordinate.';
   }catch(e){
     $('rstatus').textContent=cellsLast?'Refresh failed. The cells table shows a PREVIOUS read.':'No cell observations available.';
     fail('rerror',e.message);
@@ -711,15 +711,15 @@ $('rcread').onclick=async()=>{
   finally{b.disabled=false}
 };
 $('rtrack').onclick=async()=>{
-  const b=$('rtrack');b.disabled=true;$('rerror').hidden=true;$('rstatus').textContent='Logging one sweep: the cached Wi-Fi scan, placed at the registered cell…';
+  const b=$('rtrack');b.disabled=true;$('rerror').hidden=true;$('rstatus').textContent='Checking OS-cached Wi-Fi freshness before logging a sweep with a coarse cell identifier…';
   try{
     const r=await api('/api/radar/track',{method:'POST'});$('rtresult').hidden=false;
     fill('rtrows',r.followers||[],f=>[f.mac,f.vendor||'unknown',f.distinct_cells,Number(f.coverage).toFixed(2),f.sightings,f.span_secs,radarPivot({sighting:{network_id:f.mac}})]);
     fill('rrrows',r.recurring||[],d=>[d.mac,d.name||'(hidden)',d.vendor||'unknown',d.sweeps_seen,when(d.first_ts*1000),when(d.last_ts*1000)]);
-    $('rtsummary').textContent='Sweep logged at '+new Date().toLocaleString()+' · sweeps: '+r.sweeps+' · placed: '+r.located_sweeps+' · cells: '+r.distinct_cells+' · followers: '+(r.followers||[]).length+' · recurring: '+(r.recurring||[]).length+(r.skipped_lines?' · unreadable log lines: '+r.skipped_lines:'');
+    $('rtsummary').textContent='Sweep logged at '+new Date().toLocaleString()+' · sweeps: '+r.sweeps+' · cell-associated: '+r.located_sweeps+' · distinct cell IDs: '+r.distinct_cells+' · recurrence candidates: '+(r.followers||[]).length+' · recurring: '+(r.recurring||[]).length+(r.skipped_lines?' · unreadable log lines: '+r.skipped_lines:'');
     $('rstatus').textContent=(r.followers||[]).length
-      ?'A follower was heard in three or more of your places over ten minutes or more: something travelled with you. It does not identify an owner.'
-      :'Nothing has followed you across your logged places yet. The log keeps the newest 256 sweeps; log one now and then as you move.';
+      ?'Possible cross-cell recurrence indicator, not proof of following or surveillance. Cell IDs are coarse network associations, not verified physical positions; independently corroborate before drawing conclusions.'
+      :'No cross-cell recurrence candidates met the rule in these logged sweeps. This does not exclude tracking or confirm safety. Only known-current Wi-Fi observations contribute to new live sweeps.';
   }catch(e){$('rstatus').textContent='The sweep was not logged.';fail('rerror',e.message)}
   finally{b.disabled=false}
 };

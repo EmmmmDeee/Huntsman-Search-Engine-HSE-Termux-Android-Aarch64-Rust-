@@ -13,7 +13,7 @@ use huntsman_recon::mitm_guard::{self, Baseline, Report};
 use huntsman_recon::textnorm::escape_controls;
 use huntsman_recon::wifi_radar;
 
-pub(super) const USAGE: &str = "mitm audit [--file WIFI_JSON_OR_WIGLE_JSONL] [--baseline TRUSTED_JSON] [--json]\nmitm baseline --ssid SSID --bssid MAC [--bssid MAC ...] --minimum-security OPEN|WEP|WPA|WPA2|WPA3 --output FILE --confirmed\nThe baseline command writes a private new file from independently verified operator input only; it never trusts a captured scan or overwrites an existing baseline. --confirmed records an operator assertion, not authentication.\nWithout --file, read the existing rootless Termux OS-cached Wi-Fi radar; offline --file accepts a Termux scan JSON array or Huntsman-normalized WiGLE JSONL. Baseline JSON format: {\"networks\":[{\"ssid\":\"Office\",\"bssids\":[\"3c:5a:b4:11:22:33\"],\"minimum_security\":\"WPA3\"}]}. This tool only reports unconfirmed indicators; it never forcibly disconnects networks. Remediation requires verifying the authorised access point and making manual Android network settings changes.";
+pub(super) const USAGE: &str = "mitm audit [--file WIFI_JSON_OR_WIGLE_JSONL] [--baseline TRUSTED_JSON] [--json] [--require-evaluated]\nmitm baseline --ssid SSID --bssid MAC [--bssid MAC ...] --minimum-security OPEN|WEP|WPA|WPA2|WPA3 --output FILE --confirmed\nThe baseline command writes a private new file from independently verified operator input only; it never trusts a captured scan or overwrites an existing baseline. --confirmed records an operator assertion, not authentication.\nWithout --file, read the existing rootless Termux OS-cached Wi-Fi radar; offline --file accepts a Termux scan JSON array or Huntsman-normalized WiGLE JSONL. Baseline JSON format: {\"networks\":[{\"ssid\":\"Office\",\"bssids\":[\"3c:5a:b4:11:22:33\"],\"minimum_security\":\"WPA3\"}]}. This tool only reports unconfirmed indicators; it never forcibly disconnects networks. Remediation requires verifying the authorised access point and making manual Android network settings changes.";
 
 fn print_text(report: &Report) {
     println!(
@@ -63,10 +63,13 @@ pub(super) fn mitm_cmd(args: &[String]) -> ExitCode {
     let mut file = None;
     let mut baseline_file = None;
     let mut json = false;
+    // Optional strict exit semantics preserve legacy default behavior.
+    let mut require_evaluated = false;
     let mut iter = args[1..].iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--json" if !json => json = true,
+            "--require-evaluated" if !require_evaluated => require_evaluated = true,
             "--file" if file.is_none() => {
                 let Some(path) = iter.next().filter(|s| !s.starts_with("--")) else {
                     return fail(EX_USAGE, USAGE);
@@ -126,7 +129,11 @@ pub(super) fn mitm_cmd(args: &[String]) -> ExitCode {
     } else {
         print_text(&report);
     }
-    ExitCode::SUCCESS
+    if require_evaluated && report.evaluated_access_points == 0 {
+        ExitCode::from(EX_UNAVAILABLE)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /** Write a trusted inventory from explicitly entered, independently checked values.

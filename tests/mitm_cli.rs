@@ -3,6 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use huntsman_recon::exit::EX_UNAVAILABLE;
+
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
 }
@@ -181,4 +183,54 @@ fn baseline_rejects_invalid_and_duplicate_operator_bssids() {
         .unwrap();
     assert!(!duplicate.status.success());
     assert!(!output.exists());
+}
+
+#[test]
+fn strict_audit_preserves_report_but_fails_when_unevaluable() {
+    let path = fixture("empty-strict", "json");
+    fs::write(&path, b"[]").unwrap();
+    let run = |strict: bool| {
+        let mut cmd = bin();
+        cmd.args(["mitm", "audit", "--file"])
+            .arg(&path)
+            .arg("--json");
+        if strict {
+            cmd.arg("--require-evaluated");
+        }
+        cmd.output().unwrap()
+    };
+    let legacy = run(false);
+    assert!(legacy.status.success());
+    let strict = run(true);
+    assert_eq!(strict.status.code(), Some(i32::from(EX_UNAVAILABLE)));
+    assert_eq!(strict.stdout, legacy.stdout);
+    let report: serde_json::Value = serde_json::from_slice(&strict.stdout).unwrap();
+    assert_eq!(report["status"], "inconclusive");
+    assert_eq!(report["evaluated_access_points"], 0);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn strict_audit_succeeds_with_an_evaluable_historical_record() {
+    let path = fixture("strict-valid", "json");
+    fs::write(
+        &path,
+        br#"[{"bssid":"02:11:22:33:44:55","ssid":"Lab","rssi":-52}]"#,
+    )
+    .unwrap();
+    let result = bin()
+        .args(["mitm", "audit", "--file"])
+        .arg(&path)
+        .args(["--json", "--require-evaluated"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["evaluated_access_points"], 1);
+    assert_eq!(report["status"], "no_specific_indicators_observed");
+    fs::remove_file(path).unwrap();
 }

@@ -327,7 +327,8 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         trackText.includes('3c:5a:b4:11:22:33') && trackText.includes('1.00') && trackText.includes('1200') &&
         (await page.textContent('#rrrows')).includes('3c:5a:b4:11:22:33') &&
         (await page.textContent('#rtsummary')).includes('sweeps: 3') &&
-        (await page.textContent('#rstatus')).includes('travelled with you'), { trackCalls, trackMethod, trackText });
+        (await page.textContent('#rstatus')).includes('not proof of following') &&
+        (await page.textContent('#rstatus')).includes('not verified physical positions'), { trackCalls, trackMethod, trackText });
       page.off('request', countSensors);
       await page.unroute('**/api/radar/cells');
       await page.unroute('**/api/radar/track');

@@ -75,6 +75,27 @@ jq --argjson radar_exit "$radar_rc" '
   ($eligible | map([.ssid, .bssid]) | unique | length) as $unique |
   ($input.mitm_assessment.evaluated_access_points) as $rust |
   ($input.mitm_assessment.findings | length) as $findings |
+  (
+    ["stale", "freshness_unknown", "missing_ssid", "oversized_ssid", "hidden_ssid", "invalid_bssid"] |
+    map(. as $reason | {key: $reason, value: ($classified | map(select(.reason == $reason)) | length)}) |
+    from_entries
+  ) as $exclusions |
+  ($input.mitm_assessment.eligibility // null) as $native |
+  (
+    if $native == null then null
+    elif ($native | type) != "object" then false
+    else
+      ($native.observed_records == ($classified | length)) and
+      ($native.excluded_stale == $exclusions.stale) and
+      ($native.excluded_unknown_freshness == $exclusions.freshness_unknown) and
+      ($native.excluded_missing_ssid == $exclusions.missing_ssid) and
+      ($native.excluded_oversized_ssid == $exclusions.oversized_ssid) and
+      ($native.excluded_hidden_ssid == $exclusions.hidden_ssid) and
+      ($native.excluded_invalid_bssid == $exclusions.invalid_bssid) and
+      ($native.duplicate_rows == (($eligible | length) - $unique)) and
+      ($native.eligible_access_points == $unique)
+    end
+  ) as $native_agrees |
   {
     schema: "huntsman.mitm.eligibility.v2",
     source: "termux-wifi-scaninfo",
@@ -86,17 +107,18 @@ jq --argjson radar_exit "$radar_rc" '
     android_timestamps_present: ($input.observations | map(select(.os_timestamp_us != null)) | length),
     computed_ages_present: ($input.observations | map(select(.age_secs != null)) | length),
     security_metadata_present: ($input.observations | map(select((.capabilities // "") != "")) | length),
-    exclusions: (
-      ["stale", "freshness_unknown", "missing_ssid", "oversized_ssid", "hidden_ssid", "invalid_bssid"] |
-      map(. as $reason | {key: $reason, value: ($classified | map(select(.reason == $reason)) | length)}) |
-      from_entries
-    ),
+    exclusions: $exclusions,
     eligibility: {
       raw_eligible_rows: ($eligible | length),
       duplicate_rows: (($eligible | length) - $unique),
       predicted_unique_eligible: $unique,
       rust_evaluated: $rust,
-      agrees: ($unique == $rust)
+      native_count_verification: (
+        if $native_agrees == null then "not_available_older_binary"
+        elif $native_agrees then "agree"
+        else "mismatch" end
+      ),
+      agrees: (($unique == $rust) and ($native_agrees != false))
     },
     mitm: {
       status: $input.mitm_assessment.status,
@@ -104,13 +126,13 @@ jq --argjson radar_exit "$radar_rc" '
       confirmed: false
     },
     conclusion: (
-      if $unique != $rust then "COUNT_MISMATCH"
+      if $unique != $rust or $native_agrees == false then "COUNT_MISMATCH"
       elif $rust == 0 then "INCONCLUSIVE_ZERO_EVALUATED"
       elif $findings > 0 then "UNCONFIRMED_INDICATORS"
       else "NO_SPECIFIC_INDICATORS_NOT_PROOF_OF_SAFETY" end
     ),
     next_step: (
-      if $unique != $rust then "Review native Rust assessment selection, identity normalization and duplicate handling."
+      if $unique != $rust or $native_agrees == false then "Review native Rust assessment selection, identity normalization and exclusion counters."
       elif $rust > 0 then "Review unconfirmed findings; compare with independently verified access-point inventory."
       elif ($input.observations | length) == 0 then "Android supplied no usable cached observations; inspect Wi-Fi and Location permissions."
       elif ($classified | any(.reason == "stale")) then "Refresh Android Wi-Fi available-networks display, then repeat this diagnostic."

@@ -25,6 +25,17 @@ duplicate rows, and eligible access points. Native text output also prints
 these counts. The fields contain no network identifiers and are omitted from
 historical imports; they do not assert that an attack occurred.
 
+The shell diagnostic independently reconciles every native `eligibility`
+counter when present. A missing native field (older binary) is reported as
+`native_count_verification: not_available_older_binary`, not counted as a
+passed native comparison. A disagreement produces `COUNT_MISMATCH` and a
+nonzero exit status. Neither case exposes SSIDs or BSSIDs.
+
+For automation, `huntsman mitm audit --json --require-evaluated` opts into
+exit code `EX_UNAVAILABLE` (69) when zero access points were evaluated,
+after still printing the full result. Without this flag, the existing exit
+behavior is preserved. Imported captures remain historical evidence.
+
 The tool acquires **one** sensor snapshot through `huntsman radar wifi --json`
 and uses the same selection order as the Rust MITM assessment: current
 (`os_cached`) records, visible 1..32-byte SSIDs, valid individual BSSIDs, then
