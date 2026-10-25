@@ -608,27 +608,31 @@ fn encode_retained_track_log(
     sweep: LoggedSweep,
 ) -> (Vec<u8>, Vec<LoggedSweep>, bool) {
     sweeps.push(sweep);
-    let mut lines: Vec<(usize, LoggedSweep, Vec<u8>)> = sweeps
-        .into_iter()
-        .rev()
-        .take(MAX_TRACK_SWEEPS)
-        .enumerate()
-        .filter_map(|(index, sweep)| {
-            serde_json::to_vec(&sweep)
-                .ok()
-                .map(|line| (index, sweep, line))
-        })
-        .collect();
     let limit = usize::try_from(MAX_TRACK_LOG_BYTES).unwrap_or(usize::MAX);
     let mut total = 0usize;
-    lines.retain(|(_, _, line)| {
-        let bytes = line.len().saturating_add(1);
-        if bytes > limit.saturating_sub(total) {
-            return false;
+    let mut lines = Vec::new();
+    // A history window must be contiguous. Skipping a large recent row and
+    // then accepting an older small row creates a misleading gap in the
+    // stored timeline (and thus in recurring/cross-cell evidence).
+    // Stop at the first record that cannot fit, including serialisation
+    // failures, and do not allocate JSON for older rows unnecessarily.
+    for (index, sweep) in sweeps.into_iter().rev().take(MAX_TRACK_SWEEPS).enumerate() {
+        let Ok(line) = serde_json::to_vec(&sweep) else {
+            break;
+        };
+        let Some(next_total) = line
+            .len()
+            .checked_add(1)
+            .and_then(|bytes| total.checked_add(bytes))
+        else {
+            break;
+        };
+        if next_total > limit {
+            break;
         }
-        total += bytes;
-        true
-    });
+        total = next_total;
+        lines.push((index, sweep, line));
+    }
     let newest_retained = lines.first().is_some_and(|(index, _, _)| *index == 0);
     lines.reverse();
     let mut body = Vec::with_capacity(total);
@@ -1172,6 +1176,37 @@ mod tests {
         assert_eq!(std::fs::read(&log).unwrap(), old);
         assert_eq!(std::fs::read(&lock).unwrap(), b"occupied");
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn byte_limit_keeps_a_contiguous_newest_history_without_older_holes() {
+        let old = LoggedSweep::new(1, Some("cell:old".into()), [device(HOME, "old")]);
+        let middle = LoggedSweep::new(
+            2,
+            Some("cell:middle".into()),
+            [device(TAIL, &"m".repeat(4_000_000))],
+        );
+        let latest = LoggedSweep::new(
+            3,
+            Some("cell:latest".into()),
+            [device(HOME, &"n".repeat(300_000))],
+        );
+        let (initial, _, accepted) = encode_retained_track_log(vec![old.clone()], middle.clone());
+        assert!(accepted);
+        assert!(u64::try_from(initial.len()).unwrap() <= MAX_TRACK_LOG_BYTES);
+        let (bytes, retained, latest_accepted) =
+            encode_retained_track_log(vec![old, middle], latest);
+        assert!(latest_accepted);
+        assert!(u64::try_from(bytes.len()).unwrap() <= MAX_TRACK_LOG_BYTES);
+        // The middle sweep cannot fit alongside the newest. Keeping the
+        // oldest sweep after skipping that middle one would fabricate a
+        // continuous history where none exists.
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].ts, 3);
+        let (decoded, rejected) = parse_track_log(&bytes);
+        assert_eq!(rejected, 0);
+        assert_eq!(decoded, retained);
+        assert_eq!(track(&decoded, rejected).sweeps, 1);
     }
 
     #[test]
