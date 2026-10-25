@@ -545,6 +545,31 @@ mod tests {
     }
 
     #[test]
+    fn mixed_security_downgrade_and_unknown_capabilities_are_distinct() {
+        assert_eq!(
+            Security::parse("[WPA2-PSK-CCMP][RSN-SAE-CCMP][ESS]"),
+            Security::Wpa2
+        );
+        assert_eq!(Security::parse("[RSN-SAE-CCMP][ESS]"), Security::Wpa3);
+        assert_eq!(Security::parse("Unknown"), Security::Unknown);
+        let baseline = parse_baseline(br#"{"networks":[{"ssid":"Corp","bssids":["3c:5a:b4:11:22:33"],"minimum_security":"WPA3"}]}"#).unwrap();
+        let transition = assess(
+            &[ap("Corp", "3c:5a:b4:11:22:33", Security::Wpa2)],
+            Some(&baseline),
+            "fixture",
+            0,
+        );
+        assert_eq!(transition.findings[0].code, "security_below_trusted_floor");
+        let missing = assess(
+            &[ap("Corp", "3c:5a:b4:11:22:33", Security::Unknown)],
+            Some(&baseline),
+            "fixture",
+            0,
+        );
+        assert_eq!(missing.findings[0].code, "trusted_ssid_security_unverified");
+    }
+
+    #[test]
     fn no_derived_finding_proves_mitm() {
         let r = assess(&[], None, "fixture", 0);
         assert_eq!(r.status, "inconclusive");
