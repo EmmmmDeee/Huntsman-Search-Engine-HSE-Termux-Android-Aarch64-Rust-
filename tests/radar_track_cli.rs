@@ -195,3 +195,40 @@ fn a_sweep_that_cannot_be_trusted_is_not_logged() {
     assert_eq!(usage.status.code(), Some(i32::from(EX_USAGE)));
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[cfg(unix)]
+#[test]
+fn missing_scan_timestamps_do_not_create_a_live_track_log() {
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch("missing-live-timestamps");
+    let log = dir.join("sweeps.jsonl");
+    let shim = dir.join("termux-wifi-scaninfo");
+    // Android may provide BSSID and RSSI while withholding a usable
+    // boot-relative timestamp. Those rows must never be recorded as live.
+    fs::write(
+        &shim,
+        b"#!/bin/sh\\nprintf '[{\"bssid\":\"00:11:22:33:44:55\",\"ssid\":\"unknown-age\",\"rssi\":-51}]\\n'\\n",
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&shim).unwrap().permissions();
+    perms.set_mode(0o700);
+    fs::set_permissions(&shim, perms).unwrap();
+    let mut search_path = OsString::from(dir.as_os_str());
+    search_path.push(":");
+    search_path.push(std::env::var_os("PATH").unwrap_or_default());
+
+    let output = bin()
+        .args(["radar", "track", "--json", "--log"])
+        .arg(&log)
+        .env("PATH", search_path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(i32::from(EX_UNAVAILABLE)));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no current-age observations")
+    );
+    assert!(!log.exists(), "unknown-age records created a tracking log");
+    let _ = fs::remove_dir_all(dir);
+}

@@ -61,6 +61,34 @@ impl WifiScan {
                 }),
         )
     }
+
+    /// A live sensor may have stale and unknown-age observations even when its
+    /// overall status says "os_cached". Only known-current rows can substantiate
+    /// this scan's new track sweep; an unknown-age row is not current evidence.
+    #[must_use]
+    pub fn has_current_observations(&self) -> bool {
+        self.observations
+            .iter()
+            .any(|observation| observation.freshness == "os_cached")
+    }
+
+    /// The live recording path applies the same freshness requirement as the
+    /// native MITM assessment. Replay data continues to use logged_sweep
+    /// explicitly, retaining existing historical fixture/log compatibility.
+    #[must_use]
+    pub fn logged_current_sweep(&self, ts: u64, cell: Option<String>) -> LoggedSweep {
+        LoggedSweep::new(
+            ts,
+            cell,
+            self.observations
+                .iter()
+                .filter(|observation| observation.freshness == "os_cached")
+                .map(|observation| LoggedDevice {
+                    mac: observation.sighting.network_id.clone(),
+                    name: observation.sighting.name.clone(),
+                }),
+        )
+    }
 }
 
 impl crate::mitm_guard::WifiEvidenceSource for WifiScan {
@@ -298,6 +326,34 @@ mod tests {
         assert_eq!(scan.observations[0].sighting.signal_dbm, Some(-57.0));
         assert_eq!(scan.observations[0].sighting.observed_epoch, None);
         assert!(!scan.observations[0].sighting.has_usable_position());
+    }
+
+    #[test]
+    fn live_track_filters_unknown_age_even_when_other_records_are_current() {
+        let raw = br#"[{"bssid":"00:11:22:33:44:55","ssid":"fresh","rssi":-44,"timestamp":980000000},{"bssid":"00:11:22:33:44:56","ssid":"unknown","rssi":-45},{"bssid":"00:11:22:33:44:57","ssid":"old","rssi":-46,"timestamp":100000000}]"#;
+        let scan = parse_scan(raw, Some(1000.0)).unwrap();
+        assert!(scan.has_current_observations());
+        assert_eq!(scan.status, "os_cached");
+        let live = scan.logged_current_sweep(1000, Some("cell:coarse".into()));
+        assert_eq!(live.devices.len(), 1);
+        assert_eq!(live.devices[0].mac, "00:11:22:33:44:55");
+        assert_eq!(live.cell.as_deref(), Some("cell:coarse"));
+        // The pre-existing replay helper remains compatible with cached
+        // fixture logs, but it must never be used for live acquisition.
+        let historical = scan.logged_sweep(1000, None);
+        assert_eq!(historical.devices.len(), 2);
+    }
+
+    #[test]
+    fn unknown_only_capture_has_no_current_tracking_evidence() {
+        let raw = br#"[{"bssid":"00:11:22:33:44:55","ssid":"unknown","rssi":-45}]"#;
+        let scan = parse_scan(raw, Some(1000.0)).unwrap();
+        assert_eq!(scan.status, "freshness_unknown");
+        assert!(!scan.has_current_observations());
+        assert!(scan.logged_current_sweep(1000, None).devices.is_empty());
+        // File replays are still parseable, but are never promoted to live.
+        let replay = parse_replay(raw).unwrap();
+        assert!(!replay.has_current_observations());
     }
 
     #[test]

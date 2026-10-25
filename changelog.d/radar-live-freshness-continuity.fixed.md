@@ -1,0 +1,1 @@
+- Align rootless live Wi-Fi radar tracking with native MITM freshness eligibility across CLI and loopback Web UI; refuse unknown-age-only live sweeps, retain historical replay support, and clarify that cell IDs and device recurrence are not verified locations or evidence of following.
