@@ -39,24 +39,34 @@ pub struct CellScan {
 }
 
 impl CellScan {
-    /// The place this report says the phone is: its registered serving cell as an opaque bucket
-    /// (`technology:MCC-MNC-AREA-CELL`, a `?` for a code CDMA has none of), or `None` when the
-    /// phone is registered to no cell, so a sweep is kept but not placed. **Pure.**
+    /// Return a coarse registered-cell bucket only when the Android snapshot
+    /// identifies exactly one distinct registered cell. Multiple registered
+    /// identities may reflect dual SIMs or concurrent radio technologies;
+    /// choosing whichever appeared first would fabricate a single location.
+    /// Duplicate rows for the same identity are acceptable. `None` keeps the
+    /// tracking sweep unplaced, without treating the cellular scan as empty.
+    ///
+    /// Retain the original bucket string format for historical compatibility.
     #[must_use]
     pub fn serving_cell(&self) -> Option<String> {
-        self.observations
+        let mut registered = self
+            .observations
             .iter()
-            .find(|cell| cell.registered == Some(true))
-            .map(|cell| {
-                format!(
-                    "{}:{}-{}-{}-{}",
-                    cell.technology,
-                    cell.mcc.as_deref().unwrap_or("?"),
-                    cell.mnc.as_deref().unwrap_or("?"),
-                    cell.area_code,
-                    cell.cell_id
-                )
-            })
+            .filter(|cell| cell.registered == Some(true));
+        let first = registered.next()?;
+        if registered.any(|other| {
+            other.sighting.network_id.as_str() != first.sighting.network_id.as_str()
+        }) {
+            return None;
+        }
+        Some(format!(
+            "{}:{}-{}-{}-{}",
+            first.technology,
+            first.mcc.as_deref().unwrap_or("?"),
+            first.mnc.as_deref().unwrap_or("?"),
+            first.area_code,
+            first.cell_id
+        ))
     }
 }
 
@@ -268,6 +278,27 @@ mod tests {
             assert!(!row.sighting.has_usable_position());
             assert_eq!(row.freshness, "unknown");
         }
+    }
+
+    #[test]
+    fn multiple_registered_cells_do_not_create_an_arbitrary_location() {
+        let raw = br#"[{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":1234,"registered":true},{"type":"nr","mcc":505,"mnc":1,"tac":43,"nci":5678,"registered":true}]"#;
+        let scan = parse_cells(raw).unwrap();
+        assert_eq!(scan.observed, 2);
+        assert_eq!(scan.status, "freshness_unknown");
+        assert_eq!(scan.serving_cell(), None);
+        let reversed = br#"[{"type":"nr","mcc":505,"mnc":1,"tac":43,"nci":5678,"registered":true},{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":1234,"registered":true}]"#;
+        assert_eq!(parse_cells(reversed).unwrap().serving_cell(), None);
+        assert_eq!(parse_replay(raw).unwrap().serving_cell(), None);
+    }
+
+    #[test]
+    fn duplicate_registered_identity_preserves_original_bucket_format() {
+        let raw = br#"[{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":1234,"registered":true},{"type":"lte","mcc":"505","mnc":"01","tac":42,"ci":1234,"registered":true},{"type":"nr","mcc":505,"mnc":1,"tac":43,"nci":5678,"registered":false}]"#;
+        let scan = parse_cells(raw).unwrap();
+        assert_eq!(scan.serving_cell().as_deref(), Some("lte:505-01-42-1234"));
+        let no_registered = br#"[{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":1234,"registered":false}]"#;
+        assert_eq!(parse_cells(no_registered).unwrap().serving_cell(), None);
     }
 
     #[test]

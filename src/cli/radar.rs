@@ -451,14 +451,30 @@ fn track_cmd(args: &[String]) -> ExitCode {
                     cell_radar::parse_replay(&raw).map_err(|error| (EX_DATAERR, error.to_string()))
                 });
             match parsed {
-                Ok(scan) => scan.serving_cell(),
+                Ok(scan) => {
+                    let serving = scan.serving_cell();
+                    if serving.is_none() {
+                        eprintln!(
+                            "radar track: no unique registered serving cell; sweep remains unplaced"
+                        );
+                    }
+                    serving
+                }
                 Err((code, error)) => return fail(code, &error),
             }
         }
         None => match collect_termux_cells()
             .and_then(|raw| cell_radar::parse_cells(&raw).map_err(|error| error.to_string()))
         {
-            Ok(scan) => scan.serving_cell(),
+            Ok(scan) => {
+                let serving = scan.serving_cell();
+                if serving.is_none() {
+                    eprintln!(
+                        "radar track: no unique registered serving cell; sweep remains unplaced"
+                    );
+                }
+                serving
+            }
             Err(error) => {
                 eprintln!("radar track: no serving cell, so this sweep is not placed: {error}");
                 None

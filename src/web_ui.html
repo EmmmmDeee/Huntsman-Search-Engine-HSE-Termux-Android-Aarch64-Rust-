@@ -703,7 +703,7 @@ $('rcread').onclick=async()=>{
     $('rcsummary').textContent='Requested at '+new Date().toLocaleString()+' (browser clock; no capture time is reported) · Source: '+scan.source+' · status: '+scan.status+' · records: '+scan.observed+' · rejected: '+scan.rejected;
     $('rstatus').textContent=scan.status==='inconclusive'
       ?'Android returned no cells. Cellular service may still exist; this is not evidence that no cell site is near.'
-      :'Cells as Android reports them: no tower position, time or capture age is inferred. A registered cell is a network identifier, not a verified tower location or GPS coordinate.';
+      :'Cells as Android reports them: no tower position, time or capture age is inferred. Multiple distinct registered cell identities cannot establish one serving-cell bucket, and no reported cell is a verified GPS coordinate.';
   }catch(e){
     $('rstatus').textContent=cellsLast?'Refresh failed. The cells table shows a PREVIOUS read.':'No cell observations available.';
     fail('rerror',e.message);
