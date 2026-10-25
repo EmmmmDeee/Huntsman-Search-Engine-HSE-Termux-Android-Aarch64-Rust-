@@ -417,6 +417,42 @@ fn system_resolve_with<F>(
 where
     F: FnOnce() -> io::Result<Vec<IpAddr>> + Send + 'static,
 {
+    system_resolve_with_spawner(
+        name,
+        timeout,
+        active,
+        capacity,
+        resolve,
+        |permit, sender, resolve| {
+            std::thread::Builder::new()
+                .name("resolve".into())
+                .spawn(move || {
+                    // Owned by the worker, not the timed-out caller. Also released on panic.
+                    let _permit = permit;
+                    let _ = sender.send(resolve());
+                })
+                .map(|_| ())
+        },
+    )
+}
+
+/// The injected spawner makes failed thread creation testable without exhausting OS resources.
+fn system_resolve_with_spawner<F, S>(
+    name: &str,
+    timeout: Duration,
+    active: &'static std::sync::atomic::AtomicUsize,
+    capacity: usize,
+    resolve: F,
+    spawn: S,
+) -> Result<Vec<IpAddr>, TransportFailure>
+where
+    F: FnOnce() -> io::Result<Vec<IpAddr>> + Send + 'static,
+    S: FnOnce(
+        ResolverWorkerSlot,
+        std::sync::mpsc::Sender<io::Result<Vec<IpAddr>>>,
+        F,
+    ) -> io::Result<()>,
+{
     let failure = |detail: String| TransportFailure {
         kind: SourceOutcomeKind::DnsFailure,
         detail,
@@ -432,14 +468,7 @@ where
         ))
     })?;
     let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
-        .name("resolve".into())
-        .spawn(move || {
-            // Owned by the worker, not the timed-out caller. Also released on panic.
-            let _permit = permit;
-            let _ = sender.send(resolve());
-        })
-        .map_err(|e| failure(format!("resolver thread: {e}")))?;
+    spawn(permit, sender, resolve).map_err(|e| failure(format!("resolver thread: {e}")))?;
     match receiver.recv_timeout(timeout) {
         Ok(Ok(addresses)) => Ok(addresses),
         Ok(Err(error)) if names_no_address(&error.to_string()) => Ok(Vec::new()),
@@ -1049,6 +1078,42 @@ mod tests {
             move || Ok(vec![address]),
         )
         .expect("capacity recovered");
+        assert_eq!(result, vec![address]);
+    }
+
+    #[test]
+    fn native_resolver_spawn_failure_releases_capacity() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        let err = super::system_resolve_with_spawner(
+            "spawn.invalid",
+            std::time::Duration::from_secs(1),
+            &ACTIVE,
+            1,
+            || -> std::io::Result<Vec<std::net::IpAddr>> {
+                panic!("failed spawn must never invoke resolver");
+            },
+            |_permit, _sender, _resolve| {
+                Err(std::io::Error::other("injected thread-spawn failure"))
+            },
+        )
+        .expect_err("failed spawn must be reported as DNS failure");
+        assert_eq!(err.kind, super::SourceOutcomeKind::DnsFailure);
+        assert!(
+            err.detail.contains("resolver thread: injected thread-spawn failure"),
+            "{}",
+            err.detail
+        );
+        assert_eq!(ACTIVE.load(Ordering::Acquire), 0);
+        let address = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let result = super::system_resolve_with(
+            "recovered.invalid",
+            std::time::Duration::from_secs(1),
+            &ACTIVE,
+            1,
+            move || Ok(vec![address]),
+        )
+        .expect("failed spawn must not consume future capacity");
         assert_eq!(result, vec![address]);
     }
 
