@@ -1,0 +1,1 @@
+- Preserve the previous confirmed radar tracking report when a browser POST response is lost, avoid falsely claiming the sweep was not saved, and label cross-cell recurrence as an unconfirmed indicator; add browser regression coverage for interrupted requests.

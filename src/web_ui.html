@@ -302,7 +302,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="table-wrap"><table class="sortable"><thead><tr><th>Cell</th><th>Type</th><th>Registered</th><th>Signal (dBm)</th><th>Freshness</th><th>Next step</th></tr></thead><tbody id="rcrows"></tbody></table></div>
 </div>
 <div class="panel" id="rtresult" hidden>
-<div class="panel-heading">Devices that moved with you <span class="badge" id="rtrows-n"></span></div>
+<div class="panel-heading">Cross-cell recurrence candidates (unconfirmed) <span class="badge" id="rtrows-n"></span></div>
 <p class="note" id="rtsummary"></p>
 <div class="table-wrap"><table class="sortable"><thead><tr><th>BSSID</th><th>Vendor</th><th>Cells</th><th>Coverage</th><th>Sightings</th><th>Span (s)</th><th>Next step</th></tr></thead><tbody id="rtrows"></tbody></table></div>
 <div class="panel-heading">Heard in two or more sweeps <span class="badge" id="rrrows-n"></span></div>
@@ -710,17 +710,22 @@ $('rcread').onclick=async()=>{
   }
   finally{b.disabled=false}
 };
+let trackLast=null;
 $('rtrack').onclick=async()=>{
   const b=$('rtrack');b.disabled=true;$('rerror').hidden=true;$('rstatus').textContent='Checking OS-cached Wi-Fi freshness before logging a sweep with a coarse cell identifier…';
   try{
-    const r=await api('/api/radar/track',{method:'POST'});$('rtresult').hidden=false;
+    const r=await api('/api/radar/track',{method:'POST'});trackLast=r;$('rtresult').hidden=false;
     fill('rtrows',r.followers||[],f=>[f.mac,f.vendor||'unknown',f.distinct_cells,Number(f.coverage).toFixed(2),f.sightings,f.span_secs,radarPivot({sighting:{network_id:f.mac}})]);
     fill('rrrows',r.recurring||[],d=>[d.mac,d.name||'(hidden)',d.vendor||'unknown',d.sweeps_seen,when(d.first_ts*1000),when(d.last_ts*1000)]);
     $('rtsummary').textContent='Sweep logged at '+new Date().toLocaleString()+' · sweeps: '+r.sweeps+' · cell-associated: '+r.located_sweeps+' · distinct cell IDs: '+r.distinct_cells+' · recurrence candidates: '+(r.followers||[]).length+' · recurring: '+(r.recurring||[]).length+(r.skipped_lines?' · unreadable log lines: '+r.skipped_lines:'');
     $('rstatus').textContent=(r.followers||[]).length
       ?'Possible cross-cell recurrence indicator, not proof of following or surveillance. Cell IDs are coarse network associations, not verified physical positions; independently corroborate before drawing conclusions.'
       :'No cross-cell recurrence candidates met the rule in these logged sweeps. This does not exclude tracking or confirm safety. Only known-current Wi-Fi observations contribute to new live sweeps.';
-  }catch(e){$('rstatus').textContent='The sweep was not logged.';fail('rerror',e.message)}
+  }catch(e){
+    $('rstatus').textContent='The sweep may or may not have been saved. Check the local log before retrying.';
+    if(trackLast)$('rtsummary').textContent='PREVIOUS CONFIRMED REPORT ONLY · outcome unknown · sweeps: '+trackLast.sweeps;
+    fail('rerror',e.message)
+  }
   finally{b.disabled=false}
 };
 // Inspect reads a picked file only when asked; a GPS lead is prefilled, never started.
