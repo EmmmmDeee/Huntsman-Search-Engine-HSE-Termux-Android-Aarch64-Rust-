@@ -1191,8 +1191,7 @@ mod tests {
             Some("cell:latest".into()),
             [device(HOME, &"n".repeat(300_000))],
         );
-        let (initial, _, accepted) =
-            encode_retained_track_log(vec![old.clone()], middle.clone());
+        let (initial, _, accepted) = encode_retained_track_log(vec![old.clone()], middle.clone());
         assert!(accepted);
         assert!(u64::try_from(initial.len()).unwrap() <= MAX_TRACK_LOG_BYTES);
         let (bytes, retained, latest_accepted) =
