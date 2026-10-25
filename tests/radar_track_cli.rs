@@ -303,10 +303,7 @@ fn cli_report_matches_stored_history_under_byte_capacity_pressure() {
         .unwrap()
         .serving_cell();
     let incoming = scan.logged_sweep(now(), serving);
-    assert!(
-        original.len() + serde_json::to_vec(&incoming).unwrap().len() + 1
-            > bound
-    );
+    assert!(original.len() + serde_json::to_vec(&incoming).unwrap().len() + 1 > bound);
     fs::write(&log, original).unwrap();
 
     let result = bin()

@@ -956,7 +956,10 @@ mod tests {
         let oversized = LoggedSweep::new(
             2,
             Some("cell:new".into()),
-            [device(HOME, &"z".repeat(usize::try_from(MAX_TRACK_LOG_BYTES).unwrap()))],
+            [device(
+                HOME,
+                &"z".repeat(usize::try_from(MAX_TRACK_LOG_BYTES).unwrap()),
+            )],
         );
         assert!(matches!(
             record_sweep(&log, oversized),
