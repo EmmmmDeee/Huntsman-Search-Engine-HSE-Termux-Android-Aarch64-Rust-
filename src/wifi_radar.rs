@@ -88,7 +88,42 @@ impl crate::mitm_guard::WifiEvidenceSource for WifiScan {
     fn mitm_rejected(&self) -> usize {
         self.rejected
     }
-}
+
+    fn mitm_eligibility(&self, unique: usize) -> Option<crate::mitm_guard::Eligibility> {
+        let mut counts = crate::mitm_guard::Eligibility {
+            observed_records: self.observations.len(),
+            eligible_access_points: unique,
+            ..Default::default()
+        };
+        let mut candidates = 0usize;
+        for row in &self.observations {
+            if row.freshness == "stale" {
+                counts.excluded_stale += 1;
+                continue;
+            }
+            if row.freshness != "os_cached" {
+                counts.excluded_unknown_freshness += 1;
+                continue;
+            }
+            let ssid = row.sighting.name.as_deref().unwrap_or("");
+            if ssid.is_empty() {
+                counts.excluded_missing_ssid += 1;
+            } else if ssid.len() > 32 {
+                counts.excluded_oversized_ssid += 1;
+            } else if ssid.eq_ignore_ascii_case("(hidden)")
+                || ssid.eq_ignore_ascii_case("(no SSID)")
+            {
+                counts.excluded_hidden_ssid += 1;
+            } else if !valid_wifi_bssid(&row.sighting.network_id) {
+                counts.excluded_invalid_bssid += 1;
+            } else {
+                candidates += 1;
+            }
+        }
+        counts.duplicate_rows = candidates.saturating_sub(unique);
+        Some(counts)
+    }
+
 
 fn optional_string(value: Option<&serde_json::Value>) -> Option<String> {
     value
@@ -384,6 +419,40 @@ mod tests {
         ] {
             assert!(parse_scan(raw.as_bytes(), None).is_err(), "{raw}");
         }
+    }
+
+    #[test]
+    fn live_mitm_exclusions_explain_zero_without_identifier_leak() {
+        let raw = br#"[{"bssid":"02:11:22:33:44:55","ssid":"PrivateLab","rssi":-50,"timestamp":100000000,"capabilities":"[WPA2-PSK]"},{"bssid":"02:11:22:33:44:56","ssid":"PrivateLab","rssi":-50},{"bssid":"02:11:22:33:44:57","ssid":"(hidden)","rssi":-50,"timestamp":980000000},{"bssid":"02:11:22:33:44:58","rssi":-50,"timestamp":980000000},{"bssid":"02:00:00:00:00:00","ssid":"rejected","rssi":-50,"timestamp":980000000}]"#;
+        let scan = parse_scan(raw, Some(1000.0)).unwrap();
+        let report = scan.mitm_assessment.as_ref().unwrap();
+        let e = report.eligibility.as_ref().unwrap();
+        assert_eq!(scan.rejected, 1);
+        assert_eq!(e.observed_records, 4);
+        assert_eq!(e.excluded_stale, 1);
+        assert_eq!(e.excluded_unknown_freshness, 1);
+        assert_eq!(e.excluded_hidden_ssid, 1);
+        assert_eq!(e.excluded_missing_ssid, 1);
+        assert_eq!(e.eligible_access_points, 0);
+        assert_eq!(report.status, "inconclusive");
+        assert_eq!(report.evaluated_access_points, 0);
+        let json = serde_json::to_string(report).unwrap();
+        assert!(!json.contains("PrivateLab"));
+        assert!(!json.contains("02:11:22:33:44:55"));
+    }
+
+    #[test]
+    fn live_mitm_duplicates_and_oversized_ssids_reconcile() {
+        let raw = br#"[{"bssid":"02:11:22:33:44:55","ssid":"Lab","rssi":-50,"timestamp":980000000},{"bssid":"02:11:22:33:44:55","ssid":"Lab","rssi":-55,"timestamp":980000000},{"bssid":"02:11:22:33:44:56","ssid":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","rssi":-45,"timestamp":980000000}]"#;
+        let scan = parse_scan(raw, Some(1000.0)).unwrap();
+        let report = scan.mitm_assessment.as_ref().unwrap();
+        let e = report.eligibility.as_ref().unwrap();
+        assert_eq!(e.observed_records, 3);
+        assert_eq!(e.eligible_access_points, 1);
+        assert_eq!(e.duplicate_rows, 1);
+        assert_eq!(e.excluded_oversized_ssid, 1);
+        assert_eq!(report.evaluated_access_points, 1);
+        assert_eq!(report.status, "no_specific_indicators_observed");
     }
 
     #[test]

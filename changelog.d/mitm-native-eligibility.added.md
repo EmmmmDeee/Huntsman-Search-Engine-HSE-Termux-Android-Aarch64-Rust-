@@ -1,0 +1,1 @@
+- Expose privacy-preserving exclusion and eligibility counters in native live Wi-Fi MITM assessment reports without interpreting unassessed observations as a clean network.

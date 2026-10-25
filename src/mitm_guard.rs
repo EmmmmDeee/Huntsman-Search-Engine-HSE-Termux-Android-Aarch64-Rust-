@@ -135,6 +135,20 @@ pub struct Finding {
     pub resolution: &'static str,
 }
 
+/// Aggregate eligibility for one live Wi-Fi capture; never includes identifiers.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Eligibility {
+    pub observed_records: usize,
+    pub excluded_stale: usize,
+    pub excluded_unknown_freshness: usize,
+    pub excluded_missing_ssid: usize,
+    pub excluded_oversized_ssid: usize,
+    pub excluded_hidden_ssid: usize,
+    pub excluded_invalid_bssid: usize,
+    pub duplicate_rows: usize,
+    pub eligible_access_points: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Report {
     pub source: &'static str,
@@ -145,6 +159,9 @@ pub struct Report {
     pub mitm_confirmed: bool,
     pub findings: Vec<Finding>,
     pub capability_limit: &'static str,
+    /// Live sensor counts; omitted for unverified historical captures.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eligibility: Option<Eligibility>,
 }
 
 fn assess_status(accepted: usize, findings: &[Finding]) -> &'static str {
@@ -267,6 +284,7 @@ pub fn assess(
         mitm_confirmed: false,
         findings,
         capability_limit: "Passive scan heuristics cannot prove interception, validate AP ownership, read 802.11 management frames, observe ARP/TLS tampering, or forcibly disconnect Wi-Fi on unprivileged Android.",
+        eligibility: None,
     }
 }
 
@@ -277,19 +295,26 @@ pub trait WifiEvidenceSource {
     fn mitm_access_points(&self, current_only: bool) -> Vec<AccessPoint>;
     fn mitm_source(&self) -> &'static str;
     fn mitm_rejected(&self) -> usize;
+
+    /// Only rootless live Wi-Fi captures supply exclusion counts.
+    fn mitm_eligibility(&self, _unique_access_points: usize) -> Option<Eligibility> {
+        None
+    }
 }
 
 /// A replay lacking a trusted boot clock must never establish current proximity.
 #[must_use]
 pub fn from_wifi_scan(scan: &impl WifiEvidenceSource, baseline: Option<&Baseline>) -> Report {
     let observations = scan.mitm_access_points(true);
-    assess(
+    let mut report = assess(
         &observations,
         baseline,
         scan.mitm_source(),
         scan.mitm_rejected(),
-    )
-}
+    );
+    report.eligibility = scan.mitm_eligibility(report.evaluated_access_points);
+    report
+
 
 /// Historical captures can be assessed but cannot prove a live attack.
 #[must_use]

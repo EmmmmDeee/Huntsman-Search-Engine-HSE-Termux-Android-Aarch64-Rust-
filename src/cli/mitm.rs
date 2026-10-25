@@ -25,6 +25,20 @@ fn print_text(report: &Report) {
         report.trusted_baseline_supplied,
         report.mitm_confirmed
     );
+    if let Some(e) = &report.eligibility {
+        println!(
+            "eligibility\tobserved={}\tstale={}\tunknown_freshness={}\tmissing_ssid={}\toversized_ssid={}\thidden_ssid={}\tinvalid_bssid={}\tduplicates={}\teligible={}",
+            e.observed_records,
+            e.excluded_stale,
+            e.excluded_unknown_freshness,
+            e.excluded_missing_ssid,
+            e.excluded_oversized_ssid,
+            e.excluded_hidden_ssid,
+            e.excluded_invalid_bssid,
+            e.duplicate_rows,
+            e.eligible_access_points
+        );
+    }
     for finding in &report.findings {
         println!(
             "finding\tseverity={}\tcode={}\tssid={}\tbssid={}\tevidence={}\tresolution={}",
