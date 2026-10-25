@@ -104,6 +104,34 @@ if is_hse_update; then
   exit 0
 fi
 
+# pkg prints "No mirror or mirror group selected" and probes every mirror on
+# each invocation until $PREFIX/etc/termux/chosen_mirrors exists. A probe that
+# succeeds is not remembered, so the next pkg install prints the warning again.
+# Pin Termux's default mirror only when nothing is selected and that mirror
+# answers. A miss leaves pkg's full rotation unchanged, including networks
+# where the default host is blocked.
+pin_default_package_mirror() {
+  local chosen="$TERMUX_PREFIX/etc/termux/chosen_mirrors"
+  local default="$TERMUX_PREFIX/etc/termux/mirrors/default"
+  local main_url=""
+  if [[ -e "$chosen" || -L "$chosen" ]]; then
+    return 0
+  fi
+  [[ -f "$default" ]] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  main_url="$(sed -n 's/^MAIN="\(https:\/\/[^"]*\)".*/\1/p' "$default" | head -n 1)"
+  [[ "$main_url" == https://* ]] || return 0
+  if ! curl -fsSL --proto '=https' --max-time 8 --range 0-64 -o /dev/null \
+      "$main_url/dists/stable/InRelease"; then
+    printf 'Package mirror: %s did not answer; leaving pkg mirror rotation unchanged.\n' "$main_url"
+    return 0
+  fi
+  ln -sfn "$default" "$chosen" || return 0
+  printf 'Package mirror: %s\n' "$main_url"
+}
+
+pin_default_package_mirror
+
 # Refresh repository metadata, then install what every path needs: git resolves
 # main, curl and coreutils fetch and verify a prebuilt build, termux-services
 # (runit) keeps the web UI running, and jq reads saved scans in the shortcuts.
@@ -397,7 +425,7 @@ install_controller() {
   if fetch_script scripts/termux/huntsman "$controller" 0755 &&
     fetch_script scripts/termux/huntsman-profile.sh "$INSTALL_ROOT/etc/profile.d/huntsman.sh" 0644; then
     ln -sfn huntsman "$INSTALL_ROOT/bin/huntsmanctl"
-    controller_note="huntsman (try: huntsman help); shortcuts load in new Termux sessions"
+    controller_note="huntsman (try: huntsman help); shortcuts: source $INSTALL_ROOT/etc/profile.d/huntsman.sh (or a new Termux session)"
   else
     controller_note="not installed: could not fetch scripts/termux/huntsman at ${scripts_rev:0:7}"
     printf 'warning: huntsman command %s\n' "${controller_note#not installed: }" >&2
