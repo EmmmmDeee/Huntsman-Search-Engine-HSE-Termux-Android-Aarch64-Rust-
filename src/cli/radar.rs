@@ -168,7 +168,7 @@ pub(super) fn capture_cells() -> Result<cell_radar::CellScan, String> {
 /// Translate the same typed tracking-storage failure into the Web UI contract.
 /// The CLI already distinguishes unavailable writes (exit 69) from bad or
 /// missing readable history; use HTTP 503 for that same unavailable class.
-fn track_log_lookup_error(error: radar::TrackLogError) -> LookupError {
+fn track_log_lookup_error(error: &radar::TrackLogError) -> LookupError {
     let status = match &error {
         radar::TrackLogError::Unwritable(_) => 503,
         radar::TrackLogError::Unreadable(_) | radar::TrackLogError::Missing(_) => 500,
@@ -207,7 +207,7 @@ pub(super) fn track_live(log: &Path) -> Result<radar::TrackReport, LookupError> 
         .ok()
         .and_then(|scan| scan.serving_cell())
         .filter(|cell| !cell.trim().is_empty());
-    radar::record_sweep(log, sweep).map_err(track_log_lookup_error)
+    radar::record_sweep(log, sweep).map_err(|error| track_log_lookup_error(&error))
 }
 
 /// The options both radar sources take: `--json` for the report, and `--file PATH` to replay a
@@ -542,7 +542,7 @@ mod track_storage_contract_tests {
 
     #[test]
     fn unavailable_track_write_maps_to_http_503_without_losing_reason() {
-        let error = track_log_lookup_error(radar::TrackLogError::Unwritable(
+        let error = track_log_lookup_error(&radar::TrackLogError::Unwritable(
             "tracking log is busy".into(),
         ));
         assert_eq!(error.status, 503);
@@ -551,10 +551,10 @@ mod track_storage_contract_tests {
 
     #[test]
     fn unreadable_or_missing_history_remains_http_500() {
-        let unreadable = track_log_lookup_error(radar::TrackLogError::Unreadable(
+        let unreadable = track_log_lookup_error(&radar::TrackLogError::Unreadable(
             "invalid stored log".into(),
         ));
-        let missing = track_log_lookup_error(radar::TrackLogError::Missing(
+        let missing = track_log_lookup_error(&radar::TrackLogError::Missing(
             "cannot inspect log path".into(),
         ));
         assert_eq!(unreadable.status, 500);
