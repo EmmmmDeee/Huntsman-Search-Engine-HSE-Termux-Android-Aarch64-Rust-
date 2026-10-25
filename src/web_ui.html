@@ -710,7 +710,6 @@ $('rcread').onclick=async()=>{
   }
   finally{b.disabled=false}
 };
-// A lost POST reply does not prove the sweep was rolled back.
 let trackLast=null;
 $('rtrack').onclick=async()=>{
   const b=$('rtrack');b.disabled=true;$('rerror').hidden=true;$('rstatus').textContent='Checking OS-cached Wi-Fi freshness before logging a sweep with a coarse cell identifier…';
@@ -723,7 +722,7 @@ $('rtrack').onclick=async()=>{
       ?'Possible cross-cell recurrence indicator, not proof of following or surveillance. Cell IDs are coarse network associations, not verified physical positions; independently corroborate before drawing conclusions.'
       :'No cross-cell recurrence candidates met the rule in these logged sweeps. This does not exclude tracking or confirm safety. Only known-current Wi-Fi observations contribute to new live sweeps.';
   }catch(e){
-    $('rstatus').textContent='Tracking response unconfirmed: the sweep may or may not have been saved. Check the local log before retrying.';
+    $('rstatus').textContent='The sweep may or may not have been saved. Check the local log before retrying.';
     if(trackLast)$('rtsummary').textContent='PREVIOUS CONFIRMED REPORT ONLY · outcome unknown · sweeps: '+trackLast.sweeps;
     fail('rerror',e.message)
   }
