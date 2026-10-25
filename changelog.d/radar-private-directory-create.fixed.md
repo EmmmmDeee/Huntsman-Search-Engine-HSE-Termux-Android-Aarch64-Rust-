@@ -1,0 +1,1 @@
+- Set private radar tracking directory permissions on creation rather than via a later pathname chmod, avoiding a replacement-window permission change while preserving existing parent modes, CLI/Web UI tracking contracts, JSONL data and rootless Android AArch64 compatibility.
