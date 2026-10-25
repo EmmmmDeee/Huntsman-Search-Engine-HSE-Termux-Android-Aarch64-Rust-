@@ -336,11 +336,16 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       // Simulate a response disappearing after an operator-initiated POST.
       // The client cannot know whether the server persisted the sweep.
       await page.unroute('**/api/radar/track');
+      const beforeAbortErrors = errors.length;
       await page.route('**/api/radar/track', route => route.abort('failed'));
       await page.click('#rtrack');
       await page.waitForFunction(() => document.querySelector('#rstatus').textContent.includes('may or may not have been saved'), { timeout: 10000 }).catch(() => {});
       const failedTrackStatus = await page.textContent('#rstatus');
       const previousSummary = await page.textContent('#rtsummary');
+      // Playwright's injected abort emits ERR_FAILED in the browser console.
+      // Exclude only that known synthetic error from the general console check.
+      const inducedErrors = errors.splice(beforeAbortErrors).filter(message => !message.includes('net::ERR_FAILED'));
+      errors.push(...inducedErrors);
       check(`${scheme}: lost tracking response preserves confirmed rows and reports unknown storage outcome`,
         trackCalls === 2 &&
         await page.isVisible('#rerror') &&

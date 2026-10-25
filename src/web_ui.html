@@ -710,9 +710,7 @@ $('rcread').onclick=async()=>{
   }
   finally{b.disabled=false}
 };
-// A failed HTTP response or lost connection may arrive after the server
-// committed a sweep. Never infer rollback from a missing browser response;
-// keep the last confirmed report and do not issue an automatic retry.
+// A lost POST reply does not prove the sweep was rolled back.
 let trackLast=null;
 $('rtrack').onclick=async()=>{
   const b=$('rtrack');b.disabled=true;$('rerror').hidden=true;$('rstatus').textContent='Checking OS-cached Wi-Fi freshness before logging a sweep with a coarse cell identifier…';
@@ -725,9 +723,9 @@ $('rtrack').onclick=async()=>{
       ?'Possible cross-cell recurrence indicator, not proof of following or surveillance. Cell IDs are coarse network associations, not verified physical positions; independently corroborate before drawing conclusions.'
       :'No cross-cell recurrence candidates met the rule in these logged sweeps. This does not exclude tracking or confirm safety. Only known-current Wi-Fi observations contribute to new live sweeps.';
   }catch(e){
-    $('rstatus').textContent='The last tracking request was not confirmed by the browser. The sweep may or may not have been saved; check the local tracking log before retrying to avoid duplicates.';
-    if(trackLast)$('rtsummary').textContent='PREVIOUS CONFIRMED REPORT ONLY · the last tracking request has an unknown storage outcome · sweeps: '+trackLast.sweeps+' · cell-associated: '+trackLast.located_sweeps;
-    fail('rerror',e.message);
+    $('rstatus').textContent='Tracking response unconfirmed: the sweep may or may not have been saved. Check the local log before retrying.';
+    if(trackLast)$('rtsummary').textContent='PREVIOUS CONFIRMED REPORT ONLY · outcome unknown · sweeps: '+trackLast.sweeps;
+    fail('rerror',e.message)
   }
   finally{b.disabled=false}
 };
