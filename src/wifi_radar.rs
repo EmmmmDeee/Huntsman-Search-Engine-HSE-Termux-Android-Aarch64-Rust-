@@ -63,7 +63,7 @@ impl WifiScan {
     }
 
     /// A live sensor may have stale and unknown-age observations even when its
-    /// overall status says "os_cached". Only known-current rows can substantiate
+    /// overall status says `os_cached`. Only known-current rows can substantiate
     /// this scan's new track sweep; an unknown-age row is not current evidence.
     #[must_use]
     pub fn has_current_observations(&self) -> bool {
@@ -73,7 +73,7 @@ impl WifiScan {
     }
 
     /// The live recording path applies the same freshness requirement as the
-    /// native MITM assessment. Replay data continues to use logged_sweep
+    /// native MITM assessment. Replay data continues to use `logged_sweep`
     /// explicitly, retaining existing historical fixture/log compatibility.
     #[must_use]
     pub fn logged_current_sweep(&self, ts: u64, cell: Option<String>) -> LoggedSweep {
