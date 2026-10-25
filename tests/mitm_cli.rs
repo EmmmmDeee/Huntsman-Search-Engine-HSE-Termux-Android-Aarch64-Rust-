@@ -191,7 +191,9 @@ fn strict_audit_preserves_report_but_fails_when_unevaluable() {
     fs::write(&path, b"[]").unwrap();
     let run = |strict: bool| {
         let mut cmd = bin();
-        cmd.args(["mitm", "audit", "--file"]).arg(&path).arg("--json");
+        cmd.args(["mitm", "audit", "--file"])
+            .arg(&path)
+            .arg("--json");
         if strict {
             cmd.arg("--require-evaluated");
         }
@@ -222,7 +224,11 @@ fn strict_audit_succeeds_with_an_evaluable_historical_record() {
         .args(["--json", "--require-evaluated"])
         .output()
         .unwrap();
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
     assert_eq!(report["evaluated_access_points"], 1);
     assert_eq!(report["status"], "no_specific_indicators_observed");

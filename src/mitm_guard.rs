@@ -178,9 +178,7 @@ pub(crate) fn ssid_exclusion(ssid: &str) -> Option<SsidExclusion> {
         Some(SsidExclusion::Missing)
     } else if ssid.len() > 32 {
         Some(SsidExclusion::Oversized)
-    } else if ssid.eq_ignore_ascii_case("(hidden)")
-        || ssid.eq_ignore_ascii_case("(no SSID)")
-    {
+    } else if ssid.eq_ignore_ascii_case("(hidden)") || ssid.eq_ignore_ascii_case("(no SSID)") {
         Some(SsidExclusion::Hidden)
     } else {
         None

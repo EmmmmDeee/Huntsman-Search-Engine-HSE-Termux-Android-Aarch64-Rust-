@@ -134,7 +134,7 @@ pub(super) fn mitm_cmd(args: &[String]) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
-
+}
 
 /** Write a trusted inventory from explicitly entered, independently checked values.
  * No scan-derived enrollment: a nearby rogue AP must not poison a baseline.
