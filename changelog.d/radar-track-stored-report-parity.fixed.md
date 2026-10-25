@@ -1,0 +1,1 @@
+- Make radar CLI and loopback Web UI tracking reports reflect only the exact sweeps retained after the log byte cap; reject oversized new sweeps without modifying persistent history, while preserving JSONL and public append interfaces.

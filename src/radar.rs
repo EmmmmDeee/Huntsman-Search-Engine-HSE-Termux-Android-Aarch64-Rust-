@@ -599,30 +599,53 @@ pub fn parse_track_log(bytes: &[u8]) -> (Vec<LoggedSweep>, usize) {
     (sweeps, skipped)
 }
 
+/// Encode a bounded log and return exactly the sweeps retained on disk.
+/// The first reverse-ordered entry is the newly supplied sweep. Preserve
+/// append_track_log's historical cap/selection semantics, but expose whether
+/// the new row survived so record_sweep can reject a silent dropped write.
+fn encode_retained_track_log(
+    mut sweeps: Vec<LoggedSweep>,
+    sweep: LoggedSweep,
+) -> (Vec<u8>, Vec<LoggedSweep>, bool) {
+    sweeps.push(sweep);
+    let mut lines: Vec<(usize, LoggedSweep, Vec<u8>)> = sweeps
+        .into_iter()
+        .rev()
+        .take(MAX_TRACK_SWEEPS)
+        .enumerate()
+        .filter_map(|(index, sweep)| {
+            serde_json::to_vec(&sweep)
+                .ok()
+                .map(|line| (index, sweep, line))
+        })
+        .collect();
+    let limit = usize::try_from(MAX_TRACK_LOG_BYTES).unwrap_or(usize::MAX);
+    let mut total = 0usize;
+    lines.retain(|(_, _, line)| {
+        let bytes = line.len().saturating_add(1);
+        if bytes > limit.saturating_sub(total) {
+            return false;
+        }
+        total += bytes;
+        true
+    });
+    let newest_retained = lines.first().is_some_and(|(index, _, _)| *index == 0);
+    lines.reverse();
+    let mut body = Vec::with_capacity(total);
+    let mut retained = Vec::with_capacity(lines.len());
+    for (_, sweep, line) in lines {
+        body.extend_from_slice(&line);
+        body.push(b'\n');
+        retained.push(sweep);
+    }
+    (body, retained, newest_retained)
+}
+
 /// `sweeps` with `sweep` added, as the log's bytes: the newest [`MAX_TRACK_SWEEPS`] that fit in
 /// [`MAX_TRACK_LOG_BYTES`], oldest first. **Pure.**
 #[must_use]
-pub fn append_track_log(mut sweeps: Vec<LoggedSweep>, sweep: LoggedSweep) -> Vec<u8> {
-    sweeps.push(sweep);
-    let mut lines: Vec<Vec<u8>> = sweeps
-        .iter()
-        .rev()
-        .take(MAX_TRACK_SWEEPS)
-        .filter_map(|sweep| serde_json::to_vec(sweep).ok())
-        .collect();
-    let limit = usize::try_from(MAX_TRACK_LOG_BYTES).unwrap_or(usize::MAX);
-    let mut total = 0;
-    lines.retain(|line| {
-        total += line.len() + 1;
-        total <= limit
-    });
-    lines.reverse();
-    let mut out = Vec::with_capacity(total);
-    for line in lines {
-        out.extend_from_slice(&line);
-        out.push(b'\n');
-    }
-    out
+pub fn append_track_log(sweeps: Vec<LoggedSweep>, sweep: LoggedSweep) -> Vec<u8> {
+    encode_retained_track_log(sweeps, sweep).0
 }
 
 /// What the track log shows: devices that recur across sweeps, and devices seen in several of the
@@ -732,19 +755,22 @@ pub fn record_sweep(log: &Path, sweep: LoggedSweep) -> Result<TrackReport, Track
             )));
         }
     };
-    let (mut sweeps, skipped) = parse_track_log(&existing);
-    let bytes = append_track_log(sweeps.clone(), sweep.clone());
+    let (sweeps, skipped) = parse_track_log(&existing);
+    let (bytes, retained, newest_retained) = encode_retained_track_log(sweeps, sweep);
+    if !newest_retained {
+        return Err(TrackLogError::Unwritable(format!(
+            "new radar sweep cannot fit within the {MAX_TRACK_LOG_BYTES}-byte tracking log; existing data was preserved"
+        )));
+    }
     private_parent(log)
         .and_then(|()| {
             crate::fsio::write_atomic_private(log, &bytes, MAX_TRACK_LOG_BYTES)
                 .map_err(|error| error.to_string())
         })
         .map_err(TrackLogError::Unwritable)?;
-    sweeps.push(sweep);
-    Ok(track(
-        &sweeps[sweeps.len().saturating_sub(MAX_TRACK_SWEEPS)..],
-        skipped,
-    ))
+    // Both CLI and Web UI must describe what is actually retained, not
+    // pre-truncation in-memory history. Avoid cloning the entire sweep list.
+    Ok(track(&retained, skipped))
 }
 
 /// Create the log's directory when it is missing, private to the user.
@@ -880,6 +906,64 @@ mod tests {
             })
             .collect();
         assert!(track(&quick, 0).followers.is_empty());
+    }
+
+    #[test]
+    fn reported_track_history_matches_the_bounded_persisted_log() {
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-track-report-capacity-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let log = directory.join("radar.jsonl");
+        let older = LoggedSweep::new(
+            10,
+            Some("cell:old".into()),
+            [device(TAIL, &"a".repeat(2_500_000))],
+        );
+        let newer = LoggedSweep::new(
+            900,
+            Some("cell:new".into()),
+            [device(TAIL, &"b".repeat(2_500_000))],
+        );
+        assert_eq!(record_sweep(&log, older).unwrap().sweeps, 1);
+        let report = record_sweep(&log, newer).unwrap();
+        let bytes = std::fs::read(&log).unwrap();
+        assert!(u64::try_from(bytes.len()).unwrap() <= MAX_TRACK_LOG_BYTES);
+        let (retained, skipped) = parse_track_log(&bytes);
+        assert_eq!(skipped, 0);
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].ts, 900);
+        assert_eq!(report, track(&retained, skipped));
+        assert!(report.recurring.is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn oversized_incoming_sweep_is_rejected_without_modifying_the_log() {
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-track-oversized-new-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let log = directory.join("radar.jsonl");
+        record_sweep(
+            &log,
+            LoggedSweep::new(1, Some("cell:old".into()), [device(TAIL, "old")]),
+        )
+        .unwrap();
+        let before = std::fs::read(&log).unwrap();
+        let oversized = LoggedSweep::new(
+            2,
+            Some("cell:new".into()),
+            [device(HOME, &"z".repeat(MAX_TRACK_LOG_BYTES as usize))],
+        );
+        assert!(matches!(
+            record_sweep(&log, oversized),
+            Err(TrackLogError::Unwritable(_))
+        ));
+        assert_eq!(std::fs::read(&log).unwrap(), before);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
