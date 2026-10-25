@@ -232,3 +232,42 @@ printf '[{"bssid":"00:11:22:33:44:55","ssid":"unknown-age","rssi":-51}]'
     assert!(!log.exists(), "unknown-age records created a tracking log");
     let _ = fs::remove_dir_all(dir);
 }
+
+#[cfg(unix)]
+#[test]
+fn live_randomized_only_cache_must_not_append_a_sweep() {
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch("randomized-only-live");
+    let log = dir.join("sweeps.jsonl");
+    let shim = dir.join("termux-wifi-scaninfo");
+    fs::write(
+        &shim,
+        br#"#!/bin/sh
+awk '{printf "[{\"bssid\":\"02:11:22:33:44:55\",\"ssid\":\"random\",\"rssi\":-51,\"timestamp\":%.0f}]\n", $1*1000000}' /proc/uptime
+"#,
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&shim).unwrap().permissions();
+    perms.set_mode(0o700);
+    fs::set_permissions(&shim, perms).unwrap();
+    let mut search_path = OsString::from(dir.as_os_str());
+    search_path.push(":");
+    search_path.push(std::env::var_os("PATH").unwrap_or_default());
+
+    let output = bin()
+        .args(["radar", "track", "--json", "--log"])
+        .arg(&log)
+        .env("PATH", search_path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(i32::from(EX_UNAVAILABLE)));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("trackable access points"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!log.exists(), "randomized-only capture created an empty sweep");
+    let _ = fs::remove_dir_all(dir);
+}
