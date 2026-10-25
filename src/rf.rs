@@ -163,6 +163,21 @@ impl RfSighting {
     }
 }
 
+/// Validate an individual Wi-Fi BSSID, rejecting Android's redaction
+/// sentinel, zero and group addresses while allowing randomised addresses.
+#[must_use]
+pub fn valid_wifi_bssid(value: &str) -> bool {
+    if !is_mac(value) {
+        return false;
+    }
+    let address = value.to_ascii_lowercase();
+    if matches!(address.as_str(), "00:00:00:00:00:00" | "02:00:00:00:00:00") {
+        return false;
+    }
+    // IEEE 802 I/G low bit distinguishes group/broadcast from individual.
+    oui::is_multicast(&address) == Some(false)
+}
+
 /// A finite, in-range coordinate other than (0, 0), the null island an unset fix is written as.
 fn is_valid_coords(lat: f64, lon: f64) -> bool {
     lat.is_finite()
