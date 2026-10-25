@@ -367,6 +367,6 @@ fn ambiguous_registered_cell_replay_is_logged_without_a_place() {
     assert_eq!(malformed, 0);
     assert_eq!(sweeps.len(), 1);
     assert!(sweeps[0].cell.is_none());
-    assert!(!sweeps[0].devices.is_empty());
+    assert_eq!(sweeps[0].devices.len(), 2);
     fs::remove_dir_all(dir).unwrap();
 }
