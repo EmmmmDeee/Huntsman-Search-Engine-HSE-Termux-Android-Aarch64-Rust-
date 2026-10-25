@@ -1100,7 +1100,8 @@ mod tests {
         .expect_err("failed spawn must be reported as DNS failure");
         assert_eq!(err.kind, super::SourceOutcomeKind::DnsFailure);
         assert!(
-            err.detail.contains("resolver thread: injected thread-spawn failure"),
+            err.detail
+                .contains("resolver thread: injected thread-spawn failure"),
             "{}",
             err.detail
         );
