@@ -54,9 +54,9 @@ impl CellScan {
             .iter()
             .filter(|cell| cell.registered == Some(true));
         let first = registered.next()?;
-        if registered.any(|other| {
-            other.sighting.network_id.as_str() != first.sighting.network_id.as_str()
-        }) {
+        if registered
+            .any(|other| other.sighting.network_id.as_str() != first.sighting.network_id.as_str())
+        {
             return None;
         }
         Some(format!(
@@ -297,7 +297,8 @@ mod tests {
         let raw = br#"[{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":1234,"registered":true},{"type":"lte","mcc":"505","mnc":"01","tac":42,"ci":1234,"registered":true},{"type":"nr","mcc":505,"mnc":1,"tac":43,"nci":5678,"registered":false}]"#;
         let scan = parse_cells(raw).unwrap();
         assert_eq!(scan.serving_cell().as_deref(), Some("lte:505-01-42-1234"));
-        let no_registered = br#"[{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":1234,"registered":false}]"#;
+        let no_registered =
+            br#"[{"type":"lte","mcc":505,"mnc":1,"tac":42,"ci":1234,"registered":false}]"#;
         assert_eq!(parse_cells(no_registered).unwrap().serving_cell(), None);
     }
 

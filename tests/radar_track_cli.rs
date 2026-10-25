@@ -357,9 +357,7 @@ fn ambiguous_registered_cell_replay_is_logged_without_a_place() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("no unique registered serving cell")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no unique registered serving cell"));
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["sweeps"], 1);
     assert_eq!(report["located_sweeps"], 0);
