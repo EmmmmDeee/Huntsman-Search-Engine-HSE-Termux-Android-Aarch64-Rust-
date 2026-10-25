@@ -268,6 +268,9 @@ awk '{printf "[{\"bssid\":\"02:11:22:33:44:55\",\"ssid\":\"random\",\"rssi\":-51
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!log.exists(), "randomized-only capture created an empty sweep");
+    assert!(
+        !log.exists(),
+        "randomized-only capture created an empty sweep"
+    );
     let _ = fs::remove_dir_all(dir);
 }

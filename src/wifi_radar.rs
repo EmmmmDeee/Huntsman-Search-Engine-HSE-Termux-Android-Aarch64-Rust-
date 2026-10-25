@@ -375,7 +375,9 @@ mod tests {
     fn mixed_current_cache_logs_only_stable_known_current_access_points() {
         let raw = br#"[{"bssid":"3c:5a:b4:11:22:33","ssid":"stable","rssi":-50,"timestamp":980000000},{"bssid":"02:11:22:33:44:55","ssid":"random","rssi":-49,"timestamp":980000000},{"bssid":"3c:5a:b4:11:22:33","ssid":"duplicate","rssi":-48,"timestamp":980000000},{"bssid":"00:11:22:33:44:56","ssid":"unknown","rssi":-50}]"#;
         let scan = parse_scan(raw, Some(1000.0)).unwrap();
-        let sweep = scan.trackable_current_sweep(1000, Some("gsm:505-01-1-1".into())).unwrap();
+        let sweep = scan
+            .trackable_current_sweep(1000, Some("gsm:505-01-1-1".into()))
+            .unwrap();
         assert_eq!(sweep.devices.len(), 1);
         assert_eq!(sweep.devices[0].mac, "3c:5a:b4:11:22:33");
         assert_eq!(sweep.cell.as_deref(), Some("gsm:505-01-1-1"));
