@@ -601,8 +601,8 @@ pub fn parse_track_log(bytes: &[u8]) -> (Vec<LoggedSweep>, usize) {
 
 /// Encode a bounded log and return exactly the sweeps retained on disk.
 /// The first reverse-ordered entry is the newly supplied sweep. Preserve
-/// append_track_log's historical cap/selection semantics, but expose whether
-/// the new row survived so record_sweep can reject a silent dropped write.
+/// `append_track_log`'s historical cap/selection semantics, but expose whether
+/// the new row survived so `record_sweep` can reject a silent dropped write.
 fn encode_retained_track_log(
     mut sweeps: Vec<LoggedSweep>,
     sweep: LoggedSweep,
@@ -956,7 +956,7 @@ mod tests {
         let oversized = LoggedSweep::new(
             2,
             Some("cell:new".into()),
-            [device(HOME, &"z".repeat(MAX_TRACK_LOG_BYTES as usize))],
+            [device(HOME, &"z".repeat(usize::try_from(MAX_TRACK_LOG_BYTES).unwrap()))],
         );
         assert!(matches!(
             record_sweep(&log, oversized),

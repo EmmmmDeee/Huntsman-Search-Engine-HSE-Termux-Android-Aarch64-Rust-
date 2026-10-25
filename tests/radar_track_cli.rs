@@ -284,17 +284,18 @@ fn cli_report_matches_stored_history_under_byte_capacity_pressure() {
     let log = dir.join("sweeps.jsonl");
     fs::write(&wifi, WIFI).unwrap();
     fs::write(&cells, CELLS).unwrap();
+    let bound = usize::try_from(huntsman_recon::radar::MAX_TRACK_LOG_BYTES).unwrap();
     let huge = serde_json::json!({
         "ts": now().saturating_sub(900),
         "cell": "lte:505-01-1-19",
         "devices": [{
             "mac": "3c:5a:b4:11:22:33",
-            "name": "x".repeat(huntsman_recon::radar::MAX_TRACK_LOG_BYTES as usize - 150)
+            "name": "x".repeat(bound - 150)
         }]
     });
     let mut original = serde_json::to_vec(&huge).unwrap();
     original.push(b'\n');
-    assert!(original.len() as u64 <= huntsman_recon::radar::MAX_TRACK_LOG_BYTES);
+    assert!(original.len() <= bound);
     // Independently prove this fixture forces the byte cap to discard the
     // prior sweep, regardless of JSON field ordering or current clock value.
     let scan = huntsman_recon::wifi_radar::parse_replay(WIFI).unwrap();
@@ -304,7 +305,7 @@ fn cli_report_matches_stored_history_under_byte_capacity_pressure() {
     let incoming = scan.logged_sweep(now(), serving);
     assert!(
         original.len() + serde_json::to_vec(&incoming).unwrap().len() + 1
-            > huntsman_recon::radar::MAX_TRACK_LOG_BYTES as usize
+            > bound
     );
     fs::write(&log, original).unwrap();
 
