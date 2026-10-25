@@ -314,7 +314,7 @@ pub fn from_wifi_scan(scan: &impl WifiEvidenceSource, baseline: Option<&Baseline
     );
     report.eligibility = scan.mitm_eligibility(report.evaluated_access_points);
     report
-
+}
 
 /// Historical captures can be assessed but cannot prove a live attack.
 #[must_use]
