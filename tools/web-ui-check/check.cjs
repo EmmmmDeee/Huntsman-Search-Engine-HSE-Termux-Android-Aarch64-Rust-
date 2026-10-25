@@ -329,6 +329,26 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
         (await page.textContent('#rtsummary')).includes('sweeps: 3') &&
         (await page.textContent('#rstatus')).includes('not proof of following') &&
         (await page.textContent('#rstatus')).includes('not verified physical positions'), { trackCalls, trackMethod, trackText });
+      check(`${scheme}: cross-cell tracking does not assert that a device followed someone`,
+        (await page.textContent('#rtresult')).includes('Cross-cell recurrence candidates (unconfirmed)') &&
+        !(await page.textContent('#rtresult')).includes('Devices that moved with you'),
+        await page.textContent('#rtresult'));
+      // Simulate a response disappearing after an operator-initiated POST.
+      // The client cannot know whether the server persisted the sweep.
+      await page.unroute('**/api/radar/track');
+      await page.route('**/api/radar/track', route => route.abort('failed'));
+      await page.click('#rtrack');
+      await page.waitForFunction(() => document.querySelector('#rstatus').textContent.includes('may or may not have been saved'), { timeout: 10000 }).catch(() => {});
+      const failedTrackStatus = await page.textContent('#rstatus');
+      const previousSummary = await page.textContent('#rtsummary');
+      check(`${scheme}: lost tracking response preserves confirmed rows and reports unknown storage outcome`,
+        trackCalls === 2 &&
+        await page.isVisible('#rerror') &&
+        failedTrackStatus.includes('may or may not have been saved') &&
+        !failedTrackStatus.includes('The sweep was not logged') &&
+        previousSummary.includes('PREVIOUS CONFIRMED REPORT ONLY') &&
+        (await page.textContent('#rtrows')).includes('3c:5a:b4:11:22:33') &&
+        await page.isEnabled('#rtrack'), { trackCalls, failedTrackStatus, previousSummary });
       page.off('request', countSensors);
       await page.unroute('**/api/radar/cells');
       await page.unroute('**/api/radar/track');
