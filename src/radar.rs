@@ -764,9 +764,10 @@ impl TrackWriteGuard {
                         let _ = std::fs::remove_file(&path);
                         TrackLogError::Unwritable(format!("{}: {error}", path.display()))
                     })?;
-                    if let Err(error) =
-                        std::io::Write::write_all(&mut file, std::process::id().to_string().as_bytes())
-                    {
+                    if let Err(error) = std::io::Write::write_all(
+                        &mut file,
+                        std::process::id().to_string().as_bytes(),
+                    ) {
                         let _ = std::fs::remove_file(&path);
                         return Err(TrackLogError::Unwritable(format!(
                             "{}: {error}",
@@ -1014,8 +1015,7 @@ mod tests {
         let (sweeps, rejected) = parse_track_log(&bytes);
         assert_eq!(rejected, 0);
         assert_eq!(sweeps.len(), 12);
-        let times: std::collections::HashSet<u64> =
-            sweeps.iter().map(|sweep| sweep.ts).collect();
+        let times: std::collections::HashSet<u64> = sweeps.iter().map(|sweep| sweep.ts).collect();
         assert_eq!(times.len(), 12);
         assert!(!directory.join("radar.jsonl.lock").exists());
         std::fs::remove_dir_all(directory).unwrap();
@@ -1023,10 +1023,8 @@ mod tests {
 
     #[test]
     fn existing_lock_refuses_writes_without_touching_original_history() {
-        let directory = std::env::temp_dir().join(format!(
-            "huntsman-track-locked-log-{}",
-            std::process::id()
-        ));
+        let directory =
+            std::env::temp_dir().join(format!("huntsman-track-locked-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
         let log = directory.join("radar.jsonl");
