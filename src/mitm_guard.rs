@@ -491,7 +491,7 @@ mod tests {
             Security::Wpa2
         );
         assert_eq!(Security::parse("[RSN-SAE-CCMP][ESS]"), Security::Wpa3);
-        assert_eq!(Security::parse("[RSN-PSK-CCMP][ESS]"), Security::Wpa);
+        assert_eq!(Security::parse("[RSN-PSK-CCMP][ESS]"), Security::Wpa2);
         assert_eq!(Security::parse("[ESS]"), Security::Open);
         assert_eq!(Security::parse("Unknown"), Security::Unknown);
     }
