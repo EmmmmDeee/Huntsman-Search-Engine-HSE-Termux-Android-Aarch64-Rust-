@@ -422,6 +422,10 @@ where
         detail,
         blocked: false,
     };
+    if timeout.is_zero() {
+        // An expired deadline must not launch a native call that cannot be cancelled.
+        return Err(failure(format!("{name}: no answer within 0s")));
+    }
     let permit = reserve_resolver_worker(active, capacity).ok_or_else(|| {
         failure(format!(
             "{name}: native resolver capacity exhausted ({capacity} workers in flight)"
@@ -968,6 +972,25 @@ pub fn retry_after_secs(value: &str, now_unix: u64) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expired_resolver_deadline_does_not_spawn_a_worker() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        let err = super::system_resolve_with(
+            "expired.invalid",
+            std::time::Duration::ZERO,
+            &ACTIVE,
+            1,
+            || -> std::io::Result<Vec<std::net::IpAddr>> {
+                panic!("expired deadline must not spawn a native resolver");
+            },
+        )
+        .expect_err("zero budget cannot produce an answer");
+        assert_eq!(err.kind, super::SourceOutcomeKind::DnsFailure);
+        assert!(err.detail.contains("no answer within 0s"));
+        assert_eq!(ACTIVE.load(Ordering::Acquire), 0);
+    }
+
     #[test]
     fn native_resolver_workers_stay_bounded_after_caller_timeouts() {
         use std::sync::atomic::{AtomicUsize, Ordering};
