@@ -165,11 +165,26 @@ pub(super) fn capture_cells() -> Result<cell_radar::CellScan, String> {
     cell_radar::parse_cells(&data).map_err(|e| e.to_string())
 }
 
+/// Translate the same typed tracking-storage failure into the Web UI contract.
+/// The CLI already distinguishes unavailable writes (exit 69) from bad or
+/// missing readable history; use HTTP 503 for that same unavailable class.
+fn track_log_lookup_error(error: &radar::TrackLogError) -> LookupError {
+    let status = match &error {
+        radar::TrackLogError::Unwritable(_) => 503,
+        radar::TrackLogError::Unreadable(_) | radar::TrackLogError::Missing(_) => 500,
+    };
+    LookupError {
+        status,
+        message: format!("radar track: {error}"),
+    }
+}
+
 /// One sweep of this device added to the track log at `log`, for the web UI's
 /// `POST /api/radar/track`: the cached Wi-Fi scan placed at the registered serving cell, as
 /// `radar track` records it with no replay. A missing sensor, or a cache that is empty or wholly
 /// stale, or lacks any provably current Wi-Fi observation is `503` and logs nothing.
-/// A log that cannot be kept is `500`. Android's registered cell is a coarse
+/// A log that cannot be written is `503`; invalid/unreadable stored history is `500`.
+/// Android's registered cell is a coarse
 /// association, never an independently verified tower location.
 pub(super) fn track_live(log: &Path) -> Result<radar::TrackReport, LookupError> {
     let wifi = capture_wifi().map_err(|message| LookupError {
@@ -192,10 +207,7 @@ pub(super) fn track_live(log: &Path) -> Result<radar::TrackReport, LookupError> 
         .ok()
         .and_then(|scan| scan.serving_cell())
         .filter(|cell| !cell.trim().is_empty());
-    radar::record_sweep(log, sweep).map_err(|error| LookupError {
-        status: 500,
-        message: format!("radar track: {error}"),
-    })
+    radar::record_sweep(log, sweep).map_err(|error| track_log_lookup_error(&error))
 }
 
 /// The options both radar sources take: `--json` for the report, and `--file PATH` to replay a
@@ -520,4 +532,33 @@ fn render_track(report: &radar::TrackReport) -> String {
         );
     }
     out
+}
+
+// Preserve CLI and Web UI error semantics for each public storage error
+// variant even when the internal tracking implementation changes.
+#[cfg(test)]
+mod track_storage_contract_tests {
+    use super::{radar, track_log_lookup_error};
+
+    #[test]
+    fn unavailable_track_write_maps_to_http_503_without_losing_reason() {
+        let error = track_log_lookup_error(&radar::TrackLogError::Unwritable(
+            "tracking log is busy".into(),
+        ));
+        assert_eq!(error.status, 503);
+        assert!(error.message.contains("tracking log is busy"));
+    }
+
+    #[test]
+    fn unreadable_or_missing_history_remains_http_500() {
+        let unreadable = track_log_lookup_error(&radar::TrackLogError::Unreadable(
+            "invalid stored log".into(),
+        ));
+        let missing = track_log_lookup_error(&radar::TrackLogError::Missing(
+            "cannot inspect log path".into(),
+        ));
+        assert_eq!(unreadable.status, 500);
+        assert_eq!(missing.status, 500);
+        assert!(unreadable.message.contains("invalid stored log"));
+    }
 }
