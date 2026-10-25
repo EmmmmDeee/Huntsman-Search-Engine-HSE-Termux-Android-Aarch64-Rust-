@@ -27,10 +27,7 @@ fn offline_cli_and_embedded_radar_report_use_the_same_evidence_contract() {
     );
     assert_eq!(replay_embedded.status, "historical_unconfirmed_indicators");
 
-    let file = std::env::temp_dir().join(format!(
-        "hse-mitm-boundary-{}.json",
-        std::process::id()
-    ));
+    let file = std::env::temp_dir().join(format!("hse-mitm-boundary-{}.json", std::process::id()));
     fs::write(&file, raw).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"))
         .args(["mitm", "audit", "--file"])
