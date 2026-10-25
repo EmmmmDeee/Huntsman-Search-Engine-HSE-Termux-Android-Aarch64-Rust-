@@ -855,7 +855,10 @@ fn private_parent(log: &Path) -> Result<(), String> {
     };
     match std::fs::symlink_metadata(parent) {
         Ok(meta) if meta.file_type().is_symlink() => {
-            return Err(format!("{}: symbolic-link parent refused", parent.display()));
+            return Err(format!(
+                "{}: symbolic-link parent refused",
+                parent.display()
+            ));
         }
         Ok(meta) if meta.is_dir() => return Ok(()),
         Ok(_) => return Err(format!("{}: parent is not a directory", parent.display())),
@@ -863,8 +866,8 @@ fn private_parent(log: &Path) -> Result<(), String> {
         Err(error) => return Err(format!("{}: {error}", parent.display())),
     }
     std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
-    // Before chmod, check the new path again: never chmod through a link
-    // planted between directory creation and the permission operation.
+    // Recheck before chmod to reject visible replacements; a swap between
+    // this check and chmod remains a filesystem race without descriptor APIs.
     let meta = std::fs::symlink_metadata(parent)
         .map_err(|error| format!("{}: {error}", parent.display()))?;
     if meta.file_type().is_symlink() || !meta.is_dir() {
@@ -1001,8 +1004,10 @@ mod tests {
     fn symlinked_parent_is_refused_before_any_lock_or_data_write() {
         use std::os::unix::fs::symlink;
 
-        let directory = std::env::temp_dir()
-            .join(format!("huntsman-track-linked-parent-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-track-linked-parent-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&directory);
         let actual = directory.join("actual");
         std::fs::create_dir_all(&actual).unwrap();
@@ -1022,8 +1027,8 @@ mod tests {
 
     #[test]
     fn existing_non_directory_parent_is_refused_without_creating_lock() {
-        let directory = std::env::temp_dir()
-            .join(format!("huntsman-track-file-parent-{}", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("huntsman-track-file-parent-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
         let parent = directory.join("not-a-directory");
