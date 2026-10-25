@@ -865,19 +865,25 @@ fn private_parent(log: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("{}: {error}", parent.display())),
     }
-    std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
-    // Recheck before chmod to reject visible replacements; a swap between
-    // this check and chmod remains a filesystem race without descriptor APIs.
+    // Set private permissions when directories are CREATED. A later
+    // path-based chmod could instead modify an attacker-replaced symlink
+    // target; DirBuilder also keeps pre-existing parent modes unchanged.
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(parent)
+        .map_err(|error| format!("{}: {error}", parent.display()))?;
+    // Detect a visible replacement before a lock is created. This is not
+    // atomic protection against a malicious process racing path lookups.
     let meta = std::fs::symlink_metadata(parent)
         .map_err(|error| format!("{}: {error}", parent.display()))?;
     if meta.file_type().is_symlink() || !meta.is_dir() {
         return Err(format!("{}: not a regular directory", parent.display()));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-            .map_err(|error| format!("{}: {error}", parent.display()))?;
     }
     Ok(())
 }
@@ -997,6 +1003,61 @@ mod tests {
             })
             .collect();
         assert!(track(&quick, 0).followers.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_nested_tracking_directories_are_private_without_chmod_race() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir()
+            .join(format!("huntsman-track-private-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let nested = directory.join("level-one").join("level-two");
+        let log = nested.join("sweeps.jsonl");
+        assert_eq!(
+            record_sweep(
+                &log,
+                LoggedSweep::new(1, Some("cell:coarse".into()), [device(TAIL, "test")])
+            )
+            .unwrap()
+            .sweeps,
+            1
+        );
+        for parent in [directory.join("level-one"), nested] {
+            let mode = std::fs::metadata(parent).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "new tracking directory was not private");
+        }
+        assert!(!log.with_extension("jsonl.lock").exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_tracking_directory_permissions_remain_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir()
+            .join(format!("huntsman-track-existing-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let parent = directory.join("existing");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let log = parent.join("sweeps.jsonl");
+        assert_eq!(
+            record_sweep(
+                &log,
+                LoggedSweep::new(1, Some("cell:coarse".into()), [device(TAIL, "test")])
+            )
+            .unwrap()
+            .sweeps,
+            1
+        );
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o750);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[cfg(unix)]
