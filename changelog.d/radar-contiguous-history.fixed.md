@@ -1,0 +1,1 @@
+- Keep bounded radar JSONL logs as a contiguous newest-first suffix instead of skipping an oversized recent row and retaining older observations beyond the gap. This preserves provenance and recurrence chronology while retaining the same schema and public append API.
