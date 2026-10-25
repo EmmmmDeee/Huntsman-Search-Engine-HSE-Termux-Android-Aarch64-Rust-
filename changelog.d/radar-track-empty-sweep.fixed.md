@@ -1,0 +1,1 @@
+- Prevent empty live radar track sweeps when Android supplies only randomized Wi-Fi identities. Apply identical current-age and stable-identity acceptance in CLI and loopback Web UI, preserving existing replay formats and stored tracking logs.

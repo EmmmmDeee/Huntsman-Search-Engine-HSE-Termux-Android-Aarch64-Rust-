@@ -232,3 +232,101 @@ printf '[{"bssid":"00:11:22:33:44:55","ssid":"unknown-age","rssi":-51}]'
     assert!(!log.exists(), "unknown-age records created a tracking log");
     let _ = fs::remove_dir_all(dir);
 }
+
+#[cfg(unix)]
+#[test]
+fn live_randomized_only_cache_must_not_append_a_sweep() {
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch("randomized-only-live");
+    let log = dir.join("sweeps.jsonl");
+    let shim = dir.join("termux-wifi-scaninfo");
+    fs::write(
+        &shim,
+        br#"#!/bin/sh
+awk '{printf "[{\"bssid\":\"02:11:22:33:44:55\",\"ssid\":\"random\",\"rssi\":-51,\"timestamp\":%.0f}]\n", $1*1000000}' /proc/uptime
+"#,
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&shim).unwrap().permissions();
+    perms.set_mode(0o700);
+    fs::set_permissions(&shim, perms).unwrap();
+    let mut search_path = OsString::from(dir.as_os_str());
+    search_path.push(":");
+    search_path.push(std::env::var_os("PATH").unwrap_or_default());
+
+    let output = bin()
+        .args(["radar", "track", "--json", "--log"])
+        .arg(&log)
+        .env("PATH", search_path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(i32::from(EX_UNAVAILABLE)));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("trackable access points"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !log.exists(),
+        "randomized-only capture created an empty sweep"
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// The CLI reports only persisted, capacity-bounded sweeps.
+#[test]
+fn cli_report_matches_stored_history_under_byte_capacity_pressure() {
+    let dir = scratch("capacity-consistency");
+    let wifi = dir.join("wifi.json");
+    let cells = dir.join("cells.json");
+    let log = dir.join("sweeps.jsonl");
+    fs::write(&wifi, WIFI).unwrap();
+    fs::write(&cells, CELLS).unwrap();
+    let bound = usize::try_from(huntsman_recon::radar::MAX_TRACK_LOG_BYTES).unwrap();
+    let huge = serde_json::json!({
+        "ts": now().saturating_sub(900),
+        "cell": "lte:505-01-1-19",
+        "devices": [{
+            "mac": "3c:5a:b4:11:22:33",
+            "name": "x".repeat(bound - 150)
+        }]
+    });
+    let mut original = serde_json::to_vec(&huge).unwrap();
+    original.push(b'\n');
+    assert!(original.len() <= bound);
+    // Independently prove this fixture forces the byte cap to discard the
+    // prior sweep, regardless of JSON field ordering or current clock value.
+    let scan = huntsman_recon::wifi_radar::parse_replay(WIFI).unwrap();
+    let serving = huntsman_recon::cell_radar::parse_replay(CELLS)
+        .unwrap()
+        .serving_cell();
+    let incoming = scan.logged_sweep(now(), serving);
+    assert!(original.len() + serde_json::to_vec(&incoming).unwrap().len() + 1 > bound);
+    fs::write(&log, original).unwrap();
+
+    let result = bin()
+        .args(["radar", "track", "--json", "--wifi-file"])
+        .arg(&wifi)
+        .arg("--cells-file")
+        .arg(&cells)
+        .arg("--log")
+        .arg(&log)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let bytes = fs::read(&log).unwrap();
+    let (stored, skipped) = huntsman_recon::radar::parse_track_log(&bytes);
+    assert_eq!(skipped, 0);
+    assert_eq!(stored.len(), 1);
+    assert_eq!(report["sweeps"], 1);
+    assert_eq!(report["recurring"].as_array().unwrap().len(), 0);
+    assert_eq!(report["followers"].as_array().unwrap().len(), 0);
+    fs::remove_dir_all(dir).unwrap();
+}
