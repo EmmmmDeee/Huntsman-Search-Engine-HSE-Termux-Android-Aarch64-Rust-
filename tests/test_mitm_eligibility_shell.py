@@ -63,6 +63,39 @@ class TestRefactor(unittest.TestCase):
         self.assertEqual(d['eligibility']['predicted_unique_eligible'], 1)
         self.assertTrue(d['eligibility']['agrees'])
 
+
+    def test_native_exclusion_counter_parity(self):
+        obj = capture([ap()], evaluated=1)
+        obj['mitm_assessment']['eligibility'] = {
+            'observed_records': 1, 'excluded_stale': 0,
+            'excluded_unknown_freshness': 0, 'excluded_missing_ssid': 0,
+            'excluded_oversized_ssid': 0, 'excluded_hidden_ssid': 0,
+            'excluded_invalid_bssid': 0, 'duplicate_rows': 0,
+            'eligible_access_points': 1,
+        }
+        result, report = self.run_case(obj)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(report['eligibility']['native_count_verification'], 'agree')
+
+    def test_native_exclusion_mismatch_is_not_passed(self):
+        obj = capture([ap()], evaluated=1)
+        obj['mitm_assessment']['eligibility'] = {
+            'observed_records': 1, 'excluded_stale': 1,
+            'excluded_unknown_freshness': 0, 'excluded_missing_ssid': 0,
+            'excluded_oversized_ssid': 0, 'excluded_hidden_ssid': 0,
+            'excluded_invalid_bssid': 0, 'duplicate_rows': 0,
+            'eligible_access_points': 1,
+        }
+        result, report = self.run_case(obj)
+        self.assertEqual(result.returncode, 24, result.stderr)
+        self.assertFalse(report['eligibility']['agrees'])
+        self.assertEqual(report['conclusion'], 'COUNT_MISMATCH')
+
+    def test_legacy_native_absence_remains_supported(self):
+        result, report = self.run_case(capture(evaluated=1))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(report['eligibility']['native_count_verification'], 'not_available_older_binary')
+
     def test_stale_two(self):
         r, d = self.run_case(capture([ap(freshness='stale', age=600), ap(freshness='stale', age=800)], status='stale_only'), 69)
         self.assertEqual(r.returncode, 0, r.stderr)

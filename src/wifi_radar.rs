@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::error::Error;
+use crate::mitm_guard::SsidExclusion;
 use crate::radar::{LoggedDevice, LoggedSweep};
 use crate::rf::{RadioKind, RfSighting, RfSource, band};
 use crate::textnorm::escape_controls;
@@ -106,18 +107,14 @@ impl crate::mitm_guard::WifiEvidenceSource for WifiScan {
                 continue;
             }
             let ssid = row.sighting.name.as_deref().unwrap_or("");
-            if ssid.is_empty() {
-                counts.excluded_missing_ssid += 1;
-            } else if ssid.len() > 32 {
-                counts.excluded_oversized_ssid += 1;
-            } else if ssid.eq_ignore_ascii_case("(hidden)")
-                || ssid.eq_ignore_ascii_case("(no SSID)")
-            {
-                counts.excluded_hidden_ssid += 1;
-            } else if !valid_wifi_bssid(&row.sighting.network_id) {
-                counts.excluded_invalid_bssid += 1;
-            } else {
-                candidates += 1;
+            match crate::mitm_guard::ssid_exclusion(ssid) {
+                Some(SsidExclusion::Missing) => counts.excluded_missing_ssid += 1,
+                Some(SsidExclusion::Oversized) => counts.excluded_oversized_ssid += 1,
+                Some(SsidExclusion::Hidden) => counts.excluded_hidden_ssid += 1,
+                None if !valid_wifi_bssid(&row.sighting.network_id) => {
+                    counts.excluded_invalid_bssid += 1;
+                }
+                None => candidates += 1,
             }
         }
         counts.duplicate_rows = candidates.saturating_sub(unique);
