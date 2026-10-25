@@ -390,8 +390,7 @@ fn track_serving_cell(file: Option<&str>) -> Result<Option<String>, ExitCode> {
         Some(path) => {
             let raw = read_bounded(Path::new(path), cell_radar::MAX_CELL_SCAN_BYTES)
                 .map_err(|error| fail(EX_NOINPUT, &error.to_string()))?;
-            cell_radar::parse_replay(&raw)
-                .map_err(|error| fail(EX_DATAERR, &error.to_string()))?
+            cell_radar::parse_replay(&raw).map_err(|error| fail(EX_DATAERR, &error.to_string()))?
         }
         None => {
             match collect_termux_cells()
