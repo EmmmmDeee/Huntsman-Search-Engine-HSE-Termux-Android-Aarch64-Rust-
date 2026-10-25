@@ -1,0 +1,1 @@
+- Preserve dual-SIM/multi-radio cellular ambiguity end-to-end: track sweeps remain unplaced when Android reports more than one distinct registered cell, while duplicate identities and single-cell bucket formats remain compatible across parser, CLI and Web UI.

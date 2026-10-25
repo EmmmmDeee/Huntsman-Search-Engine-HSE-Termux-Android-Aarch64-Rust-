@@ -330,3 +330,43 @@ fn cli_report_matches_stored_history_under_byte_capacity_pressure() {
     assert_eq!(report["followers"].as_array().unwrap().len(), 0);
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn ambiguous_registered_cell_replay_is_logged_without_a_place() {
+    let dir = scratch("ambiguous-cells");
+    let wifi = dir.join("wifi.json");
+    let cells = dir.join("cells.json");
+    let log = dir.join("sweeps.jsonl");
+    fs::write(&wifi, WIFI).unwrap();
+    fs::write(
+        &cells,
+        br#"[{"type":"gsm","mcc":505,"mnc":1,"lac":17,"cid":91,"registered":true},{"type":"lte","mcc":505,"mnc":1,"tac":19,"ci":1234,"registered":true}]"#,
+    )
+    .unwrap();
+    let output = bin()
+        .args(["radar", "track", "--json", "--wifi-file"])
+        .arg(&wifi)
+        .arg("--cells-file")
+        .arg(&cells)
+        .arg("--log")
+        .arg(&log)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no unique registered serving cell"));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["sweeps"], 1);
+    assert_eq!(report["located_sweeps"], 0);
+    assert_eq!(report["distinct_cells"], 0);
+    let saved = fs::read(&log).unwrap();
+    let (sweeps, malformed) = huntsman_recon::radar::parse_track_log(&saved);
+    assert_eq!(malformed, 0);
+    assert_eq!(sweeps.len(), 1);
+    assert!(sweeps[0].cell.is_none());
+    assert_eq!(sweeps[0].devices.len(), 2);
+    fs::remove_dir_all(dir).unwrap();
+}
