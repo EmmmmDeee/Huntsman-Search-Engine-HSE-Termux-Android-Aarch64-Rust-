@@ -1,0 +1,23 @@
+name: mitm-eligibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-and-eligibility:
+    name: Offline MITM eligibility fixtures
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check jq and Bash syntax
+        run: |
+          set -euo pipefail
+          command -v jq
+          bash -n scripts/termux/mitm-eligibility.sh
+      - name: Validate single-capture filtering and privacy
+        run: python3 -m unittest discover -s tests -p 'test_mitm_eligibility_shell.py' -v
