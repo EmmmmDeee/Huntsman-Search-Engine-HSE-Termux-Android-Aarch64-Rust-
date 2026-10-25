@@ -1,6 +1,6 @@
 # Target architecture (Stage 1 inventory)
 
-Status: **PLANNED** design plus a **CURRENT** inventory taken at `main` commit `2bc6d0f38a00b6b7b331823f89f9188237a81e47` (#1109). The authoritative, test-enforced module map, capability matrix (CURRENT/PLANNED) and layer rules remain in the root [`ARCHITECTURE.md`](../ARCHITECTURE.md), checked by `tests/architecture_doc.rs`. This document changes no code, moves no module and supersedes nothing there; if the two disagree, the root document and its test win.
+Status: **PLANNED** design plus a **CURRENT** inventory taken at `main` commit `2bc6d0f38` (#1109). The authoritative, test-enforced module map, capability matrix (CURRENT/PLANNED) and layer rules remain in the root [`ARCHITECTURE.md`](../ARCHITECTURE.md), checked by `tests/architecture_doc.rs`. This document changes no code, moves no module and supersedes nothing there; if the two disagree, the root document and its test win.
 
 ## Goal
 
