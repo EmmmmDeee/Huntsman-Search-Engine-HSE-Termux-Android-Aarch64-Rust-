@@ -370,3 +370,58 @@ fn ambiguous_registered_cell_replay_is_logged_without_a_place() {
     assert_eq!(sweeps[0].devices.len(), 2);
     fs::remove_dir_all(dir).unwrap();
 }
+
+/// Legacy JSONL group/sentinel identifiers remain readable and preserved as
+/// evidence, but may never appear as recurring devices or follower candidates.
+#[test]
+fn historical_group_mac_rows_do_not_create_cli_recurrence_or_followers() {
+    let dir = scratch("group-mac-history");
+    let wifi = dir.join("wifi.json");
+    let cells = dir.join("cells.json");
+    let log = dir.join("sweeps.jsonl");
+    fs::write(&wifi, WIFI).unwrap();
+    fs::write(&cells, CELLS).unwrap();
+    let start = now().saturating_sub(1_800);
+    let mut old = String::new();
+    for (index, cell) in ["lte:505-01-1-1", "lte:505-01-1-2", "lte:505-01-1-3"]
+        .iter()
+        .enumerate()
+    {
+        let row = serde_json::json!({
+            "ts": start + u64::try_from(index).unwrap() * 600,
+            "cell": cell,
+            "devices": [
+                {"mac": "01:00:5e:00:00:fb"},
+                {"mac": "00:00:00:00:00:00"}
+            ]
+        });
+        old.push_str(&row.to_string());
+        old.push('\n');
+    }
+    fs::write(&log, old).unwrap();
+
+    let out = bin()
+        .args(["radar", "track", "--json", "--wifi-file"])
+        .arg(&wifi)
+        .arg("--cells-file")
+        .arg(&cells)
+        .arg("--log")
+        .arg(&log)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["sweeps"], 4);
+    assert_eq!(report["recurring"].as_array().unwrap().len(), 0);
+    assert_eq!(report["followers"].as_array().unwrap().len(), 0);
+    let stored = fs::read_to_string(&log).unwrap();
+    assert_eq!(stored.lines().count(), 4);
+    let first: serde_json::Value = serde_json::from_str(stored.lines().next().unwrap()).unwrap();
+    assert_eq!(first["devices"].as_array().unwrap().len(), 2);
+    assert_eq!(first["devices"][0]["mac"], "01:00:5e:00:00:fb");
+    let _ = fs::remove_dir_all(dir);
+}

@@ -1,0 +1,1 @@
+- Align radar/Bluetooth recurring-device eligibility with Wi-Fi's individual-address rule: exclude multicast/broadcast and all-zero identifiers without deleting existing historical JSONL evidence; add Rust and end-to-end CLI regressions.

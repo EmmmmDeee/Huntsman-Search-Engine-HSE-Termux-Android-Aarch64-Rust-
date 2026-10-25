@@ -10,16 +10,22 @@ use crate::fsio::read_bounded;
 const DEPART_AFTER_MISSED_READS: u32 = 2;
 const DEFAULT_TRACK_CAPACITY: usize = 4_096;
 
-/// Whether a MAC can be held to one physical device over time: a
-/// globally-registered address (not randomized or locally-administered) on a
-/// device the operator has not bonded (so, not the operator's own kit). A
-/// randomized address rotates and must not be tracked across sweeps or
-/// locations, both because it cannot be and because treating it as one device
-/// would manufacture false links. This is the single home for that rule;
-/// `recurring_devices`, `follower_candidates`, and the live radar all use it.
+/// Whether a MAC identifies an individual, globally administered device
+/// that the operator has not bonded. IEEE 802 group (I/G) addresses and
+/// Android's all-zero sentinel are not individual devices, even if the local
+/// administration (U/L) bit is clear. This deliberately aligns historical
+/// radar replays and Bluetooth recurrence with live Wi-Fi BSSID validation;
+/// the original JSONL records remain readable and are not rewritten here.
 #[must_use]
 fn stable_identity(mac: &str, bonded: bool) -> bool {
-    !bonded && oui::is_locally_administered(mac) == Some(false)
+    !bonded
+        && oui::is_locally_administered(mac) == Some(false)
+        && oui::is_multicast(mac) == Some(false)
+        // Addresses have been validated by oui's bit parsers above.
+        // Reject the zero-address sentinel in any already-accepted spelling.
+        && mac
+            .bytes()
+            .any(|byte| byte.is_ascii_hexdigit() && byte != b'0')
 }
 
 pub struct SweepObservation {
@@ -906,6 +912,51 @@ mod tests {
     const TAIL: &str = "00:11:22:33:44:55";
     const HOME: &str = "00:aa:bb:cc:dd:ee";
     const RANDOM: &str = "da:a1:19:00:00:01";
+
+    #[test]
+    fn individual_address_contract_rejects_groups_and_zero_sentinels() {
+        use crate::rf::valid_wifi_bssid;
+
+        for mac in [
+            "01:00:5e:00:00:fb", // globally administered multicast (mDNS)
+            "01:80:c2:00:00:0e", // globally administered group address
+            "ff:ff:ff:ff:ff:ff", // broadcast
+            "00:00:00:00:00:00", // Android absence sentinel
+        ] {
+            assert!(!stable_identity(mac, false), "{mac}");
+            assert!(!valid_wifi_bssid(mac), "{mac}");
+        }
+        assert!(!stable_identity("02:11:22:33:44:55", false));
+        assert!(stable_identity("3c:5a:b4:11:22:33", false));
+        assert!(!stable_identity("3c:5a:b4:11:22:33", true));
+    }
+
+    #[test]
+    fn historical_group_rows_remain_readable_but_cannot_trigger_recurrence() {
+        let body = br#"{"ts":0,"cell":"lte:505-01-1-1","devices":[{"mac":"01:00:5e:00:00:fb"},{"mac":"00:00:00:00:00:00"}]}
+{"ts":300,"cell":"lte:505-01-1-2","devices":[{"mac":"01:00:5e:00:00:fb"},{"mac":"00:00:00:00:00:00"}]}
+{"ts":900,"cell":"lte:505-01-1-3","devices":[{"mac":"01:00:5e:00:00:fb"},{"mac":"00:00:00:00:00:00"}]}
+"#;
+        let (history, skipped) = parse_track_log(body);
+        assert_eq!((history.len(), skipped), (3, 0));
+        // Backward-compatible decoding retains old records for provenance.
+        assert_eq!(history[0].devices.len(), 2);
+        let report = track(&history, skipped);
+        assert_eq!(report.sweeps, 3);
+        assert!(report.recurring.is_empty());
+        assert!(report.followers.is_empty());
+        // Newly collected device lists apply the same individual rule.
+        let new = LoggedSweep::new(
+            1_000,
+            None,
+            [
+                device("01:00:5e:00:00:fb", "multicast"),
+                device("00:00:00:00:00:00", "zero"),
+                device(TAIL, "individual"),
+            ],
+        );
+        assert_eq!(new.devices, vec![device(TAIL, "individual")]);
+    }
 
     #[test]
     fn a_logged_sweep_keeps_stable_addresses_once_and_drops_randomized_ones() {
