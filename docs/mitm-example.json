@@ -1,0 +1,16 @@
+[
+  {
+    "bssid": "02:11:22:33:44:55",
+    "ssid": "SyntheticLab",
+    "rssi": -48,
+    "capabilities": "[WPA2-PSK-CCMP][ESS]",
+    "frequency_mhz": 2412
+  },
+  {
+    "bssid": "02:22:33:44:55:66",
+    "ssid": "SyntheticLab",
+    "rssi": -54,
+    "capabilities": "[RSN-SAE-CCMP][ESS]",
+    "frequency_mhz": 5180
+  }
+]
