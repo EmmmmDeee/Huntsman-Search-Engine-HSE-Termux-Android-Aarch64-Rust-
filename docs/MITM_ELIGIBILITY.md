@@ -19,6 +19,12 @@ the Wi-Fi scan schedule; the diagnostic reads its OS-cached scan observations
 and **does not actively scan, disconnect, enroll trusted baselines, or modify
 network settings**.
 
+Native live `mitm audit --json` reports now include an optional `eligibility` object:
+counts of observed records, exclusions by freshness and SSID/BSSID identity,
+duplicate rows, and eligible access points. Native text output also prints
+these counts. The fields contain no network identifiers and are omitted from
+historical imports; they do not assert that an attack occurred.
+
 The tool acquires **one** sensor snapshot through `huntsman radar wifi --json`
 and uses the same selection order as the Rust MITM assessment: current
 (`os_cached`) records, visible 1..32-byte SSIDs, valid individual BSSIDs, then
