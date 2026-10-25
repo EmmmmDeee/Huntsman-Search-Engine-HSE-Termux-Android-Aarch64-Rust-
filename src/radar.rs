@@ -735,6 +735,78 @@ impl std::fmt::Display for TrackLogError {
     }
 }
 
+/// One cooperative cross-process lock for the complete read–modify–write cycle.
+/// A private adjacent file is created exclusively, so CLI and loopback Web UI
+/// writers cannot silently overwrite each other's sweeps. A crash can strand
+/// this file; fail closed rather than deleting a lock that might still be held.
+struct TrackWriteGuard {
+    path: std::path::PathBuf,
+    inode: std::fs::Metadata,
+}
+
+impl TrackWriteGuard {
+    fn acquire(log: &Path) -> Result<Self, TrackLogError> {
+        let mut name = log.as_os_str().to_os_string();
+        name.push(".lock");
+        let path = std::path::PathBuf::from(name);
+        let began = std::time::Instant::now();
+        loop {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
+                Ok(mut file) => {
+                    let inode = file.metadata().map_err(|error| {
+                        let _ = std::fs::remove_file(&path);
+                        TrackLogError::Unwritable(format!("{}: {error}", path.display()))
+                    })?;
+                    if let Err(error) = std::io::Write::write_all(
+                        &mut file,
+                        std::process::id().to_string().as_bytes(),
+                    ) {
+                        let _ = std::fs::remove_file(&path);
+                        return Err(TrackLogError::Unwritable(format!(
+                            "{}: {error}",
+                            path.display()
+                        )));
+                    }
+                    return Ok(Self { path, inode });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if began.elapsed() >= std::time::Duration::from_secs(1) {
+                        return Err(TrackLogError::Unwritable(format!(
+                            "tracking log is busy or has a stale lock at {}; no sweep was written; remove the lock only after verifying no Huntsman writer is running",
+                            path.display()
+                        )));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => {
+                    return Err(TrackLogError::Unwritable(format!(
+                        "{}: {error}",
+                        path.display()
+                    )));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for TrackWriteGuard {
+    fn drop(&mut self) {
+        // An externally replaced lock must not be removed by its old holder.
+        if std::fs::symlink_metadata(&self.path).is_ok_and(|current| {
+            current.is_file() && crate::fsio::same_inode(&self.inode, &current)
+        }) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Add `sweep` to the track log at `log` and report what the log then shows. The log is written
 /// private to the user, in a directory created private when missing, keeps the newest
 /// [`MAX_TRACK_SWEEPS`] sweeps within [`MAX_TRACK_LOG_BYTES`], and a line of it that does not
@@ -744,6 +816,10 @@ impl std::fmt::Display for TrackLogError {
 /// # Errors
 /// [`TrackLogError`] when the log cannot be read or written.
 pub fn record_sweep(log: &Path, sweep: LoggedSweep) -> Result<TrackReport, TrackLogError> {
+    // Keep the directory creation and the lock within the same entry point so
+    // all native CLI and browser handlers follow the same transaction boundary.
+    private_parent(log).map_err(TrackLogError::Unwritable)?;
+    let _guard = TrackWriteGuard::acquire(log)?;
     let existing = match std::fs::symlink_metadata(log) {
         Ok(_) => read_bounded(log, MAX_TRACK_LOG_BYTES)
             .map_err(|error| TrackLogError::Unreadable(error.to_string()))?,
@@ -762,26 +838,41 @@ pub fn record_sweep(log: &Path, sweep: LoggedSweep) -> Result<TrackReport, Track
             "new radar sweep cannot fit within the {MAX_TRACK_LOG_BYTES}-byte tracking log; existing data was preserved"
         )));
     }
-    private_parent(log)
-        .and_then(|()| {
-            crate::fsio::write_atomic_private(log, &bytes, MAX_TRACK_LOG_BYTES)
-                .map_err(|error| error.to_string())
-        })
-        .map_err(TrackLogError::Unwritable)?;
+    crate::fsio::write_atomic_private(log, &bytes, MAX_TRACK_LOG_BYTES)
+        .map_err(|error| TrackLogError::Unwritable(error.to_string()))?;
     // Both CLI and Web UI must describe what is actually retained, not
     // pre-truncation in-memory history. Avoid cloning the entire sweep list.
     Ok(track(&retained, skipped))
 }
 
-/// Create the log's directory when it is missing, private to the user.
+/// Validate the final parent path before creating the lock file. The
+/// atomic writer rejects a symlinked parent too, but the lock exists earlier:
+/// do not create even a temporary lock through a parent-directory symlink.
+/// A pre-existing directory retains its existing permissions.
 fn private_parent(log: &Path) -> Result<(), String> {
     let Some(parent) = log.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
         return Ok(());
     };
-    if parent.is_dir() {
-        return Ok(());
+    match std::fs::symlink_metadata(parent) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(format!(
+                "{}: symbolic-link parent refused",
+                parent.display()
+            ));
+        }
+        Ok(meta) if meta.is_dir() => return Ok(()),
+        Ok(_) => return Err(format!("{}: parent is not a directory", parent.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("{}: {error}", parent.display())),
     }
     std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    // Recheck before chmod to reject visible replacements; a swap between
+    // this check and chmod remains a filesystem race without descriptor APIs.
+    let meta = std::fs::symlink_metadata(parent)
+        .map_err(|error| format!("{}: {error}", parent.display()))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(format!("{}: not a regular directory", parent.display()));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -906,6 +997,118 @@ mod tests {
             })
             .collect();
         assert!(track(&quick, 0).followers.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_parent_is_refused_before_any_lock_or_data_write() {
+        use std::os::unix::fs::symlink;
+
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-track-linked-parent-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let actual = directory.join("actual");
+        std::fs::create_dir_all(&actual).unwrap();
+        let alias = directory.join("alias");
+        symlink(&actual, &alias).unwrap();
+
+        let log = alias.join("radar.jsonl");
+        let result = record_sweep(
+            &log,
+            LoggedSweep::new(7, Some("cell:coarse".into()), [device(TAIL, "sample")]),
+        );
+        assert!(matches!(result, Err(TrackLogError::Unwritable(_))));
+        assert!(!actual.join("radar.jsonl.lock").exists());
+        assert!(!actual.join("radar.jsonl").exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn existing_non_directory_parent_is_refused_without_creating_lock() {
+        let directory =
+            std::env::temp_dir().join(format!("huntsman-track-file-parent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let parent = directory.join("not-a-directory");
+        std::fs::write(&parent, b"protected").unwrap();
+
+        let log = parent.join("radar.jsonl");
+        let result = record_sweep(
+            &log,
+            LoggedSweep::new(8, Some("cell:coarse".into()), [device(TAIL, "sample")]),
+        );
+        assert!(matches!(result, Err(TrackLogError::Unwritable(_))));
+        assert_eq!(std::fs::read(&parent).unwrap(), b"protected");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn concurrent_writers_preserve_every_sweep_and_report_latest_storage() {
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-track-concurrent-writes-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let log = directory.join("radar.jsonl");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(12));
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..12u64)
+                .map(|ts| {
+                    let barrier = std::sync::Arc::clone(&barrier);
+                    let log = log.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        record_sweep(
+                            &log,
+                            LoggedSweep::new(
+                                ts,
+                                Some("lte:505-01-1-10".into()),
+                                [device(TAIL, "test")],
+                            ),
+                        )
+                    })
+                })
+                .collect();
+            for handle in handles {
+                assert!(handle.join().unwrap().is_ok());
+            }
+        });
+        let bytes = std::fs::read(&log).unwrap();
+        let (sweeps, rejected) = parse_track_log(&bytes);
+        assert_eq!(rejected, 0);
+        assert_eq!(sweeps.len(), 12);
+        let times: std::collections::HashSet<u64> = sweeps.iter().map(|sweep| sweep.ts).collect();
+        assert_eq!(times.len(), 12);
+        assert!(!directory.join("radar.jsonl.lock").exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn existing_lock_refuses_writes_without_touching_original_history() {
+        let directory =
+            std::env::temp_dir().join(format!("huntsman-track-locked-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let log = directory.join("radar.jsonl");
+        let old = append_track_log(
+            Vec::new(),
+            LoggedSweep::new(1, Some("cell:old".into()), [device(HOME, "existing")]),
+        );
+        std::fs::write(&log, &old).unwrap();
+        let lock = directory.join("radar.jsonl.lock");
+        std::fs::write(&lock, b"occupied").unwrap();
+        assert!(matches!(
+            record_sweep(
+                &log,
+                LoggedSweep::new(2, Some("cell:new".into()), [device(TAIL, "new")])
+            ),
+            Err(TrackLogError::Unwritable(_))
+        ));
+        assert_eq!(std::fs::read(&log).unwrap(), old);
+        assert_eq!(std::fs::read(&lock).unwrap(), b"occupied");
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

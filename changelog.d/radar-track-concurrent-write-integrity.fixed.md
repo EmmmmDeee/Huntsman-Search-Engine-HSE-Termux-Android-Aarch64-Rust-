@@ -1,0 +1,1 @@
+- Serialize concurrent CLI and loopback Web UI radar tracking read–modify–write cycles across processes via a bounded private adjacent lock file, preserving JSONL data and existing public interfaces; fail closed on busy/stale locks, with unit regressions for racing writers and refused updates.

@@ -1,0 +1,1 @@
+- Refuse symlink and non-directory radar track parents before creating cross-process lock sidecars; validate newly created parents before chmod, preserving existing directory permissions and CLI/Web UI JSONL contracts.
