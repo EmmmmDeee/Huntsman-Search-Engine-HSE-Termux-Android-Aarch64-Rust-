@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::wifi_radar::{WifiScan, valid_wifi_bssid};
+use crate::rf::valid_wifi_bssid;
 
 pub const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_BASELINE_BYTES: u64 = 128 * 1024;
@@ -270,59 +270,27 @@ pub fn assess(
     }
 }
 
-/// Uses the existing live scan model. Stale cached observations cannot be
-/// promoted to current evidence. A replay lacking a boot clock is unverified.
-#[must_use]
-pub fn from_wifi_scan(scan: &WifiScan, baseline: Option<&Baseline>) -> Report {
-    // Offline replays and unknown boot-clock ages cannot establish present
-    // network proximity. Keep the assessment inconclusive in those cases.
-    // Only an OS-cached observation with a verified boot-relative age may
-    // contribute to a current MITM warning; historical WiGLE replay remains
-    // available separately and explicitly unverified.
-    let observations: Vec<_> = scan
-        .observations
-        .iter()
-        .filter(|row| row.freshness == "os_cached")
-        .map(|row| AccessPoint {
-            ssid: row.sighting.name.clone().unwrap_or_default(),
-            bssid: row.sighting.network_id.clone(),
-            security: Security::parse(
-                row.capabilities
-                    .as_deref()
-                    .or(row.sighting.encryption.as_deref())
-                    .unwrap_or(""),
-            ),
-            frequency_mhz: row.frequency_mhz,
-        })
-        .collect();
-    assess(&observations, baseline, scan.source, scan.rejected)
+/// Adapter contract for Wi-Fi observations. The assessment engine never
+/// imports the radar parser, preventing an RF module dependency cycle.
+pub trait WifiEvidenceSource {
+    /// Convert only appropriately fresh observations for a current assessment.
+    fn mitm_access_points(&self, current_only: bool) -> Vec<AccessPoint>;
+    fn mitm_source(&self) -> &'static str;
+    fn mitm_rejected(&self) -> usize;
 }
 
-/// Offline Termux replay is useful for historical comparisons, but never
-/// treated as evidence of a *currently nearby* adversary.
+/// A replay lacking a trusted boot clock must never establish current proximity.
 #[must_use]
-pub fn from_wifi_replay(scan: &WifiScan, baseline: Option<&Baseline>) -> Report {
-    let observations: Vec<_> = scan
-        .observations
-        .iter()
-        .map(|row| AccessPoint {
-            ssid: row.sighting.name.clone().unwrap_or_default(),
-            bssid: row.sighting.network_id.clone(),
-            security: Security::parse(
-                row.capabilities
-                    .as_deref()
-                    .or(row.sighting.encryption.as_deref())
-                    .unwrap_or(""),
-            ),
-            frequency_mhz: row.frequency_mhz,
-        })
-        .collect();
-    let mut report = assess(
-        &observations,
-        baseline,
-        "termux_wifi_replay_unverified",
-        scan.rejected,
-    );
+pub fn from_wifi_scan(scan: &impl WifiEvidenceSource, baseline: Option<&Baseline>) -> Report {
+    let observations = scan.mitm_access_points(true);
+    assess(&observations, baseline, scan.mitm_source(), scan.mitm_rejected())
+}
+
+/// Historical captures can be assessed but cannot prove a live attack.
+#[must_use]
+pub fn from_wifi_replay(scan: &impl WifiEvidenceSource, baseline: Option<&Baseline>) -> Report {
+    let observations = scan.mitm_access_points(false);
+    let mut report = assess(&observations, baseline, "termux_wifi_replay_unverified", scan.mitm_rejected());
     if report.status == "unconfirmed_indicators" {
         report.status = "historical_unconfirmed_indicators";
     }
