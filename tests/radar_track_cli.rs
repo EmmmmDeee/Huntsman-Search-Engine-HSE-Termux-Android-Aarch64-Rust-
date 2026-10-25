@@ -209,7 +209,9 @@ fn missing_scan_timestamps_do_not_create_a_live_track_log() {
     // boot-relative timestamp. Those rows must never be recorded as live.
     fs::write(
         &shim,
-        b"#!/bin/sh\\nprintf '[{\"bssid\":\"00:11:22:33:44:55\",\"ssid\":\"unknown-age\",\"rssi\":-51}]\\n'\\n",
+        br#"#!/bin/sh
+printf '[{"bssid":"00:11:22:33:44:55","ssid":"unknown-age","rssi":-51}]'
+"#,
     )
     .unwrap();
     let mut perms = fs::metadata(&shim).unwrap().permissions();
