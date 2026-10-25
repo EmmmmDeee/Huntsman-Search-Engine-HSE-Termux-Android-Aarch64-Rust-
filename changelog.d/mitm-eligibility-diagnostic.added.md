@@ -1,0 +1,1 @@
+- Add an offline-only, privacy-preserving rootless Termux MITM eligibility diagnostic that explains stale, unknown-freshness, hidden-SSID, invalid-BSSID and duplicate exclusions from one Wi-Fi capture without exporting nearby network identifiers.
