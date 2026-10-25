@@ -228,9 +228,7 @@ printf '[{"bssid":"00:11:22:33:44:55","ssid":"unknown-age","rssi":-51}]'
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(i32::from(EX_UNAVAILABLE)));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("no current-age observations")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no current-age observations"));
     assert!(!log.exists(), "unknown-age records created a tracking log");
     let _ = fs::remove_dir_all(dir);
 }
