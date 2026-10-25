@@ -92,3 +92,93 @@ fn invalid_baseline_is_rejected() {
     fs::remove_file(file).unwrap();
     fs::remove_file(baseline).unwrap();
 }
+
+#[test]
+fn baseline_requires_explicit_confirmation_and_never_overwrites() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let output = fixture("operator-baseline", "json");
+    let path = output.to_str().expect("temporary path is UTF-8");
+    let args = [
+        "mitm",
+        "baseline",
+        "--ssid",
+        "LabNet",
+        "--bssid",
+        "02:11:22:33:44:55",
+        "--minimum-security",
+        "WPA2",
+        "--output",
+        path,
+    ];
+    let missing_confirmation = bin().args(args).output().unwrap();
+    assert!(!missing_confirmation.status.success());
+    assert!(!output.exists());
+
+    let created = bin().args(args).arg("--confirmed").output().unwrap();
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let original = fs::read(&output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    assert_eq!(parsed["networks"][0]["ssid"], "LabNet");
+    assert_eq!(parsed["networks"][0]["bssids"][0], "02:11:22:33:44:55");
+    assert_eq!(parsed["networks"][0]["minimum_security"], "WPA2");
+    assert_eq!(
+        fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    let overwrite = bin().args(args).arg("--confirmed").output().unwrap();
+    assert!(!overwrite.status.success());
+    assert_eq!(fs::read(&output).unwrap(), original);
+    fs::remove_file(output).unwrap();
+}
+
+#[test]
+fn baseline_rejects_invalid_and_duplicate_operator_bssids() {
+    let output = fixture("invalid-operator-baseline", "json");
+    let path = output.to_str().expect("temporary path is UTF-8");
+    for bssid in ["00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff", "not-a-mac"] {
+        let result = bin()
+            .args([
+                "mitm",
+                "baseline",
+                "--ssid",
+                "LabNet",
+                "--bssid",
+                bssid,
+                "--minimum-security",
+                "WPA2",
+                "--output",
+                path,
+                "--confirmed",
+            ])
+            .output()
+            .unwrap();
+        assert!(!result.status.success(), "accepted invalid BSSID: {bssid}");
+        assert!(!output.exists());
+    }
+    let duplicate = bin()
+        .args([
+            "mitm",
+            "baseline",
+            "--ssid",
+            "LabNet",
+            "--bssid",
+            "02:11:22:33:44:55",
+            "--bssid",
+            "02:11:22:33:44:55",
+            "--minimum-security",
+            "WPA2",
+            "--output",
+            path,
+            "--confirmed",
+        ])
+        .output()
+        .unwrap();
+    assert!(!duplicate.status.success());
+    assert!(!output.exists());
+}

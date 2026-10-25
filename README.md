@@ -190,6 +190,7 @@ cargo run -- exif --help                  # keyless, offline EXIF metadata + GPS
 cargo run -- docmeta --help               # keyless, offline XMP packets + edit history + PDF /Info (with values an edit superseded) + embedded GPS from a local file
 cargo run -- radar --help                 # no root, explain Termux:API Wi-Fi cache acquisition; offline
 cargo run -- mitm audit --file docs/mitm-example.json --json  # synthetic offline Wi-Fi replay; advisory only
+cargo run -- mitm baseline --ssid LabNet --bssid 02:11:22:33:44:55 --minimum-security WPA2 --output trusted-wifi.json --confirmed  # explicit operator-supplied inventory; never auto-trust a scan
 cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone front-end
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
 cargo run -- plan ada@example.com example.com  # offline spine: entities, relations, planned routes; nothing fetched
@@ -202,6 +203,13 @@ cargo run -- modules --json               # only modules currently reachable fro
 cargo run -- attack status --json          # offline ATT&CK Reconnaissance capability posture
 cargo run -- recon crtsh https://example.com/
 ```
+
+
+The optional `mitm baseline` command creates a new mode-600 JSON inventory only from
+BSSIDs and minimum security independently verified with the network operator.
+`--confirmed` records the operator's assertion, not cryptographic verification.
+It rejects duplicate/invalid BSSIDs and refuses to overwrite existing files;
+never populate this baseline directly from an untrusted Wi-Fi capture.
 
 `attack status|coverage|gaps [--json]` restores the MITRE ATT&CK Reconnaissance reporting surface over currently reachable network modules. The TA0043 slice is reconciled through ATT&CK v19.2, including T1681 and T1682; the repository's complete embedded Enterprise matrix remains the older v17.1 baseline and is reported separately rather than mislabeled as current. `attack navigator` emits Reconnaissance Navigator JSON. Coverage is hierarchy-aware and evidence-backed: only module-mapped independent leaf techniques count as covered, parent techniques remain roll-ups, and coverage is not proof that a technique was executed or a measure of detection effectiveness.
 
