@@ -382,6 +382,36 @@ fn track_options(args: &[String]) -> Option<TrackOptions<'_>> {
     Some(options)
 }
 
+/// Obtain one coarse location bucket for a track sweep. Explicit file
+/// failures retain their original CLI exit codes. Missing live telephony and
+/// ambiguous dual-SIM registration leave the Wi-Fi sweep unplaced.
+fn track_serving_cell(file: Option<&str>) -> Result<Option<String>, ExitCode> {
+    let scan = match file {
+        Some(path) => {
+            let raw = read_bounded(Path::new(path), cell_radar::MAX_CELL_SCAN_BYTES)
+                .map_err(|error| fail(EX_NOINPUT, &error.to_string()))?;
+            cell_radar::parse_replay(&raw)
+                .map_err(|error| fail(EX_DATAERR, &error.to_string()))?
+        }
+        None => {
+            match collect_termux_cells()
+                .and_then(|raw| cell_radar::parse_cells(&raw).map_err(|error| error.to_string()))
+            {
+                Ok(scan) => scan,
+                Err(error) => {
+                    eprintln!("radar track: no serving cell, so this sweep is not placed: {error}");
+                    return Ok(None);
+                }
+            }
+        }
+    };
+    let serving = scan.serving_cell();
+    if serving.is_none() {
+        eprintln!("radar track: no unique registered serving cell; sweep remains unplaced");
+    }
+    Ok(serving)
+}
+
 /// Take one Wi-Fi sweep, place it at the serving cell, add it to the track log and report what
 /// the log shows: devices that keep recurring, and devices seen across several of the
 /// operator's places (a personal-safety signal that something moved with them). The log is
@@ -441,45 +471,11 @@ fn track_cmd(args: &[String]) -> ExitCode {
             ),
         );
     }
-    // A sweep without its place still counts towards recurrence, so a cell scan Android
-    // withholds is noted and the sweep kept; a replay that cannot be read is an error.
-    let cell = match options.cells_file {
-        Some(path) => {
-            let parsed = read_bounded(Path::new(path), cell_radar::MAX_CELL_SCAN_BYTES)
-                .map_err(|error| (EX_NOINPUT, error.to_string()))
-                .and_then(|raw| {
-                    cell_radar::parse_replay(&raw).map_err(|error| (EX_DATAERR, error.to_string()))
-                });
-            match parsed {
-                Ok(scan) => {
-                    let serving = scan.serving_cell();
-                    if serving.is_none() {
-                        eprintln!(
-                            "radar track: no unique registered serving cell; sweep remains unplaced"
-                        );
-                    }
-                    serving
-                }
-                Err((code, error)) => return fail(code, &error),
-            }
-        }
-        None => match collect_termux_cells()
-            .and_then(|raw| cell_radar::parse_cells(&raw).map_err(|error| error.to_string()))
-        {
-            Ok(scan) => {
-                let serving = scan.serving_cell();
-                if serving.is_none() {
-                    eprintln!(
-                        "radar track: no unique registered serving cell; sweep remains unplaced"
-                    );
-                }
-                serving
-            }
-            Err(error) => {
-                eprintln!("radar track: no serving cell, so this sweep is not placed: {error}");
-                None
-            }
-        },
+    // Missing or ambiguous cell identities keep Wi-Fi recurrence intact, but
+    // cannot become a physical location or cross-cell recurrence assertion.
+    let cell = match track_serving_cell(options.cells_file) {
+        Ok(cell) => cell,
+        Err(code) => return code,
     };
     let sweep = if let Some(mut sweep) = live_sweep {
         sweep.cell = cell.filter(|cell| !cell.trim().is_empty());
