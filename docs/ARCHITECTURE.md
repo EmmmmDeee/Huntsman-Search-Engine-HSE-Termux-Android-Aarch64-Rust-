@@ -2,6 +2,8 @@
 
 Status: **PLANNED** design plus a **CURRENT** inventory taken at `main` commit `2bc6d0f38` (#1109). The authoritative, test-enforced module map, capability matrix (CURRENT/PLANNED) and layer rules remain in the root [`ARCHITECTURE.md`](../ARCHITECTURE.md), checked by `tests/architecture_doc.rs`. This document changes no code, moves no module and supersedes nothing there; if the two disagree, the root document and its test win.
 
+> **Inventory freshness (2026-10-25):** This is an intentionally historical snapshot of `2bc6d0f`, not a live inventory of current `main`. PR #1402 (MITM guard) has since merged as `5f38d04`, adding `mitm_guard`, CLI integration and Radar Web UI functionality. Module counts, dependency-edge estimates and the radio table below have **not** been recomputed for that revision. Re-run the root architecture tests and inventory before treating these numbers as current or beginning Stage 2.
+
 ## Goal
 
 A pure-Rust modular monolith, one package (`huntsman-recon`), feature-oriented internal modules under `src/`:
