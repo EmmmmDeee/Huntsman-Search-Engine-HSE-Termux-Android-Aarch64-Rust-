@@ -1010,8 +1010,8 @@ mod tests {
     fn new_nested_tracking_directories_are_private_without_chmod_race() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = std::env::temp_dir()
-            .join(format!("huntsman-track-private-dir-{}", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("huntsman-track-private-dir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
         let nested = directory.join("level-one").join("level-two");
@@ -1038,8 +1038,10 @@ mod tests {
     fn existing_tracking_directory_permissions_remain_unchanged() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = std::env::temp_dir()
-            .join(format!("huntsman-track-existing-mode-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-track-existing-mode-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
         let parent = directory.join("existing");
