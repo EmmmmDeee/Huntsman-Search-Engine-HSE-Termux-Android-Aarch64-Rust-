@@ -227,10 +227,7 @@ pub fn assess(
         if let Some(policy) = trusted.get(ssid) {
             let minimum = Security::parse(&policy.minimum_security).ordinal();
             for (bssid, ap) in aps {
-                let enrolled = policy
-                    .bssids
-                    .iter()
-                    .any(|b| b.eq_ignore_ascii_case(bssid));
+                let enrolled = policy.bssids.iter().any(|b| b.eq_ignore_ascii_case(bssid));
                 let downgrade = minimum
                     .zip(ap.security.ordinal())
                     .is_some_and(|(min, current)| current < min);
