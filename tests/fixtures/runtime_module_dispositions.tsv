@@ -218,6 +218,7 @@ virustotal	adapter	VirusTotal leg reached through ip_cli and domain_cli when its
 web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
 whoxy	adapter	Whoxy WHOIS leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set
+mitm_guard	adapter	Passive advisory Wi-Fi anomaly assessment reached from the shipped mitm audit CLI and radar Web UI; consumes OS-cached observations without claiming confirmed interception
 wifi_radar	adapter	Termux API OS-cached WiFi scan observations reached through radar wifi command and typed RF results
 cell_radar	adapter	Termux API OS-cached cellular observations reached through radar cells command and typed RF results
 wigle	adapter	WiGLE network-search leg reached through network_cli from network, scan -k network and /api/lookup
