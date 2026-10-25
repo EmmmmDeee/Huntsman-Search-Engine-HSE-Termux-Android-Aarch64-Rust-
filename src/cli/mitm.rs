@@ -128,19 +128,28 @@ fn baseline_cmd(args: &[String]) -> ExitCode {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--ssid" if ssid.is_none() => {
-                ssid = iter.next().filter(|s| !s.starts_with("--")).map(String::as_str);
+                ssid = iter
+                    .next()
+                    .filter(|s| !s.starts_with("--"))
+                    .map(String::as_str);
                 if ssid.is_none() {
                     return fail(EX_USAGE, USAGE);
                 }
             }
             "--minimum-security" if security.is_none() => {
-                security = iter.next().filter(|s| !s.starts_with("--")).map(String::as_str);
+                security = iter
+                    .next()
+                    .filter(|s| !s.starts_with("--"))
+                    .map(String::as_str);
                 if security.is_none() {
                     return fail(EX_USAGE, USAGE);
                 }
             }
             "--output" if output.is_none() => {
-                output = iter.next().filter(|s| !s.starts_with("--")).map(String::as_str);
+                output = iter
+                    .next()
+                    .filter(|s| !s.starts_with("--"))
+                    .map(String::as_str);
                 if output.is_none() {
                     return fail(EX_USAGE, USAGE);
                 }
@@ -157,8 +166,7 @@ fn baseline_cmd(args: &[String]) -> ExitCode {
             _ => return fail(EX_USAGE, USAGE),
         }
     }
-    let (Some(ssid), Some(security), Some(output), true) =
-        (ssid, security, output, confirmed)
+    let (Some(ssid), Some(security), Some(output), true) = (ssid, security, output, confirmed)
     else {
         return fail(EX_USAGE, USAGE);
     };

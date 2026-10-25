@@ -100,9 +100,16 @@ fn baseline_requires_explicit_confirmation_and_never_overwrites() {
     let output = fixture("operator-baseline", "json");
     let path = output.to_str().expect("temporary path is UTF-8");
     let args = [
-        "mitm", "baseline", "--ssid", "LabNet",
-        "--bssid", "02:11:22:33:44:55",
-        "--minimum-security", "WPA2", "--output", path,
+        "mitm",
+        "baseline",
+        "--ssid",
+        "LabNet",
+        "--bssid",
+        "02:11:22:33:44:55",
+        "--minimum-security",
+        "WPA2",
+        "--output",
+        path,
     ];
     let missing_confirmation = bin().args(args).output().unwrap();
     assert!(!missing_confirmation.status.success());
