@@ -290,7 +290,12 @@ pub fn from_wifi_scan(scan: &impl WifiEvidenceSource, baseline: Option<&Baseline
 #[must_use]
 pub fn from_wifi_replay(scan: &impl WifiEvidenceSource, baseline: Option<&Baseline>) -> Report {
     let observations = scan.mitm_access_points(false);
-    let mut report = assess(&observations, baseline, "termux_wifi_replay_unverified", scan.mitm_rejected());
+    let mut report = assess(
+        &observations,
+        baseline,
+        "termux_wifi_replay_unverified",
+        scan.mitm_rejected(),
+    );
     if report.status == "unconfirmed_indicators" {
         report.status = "historical_unconfirmed_indicators";
     }
