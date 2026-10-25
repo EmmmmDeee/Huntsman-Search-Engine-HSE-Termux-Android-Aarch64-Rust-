@@ -88,7 +88,7 @@ fn invalid_baseline_is_rejected() {
         .output()
         .unwrap();
     assert!(!out.status.success());
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, [] as [u8; 0]);
     fs::remove_file(file).unwrap();
     fs::remove_file(baseline).unwrap();
 }
