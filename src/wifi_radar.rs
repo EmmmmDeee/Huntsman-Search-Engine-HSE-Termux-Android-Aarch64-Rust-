@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use crate::error::Error;
 use crate::radar::{LoggedDevice, LoggedSweep};
-use crate::rf::{RadioKind, RfSighting, RfSource, band, is_mac};
+use crate::rf::{RadioKind, RfSighting, RfSource, band};
 use crate::textnorm::escape_controls;
 
 /// Older OS scan results are marked stale, never silently called live.
@@ -62,6 +62,34 @@ impl WifiScan {
     }
 }
 
+impl crate::mitm_guard::WifiEvidenceSource for WifiScan {
+    fn mitm_access_points(&self, current_only: bool) -> Vec<crate::mitm_guard::AccessPoint> {
+        self.observations
+            .iter()
+            .filter(|row| !current_only || row.freshness == "os_cached")
+            .map(|row| crate::mitm_guard::AccessPoint {
+                ssid: row.sighting.name.clone().unwrap_or_default(),
+                bssid: row.sighting.network_id.clone(),
+                security: crate::mitm_guard::Security::parse(
+                    row.capabilities
+                        .as_deref()
+                        .or(row.sighting.encryption.as_deref())
+                        .unwrap_or(""),
+                ),
+                frequency_mhz: row.frequency_mhz,
+            })
+            .collect()
+    }
+
+    fn mitm_source(&self) -> &'static str {
+        self.source
+    }
+
+    fn mitm_rejected(&self) -> usize {
+        self.rejected
+    }
+}
+
 fn optional_string(value: Option<&serde_json::Value>) -> Option<String> {
     value
         .and_then(serde_json::Value::as_str)
@@ -73,18 +101,7 @@ fn optional_string(value: Option<&serde_json::Value>) -> Option<String> {
 /// A service-set identifier must be an individual hardware address, not
 /// Android's redaction sentinel, zero, or an IEEE group/broadcast address.
 /// Randomised (locally administered) *individual* BSSIDs remain valid.
-#[must_use]
-pub fn valid_wifi_bssid(value: &str) -> bool {
-    if !is_mac(value) {
-        return false;
-    }
-    let address = value.to_ascii_lowercase();
-    if matches!(address.as_str(), "00:00:00:00:00:00" | "02:00:00:00:00:00") {
-        return false;
-    }
-    // IEEE 802 I/G low bit distinguishes group/broadcast from individual.
-    crate::oui::is_multicast(&address) == Some(false)
-}
+pub use crate::rf::valid_wifi_bssid;
 
 /// Age Android boot-relative scan timestamps without precision-losing integer casts.
 /// A timestamp beyond 136 years of uptime has no meaningful handset age.
