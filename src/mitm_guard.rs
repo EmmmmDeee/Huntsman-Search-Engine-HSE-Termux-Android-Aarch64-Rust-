@@ -283,7 +283,12 @@ pub trait WifiEvidenceSource {
 #[must_use]
 pub fn from_wifi_scan(scan: &impl WifiEvidenceSource, baseline: Option<&Baseline>) -> Report {
     let observations = scan.mitm_access_points(true);
-    assess(&observations, baseline, scan.mitm_source(), scan.mitm_rejected())
+    assess(
+        &observations,
+        baseline,
+        scan.mitm_source(),
+        scan.mitm_rejected(),
+    )
 }
 
 /// Historical captures can be assessed but cannot prove a live attack.
