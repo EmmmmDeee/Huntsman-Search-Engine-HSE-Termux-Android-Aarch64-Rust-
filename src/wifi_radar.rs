@@ -89,6 +89,18 @@ impl WifiScan {
                 }),
         )
     }
+
+    /// A live track sweep is useful only if at least one known-current access
+    /// point has a stable, non-randomized identity. Apply `LoggedSweep::new`'s
+    /// canonical deduplication and identity policy before accepting it. An
+    /// empty result is inconclusive and must not enter the persistent log.
+    ///
+    /// Historical replay remains available through `logged_sweep`.
+    #[must_use]
+    pub fn trackable_current_sweep(&self, ts: u64, cell: Option<String>) -> Option<LoggedSweep> {
+        let sweep = self.logged_current_sweep(ts, cell);
+        (!sweep.devices.is_empty()).then_some(sweep)
+    }
 }
 
 impl crate::mitm_guard::WifiEvidenceSource for WifiScan {
@@ -342,6 +354,33 @@ mod tests {
         // fixture logs, but it must never be used for live acquisition.
         let historical = scan.logged_sweep(1000, None);
         assert_eq!(historical.devices.len(), 2);
+    }
+
+    #[test]
+    fn randomized_only_current_cache_cannot_create_an_empty_live_sweep() {
+        let raw = br#"[{"bssid":"02:11:22:33:44:55","ssid":"random","rssi":-50,"timestamp":980000000},{"bssid":"36:32:62:36:31:33","ssid":"random-two","rssi":-47,"timestamp":980000000}]"#;
+        let scan = parse_scan(raw, Some(1000.0)).unwrap();
+        assert!(scan.has_current_observations());
+        assert_eq!(scan.status, "os_cached");
+        assert!(scan.logged_current_sweep(1000, None).devices.is_empty());
+        assert!(scan.trackable_current_sweep(1000, None).is_none());
+        // An explicit imported capture retains the historic decoding and
+        // logging policy; the live acceptance check is opt-in.
+        let replay = parse_replay(raw).unwrap();
+        assert_eq!(replay.status, "freshness_unknown");
+        assert!(replay.logged_sweep(1000, None).devices.is_empty());
+    }
+
+    #[test]
+    fn mixed_current_cache_logs_only_stable_known_current_access_points() {
+        let raw = br#"[{"bssid":"3c:5a:b4:11:22:33","ssid":"stable","rssi":-50,"timestamp":980000000},{"bssid":"02:11:22:33:44:55","ssid":"random","rssi":-49,"timestamp":980000000},{"bssid":"3c:5a:b4:11:22:33","ssid":"duplicate","rssi":-48,"timestamp":980000000},{"bssid":"00:11:22:33:44:56","ssid":"unknown","rssi":-50}]"#;
+        let scan = parse_scan(raw, Some(1000.0)).unwrap();
+        let sweep = scan
+            .trackable_current_sweep(1000, Some("gsm:505-01-1-1".into()))
+            .unwrap();
+        assert_eq!(sweep.devices.len(), 1);
+        assert_eq!(sweep.devices[0].mac, "3c:5a:b4:11:22:33");
+        assert_eq!(sweep.cell.as_deref(), Some("gsm:505-01-1-1"));
     }
 
     #[test]

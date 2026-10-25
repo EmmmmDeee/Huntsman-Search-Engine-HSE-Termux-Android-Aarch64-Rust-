@@ -176,17 +176,22 @@ pub(super) fn track_live(log: &Path) -> Result<radar::TrackReport, LookupError> 
         status: 503,
         message,
     })?;
-    if !wifi.has_current_observations() {
+    // Use the exact same stable-identity and freshness selection as the CLI.
+    // Reject before acquiring cell metadata or writing an empty sweep.
+    let Some(mut sweep) = wifi.trackable_current_sweep(huntsman_recon::clock::unix_now(), None)
+    else {
         return Err(LookupError {
             status: 503,
             message: format!(
-                "the Wi-Fi scan is {} with no current-age observations; nothing was logged",
+                "the Wi-Fi scan is {} with no current-age observations of trackable access points; nothing was logged",
                 wifi.status
             ),
         });
-    }
-    let cell = capture_cells().ok().and_then(|scan| scan.serving_cell());
-    let sweep = wifi.logged_current_sweep(huntsman_recon::clock::unix_now(), cell);
+    };
+    sweep.cell = capture_cells()
+        .ok()
+        .and_then(|scan| scan.serving_cell())
+        .filter(|cell| !cell.trim().is_empty());
     radar::record_sweep(log, sweep).map_err(|error| LookupError {
         status: 500,
         message: format!("radar track: {error}"),
@@ -396,17 +401,25 @@ fn track_cmd(args: &[String]) -> ExitCode {
         Ok(wifi) => wifi,
         Err(error) => return fail(EX_DATAERR, &error.to_string()),
     };
-    // Live recording requires current-age Wi-Fi observations. A replay remains
-    // an explicit historical/unverified fixture and retains prior semantics.
-    if !replay && !wifi.has_current_observations() {
-        return fail(
-            EX_UNAVAILABLE,
-            &format!(
-                "radar track: the Wi-Fi scan is {} with no current-age observations; nothing was logged",
-                wifi.status
-            ),
-        );
-    }
+    // Accept a live sweep only after both freshness and the same stable
+    // identity filters used by the persistent log have selected a device.
+    // A replay remains an explicit historical fixture with unchanged rules.
+    let live_sweep = if replay {
+        None
+    } else {
+        match wifi.trackable_current_sweep(huntsman_recon::clock::unix_now(), None) {
+            Some(sweep) => Some(sweep),
+            None => {
+                return fail(
+                    EX_UNAVAILABLE,
+                    &format!(
+                        "radar track: the Wi-Fi scan is {} with no current-age observations of trackable access points; nothing was logged",
+                        wifi.status
+                    ),
+                );
+            }
+        }
+    };
     if replay && matches!(wifi.status, "inconclusive" | "stale_only") {
         return fail(
             EX_UNAVAILABLE,
@@ -440,12 +453,13 @@ fn track_cmd(args: &[String]) -> ExitCode {
             }
         },
     };
-    let when = huntsman_recon::clock::unix_now();
-    let sweep = if replay {
-        // Historical file input remains supported but is not current proximity evidence.
-        wifi.logged_sweep(when, cell)
+    let sweep = if let Some(mut sweep) = live_sweep {
+        sweep.cell = cell.filter(|cell| !cell.trim().is_empty());
+        sweep
     } else {
-        wifi.logged_current_sweep(when, cell)
+        // Explicit historical input retains its existing acceptance and
+        // storage semantics, but is not evidence of current proximity.
+        wifi.logged_sweep(huntsman_recon::clock::unix_now(), cell)
     };
     let report = match radar::record_sweep(&log, sweep) {
         Ok(report) => report,
