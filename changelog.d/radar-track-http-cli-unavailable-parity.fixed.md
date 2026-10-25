@@ -1,0 +1,1 @@
+- Align loopback Web UI radar tracking errors with CLI unavailability: busy/unwritable tracking logs now return HTTP 503 instead of 500, while unreadable/missing histories remain 500. Preserve all JSON responses, CLI exit codes and stored data.

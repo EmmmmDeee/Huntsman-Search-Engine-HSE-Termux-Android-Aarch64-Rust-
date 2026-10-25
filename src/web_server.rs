@@ -2748,6 +2748,33 @@ mod tests {
         assert!(error.contains("Termux:API unavailable"));
     }
 
+    /// A track write refusal must propagate its 503 status through the
+    /// guarded HTTP route instead of being reported as an internal 500.
+    #[test]
+    fn radar_track_write_unavailable_is_http_503() {
+        let config = ServeConfig::parse("127.0.0.1:8080", None).unwrap();
+        let track: TrackHandler = Arc::new(|| {
+            Err(LookupError {
+                status: 503,
+                message: "tracking log is busy".into(),
+            })
+        });
+        let routes = Routes {
+            track: Some(Sensor {
+                handler: track,
+                live: Arc::new(AtomicUsize::new(0)),
+            }),
+            ..Routes::default()
+        };
+        let answer = text(respond(
+            "POST /api/radar/track HTTP/1.1\r\nHost: localhost\r\nX-Huntsman-Lookup: 1\r\n\r\n",
+            &config,
+            &routes,
+        ));
+        assert!(answer.starts_with("HTTP/1.1 503"), "{answer}");
+        assert!(answer.contains("tracking log is busy"));
+    }
+
     /// The cells Android reports and the track log are read from the page through the Wi-Fi
     /// radar's own guards: the lookup header, same origin, one method, no parameters and no body,
     /// and a refusal rather than an invented reading where no adapter is installed.
