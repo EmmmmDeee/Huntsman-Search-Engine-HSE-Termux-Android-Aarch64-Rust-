@@ -845,15 +845,31 @@ pub fn record_sweep(log: &Path, sweep: LoggedSweep) -> Result<TrackReport, Track
     Ok(track(&retained, skipped))
 }
 
-/// Create the log's directory when it is missing, private to the user.
+/// Validate the final parent path before creating the lock file. The
+/// atomic writer rejects a symlinked parent too, but the lock exists earlier:
+/// do not create even a temporary lock through a parent-directory symlink.
+/// A pre-existing directory retains its existing permissions.
 fn private_parent(log: &Path) -> Result<(), String> {
     let Some(parent) = log.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
         return Ok(());
     };
-    if parent.is_dir() {
-        return Ok(());
+    match std::fs::symlink_metadata(parent) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(format!("{}: symbolic-link parent refused", parent.display()));
+        }
+        Ok(meta) if meta.is_dir() => return Ok(()),
+        Ok(_) => return Err(format!("{}: parent is not a directory", parent.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("{}: {error}", parent.display())),
     }
     std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+    // Before chmod, check the new path again: never chmod through a link
+    // planted between directory creation and the permission operation.
+    let meta = std::fs::symlink_metadata(parent)
+        .map_err(|error| format!("{}: {error}", parent.display()))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(format!("{}: not a regular directory", parent.display()));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -978,6 +994,49 @@ mod tests {
             })
             .collect();
         assert!(track(&quick, 0).followers.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_parent_is_refused_before_any_lock_or_data_write() {
+        use std::os::unix::fs::symlink;
+
+        let directory = std::env::temp_dir()
+            .join(format!("huntsman-track-linked-parent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let actual = directory.join("actual");
+        std::fs::create_dir_all(&actual).unwrap();
+        let alias = directory.join("alias");
+        symlink(&actual, &alias).unwrap();
+
+        let log = alias.join("radar.jsonl");
+        let result = record_sweep(
+            &log,
+            LoggedSweep::new(7, Some("cell:coarse".into()), [device(TAIL, "sample")]),
+        );
+        assert!(matches!(result, Err(TrackLogError::Unwritable(_))));
+        assert!(!actual.join("radar.jsonl.lock").exists());
+        assert!(!actual.join("radar.jsonl").exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn existing_non_directory_parent_is_refused_without_creating_lock() {
+        let directory = std::env::temp_dir()
+            .join(format!("huntsman-track-file-parent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let parent = directory.join("not-a-directory");
+        std::fs::write(&parent, b"protected").unwrap();
+
+        let log = parent.join("radar.jsonl");
+        let result = record_sweep(
+            &log,
+            LoggedSweep::new(8, Some("cell:coarse".into()), [device(TAIL, "sample")]),
+        );
+        assert!(matches!(result, Err(TrackLogError::Unwritable(_))));
+        assert_eq!(std::fs::read(&parent).unwrap(), b"protected");
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
