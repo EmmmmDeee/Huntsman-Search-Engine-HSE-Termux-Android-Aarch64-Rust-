@@ -123,7 +123,7 @@ impl crate::mitm_guard::WifiEvidenceSource for WifiScan {
         counts.duplicate_rows = candidates.saturating_sub(unique);
         Some(counts)
     }
-
+}
 
 fn optional_string(value: Option<&serde_json::Value>) -> Option<String> {
     value
