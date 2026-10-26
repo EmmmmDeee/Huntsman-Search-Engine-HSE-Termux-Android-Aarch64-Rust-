@@ -90,6 +90,7 @@ pub mod gap;
 pub mod geohash;
 pub mod geoint;
 pub mod gexf;
+pub mod gitlab_user;
 pub mod github_user;
 pub mod graph;
 pub mod graph_exec;
