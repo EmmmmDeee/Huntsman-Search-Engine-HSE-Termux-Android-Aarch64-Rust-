@@ -197,7 +197,12 @@ fn public_profile_entities(user: &Value, name: &str, scan_id: &str) -> Vec<Entit
                     .clone()
                     .with_attr("source_field", "public_bio_signature")
                     .inferred(),
-                &["tiktok", "public-contact", "self-declared", crate::tags::CANDIDATE],
+                &[
+                    "tiktok",
+                    "public-contact",
+                    "self-declared",
+                    crate::tags::CANDIDATE,
+                ],
             );
         }
     }
@@ -216,7 +221,12 @@ fn public_profile_entities(user: &Value, name: &str, scan_id: &str) -> Vec<Entit
             evidence
                 .with_attr("source_field", "public_bio_link")
                 .inferred(),
-            &["tiktok", "public-bio-link", "self-declared", crate::tags::CANDIDATE],
+            &[
+                "tiktok",
+                "public-bio-link",
+                "self-declared",
+                crate::tags::CANDIDATE,
+            ],
         );
     }
     merge_by_uid(&mut entities);
