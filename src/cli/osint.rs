@@ -1,7 +1,7 @@
 //! CLI adapter for the operator-controlled, read-only OSINT federation.
 
-use std::process::ExitCode;
 use std::path::Path;
+use std::process::ExitCode;
 
 use super::{fail, lookup, terminal_json_pretty};
 use huntsman_recon::clock;
@@ -12,10 +12,10 @@ use huntsman_recon::federated_osint::{
     self, ALCHEMY_KEY_SLOT, BASE_ALCHEMY_ORIGIN, X_API_ORIGIN, X_BEARER_SLOT,
 };
 use huntsman_recon::fetch::{AuthStyle, Credential};
-use huntsman_recon::http::{TransportConfig, UreqTransport};
-use huntsman_recon::keys::Keys;
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::geoint;
+use huntsman_recon::http::{TransportConfig, UreqTransport};
+use huntsman_recon::keys::Keys;
 use huntsman_recon::osint_area_risk::{self, MAX_RISK_BYTES};
 use huntsman_recon::osint_casework::{self, MAX_CASE_BYTES};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
@@ -39,12 +39,16 @@ fn optional_credential(
     origin: &'static str,
     now: u64,
 ) -> Result<Credential, Error> {
-    let secret = keys.get(slot).ok_or_else(|| Error::missing_credential(slot))?;
+    let secret = keys
+        .get(slot)
+        .ok_or_else(|| Error::missing_credential(slot))?;
     let authority = AuthenticationAuthority::operator_approved(OperatorCredentialRef {
         provider_id: provider.to_owned(),
         credential_slot: slot.to_owned(),
         approved_at_unix: now,
-        approval_provenance: format!("operator configured {slot} for explicitly selected OSINT command"),
+        approval_provenance: format!(
+            "operator configured {slot} for explicitly selected OSINT command"
+        ),
     })?;
     Ok(Credential::new(authority, secret, AuthStyle::Bearer)?.only_for_origin(origin))
 }
@@ -53,7 +57,11 @@ fn emit<T: serde::Serialize>(report: &T, success: bool) -> ExitCode {
     match terminal_json_pretty(report) {
         Ok(json) => {
             println!("{json}");
-            if success { ExitCode::SUCCESS } else { ExitCode::from(EX_UNAVAILABLE) }
+            if success {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(EX_UNAVAILABLE)
+            }
         }
         Err(error) => fail(EX_UNAVAILABLE, &error.to_string()),
     }
@@ -73,17 +81,17 @@ fn fail_error(error: Error) -> ExitCode {
 pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
     let now = clock::unix_now();
     match args {
-        [mode, path] if mode == "case" => {
-            match read_bounded(Path::new(path), MAX_CASE_BYTES) {
-                Ok(data) => match osint_casework::review_json(&data) {
-                    Ok(report) => emit(&report, true),
-                    Err(error) => fail_error(error),
-                },
+        [mode, path] if mode == "case" => match read_bounded(Path::new(path), MAX_CASE_BYTES) {
+            Ok(data) => match osint_casework::review_json(&data) {
+                Ok(report) => emit(&report, true),
                 Err(error) => fail_error(error),
-            }
-        }
+            },
+            Err(error) => fail_error(error),
+        },
         [mode, path, coords, rest @ ..] if mode == "area-risk" => {
-            if rest.len() > 2 { return fail(EX_USAGE, OSINT_HELP); }
+            if rest.len() > 2 {
+                return fail(EX_USAGE, OSINT_HELP);
+            }
             let radius = match rest.first() {
                 Some(raw) => match raw.parse::<f64>() {
                     Ok(value) => value,
@@ -98,10 +106,14 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
             }
         }
         [mode, path, first, second, rest @ ..] if mode == "area-compare" => {
-            if rest.len() > 1 { return fail(EX_USAGE, OSINT_HELP); }
+            if rest.len() > 1 {
+                return fail(EX_USAGE, OSINT_HELP);
+            }
             let category = rest.first().map_or("general", String::as_str);
-            match (area_report(path, first, 1000.0, category),
-                   area_report(path, second, 1000.0, category)) {
+            match (
+                area_report(path, first, 1000.0, category),
+                area_report(path, second, 1000.0, category),
+            ) {
                 (Ok(a), Ok(b)) => emit(&serde_json::json!({"first":a,"second":b}), true),
                 (Err(error), _) | (_, Err(error)) => fail_error(error),
             }
@@ -115,7 +127,11 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
             let report = if mode == "x-api" {
                 let keys = super::credentials::lookup_keys();
                 let credential = match optional_credential(
-                    &keys, X_BEARER_SLOT, "official_x_recent_search", X_API_ORIGIN, now
+                    &keys,
+                    X_BEARER_SLOT,
+                    "official_x_recent_search",
+                    X_API_ORIGIN,
+                    now,
                 ) {
                     Ok(credential) => credential,
                     Err(error) => return fail_error(error),
@@ -126,20 +142,18 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
             };
             match report {
                 Ok(report) => {
-                    let accepted = !report.hits.is_empty() && report.outcomes.iter().any(|outcome| {
-                        outcome.kind == SourceOutcomeKind::Success
-                    });
+                    let accepted = !report.hits.is_empty()
+                        && report
+                            .outcomes
+                            .iter()
+                            .any(|outcome| outcome.kind == SourceOutcomeKind::Success);
                     emit(&report, accepted)
                 }
                 Err(error) => fail_error(error),
             }
         }
-        [mode, query, dir] if mode == "local" => {
-            lookup::search_cmd(&[query.clone(), dir.clone()])
-        }
-        [mode, seeds @ ..] if mode == "plan" && !seeds.is_empty() => {
-            lookup::plan_cmd(seeds)
-        }
+        [mode, query, dir] if mode == "local" => lookup::search_cmd(&[query.clone(), dir.clone()]),
+        [mode, seeds @ ..] if mode == "plan" && !seeds.is_empty() => lookup::plan_cmd(seeds),
         [mode, address] if mode == "wallet" => wallet(address, false, now),
         [mode, address, flag] if mode == "wallet" && flag == "--alchemy" => {
             wallet(address, true, now)
@@ -162,7 +176,13 @@ fn wallet(address: &str, use_alchemy: bool, now: u64) -> ExitCode {
     let transport = UreqTransport::new(&TransportConfig::default());
     let credential = if use_alchemy {
         let keys = super::credentials::lookup_keys();
-        match optional_credential(&keys, ALCHEMY_KEY_SLOT, "alchemy_base", BASE_ALCHEMY_ORIGIN, now) {
+        match optional_credential(
+            &keys,
+            ALCHEMY_KEY_SLOT,
+            "alchemy_base",
+            BASE_ALCHEMY_ORIGIN,
+            now,
+        ) {
             Ok(credential) => Some(credential),
             Err(error) => return fail_error(error),
         }
@@ -177,8 +197,12 @@ fn wallet(address: &str, use_alchemy: bool, now: u64) -> ExitCode {
         Err(error) => fail_error(error),
     }
 }
-fn area_report(path: &str, coords: &str, radius: f64, category: &str)
-    -> Result<osint_area_risk::AreaEstimate, Error> {
+fn area_report(
+    path: &str,
+    coords: &str,
+    radius: f64,
+    category: &str,
+) -> Result<osint_area_risk::AreaEstimate, Error> {
     let (lat, lon) = geoint::parse_latlon(coords)?;
     let bytes = read_bounded(Path::new(path), MAX_RISK_BYTES)?;
     let dataset = osint_area_risk::input_json(&bytes)?;
