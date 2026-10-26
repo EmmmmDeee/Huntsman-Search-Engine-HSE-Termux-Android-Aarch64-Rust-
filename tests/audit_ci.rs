@@ -77,7 +77,7 @@ fn audit_runs_on_every_pr_and_scoped_pushes() {
     }
     // Every PR must emit the required audit check, even for source-only changes.
     assert!(
-        audit.contains("  pull_request:\n  "),
+        audit.contains("  pull_request:\n\npermissions:"),
         "pull_request must have no paths filter"
     );
     // Main pushes need only audit dependency and workflow changes.
