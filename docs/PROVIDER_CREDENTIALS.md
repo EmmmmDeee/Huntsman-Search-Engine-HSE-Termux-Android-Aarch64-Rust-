@@ -23,7 +23,7 @@ No credential values are required in CLI arguments, logs or source control.
 | Shodan | `HUNTSMAN_SHODAN_KEY` | used by `ip` (host, no query credits) and `domain` (DNS, one query credit) whenever set; private stored credential located; validity unverified |
 | Whoxy | `HUNTSMAN_WHOXY_KEY` | used by `domain` (live WHOIS, one credit each) and `email` (reverse WHOIS, one reverse credit a page) whenever set; an empty balance is reported as a plan refusal; private stored credential located; validity unverified |
 | HIBP | `HUNTSMAN_HIBP_KEY` | owned subscription/key history; clean current credential required |
-| SeekNow | `HUNTSMAN_SEEKNOW_KEY` | historical credential only; clean current credential required |
+| SeekNow | `HUNTSMAN_SEEKNOW_KEY` | native `seeknow` CLI and keyed lookup leg; generate an API key from the [SeekNow account](https://see-know.ru/register); website search quotas do not establish API entitlements or available credits; credential is operator-supplied and never committed |
 | OathNet | `HUNTSMAN_OATHNET_KEY` | used by `exposure` (CLI, `scan -k exposure`, web UI) when set in the environment; one daily lookup per search; validity unverified until a live search |
 | DeHashed | `HUNTSMAN_DEHASHED_KEY` | used by `exposure` and `email` (CLI, `scan`, web UI), and by explicit `dehashed search --purpose ...`. All resolve the private `~/.huntsman.env` slot with process-environment fallback; the explicit command also supports its legacy private `~/.config/dehashed/api_key` file if the shared slot is unset. Keys are sent only to DeHashed's fixed API origin |
 | stolen.tax | `HUNTSMAN_STOLEN_TAX_KEY` | used by `exposure` and the `email` and `username` lookups (CLI, `scan`, web UI) when set |
