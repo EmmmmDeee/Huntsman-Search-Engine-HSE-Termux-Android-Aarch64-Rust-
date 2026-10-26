@@ -148,10 +148,13 @@ pub fn estimate(
     let components = [
         bounded(daily_density, 45.0, 0.2),
         bounded(focused_density, 25.0, 0.12),
-        bounded(recent as f64, 15.0, 3.0),
-        bounded(severe as f64, 15.0, 2.0),
+        bounded(f64::from(u16::try_from(recent).unwrap_or(u16::MAX)), 15.0, 3.0),
+        bounded(f64::from(u16::try_from(severe).unwrap_or(u16::MAX)), 15.0, 2.0),
     ];
-    let score = components.iter().sum::<f64>().min(100.0).round() as u8;
+    let rounded_score = components.iter().sum::<f64>().clamp(0.0, 100.0).round();
+    let score = (0_u8..=100)
+        .find(|candidate| f64::from(*candidate) >= rounded_score)
+        .unwrap_or(100);
     Ok(AreaEstimate {
         as_of_unix: input.as_of_unix,
         center_lat: lat,
