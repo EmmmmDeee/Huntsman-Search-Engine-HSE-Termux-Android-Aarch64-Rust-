@@ -518,7 +518,10 @@ mod tests {
         assert_eq!(first.findings.len(), 1);
         assert_eq!(first.findings[0].code, "bssid_security_conflict_unverified");
         assert_eq!(first.findings[0].severity, "review");
-        assert_eq!(first.findings[0].bssid.as_deref(), Some("3c:5a:b4:11:22:33"));
+        assert_eq!(
+            first.findings[0].bssid.as_deref(),
+            Some("3c:5a:b4:11:22:33")
+        );
         assert!(!first.mitm_confirmed);
     }
 
