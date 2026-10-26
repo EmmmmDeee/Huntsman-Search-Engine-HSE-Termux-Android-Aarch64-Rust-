@@ -2,6 +2,17 @@
   "schema": "huntsman.completion/1",
   "implementations": [
     {
+      "id": "00-radar-concurrent-writer-regression",
+      "priority": "P0",
+      "state": "INCOMPLETE",
+      "path": "src/radar.rs",
+      "depends_on": [],
+      "objective": "Ensure simultaneous legitimate radar log writers retain every sweep without a spurious lock-timeout failure, while refusing genuine stale/foreign locks and preserving recorded evidence.",
+      "evidence": "Feature-branch release acceptance run 40285272686, job 121447455347: cargo test --locked --workspace failed at radar::tests::concurrent_writers_preserve_every_sweep_and_report_latest_storage (2403 passed, 1 failed). Previous lock retry capped at 1 second; contention under runner load is suspected, not yet independently proven.",
+      "implementation": "A bounded five-second retry window and explicit writer-error diagnostic were added in src/radar.rs on the review branch. Investigate if failure recurs; preserve inode-safe lock cleanup, private permissions and write atomicity.",
+      "verification": "Require repeated full Rust workspace tests on supported toolchains; verify 12 concurrent writes, exact 12 retained timestamps, lock cleanup, stale-lock refusal, Android aarch64 cross-build and no CLI/web contract regression. Record actual observed outcomes against the PR head."
+    },
+    {
       "id": "01-register-generation",
       "priority": "P0",
       "state": "REVIEW",
