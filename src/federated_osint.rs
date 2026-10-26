@@ -13,7 +13,9 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::web_query::{self, SearchHit};
 
 pub const BASE_PUBLIC_RPC: &str = "https://mainnet.base.org";
-pub use crate::environment::{ALCHEMY_KEY_ENV as ALCHEMY_KEY_SLOT, X_BEARER_TOKEN_ENV as X_BEARER_SLOT};
+pub use crate::environment::{
+    ALCHEMY_KEY_ENV as ALCHEMY_KEY_SLOT, X_BEARER_TOKEN_ENV as X_BEARER_SLOT,
+};
 
 pub const BASE_ALCHEMY_RPC: &str = "https://base-mainnet.g.alchemy.com/v2";
 pub const BASE_ALCHEMY_ORIGIN: &str = "https://base-mainnet.g.alchemy.com:443";
