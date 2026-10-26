@@ -1,4 +1,4 @@
-//! The RustSec audit must run on every PR as a required check, and on dependency-changing
+//! The `RustSec` audit must run on every PR as a required check, and on dependency-changing
 //! pushes, schedules and manual dispatch. It remains read-only, pins actions by SHA,
 //! and fails on vulnerabilities in the locked dependency graph.
 
@@ -81,32 +81,31 @@ fn audit_runs_on_every_pr_and_scoped_pushes() {
         "pull_request must have no paths filter"
     );
     // Main pushes need only audit dependency and workflow changes.
-    for event in ["push:"] {
-        let marker = format!("  {event}\n");
-        let section = audit
-            .split_once(&marker)
-            .map(|(_, tail)| {
-                tail.lines()
-                    .take_while(|line| line.starts_with("    ") || line.trim().is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .expect("event trigger must have a scoped paths section");
-        assert!(
-            section.iter().any(|line| line.trim() == "paths:"),
-            "{event} must declare paths"
-        );
-        let actual = section
-            .iter()
-            .filter_map(|line| line.trim().strip_prefix("- "))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            actual,
-            [
-                "\"**/Cargo.toml\"",
-                "\"**/Cargo.lock\"",
-                "\".github/workflows/audit.yml\"",
-            ],
-            "{event} must include exactly the audited paths"
-        );
-    }
+    let event = "push:";
+    let marker = format!("  {event}\n");
+    let section = audit
+        .split_once(&marker)
+        .map(|(_, tail)| {
+            tail.lines()
+                .take_while(|line| line.starts_with("    ") || line.trim().is_empty())
+                .collect::<Vec<_>>()
+        })
+        .expect("event trigger must have a scoped paths section");
+    assert!(
+        section.iter().any(|line| line.trim() == "paths:"),
+        "{event} must declare paths"
+    );
+    let actual = section
+        .iter()
+        .filter_map(|line| line.trim().strip_prefix("- "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        [
+            "\"**/Cargo.toml\"",
+            "\"**/Cargo.lock\"",
+            "\".github/workflows/audit.yml\"",
+        ],
+        "{event} must include exactly the audited paths"
+    );
 }
