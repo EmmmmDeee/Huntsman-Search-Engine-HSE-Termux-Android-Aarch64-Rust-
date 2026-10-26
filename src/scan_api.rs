@@ -1044,11 +1044,20 @@ impl ScanApi {
             .iter()
             .map(|(record, results)| (record, results))
             .collect();
-        match scan_export::render_many(
-            &pairs,
-            param.get("format").unwrap_or("json"),
-            param.get("type").filter(|kind| !kind.is_empty()),
-        ) {
+        let format = param.get("format").unwrap_or("json");
+        let kind = param.get("type").filter(|kind| !kind.is_empty());
+        if format.trim().eq_ignore_ascii_case("json") {
+            return match scan_export::render_many_json_bounded(
+                &pairs,
+                kind,
+                usize::try_from(max_bytes).unwrap_or(usize::MAX),
+            ) {
+                Ok(Ok(export)) => ApiResponse::export(export),
+                Ok(Err(_)) => error(413, "export output budget exceeded"),
+                Err(message) => error(400, &message),
+            };
+        }
+        match scan_export::render_many(&pairs, format, kind) {
             // A post-render transport cap; streaming format writers are a separate
             // prerequisite for bounding peak output-rendering allocations.
             Ok(export) if u64::try_from(export.body.len()).unwrap_or(u64::MAX) > max_bytes => {
