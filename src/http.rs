@@ -1017,7 +1017,10 @@ mod tests {
         assert_eq!(err.kind, super::SourceOutcomeKind::DnsFailure);
         assert_eq!(
             err.detail,
-            format!("expired.invalid: no answer within {:?}", std::time::Duration::ZERO)
+            format!(
+                "expired.invalid: no answer within {:?}",
+                std::time::Duration::ZERO
+            )
         );
         assert_eq!(ACTIVE.load(Ordering::Acquire), 0);
     }
