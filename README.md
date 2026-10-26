@@ -14,6 +14,11 @@ score.
 
 ## Install on Termux (Android arm64)
 
+For repository upgrades, start with the [adaptive implementation handoff](docs/implementation/README.md).
+`cargo run --locked -p xtask -- roadmap` generates the committed file tree and
+ordered repair queue; the existing completion workflow publishes both register views
+as `huntsman-adaptive-completion` artifacts with exact commit provenance and explicit verification limits.
+
 Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or the
 [official GitHub releases](https://github.com/termux/termux-app/releases).
 Keep Termux and its plugins from the same distribution source. On an ARM64

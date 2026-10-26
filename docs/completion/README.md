@@ -149,3 +149,16 @@ The upper bound called "absolute completion in design" is operationally interpre
 all registered acceptance criteria proven; no reproducible blocking defects; no unaccounted
 file paths or integration contracts; and no remaining justified implementation with positive
 expected value under measured constraints. Any untested or unknown requirement remains explicit.
+
+## Immutable review snapshot and detailed contracts
+
+`cargo run --locked -p xtask -- roadmap markdown` provides a complementary committed
+Git snapshot, blob identities, inclusion hints, path drift and detailed repair
+contracts. Read `docs/implementation/README.md`. This register remains the broad
+capability/status authority; `register_tasks` maps each detail to its existing IDs.
+The roadmap includes unmapped broad tasks and identifies absent paths without
+automatically changing their declared states. The existing completion workflow
+publishes both views together. Mappings are partial coverage links, not dependency
+or completion equivalence: detailed repair prerequisites control their execution;
+broad dependencies and acceptance criteria control broad task closure. Preserve
+the CLI above and never close a broad task merely because one detail passed.

@@ -36,6 +36,11 @@ jobs:
           set -euo pipefail
           cargo run --locked -p xtask -- completion write
           cargo run --locked -p xtask -- completion check
+          cargo run --locked -p xtask -- roadmap check
+          cargo run --locked -p xtask -- roadmap markdown > target/completion/HUNTSMAN_IMPLEMENTATION_MAP.md
+          cargo run --locked -p xtask -- roadmap json > target/completion/HUNTSMAN_IMPLEMENTATION_MAP.json
+          (cd target/completion && sha256sum HUNTSMAN_IMPLEMENTATION_MAP.md HUNTSMAN_IMPLEMENTATION_MAP.json > HUNTSMAN_IMPLEMENTATION_MAP.sha256)
+          (cd target/completion && sha256sum -c HUNTSMAN_IMPLEMENTATION_MAP.sha256)
           test -s target/completion/IMPLEMENTATION_REGISTER.md
           (cd target/completion && sha256sum IMPLEMENTATION_REGISTER.md > IMPLEMENTATION_REGISTER.md.sha256)
           (cd target/completion && sha256sum -c IMPLEMENTATION_REGISTER.md.sha256)
@@ -46,5 +51,8 @@ jobs:
           path: |
             target/completion/IMPLEMENTATION_REGISTER.md
             target/completion/IMPLEMENTATION_REGISTER.md.sha256
+            target/completion/HUNTSMAN_IMPLEMENTATION_MAP.md
+            target/completion/HUNTSMAN_IMPLEMENTATION_MAP.json
+            target/completion/HUNTSMAN_IMPLEMENTATION_MAP.sha256
           if-no-files-found: error
           retention-days: 30
