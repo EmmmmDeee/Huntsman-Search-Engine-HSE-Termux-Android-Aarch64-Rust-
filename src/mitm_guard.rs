@@ -114,6 +114,16 @@ pub fn parse_baseline(bytes: &[u8]) -> Result<Baseline, String> {
         {
             return Err("baseline requires 1..256 valid individual BSSIDs per SSID".into());
         }
+        // A MAC address is case-insensitive: duplicate case variants cannot
+        // represent separate trusted access points in an operator baseline.
+        let mut seen_bssids = BTreeSet::new();
+        if n
+            .bssids
+            .iter()
+            .any(|bssid| !seen_bssids.insert(bssid.to_ascii_lowercase()))
+        {
+            return Err("baseline BSSIDs must be unique per SSID (case-insensitive)".into());
+        }
         if !matches!(
             n.minimum_security.trim().to_ascii_uppercase().as_str(),
             "OPEN" | "WEP" | "WPA" | "WPA2" | "WPA3"
@@ -632,6 +642,14 @@ mod tests {
     fn baseline_validation_rejects_redacted_or_multicast_mac() {
         assert!(parse_baseline(br#"{"networks":[{"ssid":"X","bssids":["02:00:00:00:00:00"],"minimum_security":"WPA2"}]}"#).is_err());
         assert!(parse_baseline(br#"{"networks":[{"ssid":"X","bssids":["01:00:5e:00:00:01"],"minimum_security":"WPA2"}]}"#).is_err());
+    }
+
+    #[test]
+    fn baseline_rejects_duplicate_bssids_irrespective_of_hex_case() {
+        let duplicate = br#"{"networks":[{"ssid":"Office","bssids":["3c:5a:b4:11:22:33","3C:5A:B4:11:22:33"],"minimum_security":"WPA2"}]}"#;
+        let distinct = br#"{"networks":[{"ssid":"Office","bssids":["3c:5a:b4:11:22:33","3c:5a:b4:11:22:44"],"minimum_security":"WPA2"}]}"#;
+        assert!(parse_baseline(duplicate).is_err());
+        assert!(parse_baseline(distinct).is_ok());
     }
 
     #[test]
