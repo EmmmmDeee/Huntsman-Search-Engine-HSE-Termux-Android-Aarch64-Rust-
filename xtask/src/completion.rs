@@ -110,7 +110,9 @@ fn generate(root: &Path) -> Result<String> {
         files.insert(path.to_owned());
     }
     if files.is_empty() {
-        return Err(Error::Refused("git index contains no tracked files".to_owned()));
+        return Err(Error::Refused(
+            "git index contains no tracked files".to_owned(),
+        ));
     }
     let tasks = read_tasks(root)?;
     let ordered = order_tasks(&tasks)?;
@@ -133,7 +135,8 @@ fn generate(root: &Path) -> Result<String> {
     let mut report = String::new();
     let fence = char::from(96).to_string().repeat(3);
     report.push_str("# Huntsman — adaptive implementation register\n\n");
-    report.push_str("GENERATED EVIDENCE INVENTORY — NOT A CLAIM OF IMPLEMENTATION COMPLETENESS.\n\n");
+    report
+        .push_str("GENERATED EVIDENCE INVENTORY — NOT A CLAIM OF IMPLEMENTATION COMPLETENESS.\n\n");
     let _ = writeln!(
         report,
         "Source: local Git index at HEAD {}, generated from {} and tracked paths.",
