@@ -102,6 +102,82 @@ fn normalize_news_time(raw: &str) -> Option<String> {
     crate::timefmt::parse_timestamp_and_iso(&formatted).map(|(_, iso)| iso)
 }
 
+// Converts one source record into Huntsman's existing evidence contract.
+fn push_sourced_entity(
+    entities: &mut Vec<Entity>,
+    source: Source,
+    row: &Value,
+    url: &str,
+    title: &str,
+    scan_id: &str,
+) {
+    let mut evidence = Evidence::new(
+        EvidenceProvenance::for_scan(name(source), scan_id),
+        if source == Source::News {
+            "Indexed news article; underlying claims unverified"
+        } else {
+            "Official notice exists; status and reward are subject to change"
+        },
+    )
+    .with_attr("source_url", url)
+    .with_attr("title", title);
+
+    match source {
+        Source::News => {
+            for (upstream, field) in [
+                ("domain", "domain"),
+                ("language", "language"),
+                ("sourcecountry", "source_country"),
+            ] {
+                if let Some(s) = row.get(upstream).and_then(Value::as_str) {
+                    evidence = evidence.with_attr(field, s);
+                }
+            }
+            if let Some(time) = row
+                .get("seendate")
+                .and_then(Value::as_str)
+                .and_then(normalize_news_time)
+            {
+                evidence = evidence.with_attr("first_seen", time);
+            }
+            push_entity(
+                &mut entities,
+                EntityKind::Url,
+                url,
+                0.35,
+                scan_id,
+                evidence,
+                &["news_lead", "unverified"],
+            );
+        }
+        Source::Notices => {
+            for key in ["reward_text", "publication", "status", "uid"] {
+                if let Some(s) = row
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    evidence = evidence.with_attr(key, s);
+                }
+            }
+            if let Some(date) = row.get("modified").and_then(Value::as_str) {
+                evidence = evidence.with_attr("last_updated", date);
+            }
+            push_entity(
+                &mut entities,
+                EntityKind::Document,
+                url,
+                0.8,
+                scan_id,
+                evidence,
+                &["official_notice", "status_unverified"],
+            );
+        }
+        Source::Web | Source::All => unreachable!(),
+    }
+
+}
+
 fn parse(
     source: Source,
     body: &Value,
@@ -143,70 +219,7 @@ fn parse(
             skipped += 1;
             continue;
         };
-        let mut evidence = Evidence::new(
-            EvidenceProvenance::for_scan(name(source), scan_id),
-            if source == Source::News {
-                "Indexed news article; underlying claims unverified"
-            } else {
-                "Official notice exists; status and reward are subject to change"
-            },
-        )
-        .with_attr("source_url", url)
-        .with_attr("title", title);
-
-        match source {
-            Source::News => {
-                for (upstream, field) in [
-                    ("domain", "domain"),
-                    ("language", "language"),
-                    ("sourcecountry", "source_country"),
-                ] {
-                    if let Some(s) = row.get(upstream).and_then(Value::as_str) {
-                        evidence = evidence.with_attr(field, s);
-                    }
-                }
-                if let Some(time) = row
-                    .get("seendate")
-                    .and_then(Value::as_str)
-                    .and_then(normalize_news_time)
-                {
-                    evidence = evidence.with_attr("first_seen", time);
-                }
-                push_entity(
-                    &mut entities,
-                    EntityKind::Url,
-                    url,
-                    0.35,
-                    scan_id,
-                    evidence,
-                    &["news_lead", "unverified"],
-                );
-            }
-            Source::Notices => {
-                for key in ["reward_text", "publication", "status", "uid"] {
-                    if let Some(s) = row
-                        .get(key)
-                        .and_then(Value::as_str)
-                        .filter(|s| !s.is_empty())
-                    {
-                        evidence = evidence.with_attr(key, s);
-                    }
-                }
-                if let Some(date) = row.get("modified").and_then(Value::as_str) {
-                    evidence = evidence.with_attr("last_updated", date);
-                }
-                push_entity(
-                    &mut entities,
-                    EntityKind::Document,
-                    url,
-                    0.8,
-                    scan_id,
-                    evidence,
-                    &["official_notice", "status_unverified"],
-                );
-            }
-            Source::Web | Source::All => unreachable!(),
-        }
+        push_sourced_entity(&mut entities, source, row, url, title, scan_id);
     }
     merge_by_uid(&mut entities);
     Ok((entities, skipped))
@@ -280,6 +293,17 @@ fn collect<T: Transport + ?Sized>(
             ),
         );
     }
+    classify_document(source, &document, scan_id, now)
+}
+
+// Preserves source-level failures and refuses to convert schema drift into zero findings.
+fn classify_document(
+    source: Source,
+    document: &Value,
+    scan_id: &str,
+    now: u64,
+) -> (Vec<Entity>, SourceExecutionOutcome) {
+    let label = name(source);
     match parse(source, &document, scan_id) {
         Ok((entities, skipped)) if !entities.is_empty() => {
             let mut outcome =
