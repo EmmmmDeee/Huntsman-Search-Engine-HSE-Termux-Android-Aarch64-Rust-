@@ -113,8 +113,7 @@ fn parse_response(
     }
     if rows.len() == 1 {
         return Ok(miss(
-            SourceExecutionOutcome::valid_zero(SOURCE, now_unix)
-                .with_http_status(response.status),
+            SourceExecutionOutcome::valid_zero(SOURCE, now_unix).with_http_status(response.status),
         ));
     }
 
@@ -148,7 +147,9 @@ fn parse_response(
                 "Wayback CDX returned an invalid HTTP(S) URL",
             ));
         };
-        let host = host_only(&canonical).trim_end_matches('.').to_ascii_lowercase();
+        let host = host_only(&canonical)
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
         if host != domain && !host.ends_with(&format!(".{domain}")) {
             return Err(failed(
                 SourceOutcomeKind::SemanticDrift,
@@ -172,7 +173,10 @@ fn parse_response(
         .with_attr("capture_timestamp_utc", timestamp)
         .with_attr("original_url", &canonical)
         .with_attr("capture_http_status", "200")
-        .with_attr("archive_snapshot_url", format!("{ARCHIVE}/{timestamp}/{canonical}"));
+        .with_attr(
+            "archive_snapshot_url",
+            format!("{ARCHIVE}/{timestamp}/{canonical}"),
+        );
         if !row[3].is_empty() {
             evidence = evidence.with_attr("cdx_digest", &row[3]);
         }
@@ -207,9 +211,8 @@ fn parse_response(
         ));
     }
     merge_by_uid(&mut entities);
-    let mut outcome =
-        SourceExecutionOutcome::success(SOURCE, now_unix, entities.len())
-            .with_http_status(response.status);
+    let mut outcome = SourceExecutionOutcome::success(SOURCE, now_unix, entities.len())
+        .with_http_status(response.status);
     if skipped_query_urls != 0 {
         outcome = outcome.with_detail(format!(
             "{skipped_query_urls} URLs with query, fragment or user-info were excluded"
@@ -218,7 +221,12 @@ fn parse_response(
     Ok(Report { entities, outcome })
 }
 
-fn failed(kind: SourceOutcomeKind, now_unix: u64, status: u16, detail: &str) -> SourceExecutionOutcome {
+fn failed(
+    kind: SourceOutcomeKind,
+    now_unix: u64,
+    status: u16,
+    detail: &str,
+) -> SourceExecutionOutcome {
     SourceExecutionOutcome::failed(SOURCE, now_unix, kind, Some(status), detail)
 }
 
@@ -245,11 +253,20 @@ mod tests {
     #[test]
     fn accepts_indexed_urls_and_historical_subdomain_pivots() {
         let body = r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://example.org/about","200","ABC"],["20221231235959","http://old.example.org/","200","DEF"]]"#;
-        let report = parse_response(&response(body), "example.org", "scan", NOW).expect("CDX contract");
+        let report =
+            parse_response(&response(body), "example.org", "scan", NOW).expect("CDX contract");
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
         assert_eq!(report.entities.len(), 3);
-        assert!(report.entities.iter().any(|e| e.kind == EntityKind::Domain && e.value == "old.example.org"));
-        assert!(report.entities.iter().any(|e| e.evidence.iter().any(|ev| ev.attr_values("capture_timestamp_utc").any(|a| a == "20200102030405"))));
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Domain && e.value == "old.example.org")
+        );
+        assert!(report.entities.iter().any(|e| e.evidence.iter().any(|ev| {
+            ev.attr_values("capture_timestamp_utc")
+                .any(|a| a == "20200102030405")
+        })));
     }
 
     #[test]
@@ -269,14 +286,18 @@ mod tests {
             r#"[["original","timestamp","statuscode","digest"],["https://example.org/","20200102030405","200","ABC"]]"#,
             r#"{"error":"rate limit"}"#,
         ] {
-            assert!(parse_response(&response(body), "example.org", "scan", NOW).is_err(), "{body}");
+            assert!(
+                parse_response(&response(body), "example.org", "scan", NOW).is_err(),
+                "{body}"
+            );
         }
     }
 
     #[test]
     fn excludes_sensitive_query_urls_without_losing_other_captures() {
         let body = r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://example.org/?token=secret","200","ABC"],["20200102030406","https://example.org/page","200","DEF"]]"#;
-        let report = parse_response(&response(body), "example.org", "scan", NOW).expect("safe subset");
+        let report =
+            parse_response(&response(body), "example.org", "scan", NOW).expect("safe subset");
         assert_eq!(report.entities.len(), 1);
         assert!(!format!("{report:?}").contains("secret"));
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
@@ -288,7 +309,9 @@ mod tests {
             assert!(request.url.starts_with(API));
             assert!(request.url.contains("matchType=domain"));
             assert!(!request.url.contains("token"));
-            Ok(response(r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://example.org/a","200","ABC"]]"#))
+            Ok(response(
+                r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://example.org/a","200","ABC"]]"#,
+            ))
         }
     }
 
@@ -296,6 +319,11 @@ mod tests {
     fn live_adapter_uses_exact_archival_origin_without_credentials() {
         let report = lookup(&NetworkStub, "example.org", "scan", NOW).expect("transport");
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
-        assert!(report.entities.iter().any(|e| e.value == "https://example.org/a"));
+        assert!(
+            report
+                .entities
+                .iter()
+                .any(|e| e.value == "https://example.org/a")
+        );
     }
 }
