@@ -344,7 +344,7 @@ mod tests {
             .collect();
         assert_eq!(contacts.len(), 1);
         assert_eq!(contacts[0].value, "hello@example.org");
-        assert!(contacts[0].has_tag("candidate"));
+        assert!(contacts[0].has_tag(crate::tags::CANDIDATE));
         assert!(contacts[0].evidence.iter().any(|e| e.is_inferred));
         assert!(report.entities.iter().all(|e| !e.value.contains("hidden@")));
         assert!(
