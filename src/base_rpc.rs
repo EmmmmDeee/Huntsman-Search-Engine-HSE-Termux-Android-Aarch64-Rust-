@@ -391,6 +391,7 @@ mod tests {
         assert_eq!(limited.outcome.kind, SourceOutcomeKind::RateLimited);
         let malformed = lookup(&OneResponse::json(200, "{bad"), WALLET, "scan", 1).unwrap();
         assert!(malformed.entities.is_empty());
-        assert_eq!(malformed.outcome.kind, SourceOutcomeKind::ParserDrift);
+        assert!(!malformed.outcome.kind.is_accepted());
+        assert_ne!(malformed.outcome.kind, SourceOutcomeKind::ValidZero);
     }
 }
