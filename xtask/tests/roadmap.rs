@@ -392,3 +392,48 @@ fn budget_errors_cannot_emit_terminal_controls_or_forge_an_extra_line() {
     assert_eq!(out.stderr.iter().filter(|b| **b == b'\n').count(), 1);
     assert!(String::from_utf8_lossy(&out.stderr).contains("budget"));
 }
+
+#[test]
+fn preserves_the_existing_register_and_maps_details_without_claiming_completion() {
+    let mut repo = fixture(&[]);
+    let mut t = task("detail", 1, &[]);
+    t["register_tasks"] = json!(["existing"]);
+    repo.write("docs/implementation/queue.json", &queue(vec![t]));
+    repo.write("docs/completion/tasks.json", &json!({"schema":"huntsman.completion/1", "implementations":[
+        {"id":"existing","path":"src/lib.rs","state":"REVIEW","objective":"Existing broad contract"},
+        {"id":"unmapped","path":"src/not-present.rs","state":"PROPOSED","objective":"Keep this separate intent visible"}
+    ]}).to_string());
+    repo.commit_all("existing register");
+    let value = report(&repo);
+    assert_eq!(
+        value["completion_register"]["tasks"][0]["implementation_tasks"],
+        json!(["detail"])
+    );
+    assert_eq!(
+        value["completion_register"]["tasks"][0]["declared_state"],
+        "REVIEW"
+    );
+    assert_eq!(
+        value["completion_register"]["tasks"][1]["path_exists"],
+        false
+    );
+    assert_eq!(
+        value["completion_register"]["tasks"][1]["implementation_tasks"],
+        json!([])
+    );
+    assert_eq!(value["tasks"][0]["verification"], "not_run");
+}
+
+#[test]
+fn refuses_a_crosswalk_to_an_unknown_existing_register_task() {
+    let mut repo = fixture(&[]);
+    let mut t = task("detail", 1, &[]);
+    t["register_tasks"] = json!(["typo"]);
+    repo.write("docs/implementation/queue.json", &queue(vec![t]));
+    repo.write(
+        "docs/completion/tasks.json",
+        r#"{"schema":"huntsman.completion/1","implementations":[]}"#,
+    );
+    repo.commit_all("dangling crosswalk");
+    assert_eq!(run(&repo, "check").status.code(), Some(64));
+}

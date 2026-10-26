@@ -67,7 +67,13 @@
         "cargo test --locked --test architecture_doc --test architecture_boundaries --test runtime_reachability"
       ],
       "done_when": "Baseline receipts are recorded for the exact intended tree, failures are named, and scope-specific blockers are explicit. Tests are actually executed, not inferred from this plan.",
-      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration."
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "00-radar-concurrent-writer-regression",
+        "01-register-generation",
+        "02-ci-generation",
+        "03-security-preflight"
+      ]
     },
     {
       "id": "bound-scan-exports",
@@ -111,7 +117,11 @@
         "cargo run --locked -p xtask -- gate full"
       ],
       "done_when": "Regression fixtures prove exact-boundary success, one-byte-over refusal before aggregate allocation, checked arithmetic, duplicate-ID policy, escaping expansion and unchanged small SpiderFoot exports. An identical-host peak-memory comparison documents improvement without claiming handset measurements.",
-      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration."
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "07-evidence-integrity",
+        "11-memory-resource-budget"
+      ]
     },
     {
       "id": "migrate-provider-authority",
@@ -171,7 +181,10 @@
         "cargo run --locked -p xtask -- gate full"
       ],
       "done_when": "Fake transports prove exact required auth headers only to the approved origin, missing-key no-send behavior, redirect/off-origin refusal, secret redaction and unchanged result/error/exit contracts. Authorized live tests remain separately labelled when credentials are unavailable.",
-      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration."
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "05-credential-boundaries"
+      ]
     },
     {
       "id": "admit-heavy-scan-requests",
@@ -214,7 +227,11 @@
         "cargo run --locked -p xtask -- gate full"
       ],
       "done_when": "Synchronized requests prove peak admitted heavy work never exceeds the chosen documented cap and permits recover on every exit path. Existing phone-sized browser CI passes, including useful capacity errors and unchanged health/control behavior.",
-      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration."
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "08-http-ui-wiring",
+        "11-memory-resource-budget"
+      ]
     },
     {
       "id": "unify-provider-failure-pacing",
@@ -263,7 +280,11 @@
         "cargo run --locked -p xtask -- gate full"
       ],
       "done_when": "Deterministic transport/clock fixtures prove suppression, Retry-After handling, recovery, unrelated-host isolation, total request bounds and preservation of legitimate misses.",
-      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration."
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "05-credential-boundaries",
+        "11-memory-resource-budget"
+      ]
     },
     {
       "id": "reconcile-wiring-contracts",
@@ -340,7 +361,10 @@
         "cargo run --locked -p xtask -- gate full"
       ],
       "done_when": "Each candidate has a recorded inclusion/consumer decision; no deletion relies solely on static analysis. Representative module selections execute only intended fake transports and agree across CLI/API/UI and metadata. New unsupported syntax has explicit uncertainty and regression fixtures.",
-      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration."
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "06-source-registry-wiring"
+      ]
     },
     {
       "id": "preserve-lineage-independence",
@@ -394,7 +418,10 @@
         "cargo run --locked -p xtask -- gate full"
       ],
       "done_when": "Adversarial fixtures cover lookalikes, invisible characters, alias collisions, immutable originals and held decisions. No case upgrades weak or ambiguous upstream evidence into independent corroboration.",
-      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration."
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "07-evidence-integrity"
+      ]
     },
     {
       "id": "close-legacy-parity-increments",
@@ -438,7 +465,11 @@
         "cargo run --locked -p xtask -- gate full"
       ],
       "done_when": "A selected capability has independently produced reproducible legacy/current receipts satisfying every root architecture acceptance criterion. Only then update that row; retain partial status for uncovered paths.",
-      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration."
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "06-source-registry-wiring",
+        "07-evidence-integrity"
+      ]
     },
     {
       "id": "verify-radio-continuity",
@@ -496,7 +527,10 @@
         "cargo run --locked -p xtask -- gate full"
       ],
       "done_when": "Synthetic fixtures show equivalent CLI/native Web UI assessment semantics, no false proof/attribution, unchanged historical/eligibility handling and bounded malformed-input rejection. Live radio validation is recorded separately on the handset.",
-      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration."
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "09-mitm-guard"
+      ]
     },
     {
       "id": "record-handset-acceptance",
@@ -549,7 +583,11 @@
         "bash scripts/termux-runtime-acceptance.sh"
       ],
       "done_when": "A timestamped TERMUX_RUNTIME_ACCEPTANCE receipt and UI/radio checks identify the actual accepted commit, Android/Termux environment, measurements and exit status. Missing device access remains blocked; no target-specific success is inferred.",
-      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration."
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "04-android-handset-acceptance",
+        "12-handset-evidence-record"
+      ]
     }
   ]
 }

@@ -100,6 +100,7 @@ fn snapshot(root: &Path) -> Result<Value> {
         .ok_or_else(|| Error::Invalid(format!("{QUEUE_PATH} must be a committed regular file")))?;
     let authored = blobs.read(queue_entry, MAX_QUEUE)?;
     let (tasks, shared) = queue::tasks(&authored, &known)?;
+    let completion_register = register(&entries, &mut blobs, &tasks, &known)?;
     let (wiring, limitations) = wiring::scan(&entries, &mut blobs)?;
     let mut identical: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut files = Vec::with_capacity(entries.len());
@@ -129,7 +130,88 @@ fn snapshot(root: &Path) -> Result<Value> {
         "working_tree_clean": clean, "verification": "not_run",
         "files": files, "duplicate_groups": duplicates,
         "tasks": tasks, "shared_edit_paths": shared, "limitations": limitations,
+        "completion_register": completion_register,
     }))
+}
+
+/// Preserve the existing broad register as authored intent. Detailed tasks reference it;
+/// the immutable view never creates a competing completion state or omits unmapped work.
+fn register(
+    entries: &[Entry],
+    blobs: &mut Blobs,
+    tasks: &[Value],
+    known: &BTreeSet<String>,
+) -> Result<Value> {
+    let path = "docs/completion/tasks.json";
+    let input = entries.iter().find(|e| e.path == path && e.kind == "file");
+    let Some(input) = input else {
+        if tasks.iter().any(|t| t.get("register_tasks").is_some()) {
+            return Err(Error::Invalid(
+                "register_tasks needs committed docs/completion/tasks.json".into(),
+            ));
+        }
+        return Ok(Value::Null);
+    };
+    let value: Value = serde_json::from_slice(&blobs.read(input, MAX_QUEUE)?)
+        .map_err(|e| Error::Invalid(format!("completion register JSON: {e}")))?;
+    if value["schema"] != "huntsman.completion/1" {
+        return Err(Error::Invalid(
+            "unsupported completion register schema".into(),
+        ));
+    }
+    let rows = value["implementations"]
+        .as_array()
+        .ok_or_else(|| Error::Invalid("completion register needs implementations array".into()))?;
+    let mut definitions = BTreeMap::new();
+    for row in rows {
+        let id = row["id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error::Invalid("completion register needs nonempty IDs".into()))?;
+        for field in ["path", "state", "objective"] {
+            if row[field].as_str().is_none_or(|s| s.is_empty()) {
+                return Err(Error::Invalid(format!("completion register needs {field}")));
+            }
+        }
+        if !safe_path(row["path"].as_str().unwrap_or_default())
+            || definitions.insert(id, row).is_some()
+        {
+            return Err(Error::Invalid(
+                "unsafe path or duplicate ID in completion register".into(),
+            ));
+        }
+    }
+    let mut mappings: BTreeMap<&str, Vec<&Value>> = BTreeMap::new();
+    for task in tasks {
+        let Some(ids) = task.get("register_tasks") else {
+            continue;
+        };
+        let ids = ids
+            .as_array()
+            .ok_or_else(|| Error::Invalid("register_tasks needs an array".into()))?;
+        let mut seen = BTreeSet::new();
+        for id in ids {
+            let id = id
+                .as_str()
+                .ok_or_else(|| Error::Invalid("register_tasks needs text IDs".into()))?;
+            if !definitions.contains_key(id) || !seen.insert(id) {
+                return Err(Error::Invalid(format!(
+                    "unknown or repeated completion task {id:?}"
+                )));
+            }
+            mappings.entry(id).or_default().push(&task["id"]);
+        }
+    }
+    let rows: Vec<Value> = definitions.into_iter().map(|(id, definition)| json!({
+        "id": id, "path": definition["path"], "declared_state": definition["state"],
+        "path_exists": definition["path"].as_str().is_some_and(|p| known.contains(p)),
+        "implementation_tasks": mappings.remove(id).unwrap_or_default(), "definition": definition,
+    })).collect();
+    Ok(
+        json!({"source": path, "scope": "declared_intent_not_verification",
+        "mapping_semantics": "partial coverage only; detailed dependencies govern execution, broad prerequisites govern broad task completion",
+        "tasks": rows}),
+    )
 }
 
 fn entries(bytes: &[u8]) -> Result<Vec<Entry>> {
@@ -390,6 +472,35 @@ fn markdown(report: &Value) -> String {
                 "{label}: {}.\n",
                 literal(task[field].as_str().unwrap_or_default())
             );
+        }
+    }
+    if let Some(rows) = report["completion_register"]["tasks"].as_array() {
+        text.push_str("## Existing completion register and task crosswalk\n\nThe broad capability/status authority remains docs/completion/tasks.json. These are authored states, not new verification results. Links represent partial coverage, not task or dependency equivalence. Detailed dependencies govern repair execution; broad prerequisites and full acceptance criteria govern broad task closure. An offline detail passing does not close a broad handset-gated task. Avoid duplicate implementation where coverage overlaps. Unmapped and missing-path intentions remain visible.\n\n");
+        for row in rows {
+            let _ = writeln!(
+                text,
+                "### Register {}\n",
+                literal(row["id"].as_str().unwrap_or_default())
+            );
+            let _ = writeln!(
+                text,
+                "Declared state: {}. Path: {}. Committed path exists: {}. Implementation tasks: {}.\n",
+                literal(row["declared_state"].as_str().unwrap_or_default()),
+                literal(row["path"].as_str().unwrap_or_default()),
+                row["path_exists"],
+                literal(&row["implementation_tasks"].to_string())
+            );
+            let _ = writeln!(
+                text,
+                "Broad priority: {}. Broad completion prerequisites: {}.\n",
+                literal(&row["definition"]["priority"].to_string()),
+                literal(&row["definition"]["depends_on"].to_string())
+            );
+            for field in ["objective", "evidence", "implementation", "verification"] {
+                if let Some(value) = row["definition"][field].as_str() {
+                    let _ = writeln!(text, "{field}: {}.\n", literal(value));
+                }
+            }
         }
     }
     text.push_str("## Shared edit paths\n\nSerialise tasks touching these files or reconcile them in isolated branches before integration.\n\n");

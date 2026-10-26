@@ -49,8 +49,8 @@ operator's standing instruction to execute without ordinary option questions.
 - Metadata capture is bounded at 16 MiB, source blobs at 2 MiB, and the queue at
   1 MiB. Parse one source file at a time. Oversize input is refused with a clear
   error, never truncated. The product gains no dependencies or persistent cache.
-- Existing CI and the daily read-only controller generate Markdown/JSON artifacts
-  for their exact checkout. The guide explains manual regeneration, finite
+- The existing completion workflow generates both register views as Markdown/JSON artifacts
+  for their exact checkout on PRs, main pushes and its existing daily schedule. The guide explains manual regeneration, finite
   acceptance, dependency ordering and external device/credential blockers.
 
 ## Acceptance
@@ -65,3 +65,15 @@ The task queue is finite and continuously revisable. A passing generator does no
 establish that the listed repairs are implemented or that a design is absolutely
 complete. New evidence changes priorities; receipts, not optimistic status text,
 establish completion.
+
+## Integration with concurrent main work
+
+Main commit c31af6935669153ddf13367f24920e1bc138a8d7 independently added an
+index-based completion register and radar writer hardening. Preserve both. The
+broad docs/completion/tasks.json remains the state authority; detailed queue tasks
+reference its IDs through register_tasks as partial coverage links, not
+dependency or completion equivalence. Detailed dependencies govern repair execution;
+broad prerequisites and acceptance criteria govern broad task closure. The immutable roadmap includes every
+broad definition, including unmapped intent and absent paths, without interpreting
+a declared state as fresh test evidence. The existing completion workflow alone
+publishes both views; remove the initially proposed extra CI/controller refreshes.

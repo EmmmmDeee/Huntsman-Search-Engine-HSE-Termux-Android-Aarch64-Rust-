@@ -49,7 +49,7 @@ stderr. `check` validates the same snapshot and does not claim verification.
 ## Task 2: Ground the queue and refresh it
 
 **Files:** create `docs/implementation/{README.md,queue.json}` and a changelog
-fragment; modify `.github/workflows/{ci,fortified-controller}.yml` and the README.
+fragment; modify `.github/workflows/completion.yml`, `docs/completion/README.md` and the README.
 
 **Interfaces:** author queue fields specified by Task 1; CI captures both output
 formats under `target/implementation-map/`, with read-only GitHub permissions.
@@ -57,7 +57,7 @@ formats under `target/implementation-map/`, with read-only GitHub permissions.
 - [ ] Cross-check each task's evidence and existing file paths against current code.
 - [ ] Describe exact adapter contracts, resource policies, test commands, rollback,
   external blockers and finite completion rules for the next coding agent.
-- [ ] Add snapshot generation/upload steps to existing CI and daily controller.
+- [ ] Add snapshot generation/upload steps to the existing completion workflow; preserve its CLI/output contract and validate the task crosswalk.
 - [ ] Commit the coherent source so generation includes the new tracked paths.
 - [ ] Generate both outputs and compare inventory counts with Git independently.
 - [ ] Run host gate; obtain independent correctness/security review; fix material findings.

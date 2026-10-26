@@ -27,12 +27,33 @@ lazy object fetching are disabled. Partial clones missing required local blobs
 are refused; materialize them explicitly before generation. No environment
 credentials, ignored files, symlink targets or remote providers are read. The tool never executes queue command strings.
 
-The `ci` workflow and daily `fortified-controller` workflow generate both files
-as `implementation-map` artifacts. The scheduled controller runs at 02:17 UTC
-(12:17 Australia/Brisbane). CI uploads are generated projections; they do not
-rewrite source documents, make commits or autonomously implement repairs. A failed
-generation is visible in the workflow, and its upload cannot claim missing files
-were generated. Download the artifact for the exact run/commit being reviewed.
+The existing `completion` workflow publishes both register views as the
+`huntsman-adaptive-completion` artifact on PRs, main pushes, manual dispatch and
+its daily 06:17 UTC (16:17 Australia/Brisbane) schedule. One workflow owns refresh;
+no additional scheduled controller is introduced. Generated files do not rewrite
+sources, make commits or implement repairs. Download the exact run/commit artifact.
+
+## One task authority, complementary views
+
+The existing `docs/completion/tasks.json` owns broad capability intent and declared
+status. Its `completion print|write|check` CLI and index-based output remain intact.
+`docs/implementation/queue.json` adds precise implementation contracts, acceptance
+commands and rollback without a second completion-state system. Each detailed task
+has `register_tasks` IDs linking it to existing broad contracts. The immutable
+roadmap validates that crosswalk and includes every broad definition, even those
+without a detailed implementation task. Mappings describe partial coverage, not task equivalence, dependency equivalence
+or completion. Execute a detailed repair only after its own `depends_on` entries.
+A broad task remains open until its full acceptance criteria and all broad
+prerequisites are verified, including physical handset gates. Offline radio or
+wiring repairs may precede that final acceptance without completing the broader
+task. Avoid duplicate implementation where coverage overlaps; record receipts
+against the precise scope they prove. An authored VERIFIED label is not fresh proof.
+
+Missing registered paths are explicit. The existing TikTok task remains visible
+as unmapped broad work even though none of the ten detailed tasks claims its full
+scope. Its module is present in the committed tree; presence alone does not prove
+provider reachability, correct attribution or complete integration. Inspect actual
+call paths and never infer a contact association from a handle alone.
 
 ## Read in this order
 
@@ -81,7 +102,10 @@ Actions are `inspect`, `modify`, or `create`. A task names each path at most onc
 Dependencies must be unique, resolvable and acyclic. Among available tasks, lower
 priority numbers run first, then lexical IDs; prerequisites always precede dependents.
 
-The schema has no automatic completion flag. Archive successful task decisions
+The optional `register_tasks` array references exact IDs in the existing broad
+completion register. Unknown or repeated references are refused.
+
+The detailed schema has no automatic completion flag. Archive successful task decisions
 and their receipts in a reviewed change, then remove or revise the corresponding
 queue task and dependency edges together. Preserve unresolved evidence and external
 blockers. Merely editing a task's text cannot make the generator certify success.

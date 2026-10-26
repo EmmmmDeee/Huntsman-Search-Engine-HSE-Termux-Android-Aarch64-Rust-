@@ -1,0 +1,58 @@
+name: Adaptive completion register
+
+# A fresh, commit-addressed handoff is generated from the Git index and reviewed task
+# definitions. It never edits source, opens a PR, or bypasses the repository merge gates.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  register:
+    name: Generate the full repository completion register
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-08-05
+        with:
+          toolchain: "1.87"
+          components: rustfmt
+      - name: Check formatting and completion regression tests
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked -p xtask --test completion
+      - name: Generate and verify complete register
+        run: |
+          set -euo pipefail
+          cargo run --locked -p xtask -- completion write
+          cargo run --locked -p xtask -- completion check
+          cargo run --locked -p xtask -- roadmap check
+          cargo run --locked -p xtask -- roadmap markdown > target/completion/HUNTSMAN_IMPLEMENTATION_MAP.md
+          cargo run --locked -p xtask -- roadmap json > target/completion/HUNTSMAN_IMPLEMENTATION_MAP.json
+          (cd target/completion && sha256sum HUNTSMAN_IMPLEMENTATION_MAP.md HUNTSMAN_IMPLEMENTATION_MAP.json > HUNTSMAN_IMPLEMENTATION_MAP.sha256)
+          (cd target/completion && sha256sum -c HUNTSMAN_IMPLEMENTATION_MAP.sha256)
+          test -s target/completion/IMPLEMENTATION_REGISTER.md
+          (cd target/completion && sha256sum IMPLEMENTATION_REGISTER.md > IMPLEMENTATION_REGISTER.md.sha256)
+          (cd target/completion && sha256sum -c IMPLEMENTATION_REGISTER.md.sha256)
+      - name: Publish read-only, source-addressed handoff
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: huntsman-adaptive-completion
+          path: |
+            target/completion/IMPLEMENTATION_REGISTER.md
+            target/completion/IMPLEMENTATION_REGISTER.md.sha256
+            target/completion/HUNTSMAN_IMPLEMENTATION_MAP.md
+            target/completion/HUNTSMAN_IMPLEMENTATION_MAP.json
+            target/completion/HUNTSMAN_IMPLEMENTATION_MAP.sha256
+          if-no-files-found: error
+          retention-days: 30

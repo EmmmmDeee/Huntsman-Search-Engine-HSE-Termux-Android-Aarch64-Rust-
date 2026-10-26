@@ -2,4 +2,5 @@
   dependency-ordered implementation handoff, with conservative inclusion hints,
   duplicate-content review, task/path drift, shared edits and explicit uncertainty.
   The editable queue and guide carry grounded repair contracts for future agents;
-  read-only CI and the daily controller publish refreshed Markdown/JSON artifacts.
+  the existing completion workflow publishes both views, with a validated task
+  crosswalk and preserved broad status authority.
