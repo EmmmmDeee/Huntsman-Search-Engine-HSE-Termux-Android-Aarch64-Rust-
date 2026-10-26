@@ -1057,6 +1057,18 @@ impl ScanApi {
                 Err(message) => error(400, &message),
             };
         }
+        if matches!(format.trim().to_ascii_lowercase().as_str(), "csv" | "tsv") {
+            return match scan_export::render_many_text_bounded(
+                &pairs,
+                format,
+                kind,
+                usize::try_from(max_bytes).unwrap_or(usize::MAX),
+            ) {
+                Ok(Ok(export)) => ApiResponse::export(export),
+                Ok(Err(_)) => error(413, "export output budget exceeded"),
+                Err(message) => error(400, &message),
+            };
+        }
         match scan_export::render_many(&pairs, format, kind) {
             // A post-render transport cap; streaming format writers are a separate
             // prerequisite for bounding peak output-rendering allocations.
