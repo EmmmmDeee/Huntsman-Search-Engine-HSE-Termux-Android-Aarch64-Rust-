@@ -1,0 +1,593 @@
+{
+  "schema": "huntsman.implementation-queue",
+  "tasks": [
+    {
+      "id": "verify-baseline",
+      "priority": 0,
+      "title": "Record the actual baseline and critical contract receipts",
+      "depends_on": [],
+      "files": [
+        {
+          "path": "AGENTS.md",
+          "action": "inspect"
+        },
+        {
+          "path": "Cargo.toml",
+          "action": "inspect"
+        },
+        {
+          "path": "Cargo.lock",
+          "action": "inspect"
+        },
+        {
+          "path": "ARCHITECTURE.md",
+          "action": "inspect"
+        },
+        {
+          "path": "docs/ARCHITECTURE.md",
+          "action": "inspect"
+        },
+        {
+          "path": "xtask/src/gate.rs",
+          "action": "inspect"
+        },
+        {
+          "path": "tests/architecture_doc.rs",
+          "action": "inspect"
+        },
+        {
+          "path": "tests/runtime_reachability.rs",
+          "action": "inspect"
+        },
+        {
+          "path": "src/lookup_modules.rs",
+          "action": "inspect"
+        },
+        {
+          "path": "src/source_registry.rs",
+          "action": "inspect"
+        }
+      ],
+      "evidence": [
+        "Inspected source baseline: 7760296feff852e505d4579e4b4866798eaf75ea, 2026-10-26 Australia/Brisbane. Revalidate all findings at the implementation head.",
+        "Root ARCHITECTURE.md and architecture_doc tests are current authorities; docs/ARCHITECTURE.md explicitly contains a historical inventory.",
+        "CI distinguishes host, MSRV, phone-sized browser, AArch64 emulation and Android cross-build. None alone is a physical handset receipt."
+      ],
+      "interfaces": [
+        "Preserve Rust edition 2024 and MSRV 1.87; use existing xtask, guarded blocking HTTP, native Web UI and rootless AArch64 Termux.",
+        "Keep public Rust re-exports, CLI grammar, SpiderFoot JSON/export shapes and saved evidence formats compatible. Record existing failures separately from introduced regressions.",
+        "Use one accepted commit identity per receipt; include command, toolchain, target, start/end timestamps, exit code and log hash. Never classify pending CI as passed."
+      ],
+      "acceptance": [
+        "git rev-parse HEAD",
+        "git status --short --untracked-files=all",
+        "cargo run --locked -p xtask -- roadmap check",
+        "cargo run --locked -p xtask -- gate full",
+        "cargo +1.87.0 run --locked -p xtask -- gate msrv",
+        "cargo test --locked --test architecture_doc --test architecture_boundaries --test runtime_reachability"
+      ],
+      "done_when": "Baseline receipts are recorded for the exact intended tree, failures are named, and scope-specific blockers are explicit. Tests are actually executed, not inferred from this plan.",
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "00-radar-concurrent-writer-regression",
+        "01-register-generation",
+        "02-ci-generation",
+        "03-security-preflight"
+      ]
+    },
+    {
+      "id": "bound-scan-exports",
+      "priority": 1,
+      "title": "Bound aggregate scan export input and output allocations",
+      "depends_on": [
+        "verify-baseline"
+      ],
+      "files": [
+        {
+          "path": "src/scan_store.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/scan_api.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/scan_export.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/pipeline_limits.rs",
+          "action": "modify"
+        }
+      ],
+      "evidence": [
+        "Verified code path: ScanApi::export_many accepts up to 50 IDs and collects all ScanResults before render_many.",
+        "MAX_RESULTS_BYTES permits 64 MiB per results file. Theoretical aggregate serialized allowance is 50 x 64 MiB = 3200 MiB before parsing/output overhead; no RSS or OOM was measured.",
+        "PipelineLimits.max_export_bytes already defaults to 8 MiB. Existing single/multiple exports create intermediate rows and complete output buffers."
+      ],
+      "interfaces": [
+        "Reuse ScanStore::results safety and private atomic storage; add budget-aware reading at the existing bounded I/O boundary before allocation. Avoid a metadata-check/reopen race.",
+        "Apply checked cumulative input and output accounting; include JSON escaping, CSV quoting and XLSX container overhead. Validate format and repeated IDs before loading.",
+        "Preserve small-output schemas and row order. Reject over-budget work with an explicit existing-compatible error and useful UI message; never silently truncate or report partial output as complete. Streaming is acceptable only where the current response contract and aggregate limits remain enforced."
+      ],
+      "acceptance": [
+        "cargo test --locked --lib scan_store",
+        "cargo test --locked --lib scan_api",
+        "cargo test --locked --lib scan_export",
+        "cargo run --locked -p xtask -- gate full"
+      ],
+      "done_when": "Regression fixtures prove exact-boundary success, one-byte-over refusal before aggregate allocation, checked arithmetic, duplicate-ID policy, escaping expansion and unchanged small SpiderFoot exports. An identical-host peak-memory comparison documents improvement without claiming handset measurements.",
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "07-evidence-integrity",
+        "11-memory-resource-budget"
+      ]
+    },
+    {
+      "id": "migrate-provider-authority",
+      "priority": 1,
+      "title": "Migrate remaining keyed clients through the shared credential authority boundary",
+      "depends_on": [
+        "verify-baseline"
+      ],
+      "files": [
+        {
+          "path": "src/hibp/mod.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/hibp/client.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/dehashed/client.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/fetch.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/credential_origin.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/provider_credentials.rs",
+          "action": "modify"
+        },
+        {
+          "path": "tests/hibp_cli.rs",
+          "action": "modify"
+        },
+        {
+          "path": "tests/provider_credentials_cli.rs",
+          "action": "modify"
+        }
+      ],
+      "evidence": [
+        "Verified migration gap: HIBP send and DeHashed send pass None as fetch credential while clients manually attach key headers. Root ARCHITECTURE.md documents the remaining gap.",
+        "No credential leak was demonstrated. This task enforces consistency and exact-origin authority; discovered evidence credentials are not authentication authority."
+      ],
+      "interfaces": [
+        "Construct fetch::Credential only from AuthenticationAuthority::operator_approved with existing provider slot and provenance. Retain public/keyless request behavior.",
+        "Use the existing injected Transport and FetchOptions::no_redirects. Keep existing constructors usable through compatible adapters; do not add another credential store or network client.",
+        "DiscoveredCredential must never be promoted automatically. No secret values in Debug, URLs, diagnostics, generated docs, logs or test receipts. Do not invent or search for working keys."
+      ],
+      "acceptance": [
+        "cargo test --locked --lib hibp",
+        "cargo test --locked --lib dehashed",
+        "cargo test --locked --lib fetch",
+        "cargo test --locked --test hibp_cli --test provider_credentials_cli --test shared_provider_settings --test provider_credentials_doc",
+        "cargo run --locked -p xtask -- gate full"
+      ],
+      "done_when": "Fake transports prove exact required auth headers only to the approved origin, missing-key no-send behavior, redirect/off-origin refusal, secret redaction and unchanged result/error/exit contracts. Authorized live tests remain separately labelled when credentials are unavailable.",
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "05-credential-boundaries"
+      ]
+    },
+    {
+      "id": "admit-heavy-scan-requests",
+      "priority": 1,
+      "title": "Cap expensive saved-scan operations before worker and body allocation",
+      "depends_on": [
+        "bound-scan-exports"
+      ],
+      "files": [
+        {
+          "path": "src/web_server.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/scan_api.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/web_ui.html",
+          "action": "modify"
+        },
+        {
+          "path": "tests/web_ui.rs",
+          "action": "modify"
+        }
+      ],
+      "evidence": [
+        "Verified code path: web_server::scans_response starts a 4 MiB-stack worker per admitted saved-scan request; the general connection limit is 32.",
+        "A distinct admission cap for heavy saved-scan requests is absent at this boundary. Multiplied memory/latency impact is a supported risk, not a measured OOM."
+      ],
+      "interfaces": [
+        "Reuse existing atomic/RAII permit patterns; acquire the heavy-operation permit before spawning or loading. Keep quick health/control/stop paths responsive.",
+        "Return a bounded 503 response when capacity is exhausted. Release permits on success, error, panic, spawn failure and connection teardown.",
+        "Keep current host/origin/token protections, response schemas and Web UI retry semantics. Surface capacity rejection in the existing status UI; no root privileges or Android packet interception."
+      ],
+      "acceptance": [
+        "cargo test --locked --lib web_server",
+        "cargo test --locked --lib scan_api",
+        "cargo test --locked --test web_ui --test serve_credentials",
+        "cargo run --locked -p xtask -- gate full"
+      ],
+      "done_when": "Synchronized requests prove peak admitted heavy work never exceeds the chosen documented cap and permits recover on every exit path. Existing phone-sized browser CI passes, including useful capacity errors and unchanged health/control behavior.",
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "08-http-ui-wiring",
+        "11-memory-resource-budget"
+      ]
+    },
+    {
+      "id": "unify-provider-failure-pacing",
+      "priority": 2,
+      "title": "Integrate shared failure suppression without duplicate provider throttlers",
+      "depends_on": [
+        "migrate-provider-authority"
+      ],
+      "files": [
+        {
+          "path": "src/fetch.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/github_user.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/hibp/mod.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/dehashed/client.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/stolen_tax.rs",
+          "action": "modify"
+        }
+      ],
+      "evidence": [
+        "Verified opt-in gap: shared FetchOptions::paced exists; inspected GitHub, HIBP and DeHashed send paths use unpaced no_redirects options.",
+        "HIBP/DeHashed already have provider-specific rate limiters. stolen.tax has bounded retries. A second independent limiter could increase delays and request costs."
+      ],
+      "interfaces": [
+        "Use the existing shared host breaker where compatible; retain provider-specific Retry-After and one authoritative retry budget.",
+        "Treat 429, timeout, challenge/WAF, failed authentication, legitimate empty response and confirmed miss as distinct source outcomes. No failure-to-not-found conversion.",
+        "No additional paid requests or retry multiplication. Isolate unrelated hosts and make recovery bounded and observable without logging keys."
+      ],
+      "acceptance": [
+        "cargo test --locked --lib fetch",
+        "cargo test --locked --lib github_user",
+        "cargo test --locked --lib hibp",
+        "cargo test --locked --lib dehashed",
+        "cargo test --locked --lib stolen_tax",
+        "cargo run --locked -p xtask -- gate full"
+      ],
+      "done_when": "Deterministic transport/clock fixtures prove suppression, Retry-After handling, recovery, unrelated-host isolation, total request bounds and preservation of legitimate misses.",
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "05-credential-boundaries",
+        "11-memory-resource-budget"
+      ]
+    },
+    {
+      "id": "reconcile-wiring-contracts",
+      "priority": 2,
+      "title": "Reconcile file inclusion, executable collectors and CLI/API/UI contracts",
+      "depends_on": [
+        "verify-baseline"
+      ],
+      "files": [
+        {
+          "path": "xtask/src/coupling.rs",
+          "action": "modify"
+        },
+        {
+          "path": "xtask/src/roadmap/wiring.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/module.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/lookup_modules.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/source_registry.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/cli/mod.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/scan_api.rs",
+          "action": "modify"
+        },
+        {
+          "path": "tests/architecture_doc.rs",
+          "action": "modify"
+        },
+        {
+          "path": "tests/architecture_boundaries.rs",
+          "action": "modify"
+        },
+        {
+          "path": "tests/runtime_reachability.rs",
+          "action": "modify"
+        },
+        {
+          "path": "tests/source_registry_cli.rs",
+          "action": "modify"
+        },
+        {
+          "path": "tests/source_registry_metadata.rs",
+          "action": "modify"
+        }
+      ],
+      "evidence": [
+        "Existing authorities: coupling uses syn module references; architecture_doc checks source inclusion; lookup_modules derives executable source membership from actual lookup tables.",
+        "source_registry explicitly supplies discovery URL leads, not executed collection or independently verified evidence.",
+        "The generated inventory deliberately marks syntactic gaps as candidates and all compatibility as not_assessed."
+      ],
+      "interfaces": [
+        "For each candidate, inspect mod declarations, cfg, path/include macros, Cargo targets, public exports and fixtures before changing anything. Reuse the existing walkers; do not infer dead code from zero inbound references.",
+        "Trace provider parser -> guarded transport -> executable lookup table -> module selection -> scan service -> CLI/API -> Web UI -> export. Use existing service contracts; do not create a parallel registry.",
+        "Keep root architecture status and layer rules truthful. Preserve intentional directive mirrors, golden fixtures, embedded assets and documented legacy compatibility. Directory moves need a measured benefit and old public re-exports."
+      ],
+      "acceptance": [
+        "cargo run --locked -p xtask -- coupling",
+        "cargo test --locked --test architecture_doc --test architecture_boundaries --test runtime_reachability",
+        "cargo test --locked --test source_registry_cli --test source_registry_metadata --test mitm_boundary_continuity",
+        "cargo test --locked --lib lookup_modules",
+        "cargo run --locked -p xtask -- gate full"
+      ],
+      "done_when": "Each candidate has a recorded inclusion/consumer decision; no deletion relies solely on static analysis. Representative module selections execute only intended fake transports and agree across CLI/API/UI and metadata. New unsupported syntax has explicit uncertainty and regression fixtures.",
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "06-source-registry-wiring"
+      ]
+    },
+    {
+      "id": "preserve-lineage-independence",
+      "priority": 2,
+      "title": "Harden ambiguous dataset naming without inventing source independence",
+      "depends_on": [
+        "verify-baseline"
+      ],
+      "files": [
+        {
+          "path": "src/evidence_ancestry.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/lineage.rs",
+          "action": "modify"
+        },
+        {
+          "path": "src/identity_resolution.rs",
+          "action": "modify"
+        },
+        {
+          "path": "docs/LINEAGE.md",
+          "action": "modify"
+        },
+        {
+          "path": "tests/lineage_independence_adversarial.rs",
+          "action": "modify"
+        },
+        {
+          "path": "tests/lineage_merge_rule.rs",
+          "action": "modify"
+        },
+        {
+          "path": "tests/lineage_legacy.rs",
+          "action": "modify"
+        }
+      ],
+      "evidence": [
+        "Verified documented limitation: evidence_ancestry canonicalizes whitespace/case; docs/LINEAGE.md retains confusable and zero-width dataset names as distinct.",
+        "Current automatic-merge rules already require proven upstream independence. Different spelling is not evidence of an automatic merge bypass."
+      ],
+      "interfaces": [
+        "Preserve original observations and provenance. Ambiguous aliases may lower confidence or hold a decision; they must never manufacture independence or assert two unrelated datasets are identical.",
+        "Prefer explicit provenance-backed alias handling and suspicious-name reporting over destructive Unicode normalization or a broad new dependency.",
+        "Retain saved-evidence compatibility and bounded processing. Document ambiguity and decision reason separately from identity attribution."
+      ],
+      "acceptance": [
+        "cargo test --locked --test lineage_independence_adversarial --test lineage_merge_rule --test lineage_legacy --test person_resolution_benchmark",
+        "cargo test --locked --lib evidence_ancestry",
+        "cargo run --locked -p xtask -- gate full"
+      ],
+      "done_when": "Adversarial fixtures cover lookalikes, invisible characters, alias collisions, immutable originals and held decisions. No case upgrades weak or ambiguous upstream evidence into independent corroboration.",
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "07-evidence-integrity"
+      ]
+    },
+    {
+      "id": "close-legacy-parity-increments",
+      "priority": 2,
+      "title": "Close one legacy capability at a time using reproducible differential receipts",
+      "depends_on": [
+        "verify-baseline",
+        "reconcile-wiring-contracts"
+      ],
+      "files": [
+        {
+          "path": "ARCHITECTURE.md",
+          "action": "modify"
+        },
+        {
+          "path": "src/differential.rs",
+          "action": "modify"
+        },
+        {
+          "path": "tests/phone_differential.rs",
+          "action": "modify"
+        },
+        {
+          "path": "docs/PHONE_DIFFERENTIAL.md",
+          "action": "modify"
+        }
+      ],
+      "evidence": [
+        "At inspected baseline the root architecture lists 21 partial capability rows and no complete row meeting its full differential acceptance.",
+        "Pinned legacy oracle revision: 7dca720b5bf51f20b4e27d5ca29cc570ec2f9a58. Existing phone fixtures provide input/golden/hash machinery; preserved-test provenance is not an independently executed legacy receipt."
+      ],
+      "interfaces": [
+        "Choose the next capability from the current root backlog and authoritative legacy fixtures. Record exact legacy/current revisions and transport fixtures; preserve source attribution, entities and exit status.",
+        "Use existing differential types and fixture hashes. Add capability-specific adapters/tests only after reading their actual signatures. Never label an entire capability complete from a small subset.",
+        "Keep current CLI grammar, public facade paths and ledger/session/export schemas. Do not manufacture the phone_geo result or a historical golden receipt."
+      ],
+      "acceptance": [
+        "cargo test --locked --test phone_differential",
+        "cargo test --locked --lib differential",
+        "cargo test --locked --test architecture_doc",
+        "cargo run --locked -p xtask -- gate full"
+      ],
+      "done_when": "A selected capability has independently produced reproducible legacy/current receipts satisfying every root architecture acceptance criterion. Only then update that row; retain partial status for uncovered paths.",
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "06-source-registry-wiring",
+        "07-evidence-integrity"
+      ]
+    },
+    {
+      "id": "verify-radio-continuity",
+      "priority": 2,
+      "title": "Maintain one native radio/MITM evaluator and honest rootless limitations",
+      "depends_on": [
+        "reconcile-wiring-contracts"
+      ],
+      "files": [
+        {
+          "path": "src/mitm_guard.rs",
+          "action": "inspect"
+        },
+        {
+          "path": "src/cli/mitm.rs",
+          "action": "inspect"
+        },
+        {
+          "path": "src/wifi_radar.rs",
+          "action": "inspect"
+        },
+        {
+          "path": "src/cell_radar.rs",
+          "action": "inspect"
+        },
+        {
+          "path": "src/web_server.rs",
+          "action": "inspect"
+        },
+        {
+          "path": "src/web_ui.html",
+          "action": "inspect"
+        },
+        {
+          "path": "tests/mitm_cli.rs",
+          "action": "inspect"
+        },
+        {
+          "path": "tests/mitm_boundary_continuity.rs",
+          "action": "inspect"
+        }
+      ],
+      "evidence": [
+        "Native mitm_guard, CLI integration and radar Web UI are already present; historical docs/ARCHITECTURE.md explicitly predates that implementation.",
+        "Current continuity tests use synthetic inputs. Wi-Fi names, mixed security or changed BSSIDs do not prove an active MITM or attribute an attacker."
+      ],
+      "interfaces": [
+        "Reuse mitm_guard::{parse_baseline, assess, from_wifi_scan, from_wifi_replay, from_wigle_jsonl}. Preserve evidence age, source, rejected-row counts and eligibility.",
+        "Inspect existing CLI and Web UI report adapters before adding anything. Keep historical/unavailable/stale/cached readings inconclusive and retain rootless permission/error behavior.",
+        "No automatic network disruption, system trust-store modification, privileged packet interception or claims of attack resolution from radio observations. Remediation remains operator review of supported evidence."
+      ],
+      "acceptance": [
+        "cargo test --locked --lib mitm_guard",
+        "cargo test --locked --test mitm_cli --test mitm_boundary_continuity --test web_ui",
+        "cargo run --locked -p xtask -- gate full"
+      ],
+      "done_when": "Synthetic fixtures show equivalent CLI/native Web UI assessment semantics, no false proof/attribution, unchanged historical/eligibility handling and bounded malformed-input rejection. Live radio validation is recorded separately on the handset.",
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "09-mitm-guard"
+      ]
+    },
+    {
+      "id": "record-handset-acceptance",
+      "priority": 1,
+      "title": "Verify the exact accepted build on physical rootless AArch64 Termux",
+      "depends_on": [
+        "bound-scan-exports",
+        "migrate-provider-authority",
+        "admit-heavy-scan-requests",
+        "unify-provider-failure-pacing",
+        "reconcile-wiring-contracts",
+        "preserve-lineage-independence",
+        "close-legacy-parity-increments",
+        "verify-radio-continuity"
+      ],
+      "files": [
+        {
+          "path": "scripts/termux-runtime-acceptance.sh",
+          "action": "inspect"
+        },
+        {
+          "path": ".github/scripts/install-termux.sh",
+          "action": "inspect"
+        },
+        {
+          "path": "install.sh",
+          "action": "inspect"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "action": "inspect"
+        },
+        {
+          "path": "tools/web-ui-check/check.cjs",
+          "action": "inspect"
+        }
+      ],
+      "evidence": [
+        "Existing harness distinguishes HOST_RUNTIME_ACCEPTANCE from TERMUX_RUNTIME_ACCEPTANCE.",
+        "This task requires physical device access and an actual installed build. Cross-build/emulation/phone-sized Chromium cannot substitute. Keys and permissions must actually be available for live provider/radio receipts."
+      ],
+      "interfaces": [
+        "Retain loopback 127.0.0.1:8080 default, private state mode 700 and credentials mode 600. Verify installed build identity before recording success.",
+        "Use the existing acceptance script. Exercise UI controls, empty/error/stale RF cases and service stop/recovery. Measure RSS, disk/cache growth and latency against the same handset baseline.",
+        "Record configured credential completeness without values. A blocked provider, missing permission or unavailable key is an explicit blocker/inconclusive outcome, never a negative finding."
+      ],
+      "acceptance": [
+        "huntsman-recon build-sha",
+        "huntsman-recon doctor --json",
+        "bash scripts/termux-runtime-acceptance.sh"
+      ],
+      "done_when": "A timestamped TERMUX_RUNTIME_ACCEPTANCE receipt and UI/radio checks identify the actual accepted commit, Android/Termux environment, measurements and exit status. Missing device access remains blocked; no target-specific success is inferred.",
+      "rollback": "Revert only the verified implementation commit through a reviewed PR; retain the previous usable binary and preserve ~/.huntsman and credential files. Do not rewrite saved evidence or operator configuration.",
+      "register_tasks": [
+        "04-android-handset-acceptance",
+        "12-handset-evidence-record"
+      ]
+    }
+  ]
+}
