@@ -5,12 +5,14 @@ on:
     paths:
       - 'scripts/github/**'
       - 'tests/github-merge-policy.sh'
+      - 'tests/github-automerge.sh'
       - '.github/workflows/merge-policy-contract.yml'
   push:
     branches: [main]
     paths:
       - 'scripts/github/**'
       - 'tests/github-merge-policy.sh'
+      - 'tests/github-automerge.sh'
       - '.github/workflows/merge-policy-contract.yml'
   workflow_dispatch:
   schedule:
@@ -31,9 +33,10 @@ jobs:
       - name: Syntax, JSON, and adversarial mock API scenarios
         run: |
           set -euo pipefail
-          bash -n scripts/github/merge-policy.sh tests/github-merge-policy.sh
+          bash -n scripts/github/merge-policy.sh scripts/github/enable-pr-automerge.sh tests/github-merge-policy.sh tests/github-automerge.sh
           jq -e '.' scripts/github/merge-policy.json >/dev/null
           bash tests/github-merge-policy.sh
+          bash tests/github-automerge.sh
 
   live-policy:
     name: Verify enforced main ruleset (read-only)
