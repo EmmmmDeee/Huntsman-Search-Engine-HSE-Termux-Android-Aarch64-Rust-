@@ -1,0 +1,1 @@
+- Reject duplicate trusted Wi-Fi BSSID values within each operator-baselined SSID, including hex-case variants, while preserving distinct valid addresses and the existing CLI/Web assessment contract.
