@@ -215,6 +215,7 @@ pub mod store;
 pub mod submd;
 pub mod tags;
 pub mod termination;
+pub mod tiktok_public_contact;
 pub mod textnorm;
 pub mod threat_feeds;
 pub mod threatfox;
