@@ -410,7 +410,7 @@ mod tests {
             1,
         )
         .unwrap();
-        assert_eq!(wrong.outcome.kind, SourceOutcomeKind::SchemaDrift);
+        assert_eq!(wrong.outcome.kind, SourceOutcomeKind::ParserDrift);
     }
 
     #[test]
