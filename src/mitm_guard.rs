@@ -195,6 +195,14 @@ fn assess_status(accepted: usize, findings: &[Finding]) -> &'static str {
     }
 }
 
+/// Group validated observations by byte-exact SSID and canonical BSSID.
+fn grouped_access_points(
+    observations: &[AccessPoint],
+) -> BTreeMap<&str, BTreeMap<String, BTreeSet<Security>>> {
+    let by_ssid = grouped_access_points(observations);
+    by_ssid
+}
+
 /// Based on MITM/evil-twin literature, but these are conservative heuristics,
 /// NOT reproduced ML classifiers or validated sensitivities from the papers.
 #[must_use]
