@@ -16,7 +16,10 @@ fn generated_tree_contains_every_tracked_path_and_is_repeatable() {
     let two = xtask(&["completion", "print"]);
     assert!(one.status.success(), "{one:?}");
     assert!(two.status.success(), "{two:?}");
-    assert_eq!(one.stdout, two.stdout, "same Git index must be deterministic");
+    assert_eq!(
+        one.stdout, two.stdout,
+        "same Git index must be deterministic"
+    );
     let document = String::from_utf8(one.stdout).expect("UTF-8 document");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -27,7 +30,11 @@ fn generated_tree_contains_every_tracked_path_and_is_repeatable() {
         .output()
         .expect("git ls-files");
     assert!(paths.status.success(), "{paths:?}");
-    for raw in paths.stdout.split(|byte| *byte == 0).filter(|p| !p.is_empty()) {
+    for raw in paths
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|p| !p.is_empty())
+    {
         let path = std::str::from_utf8(raw).expect("UTF-8 tracked path");
         let basename = path.rsplit('/').next().expect("basename");
         assert!(
