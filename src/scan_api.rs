@@ -1058,7 +1058,9 @@ impl ScanApi {
                 &format!("export takes at most {MAX_EXPORT_SCANS} scans"),
             );
         }
-        let mut scans = Vec::new();
+        // Reserve only the bounded number of scan slots, avoiding incremental
+        // vector growth while evidence is loaded under the aggregate budget.
+        let mut scans = Vec::with_capacity(ids.len());
         let mut remaining = max_bytes;
         for id in ids {
             let record = match self.record(id) {
