@@ -1,7 +1,7 @@
 //! Keyless OSINT lookup of public GitLab.com user identities.
 //!
 //! GitLab documents `GET /api/v4/users?username=...` as an exact,
- //! case-insensitive username filter. A result proves an account matching that
+//! case-insensitive username filter. A result proves an account matching that
 //! handle exists on GitLab.com; it does not prove that similarly named accounts
 //! elsewhere belong to the same person. No credentials, scraping or private fields.
 
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn only_safe_selectors_can_generate_requests() {
-        for invalid in ["", ".", "admin@", "../secret", "a/b", "a", "x?".into()] {
+        for invalid in ["", ".", "admin@", "../secret", "a/b", "a", "x?"] {
             assert!(!valid_username(invalid));
         }
         assert!(valid_username("Ada-Test_1"));
