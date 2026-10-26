@@ -434,6 +434,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "public Mastodon account lookup on mastodon.social",
     },
     ReachableModule {
+        name: "tiktok_public_contact",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.001"],
+        description: "public TikTok profile bio contact candidates, never private registration emails",
+    },
+    ReachableModule {
         name: "keybase",
         command: "username HANDLE",
         access: "keyless",

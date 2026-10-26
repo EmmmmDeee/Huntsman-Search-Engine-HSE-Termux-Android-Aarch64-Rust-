@@ -37,7 +37,7 @@ Commands:
   people                Look up a name on keyless ASIC people registers
   email                 Enrich an email and query its public Gravatar profile
   exposure              Keyed breach evidence for an email (HIBP account, stolen.tax, OathNet)
-  username              Enrich a username through public GitHub and Bluesky profiles
+  username              Enrich public profiles, including TikTok self-published bio contacts
   phone                 Canonicalise and classify a phone number offline, plus a keyed carrier lookup
   domain                Certificate-transparency names and DNS records for one domain, plus keyed reputation and published addresses
   ip                    Open ports, routing, scanner status and keyed reputation for one public IP address

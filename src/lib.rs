@@ -218,6 +218,7 @@ pub mod termination;
 pub mod textnorm;
 pub mod threat_feeds;
 pub mod threatfox;
+pub mod tiktok_public_contact;
 pub mod timefmt;
 pub mod timeline;
 pub mod tlsrpt;
