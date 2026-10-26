@@ -253,7 +253,13 @@ fn profile_from_public_bootstrap(html: &str, username: &str) -> Option<Value> {
                 })
                 .map(|(_, user)| user)
         } else {
-            data.pointer("/__DEFAULT_SCOPE__/webapp.user-detail/userInfo/user")
+            data.get("__DEFAULT_SCOPE__")
+                .or_else(|| data.get("DEFAULT_SCOPE"))
+                .and_then(|scope| {
+                    scope
+                        .pointer("/webapp.user-detail/userInfo/user")
+                        .or_else(|| scope.pointer("/webapp.reflow.profile.initial/userInfo/user"))
+                })
         };
         if let Some(user) = user.filter(|user| {
             user.get("uniqueId")
@@ -308,6 +314,35 @@ mod tests {
         let user = profile_from_public_bootstrap(&page, "alice24").unwrap();
         assert_eq!(user["signature"], "Business: hello@example.org");
         assert!(profile_from_public_bootstrap(&page, "someoneelse").is_none());
+    }
+
+    #[test]
+    fn alternate_public_bootstrap_schema_requires_exact_profile_identity() {
+        for scope_name in ["__DEFAULT_SCOPE__", "DEFAULT_SCOPE"] {
+            for shape in ["webapp.user-detail", "webapp.reflow.profile.initial"] {
+                let payload = serde_json::json!({
+                    scope_name: {
+                        shape: {
+                            "userInfo": {
+                                "user": {
+                                    "uniqueId": "alice24",
+                                    "signature": "business@example.org",
+                                    "privateAccountEmail": "do-not-return@example.org"
+                                }
+                            }
+                        }
+                    }
+                });
+                let page = html(
+                    &payload.to_string(),
+                    "__UNIVERSAL_DATA_FOR_REHYDRATION__",
+                );
+                let user = profile_from_public_bootstrap(&page, "alice24")
+                    .expect("matching public profile data");
+                assert_eq!(user["signature"], "business@example.org");
+                assert!(profile_from_public_bootstrap(&page, "unrelated").is_none());
+            }
+        }
     }
 
     #[test]
