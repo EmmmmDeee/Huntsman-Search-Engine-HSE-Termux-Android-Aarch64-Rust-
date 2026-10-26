@@ -48,5 +48,5 @@ jobs:
           persist-credentials: false
       - name: Detect policy drift without any write credentials
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/github/merge-policy.sh check
