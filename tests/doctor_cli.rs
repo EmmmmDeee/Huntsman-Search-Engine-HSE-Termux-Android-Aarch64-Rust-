@@ -18,8 +18,17 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
+/// Whether an inherited variable is a provider key or other Huntsman setting that would make the
+/// caller's shell, not the scratch home, decide what `doctor` counts.
+fn inherited_setting(name: &str) -> bool {
+    name.starts_with("HUNTSMAN_")
+        || ["_KEY", "_TOKEN", "_USER", "_SECRET", "_PASSWORD"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+}
+
 /// The binary with `$HOME` at `home`, its own directory and the system tools on `PATH`, and no
-/// serve settings inherited from the caller.
+/// serve settings or provider keys inherited from the caller.
 fn bin(home: &Path) -> Command {
     let bin_dir = Path::new(BIN).parent().unwrap();
     let path = format!("{}:/usr/bin:/bin", bin_dir.display());
@@ -35,6 +44,11 @@ fn bin(home: &Path) -> Command {
         .env_remove("HUNTSMAN_ENV_FILE")
         .env_remove("TERMUX_VERSION")
         .env_remove("PREFIX");
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(inherited_setting) {
+            command.env_remove(&name);
+        }
+    }
     command
 }
 

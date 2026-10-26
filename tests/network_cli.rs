@@ -1,7 +1,7 @@
-//! The `network` lookup end to end through the binary, with no `WiGLE` credentials so no request
-//! is made: `network`, `scan` inference and `scan -k network` reach the same front-end, the
-//! offline OUI classification runs, the `WiGLE` leg reports `not_configured` rather than a zero,
-//! and `--save` writes a ledger that `verify` reloads.
+//! The `network` lookup end to end through the binary, with a scratch `$HOME` and no `WiGLE`
+//! credentials so no request is made: `network`, `scan` inference and `scan -k network` reach the
+//! same front-end, the offline OUI classification runs, the `WiGLE` leg reports `not_configured`
+//! rather than a zero, and `--save` writes a ledger that `verify` reloads.
 
 use std::fs;
 use std::path::PathBuf;
@@ -9,9 +9,20 @@ use std::process::{Command, Output};
 
 const BSSID: &str = "3c:5a:b4:01:02:03";
 
+/// A `$HOME` with no `~/.huntsman.env`, so credentials in the caller's real keys file stay out.
+fn scratch_home() -> PathBuf {
+    let home = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("network-cli-home-{}", std::process::id()));
+    fs::create_dir_all(&home).unwrap();
+    home
+}
+
 fn bin() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_huntsman-recon"));
     command
+        .env("HOME", scratch_home())
+        .env_remove("HUNTSMAN_HOME")
+        .env_remove("HUNTSMAN_ENV_FILE")
         .env_remove("HUNTSMAN_WIGLE_USER")
         .env_remove("HUNTSMAN_WIGLE_TOKEN");
     command
