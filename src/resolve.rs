@@ -33,7 +33,11 @@ pub fn automatic_clusters(
     let mut uf = UnionFind::new(ids.len());
     let mut applied = Vec::new();
     for decision in decisions {
-        if decision.allows_automatic_merge(graph, policy) {
+        // A self-link is not evidence of a relationship between two identities.
+        // Do not count it as an accepted merge, even if policy permits the decision.
+        if decision.left_entity_uid != decision.right_entity_uid
+            && decision.allows_automatic_merge(graph, policy)
+        {
             let left = index[&decision.left_entity_uid];
             let right = index[&decision.right_entity_uid];
             uf.union(left, right);
@@ -195,6 +199,18 @@ mod tests {
             geographic_conflict: false,
             decided_at_unix: 1,
         }
+    }
+
+    #[test]
+    fn self_links_never_count_as_identity_merges() {
+        let clusters = automatic_clusters(
+            &[decision("a", "a")],
+            &graph(),
+            AutoMergePolicy::default(),
+        );
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].members, ["a"]);
+        assert_eq!(clusters[0].decision_count, 0);
     }
 
     #[test]
