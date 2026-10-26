@@ -105,3 +105,19 @@ verified. Authenticated upstream success is **not** verified without a configure
 Synthetic transport fixtures exercise request construction, parser behavior,
 routing, provenance, redaction, and failure handling without querying any real
 person or exposed credential.
+
+## Website case access and API entitlement (2026-10-27 review)
+
+- Public registration: https://see-know.ru/register
+- Public pricing: https://see-know.ru/pricing
+- The website advertises a free search quota, but it does **not** establish
+  REST API entitlement or credits. Check the authenticated `/credits` response.
+- A case link of the form `/workflow/case/{id}` returned the public homepage
+  to an unauthenticated page extractor on 2026-10-27. This does not establish
+  that the case is missing, publicly accessible, or API-exportable.
+- Do not infer a case-management endpoint from the website route. Use only
+  documented, authorized APIs and preserve evidence provenance.
+- The website's short API summary lists endpoint names using `/v1` even though
+  the declared base already includes `/api/v1`. The REST client continues to
+  use the explicitly checked paths above until a new authenticated contract
+  test establishes a replacement.
