@@ -1,4 +1,4 @@
-//! TikTok public-profile contact observations, not account-email recovery.
+//! `TikTok` public-profile contact observations, not account-email recovery.
 //!
 //! Only a matching public profile's self-authored signature and bio link are read.
 //! Internal account metadata, guessed addresses and unrelated page text are excluded.
@@ -25,7 +25,7 @@ pub struct Report {
     pub outcome: SourceExecutionOutcome,
 }
 
-/// TikTok account handles are not arbitrary OSINT usernames. Do not request
+/// `TikTok` account handles are not arbitrary OSINT usernames. Do not request
 /// paths, URLs, emails, very long strings or handle variants from this source.
 #[must_use]
 pub fn valid_username(name: &str) -> bool {
@@ -44,7 +44,7 @@ pub fn valid_username(name: &str) -> bool {
         && !name.contains("..")
 }
 
-/// Query only the operator-specified public TikTok profile.
+/// Query only the operator-specified public `TikTok` profile.
 /// # Errors
 /// Refusal by the shared guarded transport is returned as a network error.
 pub fn lookup<T: Transport + ?Sized>(
@@ -98,7 +98,7 @@ fn empty(outcome: SourceExecutionOutcome) -> Report {
     }
 }
 
-/// Interpret only embedded JSON from TikTok's recognized public profile
+/// Interpret only embedded JSON from `TikTok`'s recognized public profile
 /// bootstrap scripts. Scripted data is still self-asserted, not verification
 /// of the mailbox or ownership of any contact address.
 fn interpret(
@@ -136,6 +136,16 @@ fn interpret(
             "no matching public TikTok profile in recognized bootstrap data",
         )
     })?;
+    let entities = public_profile_entities(&user, name, scan_id);
+    Ok(Report {
+        outcome: SourceExecutionOutcome::success(SRC, now_unix, entities.len())
+            .with_http_status(response.status),
+        entities,
+    })
+}
+
+/// Create self-declared public-profile candidates with explicit evidence fields.
+fn public_profile_entities(user: &Value, name: &str, scan_id: &str) -> Vec<Entity> {
     let source_url = format!("https://www.tiktok.com/@{name}");
     let evidence = Evidence::new(
         EvidenceProvenance::for_scan(SRC, scan_id),
@@ -207,14 +217,10 @@ fn interpret(
         );
     }
     merge_by_uid(&mut entities);
-    Ok(Report {
-        outcome: SourceExecutionOutcome::success(SRC, now_unix, entities.len())
-            .with_http_status(response.status),
-        entities,
-    })
+    entities
 }
 
-/// TikTok embeds profile bootstrap JSON under either of these two shapes.
+/// `TikTok` embeds profile bootstrap JSON under either of these two shapes.
 /// A change to those fields is parser drift, not evidence the user is missing.
 fn profile_from_public_bootstrap(html: &str, username: &str) -> Option<Value> {
     for id in ["__UNIVERSAL_DATA_FOR_REHYDRATION__", "SIGI_STATE"] {
