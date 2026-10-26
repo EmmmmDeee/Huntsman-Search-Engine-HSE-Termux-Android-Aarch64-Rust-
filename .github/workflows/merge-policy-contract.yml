@@ -1,0 +1,55 @@
+name: merge-policy-contract
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/github/**'
+      - 'tests/github-merge-policy.sh'
+      - 'tests/github-automerge.sh'
+      - '.github/workflows/merge-policy-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/github/**'
+      - 'tests/github-merge-policy.sh'
+      - 'tests/github-automerge.sh'
+      - '.github/workflows/merge-policy-contract.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '23 5 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Validate merge-policy behavior offline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Syntax, JSON, and adversarial mock API scenarios
+        run: |
+          set -euo pipefail
+          bash -n scripts/github/merge-policy.sh scripts/github/enable-pr-automerge.sh tests/github-merge-policy.sh tests/github-automerge.sh
+          jq -e '.' scripts/github/merge-policy.json >/dev/null
+          bash tests/github-merge-policy.sh
+          bash tests/github-automerge.sh
+
+  live-policy:
+    name: Verify enforced main ruleset (read-only)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Detect policy drift without any write credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/github/merge-policy.sh check
