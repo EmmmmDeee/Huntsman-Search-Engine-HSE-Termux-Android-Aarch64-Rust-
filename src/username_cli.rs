@@ -278,6 +278,7 @@ mod tests {
     use crate::test_support::unexpected_controls;
 
     const GITHUB: &str = "api.github.com";
+    const GITLAB: &str = "gitlab.com";
     const BLUESKY: &str = "public.api.bsky.app";
     const KEYBASE: &str = "keybase.io";
     const WIKIPEDIA: &str = "en.wikipedia.org";
@@ -441,6 +442,7 @@ mod tests {
         let keybase = r#"{"status":{"code":0,"name":"OK"},"them":[null]}"#;
         let fake = Fake::new(vec![
             (GITHUB, response(404, "")),
+            (GITLAB, response(200, "[]")),
             (BLUESKY, response(200, bluesky)),
             (KEYBASE, response(200, keybase)),
             (WIKIPEDIA, response(200, r#"{"query":{"usercontribs":[]}}"#)),
@@ -449,8 +451,9 @@ mod tests {
         match run(&fake, &Keys::default(), "nobody", 1) {
             UsernameRun::Printed { report, text } => {
                 assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
-                assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::Success);
-                assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::ValidZero);
+                assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::ValidZero);
+                assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::Success);
+                assert_eq!(report.outcomes[3].kind, SourceOutcomeKind::ValidZero);
                 assert!(text.contains("keybase\t"), "{text}");
                 assert!(
                     report
@@ -503,6 +506,7 @@ mod tests {
     fn every_source_answers_in_a_fixed_order() {
         let fake = Fake::new(vec![
             (GITHUB, response(404, "")),
+            (GITLAB, response(200, "[]")),
             (BLUESKY, response(200, r#"{"handle":"max.bsky.social"}"#)),
             (
                 KEYBASE,
@@ -521,6 +525,7 @@ mod tests {
                 modules,
                 [
                     github_user::SRC,
+                    gitlab_user::SRC,
                     bluesky_user::SRC,
                     keybase::SRC,
                     wikipedia::SRC,
@@ -531,7 +536,7 @@ mod tests {
         }
     }
 
-    /// Each source waits on its own server, so six that take 200 ms each answer in about 200 ms,
+    /// Each source waits on its own server, so seven that take 200 ms each answer in about 200 ms,
     /// not the second they took one after another.
     #[test]
     fn the_sources_run_at_once() {
@@ -544,6 +549,7 @@ mod tests {
         }
         let slow = Slow(Fake::new(vec![
             (GITHUB, response(404, "")),
+            (GITLAB, response(200, "[]")),
             (
                 BLUESKY,
                 response(200, r#"{"handle":"maxslow.bsky.social"}"#),
@@ -561,10 +567,10 @@ mod tests {
             panic!("the lookup should print a report");
         };
         let took = started.elapsed();
-        assert_eq!(report.outcomes.len(), 6);
+        assert_eq!(report.outcomes.len(), 7);
         assert!(
             took < std::time::Duration::from_millis(800),
-            "six 200 ms sources took {took:?}"
+            "seven 200 ms sources took {took:?}"
         );
     }
 
