@@ -264,7 +264,6 @@ fn script_payload<'a>(html: &'a str, id: &str) -> Option<&'a str> {
 mod tests {
     use super::*;
     use crate::http::{Response, TransportFailure};
-    use crate::test_support::Scripted;
 
     fn html(payload: &str, id: &str) -> String {
         format!("<html><script id=\"{id}\" type=\"application/json\">{payload}</script></html>")
@@ -289,6 +288,77 @@ mod tests {
         );
         assert!(profile_from_public_bootstrap(&page, "alice24").is_some());
         assert!(profile_from_public_bootstrap(&page, "alice").is_none());
+    }
+
+    struct Fake {
+        page: String,
+        status: u16,
+    }
+
+    impl Transport for Fake {
+        fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
+            assert_eq!(request.url, "https://www.tiktok.com/@alice24");
+            Ok(Response {
+                status: self.status,
+                headers: vec![("content-type".into(), "text/html".into())],
+                body: self.page.as_bytes().to_vec(),
+                truncated: false,
+            })
+        }
+    }
+
+    #[test]
+    fn public_bio_contact_is_a_candidate_and_hidden_fields_do_not_leak() {
+        let fake = Fake {
+            status: 200,
+            page: html(
+                r#"{"__DEFAULT_SCOPE__":{"webapp.user-detail":{"userInfo":{"user":{"uniqueId":"alice24","signature":"Business: hello@example.org","bioLink":{"link":"https://artist.example.org/"},"email":"hidden@example.org","privateAccountEmail":"hidden2@example.org"}}}}}"#,
+                "__UNIVERSAL_DATA_FOR_REHYDRATION__",
+            ),
+        };
+        let report = lookup_with_options(
+            &fake,
+            "alice24",
+            "scan",
+            1,
+            &FetchOptions::no_redirects(),
+        )
+        .unwrap();
+        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
+        let contacts: Vec<&Entity> = report
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .collect();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].value, "hello@example.org");
+        assert!(contacts[0].has_tag("candidate"));
+        assert!(contacts[0].evidence.iter().any(|e| e.is_inferred));
+        assert!(report.entities.iter().all(|e| !e.value.contains("hidden@")));
+        assert!(report.entities.iter().all(|e| !e.value.contains("hidden2@")));
+    }
+
+    #[test]
+    fn absent_bootstrap_and_http_404_are_never_verified_absence() {
+        for (page, status) in [
+            ("<html>Ordinary page without public data</html>", 200),
+            ("<html>missing</html>", 404),
+        ] {
+            let fake = Fake { page: page.into(), status };
+            let report = lookup_with_options(
+                &fake,
+                "alice24",
+                "scan",
+                1,
+                &FetchOptions::no_redirects(),
+            )
+            .unwrap();
+            assert!(report.entities.is_empty());
+            assert!(!matches!(
+                report.outcome.kind,
+                SourceOutcomeKind::Success | SourceOutcomeKind::ValidZero
+            ));
+        }
     }
 
     #[test]
