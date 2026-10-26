@@ -267,6 +267,7 @@ pub const NETWORK_POLICY: SavePolicy = SavePolicy {
 fn crypto_provenance(source: &str) -> (&str, &'static str) {
     match source {
         "blockchain" => ("blockchain", "src/blockchain.rs"),
+        "base_rpc" => ("base_rpc", "src/base_rpc.rs"),
         _ => (source, "src/crypto_cli.rs"),
     }
 }
