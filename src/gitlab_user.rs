@@ -39,9 +39,17 @@ struct PublicUser {
 pub fn valid_username(raw: &str) -> bool {
     let value = raw.trim().trim_start_matches('@');
     (2..=MAX_USERNAME).contains(&value.len())
-        && value.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
-        && value.as_bytes().last().is_some_and(u8::is_ascii_alphanumeric)
-        && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && value
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 /// Query exactly one public GitLab.com account; use no secret and follow no redirects.
@@ -205,11 +213,20 @@ mod tests {
             "ada_test",
             "scan",
             NOW,
-        ).expect("valid account");
+        )
+        .expect("valid account");
         assert_eq!(res.outcome.kind, SourceOutcomeKind::Success);
         assert_eq!(res.entities.len(), 2);
-        assert!(res.entities.iter().any(|e| e.kind == EntityKind::Url && e.value == "https://gitlab.com/Ada_Test"));
-        assert!(res.entities.iter().any(|e| e.evidence.iter().any(|ev| ev.attr_values("gitlab_id").any(|id| id == "42"))));
+        assert!(
+            res.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Url && e.value == "https://gitlab.com/Ada_Test")
+        );
+        assert!(res.entities.iter().any(|e| {
+            e.evidence
+                .iter()
+                .any(|ev| ev.attr_values("gitlab_id").any(|id| id == "42"))
+        }));
         assert!(!res.entities.iter().any(|e| e.kind == EntityKind::Person));
     }
 
@@ -228,7 +245,10 @@ mod tests {
             r#"[{"username":"ada_test","id":4},{"username":"ada_test","id":5}]"#,
             r#"{"message":"blocked"}"#,
         ] {
-            assert!(parse(&response(json), "ada_test", "scan", NOW).is_err(), "{json}");
+            assert!(
+                parse(&response(json), "ada_test", "scan", NOW).is_err(),
+                "{json}"
+            );
         }
     }
 
