@@ -543,7 +543,7 @@ pub fn render_many_xlsx_bounded(
                 estimate = estimate.saturating_add(
                     cell.len()
                         .saturating_mul(7)
-                        .saturating_add(pieces.max(1).saturating_mul(CELL_BYTES))
+                        .saturating_add(pieces.max(1).saturating_mul(CELL_BYTES)),
                 );
             }
             if estimate > max_bytes {
