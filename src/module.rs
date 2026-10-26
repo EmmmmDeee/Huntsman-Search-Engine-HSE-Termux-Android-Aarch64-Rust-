@@ -407,6 +407,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "bounded deterministic username variants",
     },
     ReachableModule {
+        name: "github_repos",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.003"],
+        description: "bounded public GitHub repository footprint; self-declared metadata is not identity proof",
+    },
+    ReachableModule {
         name: "github_user",
         command: "username HANDLE",
         access: "keyless",
