@@ -331,6 +331,65 @@ fn cli_report_matches_stored_history_under_byte_capacity_pressure() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// Legacy CDMA buckets lack a system ID. Keep their original JSONL evidence
+/// and Wi-Fi recurrence, but never count them as distinct places for followers.
+#[test]
+fn legacy_cdma_replay_does_not_invent_cross_system_locations() {
+    let dir = scratch("legacy-cdma");
+    let wifi = dir.join("wifi.json");
+    let cells = dir.join("cells.json");
+    let log = dir.join("sweeps.jsonl");
+    fs::write(&wifi, WIFI).unwrap();
+    fs::write(
+        &cells,
+        br#"[{"type":"cdma","registered":true,"system":12,"network":22,"basestation":33}]"#,
+    )
+    .unwrap();
+    let old1 = serde_json::json!({
+        "ts": now().saturating_sub(1800),
+        "cell": "cdma:?-?-22-33",
+        "devices": [{"mac": "3c:5a:b4:11:22:33"}]
+    });
+    let old2 = serde_json::json!({
+        "ts": now().saturating_sub(900),
+        "cell": "cdma:?-?-22-44",
+        "devices": [{"mac": "3c:5a:b4:11:22:33"}]
+    });
+    fs::write(&log, format!("{old1}\n{old2}\n")).unwrap();
+
+    let output = bin()
+        .args(["radar", "track", "--json", "--wifi-file"])
+        .arg(&wifi)
+        .arg("--cells-file")
+        .arg(&cells)
+        .arg("--log")
+        .arg(&log)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["sweeps"], 3);
+    assert_eq!(report["located_sweeps"], 1);
+    assert_eq!(report["distinct_cells"], 1);
+    assert_eq!(report["recurring"].as_array().unwrap().len(), 1);
+    assert_eq!(report["followers"], serde_json::json!([]));
+
+    let saved = fs::read_to_string(&log).unwrap();
+    let rows: Vec<serde_json::Value> = saved
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["cell"], "cdma:?-?-22-33");
+    assert_eq!(rows[1]["cell"], "cdma:?-?-22-44");
+    assert_eq!(rows[2]["cell"], "cdma:12-22-33");
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn ambiguous_registered_cell_replay_is_logged_without_a_place() {
     let dir = scratch("ambiguous-cells");
