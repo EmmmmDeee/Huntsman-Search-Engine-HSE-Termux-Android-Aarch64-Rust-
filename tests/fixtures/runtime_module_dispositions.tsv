@@ -15,6 +15,7 @@ au_id	leaf	Australian identifier normalization
 base64	leaf	RFC 4648 base64 codec for CSP hashes, PKCE values and certificate DER
 benchmark	diagnostic	benchmarking support
 blockchain	adapter	blockchain.info Bitcoin address source client reached through crypto_cli
+base_rpc	adapter	keyless Base mainnet account observations through crypto_cli, scan and shared Web UI lookup; provenance retained without ownership attribution
 bluesky_user	adapter	public Bluesky profile source client
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
 canonical	runtime	canonicalization for entities and provenance
