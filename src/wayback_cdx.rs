@@ -159,7 +159,7 @@ fn parse_response(
         }
         // Do not persist historical session tokens, emails or other query values
         // that may have been accidentally exposed in archived URL parameters.
-        if original.contains(['?', '#', '@']) {
+        if original.bytes().any(|byte| matches!(byte, b'?' | b'#' | b'@')) {
             skipped_query_urls += 1;
             continue;
         }
