@@ -430,13 +430,13 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <textarea id="osint-case-input" rows="4" maxlength="20000" spellcheck="false" placeholder='{"case_id":"case1","observations":[]}' required></textarea>
 <button class="btn" id="osint-case-run" type="submit">Review provenance and timeline</button>
 </form>
-<pre class="mono" id="osint-case-output" role="status" class="osint-report"></pre>
+<pre class="mono osint-report" id="osint-case-output" role="status"></pre>
 <form id="osint-risk-form" class="row">
 <label for="osint-risk-input">Public-event dataset and area (JSON)</label>
 <textarea id="osint-risk-input" rows="4" maxlength="20000" spellcheck="false" placeholder='{"as_of_unix":1793059200,"events":[],"center_lat":-26.8,"center_lon":152.9,"radius_m":1000,"category":"general"}' required></textarea>
 <button class="btn" id="osint-risk-run" type="submit">Calculate event pressure</button>
 </form>
-<pre class="mono" id="osint-risk-output" role="status" class="osint-report"></pre>
+<pre class="mono osint-report" id="osint-risk-output" role="status"></pre>
 <p class="help">Import source records you are authorized to use. Leads and declared origins are not independently verified. A zero area score does not establish safety.</p>
 </div></div>
 <p class="alert" id="aerror" role="alert" hidden></p>
