@@ -66,7 +66,6 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
             "diagnostics [--json]\nPrint offline build provenance, target/runtime context, reachable-module counts, ATT&CK-mapped collector counts, and provider credential completeness without values or network access."
         }
         "doctor" => DOCTOR_HELP,
-        "public-osint" => super::public_osint::HELP,
         "fix" => {
             "fix [--json] [--probe] [--bind ADDR]\nThe same as doctor --fix: run every doctor check, make each repair that can be undone, then check again. It creates ~/.huntsman (mode 700) and an empty ~/.huntsman.env (mode 600) when they are missing, tightens loose permissions, re-runs the install acceptance before recording this binary as installed (the old record is kept as installed-revision.bak-TIME), and removes the Rust build cache only when Cargo tagged it and it is stale or the disk is nearly full. It never deletes a ledger or scan data and never writes or prints a key. Exit 0 when nothing fails afterwards, 78 when something still does."
         }
@@ -156,7 +155,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "verify" => {
             "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
         }
-        _ => return None,
+        _ => return (command == "public-osint").then_some(super::public_osint::HELP),
     };
     Some(help)
 }
