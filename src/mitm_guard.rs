@@ -206,16 +206,21 @@ pub fn assess(
 ) -> Report {
     // SSIDs are byte-exact, but BSSIDs are hexadecimal, case-insensitive identifiers.
     // Canonicalise once at this shared boundary even for direct library callers.
-    let mut by_ssid: BTreeMap<&str, BTreeMap<String, &AccessPoint>> = BTreeMap::new();
+    let mut by_ssid: BTreeMap<&str, BTreeMap<String, BTreeSet<Security>>> = BTreeMap::new();
     for ap in observations {
         if ssid_exclusion(&ap.ssid).is_some() || !valid_wifi_bssid(&ap.bssid) {
             continue;
         }
-        by_ssid
+        let modes = by_ssid
             .entry(&ap.ssid)
             .or_default()
             .entry(ap.bssid.to_ascii_lowercase())
-            .or_insert(ap);
+            .or_default();
+        // Unknown capabilities do not contradict a known mode; two distinct
+        // known modes do. Preserve both, regardless of observation ordering.
+        if ap.security != Security::Unknown {
+            modes.insert(ap.security);
+        }
     }
     let accepted = by_ssid.values().map(BTreeMap::len).sum::<usize>();
     let mut findings = Vec::new();
@@ -224,14 +229,31 @@ pub fn assess(
         .unwrap_or_default();
 
     for (ssid, aps) in &by_ssid {
+        for (bssid, modes) in aps {
+            if modes.len() > 1 {
+                findings.push(Finding {
+                    code: "bssid_security_conflict_unverified",
+                    severity: "review",
+                    ssid: (*ssid).to_owned(),
+                    bssid: Some(bssid.clone()),
+                    evidence: "Records for the same SSID/BSSID advertise conflicting security modes; record order does not establish the current mode.".into(),
+                    resolution: "Verify current security with the network administrator and repeat a fresh capture before drawing conclusions.",
+                });
+            }
+        }
         if let Some(policy) = trusted.get(ssid) {
             let minimum = Security::parse(&policy.minimum_security).ordinal();
-            for (bssid, ap) in aps {
+            for (bssid, modes) in aps {
+                // A contradictory capture cannot establish a downgrade.
+                if modes.len() > 1 {
+                    continue;
+                }
+                let security = modes.iter().next().copied().unwrap_or(Security::Unknown);
                 let enrolled = policy.bssids.iter().any(|b| b.eq_ignore_ascii_case(bssid));
                 let downgrade = minimum
-                    .zip(ap.security.ordinal())
+                    .zip(security.ordinal())
                     .is_some_and(|(min, current)| current < min);
-                if ap.security == Security::Unknown {
+                if security == Security::Unknown {
                     findings.push(Finding {
                         code: "trusted_ssid_security_unverified",
                         severity: "review",
@@ -248,7 +270,7 @@ pub fn assess(
                         bssid: Some(bssid.clone()),
                         evidence: format!(
                             "Observed {:?} below operator baseline {} (authorised BSSID: {}). Baseline authenticity must be independently verified.",
-                            ap.security, policy.minimum_security, enrolled
+                            security, policy.minimum_security, enrolled
                         ),
                         resolution: "Do not authenticate via this access point. Manually leave/forget the network and verify the BSSID, WPA mode and enterprise certificate with its administrator.",
                     });
@@ -264,7 +286,13 @@ pub fn assess(
                 }
             }
         } else {
-            let modes: BTreeSet<_> = aps.values().filter_map(|a| a.security.ordinal()).collect();
+            // Contradictory rows from one BSSID do not establish variation
+            // between different physical BSSIDs.
+            let modes: BTreeSet<_> = aps
+                .values()
+                .filter(|known| known.len() == 1)
+                .flat_map(|known| known.iter().filter_map(|mode| mode.ordinal()))
+                .collect();
             if modes.len() > 1 {
                 findings.push(Finding {
                     code: "unverified_ssid_security_variation",
@@ -467,6 +495,39 @@ mod tests {
             downgraded.findings[0].bssid.as_deref(),
             Some("3c:5a:b4:11:22:33")
         );
+    }
+
+    #[test]
+    fn conflicting_bssid_modes_are_order_independent_and_review_only() {
+        let baseline = parse_baseline(
+            br#"{"networks":[{"ssid":"Office","bssids":["3c:5a:b4:11:22:33"],"minimum_security":"WPA3"}]}"#,
+        )
+        .unwrap();
+        let low = ap("Office", "3C:5A:B4:11:22:33", Security::Wpa);
+        let high = ap("Office", "3c:5a:b4:11:22:33", Security::Wpa3);
+        let unknown = ap("Office", "3c:5a:b4:11:22:33", Security::Unknown);
+        let first = assess(&[low.clone(), high.clone(), unknown.clone()], Some(&baseline), "fixture", 0);
+        let last = assess(&[unknown, high, low], Some(&baseline), "fixture", 0);
+        assert_eq!(first, last);
+        assert_eq!(first.evaluated_access_points, 1);
+        assert_eq!(first.findings.len(), 1);
+        assert_eq!(first.findings[0].code, "bssid_security_conflict_unverified");
+        assert_eq!(first.findings[0].severity, "review");
+        assert_eq!(first.findings[0].bssid.as_deref(), Some("3c:5a:b4:11:22:33"));
+        assert!(!first.mitm_confirmed);
+    }
+
+    #[test]
+    fn one_bssid_conflict_does_not_imply_cross_bssid_variation() {
+        let low = ap("Office", "3c:5a:b4:11:22:33", Security::Wpa);
+        let high = ap("Office", "3C:5A:B4:11:22:33", Security::Wpa3);
+        let first = assess(&[low.clone(), high.clone()], None, "fixture", 0);
+        let last = assess(&[high, low], None, "fixture", 0);
+        assert_eq!(first, last);
+        assert_eq!(first.evaluated_access_points, 1);
+        assert_eq!(first.findings.len(), 1);
+        assert_eq!(first.findings[0].code, "bssid_security_conflict_unverified");
+        assert!(!first.mitm_confirmed);
     }
 
     #[test]
