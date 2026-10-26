@@ -47,6 +47,7 @@ use crate::spf::Mechanism;
 use crate::tags;
 use crate::threat_feeds::{self, Feeds};
 use crate::virustotal;
+use crate::wayback_cdx;
 
 mod resolve;
 
@@ -123,6 +124,28 @@ pub fn run<T: Transport + ?Sized + Sync>(
         let certificates = certspotter::lookup(transport, keys, &domain, &scan_id, now_unix);
         found.entities.extend(certificates.entities);
         found.outcomes.push(certificates.outcome);
+    }
+    // Public web-archive captures are actual indexed historical URLs, not the
+    // source registry's Wayback search link. Never fetch the returned URLs.
+    if transport.runs_module(wayback_cdx::SOURCE) {
+        match wayback_cdx::lookup(transport, &domain, &scan_id, now_unix) {
+            Ok(captures) => {
+                found.entities.extend(captures.entities);
+                found.outcomes.push(captures.outcome);
+            }
+            Err(Error::Network(reason)) => found.outcomes.push(
+                SourceExecutionOutcome::refused_before_sending(
+                    wayback_cdx::SOURCE,
+                    now_unix,
+                    reason,
+                ),
+            ),
+            Err(error) => found.outcomes.push(SourceExecutionOutcome::inconclusive(
+                wayback_cdx::SOURCE,
+                now_unix,
+                error.to_string(),
+            )),
+        }
     }
     let Resolved {
         resolvers_up,
