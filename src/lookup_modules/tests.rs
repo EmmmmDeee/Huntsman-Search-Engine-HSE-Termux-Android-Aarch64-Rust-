@@ -579,6 +579,7 @@ const ASKS_NOTHING: &[(ScanKind, &str, &str)] = &[
     (ScanKind::Email, "oathnet", "ada@huntsman-shop.net"),
     (ScanKind::Email, "dehashed", "ada@huntsman-shop.net"),
     (ScanKind::Username, "github_user", "ada_lovelace"),
+    (ScanKind::Username, "github_repos", "ada_lovelace"),
     (ScanKind::Username, "bluesky_user", "ada_lovelace"),
     (ScanKind::Username, "seeknow", "ada_lovelace"),
     (ScanKind::Username, "seeknow", "adalovelace"),
