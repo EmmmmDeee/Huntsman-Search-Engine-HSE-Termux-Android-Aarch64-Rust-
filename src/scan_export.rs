@@ -437,6 +437,69 @@ pub fn render_many_json_bounded(
         .map_err(|error| error.to_string())
 }
 
+/// Write multi-scan CSV/TSV directly into a bounded byte buffer. Each escaped
+/// cell is checked before append; a rejected response is never returned partially.
+///
+/// # Errors
+/// An unsupported format.
+pub fn render_many_text_bounded(
+    scans: &[(&ScanRecord, &ScanResults)],
+    format: &str,
+    kind: Option<&str>,
+    max_bytes: usize,
+) -> Result<Result<Export, usize>, String> {
+    let format = format_name(format);
+    let (separator, content_type): (&[u8], _) = match format.as_str() {
+        "csv" => (b",", "text/csv; charset=utf-8"),
+        "tsv" => (b"\t", "text/tab-separated-values; charset=utf-8"),
+        _ => return Err(format!("unknown bounded tabular export format {format}")),
+    };
+    let filename = match scans {
+        [(scan, _)] => file_name(scan, &format),
+        _ => format!("Huntsman.{format}"),
+    };
+    let mut body = Vec::new();
+    let append = |body: &mut Vec<u8>, bytes: &[u8]| -> Result<(), usize> {
+        let required = body.len().saturating_add(bytes.len());
+        if required > max_bytes {
+            Err(required)
+        } else {
+            body.extend_from_slice(bytes);
+            Ok(())
+        }
+    };
+    let write = || -> Result<Vec<u8>, usize> {
+        let mut header = vec!["Scan Name"];
+        header.extend(ELEMENT_COLUMNS);
+        append(&mut body, header.join(std::str::from_utf8(separator).unwrap_or(",")).as_bytes())?;
+        append(&mut body, b"\r\n")?;
+        for &(scan, results) in scans {
+            for (element, source) in rows(results, kind) {
+                let mut line = vec![scan.name.clone()];
+                line.extend(element_line(element, source));
+                for (index, cell) in line.iter().enumerate() {
+                    if index != 0 {
+                        append(&mut body, separator)?;
+                    }
+                    let escaped = if format == "csv" {
+                        csv_cell(cell)
+                    } else {
+                        tsv_cell(cell)
+                    };
+                    append(&mut body, escaped.as_bytes())?;
+                }
+                append(&mut body, b"\r\n")?;
+            }
+        }
+        Ok(body)
+    };
+    Ok(write().map(|body| Export {
+        body,
+        content_type,
+        filename,
+    }))
+}
+
 /// Spiderfoot's `scanexportjsonmulti` rows for several scans, each element with its raw evidence
 /// as well.
 #[must_use]
@@ -906,6 +969,24 @@ mod tests {
                 .unwrap(),
             filtered
         );
+    }
+
+    #[test]
+    fn bounded_text_multi_export_matches_spiderfoot_and_enforces_limit() {
+        let (scan, results) = scan();
+        let scans = [(&scan, &results), (&scan, &results)];
+        for format in ["csv", "tsv"] {
+            let original = render_many(&scans, format, None).unwrap();
+            let exact = render_many_text_bounded(&scans, format, None, original.body.len())
+                .unwrap()
+                .unwrap();
+            assert_eq!(exact, original);
+            assert!(
+                render_many_text_bounded(&scans, format, None, original.body.len() - 1)
+                    .unwrap()
+                    .is_err()
+            );
+        }
     }
 
     #[test]
