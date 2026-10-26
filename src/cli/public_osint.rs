@@ -44,9 +44,8 @@ pub(super) fn run(args: &[String]) -> ExitCode {
     }
     let query = remainder.join(" ");
     let scan = entity::scan_id("public-osint", &query);
-    let report = match public_osint::search(
-        &transport(), source, &query, &scan, clock::unix_now()
-    ) {
+    let report = match public_osint::search(&transport(), source, &query, &scan, clock::unix_now())
+    {
         Ok(report) => report,
         Err(reason) => return fail(EX_DATAERR, reason),
     };
@@ -67,17 +66,21 @@ pub(super) fn web_lookup(query: &LookupQuery) -> Option<Result<LookupReport, Loo
     let scan = entity::scan_id("public-osint", &query.selector);
     Some((|| {
         let report = public_osint::search(
-            &transport(), source, &query.selector, &scan, clock::unix_now()
-        ).map_err(|message| LookupError {
+            &transport(),
+            source,
+            &query.selector,
+            &scan,
+            clock::unix_now(),
+        )
+        .map_err(|message| LookupError {
             status: 400,
             message: message.into(),
         })?;
-        let text = huntsman_recon::lookup_report::render(
-            &report.entities, &report.outcomes
-        ).map_err(|message| LookupError {
-            status: 500,
-            message,
-        })?;
+        let text = huntsman_recon::lookup_report::render(&report.entities, &report.outcomes)
+            .map_err(|message| LookupError {
+                status: 500,
+                message,
+            })?;
         Ok(LookupReport {
             route: "public-osint",
             text,
