@@ -71,14 +71,14 @@ script="$root/scripts/github/merge-policy.sh"
 pass=0
 fail=0
 check_case() {
-  local title="$1" scenario="$2" mode="$3" expected="$4" writes="$5" status=0
+  local title="$1" scenario="$2" mode="$3" expected="$4" writes="$5" reason="${6:-}" status=0
   rm -f -- "$MOCK_STATE" "$MOCK_LOG"
   local output
-  output="$(MOCK_SCENARIO="$scenario" "$script" "$mode" 2>&1)" || status=$?
+  output="$(MOCK_SCENARIO="$scenario" bash "$script" "$mode" 2>&1)" || status=$?
   local count=0
   [[ -f "$MOCK_LOG" ]] && count="$(grep -c -- '--method POST' "$MOCK_LOG" || :)"
   if [[ "$expected" == pass && "$status" -eq 0 && "$count" -eq "$writes" ]] ||
-     [[ "$expected" == fail && "$status" -ne 0 && "$count" -eq "$writes" ]]; then
+     [[ "$expected" == fail && "$status" -ne 0 && "$status" -ne 126 && "$status" -ne 127 && "$count" -eq "$writes" && "$output" == *"$reason"* ]]; then
     echo "PASS: $title"
     pass=$((pass + 1))
   else
@@ -88,21 +88,21 @@ check_case() {
   fi
 }
 
-check_case 'read-only missing policy fails without writing' none check fail 0
+check_case 'read-only missing policy fails without writing' none check fail 0 'MISSING:'
 check_case 'apply installs and validates policy' none apply pass 1
 check_case 'existing correct policy verifies read-only' installed check pass 0
 check_case 'existing correct policy apply remains idempotent' installed apply pass 0
-check_case 'duplicate names fail without writing' duplicate apply fail 0
-check_case 'API read 403 aborts without writing' forbidden apply fail 0
-check_case 'API create 403 fails closed' post_denied apply fail 1
-check_case 'protected branch with foreign policy is not overwritten' protected_other apply fail 0
-check_case 'ruleset admin bypass is rejected' drift_bypass check fail 0
-check_case 'required check name drift is rejected' drift_context check fail 0
-check_case 'weak stale-branch policy is rejected' drift_strict check fail 0
-check_case 'unexpected check provider is rejected' drift_app check fail 0
-check_case 'wrong branch target is rejected' drift_target check fail 0
-check_case 'inactive branch enforcement is rejected' unprotected check fail 0
-check_case 'auto-merge disabled is rejected' auto_disabled check fail 0
+check_case 'duplicate names fail without writing' duplicate apply fail 0 'duplicate named rulesets'
+check_case 'API read 403 aborts without writing' forbidden apply fail 0 'HTTP 403'
+check_case 'API create 403 fails closed' post_denied apply fail 1 'HTTP 403'
+check_case 'protected branch with foreign policy is not overwritten' protected_other apply fail 0 'already protected differently'
+check_case 'ruleset admin bypass is rejected' drift_bypass check fail 0 'DRIFT:'
+check_case 'required check name drift is rejected' drift_context check fail 0 'DRIFT:'
+check_case 'weak stale-branch policy is rejected' drift_strict check fail 0 'DRIFT:'
+check_case 'unexpected check provider is rejected' drift_app check fail 0 'DRIFT:'
+check_case 'wrong branch target is rejected' drift_target check fail 0 'DRIFT:'
+check_case 'inactive branch enforcement is rejected' unprotected check fail 0 'NOT ENFORCED:'
+check_case 'auto-merge disabled is rejected' auto_disabled check fail 0 'NOT READY:'
 
 if [[ "$fail" -ne 0 ]]; then
   echo "$fail failed / $pass passed" >&2
