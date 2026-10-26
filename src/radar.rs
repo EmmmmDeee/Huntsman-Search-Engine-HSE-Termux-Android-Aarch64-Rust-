@@ -724,7 +724,12 @@ pub fn track(sweeps: &[LoggedSweep], skipped_lines: usize) -> TrackReport {
         .collect();
     let cells: HashSet<&str> = sweeps
         .iter()
-        .filter_map(|sweep| sweep.cell.as_deref().filter(|cell| unambiguous_track_cell(cell)))
+        .filter_map(|sweep| {
+            sweep
+                .cell
+                .as_deref()
+                .filter(|cell| unambiguous_track_cell(cell))
+        })
         .collect();
     TrackReport {
         sweeps: sweeps.len(),
