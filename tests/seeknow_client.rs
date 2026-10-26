@@ -304,3 +304,55 @@ fn sensitive_result_values_are_discarded_but_upstream_lineage_fields_survive() {
     assert!(!rendered.contains("tok-secret"));
     assert!(!rendered.contains("sid=secret"));
 }
+
+#[test]
+fn variant_secret_field_names_are_dropped_without_losing_safe_evidence() {
+    let body = serde_json::json!({
+        "success": true,
+        "data": [{
+            "email": "alice@example.com",
+            "source": "Dataset A",
+            "record_id": "row-1",
+            "api_version": "v1",
+            "passwordHash": "must-not-retain-1",
+            "password.hint": "must-not-retain-2",
+            "accessToken": "must-not-retain-3",
+            "refresh-token": "must-not-retain-4",
+            "sessionCookie": "must-not-retain-5",
+            "apiKey": "must-not-retain-6",
+            "privateKey": "must-not-retain-7",
+            "recoveryCodes": "must-not-retain-8",
+            "jwt": "must-not-retain-9",
+            "otp": "must-not-retain-10",
+            "credentials": "must-not-retain-11"
+        }]
+    })
+    .to_string();
+    let transport = ScriptedTransport::new(vec![response(&body)]);
+    let result = search_fast(&transport, &credential(), &auto_search(), 17).unwrap();
+    assert_eq!(result.outcome.kind, SourceOutcomeKind::Success);
+    assert_eq!(result.rows.len(), 1);
+
+    let row = &result.rows[0];
+    for key in ["email", "source", "record_id", "api_version"] {
+        assert!(row.fields.contains_key(key), "lost safe field {key}");
+    }
+    for key in [
+        "passwordHash",
+        "password.hint",
+        "accessToken",
+        "refresh-token",
+        "sessionCookie",
+        "apiKey",
+        "privateKey",
+        "recoveryCodes",
+        "jwt",
+        "otp",
+        "credentials",
+    ] {
+        assert!(!row.fields.contains_key(key), "leaked {key}");
+        assert!(row.sensitive_fields.contains(key), "unreported redaction {key}");
+    }
+    let serialized = serde_json::to_string(&result).unwrap();
+    assert!(!serialized.contains("must-not-retain-"));
+}
