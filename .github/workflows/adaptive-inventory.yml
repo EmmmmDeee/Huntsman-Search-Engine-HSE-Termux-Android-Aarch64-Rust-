@@ -1,0 +1,28 @@
+name: Huntsman adaptive inventory
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * *'
+permissions:
+  contents: read
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Generate complete tree and machine-readable index
+        run: python3 tools/huntsman_inventory.py
+      - name: Upload evidence artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: huntsman-repository-inventory
+          path: |
+            docs/HUNTSMAN_REPOSITORY_TREE.md
+            docs/huntsman-inventory.json
+          retention-days: 30
