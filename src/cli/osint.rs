@@ -67,7 +67,7 @@ fn emit<T: serde::Serialize>(report: &T, success: bool) -> ExitCode {
     }
 }
 
-fn fail_error(error: Error) -> ExitCode {
+fn fail_error(error: &Error) -> ExitCode {
     let code = match error {
         Error::Invalid(_) => EX_USAGE,
         Error::InvalidValue(_) => EX_DATAERR,
@@ -85,9 +85,9 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
             match read_bounded(Path::new(path), MAX_CASE_BYTES as u64) {
                 Ok(data) => match osint_casework::review_json(&data) {
                     Ok(report) => emit(&report, true),
-                    Err(error) => fail_error(error),
+                    Err(error) => fail_error(&error),
                 },
-                Err(error) => fail_error(error),
+                Err(error) => fail_error(&error),
             }
         }
         [mode, path, coords, rest @ ..] if mode == "area-risk" => {
@@ -104,7 +104,7 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
             let category = rest.get(1).map_or("general", String::as_str);
             match area_report(path, coords, radius, category) {
                 Ok(report) => emit(&report, true),
-                Err(error) => fail_error(error),
+                Err(error) => fail_error(&error),
             }
         }
         [mode, path, first, second, rest @ ..] if mode == "area-compare" => {
@@ -117,7 +117,7 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
                 area_report(path, second, 1000.0, category),
             ) {
                 (Ok(a), Ok(b)) => emit(&serde_json::json!({"first":a,"second":b}), true),
-                (Err(error), _) | (_, Err(error)) => fail_error(error),
+                (Err(error), _) | (_, Err(error)) => fail_error(&error),
             }
         }
         [mode, terms @ ..] if mode == "x" || mode == "x-api" => {
@@ -136,7 +136,7 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
                     now,
                 ) {
                     Ok(credential) => credential,
-                    Err(error) => return fail_error(error),
+                    Err(error) => return fail_error(&error),
                 };
                 federated_osint::search_official_x(&transport, &credential, &query, now)
             } else {
@@ -151,7 +151,7 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
                             .any(|outcome| outcome.kind == SourceOutcomeKind::Success);
                     emit(&report, accepted)
                 }
-                Err(error) => fail_error(error),
+                Err(error) => fail_error(&error),
             }
         }
         [mode, query, dir] if mode == "local" => lookup::search_cmd(&[query.clone(), dir.clone()]),
@@ -186,7 +186,7 @@ fn wallet(address: &str, use_alchemy: bool, now: u64) -> ExitCode {
             now,
         ) {
             Ok(credential) => Some(credential),
-            Err(error) => return fail_error(error),
+            Err(error) => return fail_error(&error),
         }
     } else {
         None
@@ -196,7 +196,7 @@ fn wallet(address: &str, use_alchemy: bool, now: u64) -> ExitCode {
             let accepted = report.outcome.kind == SourceOutcomeKind::Success;
             emit(&report, accepted)
         }
-        Err(error) => fail_error(error),
+        Err(error) => fail_error(&error),
     }
 }
 fn area_report(
