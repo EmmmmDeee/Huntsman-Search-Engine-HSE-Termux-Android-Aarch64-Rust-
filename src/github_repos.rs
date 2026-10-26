@@ -113,7 +113,7 @@ pub fn lookup<T: Transport + ?Sized>(
         SRC,
         now_unix,
     )?;
-    Ok(interpret(&fetched, username, scan_id, now_unix).unwrap_or_else(empty))
+    Ok(interpret(&fetched, username, &url, scan_id, now_unix).unwrap_or_else(empty))
 }
 
 fn empty(outcome: SourceExecutionOutcome) -> Report {
@@ -126,6 +126,7 @@ fn empty(outcome: SourceExecutionOutcome) -> Report {
 fn interpret(
     fetched: &Fetched,
     username: &str,
+    source_url: &str,
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, SourceExecutionOutcome> {
@@ -170,7 +171,7 @@ fn interpret(
     }
     let mut entities = Vec::new();
     for repo in repositories.iter().take(MAX_REPOS) {
-        add_repository(&mut entities, repo, scan_id);
+        add_repository(&mut entities, repo, source_url, scan_id);
     }
     let accepted = entities.len();
     if accepted == 0 {
@@ -200,7 +201,12 @@ fn valid_repo(repo: &Repository, username: &str) -> bool {
             .eq_ignore_ascii_case(&format!("{}/{}", repo.owner.login, repo.name))
 }
 
-fn add_repository(entities: &mut Vec<Entity>, repo: &Repository, scan_id: &str) {
+fn add_repository(
+    entities: &mut Vec<Entity>,
+    repo: &Repository,
+    source_url: &str,
+    scan_id: &str,
+) {
     let url = format!("https://github.com/{}/{}", repo.owner.login, repo.name);
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(SRC, scan_id),
@@ -210,8 +216,9 @@ fn add_repository(entities: &mut Vec<Entity>, repo: &Repository, scan_id: &str) 
         ),
     )
     .with_attr("dataset", "GitHub public repositories")
+    .with_attr("source_url", source_url)
     .with_attr(
-        "source_url",
+        "repository_api_url",
         format!(
             "https://api.github.com/repos/{}/{}",
             repo.owner.login, repo.name
@@ -322,6 +329,13 @@ mod tests {
         assert_eq!(
             e.evidence[0].attributes.get("fork").map(String::as_str),
             Some("true")
+        );
+        assert_eq!(
+            e.evidence[0]
+                .attributes
+                .get("source_url")
+                .map(String::as_str),
+            Some("https://api.github.com/users/octocat/repos?type=owner&sort=updated&per_page=30")
         );
         assert_eq!(
             e.evidence[0]
