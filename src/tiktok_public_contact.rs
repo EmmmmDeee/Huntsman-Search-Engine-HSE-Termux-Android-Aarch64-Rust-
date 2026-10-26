@@ -197,7 +197,7 @@ fn public_profile_entities(user: &Value, name: &str, scan_id: &str) -> Vec<Entit
                     .clone()
                     .with_attr("source_field", "public_bio_signature")
                     .inferred(),
-                &["tiktok", "public-contact", "self-declared", "candidate"],
+                &["tiktok", "public-contact", "self-declared", crate::tags::CANDIDATE],
             );
         }
     }
@@ -216,7 +216,7 @@ fn public_profile_entities(user: &Value, name: &str, scan_id: &str) -> Vec<Entit
             evidence
                 .with_attr("source_field", "public_bio_link")
                 .inferred(),
-            &["tiktok", "public-bio-link", "self-declared", "candidate"],
+            &["tiktok", "public-bio-link", "self-declared", crate::tags::CANDIDATE],
         );
     }
     merge_by_uid(&mut entities);
@@ -347,7 +347,7 @@ mod tests {
             .collect();
         assert_eq!(contacts.len(), 1);
         assert_eq!(contacts[0].value, "hello@example.org");
-        assert!(contacts[0].has_tag("candidate"));
+        assert!(contacts[0].has_tag(crate::tags::CANDIDATE));
         assert!(contacts[0].evidence.iter().any(|e| e.is_inferred));
         assert!(contacts[0].evidence.iter().all(|e| {
             e.attributes.get("source_field").map(String::as_str) == Some("public_bio_signature")
