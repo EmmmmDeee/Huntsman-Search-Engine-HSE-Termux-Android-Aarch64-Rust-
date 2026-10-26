@@ -258,7 +258,7 @@ pub fn base_balance<T: Transport + ?Sized>(
         endpoint,
         alchemy,
         "eth_chainId",
-        json!([]),
+        &json!([]),
         now_unix,
         &mut report,
     )?
@@ -280,7 +280,7 @@ pub fn base_balance<T: Transport + ?Sized>(
         endpoint,
         alchemy,
         "eth_blockNumber",
-        json!([]),
+        &json!([]),
         now_unix,
         &mut report,
     )?
@@ -299,7 +299,7 @@ pub fn base_balance<T: Transport + ?Sized>(
         endpoint,
         alchemy,
         "eth_getBalance",
-        json!([report.address.as_str(), block_tag]),
+        &json!([report.address.as_str(), block_tag]),
         now_unix,
         &mut report,
     )?
@@ -332,7 +332,7 @@ fn rpc_read<T: Transport + ?Sized>(
     endpoint: &str,
     credential: Option<&Credential>,
     method: &'static str,
-    params: Value,
+    params: &Value,
     now: u64,
     report: &mut BaseBalanceReport,
 ) -> Result<Option<String>, Error> {
@@ -394,7 +394,7 @@ fn parse_quantity(raw: &str) -> Option<String> {
         for cell in &mut decimal {
             let n = u16::from(*cell) * 16 + u16::from(carry);
             *cell = (n % 10) as u8;
-            carry = (n / 10) as u8;
+            carry = u8::try_from(n / 10).expect("bounded decimal carry");
         }
         while carry != 0 {
             decimal.push(carry % 10);
