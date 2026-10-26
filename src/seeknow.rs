@@ -764,9 +764,18 @@ fn is_sensitive_result_field(key: &str) -> bool {
             | "accesskey"
             | "recoverycode"
             | "recoverycodes"
-    ) || ["password", "passwd", "token", "secret", "cookie", "apikey", "privatekey", "credential"]
-        .iter()
-        .any(|fragment| normalized.contains(fragment))
+    ) || [
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "cookie",
+        "apikey",
+        "privatekey",
+        "credential",
+    ]
+    .iter()
+    .any(|fragment| normalized.contains(fragment))
         || normalized.starts_with("session")
 }
 
