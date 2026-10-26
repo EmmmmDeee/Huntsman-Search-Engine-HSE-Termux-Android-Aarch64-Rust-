@@ -341,10 +341,18 @@ mod tests {
 
     #[test]
     fn cdma_serving_bucket_preserves_system_identity() {
-        let first = br#"[{"type":"cdma","registered":true,"system":11,"network":22,"basestation":33}]"#;
-        let second = br#"[{"type":"cdma","registered":true,"system":12,"network":22,"basestation":33}]"#;
-        assert_eq!(parse_cells(first).unwrap().serving_cell().as_deref(), Some("cdma:11-22-33"));
-        assert_eq!(parse_cells(second).unwrap().serving_cell().as_deref(), Some("cdma:12-22-33"));
+        let first =
+            br#"[{"type":"cdma","registered":true,"system":11,"network":22,"basestation":33}]"#;
+        let second =
+            br#"[{"type":"cdma","registered":true,"system":12,"network":22,"basestation":33}]"#;
+        assert_eq!(
+            parse_cells(first).unwrap().serving_cell().as_deref(),
+            Some("cdma:11-22-33")
+        );
+        assert_eq!(
+            parse_cells(second).unwrap().serving_cell().as_deref(),
+            Some("cdma:12-22-33")
+        );
         let ambiguous = br#"[{"type":"cdma","registered":true,"system":11,"network":22,"basestation":33},{"type":"cdma","registered":true,"system":12,"network":22,"basestation":33}]"#;
         assert_eq!(parse_cells(ambiguous).unwrap().serving_cell(), None);
     }
