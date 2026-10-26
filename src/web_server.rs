@@ -1997,13 +1997,19 @@ fn osint_offline_response(parsed: &ParsedRequest<'_>, risk: bool) -> String {
         return refusal;
     }
     if !parsed.query.is_empty() {
-        return json_error(400, "OSINT analysis accepts JSON body, not query parameters");
+        return json_error(
+            400,
+            "OSINT analysis accepts JSON body, not query parameters",
+        );
     }
     let Some(length) = parsed.content_length else {
         return json_error(400, "OSINT analysis needs content length");
     };
     if length == 0 || length > MAX_FORM_BYTES {
-        return json_error(413, "OSINT body size exceeded; use the CLI for larger datasets");
+        return json_error(
+            413,
+            "OSINT body size exceeded; use the CLI for larger datasets",
+        );
     }
     let Some(body) = parsed.body else {
         return json_error(400, "OSINT analysis body missing");
