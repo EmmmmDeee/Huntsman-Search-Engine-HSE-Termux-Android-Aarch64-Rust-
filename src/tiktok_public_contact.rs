@@ -336,10 +336,7 @@ mod tests {
                 let mut root = serde_json::Map::new();
                 root.insert(scope_name.to_owned(), Value::Object(profile));
                 let payload = Value::Object(root);
-                let page = html(
-                    &payload.to_string(),
-                    "__UNIVERSAL_DATA_FOR_REHYDRATION__",
-                );
+                let page = html(&payload.to_string(), "__UNIVERSAL_DATA_FOR_REHYDRATION__");
                 let user = profile_from_public_bootstrap(&page, "alice24")
                     .expect("matching public profile data");
                 assert_eq!(user["signature"], "business@example.org");
