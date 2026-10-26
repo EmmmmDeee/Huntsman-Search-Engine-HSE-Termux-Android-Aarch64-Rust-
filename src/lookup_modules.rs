@@ -32,7 +32,7 @@ const BREACH: [&str; 4] = [
 /// Every module `kind`'s lookup may ask, each once, in the order it asks them. **Pure.**
 #[must_use]
 pub fn modules(kind: ScanKind) -> Vec<&'static str> {
-    let mut modules: Vec<&'static str> = match kind {
+    let modules: Vec<&'static str> = match kind {
         ScanKind::Ip => {
             let mut ip = vec![
                 crate::dns::RESOLVE_SOURCE,
