@@ -81,13 +81,15 @@ fn fail_error(error: Error) -> ExitCode {
 pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
     let now = clock::unix_now();
     match args {
-        [mode, path] if mode == "case" => match read_bounded(Path::new(path), MAX_CASE_BYTES as u64) {
-            Ok(data) => match osint_casework::review_json(&data) {
-                Ok(report) => emit(&report, true),
+        [mode, path] if mode == "case" => {
+            match read_bounded(Path::new(path), MAX_CASE_BYTES as u64) {
+                Ok(data) => match osint_casework::review_json(&data) {
+                    Ok(report) => emit(&report, true),
+                    Err(error) => fail_error(error),
+                },
                 Err(error) => fail_error(error),
-            },
-            Err(error) => fail_error(error),
-        },
+            }
+        }
         [mode, path, coords, rest @ ..] if mode == "area-risk" => {
             if rest.len() > 2 {
                 return fail(EX_USAGE, OSINT_HELP);
