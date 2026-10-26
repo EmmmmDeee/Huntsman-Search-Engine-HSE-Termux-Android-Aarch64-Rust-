@@ -148,8 +148,16 @@ pub fn estimate(
     let components = [
         bounded(daily_density, 45.0, 0.2),
         bounded(focused_density, 25.0, 0.12),
-        bounded(f64::from(u16::try_from(recent).unwrap_or(u16::MAX)), 15.0, 3.0),
-        bounded(f64::from(u16::try_from(severe).unwrap_or(u16::MAX)), 15.0, 2.0),
+        bounded(
+            f64::from(u16::try_from(recent).unwrap_or(u16::MAX)),
+            15.0,
+            3.0,
+        ),
+        bounded(
+            f64::from(u16::try_from(severe).unwrap_or(u16::MAX)),
+            15.0,
+            2.0,
+        ),
     ];
     let rounded_score = components.iter().sum::<f64>().clamp(0.0, 100.0).round();
     let score = (0_u8..=100)
