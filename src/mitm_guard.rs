@@ -220,6 +220,17 @@ fn grouped_access_points(
     by_ssid
 }
 
+/// Preserve deterministic finding order across CLI, replay and Web reports.
+fn sort_findings(findings: &mut [Finding]) {
+    findings.sort_by(|a, b| {
+        (a.ssid.as_str(), a.code, a.bssid.as_deref()).cmp(&(
+            b.ssid.as_str(),
+            b.code,
+            b.bssid.as_deref(),
+        ))
+    });
+}
+
 /// Based on MITM/evil-twin literature, but these are conservative heuristics,
 /// NOT reproduced ML classifiers or validated sensitivities from the papers.
 #[must_use]
@@ -317,14 +328,7 @@ pub fn assess(
         }
     }
 
-    // Deterministic ordering makes reports diffable and reproducible.
-    findings.sort_by(|a, b| {
-        (a.ssid.as_str(), a.code, a.bssid.as_deref()).cmp(&(
-            b.ssid.as_str(),
-            b.code,
-            b.bssid.as_deref(),
-        ))
-    });
+    sort_findings(&mut findings);
     let status = assess_status(accepted, &findings);
     Report {
         source,
