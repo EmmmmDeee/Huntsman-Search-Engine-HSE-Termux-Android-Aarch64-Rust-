@@ -376,7 +376,7 @@ fn legacy_cdma_replay_does_not_invent_cross_system_locations() {
     assert_eq!(report["located_sweeps"], 1);
     assert_eq!(report["distinct_cells"], 1);
     assert_eq!(report["recurring"].as_array().unwrap().len(), 1);
-    assert_eq!(report["followers"].as_array().unwrap().as_slice(), []);
+    assert_eq!(report["followers"], serde_json::json!([]));
 
     let saved = fs::read_to_string(&log).unwrap();
     let rows: Vec<serde_json::Value> = saved
