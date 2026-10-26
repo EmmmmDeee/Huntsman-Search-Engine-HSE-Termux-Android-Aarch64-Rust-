@@ -30,11 +30,17 @@ pub struct Report {
 #[must_use]
 pub fn valid_username(name: &str) -> bool {
     (2..=24).contains(&name.len())
-        && name.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.')
-        })
-        && name.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
-        && name.as_bytes().last().is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.'))
+        && name
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && name
+            .as_bytes()
+            .last()
+            .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
         && !name.contains("..")
 }
 
@@ -174,7 +180,8 @@ fn interpret(
                 &item.value,
                 item.confidence.min(CONTACT_CONFIDENCE),
                 scan_id,
-                evidence.clone()
+                evidence
+                    .clone()
                     .with_attr("source_field", "public_bio_signature")
                     .inferred(),
                 &["tiktok", "public-contact", "self-declared", "candidate"],
@@ -193,7 +200,9 @@ fn interpret(
             &link,
             CONTACT_CONFIDENCE,
             scan_id,
-            evidence.with_attr("source_field", "public_bio_link").inferred(),
+            evidence
+                .with_attr("source_field", "public_bio_link")
+                .inferred(),
             &["tiktok", "public-bio-link", "self-declared", "candidate"],
         );
     }
