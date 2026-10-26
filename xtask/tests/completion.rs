@@ -42,7 +42,8 @@ fn generated_tree_contains_every_tracked_path_and_is_repeatable() {
             "tracked path is absent from adaptive tree: {path}"
         );
     }
-    assert!(document.contains("## Dependency-ordered implementation queue"));
+    assert!(document.contains("## Dependency-ordered outstanding implementation queue"));
+    assert!(document.contains("## Historically verified implementation receipts"));
     assert!(document.contains("docs/completion/handset-evidence.md"));
     assert!(document.contains("[P:PROPOSED]"));
 }
