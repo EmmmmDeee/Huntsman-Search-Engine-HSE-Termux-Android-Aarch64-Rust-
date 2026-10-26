@@ -16,7 +16,7 @@ use crate::scan_route::ScanKind;
 use crate::threat_feeds;
 use crate::{
     abuseipdb, asic_director, asic_persons, blockchain, bluesky_user, certspotter, dehashed,
-    duolingo, exposure_cli, github_user, gravatar, greynoise, hunter, internetdb, keybase,
+    duolingo, exposure_cli, github_repos, github_user, gravatar, greynoise, hunter, internetdb, keybase,
     mnemonic, nominatim, numverify, oathnet, openpgp_keys, rdap, ripestat, seeknow_collector,
     tiktok_public_contact, virustotal, wigle, wikipedia,
 };
@@ -81,6 +81,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         }
         ScanKind::Username => vec![
             github_user::SRC,
+            github_repos::SRC,
             bluesky_user::SRC,
             keybase::SRC,
             wikipedia::SRC,
