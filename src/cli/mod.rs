@@ -88,12 +88,12 @@ mod lookup;
 mod meta;
 mod mitm;
 mod network;
+mod osint;
 mod radar;
 mod report;
 mod scans;
 mod selfcheck;
 mod service;
-mod osint;
 mod utility;
 
 use report::{exit_on_output_failure, fail, terminal_json_pretty, usage_error};
