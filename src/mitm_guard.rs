@@ -117,8 +117,7 @@ pub fn parse_baseline(bytes: &[u8]) -> Result<Baseline, String> {
         // A MAC address is case-insensitive: duplicate case variants cannot
         // represent separate trusted access points in an operator baseline.
         let mut seen_bssids = BTreeSet::new();
-        if n
-            .bssids
+        if n.bssids
             .iter()
             .any(|bssid| !seen_bssids.insert(bssid.to_ascii_lowercase()))
         {
