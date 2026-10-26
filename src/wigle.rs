@@ -28,12 +28,12 @@ use serde_json::{Map, Value};
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport, TransportConfig, percent_encode_component};
 use crate::keys::Keys;
+use crate::network_selector::NetworkSelector;
 use crate::provider_credentials::{WigleCredentialError, wigle_credential};
 use crate::redact::{scrub_bounded, scrub_secrets};
 use crate::rf::{
     RadioKind, RfSighting, RfSource, canonical_network_id, classify_wigle_type, is_mac,
 };
-use crate::scan_route::NetworkSelector;
 use crate::source_outcome::SourceOutcomeKind;
 
 /// Source label of the `WiFi` search in outcomes, evidence and saved ledgers.

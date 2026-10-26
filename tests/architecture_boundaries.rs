@@ -598,3 +598,20 @@ fn the_reason_channel_rule_sees_each_channel_and_ignores_the_rest() {
         "#[cfg(test)] mod t { struct S { network: Option<String> } }"
     )));
 }
+
+/// The `WiGLE` collector reads the network selector grammar from `network_selector`, never from
+/// `scan_route`: collection does not depend on scan routing (`docs/ARCHITECTURE.md`, Stage 6).
+#[test]
+fn the_wigle_collector_does_not_depend_on_scan_routing() {
+    let found: Vec<String> = production_sources()
+        .into_iter()
+        .filter(|source| source.path == "src/wigle.rs" || under(&source.path, "src/wigle"))
+        .filter(|source| {
+            production_tokens(&source.text)
+                .iter()
+                .any(|t| t == "scan_route")
+        })
+        .map(|source| source.path)
+        .collect();
+    assert!(found.is_empty(), "wigle names scan_route: {found:?}");
+}
