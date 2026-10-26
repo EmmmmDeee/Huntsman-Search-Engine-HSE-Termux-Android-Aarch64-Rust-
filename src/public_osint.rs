@@ -141,7 +141,7 @@ fn push_sourced_entity(
                 evidence = evidence.with_attr("first_seen", time);
             }
             push_entity(
-                &mut entities,
+                entities,
                 EntityKind::Url,
                 url,
                 0.35,
@@ -164,7 +164,7 @@ fn push_sourced_entity(
                 evidence = evidence.with_attr("last_updated", date);
             }
             push_entity(
-                &mut entities,
+                entities,
                 EntityKind::Document,
                 url,
                 0.8,
@@ -175,7 +175,6 @@ fn push_sourced_entity(
         }
         Source::Web | Source::All => unreachable!(),
     }
-
 }
 
 fn parse(
