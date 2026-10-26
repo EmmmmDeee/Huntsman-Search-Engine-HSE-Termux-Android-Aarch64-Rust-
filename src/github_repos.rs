@@ -201,12 +201,7 @@ fn valid_repo(repo: &Repository, username: &str) -> bool {
             .eq_ignore_ascii_case(&format!("{}/{}", repo.owner.login, repo.name))
 }
 
-fn add_repository(
-    entities: &mut Vec<Entity>,
-    repo: &Repository,
-    source_url: &str,
-    scan_id: &str,
-) {
+fn add_repository(entities: &mut Vec<Entity>, repo: &Repository, source_url: &str, scan_id: &str) {
     let url = format!("https://github.com/{}/{}", repo.owner.login, repo.name);
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(SRC, scan_id),
