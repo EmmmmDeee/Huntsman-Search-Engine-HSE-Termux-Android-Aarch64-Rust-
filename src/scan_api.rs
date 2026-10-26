@@ -1576,7 +1576,9 @@ mod tests {
         let response = api.export_many_with_budget(&invalid, 1024);
         assert_eq!(response.status, 400, "{}", response.text());
         assert!(
-            response.text().contains("unsupported multi-scan export format"),
+            response
+                .text()
+                .contains("unsupported multi-scan export format"),
             "{}",
             response.text()
         );
