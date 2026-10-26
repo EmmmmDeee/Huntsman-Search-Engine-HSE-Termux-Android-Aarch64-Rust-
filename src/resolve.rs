@@ -224,11 +224,7 @@ mod tests {
 
     #[test]
     fn redundant_edges_do_not_inflate_merge_count() {
-        let decisions = [
-            decision("a", "b"),
-            decision("b", "a"),
-            decision("a", "b"),
-        ];
+        let decisions = [decision("a", "b"), decision("b", "a"), decision("a", "b")];
         let clusters = automatic_clusters(&decisions, &graph(), AutoMergePolicy::default());
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].members, ["a", "b"]);
