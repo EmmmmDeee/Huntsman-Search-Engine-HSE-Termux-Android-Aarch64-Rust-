@@ -139,6 +139,7 @@ pub mod netblock;
 pub mod netblock_cli;
 pub mod netlas;
 pub mod network_cli;
+pub mod network_selector;
 pub mod nominatim;
 pub mod nominatim_cli;
 pub mod numverify;
