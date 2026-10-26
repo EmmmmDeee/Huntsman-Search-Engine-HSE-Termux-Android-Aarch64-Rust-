@@ -221,25 +221,22 @@ fn collect<T: Transport + ?Sized>(
 ) -> (Vec<Entity>, SourceExecutionOutcome) {
     let label = name(source);
     let request = Request::get(endpoint(source, query)).with_timeout(Duration::from_secs(16));
-    let fetched = match fetch(
+    let Ok(fetched) = fetch(
         transport,
         request,
         None,
         &FetchOptions::no_redirects().paced(),
         label,
         now,
-    ) {
-        Ok(result) => result,
-        Err(_) => {
-            return (
-                Vec::new(),
-                SourceExecutionOutcome::refused_before_sending(
-                    label,
-                    now,
-                    "guarded network transport refused the request",
-                ),
-            );
-        }
+    ) else {
+        return (
+            Vec::new(),
+            SourceExecutionOutcome::refused_before_sending(
+                label,
+                now,
+                "guarded network transport refused the request",
+            ),
+        );
     };
     let Some(response) = fetched.response else {
         return (Vec::new(), fetched.outcome);
@@ -259,20 +256,17 @@ fn collect<T: Transport + ?Sized>(
     if response.status != 200 {
         return (Vec::new(), fetched.outcome);
     }
-    let document: Value = match serde_json::from_slice(&response.body) {
-        Ok(value) => value,
-        Err(_) => {
-            return (
-                Vec::new(),
-                SourceExecutionOutcome::failed(
-                    label,
-                    now,
-                    SourceOutcomeKind::ParserDrift,
-                    Some(200),
-                    "response is not JSON",
-                ),
-            );
-        }
+    let Ok(document) = serde_json::from_slice::<Value>(&response.body) else {
+        return (
+            Vec::new(),
+            SourceExecutionOutcome::failed(
+                label,
+                now,
+                SourceOutcomeKind::ParserDrift,
+                Some(200),
+                "response is not JSON",
+            ),
+        );
     };
     if document.get("ok").and_then(Value::as_bool) == Some(false) {
         return (
@@ -336,18 +330,15 @@ fn web_search<T: Transport + ?Sized>(
     scan_id: &str,
     now: u64,
 ) -> (Vec<Entity>, Vec<SourceExecutionOutcome>) {
-    let found = match crate::web_query::search(transport, query, now) {
-        Ok(report) => report,
-        Err(_) => {
-            return (
-                Vec::new(),
-                vec![SourceExecutionOutcome::refused_before_sending(
-                    "web_query",
-                    now,
-                    "search request was refused",
-                )],
-            );
-        }
+    let Ok(found) = crate::web_query::search(transport, query, now) else {
+        return (
+            Vec::new(),
+            vec![SourceExecutionOutcome::refused_before_sending(
+                "web_query",
+                now,
+                "search request was refused",
+            )],
+        );
     };
     let mut entities = Vec::new();
     for hit in found.hits.into_iter().take(40) {
@@ -423,13 +414,13 @@ mod tests {
     use crate::http::Response;
     use crate::test_support::{OneResponse, ScriptedTransport};
 
-    fn reply(status: u16, body: &str) -> Result<Response, crate::http::TransportFailure> {
-        Ok(Response {
+    fn reply(status: u16, body: &str) -> Response {
+        Response {
             status,
             headers: vec![("content-type".into(), "application/json".into())],
             body: body.as_bytes().to_vec(),
             truncated: false,
-        })
+        }
     }
 
     #[test]
@@ -484,14 +475,14 @@ mod tests {
     #[test]
     fn preserves_partial_results_and_source_failures() {
         let transport = ScriptedTransport::new(vec![
-            reply(
+            Ok(reply(
                 200,
                 r#"{"articles":[{"title":"Headline","url":"https://example.org/a"}]}"#,
-            ),
-            reply(503, "failure"),
-            reply(403, "blocked"),
-            reply(403, "blocked"),
-            reply(403, "blocked"),
+            )),
+            Ok(reply(503, "failure")),
+            Ok(reply(403, "blocked")),
+            Ok(reply(403, "blocked")),
+            Ok(reply(403, "blocked")),
         ]);
         let report = search(&transport, Source::All, "story", "s", 1).unwrap();
         assert!(!report.entities.is_empty());
