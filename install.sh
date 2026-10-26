@@ -370,11 +370,22 @@ build_from_source() {
 }
 
 # --- Choose: prebuilt first, source build only when no build fits -----------
+#
+# Opt-in prebuilt-only mode is for safe, low-resource Android upgrades.
+# It refuses an unpublished exact revision instead of invoking Cargo or
+# silently installing an older release. Existing default behaviour is kept.
+case "${HUNTSMAN_REQUIRE_PREBUILT:-0}" in
+  0|1) ;;
+  *) die "HUNTSMAN_REQUIRE_PREBUILT must be 0 or 1" ;;
+esac
+if [[ "${HUNTSMAN_REQUIRE_PREBUILT:-0}" == 1 && "${HUNTSMAN_FROM_SOURCE:-0}" == 1 ]]; then
+  die "HUNTSMAN_REQUIRE_PREBUILT=1 conflicts with HUNTSMAN_FROM_SOURCE=1"
+fi
 
 install_source=""
 if [[ "${HUNTSMAN_FROM_SOURCE:-}" == 1 ]]; then
   printf 'HUNTSMAN_FROM_SOURCE=1: building %s from source.\n' "$install_rev"
-elif ! install_prebuilt "$install_rev" && [[ -z "${HUNTSMAN_REV:-}" ]]; then
+elif ! install_prebuilt "$install_rev" && [[ -z "${HUNTSMAN_REV:-}" && "${HUNTSMAN_REQUIRE_PREBUILT:-0}" != 1 ]]; then
   # The head of main has no build yet (CI is still building it, or a newer
   # push superseded it). Install the newest main commit that has one.
   newer_rev="$(newest_published_rev)"
@@ -386,6 +397,9 @@ elif ! install_prebuilt "$install_rev" && [[ -z "${HUNTSMAN_REV:-}" ]]; then
   fi
 fi
 if [[ -z "$install_source" ]]; then
+  if [[ "${HUNTSMAN_REQUIRE_PREBUILT:-0}" == 1 ]]; then
+    die "no published prebuilt for main-${install_rev:0:7}; source build and older-release fallback disabled; existing installation preserved"
+  fi
   [[ "${HUNTSMAN_FROM_SOURCE:-}" == 1 ]] ||
     printf 'No published build for %s; building from source.\n' "${install_rev:0:7}"
   build_from_source

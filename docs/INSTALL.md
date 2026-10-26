@@ -19,6 +19,23 @@ curl -fsSL https://raw.githubusercontent.com/EmmmmDeee/Huntsman-Search-Engine-HS
 bash "$TMPDIR/huntsman-install.sh"
 ```
 
+For a **strict low-memory, prebuilt-only upgrade**, use the same installer with
+`HUNTSMAN_REQUIRE_PREBUILT=1`. This opt-in flag refuses to compile, refuses to
+fall back to an older published revision, and leaves an existing installation
+unchanged when the requested revision's prebuilt is not yet published:
+
+```sh
+HUNTSMAN_REQUIRE_PREBUILT=1 bash "$TMPDIR/huntsman-install.sh"
+```
+
+To pin an exact main commit, also set `HUNTSMAN_REV` to its full 40-digit SHA.
+`HUNTSMAN_REQUIRE_PREBUILT=1` conflicts with `HUNTSMAN_FROM_SOURCE=1` and
+fails before any source build. This preserves default installer behaviour for
+operators who intentionally choose a source build. A *completed install* is
+still followed by `huntsman-recon doctor` and `huntsman-recon doctor serve`;
+if the web service was deliberately disabled, the installer respects that
+choice rather than enabling it.
+
 The installer is no-root userland only. It refreshes Termux repository metadata,
 installs `git curl coreutils`, and resolves `main` once to a full immutable
 commit SHA (unless `HUNTSMAN_REV` already names one). Then it installs, in this
