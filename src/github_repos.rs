@@ -156,100 +156,10 @@ fn interpret(
         );
     }
     let mut entities = Vec::new();
-    let mut accepted = 0;
-    for repo in repositories.into_iter().take(MAX_REPOS) {
-        if repo.private
-            || repo.id == 0
-            || repo.owner.id == 0
-            || !repo.owner.login.eq_ignore_ascii_case(username)
-            || !valid_repo_name(&repo.name)
-            || !repo
-                .full_name
-                .eq_ignore_ascii_case(&format!("{}/{}", repo.owner.login, repo.name))
-        {
-            continue;
-        }
-        accepted += 1;
-        let url = format!("https://github.com/{}/{}", repo.owner.login, repo.name);
-        let mut evidence = Evidence::new(
-            EvidenceProvenance::for_scan(SRC, scan_id),
-            format!(
-                "Public GitHub repository {}/{}",
-                repo.owner.login, repo.name
-            ),
-        )
-        .with_attr("dataset", "GitHub public repositories")
-        .with_attr(
-            "source_url",
-            format!(
-                "https://api.github.com/repos/{}/{}",
-                repo.owner.login, repo.name
-            ),
-        )
-        .with_attr("repo_id", repo.id.to_string())
-        .with_attr("account_id", repo.owner.id.to_string())
-        .with_attr("account_login", &repo.owner.login)
-        .with_attr("repository", &repo.full_name)
-        .with_attr("fork", repo.fork.to_string())
-        .with_attr("archived", repo.archived.to_string())
-        .with_attr(
-            "observation_limit",
-            format!("latest {MAX_REPOS}; nonexhaustive"),
-        );
-        for (key, field) in [
-            ("description", repo.description.as_deref()),
-            ("language", repo.language.as_deref()),
-            ("default_branch", repo.default_branch.as_deref()),
-            ("created_at", repo.created_at.as_deref()),
-            ("updated_at", repo.updated_at.as_deref()),
-            ("pushed_at", repo.pushed_at.as_deref()),
-            (
-                "license_spdx",
-                repo.license.as_ref().and_then(|v| v.spdx_id.as_deref()),
-            ),
-        ] {
-            if let Some(value) = field.map(str::trim).filter(|v| !v.is_empty()) {
-                evidence = evidence.with_attr(key, bounded(value));
-            }
-        }
-        if let Some(homepage) = repo
-            .homepage
-            .as_deref()
-            .filter(|v| canonical_url(v).is_some())
-        {
-            evidence = evidence
-                .with_attr("self_declared_homepage", bounded(homepage))
-                .with_attr("homepage_verification", "unverified");
-        }
-        for (key, value) in [
-            ("stars", repo.stargazers_count),
-            ("forks", repo.forks_count),
-            ("open_issues_including_prs", repo.open_issues_count),
-        ] {
-            if let Some(value) = value {
-                evidence = evidence.with_attr(key, value.to_string());
-            }
-        }
-        let topics: Vec<_> = repo
-            .topics
-            .iter()
-            .filter(|v| v.len() <= 40)
-            .take(8)
-            .map(String::as_str)
-            .collect();
-        if !topics.is_empty() {
-            evidence = evidence.with_attr("topics", topics.join(", "));
-        }
-        push_entity(
-            &mut entities,
-            EntityKind::Url,
-            &url,
-            0.90,
-            scan_id,
-            evidence,
-            &["github", "public-repository"],
-        );
+    for repo in repositories.iter().take(MAX_REPOS) {
+        add_repository(&mut entities, repo, username, scan_id);
     }
+    let accepted = entities.len();
     if accepted == 0 {
         return Err(SourceExecutionOutcome::failed(
             SRC,
@@ -264,6 +174,99 @@ fn interpret(
         outcome: SourceExecutionOutcome::success(SRC, now_unix, accepted)
             .with_http_status(response.status),
     })
+}
+
+fn add_repository(entities: &mut Vec<Entity>, repo: &Repository, username: &str, scan_id: &str) {
+    if repo.private
+        || repo.id == 0
+        || repo.owner.id == 0
+        || !repo.owner.login.eq_ignore_ascii_case(username)
+        || !valid_repo_name(&repo.name)
+        || !repo
+            .full_name
+            .eq_ignore_ascii_case(&format!("{}/{}", repo.owner.login, repo.name))
+    {
+        return;
+    }
+    let url = format!("https://github.com/{}/{}", repo.owner.login, repo.name);
+    let mut evidence = Evidence::new(
+        EvidenceProvenance::for_scan(SRC, scan_id),
+        format!(
+            "Public GitHub repository {}/{}",
+            repo.owner.login, repo.name
+        ),
+    )
+    .with_attr("dataset", "GitHub public repositories")
+    .with_attr(
+        "source_url",
+        format!(
+            "https://api.github.com/repos/{}/{}",
+            repo.owner.login, repo.name
+        ),
+    )
+    .with_attr("repo_id", repo.id.to_string())
+    .with_attr("account_id", repo.owner.id.to_string())
+    .with_attr("account_login", &repo.owner.login)
+    .with_attr("repository", &repo.full_name)
+    .with_attr("fork", repo.fork.to_string())
+    .with_attr("archived", repo.archived.to_string())
+    .with_attr(
+        "observation_limit",
+        format!("latest {MAX_REPOS}; nonexhaustive"),
+    );
+    for (key, field) in [
+        ("description", repo.description.as_deref()),
+        ("language", repo.language.as_deref()),
+        ("default_branch", repo.default_branch.as_deref()),
+        ("created_at", repo.created_at.as_deref()),
+        ("updated_at", repo.updated_at.as_deref()),
+        ("pushed_at", repo.pushed_at.as_deref()),
+        (
+            "license_spdx",
+            repo.license.as_ref().and_then(|v| v.spdx_id.as_deref()),
+        ),
+    ] {
+        if let Some(value) = field.map(str::trim).filter(|v| !v.is_empty()) {
+            evidence = evidence.with_attr(key, bounded(value));
+        }
+    }
+    if let Some(homepage) = repo
+        .homepage
+        .as_deref()
+        .filter(|v| canonical_url(v).is_some())
+    {
+        evidence = evidence
+            .with_attr("self_declared_homepage", bounded(homepage))
+            .with_attr("homepage_verification", "unverified");
+    }
+    for (key, value) in [
+        ("stars", repo.stargazers_count),
+        ("forks", repo.forks_count),
+        ("open_issues_including_prs", repo.open_issues_count),
+    ] {
+        if let Some(value) = value {
+            evidence = evidence.with_attr(key, value.to_string());
+        }
+    }
+    let topics: Vec<_> = repo
+        .topics
+        .iter()
+        .filter(|v| v.len() <= 40)
+        .take(8)
+        .map(String::as_str)
+        .collect();
+    if !topics.is_empty() {
+        evidence = evidence.with_attr("topics", topics.join(", "));
+    }
+    push_entity(
+        entities,
+        EntityKind::Url,
+        &url,
+        0.90,
+        scan_id,
+        evidence,
+        &["github", "public-repository"],
+    );
 }
 
 fn bounded(value: &str) -> String {
