@@ -351,7 +351,10 @@ fn variant_secret_field_names_are_dropped_without_losing_safe_evidence() {
         "credentials",
     ] {
         assert!(!row.fields.contains_key(key), "leaked {key}");
-        assert!(row.sensitive_fields.contains(key), "unreported redaction {key}");
+        assert!(
+            row.sensitive_fields.contains(key),
+            "unreported redaction {key}"
+        );
     }
     let serialized = serde_json::to_string(&result).unwrap();
     assert!(!serialized.contains("must-not-retain-"));
