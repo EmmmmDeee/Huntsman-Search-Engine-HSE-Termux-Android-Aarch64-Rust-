@@ -1086,13 +1086,16 @@ fn prebuilt_only_refuses_unpublished_revision_without_compiling_or_replacing() {
         t.calls()
     );
     assert_eq!(fs::read(t.installed()).unwrap(), b"prior installation");
-    assert!(t.provenance().is_empty(), "a refused install records no new provenance");
+    assert!(
+        t.provenance().is_empty(),
+        "a refused install records no new provenance"
+    );
 }
 
 #[test]
 fn prebuilt_only_uses_verified_matching_binary_and_never_calls_cargo() {
     let t = Prebuilt::new();
-    let bytes = b"#!/bin/sh\\n# verified release build\\n";
+    let bytes = b"#!/bin/sh\n# verified release build\n";
     publish_release(&t.releases, BUILT_REV, bytes, bytes);
     let out = t.run(
         &[
@@ -1134,8 +1137,11 @@ fn prebuilt_only_does_not_fall_back_to_published_ancestor_of_main() {
     let older = "1111111111111111111111111111111111111111";
     publish_release(&t.releases, older, b"older build", b"older build");
     let history = t.temp.join("history");
-    fs::write(&history, format!("2222222222222222222222222222222222222222\\n{older}\\n"))
-        .unwrap();
+    fs::write(
+        &history,
+        format!("2222222222222222222222222222222222222222\n{older}\n"),
+    )
+    .unwrap();
     let out = t.run(
         &[
             ("HUNTSMAN_REQUIRE_PREBUILT", "1"),
