@@ -998,6 +998,12 @@ impl ScanApi {
     }
 
     fn export_many(&self, param: &Params) -> ApiResponse {
+        let limit = u64::try_from(PipelineLimits::default().max_export_bytes)
+            .unwrap_or(u64::MAX);
+        self.export_many_with_budget(param, limit)
+    }
+
+    fn export_many_with_budget(&self, param: &Params, max_bytes: u64) -> ApiResponse {
         let ids: Vec<&str> = param
             .get("ids")
             .unwrap_or_default()
@@ -1015,14 +1021,25 @@ impl ScanApi {
             );
         }
         let mut scans = Vec::new();
+        let mut remaining = max_bytes;
         for id in ids {
-            match self.results(id) {
-                Ok((record, results)) => {
-                    let results = results.unwrap_or_else(|| empty_results(&record));
-                    scans.push((record, results));
-                }
+            let record = match self.record(id) {
+                Ok(record) => record,
                 Err(response) => return response,
-            }
+            };
+            let (results, charged) = match self
+                .service
+                .store()
+                .results_with_byte_budget(id, remaining)
+            {
+                Ok(found) => found,
+                Err(crate::scan_store::StoreError::Invalid(message)) => {
+                    return error(413, &message);
+                }
+                Err(failure) => return service_error(&failure.into()),
+            };
+            remaining = remaining.saturating_sub(charged);
+            scans.push((record.clone(), results.unwrap_or_else(|| empty_results(&record))));
         }
         let pairs: Vec<(&ScanRecord, &ScanResults)> = scans
             .iter()
@@ -1033,6 +1050,11 @@ impl ScanApi {
             param.get("format").unwrap_or("json"),
             param.get("type").filter(|kind| !kind.is_empty()),
         ) {
+            // A post-render transport cap; streaming format writers are a separate
+            // prerequisite for bounding peak output-rendering allocations.
+            Ok(export) if u64::try_from(export.body.len()).unwrap_or(u64::MAX) > max_bytes => {
+                error(413, "export output budget exceeded")
+            }
             Ok(export) => ApiResponse::export(export),
             Err(message) => error(400, &message),
         }
@@ -1456,6 +1478,29 @@ mod tests {
             })
             .unwrap()
             .id
+    }
+
+    #[test]
+    fn multi_export_enforces_aggregate_serialized_input_budget() {
+        let (api, dir) = api("multi-export-budget");
+        let id = finished(&api);
+        let saved = std::fs::metadata(dir.join(&id).join("results.json"))
+            .unwrap()
+            .len();
+        assert!(saved > 1);
+        let one = Params(vec![("ids".into(), id.clone())]);
+        let too_small = api.export_many_with_budget(&one, saved - 1);
+        assert_eq!(too_small.status, 413, "{}", too_small.text());
+        let repeated = Params(vec![("ids".into(), format!("{id},{id}"))]);
+        let aggregate = api.export_many_with_budget(&repeated, saved);
+        assert_eq!(aggregate.status, 413, "{}", aggregate.text());
+        // Existing duplicate-ID SpiderFoot export semantics are preserved.
+        assert_eq!(
+            api.handle("GET", "/api/scans/export", &format!("ids={id},{id}"))
+                .status,
+            200
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Spiderfoot's search box over one scan or all of them: text anywhere, a wildcard as the
