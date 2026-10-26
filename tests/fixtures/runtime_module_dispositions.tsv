@@ -76,6 +76,7 @@ gap	runtime	coverage and expansion gap analysis
 geohash	leaf	geohash codec
 geoint	leaf	GEOINT distance and parsing helpers
 gexf	exporter	GEXF graph output
+github_repos	adapter	bounded public GitHub repository evidence collector
 github_user	adapter	public GitHub profile source client
 graph	runtime	shared deterministic graph model
 graph_exec	leaf	public evidence-gated DAG execution and checkpoint API; exported library surface awaiting scan-service integration
