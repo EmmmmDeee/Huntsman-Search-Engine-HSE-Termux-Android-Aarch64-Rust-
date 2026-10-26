@@ -133,13 +133,15 @@ pub fn run<T: Transport + ?Sized + Sync>(
                 found.entities.extend(captures.entities);
                 found.outcomes.push(captures.outcome);
             }
-            Err(Error::Network(reason)) => found.outcomes.push(
-                SourceExecutionOutcome::refused_before_sending(
-                    wayback_cdx::SOURCE,
-                    now_unix,
-                    reason,
-                ),
-            ),
+            Err(Error::Network(reason)) => {
+                found
+                    .outcomes
+                    .push(SourceExecutionOutcome::refused_before_sending(
+                        wayback_cdx::SOURCE,
+                        now_unix,
+                        reason,
+                    ))
+            }
             Err(error) => found.outcomes.push(SourceExecutionOutcome::inconclusive(
                 wayback_cdx::SOURCE,
                 now_unix,
