@@ -1107,10 +1107,17 @@ impl ScanApi {
                 Err(message) => error(400, &message),
             };
         }
-        // XLSX currently builds worksheet XML and the complete ZIP in memory.
-        // Until a bounded workbook writer is available, never materialize an
-        // attacker-sized XLSX export through this HTTP endpoint.
-        error(413, "bounded XLSX multi-export is not yet supported")
+        // Preflight a conservative upper bound before constructing XLSX XML
+        // and ZIP buffers. The saved-result input budget was enforced above.
+        match scan_export::render_many_xlsx_bounded(
+            &pairs,
+            kind,
+            usize::try_from(max_bytes).unwrap_or(usize::MAX),
+        ) {
+            Ok(Ok(export)) => ApiResponse::export(export),
+            Ok(Err(_)) => error(413, "export output budget exceeded"),
+            Err(message) => error(400, &message),
+        }
     }
 
     fn set_fp(&self, id: &str, param: &Params) -> ApiResponse {
@@ -1553,6 +1560,23 @@ mod tests {
                 .status,
             200
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bounded_multi_export_xlsx_preserves_download_and_rejects_tiny_budget() {
+        let (api, dir) = api("multi-export-xlsx");
+        let id = finished(&api);
+        let params = Params(vec![
+            ("ids".into(), id.clone()),
+            ("format".into(), "xlsx".into()),
+        ]);
+        let small = api.export_many_with_budget(&params, 1024);
+        assert_eq!(small.status, 413, "{}", small.text());
+        let normal = api.handle("GET", "/api/scans/export", &format!("ids={id}&format=xlsx"));
+        assert_eq!(normal.status, 200, "{}", normal.text());
+        assert_eq!(normal.filename.as_deref(), Some("1.1.1.1-Huntsman.xlsx"));
+        assert!(normal.body.starts_with(b"PK\\x03\\x04"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2453,7 +2477,9 @@ mod tests {
             "/api/scans/export",
             &format!("ids={id}&format=excel"),
         );
+        assert_eq!(book.status, 200, "{}", book.text());
         assert_eq!(book.filename.as_deref(), Some("1.1.1.1-Huntsman.xlsx"));
+        assert!(book.body.starts_with(b"PK\\x03\\x04"));
         let correlations = api.handle(
             "GET",
             &format!("/api/scans/{id}/correlations"),
