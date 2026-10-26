@@ -125,30 +125,7 @@ pub fn run<T: Transport + ?Sized + Sync>(
         found.entities.extend(certificates.entities);
         found.outcomes.push(certificates.outcome);
     }
-    // Public web-archive captures are actual indexed historical URLs, not the
-    // source registry's Wayback search link. Never fetch the returned URLs.
-    if transport.runs_module(wayback_cdx::SOURCE) {
-        match wayback_cdx::lookup(transport, &domain, &scan_id, now_unix) {
-            Ok(captures) => {
-                found.entities.extend(captures.entities);
-                found.outcomes.push(captures.outcome);
-            }
-            Err(Error::Network(reason)) => {
-                found
-                    .outcomes
-                    .push(SourceExecutionOutcome::refused_before_sending(
-                        wayback_cdx::SOURCE,
-                        now_unix,
-                        reason,
-                    ))
-            }
-            Err(error) => found.outcomes.push(SourceExecutionOutcome::inconclusive(
-                wayback_cdx::SOURCE,
-                now_unix,
-                error.to_string(),
-            )),
-        }
-    }
+    wayback_leg(transport, &domain, &scan_id, now_unix, &mut found);
     let Resolved {
         resolvers_up,
         unfiltered,
@@ -232,6 +209,39 @@ pub fn run<T: Transport + ?Sized + Sync>(
     DomainRun::Printed {
         text,
         report: Report { entities, outcomes },
+    }
+}
+
+/// Record one keyless historical capture source's entities and typed outcome.
+fn wayback_leg<T: Transport + ?Sized>(
+    transport: &T,
+    domain: &str,
+    scan_id: &str,
+    now_unix: u64,
+    found: &mut Report,
+) {
+    if !transport.runs_module(wayback_cdx::SOURCE) {
+        return;
+    }
+    match wayback_cdx::lookup(transport, domain, scan_id, now_unix) {
+        Ok(captures) => {
+            found.entities.extend(captures.entities);
+            found.outcomes.push(captures.outcome);
+        }
+        Err(Error::Network(reason)) => {
+            found.outcomes.push(SourceExecutionOutcome::refused_before_sending(
+                wayback_cdx::SOURCE,
+                now_unix,
+                reason,
+            ));
+        }
+        Err(error) => {
+            found.outcomes.push(SourceExecutionOutcome::inconclusive(
+                wayback_cdx::SOURCE,
+                now_unix,
+                error.to_string(),
+            ));
+        }
     }
 }
 
