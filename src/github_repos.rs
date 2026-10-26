@@ -131,11 +131,14 @@ fn interpret(
 ) -> Result<Report, SourceExecutionOutcome> {
     if let Some(response) = &fetched.response {
         if response.status == 404 && fetched.outcome.kind == SourceOutcomeKind::Upstream4xx {
-            return Err(SourceExecutionOutcome::valid_zero(SRC, now_unix)
-                .with_http_status(response.status));
+            return Err(
+                SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
+            );
         }
         if response.status == 403
-            && response.header_value("x-ratelimit-remaining").is_some_and(|value| value.trim() == "0")
+            && response
+                .header_value("x-ratelimit-remaining")
+                .is_some_and(|value| value.trim() == "0")
         {
             let mut outcome = fetched.outcome.clone();
             outcome.kind = SourceOutcomeKind::RateLimited;
@@ -148,18 +151,21 @@ fn interpret(
     answer(fetched, "GitHub")?;
     let repositories: Vec<Repository> = decode_json(response, SRC, now_unix, "GitHub")?;
     if repositories.is_empty() {
-        return Err(SourceExecutionOutcome::valid_zero(SRC, now_unix)
-            .with_http_status(response.status));
+        return Err(
+            SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
+        );
     }
     let mut entities = Vec::new();
     let mut accepted = 0;
     for repo in repositories.into_iter().take(MAX_REPOS) {
-        if repo.private || repo.id == 0 || repo.owner.id == 0
+        if repo.private
+            || repo.id == 0
+            || repo.owner.id == 0
             || !repo.owner.login.eq_ignore_ascii_case(username)
             || !valid_repo_name(&repo.name)
-            || !repo.full_name.eq_ignore_ascii_case(
-                &format!("{}/{}", repo.owner.login, repo.name)
-            )
+            || !repo
+                .full_name
+                .eq_ignore_ascii_case(&format!("{}/{}", repo.owner.login, repo.name))
         {
             continue;
         }
@@ -167,19 +173,29 @@ fn interpret(
         let url = format!("https://github.com/{}/{}", repo.owner.login, repo.name);
         let mut evidence = Evidence::new(
             EvidenceProvenance::for_scan(SRC, scan_id),
-            format!("Public GitHub repository {}/{}", repo.owner.login, repo.name),
+            format!(
+                "Public GitHub repository {}/{}",
+                repo.owner.login, repo.name
+            ),
         )
         .with_attr("dataset", "GitHub public repositories")
-        .with_attr("source_url", format!(
-            "https://api.github.com/repos/{}/{}", repo.owner.login, repo.name
-        ))
+        .with_attr(
+            "source_url",
+            format!(
+                "https://api.github.com/repos/{}/{}",
+                repo.owner.login, repo.name
+            ),
+        )
         .with_attr("repo_id", repo.id.to_string())
         .with_attr("account_id", repo.owner.id.to_string())
         .with_attr("account_login", &repo.owner.login)
         .with_attr("repository", &repo.full_name)
         .with_attr("fork", repo.fork.to_string())
         .with_attr("archived", repo.archived.to_string())
-        .with_attr("observation_limit", format!("latest {MAX_REPOS}; nonexhaustive"));
+        .with_attr(
+            "observation_limit",
+            format!("latest {MAX_REPOS}; nonexhaustive"),
+        );
         for (key, field) in [
             ("description", repo.description.as_deref()),
             ("language", repo.language.as_deref()),
@@ -187,13 +203,20 @@ fn interpret(
             ("created_at", repo.created_at.as_deref()),
             ("updated_at", repo.updated_at.as_deref()),
             ("pushed_at", repo.pushed_at.as_deref()),
-            ("license_spdx", repo.license.as_ref().and_then(|v| v.spdx_id.as_deref())),
+            (
+                "license_spdx",
+                repo.license.as_ref().and_then(|v| v.spdx_id.as_deref()),
+            ),
         ] {
             if let Some(value) = field.map(str::trim).filter(|v| !v.is_empty()) {
                 evidence = evidence.with_attr(key, bounded(value));
             }
         }
-        if let Some(homepage) = repo.homepage.as_deref().filter(|v| canonical_url(v).is_some()) {
+        if let Some(homepage) = repo
+            .homepage
+            .as_deref()
+            .filter(|v| canonical_url(v).is_some())
+        {
             evidence = evidence
                 .with_attr("self_declared_homepage", bounded(homepage))
                 .with_attr("homepage_verification", "unverified");
@@ -207,20 +230,33 @@ fn interpret(
                 evidence = evidence.with_attr(key, value.to_string());
             }
         }
-        let topics: Vec<_> = repo.topics.iter().filter(|v| v.len() <= 40)
-            .take(8).map(String::as_str).collect();
+        let topics: Vec<_> = repo
+            .topics
+            .iter()
+            .filter(|v| v.len() <= 40)
+            .take(8)
+            .map(String::as_str)
+            .collect();
         if !topics.is_empty() {
             evidence = evidence.with_attr("topics", topics.join(", "));
         }
         push_entity(
-            &mut entities, EntityKind::Url, &url, 0.90, scan_id, evidence,
+            &mut entities,
+            EntityKind::Url,
+            &url,
+            0.90,
+            scan_id,
+            evidence,
             &["github", "public-repository"],
         );
     }
     if accepted == 0 {
         return Err(SourceExecutionOutcome::failed(
-            SRC, now_unix, SourceOutcomeKind::SchemaDrift,
-            Some(response.status), "GitHub API rows did not match requested account",
+            SRC,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "GitHub API rows did not match requested account",
         ));
     }
     Ok(Report {
@@ -235,8 +271,13 @@ fn bounded(value: &str) -> String {
 }
 
 fn valid_repo_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 100 && name != "." && name != ".."
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    !name.is_empty()
+        && name.len() <= 100
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 
 #[cfg(test)]
@@ -262,9 +303,17 @@ mod tests {
         let e = &got.entities[0];
         assert_eq!(e.kind, EntityKind::Url);
         assert_eq!(e.value, "https://github.com/Octocat/project");
-        assert_eq!(e.evidence[0].attributes.get("fork").map(String::as_str), Some("true"));
-        assert_eq!(e.evidence[0].attributes.get("homepage_verification").map(String::as_str),
-                   Some("unverified"));
+        assert_eq!(
+            e.evidence[0].attributes.get("fork").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            e.evidence[0]
+                .attributes
+                .get("homepage_verification")
+                .map(String::as_str),
+            Some("unverified")
+        );
         assert!(!got.entities.iter().any(|e| e.kind == EntityKind::Domain));
     }
 
@@ -273,9 +322,19 @@ mod tests {
         for body in [
             REPO.replace("Octocat", "someone-else"),
             REPO.replace("\"private\":false", "\"private\":true"),
-            REPO.replace("\"full_name\":\"Octocat/project\"", "\"full_name\":\"Octocat/other\""),
+            REPO.replace(
+                "\"full_name\":\"Octocat/project\"",
+                "\"full_name\":\"Octocat/other\"",
+            ),
         ] {
-            let got = lookup(&OneResponse::json(200, &body), &Keys::default(), "octocat", "scan", 1).unwrap();
+            let got = lookup(
+                &OneResponse::json(200, &body),
+                &Keys::default(),
+                "octocat",
+                "scan",
+                1,
+            )
+            .unwrap();
             assert_eq!(got.outcome.kind, SourceOutcomeKind::SchemaDrift);
             assert!(got.entities.is_empty());
         }
@@ -283,20 +342,45 @@ mod tests {
 
     #[test]
     fn distinguishes_zero_rows_from_rate_limits_and_malformed_json() {
-        let zero = lookup(&OneResponse::json(200, "[]"), &Keys::default(), "octocat", "scan", 1).unwrap();
+        let zero = lookup(
+            &OneResponse::json(200, "[]"),
+            &Keys::default(),
+            "octocat",
+            "scan",
+            1,
+        )
+        .unwrap();
         assert_eq!(zero.outcome.kind, SourceOutcomeKind::ValidZero);
         let rate = lookup(
             &OneResponse::with_headers(403, &[("x-ratelimit-remaining", "0")], "{}"),
-            &Keys::default(), "octocat", "scan", 1,
-        ).unwrap();
+            &Keys::default(),
+            "octocat",
+            "scan",
+            1,
+        )
+        .unwrap();
         assert_eq!(rate.outcome.kind, SourceOutcomeKind::RateLimited);
-        let wrong = lookup(&OneResponse::json(200, "{}"), &Keys::default(), "octocat", "scan", 1).unwrap();
+        let wrong = lookup(
+            &OneResponse::json(200, "{}"),
+            &Keys::default(),
+            "octocat",
+            "scan",
+            1,
+        )
+        .unwrap();
         assert_eq!(wrong.outcome.kind, SourceOutcomeKind::SchemaDrift);
     }
 
     #[test]
     fn does_not_request_invalid_logins() {
-        let got = lookup(&crate::test_support::Refusing, &Keys::default(), "../x", "scan", 1).unwrap();
+        let got = lookup(
+            &crate::test_support::Refusing,
+            &Keys::default(),
+            "../x",
+            "scan",
+            1,
+        )
+        .unwrap();
         assert_eq!(got.outcome.kind, SourceOutcomeKind::Inconclusive);
     }
 
