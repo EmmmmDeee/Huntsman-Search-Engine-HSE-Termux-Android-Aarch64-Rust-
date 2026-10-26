@@ -121,9 +121,9 @@ where
         Ok(Ok(addresses)) => Ok(addresses),
         Ok(Err(error)) if names_no_address(&error.to_string()) => Ok(Vec::new()),
         Ok(Err(error)) => Err(failure(format!("{name}: {error}"))),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(failure(format!(
-            "{name}: no answer within {timeout:?}"
-        ))),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            Err(failure(format!("{name}: no answer within {timeout:?}")))
+        }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(failure(format!(
             "{name}: native resolver worker stopped without an answer"
         ))),
