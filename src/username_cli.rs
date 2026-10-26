@@ -122,7 +122,7 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
-    ];
+    ]
 }
 
 /// Run deterministic variants and the keyless public-profile sources, each when the transport's
