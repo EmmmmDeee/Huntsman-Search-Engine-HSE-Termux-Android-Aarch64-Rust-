@@ -70,7 +70,7 @@ fn failed(now: u64, kind: SourceOutcomeKind, status: Option<u16>, detail: &str) 
     }
 }
 
-fn parse_hex<'a>(value: &'a Value, cap: usize) -> Option<&'a str> {
+fn parse_hex(value: &Value, cap: usize) -> Option<&str> {
     let raw = value.as_str()?.strip_prefix("0x")?;
     if raw.is_empty() || raw.len() > cap || !raw.bytes().all(|c| c.is_ascii_hexdigit()) {
         return None;
@@ -88,7 +88,7 @@ pub fn quantity_decimal(value: &str) -> Option<String> {
     }
     let mut digits = [0_u8; 78];
     for nibble in hex.bytes() {
-        let mut carry = u16::from((nibble as char).to_digit(16)? as u8);
+        let mut carry = u16::try_from((nibble as char).to_digit(16)?).ok()?;
         for digit in digits.iter_mut().rev() {
             let updated = u16::from(*digit) * 16 + carry;
             *digit = (updated % 10) as u8;
@@ -105,6 +105,46 @@ pub fn quantity_decimal(value: &str) -> Option<String> {
             .map(|d| char::from(b'0' + d))
             .collect(),
     )
+}
+
+/// Reject a partial, duplicated or foreign-chain JSON-RPC batch before
+/// admitting account evidence. The caller owns the response buffer.
+fn parse_batch(records: &[Value]) -> Result<(String, String, bool), (SourceOutcomeKind, &'static str)> {
+    use SourceOutcomeKind::{Inconclusive, SchemaDrift};
+    if records.len() != 4 {
+        return Err((SchemaDrift, "Base RPC returned a partial or unexpected batch"));
+    }
+    let mut answers: [Option<&Value>; 4] = [None, None, None, None];
+    for row in records {
+        if row.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+            return Err((SchemaDrift, "Base RPC response protocol mismatch"));
+        }
+        if row.get("error").is_some() {
+            return Err((Inconclusive, "Base RPC returned a JSON-RPC error; no account observation admitted"));
+        }
+        let index = row.get("id").and_then(Value::as_u64).and_then(|id| id.checked_sub(1))
+            .and_then(|id| usize::try_from(id).ok()).filter(|index| *index < 4)
+            .ok_or((SchemaDrift, "Base RPC response identifier mismatch"))?;
+        let result = row.get("result").ok_or((SchemaDrift, "Base RPC omitted a result"))?;
+        if answers[index].replace(result).is_some() {
+            return Err((SchemaDrift, "Base RPC duplicated a response identifier"));
+        }
+    }
+    let [Some(chain), Some(balance), Some(nonce), Some(code)] = answers else {
+        return Err((SchemaDrift, "Base RPC omitted a requested method"));
+    };
+    if parse_hex(chain, 16).and_then(|hex| u64::from_str_radix(hex, 16).ok()) != Some(CHAIN_ID) {
+        return Err((SchemaDrift, "Base RPC replied for the wrong chain"));
+    }
+    let balance_wei = balance.as_str().and_then(quantity_decimal)
+        .ok_or((SchemaDrift, "Base RPC returned a malformed balance"))?;
+    let outgoing_nonce = nonce.as_str().and_then(quantity_decimal)
+        .ok_or((SchemaDrift, "Base RPC returned a malformed outgoing nonce"))?;
+    let code_hex = code.as_str().and_then(|s| s.strip_prefix("0x"))
+        .filter(|s| s.len() <= MAX_CODE_HEX && s.len() % 2 == 0 &&
+            s.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or((SchemaDrift, "Base RPC returned malformed contract code"))?;
+    Ok((balance_wei, outgoing_nonce, !code_hex.is_empty()))
 }
 
 /// Decode one complete public JSON-RPC batch. Unknown IDs, duplicates, a wrong
@@ -134,99 +174,10 @@ fn interpret(fetched: &Fetched, selector: &str, scan_id: &str, now: u64) -> Repo
             };
         }
     };
-    if records.len() != 4 {
-        return failed(
-            now,
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            "Base RPC returned a partial or unexpected batch",
-        );
-    }
-    let mut answers: [Option<&Value>; 4] = [None, None, None, None];
-    for row in &records {
-        if row.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-            return failed(
-                now,
-                SourceOutcomeKind::SchemaDrift,
-                Some(response.status),
-                "Base RPC response protocol mismatch",
-            );
-        }
-        if row.get("error").is_some() {
-            return failed(
-                now,
-                SourceOutcomeKind::Inconclusive,
-                Some(response.status),
-                "Base RPC returned a JSON-RPC error; no account observation admitted",
-            );
-        }
-        let Some(index) = row
-            .get("id")
-            .and_then(Value::as_u64)
-            .and_then(|id| id.checked_sub(1))
-            .and_then(|index| usize::try_from(index).ok())
-            .filter(|index| *index < 4)
-        else {
-            return failed(
-                now,
-                SourceOutcomeKind::SchemaDrift,
-                Some(response.status),
-                "Base RPC response identifier mismatch",
-            );
-        };
-        let Some(result) = row.get("result") else {
-            return failed(
-                now,
-                SourceOutcomeKind::SchemaDrift,
-                Some(response.status),
-                "Base RPC omitted a result",
-            );
-        };
-        if answers[index].replace(result).is_some() {
-            return failed(
-                now,
-                SourceOutcomeKind::SchemaDrift,
-                Some(response.status),
-                "Base RPC duplicated a response identifier",
-            );
-        }
-    }
-    let [Some(chain), Some(balance), Some(nonce), Some(code)] = answers else {
-        return failed(
-            now,
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            "Base RPC omitted a requested method",
-        );
+    let (balance_wei, outgoing_nonce, has_code) = match parse_batch(&records) {
+        Ok(account) => account,
+        Err((kind, detail)) => return failed(now, kind, Some(response.status), detail),
     };
-    let (Some(chain_hex), Some(balance_wei), Some(outgoing_nonce), Some(code_hex)) = (
-        parse_hex(chain, 16),
-        balance.as_str().and_then(quantity_decimal),
-        nonce.as_str().and_then(quantity_decimal),
-        code.as_str()
-            .filter(|s| s.starts_with("0x"))
-            .map(|s| &s[2..])
-            .filter(|s| {
-                s.len() <= MAX_CODE_HEX
-                    && s.len() % 2 == 0
-                    && s.bytes().all(|byte| byte.is_ascii_hexdigit())
-            }),
-    ) else {
-        return failed(
-            now,
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            "Base RPC returned a malformed quantity or contract-code field",
-        );
-    };
-    if u64::from_str_radix(chain_hex, 16).ok() != Some(CHAIN_ID) {
-        return failed(
-            now,
-            SourceOutcomeKind::SchemaDrift,
-            Some(response.status),
-            "Base RPC replied for the wrong chain",
-        );
-    }
     let Some(normalized) = canonical_selector(selector) else {
         return failed(
             now,
@@ -236,10 +187,10 @@ fn interpret(fetched: &Fetched, selector: &str, scan_id: &str, now: u64) -> Repo
         );
     };
     let address = normalized.strip_prefix("base:").unwrap_or("");
-    let code_presence = if code_hex.is_empty() {
-        "no_code_at_finalized_block"
-    } else {
+    let code_presence = if has_code {
         "contract_code_present"
+    } else {
+        "no_code_at_finalized_block"
     };
     let evidence = Evidence::new(
         EvidenceProvenance::for_scan(SOURCE, scan_id),
