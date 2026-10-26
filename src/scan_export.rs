@@ -501,6 +501,76 @@ pub fn render_many_text_bounded(
     }))
 }
 
+/// Build a multi-scan XLSX only after a pessimistic output-size preflight.
+/// The preflight bounds worksheet/XML expansion before the legacy workbook
+/// renderer allocates its intermediate strings and ZIP buffers. It deliberately
+/// errs toward rejecting an export rather than exceeding the phone's budget.
+/// The caller must also bound the deserialized saved results.
+/// 
+/// # Errors
+/// Invalid export configuration.
+pub fn render_many_xlsx_bounded(
+    scans: &[(&ScanRecord, &ScanResults)],
+    kind: Option<&str>,
+    max_bytes: usize,
+) -> Result<Result<Export, usize>, String> {
+    // Each XML-escaped input byte expands to at most seven output bytes.
+    // Reserve generously for XML cell tags, row tags, workbook relationships,
+    // ZIP headers, the central directory and a separate sheet per data type.
+    const FIXED_BYTES: usize = 8192;
+    const SHEET_BYTES: usize = 4096;
+    const CELL_BYTES: usize = 160;
+    const ROW_BYTES: usize = 64;
+    let mut estimate = FIXED_BYTES;
+    let mut seen_sheets = std::collections::BTreeSet::new();
+    let mut lines = Vec::new();
+    for &(scan, results) in scans {
+        for (element, source) in rows(results, kind) {
+            let mut line = vec![scan.name.clone()];
+            line.extend(element_line(element, source));
+            // The multi-export header is Scan Name, Updated, Type, ...
+            // and the Type column becomes the worksheet name.
+            if seen_sheets.insert(line[2].clone()) {
+                estimate = estimate.saturating_add(SHEET_BYTES);
+            }
+            estimate = estimate.saturating_add(ROW_BYTES);
+            for (index, cell) in line.iter().enumerate() {
+                if index == 2 {
+                    continue;
+                }
+                let units = cell.encode_utf16().count();
+                let pieces = units
+                    .saturating_add(xlsx::MAX_CELL_UNITS - 1)
+                    / xlsx::MAX_CELL_UNITS;
+                estimate = estimate.saturating_add(
+                    cell.len().saturating_mul(7).saturating_add(
+                        pieces.max(1).saturating_mul(CELL_BYTES)
+                    )
+                );
+            }
+            if estimate > max_bytes {
+                return Ok(Err(estimate));
+            }
+            lines.push(line);
+        }
+    }
+    if estimate > max_bytes {
+        return Ok(Err(estimate));
+    }
+    let mut header = vec!["Scan Name"];
+    header.extend(ELEMENT_COLUMNS);
+    let (body, content_type) = tabular("xlsx", &header, lines, 2)
+        .ok_or_else(|| "XLSX multi-export is unavailable".to_owned())?;
+    if body.len() > max_bytes {
+        return Ok(Err(body.len()));
+    }
+    let filename = match scans {
+        [(scan, _)] => file_name(scan, "xlsx"),
+        _ => "Huntsman.xlsx".to_owned(),
+    };
+    Ok(Ok(Export { body, content_type, filename }))
+}
+
 /// Spiderfoot's `scanexportjsonmulti` rows for several scans, each element with its raw evidence
 /// as well.
 #[must_use]
