@@ -131,7 +131,10 @@ fn miss(outcome: SourceExecutionOutcome) -> Report {
     }
 }
 
-pub(crate) fn token_credential(secret: crate::keys::Secret, now_unix: u64) -> Result<Credential, Error> {
+pub(crate) fn token_credential(
+    secret: crate::keys::Secret,
+    now_unix: u64,
+) -> Result<Credential, Error> {
     let authority = AuthenticationAuthority::configured_slot("github", TOKEN_SLOT, now_unix)
         .map_err(|e| Error::Invalid(e.to_string()))?;
     Ok(Credential::new(authority, secret, AuthStyle::Bearer)?.only_for_origin(API_ORIGIN))
