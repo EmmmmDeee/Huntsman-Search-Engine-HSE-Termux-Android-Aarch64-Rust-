@@ -670,6 +670,13 @@ pub struct TrackReport {
     pub followers: Vec<FollowerCandidate>,
 }
 
+/// Legacy CDMA track buckets omitted the system ID (`cdma:?-?-network-base`).
+/// They remain intact in JSONL evidence, but cannot establish a distinct
+/// location or support follower inference across different CDMA systems.
+fn unambiguous_track_cell(cell: &str) -> bool {
+    !cell.starts_with("cdma:?-?-")
+}
+
 /// The recurring devices and follower candidates of the logged `sweeps`. A sweep without a cell
 /// counts towards recurrence but not towards following, which needs to know where it was taken.
 /// **Pure.**
@@ -694,7 +701,10 @@ pub fn track(sweeps: &[LoggedSweep], skipped_lines: usize) -> TrackReport {
         .collect();
     let sightings: Vec<FollowerSighting> = sweeps
         .iter()
-        .filter_map(|sweep| sweep.cell.as_ref().map(|cell| (sweep, cell)))
+        .filter_map(|sweep| {
+            let cell = sweep.cell.as_ref()?;
+            unambiguous_track_cell(cell).then_some((sweep, cell))
+        })
         .flat_map(|(sweep, cell)| {
             // A sighting with no address marks the place as one the operator was, so a place
             // where nothing stable was heard still counts against every device's coverage.
@@ -714,11 +724,14 @@ pub fn track(sweeps: &[LoggedSweep], skipped_lines: usize) -> TrackReport {
         .collect();
     let cells: HashSet<&str> = sweeps
         .iter()
-        .filter_map(|sweep| sweep.cell.as_deref())
+        .filter_map(|sweep| sweep.cell.as_deref().filter(|cell| unambiguous_track_cell(cell)))
         .collect();
     TrackReport {
         sweeps: sweeps.len(),
-        located_sweeps: sweeps.iter().filter(|sweep| sweep.cell.is_some()).count(),
+        located_sweeps: sweeps
+            .iter()
+            .filter(|sweep| sweep.cell.as_deref().is_some_and(unambiguous_track_cell))
+            .count(),
         distinct_cells: cells.len(),
         skipped_lines,
         recurring: recurring_devices(&as_sweeps, 2),
@@ -932,6 +945,24 @@ mod tests {
         assert!(!stable_identity("02:11:22:33:44:55", false));
         assert!(stable_identity("3c:5a:b4:11:22:33", false));
         assert!(!stable_identity("3c:5a:b4:11:22:33", true));
+    }
+
+    #[test]
+    fn historical_cdma_buckets_remain_readable_but_cannot_establish_places() {
+        let body = br#"{"ts":100,"cell":"cdma:?-?-22-33","devices":[{"mac":"00:11:22:33:44:55"}]}
+{"ts":800,"cell":"cdma:?-?-22-44","devices":[{"mac":"00:11:22:33:44:55"}]}
+{"ts":1500,"cell":"cdma:11-22-33","devices":[{"mac":"00:11:22:33:44:55"}]}
+"#;
+        let (history, skipped) = parse_track_log(body);
+        assert_eq!((history.len(), skipped), (3, 0));
+        assert_eq!(history[0].cell.as_deref(), Some("cdma:?-?-22-33"));
+        assert_eq!(history[1].cell.as_deref(), Some("cdma:?-?-22-44"));
+        let report = track(&history, skipped);
+        assert_eq!(report.sweeps, 3);
+        assert_eq!(report.located_sweeps, 1);
+        assert_eq!(report.distinct_cells, 1);
+        assert_eq!(report.recurring.len(), 1);
+        assert!(report.followers.is_empty());
     }
 
     #[test]
