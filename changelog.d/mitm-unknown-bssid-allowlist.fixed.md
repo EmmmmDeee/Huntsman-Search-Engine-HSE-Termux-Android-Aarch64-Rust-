@@ -1,0 +1,1 @@
+- Preserve the independent unlisted-BSSID advisory for operator-baselined Wi-Fi networks even when capability metadata is unknown. Keep missing-security warnings, conservative evidence classification, and no confirmed-interception claim; add a focused regression.
