@@ -1037,11 +1037,6 @@ impl ScanApi {
         if !scan_export::MANY_FORMATS.contains(&normalized) {
             return error(400, "unsupported multi-scan export format");
         }
-        // Acquire before loading any saved evidence. RAII releases on every
-        // return and during unwinding; contention never queues large exports.
-        let Some(_permit) = MultiExportPermit::try_acquire() else {
-            return error(503, "another multi-scan export is already running");
-        };
         let ids: Vec<&str> = param
             .get("ids")
             .unwrap_or_default()
@@ -1058,6 +1053,11 @@ impl ScanApi {
                 &format!("export takes at most {MAX_EXPORT_SCANS} scans"),
             );
         }
+        // Validate the request before acquiring the process-wide export permit.
+        // RAII releases on every return and during unwinding.
+        let Some(_permit) = MultiExportPermit::try_acquire() else {
+            return error(503, "another multi-scan export is already running");
+        };
         // Reserve only the bounded number of scan slots, avoiding incremental
         // vector growth while evidence is loaded under the aggregate budget.
         let mut scans = Vec::with_capacity(ids.len());
