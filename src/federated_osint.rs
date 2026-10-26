@@ -35,7 +35,9 @@ pub struct XDiscoveryReport {
 fn checked_query(query: &str) -> Result<&str, Error> {
     let query = query.trim();
     if query.is_empty() || query.len() > 460 || query.chars().any(char::is_control) {
-        return Err(Error::invalid("X query must be 1..460 bytes without control characters"));
+        return Err(Error::invalid(
+            "X query must be 1..460 bytes without control characters",
+        ));
     }
     Ok(query)
 }
@@ -63,7 +65,9 @@ pub fn search_indexed_x<T: Transport + ?Sized>(
     if hits.is_empty() && outcomes.iter().any(|o| o.kind.is_accepted()) {
         let legacy = web_query::search(transport, &format!("site:twitter.com {query}"), now_unix)?;
         for hit in legacy.hits {
-            if is_public_x_url(&hit.url) && !hits.iter().any(|prior: &SearchHit| prior.url == hit.url) {
+            if is_public_x_url(&hit.url)
+                && !hits.iter().any(|prior: &SearchHit| prior.url == hit.url)
+            {
                 hits.push(hit);
             }
         }
@@ -118,11 +122,10 @@ pub fn search_official_x<T: Transport + ?Sized>(
         hits: Vec::new(),
         outcomes: Vec::new(),
     };
-    let decoded = whole_response(&fetched, "X API")
-        .and_then(|response| {
-            answer(&fetched, "X API")?;
-            decode_json::<Value>(response, "x_recent_search", now_unix, "X API")
-        });
+    let decoded = whole_response(&fetched, "X API").and_then(|response| {
+        answer(&fetched, "X API")?;
+        decode_json::<Value>(response, "x_recent_search", now_unix, "X API")
+    });
     let value = match decoded {
         Ok(value) => value,
         Err(outcome) => {
@@ -130,7 +133,10 @@ pub fn search_official_x<T: Transport + ?Sized>(
             return Ok(report);
         }
     };
-    let has_errors = value.get("errors").and_then(Value::as_array).is_some_and(|e| !e.is_empty());
+    let has_errors = value
+        .get("errors")
+        .and_then(Value::as_array)
+        .is_some_and(|e| !e.is_empty());
     let mut invalid_posts = false;
     if let Some(data) = value.get("data").and_then(Value::as_array) {
         for post in data.iter().take(10) {
@@ -146,17 +152,33 @@ pub fn search_official_x<T: Transport + ?Sized>(
             }
         }
     }
-    let malformed = invalid_posts || value.get("data").is_some_and(|d| !d.is_array())
-        || (value.get("data").and_then(Value::as_array).is_some_and(|a| !a.is_empty())
+    let malformed = invalid_posts
+        || value.get("data").is_some_and(|d| !d.is_array())
+        || (value
+            .get("data")
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty())
             && report.hits.is_empty());
-    let result_count = value.get("meta").and_then(|v| v.get("result_count"))
+    let result_count = value
+        .get("meta")
+        .and_then(|v| v.get("result_count"))
         .and_then(Value::as_u64);
     let outcome = if has_errors {
-        SourceExecutionOutcome::failed("x_recent_search", now_unix, SourceOutcomeKind::SemanticDrift,
-            Some(200), "X API returned errors; any links are partial leads")
+        SourceExecutionOutcome::failed(
+            "x_recent_search",
+            now_unix,
+            SourceOutcomeKind::SemanticDrift,
+            Some(200),
+            "X API returned errors; any links are partial leads",
+        )
     } else if malformed || (report.hits.is_empty() && result_count.is_some_and(|n| n > 0)) {
-        SourceExecutionOutcome::failed("x_recent_search", now_unix, SourceOutcomeKind::SchemaDrift,
-            Some(200), "X API returned inconsistent or malformed result data")
+        SourceExecutionOutcome::failed(
+            "x_recent_search",
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(200),
+            "X API returned inconsistent or malformed result data",
+        )
     } else if report.hits.is_empty() {
         SourceExecutionOutcome::valid_zero("x_recent_search", now_unix).with_http_status(200)
     } else {
@@ -184,7 +206,8 @@ pub struct BaseBalanceReport {
 }
 
 fn valid_evm_address(address: &str) -> bool {
-    address.len() == 42 && address.starts_with("0x")
+    address.len() == 42
+        && address.starts_with("0x")
         && address.as_bytes()[2..].iter().all(u8::is_ascii_hexdigit)
 }
 
@@ -202,7 +225,9 @@ pub fn base_balance<T: Transport + ?Sized>(
     now_unix: u64,
 ) -> Result<BaseBalanceReport, Error> {
     if !valid_evm_address(address) {
-        return Err(Error::invalid_value("expected 0x-prefixed, 20-byte hexadecimal EVM address"));
+        return Err(Error::invalid_value(
+            "expected 0x-prefixed, 20-byte hexadecimal EVM address",
+        ));
     }
     let (provider, endpoint) = if alchemy.is_some() {
         ("alchemy_operator_key", BASE_ALCHEMY_RPC)
@@ -220,11 +245,24 @@ pub fn base_balance<T: Transport + ?Sized>(
         block_height: None,
         block_tag: "latest".to_owned(),
         evidence_role: "onchain_observation_not_wallet_ownership_attribution",
-        outcome: SourceExecutionOutcome::failed(BASE_MODULE, now_unix,
-            SourceOutcomeKind::Inconclusive, None, "RPC not checked"),
+        outcome: SourceExecutionOutcome::failed(
+            BASE_MODULE,
+            now_unix,
+            SourceOutcomeKind::Inconclusive,
+            None,
+            "RPC not checked",
+        ),
     };
-    let Some(chain_hex) = rpc_read(transport, endpoint, alchemy, "eth_chainId", json!([]),
-        now_unix, &mut report)? else {
+    let Some(chain_hex) = rpc_read(
+        transport,
+        endpoint,
+        alchemy,
+        "eth_chainId",
+        json!([]),
+        now_unix,
+        &mut report,
+    )?
+    else {
         return Ok(report);
     };
     let Some(chain_id) = parse_quantity(&chain_hex).and_then(|n| n.parse::<u64>().ok()) else {
@@ -237,8 +275,16 @@ pub fn base_balance<T: Transport + ?Sized>(
         return Ok(report);
     }
     // Pin the observation to a numbered block, not a moving 'latest' head.
-    let Some(height_hex) = rpc_read(transport, endpoint, alchemy, "eth_blockNumber",
-        json!([]), now_unix, &mut report)? else {
+    let Some(height_hex) = rpc_read(
+        transport,
+        endpoint,
+        alchemy,
+        "eth_blockNumber",
+        json!([]),
+        now_unix,
+        &mut report,
+    )?
+    else {
         return Ok(report);
     };
     let Some(height) = parse_quantity(&height_hex).and_then(|n| n.parse::<u64>().ok()) else {
@@ -248,8 +294,16 @@ pub fn base_balance<T: Transport + ?Sized>(
     report.block_height = Some(height);
     report.block_tag = height_hex;
     let block_tag = report.block_tag.clone();
-    let Some(balance_hex) = rpc_read(transport, endpoint, alchemy, "eth_getBalance",
-        json!([report.address.as_str(), block_tag]), now_unix, &mut report)? else {
+    let Some(balance_hex) = rpc_read(
+        transport,
+        endpoint,
+        alchemy,
+        "eth_getBalance",
+        json!([report.address.as_str(), block_tag]),
+        now_unix,
+        &mut report,
+    )?
+    else {
         return Ok(report);
     };
     let Some(wei) = parse_quantity(&balance_hex) else {
@@ -258,12 +312,19 @@ pub fn base_balance<T: Transport + ?Sized>(
     };
     report.balance_eth = Some(wei_to_eth(&wei));
     report.balance_wei = Some(wei);
-    report.outcome = SourceExecutionOutcome::success(BASE_MODULE, now_unix, 1).with_http_status(200);
+    report.outcome =
+        SourceExecutionOutcome::success(BASE_MODULE, now_unix, 1).with_http_status(200);
     Ok(report)
 }
 
 fn schema_drift(now: u64, reason: &'static str) -> SourceExecutionOutcome {
-    SourceExecutionOutcome::failed(BASE_MODULE, now, SourceOutcomeKind::SchemaDrift, Some(200), reason)
+    SourceExecutionOutcome::failed(
+        BASE_MODULE,
+        now,
+        SourceOutcomeKind::SchemaDrift,
+        Some(200),
+        reason,
+    )
 }
 
 fn rpc_read<T: Transport + ?Sized>(
@@ -279,8 +340,14 @@ fn rpc_read<T: Transport + ?Sized>(
     let request = Request::post(endpoint, body.to_string().into_bytes())
         .header("accept", "application/json")
         .header("content-type", "application/json");
-    let fetched = fetch(transport, request, credential, &FetchOptions::no_redirects().paced(),
-        BASE_MODULE, now)?;
+    let fetched = fetch(
+        transport,
+        request,
+        credential,
+        &FetchOptions::no_redirects().paced(),
+        BASE_MODULE,
+        now,
+    )?;
     let decoded = whole_response(&fetched, "Base RPC").and_then(|response| {
         answer(&fetched, "Base RPC")?;
         decode_json::<Value>(response, BASE_MODULE, now, "Base RPC")
@@ -309,7 +376,9 @@ fn rpc_read<T: Transport + ?Sized>(
 /// Exact uint256 to decimal without floating point; refuses noncanonical quantities.
 fn parse_quantity(raw: &str) -> Option<String> {
     let digits = raw.strip_prefix("0x")?;
-    if digits.is_empty() || digits.len() > 64 || (digits.len() > 1 && digits.starts_with('0'))
+    if digits.is_empty()
+        || digits.len() > 64
+        || (digits.len() > 1 && digits.starts_with('0'))
         || !digits.bytes().all(|b| b.is_ascii_hexdigit())
     {
         return None;
@@ -317,7 +386,11 @@ fn parse_quantity(raw: &str) -> Option<String> {
     let mut decimal = vec![0_u8];
     for digit in digits.bytes() {
         let digit = digit.to_ascii_lowercase();
-        let mut carry = if digit.is_ascii_digit() { digit - b'0' } else { digit - b'a' + 10 };
+        let mut carry = if digit.is_ascii_digit() {
+            digit - b'0'
+        } else {
+            digit - b'a' + 10
+        };
         for cell in &mut decimal {
             let n = u16::from(*cell) * 16 + u16::from(carry);
             *cell = (n % 10) as u8;
@@ -328,7 +401,13 @@ fn parse_quantity(raw: &str) -> Option<String> {
             carry /= 10;
         }
     }
-    Some(decimal.iter().rev().map(|n| char::from(b'0' + *n)).collect())
+    Some(
+        decimal
+            .iter()
+            .rev()
+            .map(|n| char::from(b'0' + *n))
+            .collect(),
+    )
 }
 
 fn wei_to_eth(wei: &str) -> String {
@@ -360,12 +439,21 @@ mod tests {
     impl Fake {
         fn new(bodies: &[&str]) -> Self {
             Self {
-                responses: Mutex::new(bodies.iter().rev().map(|body| Response {
-                    status: 200,
-                    headers: vec![("content-type".to_owned(), "application/json".to_owned())],
-                    body: body.as_bytes().to_vec(),
-                    truncated: false,
-                }).collect()),
+                responses: Mutex::new(
+                    bodies
+                        .iter()
+                        .rev()
+                        .map(|body| Response {
+                            status: 200,
+                            headers: vec![(
+                                "content-type".to_owned(),
+                                "application/json".to_owned(),
+                            )],
+                            body: body.as_bytes().to_vec(),
+                            truncated: false,
+                        })
+                        .collect(),
+                ),
                 requests: Mutex::new(Vec::new()),
             }
         }
@@ -373,15 +461,26 @@ mod tests {
 
     impl Transport for Fake {
         fn send(&self, request: &Request) -> Result<Response, TransportFailure> {
-            self.requests.lock().expect("requests").push(request.clone());
-            Ok(self.responses.lock().expect("responses").pop().expect("request exceeds fixture"))
+            self.requests
+                .lock()
+                .expect("requests")
+                .push(request.clone());
+            Ok(self
+                .responses
+                .lock()
+                .expect("responses")
+                .pop()
+                .expect("request exceeds fixture"))
         }
     }
 
     #[test]
     fn quantities_remain_exact() {
         assert_eq!(parse_quantity("0x0").as_deref(), Some("0"));
-        assert_eq!(parse_quantity("0xde0b6b3a7640000").as_deref(), Some("1000000000000000000"));
+        assert_eq!(
+            parse_quantity("0xde0b6b3a7640000").as_deref(),
+            Some("1000000000000000000")
+        );
         assert_eq!(wei_to_eth("1000000000000000000"), "1");
         assert_eq!(wei_to_eth("1"), "0.000000000000000001");
         assert!(parse_quantity("0x00").is_none());
@@ -396,8 +495,13 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"result":"0x123"}"#,
             r#"{"jsonrpc":"2.0","id":1,"result":"0xde0b6b3a7640000"}"#,
         ]);
-        let report = base_balance(&fake, "0x0000000000000000000000000000000000000001", None, 100)
-            .expect("read");
+        let report = base_balance(
+            &fake,
+            "0x0000000000000000000000000000000000000001",
+            None,
+            100,
+        )
+        .expect("read");
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
         assert_eq!(report.balance_eth.as_deref(), Some("1"));
         assert_eq!(report.chain_id, Some(8453));
@@ -406,14 +510,23 @@ mod tests {
         let requests = fake.requests.lock().expect("requests");
         assert_eq!(requests.len(), 3);
         assert!(String::from_utf8_lossy(&requests[2].body).contains("0x123"));
-        assert!(requests.iter().all(|request| request.url == BASE_PUBLIC_RPC));
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.url == BASE_PUBLIC_RPC)
+        );
     }
 
     #[test]
     fn wrong_chain_never_queries_balance() {
         let fake = Fake::new(&[r#"{"jsonrpc":"2.0","id":1,"result":"0x1"}"#]);
-        let report = base_balance(&fake, "0x0000000000000000000000000000000000000001", None, 100)
-            .expect("read");
+        let report = base_balance(
+            &fake,
+            "0x0000000000000000000000000000000000000001",
+            None,
+            100,
+        )
+        .expect("read");
         assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
         assert_eq!(fake.requests.lock().expect("requests").len(), 1);
     }
@@ -431,18 +544,25 @@ mod tests {
             credential_slot: X_BEARER_SLOT.to_owned(),
             approved_at_unix: 100,
             approval_provenance: "operator-owned fixture".to_owned(),
-        }).expect("approved");
-        let credential = Credential::new(authority,
+        })
+        .expect("approved");
+        let credential = Credential::new(
+            authority,
             Secret::new("owned-fixture-secret-abcdef123456").expect("fixture"),
-            AuthStyle::Bearer).expect("credential").only_for_origin(X_API_ORIGIN);
+            AuthStyle::Bearer,
+        )
+        .expect("credential")
+        .only_for_origin(X_API_ORIGIN);
         let report = search_official_x(&fake, &credential, "sample", 100).expect("search");
         assert_eq!(report.hits.len(), 1);
         assert_eq!(report.hits[0].url, "https://x.com/i/web/status/123456789");
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::SchemaDrift);
         let requests = fake.requests.lock().expect("requests");
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].header_value("authorization"),
-            Some("Bearer owned-fixture-secret-abcdef123456"));
+        assert_eq!(
+            requests[0].header_value("authorization"),
+            Some("Bearer owned-fixture-secret-abcdef123456")
+        );
         assert!(!format!("{:?}", requests[0]).contains("owned-fixture-secret-abcdef123456"));
         assert!(requests[0].url.starts_with(X_API_URL));
     }
@@ -450,8 +570,13 @@ mod tests {
     #[test]
     fn malformed_rpc_envelope_never_reaches_balance() {
         let fake = Fake::new(&[r#"{"jsonrpc":"2.0","id":2,"result":"0x2105"}"#]);
-        let report = base_balance(&fake, "0x0000000000000000000000000000000000000001", None, 100)
-            .expect("read");
+        let report = base_balance(
+            &fake,
+            "0x0000000000000000000000000000000000000001",
+            None,
+            100,
+        )
+        .expect("read");
         assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
         assert_eq!(fake.requests.lock().expect("requests").len(), 1);
     }
