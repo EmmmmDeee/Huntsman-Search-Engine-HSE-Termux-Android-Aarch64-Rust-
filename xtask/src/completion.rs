@@ -30,6 +30,8 @@ struct Task {
     evidence: String,
     implementation: String,
     verification: String,
+    verified_commit: Option<String>,
+    verification_evidence: Option<String>,
     dependencies: Vec<String>,
 }
 
@@ -167,12 +169,16 @@ fn generate(root: &Path) -> Result<String> {
     tree.append(&mut report, "");
     report.push_str(&fence);
     report.push_str("\n\n");
-    report.push_str("## Dependency-ordered implementation queue\n\n");
+    report.push_str("## Dependency-ordered outstanding implementation queue\n\n");
     report.push_str(
         "P0 = foundational or critical verification; P1 = integration; P2 = improvement; P3 = optional. \
          Priority breaks ties only among dependency-ready tasks. No task status is inferred from a filename.\n\n",
     );
-    for (sequence, index) in ordered.iter().enumerate() {
+    for (sequence, index) in ordered
+        .iter()
+        .filter(|&&index| tasks[index].state != "VERIFIED")
+        .enumerate()
+    {
         let task = &tasks[*index];
         let _ = writeln!(
             report,
@@ -208,8 +214,34 @@ fn generate(root: &Path) -> Result<String> {
             escape_md(&task.evidence)
         );
         let _ = writeln!(report, "- Implement: {}", escape_md(&task.implementation));
-        let _ = writeln!(report, "- Verify: {}\n", escape_md(&task.verification));
+        let _ = writeln!(report, "- Verify: {}", escape_md(&task.verification));
+        if let (Some(commit), Some(proof)) = (&task.verified_commit, &task.verification_evidence) {
+            let _ = writeln!(report, "- Verified at revision: {}", escape_md(commit));
+            let _ = writeln!(report, "- Executed test evidence: {}", escape_md(proof));
+            report.push_str("  Historical verification does not prove current deployment or unchanged contracts.\n");
+        }
+        report.push('\n');
     }
+    report.push_str("## Historically verified implementation receipts\n\n");
+    for index in ordered
+        .iter()
+        .copied()
+        .filter(|&i| tasks[i].state == "VERIFIED")
+    {
+        let task = &tasks[index];
+        if let (Some(commit), Some(proof)) = (&task.verified_commit, &task.verification_evidence) {
+            let _ = writeln!(
+                report,
+                "- P{} {}: {} (verified at {}; evidence: {}).",
+                task.priority,
+                escape_md(&task.id),
+                escape_md(&task.path),
+                escape_md(commit),
+                escape_md(proof)
+            );
+        }
+    }
+    report.push('\n');
     report.push_str(
         "## Completion and continuity gates\n\n\
          - Every tracked path must remain represented, including non-overlapping files and files not selected for modification.\n\
@@ -324,6 +356,30 @@ fn read_tasks(root: &Path) -> Result<Vec<Task>> {
             }
             dependencies.push(name.to_owned());
         }
+        let verified_commit = row["verified_commit"].as_str();
+        let verification_evidence = row["verification_evidence"].as_str();
+        if state == "VERIFIED" {
+            let commit = verified_commit.ok_or_else(|| {
+                Error::Invalid(format!("{id}: VERIFIED requires verified_commit"))
+            })?;
+            let proof = verification_evidence.ok_or_else(|| {
+                Error::Invalid(format!("{id}: VERIFIED requires verification_evidence"))
+            })?;
+            if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(Error::Invalid(format!(
+                    "{id}: verified_commit must be a 40-character hex commit SHA"
+                )));
+            }
+            if proof.trim().is_empty() || proof.contains('\n') || proof.contains('\r') {
+                return Err(Error::Invalid(format!(
+                    "{id}: verification_evidence must contain a nonempty, single-line reference"
+                )));
+            }
+        } else if verified_commit.is_some() || verification_evidence.is_some() {
+            return Err(Error::Invalid(format!(
+                "{id}: verification receipts require state VERIFIED"
+            )));
+        }
         tasks.push(Task {
             id,
             path,
@@ -333,6 +389,8 @@ fn read_tasks(root: &Path) -> Result<Vec<Task>> {
             evidence: required(row, "evidence")?,
             implementation: required(row, "implementation")?,
             verification: required(row, "verification")?,
+            verified_commit: verified_commit.map(str::to_owned),
+            verification_evidence: verification_evidence.map(str::to_owned),
             dependencies,
         });
     }
@@ -425,6 +483,8 @@ mod tests {
             evidence: "not yet checked".to_owned(),
             implementation: "review".to_owned(),
             verification: "test".to_owned(),
+            verified_commit: None,
+            verification_evidence: None,
             dependencies: dependencies.into_iter().map(str::to_owned).collect(),
         };
         let tasks = vec![
@@ -433,6 +493,55 @@ mod tests {
             make("foundation", 2, vec![]),
         ];
         assert_eq!(order_tasks(&tasks).unwrap(), [1, 2, 0]);
+    }
+
+    #[test]
+    fn verified_state_requires_pinned_executed_evidence() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("current time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "huntsman-completion-evidence-{}-{unique}",
+            std::process::id()
+        ));
+        let location = root.join("docs/completion");
+        fs::create_dir_all(&location).expect("fixture directory");
+        let file = location.join("tasks.json");
+        let mut doc = serde_json::json!({
+            "schema": "huntsman.completion/1",
+            "implementations": [{
+                "id": "fixture",
+                "path": "src/radar.rs",
+                "priority": "P0",
+                "state": "VERIFIED",
+                "depends_on": [],
+                "objective": "keep all sweeps",
+                "evidence": "specific CI run",
+                "implementation": "no missing wiring",
+                "verification": "tests passed"
+            }]
+        });
+        let check = |document: &serde_json::Value| {
+            fs::write(&file, document.to_string()).expect("write fixture");
+            read_tasks(&root)
+        };
+        assert!(check(&doc).is_err(), "receipt-free verification refused");
+        doc["implementations"][0]["verified_commit"] = serde_json::json!("abc");
+        doc["implementations"][0]["verification_evidence"] =
+            serde_json::json!("https://github.com/example/repo/actions/runs/1");
+        assert!(check(&doc).is_err(), "invalid commit hash refused");
+        doc["implementations"][0]["verified_commit"] =
+            serde_json::json!("0123456789abcdef0123456789abcdef01234567");
+        let tasks = check(&doc).expect("pinned verification accepted");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].state, "VERIFIED");
+        doc["implementations"][0]["state"] = serde_json::json!("REVIEW");
+        assert!(
+            check(&doc).is_err(),
+            "unverified tasks cannot carry receipts"
+        );
+        fs::remove_dir_all(&root).expect("remove fixture");
     }
 
     #[test]
