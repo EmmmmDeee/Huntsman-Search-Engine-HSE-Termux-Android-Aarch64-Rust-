@@ -217,8 +217,8 @@ pub const PROVIDERS: &[Provider] = &[
     },
     Provider {
         name: "SeekNow",
-        get_key_url: "",
-        free_tier: "invite/paid; no public signup",
+        get_key_url: "https://see-know.ru/register",
+        free_tier: "website offers 10 daily searches free; API access and credits may differ",
         slots: &[crate::environment::SEEKNOW_KEY_ENV],
     },
     Provider {

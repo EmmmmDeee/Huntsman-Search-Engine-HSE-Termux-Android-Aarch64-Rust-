@@ -735,32 +735,48 @@ fn value_as_u64(value: &Value) -> Option<u64> {
 }
 
 fn is_sensitive_result_field(key: &str) -> bool {
-    let normalized = key.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+    // Provider schemas use snake_case, camelCase, PascalCase, hyphens and dots
+    // for the same secrets. Compare ASCII-alphanumeric names without separators
+    // so `accessToken`, `access-token` and `access_token` all stay private.
+    // Deliberately prefer dropping an ambiguous field to storing credentials.
+    let normalized: String = key
+        .bytes()
+        .filter(u8::is_ascii_alphanumeric)
+        .map(|byte| char::from(byte.to_ascii_lowercase()))
+        .collect();
+
     matches!(
         normalized.as_str(),
-        "password"
-            | "passwd"
-            | "pwd"
+        "pwd"
             | "pass"
             | "secret"
             | "token"
-            | "access_token"
-            | "refresh_token"
-            | "auth_token"
-            | "api_key"
             | "apikey"
             | "cookie"
             | "cookies"
             | "session"
-            | "session_id"
-            | "session_token"
+            | "sessionid"
             | "authorization"
-    ) || normalized.ends_with("_password")
-        || normalized.ends_with("_passwd")
-        || normalized.ends_with("_token")
-        || normalized.ends_with("_secret")
-        || normalized.ends_with("_cookie")
-        || normalized.ends_with("_api_key")
+            | "jwt"
+            | "otp"
+            | "totp"
+            | "privatekey"
+            | "accesskey"
+            | "recoverycode"
+            | "recoverycodes"
+    ) || [
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "cookie",
+        "apikey",
+        "privatekey",
+        "credential",
+    ]
+    .into_iter()
+    .any(|fragment| normalized.contains(fragment))
+        || normalized.starts_with("session")
 }
 
 fn bounded_scalar_string(value: &Value) -> Option<String> {
