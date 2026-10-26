@@ -320,19 +320,22 @@ mod tests {
     fn alternate_public_bootstrap_schema_requires_exact_profile_identity() {
         for scope_name in ["__DEFAULT_SCOPE__", "DEFAULT_SCOPE"] {
             for shape in ["webapp.user-detail", "webapp.reflow.profile.initial"] {
-                let payload = serde_json::json!({
-                    scope_name: {
-                        shape: {
-                            "userInfo": {
-                                "user": {
-                                    "uniqueId": "alice24",
-                                    "signature": "business@example.org",
-                                    "privateAccountEmail": "do-not-return@example.org"
-                                }
+                let mut profile = serde_json::Map::new();
+                profile.insert(
+                    shape.to_owned(),
+                    serde_json::json!({
+                        "userInfo": {
+                            "user": {
+                                "uniqueId": "alice24",
+                                "signature": "business@example.org",
+                                "privateAccountEmail": "do-not-return@example.org"
                             }
                         }
-                    }
-                });
+                    }),
+                );
+                let mut root = serde_json::Map::new();
+                root.insert(scope_name.to_owned(), Value::Object(profile));
+                let payload = Value::Object(root);
                 let page = html(
                     &payload.to_string(),
                     "__UNIVERSAL_DATA_FOR_REHYDRATION__",
