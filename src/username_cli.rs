@@ -14,6 +14,7 @@ use crate::canonical::canonical_handle;
 use crate::concurrent::{self, Job};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
+use crate::github_repos;
 use crate::github_user;
 use crate::http::Transport;
 use crate::keybase;
@@ -30,7 +31,7 @@ use crate::wikipedia;
 pub const USERNAME_USAGE: &str = "usage: huntsman-recon username HANDLE [--save FILE]";
 pub const USERNAME_HELP: &str = "\
 username HANDLE [--save FILE]
-Derive handle variants and query public GitHub, Bluesky, Keybase, Mastodon, TikTok self-published bio contacts and Wikipedia contributions. Email contacts are self-declared candidates, never verified account email owners. --save FILE writes an unverified ledger that verify can reload.";
+Derive handle variants and query GitHub profiles and public repositories, Bluesky, Keybase, Mastodon, TikTok self-published bio contacts and Wikipedia contributions. Email contacts are self-declared candidates, never verified account email owners. --save FILE writes an unverified ledger that verify can reload.";
 
 /// One source's answer: what it found and its outcome, or the refusal that stopped it.
 type Found = Result<(Vec<Entity>, SourceExecutionOutcome), Error>;
@@ -85,11 +86,18 @@ pub fn run<T: Transport + Sync + ?Sized>(
     // lookup takes as long as the slowest of them. Their answers are folded in this order, so the
     // report is the one they gave when they ran one after another.
     let (name, scan) = (username.as_str(), scan_id.as_str());
-    let sources: [(&str, Job<'_, Found>); 6] = [
+    let sources: [(&str, Job<'_, Found>); 7] = [
         (
             github_user::SRC,
             Box::new(move || {
                 github_user::lookup(transport, keys, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            github_repos::SRC,
+            Box::new(move || {
+                github_repos::lookup(transport, keys, name, scan, now_unix)
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
@@ -430,8 +438,8 @@ mod tests {
         match run(&fake, &Keys::default(), "nobody", 1) {
             UsernameRun::Printed { report, text } => {
                 assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
-                assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::Success);
-                assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::ValidZero);
+                assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::Success);
+                assert_eq!(report.outcomes[3].kind, SourceOutcomeKind::ValidZero);
                 assert!(text.contains("keybase\t"), "{text}");
                 assert!(
                     report
@@ -502,6 +510,7 @@ mod tests {
                 modules,
                 [
                     github_user::SRC,
+                    github_repos::SRC,
                     bluesky_user::SRC,
                     keybase::SRC,
                     wikipedia::SRC,
@@ -512,7 +521,7 @@ mod tests {
         }
     }
 
-    /// Each source waits on its own server, so six that take 200 ms each answer in about 200 ms,
+    /// Each source waits on its own request, so seven that take 200 ms each answer in about 200 ms,
     /// not the second they took one after another.
     #[test]
     fn the_sources_run_at_once() {
@@ -542,10 +551,10 @@ mod tests {
             panic!("the lookup should print a report");
         };
         let took = started.elapsed();
-        assert_eq!(report.outcomes.len(), 6);
+        assert_eq!(report.outcomes.len(), 7);
         assert!(
             took < std::time::Duration::from_millis(800),
-            "six 200 ms sources took {took:?}"
+            "seven 200 ms sources took {took:?}"
         );
     }
 
