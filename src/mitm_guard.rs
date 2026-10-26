@@ -199,19 +199,6 @@ fn assess_status(accepted: usize, findings: &[Finding]) -> &'static str {
 fn grouped_access_points(
     observations: &[AccessPoint],
 ) -> BTreeMap<&str, BTreeMap<String, BTreeSet<Security>>> {
-    let by_ssid = grouped_access_points(observations);
-    by_ssid
-}
-
-/// Based on MITM/evil-twin literature, but these are conservative heuristics,
-/// NOT reproduced ML classifiers or validated sensitivities from the papers.
-#[must_use]
-pub fn assess(
-    observations: &[AccessPoint],
-    baseline: Option<&Baseline>,
-    source: &'static str,
-    rejected: usize,
-) -> Report {
     // SSIDs are byte-exact, but BSSIDs are hexadecimal, case-insensitive identifiers.
     // Canonicalise once at this shared boundary even for direct library callers.
     let mut by_ssid: BTreeMap<&str, BTreeMap<String, BTreeSet<Security>>> = BTreeMap::new();
@@ -230,6 +217,19 @@ pub fn assess(
             modes.insert(ap.security);
         }
     }
+    by_ssid
+}
+
+/// Based on MITM/evil-twin literature, but these are conservative heuristics,
+/// NOT reproduced ML classifiers or validated sensitivities from the papers.
+#[must_use]
+pub fn assess(
+    observations: &[AccessPoint],
+    baseline: Option<&Baseline>,
+    source: &'static str,
+    rejected: usize,
+) -> Report {
+    let by_ssid = grouped_access_points(observations);
     let accepted = by_ssid.values().map(BTreeMap::len).sum::<usize>();
     let mut findings = Vec::new();
     let trusted: BTreeMap<&str, &TrustedNetwork> = baseline
