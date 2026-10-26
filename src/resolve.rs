@@ -203,11 +203,8 @@ mod tests {
 
     #[test]
     fn self_links_never_count_as_identity_merges() {
-        let clusters = automatic_clusters(
-            &[decision("a", "a")],
-            &graph(),
-            AutoMergePolicy::default(),
-        );
+        let clusters =
+            automatic_clusters(&[decision("a", "a")], &graph(), AutoMergePolicy::default());
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].members, ["a"]);
         assert_eq!(clusters[0].decision_count, 0);
