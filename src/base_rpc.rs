@@ -386,12 +386,25 @@ mod tests {
 
     #[test]
     fn rate_limit_and_non_json_cannot_be_valid_zero() {
-        let limited = lookup(&OneResponse::json(429, "rate limited"), WALLET, "scan", 1).unwrap();
+        // Test the parser independently of the shared per-host circuit breaker:
+        // the 429 fixture would otherwise suppress the next fake response.
+        let fixture = |status, body| {
+            let fetched = fetch(
+                &OneResponse::json(status, body),
+                request(WALLET).expect("valid Base selector"),
+                None,
+                &FetchOptions::no_redirects(),
+                SOURCE,
+                1,
+            )
+            .expect("fake transport fetch");
+            interpret(&fetched, WALLET, "scan", 1)
+        };
+        let limited = fixture(429, "rate limited");
         assert!(limited.entities.is_empty());
         assert_eq!(limited.outcome.kind, SourceOutcomeKind::RateLimited);
-        let malformed = lookup(&OneResponse::json(200, "{bad"), WALLET, "scan", 1).unwrap();
+        let malformed = fixture(200, "{bad");
         assert!(malformed.entities.is_empty());
-        assert!(!malformed.outcome.kind.is_accepted());
-        assert_ne!(malformed.outcome.kind, SourceOutcomeKind::ValidZero);
+        assert_eq!(malformed.outcome.kind, SourceOutcomeKind::ParserDrift);
     }
 }
