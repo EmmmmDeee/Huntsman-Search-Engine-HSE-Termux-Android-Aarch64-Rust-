@@ -102,8 +102,11 @@ fn parse_response(
         ));
     }
     let rows: Vec<Vec<String>> = decode_json(response, SOURCE, now_unix, "Wayback CDX")?;
-    let expected = FIELDS.map(str::to_owned);
-    if rows.first() != Some(&expected) || rows.len() > MAX_CAPTURES + 1 {
+    if !rows
+        .first()
+        .is_some_and(|header| header.iter().map(String::as_str).eq(FIELDS))
+        || rows.len() > MAX_CAPTURES + 1
+    {
         return Err(failed(
             SourceOutcomeKind::SchemaDrift,
             now_unix,
