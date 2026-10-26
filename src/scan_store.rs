@@ -657,8 +657,8 @@ impl ScanStore {
                 )));
             }
         }
-        let bytes = crate::fsio::read_bounded_replacing(&path, limit)
-            .map_err(|e| fsio_error(&e))?;
+        let bytes =
+            crate::fsio::read_bounded_replacing(&path, limit).map_err(|e| fsio_error(&e))?;
         let charged = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let results: ScanResults = serde_json::from_slice(&bytes)
             .map_err(|error| StoreError::Io(format!("{}: {error}", path.display())))?;
