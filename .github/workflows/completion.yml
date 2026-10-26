@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo fmt --all -- --check
-          cargo test --locked -p xtask --test completion
+          cargo test --locked -p xtask
       - name: Generate and verify complete register
         run: |
           set -euo pipefail

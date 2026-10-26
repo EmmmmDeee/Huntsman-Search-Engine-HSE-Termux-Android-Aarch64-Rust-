@@ -4,37 +4,43 @@
     {
       "id": "00-radar-concurrent-writer-regression",
       "priority": "P0",
-      "state": "INCOMPLETE",
+      "state": "VERIFIED",
       "path": "src/radar.rs",
       "depends_on": [],
       "objective": "Ensure simultaneous legitimate radar log writers retain every sweep without a spurious lock-timeout failure, while refusing genuine stale/foreign locks and preserving recorded evidence.",
-      "evidence": "Feature-branch release acceptance run 40285272686, job 121447455347: cargo test --locked --workspace failed at radar::tests::concurrent_writers_preserve_every_sweep_and_report_latest_storage (2403 passed, 1 failed). Previous lock retry capped at 1 second; contention under runner load is suspected, not yet independently proven.",
-      "implementation": "A bounded five-second retry window and explicit writer-error diagnostic were added in src/radar.rs on the review branch. Investigate if failure recurs; preserve inode-safe lock cleanup, private permissions and write atomicity.",
-      "verification": "Require repeated full Rust workspace tests on supported toolchains; verify 12 concurrent writes, exact 12 retained timestamps, lock cleanup, stale-lock refusal, Android aarch64 cross-build and no CLI/web contract regression. Record actual observed outcomes against the PR head."
+      "evidence": "Previously reproduced 1-second lock-timeout failure in release run 40285272686; the candidate bounded five-second lock adjustment and diagnostic assertion subsequently passed exact-head CI Rust 1.87/1.99, AArch64 cross-build, and release host/MSRV gates for commit 5b1296813d8b5896bc9e91b362a29f477610c22f. Contention remains a likely explanation rather than independently demonstrated root cause; real-handset stress testing remains outside this task's verified scope.",
+      "implementation": "Merged via PR #1428: retain the bounded five-second contention retry and diagnostic assertion; reopen if load tests reproduce a write loss or stale-lock mishandling.",
+      "verification": "Require repeated full Rust workspace tests on supported toolchains; verify 12 concurrent writes, exact 12 retained timestamps, lock cleanup, stale-lock refusal, Android aarch64 cross-build and no CLI/web contract regression. Record actual observed outcomes against the PR head.",
+      "verified_commit": "5b1296813d8b5896bc9e91b362a29f477610c22f",
+      "verification_evidence": "https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/actions/runs/40286228936 ; https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/actions/runs/40286228967"
     },
     {
       "id": "01-register-generation",
       "priority": "P0",
-      "state": "REVIEW",
+      "state": "VERIFIED",
       "path": "xtask/src/completion.rs",
       "depends_on": [],
       "objective": "Reconcile all tracked and proposed paths and produce a complete dependency-ordered, evidence-limited Markdown inventory with no new runtime dependencies.",
-      "evidence": "New xtask implementation exists on the feature branch; full Rust CI and Android results must establish readiness.",
-      "implementation": "Preserve the repository-native xtask integration, validate path and dependency input, render the complete tree, and emit the generated document under target/completion.",
-      "verification": "Run cargo test --locked -p xtask; compare two consecutive completion print outputs; inspect a generated artifact for all git ls-files paths."
+      "evidence": "The Rust completion generator compiled and passed rustfmt, focused regression tests, deterministic write/check, artifact generation and full xtask CI at pinned exact-head 5b1296813d8b5896bc9e91b362a29f477610c22f; merged by PR #1428.",
+      "implementation": "Merged via PR #1428: maintain generator compatibility, preserve tracked file coverage and the source-addressed read-only Markdown handoff.",
+      "verification": "Run cargo test --locked -p xtask; compare two consecutive completion print outputs; inspect a generated artifact for all git ls-files paths.",
+      "verified_commit": "5b1296813d8b5896bc9e91b362a29f477610c22f",
+      "verification_evidence": "https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/actions/runs/40286228965 ; https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/actions/runs/40286228936"
     },
     {
       "id": "02-ci-generation",
       "priority": "P0",
-      "state": "REVIEW",
+      "state": "VERIFIED",
       "path": ".github/workflows/completion.yml",
       "depends_on": [
         "01-register-generation"
       ],
       "objective": "Regenerate the handoff document automatically on each PR, main push, manual dispatch and scheduled run without bypassing the protected branch workflow.",
-      "evidence": "The existing ci.yml guards main PR origin and separately cross-builds Android; the completion workflow must not directly commit to main.",
-      "implementation": "Run the Rust generator in read-only CI and upload the generated Markdown as a commit-addressed artifact; do not auto-merge or edit production source.",
-      "verification": "Confirm workflow execution, artifact integrity, read-only permissions and matching Git commit; validate exact workflow syntax."
+      "evidence": "The new scheduled/PR/main-triggered read-only Actions workflow passed for pinned exact-head 5b1296813d8b5896bc9e91b362a29f477610c22f, generated and published a checksum-verified Markdown completion artifact; merged by PR #1428.",
+      "implementation": "Merged via PR #1428: preserve read-only CI permissions, SHA-256 artifact verification and separation from release/merge actions.",
+      "verification": "Confirm workflow execution, artifact integrity, read-only permissions and matching Git commit; validate exact workflow syntax.",
+      "verified_commit": "5b1296813d8b5896bc9e91b362a29f477610c22f",
+      "verification_evidence": "https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-/actions/runs/40286228965/artifacts/12634172708"
     },
     {
       "id": "03-security-preflight",

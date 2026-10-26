@@ -496,7 +496,14 @@ fn markdown(report: &Value) -> String {
                 literal(&row["definition"]["priority"].to_string()),
                 literal(&row["definition"]["depends_on"].to_string())
             );
-            for field in ["objective", "evidence", "implementation", "verification"] {
+            for field in [
+                "objective",
+                "evidence",
+                "implementation",
+                "verification",
+                "verified_commit",
+                "verification_evidence",
+            ] {
                 if let Some(value) = row["definition"][field].as_str() {
                     let _ = writeln!(text, "{field}: {}.\n", literal(value));
                 }

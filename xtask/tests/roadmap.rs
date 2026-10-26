@@ -437,3 +437,19 @@ fn refuses_a_crosswalk_to_an_unknown_existing_register_task() {
     repo.commit_all("dangling crosswalk");
     assert_eq!(run(&repo, "check").status.code(), Some(64));
 }
+
+#[test]
+fn historical_register_receipts_remain_visible_in_the_markdown_view() {
+    let mut repo = fixture(&[]);
+    repo.write("docs/completion/tasks.json", &json!({"schema":"huntsman.completion/1", "implementations":[
+        {"id":"history", "path":"src/lib.rs", "state":"VERIFIED", "objective":"Historical acceptance",
+         "verified_commit":"0123456789abcdef0123456789abcdef01234567",
+         "verification_evidence":"https://example.test/executed-check/receipt"}
+    ]}).to_string());
+    repo.commit_all("historical receipt");
+    let out = run(&repo, "markdown");
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("0123456789abcdef0123456789abcdef01234567"));
+    assert!(text.contains("https://example.test/executed-check/receipt"));
+}
