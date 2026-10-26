@@ -125,7 +125,14 @@ fn parse_response(
     let mut entities = Vec::new();
     let mut skipped_query_urls = 0usize;
     for row in rows.iter().skip(1) {
-        if parse_capture(row, domain, scan_id, now_unix, response.status, &mut entities)? {
+        if parse_capture(
+            row,
+            domain,
+            scan_id,
+            now_unix,
+            response.status,
+            &mut entities,
+        )? {
             skipped_query_urls += 1;
         }
     }
