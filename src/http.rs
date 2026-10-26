@@ -1015,7 +1015,13 @@ mod tests {
         )
         .expect_err("zero budget cannot produce an answer");
         assert_eq!(err.kind, super::SourceOutcomeKind::DnsFailure);
-        assert!(err.detail.contains("no answer within 0s"));
+        assert_eq!(
+            err.detail,
+            format!(
+                "expired.invalid: no answer within {:?}",
+                std::time::Duration::ZERO
+            )
+        );
         assert_eq!(ACTIVE.load(Ordering::Acquire), 0);
     }
 
