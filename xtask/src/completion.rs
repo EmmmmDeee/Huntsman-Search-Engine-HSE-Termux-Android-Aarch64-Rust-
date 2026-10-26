@@ -223,7 +223,11 @@ fn generate(root: &Path) -> Result<String> {
         report.push('\n');
     }
     report.push_str("## Historically verified implementation receipts\n\n");
-    for index in ordered.iter().copied().filter(|&i| tasks[i].state == "VERIFIED") {
+    for index in ordered
+        .iter()
+        .copied()
+        .filter(|&i| tasks[i].state == "VERIFIED")
+    {
         let task = &tasks[index];
         if let (Some(commit), Some(proof)) = (&task.verified_commit, &task.verification_evidence) {
             let _ = writeln!(
