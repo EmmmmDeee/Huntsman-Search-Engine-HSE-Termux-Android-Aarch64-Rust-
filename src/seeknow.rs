@@ -774,7 +774,7 @@ fn is_sensitive_result_field(key: &str) -> bool {
         "privatekey",
         "credential",
     ]
-    .iter()
+    .into_iter()
     .any(|fragment| normalized.contains(fragment))
         || normalized.starts_with("session")
 }
