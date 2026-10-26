@@ -1,0 +1,164 @@
+{
+  "schema": "huntsman.completion/1",
+  "implementations": [
+    {
+      "id": "01-register-generation",
+      "priority": "P0",
+      "state": "REVIEW",
+      "path": "xtask/src/completion.rs",
+      "depends_on": [],
+      "objective": "Reconcile all tracked and proposed paths and produce a complete dependency-ordered, evidence-limited Markdown inventory with no new runtime dependencies.",
+      "evidence": "New xtask implementation exists on the feature branch; full Rust CI and Android results must establish readiness.",
+      "implementation": "Preserve the repository-native xtask integration, validate path and dependency input, render the complete tree, and emit the generated document under target/completion.",
+      "verification": "Run cargo test --locked -p xtask; compare two consecutive completion print outputs; inspect a generated artifact for all git ls-files paths."
+    },
+    {
+      "id": "02-ci-generation",
+      "priority": "P0",
+      "state": "REVIEW",
+      "path": ".github/workflows/completion.yml",
+      "depends_on": [
+        "01-register-generation"
+      ],
+      "objective": "Regenerate the handoff document automatically on each PR, main push, manual dispatch and scheduled run without bypassing the protected branch workflow.",
+      "evidence": "The existing ci.yml guards main PR origin and separately cross-builds Android; the completion workflow must not directly commit to main.",
+      "implementation": "Run the Rust generator in read-only CI and upload the generated Markdown as a commit-addressed artifact; do not auto-merge or edit production source.",
+      "verification": "Confirm workflow execution, artifact integrity, read-only permissions and matching Git commit; validate exact workflow syntax."
+    },
+    {
+      "id": "03-security-preflight",
+      "priority": "P0",
+      "state": "REVIEW",
+      "path": "xtask/src/gate.rs",
+      "depends_on": [
+        "01-register-generation"
+      ],
+      "objective": "Ensure the completion workflow never bypasses format, lint, unit, security and release gates.",
+      "evidence": "The existing gate and CI workflow are present; no passing result for the current feature branch is assumed.",
+      "implementation": "Preserve existing full and MSRV verification commands, report failures as blockers and do not change protected branch policies or release checks.",
+      "verification": "Run cargo run --locked -p xtask -- gate full and gate msrv in the supported toolchains; inspect CI status against the precise head SHA."
+    },
+    {
+      "id": "04-android-handset-acceptance",
+      "priority": "P0",
+      "state": "REVIEW",
+      "path": "scripts/termux-runtime-acceptance.sh",
+      "depends_on": [
+        "03-security-preflight"
+      ],
+      "objective": "Verify actual rootless Termux Android AArch64 installation, loopback web UI operation and persistence on the same deployed revision.",
+      "evidence": "CI cross-builds aarch64-linux-android, but a Linux runner or QEMU result alone does not demonstrate Android handset behaviour.",
+      "implementation": "Audit install.sh, release artifact, PATH resolution, Android linker/page alignment, permission handling, local Web UI and recovery paths; repair only reproducible defects.",
+      "verification": "On a rootless handset: verify ELF architecture and build SHA, run check/doctor, start serve, request 127.0.0.1:8080, exercise browser UI and restart; preserve logs and return codes."
+    },
+    {
+      "id": "05-credential-boundaries",
+      "priority": "P0",
+      "state": "REVIEW",
+      "path": "src/provider_credentials.rs",
+      "depends_on": [
+        "03-security-preflight"
+      ],
+      "objective": "Audit provider key registry and safe credential ingestion without inventing secrets or declaring unavailable providers functional.",
+      "evidence": "The provider credential module is present; current operator keys and live-provider coverage are unknown from the Git tree.",
+      "implementation": "Trace aliases, environment and file permissions, redaction, request authentication, keyless fallbacks and unavailable-provider errors across CLI/API/UI.",
+      "verification": "Use offline fixture tests for secret masking, empty/invalid keys, no plaintext logs and consistent provider status in CLI/API/UI."
+    },
+    {
+      "id": "06-source-registry-wiring",
+      "priority": "P1",
+      "state": "REVIEW",
+      "path": "src/source_registry.rs",
+      "depends_on": [
+        "03-security-preflight",
+        "05-credential-boundaries"
+      ],
+      "objective": "Map source registration to CLI lookup, pipeline admission, source outcomes and saved scan evidence.",
+      "evidence": "The source registry and related modules exist. Registration alone does not prove an end-to-end reachable collector.",
+      "implementation": "Inspect crate exports and call paths, compare registered source identifiers with executable provider adapters, and add missing wiring only after reproducible analysis.",
+      "verification": "For each registered provider, run or define deterministic offline dispatch tests, outcome classification and provenance checks; record unresolved external API blockers."
+    },
+    {
+      "id": "07-evidence-integrity",
+      "priority": "P1",
+      "state": "REVIEW",
+      "path": "src/scan_service.rs",
+      "depends_on": [
+        "06-source-registry-wiring"
+      ],
+      "objective": "Preserve evidence provenance, bounded scan persistence, partial failures and accurate unknown-versus-negative outcomes.",
+      "evidence": "Scan service/store and evidence modules are present; their complete cross-module contracts require execution-path verification.",
+      "implementation": "Trace input canonicalisation to collection, storage, analysis and export; validate atomicity, bounded memory and timestamp/source attribution; do not rewrite original evidence.",
+      "verification": "Run adversarial offline tests for interrupted scans, partial provider results, conflicting claims, malformed input and restart persistence."
+    },
+    {
+      "id": "08-http-ui-wiring",
+      "priority": "P1",
+      "state": "REVIEW",
+      "path": "src/web_server.rs",
+      "depends_on": [
+        "04-android-handset-acceptance",
+        "07-evidence-integrity"
+      ],
+      "objective": "Verify CLI, HTTP API and web UI use compatible input, response, error, auth and scan-state contracts.",
+      "evidence": "A web UI CI job exists, but direct real-handset testing and all individual routes are not established by tree presence.",
+      "implementation": "Trace service boundaries and review scan_api, scan_route, scan_store, web_server and front-end assets; replace duplicate adapters only with compatibility-tested changes.",
+      "verification": "Run existing browser accessibility/360px tests plus authenticated and unauthenticated API contract tests; capture real handset UI acceptance."
+    },
+    {
+      "id": "09-mitm-guard",
+      "priority": "P1",
+      "state": "REVIEW",
+      "path": "src/mitm_guard.rs",
+      "depends_on": [
+        "07-evidence-integrity",
+        "08-http-ui-wiring"
+      ],
+      "objective": "Confirm MITM detection findings are evidence-calibrated, bounded and consistently exposed to CLI and web UI.",
+      "evidence": "The current main head contains a trusted Wi-Fi baseline deduplication change; no claim is made that all MITM attack forms can be detected or mitigated.",
+      "implementation": "Validate Wi-Fi BSSID identity, DNS/TLS evidence, trusted baseline controls, false-positive boundaries, Android API limits, saved provenance and cross-interface visibility.",
+      "verification": "Offline benign/adversarial fixtures, duplicate-baseline regression, explicit unknown attribution, and supervised Android observations where available."
+    },
+    {
+      "id": "10-tiktok-public-contact",
+      "priority": "P2",
+      "state": "REVIEW",
+      "path": "src/tiktok_public_contact.rs",
+      "depends_on": [
+        "06-source-registry-wiring",
+        "07-evidence-integrity"
+      ],
+      "objective": "Confirm public TikTok contact enrichment does not infer private email ownership from handles or uncorroborated matches.",
+      "evidence": "The existing TikTok public contact module and corresponding documentation are present; provider reachability has not been verified.",
+      "implementation": "Keep lawful public sources, timestamped provenance, contact-confidence separation and rate-bounded retrieval; verify discovery and reporting call paths.",
+      "verification": "Tests for absent public email, reused handles, name collisions, blocked provider pages and no unsupported attribution."
+    },
+    {
+      "id": "11-memory-resource-budget",
+      "priority": "P2",
+      "state": "REVIEW",
+      "path": "src/pipeline_limits.rs",
+      "depends_on": [
+        "07-evidence-integrity",
+        "08-http-ui-wiring"
+      ],
+      "objective": "Preserve Termux-friendly bounded concurrency, cache size, streaming and minimal disk persistence under representative loads.",
+      "evidence": "Resource-limit and concurrency files exist; no current memory, disk or latency measurements were supplied by the repository tree.",
+      "implementation": "Benchmark bounded scans and streaming views on compatible hardware, locate bottlenecks, and retain only measured, regression-safe optimisations.",
+      "verification": "Compare peak RSS, disk growth, request latency and result completeness at baseline and candidate commits; do not fabricate performance improvements."
+    },
+    {
+      "id": "12-handset-evidence-record",
+      "priority": "P2",
+      "state": "PROPOSED",
+      "path": "docs/completion/handset-evidence.md",
+      "depends_on": [
+        "04-android-handset-acceptance"
+      ],
+      "objective": "Record hardware-grounded evidence once a real handset has executed the acceptance protocol.",
+      "evidence": "This proposed file is not part of the initial live Git tree; do not create a PASS record before observing the handset.",
+      "implementation": "Capture target device/SDK/Termux release, deployed commit, command transcript, Web UI outcomes and unresolved constraints; redact all sensitive identifiers and tokens.",
+      "verification": "Require actual device logs linked to the tested SHA, reproducible command results and a clear distinction between executed and blocked checks."
+    }
+  ]
+}
