@@ -155,9 +155,18 @@ fn interpret(
             SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
         );
     }
+    if repositories.iter().take(MAX_REPOS).any(|repo| !valid_repo(repo, username)) {
+        return Err(SourceExecutionOutcome::failed(
+            SRC,
+            now_unix,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "GitHub API rows did not match requested account",
+        ));
+    }
     let mut entities = Vec::new();
     for repo in repositories.iter().take(MAX_REPOS) {
-        add_repository(&mut entities, repo, username, scan_id);
+        add_repository(&mut entities, repo, scan_id);
     }
     let accepted = entities.len();
     if accepted == 0 {
@@ -176,18 +185,18 @@ fn interpret(
     })
 }
 
-fn add_repository(entities: &mut Vec<Entity>, repo: &Repository, username: &str, scan_id: &str) {
-    if repo.private
-        || repo.id == 0
-        || repo.owner.id == 0
-        || !repo.owner.login.eq_ignore_ascii_case(username)
-        || !valid_repo_name(&repo.name)
-        || !repo
+fn valid_repo(repo: &Repository, username: &str) -> bool {
+    !repo.private
+        && repo.id != 0
+        && repo.owner.id != 0
+        && repo.owner.login.eq_ignore_ascii_case(username)
+        && valid_repo_name(&repo.name)
+        && repo
             .full_name
             .eq_ignore_ascii_case(&format!("{}/{}", repo.owner.login, repo.name))
-    {
-        return;
-    }
+}
+
+fn add_repository(entities: &mut Vec<Entity>, repo: &Repository, scan_id: &str) {
     let url = format!("https://github.com/{}/{}", repo.owner.login, repo.name);
     let mut evidence = Evidence::new(
         EvidenceProvenance::for_scan(SRC, scan_id),
