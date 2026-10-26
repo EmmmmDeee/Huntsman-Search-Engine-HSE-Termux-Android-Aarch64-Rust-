@@ -13,7 +13,8 @@ use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
-pub const CRYPTO_USAGE: &str = "usage: huntsman-recon crypto BITCOIN-ADDRESS|base:0xADDRESS [--save FILE]";
+pub const CRYPTO_USAGE: &str =
+    "usage: huntsman-recon crypto BITCOIN-ADDRESS|base:0xADDRESS [--save FILE]";
 pub const CRYPTO_HELP: &str = "\
 crypto BITCOIN-ADDRESS|base:0xADDRESS [--save FILE]
 Bitcoin: balance, lifetime received/sent and transaction count from blockchain.info. Base: 40-hex-digit EVM address explicitly prefixed base:, with finalized balance in exact wei, outgoing nonce and contract-code presence via the rate-limited public Base JSON-RPC. No keys, full transaction history or ownership assertion. --save FILE writes an unverified ledger; verify can reload it. Makes network requests.";
@@ -35,7 +36,8 @@ impl CryptoArgs {
     /// [`Error::Invalid`] for a missing or extra argument, [`Error::InvalidValue`] for a value that
     /// is not a Bitcoin mainnet address.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let (raw, save) = LookupTokens::single(args, "crypto needs exactly one Bitcoin or Base address")?;
+        let (raw, save) =
+            LookupTokens::single(args, "crypto needs exactly one Bitcoin or Base address")?;
         let address = canonical_address(&raw)?;
         Ok(Self { address, save })
     }
@@ -50,7 +52,9 @@ pub type CryptoRun = SourceRun<Report>;
 pub fn canonical_address(raw: &str) -> Result<String, Error> {
     canonical_bitcoin_address(raw)
         .or_else(|| base_rpc::canonical_selector(raw))
-        .ok_or_else(|| Error::invalid_value("expected Bitcoin mainnet address or base:0x plus 40 hex digits"))
+        .ok_or_else(|| {
+            Error::invalid_value("expected Bitcoin mainnet address or base:0x plus 40 hex digits")
+        })
 }
 
 /// Look up `address`, the blockchain leg only when the transport's lookup asks its module
@@ -119,7 +123,9 @@ mod tests {
     fn rejects_non_bitcoin_selectors() {
         // A bare EVM address is ambiguous across chains; only base: is supported.
         assert!(CryptoArgs::parse(&["0x0000000000000000000000000000000000000000".into()]).is_err());
-        assert!(CryptoArgs::parse(&["base:0x0000000000000000000000000000000000000000".into()]).is_ok());
+        assert!(
+            CryptoArgs::parse(&["base:0x0000000000000000000000000000000000000000".into()]).is_ok()
+        );
         assert!(CryptoArgs::parse(&["not-an-address".into()]).is_err());
         let _ = Keys::default();
     }
