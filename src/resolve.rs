@@ -40,8 +40,10 @@ pub fn automatic_clusters(
         {
             let left = index[&decision.left_entity_uid];
             let right = index[&decision.right_entity_uid];
-            uf.union(left, right);
-            applied.push((left, right));
+            // A redundant edge does not merge two previously separate clusters.
+            if uf.union(left, right) {
+                applied.push((left, right));
+            }
         }
     }
     let mut counts = std::collections::BTreeMap::<usize, usize>::new();
@@ -118,8 +120,10 @@ pub fn clusters_from_lineage(resolution: &crate::lineage::Resolution) -> Vec<Res
         }
         let left = index[candidate.decision.left_entity_uid.as_str()];
         let right = index[candidate.decision.right_entity_uid.as_str()];
-        uf.union(left, right);
-        approved.push(left);
+        // Count actual unions only, never self-links or redundant decisions.
+        if uf.union(left, right) {
+            approved.push(left);
+        }
     }
     let mut counts = std::collections::BTreeMap::<usize, usize>::new();
     for left in approved {
@@ -216,6 +220,19 @@ mod tests {
             automatic_clusters(&[decision("a", "b")], &graph(), AutoMergePolicy::default());
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].members, ["a", "b"]);
+    }
+
+    #[test]
+    fn redundant_edges_do_not_inflate_merge_count() {
+        let decisions = [
+            decision("a", "b"),
+            decision("b", "a"),
+            decision("a", "b"),
+        ];
+        let clusters = automatic_clusters(&decisions, &graph(), AutoMergePolicy::default());
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].members, ["a", "b"]);
+        assert_eq!(clusters[0].decision_count, 1);
     }
 
     #[test]
