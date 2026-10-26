@@ -18,7 +18,7 @@ use crate::{
     abuseipdb, asic_director, asic_persons, blockchain, bluesky_user, certspotter, dehashed,
     duolingo, exposure_cli, github_user, gravatar, greynoise, hunter, internetdb, keybase,
     mnemonic, nominatim, numverify, oathnet, openpgp_keys, rdap, ripestat, seeknow_collector,
-    virustotal, wigle, wikipedia,
+    tiktok_public_contact, virustotal, wigle, wikipedia,
 };
 
 /// The breach legs an email address's lookup folds in.
@@ -85,6 +85,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             keybase::SRC,
             wikipedia::SRC,
             crate::mastodon_user::SRC,
+            tiktok_public_contact::SRC,
             seeknow_collector::COLLECTOR_ID,
             exposure_cli::STOLEN_TAX_SOURCE,
             oathnet::SOURCE,
