@@ -1025,6 +1025,18 @@ impl ScanApi {
     }
 
     fn export_many_with_budget(&self, param: &Params, max_bytes: u64) -> ApiResponse {
+        // Reject unsupported formats before reading or deserializing saved evidence.
+        // Preserve SpiderFoot's `excel` alias for XLSX.
+        let format = param.get("format").unwrap_or("json");
+        let normalized = format.trim().to_ascii_lowercase();
+        let normalized = if normalized == "excel" {
+            "xlsx"
+        } else {
+            normalized.as_str()
+        };
+        if !scan_export::MANY_FORMATS.contains(&normalized) {
+            return error(400, "unsupported multi-scan export format");
+        }
         // Acquire before loading any saved evidence. RAII releases on every
         // return and during unwinding; contention never queues large exports.
         let Some(_permit) = MultiExportPermit::try_acquire() else {
@@ -1069,7 +1081,6 @@ impl ScanApi {
             .iter()
             .map(|(record, results)| (record, results))
             .collect();
-        let format = param.get("format").unwrap_or("json");
         let kind = param.get("type").filter(|kind| !kind.is_empty());
         if format.trim().eq_ignore_ascii_case("json") {
             return match scan_export::render_many_json_bounded(
