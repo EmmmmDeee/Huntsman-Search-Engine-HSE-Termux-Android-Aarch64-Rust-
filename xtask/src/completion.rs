@@ -199,7 +199,11 @@ fn generate(root: &Path) -> Result<String> {
             }
         );
         let _ = writeln!(report, "- Objective: {}", escape_md(&task.objective));
-        let _ = writeln!(report, "- Evidence/uncertainty: {}", escape_md(&task.evidence));
+        let _ = writeln!(
+            report,
+            "- Evidence/uncertainty: {}",
+            escape_md(&task.evidence)
+        );
         let _ = writeln!(report, "- Implement: {}", escape_md(&task.implementation));
         let _ = writeln!(report, "- Verify: {}\n", escape_md(&task.verification));
     }
@@ -228,7 +232,10 @@ impl Tree {
                     *existing = label;
                 } else {
                     // One file may have independent review tasks. Preserve both states.
-                    let new = label.trim_start_matches("[E:").trim_start_matches("[P:").trim_end_matches(']');
+                    let new = label
+                        .trim_start_matches("[E:")
+                        .trim_start_matches("[P:")
+                        .trim_end_matches(']');
                     if !existing.contains(new) {
                         existing.insert_str(existing.len() - 1, &format!(",{new}"));
                     }
@@ -290,8 +297,14 @@ fn read_tasks(root: &Path) -> Result<Vec<Task>> {
         let state = required(row, "state")?;
         if !matches!(
             state.as_str(),
-            "REVIEW" | "UNWIRED" | "INCOMPATIBLE" | "INCOMPLETE" |
-                "MISSING" | "PROPOSED" | "BLOCKED" | "VERIFIED"
+            "REVIEW"
+                | "UNWIRED"
+                | "INCOMPATIBLE"
+                | "INCOMPLETE"
+                | "MISSING"
+                | "PROPOSED"
+                | "BLOCKED"
+                | "VERIFIED"
         ) {
             return Err(Error::Invalid(format!("{id}: unsupported state {state}")));
         }
@@ -329,7 +342,9 @@ fn required(row: &Value, name: &str) -> Result<String> {
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| Error::Invalid(format!("task: missing or empty {name}")))?;
     if value.contains('\n') || value.contains('\r') {
-        return Err(Error::Invalid(format!("task: {name} cannot contain newlines")));
+        return Err(Error::Invalid(format!(
+            "task: {name} cannot contain newlines"
+        )));
     }
     Ok(value.to_owned())
 }
@@ -344,7 +359,9 @@ fn validate_path(path: &str) -> Result<()> {
             .components()
             .all(|part| matches!(part, Component::Normal(_)));
     if !valid {
-        return Err(Error::Invalid(format!("unsafe repository-relative path: {path:?}")));
+        return Err(Error::Invalid(format!(
+            "unsafe repository-relative path: {path:?}"
+        )));
     }
     Ok(())
 }
