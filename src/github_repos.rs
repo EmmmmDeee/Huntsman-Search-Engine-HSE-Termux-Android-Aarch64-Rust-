@@ -155,7 +155,11 @@ fn interpret(
             SourceExecutionOutcome::valid_zero(SRC, now_unix).with_http_status(response.status)
         );
     }
-    if repositories.iter().take(MAX_REPOS).any(|repo| !valid_repo(repo, username)) {
+    if repositories
+        .iter()
+        .take(MAX_REPOS)
+        .any(|repo| !valid_repo(repo, username))
+    {
         return Err(SourceExecutionOutcome::failed(
             SRC,
             now_unix,
