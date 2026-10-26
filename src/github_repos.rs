@@ -353,6 +353,23 @@ mod tests {
     }
 
     #[test]
+    fn a_mixed_foreign_response_cannot_report_partial_success() {
+        let valid = &REPO[1..REPO.len() - 1];
+        let foreign = valid.replace("\"id\":123", "\"id\":0");
+        let mixed = format!("[{valid},{foreign}]");
+        let got = lookup(
+            &OneResponse::json(200, &mixed),
+            &Keys::default(),
+            "octocat",
+            "scan",
+            1,
+        )
+        .unwrap();
+        assert_eq!(got.outcome.kind, SourceOutcomeKind::SchemaDrift);
+        assert!(got.entities.is_empty());
+    }
+
+    #[test]
     fn distinguishes_zero_rows_from_rate_limits_and_malformed_json() {
         let zero = lookup(
             &OneResponse::json(200, "[]"),
