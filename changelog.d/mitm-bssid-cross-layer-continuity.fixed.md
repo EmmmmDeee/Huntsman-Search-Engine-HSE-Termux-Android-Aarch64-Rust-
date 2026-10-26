@@ -1,0 +1,2 @@
+- Normalize Wi-Fi BSSID identity once at the shared MITM assessment boundary so public Rust calls, native radar, CLI replay, and WiGLE import deduplicate equivalent uppercase/lowercase MAC addresses consistently. Emit canonical lowercase BSSIDs in findings without changing report schemas, persisted data or command syntax.
+- Add synthetic offline end-to-end checks covering Web radar's embedded assessment, CLI replay JSON, clock-provenance separation and WiGLE adapter compatibility.
