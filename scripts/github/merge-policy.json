@@ -35,6 +35,10 @@
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           {
+            "context": "cargo audit (RustSec advisories)",
+            "integration_id": 15368
+          },
+          {
             "context": "test (1.87)",
             "integration_id": 15368
           },
