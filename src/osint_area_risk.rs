@@ -223,13 +223,13 @@ mod tests {
     use super::*;
     fn input() -> AreaInput {
         AreaInput {
-            as_of_unix: 200000,
+            as_of_unix: 200_000,
             events: vec![PublicEvent {
                 id: "fixture".into(),
                 source_url: "https://example.org/item".into(),
                 lat: -26.8,
                 lon: 152.9,
-                occurred_at_unix: 199999,
+                occurred_at_unix: 199_999,
                 category: "property".into(),
                 severity: 5,
             }],
