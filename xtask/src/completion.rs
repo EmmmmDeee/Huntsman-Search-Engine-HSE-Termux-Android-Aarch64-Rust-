@@ -475,6 +475,52 @@ mod tests {
     }
 
     #[test]
+    fn verified_state_requires_pinned_executed_evidence() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("current time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "huntsman-completion-evidence-{}-{unique}",
+            std::process::id()
+        ));
+        let location = root.join("docs/completion");
+        fs::create_dir_all(&location).expect("fixture directory");
+        let file = location.join("tasks.json");
+        let mut doc = serde_json::json!({
+            "schema": "huntsman.completion/1",
+            "implementations": [{
+                "id": "fixture",
+                "path": "src/radar.rs",
+                "priority": "P0",
+                "state": "VERIFIED",
+                "depends_on": [],
+                "objective": "keep all sweeps",
+                "evidence": "specific CI run",
+                "implementation": "no missing wiring",
+                "verification": "tests passed"
+            }]
+        });
+        let check = |document: &serde_json::Value| {
+            fs::write(&file, document.to_string()).expect("write fixture");
+            read_tasks(&root)
+        };
+        assert!(check(&doc).is_err(), "receipt-free verification refused");
+        doc["implementations"][0]["verified_commit"] = serde_json::json!("abc");
+        doc["implementations"][0]["verification_evidence"] =
+            serde_json::json!("https://github.com/example/repo/actions/runs/1");
+        assert!(check(&doc).is_err(), "invalid commit hash refused");
+        doc["implementations"][0]["verified_commit"] =
+            serde_json::json!("0123456789abcdef0123456789abcdef01234567");
+        let tasks = check(&doc).expect("pinned verification accepted");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].state, "VERIFIED");
+        doc["implementations"][0]["state"] = serde_json::json!("REVIEW");
+        assert!(check(&doc).is_err(), "unverified tasks cannot carry receipts");
+        fs::remove_dir_all(&root).expect("remove fixture");
+    }
+
+    #[test]
     fn unsafe_paths_refused() {
         for path in ["../x", "/etc/passwd", "a\\b", "a\nb", "."] {
             assert!(validate_path(path).is_err(), "{path}");
