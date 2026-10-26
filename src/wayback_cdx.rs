@@ -358,11 +358,7 @@ mod tests {
         ] {
             assert!(!valid_timestamp(invalid), "{invalid}");
         }
-        for valid in [
-            "20000229000000",
-            "20240229235959",
-            "20241231235959",
-        ] {
+        for valid in ["20000229000000", "20240229235959", "20241231235959"] {
             assert!(valid_timestamp(valid), "{valid}");
         }
     }
