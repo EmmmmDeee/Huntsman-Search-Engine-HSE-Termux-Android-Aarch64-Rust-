@@ -787,7 +787,10 @@ impl TrackWriteGuard {
                     return Ok(Self { path, inode });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if began.elapsed() >= std::time::Duration::from_secs(1) {
+                    // Shared CI runners can delay a dozen concurrent writers beyond one
+                    // second even though each transaction is short. Keep the retry bounded
+                    // without treating contention as stale or deleting another writer's lock.
+                    if began.elapsed() >= std::time::Duration::from_secs(5) {
                         return Err(TrackLogError::Unwritable(format!(
                             "tracking log is busy or has a stale lock at {}; no sweep was written; remove the lock only after verifying no Huntsman writer is running",
                             path.display()
@@ -1190,7 +1193,8 @@ mod tests {
                 })
                 .collect();
             for handle in handles {
-                assert!(handle.join().unwrap().is_ok());
+                let result = handle.join().expect("writer must not panic");
+                assert!(result.is_ok(), "concurrent tracking writer failed: {result:?}");
             }
         });
         let bytes = std::fs::read(&log).unwrap();
