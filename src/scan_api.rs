@@ -1576,7 +1576,7 @@ mod tests {
         let normal = api.handle("GET", "/api/scans/export", &format!("ids={id}&format=xlsx"));
         assert_eq!(normal.status, 200, "{}", normal.text());
         assert_eq!(normal.filename.as_deref(), Some("1.1.1.1-Huntsman.xlsx"));
-        assert!(normal.body.starts_with(b"PK\\x03\\x04"));
+        assert!(normal.body.starts_with(b"PK\x03\x04"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2479,7 +2479,7 @@ mod tests {
         );
         assert_eq!(book.status, 200, "{}", book.text());
         assert_eq!(book.filename.as_deref(), Some("1.1.1.1-Huntsman.xlsx"));
-        assert!(book.body.starts_with(b"PK\\x03\\x04"));
+        assert!(book.body.starts_with(b"PK\x03\x04"));
         let correlations = api.handle(
             "GET",
             &format!("/api/scans/{id}/correlations"),
