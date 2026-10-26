@@ -349,7 +349,7 @@ fn read_tasks(root: &Path) -> Result<Vec<Task>> {
                     "{id}: verified_commit must be a 40-character hex commit SHA"
                 )));
             }
-            if proof.trim().is_empty() || proof.contains(['\n', '\r']) {
+            if proof.trim().is_empty() || proof.contains('\n') || proof.contains('\r') {
                 return Err(Error::Invalid(format!(
                     "{id}: verification_evidence must contain a nonempty, single-line reference"
                 )));
