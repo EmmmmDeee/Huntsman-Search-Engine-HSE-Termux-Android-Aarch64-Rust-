@@ -195,6 +195,42 @@ fn assess_status(accepted: usize, findings: &[Finding]) -> &'static str {
     }
 }
 
+/// Group validated observations by byte-exact SSID and canonical BSSID.
+fn grouped_access_points(
+    observations: &[AccessPoint],
+) -> BTreeMap<&str, BTreeMap<String, BTreeSet<Security>>> {
+    // SSIDs are byte-exact, but BSSIDs are hexadecimal, case-insensitive identifiers.
+    // Canonicalise once at this shared boundary even for direct library callers.
+    let mut by_ssid: BTreeMap<&str, BTreeMap<String, BTreeSet<Security>>> = BTreeMap::new();
+    for ap in observations {
+        if ssid_exclusion(&ap.ssid).is_some() || !valid_wifi_bssid(&ap.bssid) {
+            continue;
+        }
+        let modes = by_ssid
+            .entry(&ap.ssid)
+            .or_default()
+            .entry(ap.bssid.to_ascii_lowercase())
+            .or_default();
+        // Unknown capabilities do not contradict a known mode; two distinct
+        // known modes do. Preserve both, regardless of observation ordering.
+        if ap.security != Security::Unknown {
+            modes.insert(ap.security);
+        }
+    }
+    by_ssid
+}
+
+/// Preserve deterministic finding order across CLI, replay and Web reports.
+fn sort_findings(findings: &mut [Finding]) {
+    findings.sort_by(|a, b| {
+        (a.ssid.as_str(), a.code, a.bssid.as_deref()).cmp(&(
+            b.ssid.as_str(),
+            b.code,
+            b.bssid.as_deref(),
+        ))
+    });
+}
+
 /// Based on MITM/evil-twin literature, but these are conservative heuristics,
 /// NOT reproduced ML classifiers or validated sensitivities from the papers.
 #[must_use]
@@ -204,17 +240,7 @@ pub fn assess(
     source: &'static str,
     rejected: usize,
 ) -> Report {
-    let mut by_ssid: BTreeMap<&str, BTreeMap<&str, &AccessPoint>> = BTreeMap::new();
-    for ap in observations {
-        if ssid_exclusion(&ap.ssid).is_some() || !valid_wifi_bssid(&ap.bssid) {
-            continue;
-        }
-        by_ssid
-            .entry(&ap.ssid)
-            .or_default()
-            .entry(&ap.bssid)
-            .or_insert(ap);
-    }
+    let by_ssid = grouped_access_points(observations);
     let accepted = by_ssid.values().map(BTreeMap::len).sum::<usize>();
     let mut findings = Vec::new();
     let trusted: BTreeMap<&str, &TrustedNetwork> = baseline
@@ -222,22 +248,36 @@ pub fn assess(
         .unwrap_or_default();
 
     for (ssid, aps) in &by_ssid {
+        for (bssid, modes) in aps {
+            if modes.len() > 1 {
+                findings.push(Finding {
+                    code: "bssid_security_conflict_unverified",
+                    severity: "review",
+                    ssid: (*ssid).to_owned(),
+                    bssid: Some(bssid.clone()),
+                    evidence: "Records for the same SSID/BSSID advertise conflicting security modes; record order does not establish the current mode.".into(),
+                    resolution: "Verify current security with the network administrator and repeat a fresh capture before drawing conclusions.",
+                });
+            }
+        }
         if let Some(policy) = trusted.get(ssid) {
             let minimum = Security::parse(&policy.minimum_security).ordinal();
-            for ap in aps.values() {
-                let enrolled = policy
-                    .bssids
-                    .iter()
-                    .any(|b| b.eq_ignore_ascii_case(&ap.bssid));
+            for (bssid, modes) in aps {
+                // A contradictory capture cannot establish a downgrade.
+                if modes.len() > 1 {
+                    continue;
+                }
+                let security = modes.iter().next().copied().unwrap_or(Security::Unknown);
+                let enrolled = policy.bssids.iter().any(|b| b.eq_ignore_ascii_case(bssid));
                 let downgrade = minimum
-                    .zip(ap.security.ordinal())
+                    .zip(security.ordinal())
                     .is_some_and(|(min, current)| current < min);
-                if ap.security == Security::Unknown {
+                if security == Security::Unknown {
                     findings.push(Finding {
                         code: "trusted_ssid_security_unverified",
                         severity: "review",
                         ssid: (*ssid).to_owned(),
-                        bssid: Some(ap.bssid.clone()),
+                        bssid: Some(bssid.clone()),
                         evidence: "Observed security capabilities are unavailable; this does not prove a downgrade or confirm baseline compliance.".into(),
                         resolution: "Verify the selected network's security and certificate configuration in Android settings or with the network administrator.",
                     });
@@ -246,10 +286,10 @@ pub fn assess(
                         code: "security_below_trusted_floor",
                         severity: "high",
                         ssid: (*ssid).to_owned(),
-                        bssid: Some(ap.bssid.clone()),
+                        bssid: Some(bssid.clone()),
                         evidence: format!(
                             "Observed {:?} below operator baseline {} (authorised BSSID: {}). Baseline authenticity must be independently verified.",
-                            ap.security, policy.minimum_security, enrolled
+                            security, policy.minimum_security, enrolled
                         ),
                         resolution: "Do not authenticate via this access point. Manually leave/forget the network and verify the BSSID, WPA mode and enterprise certificate with its administrator.",
                     });
@@ -258,14 +298,20 @@ pub fn assess(
                         code: "bssid_not_on_operator_allowlist",
                         severity: "review",
                         ssid: (*ssid).to_owned(),
-                        bssid: Some(ap.bssid.clone()),
+                        bssid: Some(bssid.clone()),
                         evidence: "SSID appears in the operator baseline but this BSSID is not authorised there; mesh expansion or equipment replacement is also possible.".into(),
                         resolution: "Verify the network inventory with its administrator before trusting or updating the allowlist.",
                     });
                 }
             }
         } else {
-            let modes: BTreeSet<_> = aps.values().filter_map(|a| a.security.ordinal()).collect();
+            // Contradictory rows from one BSSID do not establish variation
+            // between different physical BSSIDs.
+            let modes: BTreeSet<_> = aps
+                .values()
+                .filter(|known| known.len() == 1)
+                .flat_map(|known| known.iter().filter_map(|mode| mode.ordinal()))
+                .collect();
             if modes.len() > 1 {
                 findings.push(Finding {
                     code: "unverified_ssid_security_variation",
@@ -282,14 +328,7 @@ pub fn assess(
         }
     }
 
-    // Deterministic ordering makes reports diffable and reproducible.
-    findings.sort_by(|a, b| {
-        (a.ssid.as_str(), a.code, a.bssid.as_deref()).cmp(&(
-            b.ssid.as_str(),
-            b.code,
-            b.bssid.as_deref(),
-        ))
-    });
+    sort_findings(&mut findings);
     let status = assess_status(accepted, &findings);
     Report {
         source,
@@ -434,6 +473,81 @@ mod tests {
         assert_eq!(r.findings.len(), 1);
         assert_eq!(r.findings[0].code, "unverified_ssid_security_variation");
         assert_eq!(r.findings[0].severity, "review");
+    }
+
+    #[test]
+    fn direct_assessment_canonicalises_bssid_identity_and_findings() {
+        let baseline = parse_baseline(
+            br#"{"networks":[{"ssid":"Office","bssids":["3C:5A:B4:11:22:33"],"minimum_security":"WPA2"}]}"#,
+        )
+        .unwrap();
+        let lower = ap("Office", "3c:5a:b4:11:22:33", Security::Wpa2);
+        let upper = ap("Office", "3C:5A:B4:11:22:33", Security::Wpa2);
+
+        for candidates in [
+            [lower.clone(), upper.clone()],
+            [upper.clone(), lower.clone()],
+        ] {
+            let report = assess(&candidates, Some(&baseline), "fixture", 0);
+            assert_eq!(report.evaluated_access_points, 1);
+            assert_eq!(report.status, "no_specific_indicators_observed");
+            assert!(report.findings.is_empty());
+            assert!(!report.mitm_confirmed);
+        }
+
+        let downgraded = assess(
+            &[ap("Office", "3C:5A:B4:11:22:33", Security::Wpa)],
+            Some(&baseline),
+            "fixture",
+            0,
+        );
+        assert_eq!(downgraded.evaluated_access_points, 1);
+        assert_eq!(downgraded.findings[0].code, "security_below_trusted_floor");
+        assert_eq!(
+            downgraded.findings[0].bssid.as_deref(),
+            Some("3c:5a:b4:11:22:33")
+        );
+    }
+
+    #[test]
+    fn conflicting_bssid_modes_are_order_independent_and_review_only() {
+        let baseline = parse_baseline(
+            br#"{"networks":[{"ssid":"Office","bssids":["3c:5a:b4:11:22:33"],"minimum_security":"WPA3"}]}"#,
+        )
+        .unwrap();
+        let low = ap("Office", "3C:5A:B4:11:22:33", Security::Wpa);
+        let high = ap("Office", "3c:5a:b4:11:22:33", Security::Wpa3);
+        let unknown = ap("Office", "3c:5a:b4:11:22:33", Security::Unknown);
+        let first = assess(
+            &[low.clone(), high.clone(), unknown.clone()],
+            Some(&baseline),
+            "fixture",
+            0,
+        );
+        let last = assess(&[unknown, high, low], Some(&baseline), "fixture", 0);
+        assert_eq!(first, last);
+        assert_eq!(first.evaluated_access_points, 1);
+        assert_eq!(first.findings.len(), 1);
+        assert_eq!(first.findings[0].code, "bssid_security_conflict_unverified");
+        assert_eq!(first.findings[0].severity, "review");
+        assert_eq!(
+            first.findings[0].bssid.as_deref(),
+            Some("3c:5a:b4:11:22:33")
+        );
+        assert!(!first.mitm_confirmed);
+    }
+
+    #[test]
+    fn one_bssid_conflict_does_not_imply_cross_bssid_variation() {
+        let low = ap("Office", "3c:5a:b4:11:22:33", Security::Wpa);
+        let high = ap("Office", "3C:5A:B4:11:22:33", Security::Wpa3);
+        let first = assess(&[low.clone(), high.clone()], None, "fixture", 0);
+        let last = assess(&[high, low], None, "fixture", 0);
+        assert_eq!(first, last);
+        assert_eq!(first.evaluated_access_points, 1);
+        assert_eq!(first.findings.len(), 1);
+        assert_eq!(first.findings[0].code, "bssid_security_conflict_unverified");
+        assert!(!first.mitm_confirmed);
     }
 
     #[test]
