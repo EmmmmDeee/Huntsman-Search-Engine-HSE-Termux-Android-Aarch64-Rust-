@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+use serde::ser::{Serialize, SerializeSeq, Serializer};
 use serde_json::{Value, json};
 
 use crate::gexf::escape_xml;
@@ -375,6 +376,65 @@ pub fn render_many(
         content_type,
         filename,
     })
+}
+
+/// Serialize JSON multi-export rows one at a time, without building an unbounded Value array.
+/// The wire representation is identical to `json_rows(...).to_string()`.
+struct JsonRows<'a, 'b> {
+    scans: &'a [(&'b ScanRecord, &'b ScanResults)],
+    kind: Option<&'a str>,
+}
+
+impl Serialize for JsonRows<'_, '_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(None)?;
+        for &(scan, results) in self.scans {
+            for (element, source) in rows(results, self.kind) {
+                sequence.serialize_element(&json!({
+                    "data": element.data,
+                    "event_type": element.kind,
+                    "module": element.module,
+                    "source_data": source,
+                    "false_positive": u8::from(element.fp),
+                    "last_seen": timestamp(element.created),
+                    "scan_id": scan.id,
+                    "scan_name": scan.name,
+                    "scan_target": scan.target,
+                    "id": element.id,
+                    "source": element.source,
+                    "confidence": element.confidence,
+                    "raw": element.raw,
+                }))?;
+            }
+        }
+        sequence.end()
+    }
+}
+
+/// Bounded JSON multi-export. An over-budget response is never materialized as
+/// a complete JSON array; the outer error reports serialization failure and
+/// the inner error reports the required byte count.
+///
+/// # Errors
+/// A JSON serialization failure.
+pub fn render_many_json_bounded(
+    scans: &[(&ScanRecord, &ScanResults)],
+    kind: Option<&str>,
+    max_bytes: usize,
+) -> Result<Result<Export, usize>, String> {
+    let filename = match scans {
+        [(scan, _)] => file_name(scan, "json"),
+        _ => "Huntsman.json".to_owned(),
+    };
+    crate::json::to_bounded_json(&JsonRows { scans, kind }, max_bytes, false)
+        .map(|body| {
+            body.map(|body| Export {
+                body,
+                content_type: "application/json; charset=utf-8",
+                filename,
+            })
+        })
+        .map_err(|error| error.to_string())
 }
 
 /// Spiderfoot's `scanexportjsonmulti` rows for several scans, each element with its raw evidence
@@ -822,6 +882,30 @@ mod tests {
             termination: None,
         };
         (record, results)
+    }
+
+    #[test]
+    fn bounded_json_multi_export_preserves_bytes_and_rejects_at_exact_boundary() {
+        let (scan, results) = scan();
+        let scans = [(&scan, &results), (&scan, &results)];
+        let original = render_many(&scans, "json", None).unwrap();
+        let exact = render_many_json_bounded(&scans, None, original.body.len())
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact, original);
+        assert_eq!(
+            render_many_json_bounded(&scans, None, original.body.len() - 1)
+                .unwrap()
+                .unwrap_err(),
+            original.body.len()
+        );
+        let filtered = render_many(&scans, "json", Some("TCP_PORT_OPEN")).unwrap();
+        assert_eq!(
+            render_many_json_bounded(&scans, Some("TCP_PORT_OPEN"), filtered.body.len())
+                .unwrap()
+                .unwrap(),
+            filtered
+        );
     }
 
     #[test]
