@@ -135,7 +135,11 @@ fn interpret(fetched: &Fetched, selector: &str, scan_id: &str, now: u64) -> Repo
             return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
                 "Base RPC response identifier mismatch");
         };
-        if answers[index].replace(row.get("result").unwrap_or(&Value::Null)).is_some() {
+        let Some(result) = row.get("result") else {
+            return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
+                "Base RPC omitted a result");
+        };
+        if answers[index].replace(result).is_some() {
             return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
                 "Base RPC duplicated a response identifier");
         }
@@ -144,10 +148,6 @@ fn interpret(fetched: &Fetched, selector: &str, scan_id: &str, now: u64) -> Repo
         return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
             "Base RPC omitted a requested method");
     };
-    let chain = chain.get("result").unwrap_or(*chain);
-    let balance = balance.get("result").unwrap_or(*balance);
-    let nonce = nonce.get("result").unwrap_or(*nonce);
-    let code = code.get("result").unwrap_or(*code);
     let (Some(chain_hex), Some(balance_wei), Some(outgoing_nonce), Some(code_hex)) = (
         parse_hex(chain, 16),
         balance.as_str().and_then(quantity_decimal),
