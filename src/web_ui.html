@@ -259,7 +259,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <select id="skind"><option value="auto">Detect from the target</option><option value="domain">Domain name</option><option value="ip">IP address</option><option value="netblock">Address block (CIDR)</option><option value="asn">AS number</option><option value="email">E-mail address</option><option value="exposure">E-mail breach exposure</option><option value="phone">Phone number</option><option value="username">Username</option><option value="people">Human name</option><option value="network">Wi-Fi BSSID or location</option><option value="crypto">Bitcoin or Base wallet (base:0x…)</option><option value="geocode">Place, address or LAT,LON</option></select>
 <label class="fl" for="sdepth">Recursion depth</label>
 <input id="sdepth" type="number" min="0" step="1" value="0" inputmode="numeric" aria-describedby="sdepth-h">
-<p class="help" id="sdepth-h">How many hops the scan follows what it finds, as Spiderfoot feeds each finding to the modules that take it: every email, username, domain, phone, IP address and BSSID found is looked up in turn. 0 looks up the target only.</p>
+<p class="help" id="sdepth-h">How many hops to follow newly found emails, usernames, domains, phones, IPs and BSSIDs. 0 only scans the original target.</p>
 </div></div>
 <div class="panel"><div class="panel-body">
 <p class="help">Your scan target may be one of the following. Huntsman detects the target type from the format of your input:</p>
