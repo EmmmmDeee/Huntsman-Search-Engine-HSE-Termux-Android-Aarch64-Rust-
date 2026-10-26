@@ -1194,7 +1194,10 @@ mod tests {
                 .collect();
             for handle in handles {
                 let result = handle.join().expect("writer must not panic");
-                assert!(result.is_ok(), "concurrent tracking writer failed: {result:?}");
+                assert!(
+                    result.is_ok(),
+                    "concurrent tracking writer failed: {result:?}"
+                );
             }
         });
         let bytes = std::fs::read(&log).unwrap();
