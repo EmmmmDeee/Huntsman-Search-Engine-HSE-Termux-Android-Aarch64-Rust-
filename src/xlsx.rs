@@ -130,18 +130,24 @@ fn worksheet(rows: &[Vec<String>]) -> String {
         let number = row_index + 1;
         let _ = write!(xml, "<row r=\"{number}\">");
         let mut overflow = Vec::new();
-        let cells = row.iter().map(|value| {
+        // Write primary cells directly; only overflow fragments need staging.
+        // This avoids an additional allocation proportional to every row's width.
+        for (at, value) in row.iter().enumerate() {
             let mut parts = pieces(value).into_iter();
             let first = parts.next().unwrap_or_default();
             overflow.extend(parts);
-            first
-        });
-        let cells: Vec<&str> = cells.collect();
-        for (at, value) in cells.into_iter().chain(overflow).enumerate() {
             let _ = write!(
                 xml,
                 "<c r=\"{}{number}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{}</t></is></c>",
                 column(at),
+                cell_text(first)
+            );
+        }
+        for (index, value) in overflow.into_iter().enumerate() {
+            let _ = write!(
+                xml,
+                "<c r=\"{}{number}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{}</t></is></c>",
+                column(row.len() + index),
                 cell_text(value)
             );
         }
