@@ -1107,15 +1107,10 @@ impl ScanApi {
                 Err(message) => error(400, &message),
             };
         }
-        match scan_export::render_many(&pairs, format, kind) {
-            // A post-render transport cap; streaming format writers are a separate
-            // prerequisite for bounding peak output-rendering allocations.
-            Ok(export) if u64::try_from(export.body.len()).unwrap_or(u64::MAX) > max_bytes => {
-                error(413, "export output budget exceeded")
-            }
-            Ok(export) => ApiResponse::export(export),
-            Err(message) => error(400, &message),
-        }
+        // XLSX currently builds worksheet XML and the complete ZIP in memory.
+        // Until a bounded workbook writer is available, never materialize an
+        // attacker-sized XLSX export through this HTTP endpoint.
+        error(413, "bounded XLSX multi-export is not yet supported")
     }
 
     fn set_fp(&self, id: &str, param: &Params) -> ApiResponse {
