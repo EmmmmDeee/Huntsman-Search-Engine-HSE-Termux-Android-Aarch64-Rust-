@@ -219,7 +219,9 @@ fn profile_from_public_bootstrap(html: &str, username: &str) -> Option<Value> {
             data.pointer("/UserModule/users")
                 .and_then(Value::as_object)
                 .and_then(|users| {
-                    users.iter().find(|(name, _)| name.eq_ignore_ascii_case(username))
+                    users
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case(username))
                 })
                 .map(|(_, user)| user)
         } else {
@@ -316,14 +318,9 @@ mod tests {
                 "__UNIVERSAL_DATA_FOR_REHYDRATION__",
             ),
         };
-        let report = lookup_with_options(
-            &fake,
-            "alice24",
-            "scan",
-            1,
-            &FetchOptions::no_redirects(),
-        )
-        .unwrap();
+        let report =
+            lookup_with_options(&fake, "alice24", "scan", 1, &FetchOptions::no_redirects())
+                .unwrap();
         assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
         let contacts: Vec<&Entity> = report
             .entities
@@ -335,7 +332,12 @@ mod tests {
         assert!(contacts[0].has_tag("candidate"));
         assert!(contacts[0].evidence.iter().any(|e| e.is_inferred));
         assert!(report.entities.iter().all(|e| !e.value.contains("hidden@")));
-        assert!(report.entities.iter().all(|e| !e.value.contains("hidden2@")));
+        assert!(
+            report
+                .entities
+                .iter()
+                .all(|e| !e.value.contains("hidden2@"))
+        );
     }
 
     #[test]
@@ -344,15 +346,13 @@ mod tests {
             ("<html>Ordinary page without public data</html>", 200),
             ("<html>missing</html>", 404),
         ] {
-            let fake = Fake { page: page.into(), status };
-            let report = lookup_with_options(
-                &fake,
-                "alice24",
-                "scan",
-                1,
-                &FetchOptions::no_redirects(),
-            )
-            .unwrap();
+            let fake = Fake {
+                page: page.into(),
+                status,
+            };
+            let report =
+                lookup_with_options(&fake, "alice24", "scan", 1, &FetchOptions::no_redirects())
+                    .unwrap();
             assert!(report.entities.is_empty());
             assert!(!matches!(
                 report.outcome.kind,
@@ -363,7 +363,13 @@ mod tests {
 
     #[test]
     fn rejects_unusable_usernames_before_network() {
-        for name in ["../private", "x", "my-handle", "alice..24", "me@example.org"] {
+        for name in [
+            "../private",
+            "x",
+            "my-handle",
+            "alice..24",
+            "me@example.org",
+        ] {
             assert!(!valid_username(name), "{name}");
         }
         assert!(valid_username("alice.24"));
