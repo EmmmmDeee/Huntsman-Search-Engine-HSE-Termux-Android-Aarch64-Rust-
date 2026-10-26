@@ -2,6 +2,7 @@
 //! `cargo gate <mode>` for the verification gate.
 
 mod changelog;
+mod completion;
 mod coupling;
 mod dual_pass;
 mod error;
@@ -20,6 +21,7 @@ commands:
   fortify ...             policy graph, real status, verification and economics
   changelog ...           the changelog fragments: check, assemble, render
   coupling                the crate's coupling clusters, bridges, and co-change pairs
+  completion [print|write|check]   adaptive evidence-limited implementation register
   issue-fix ...           the issue-fix path guard, capture, key scan, and publish
   dual-pass ...           the dual-pass patch-path reader and change applier
   oui ...                 pack the IEEE MA-L registry into src/oui_ieee.bin, or dump a blob";
@@ -31,6 +33,7 @@ fn main() -> ExitCode {
         Some("fortify") => fortify::run(&args[1..]),
         Some("changelog") => changelog::run(&args[1..]),
         Some("coupling") => coupling::run(&args[1..]),
+        Some("completion") => completion::run(&args[1..]),
         Some("issue-fix") => issue_fix::run(&args[1..]),
         Some("dual-pass") => dual_pass::run(&args[1..]),
         Some("oui") => oui::run(&args[1..]),
