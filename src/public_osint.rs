@@ -303,7 +303,7 @@ fn classify_document(
     now: u64,
 ) -> (Vec<Entity>, SourceExecutionOutcome) {
     let label = name(source);
-    match parse(source, &document, scan_id) {
+    match parse(source, document, scan_id) {
         Ok((entities, skipped)) if !entities.is_empty() => {
             let mut outcome =
                 SourceExecutionOutcome::success(label, now, entities.len()).with_http_status(200);
