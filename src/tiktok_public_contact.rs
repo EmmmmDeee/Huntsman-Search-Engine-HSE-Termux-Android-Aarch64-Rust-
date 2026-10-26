@@ -351,8 +351,7 @@ mod tests {
         assert!(contacts[0].evidence.iter().any(|e| e.is_inferred));
         assert!(contacts[0].evidence.iter().all(|e| {
             e.attributes.get("source_field").map(String::as_str) == Some("public_bio_signature")
-                && e.attributes.get("mailbox_ownership").map(String::as_str)
-                    == Some("not_verified")
+                && e.attributes.get("mailbox_ownership").map(String::as_str) == Some("not_verified")
         }));
         assert!(report.entities.iter().all(|e| !e.value.contains("hidden@")));
         assert!(
@@ -394,8 +393,11 @@ mod tests {
         assert!(entities.iter().all(|e| e.kind != EntityKind::Email));
         user["signature"] = serde_json::json!("business: visible@example.org");
         let entities = public_profile_entities(&user, "alice24", "scan");
-        assert!(entities.iter().any(|e| e.kind == EntityKind::Email
-            && e.value == "visible@example.org"));
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "visible@example.org")
+        );
     }
 
     #[test]
