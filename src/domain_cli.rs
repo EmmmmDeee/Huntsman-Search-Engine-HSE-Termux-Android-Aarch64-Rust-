@@ -47,6 +47,7 @@ use crate::spf::Mechanism;
 use crate::tags;
 use crate::threat_feeds::{self, Feeds};
 use crate::virustotal;
+use crate::wayback_cdx;
 
 mod resolve;
 
@@ -124,6 +125,7 @@ pub fn run<T: Transport + ?Sized + Sync>(
         found.entities.extend(certificates.entities);
         found.outcomes.push(certificates.outcome);
     }
+    wayback_leg(transport, &domain, &scan_id, now_unix, &mut found);
     let Resolved {
         resolvers_up,
         unfiltered,
@@ -207,6 +209,41 @@ pub fn run<T: Transport + ?Sized + Sync>(
     DomainRun::Printed {
         text,
         report: Report { entities, outcomes },
+    }
+}
+
+/// Record one keyless historical capture source's entities and typed outcome.
+fn wayback_leg<T: Transport + ?Sized>(
+    transport: &T,
+    domain: &str,
+    scan_id: &str,
+    now_unix: u64,
+    found: &mut Report,
+) {
+    if !transport.runs_module(wayback_cdx::SOURCE) {
+        return;
+    }
+    match wayback_cdx::lookup(transport, domain, scan_id, now_unix) {
+        Ok(captures) => {
+            found.entities.extend(captures.entities);
+            found.outcomes.push(captures.outcome);
+        }
+        Err(Error::Network(reason)) => {
+            found
+                .outcomes
+                .push(SourceExecutionOutcome::refused_before_sending(
+                    wayback_cdx::SOURCE,
+                    now_unix,
+                    reason,
+                ));
+        }
+        Err(error) => {
+            found.outcomes.push(SourceExecutionOutcome::inconclusive(
+                wayback_cdx::SOURCE,
+                now_unix,
+                error.to_string(),
+            ));
+        }
     }
 }
 

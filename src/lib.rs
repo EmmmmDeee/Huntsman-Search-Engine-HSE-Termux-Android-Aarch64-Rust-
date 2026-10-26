@@ -232,6 +232,7 @@ pub mod username_variants;
 pub mod validation;
 pub mod value_syntax;
 pub mod virustotal;
+pub mod wayback_cdx;
 pub mod web_query;
 pub mod web_server;
 pub mod whoxy;
