@@ -1035,10 +1035,8 @@ impl ScanApi {
                     Err(failure) => return service_error(&failure.into()),
                 };
             remaining = remaining.saturating_sub(charged);
-            scans.push((
-                record.clone(),
-                results.unwrap_or_else(|| empty_results(&record)),
-            ));
+            let results = results.unwrap_or_else(|| empty_results(&record));
+            scans.push((record, results));
         }
         let pairs: Vec<(&ScanRecord, &ScanResults)> = scans
             .iter()
