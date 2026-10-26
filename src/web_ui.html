@@ -422,6 +422,22 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <p class="alert" id="txerror" role="alert" hidden></p>
 <div class="table-wrap" id="txresult" hidden><table><thead><tr><th>kind</th><th>value</th><th>confidence</th><th>signal</th></tr></thead><tbody id="txentities"></tbody></table></div>
 </div></div>
+<div class="panel" id="osint-methods-panel"><div class="panel-heading">Source-backed OSINT methods</div>
+<div class="panel-body">
+<form id="osint-case-form" class="row">
+<label for="osint-case-input">Evidence observations (JSON)</label>
+<textarea id="osint-case-input" rows="4" maxlength="20000" spellcheck="false" placeholder='{"case_id":"case1","observations":[]}' required></textarea>
+<button class="btn" id="osint-case-run" type="submit">Review provenance and timeline</button>
+</form>
+<pre class="mono" id="osint-case-output" role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+<form id="osint-risk-form" class="row">
+<label for="osint-risk-input">Public-event dataset and area (JSON)</label>
+<textarea id="osint-risk-input" rows="4" maxlength="20000" spellcheck="false" placeholder='{"as_of_unix":1793059200,"events":[],"center_lat":-26.8,"center_lon":152.9,"radius_m":1000,"category":"general"}' required></textarea>
+<button class="btn" id="osint-risk-run" type="submit">Calculate event pressure</button>
+</form>
+<pre class="mono" id="osint-risk-output" role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+<p class="help">Import source records you are authorized to use. Leads and declared origins are not independently verified. A zero area score does not establish safety.</p>
+</div></div>
 <p class="alert" id="aerror" role="alert" hidden></p>
 <div id="aresult" hidden>
 <div class="stats">
@@ -1653,6 +1669,27 @@ $('analyze').onsubmit=async ev=>{
     const saved={seeds,at:Date.now(),body};
     showAnalysis(saved);sess.set('hse-analysis',JSON.stringify(saved));
   }catch(e){fail('aerror',unreachable(e))}finally{$('arun').disabled=false;$('arun').textContent='Analyze'}
+};
+// Independent OSINT methods use the same guarded Rust library code as the CLI.
+async function osintOffline(method, source, output, button) {
+  const submit=$(button); submit.disabled=true;
+  $(output).textContent='Analyzing imported evidence…';
+  try {
+    const body=$(source).value;
+    if(new TextEncoder().encode(body).length>20000)throw new Error('Dataset exceeds browser limit; use Huntsman CLI');
+    const result=await api(method,{method:'POST',body});
+    $(output).textContent=JSON.stringify(result,null,2);
+  }catch(e) {
+    $(output).textContent='Review unavailable: '+e.message;
+  }finally{submit.disabled=false}
+}
+$('osint-case-form').onsubmit=ev=>{
+  ev.preventDefault();
+  osintOffline('/api/osint/case','osint-case-input','osint-case-output','osint-case-run');
+};
+$('osint-risk-form').onsubmit=ev=>{
+  ev.preventDefault();
+  osintOffline('/api/osint/area-risk','osint-risk-input','osint-risk-output','osint-risk-run');
 };
 $('adownload').onclick=()=>{if(alast)save(alast,'huntsman-analysis')};
 // Extract seeds from pasted text: the investigate command over the text, offline; what it finds
