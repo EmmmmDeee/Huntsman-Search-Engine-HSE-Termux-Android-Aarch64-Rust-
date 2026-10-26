@@ -59,6 +59,11 @@ impl CellScan {
         {
             return None;
         }
+        // CDMA's system identifier is part of its canonical identity.
+        // Preserve existing non-CDMA bucket formats and stored history.
+        if first.technology == "cdma" {
+            return Some(first.sighting.network_id.clone());
+        }
         Some(format!(
             "{}:{}-{}-{}-{}",
             first.technology,
@@ -332,6 +337,24 @@ mod tests {
         let replay = parse_replay(raw).unwrap();
         assert_eq!(replay.source, "unverified_json_file");
         assert_eq!(replay.observations[0].sighting.latitude, None);
+    }
+
+    #[test]
+    fn cdma_serving_bucket_preserves_system_identity() {
+        let first =
+            br#"[{"type":"cdma","registered":true,"system":11,"network":22,"basestation":33}]"#;
+        let second =
+            br#"[{"type":"cdma","registered":true,"system":12,"network":22,"basestation":33}]"#;
+        assert_eq!(
+            parse_cells(first).unwrap().serving_cell().as_deref(),
+            Some("cdma:11-22-33")
+        );
+        assert_eq!(
+            parse_cells(second).unwrap().serving_cell().as_deref(),
+            Some("cdma:12-22-33")
+        );
+        let ambiguous = br#"[{"type":"cdma","registered":true,"system":11,"network":22,"basestation":33},{"type":"cdma","registered":true,"system":12,"network":22,"basestation":33}]"#;
+        assert_eq!(parse_cells(ambiguous).unwrap().serving_cell(), None);
     }
 
     #[test]
