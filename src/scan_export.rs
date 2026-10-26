@@ -506,7 +506,7 @@ pub fn render_many_text_bounded(
 /// renderer allocates its intermediate strings and ZIP buffers. It deliberately
 /// errs toward rejecting an export rather than exceeding the phone's budget.
 /// The caller must also bound the deserialized saved results.
-/// 
+///
 /// # Errors
 /// Invalid export configuration.
 pub fn render_many_xlsx_bounded(
@@ -539,13 +539,11 @@ pub fn render_many_xlsx_bounded(
                     continue;
                 }
                 let units = cell.encode_utf16().count();
-                let pieces = units
-                    .saturating_add(xlsx::MAX_CELL_UNITS - 1)
-                    / xlsx::MAX_CELL_UNITS;
+                let pieces = units.saturating_add(xlsx::MAX_CELL_UNITS - 1) / xlsx::MAX_CELL_UNITS;
                 estimate = estimate.saturating_add(
-                    cell.len().saturating_mul(7).saturating_add(
-                        pieces.max(1).saturating_mul(CELL_BYTES)
-                    )
+                    cell.len()
+                        .saturating_mul(7)
+                        .saturating_add(pieces.max(1).saturating_mul(CELL_BYTES))
                 );
             }
             if estimate > max_bytes {
@@ -568,7 +566,11 @@ pub fn render_many_xlsx_bounded(
         [(scan, _)] => file_name(scan, "xlsx"),
         _ => "Huntsman.xlsx".to_owned(),
     };
-    Ok(Ok(Export { body, content_type, filename }))
+    Ok(Ok(Export {
+        body,
+        content_type,
+        filename,
+    }))
 }
 
 /// Spiderfoot's `scanexportjsonmulti` rows for several scans, each element with its raw evidence
