@@ -1,7 +1,7 @@
 //! End-to-end front-end for `huntsman-recon username`.
 //!
 //! Derives deterministic handle variants and queries the keyless public GitHub, Bluesky, Keybase
-//! and Mastodon profiles, TikTok self-published bio contacts, and recent public Wikipedia edits. When no
+//! and Mastodon profiles, `TikTok` self-published bio contacts, and recent public Wikipedia edits. When no
 //! profile source answered, the lookup ends from its rows through
 //! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
 //! 77), otherwise no usable response (exit 69). The handle's own derived variants are not a
