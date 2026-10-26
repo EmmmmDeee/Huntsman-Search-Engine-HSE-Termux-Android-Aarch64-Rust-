@@ -30,6 +30,8 @@ struct Task {
     evidence: String,
     implementation: String,
     verification: String,
+    verified_commit: Option<String>,
+    verification_evidence: Option<String>,
     dependencies: Vec<String>,
 }
 
@@ -208,7 +210,16 @@ fn generate(root: &Path) -> Result<String> {
             escape_md(&task.evidence)
         );
         let _ = writeln!(report, "- Implement: {}", escape_md(&task.implementation));
-        let _ = writeln!(report, "- Verify: {}\n", escape_md(&task.verification));
+        let _ = writeln!(report, "- Verify: {}", escape_md(&task.verification));
+        if let (Some(commit), Some(proof)) = (
+            &task.verified_commit,
+            &task.verification_evidence,
+        ) {
+            let _ = writeln!(report, "- Verified at revision: {}", escape_md(commit));
+            let _ = writeln!(report, "- Executed test evidence: {}", escape_md(proof));
+            report.push_str("  Historical verification does not prove current deployment or unchanged contracts.\n");
+        }
+        report.push('\n');
     }
     report.push_str(
         "## Completion and continuity gates\n\n\
@@ -324,6 +335,30 @@ fn read_tasks(root: &Path) -> Result<Vec<Task>> {
             }
             dependencies.push(name.to_owned());
         }
+        let verified_commit = row["verified_commit"].as_str();
+        let verification_evidence = row["verification_evidence"].as_str();
+        if state == "VERIFIED" {
+            let commit = verified_commit.ok_or_else(|| {
+                Error::Invalid(format!("{id}: VERIFIED requires verified_commit"))
+            })?;
+            let proof = verification_evidence.ok_or_else(|| {
+                Error::Invalid(format!("{id}: VERIFIED requires verification_evidence"))
+            })?;
+            if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(Error::Invalid(format!(
+                    "{id}: verified_commit must be a 40-character hex commit SHA"
+                )));
+            }
+            if proof.trim().is_empty() || proof.contains(['\n', '\r']) {
+                return Err(Error::Invalid(format!(
+                    "{id}: verification_evidence must contain a nonempty, single-line reference"
+                )));
+            }
+        } else if verified_commit.is_some() || verification_evidence.is_some() {
+            return Err(Error::Invalid(format!(
+                "{id}: verification receipts require state VERIFIED"
+            )));
+        }
         tasks.push(Task {
             id,
             path,
@@ -333,6 +368,8 @@ fn read_tasks(root: &Path) -> Result<Vec<Task>> {
             evidence: required(row, "evidence")?,
             implementation: required(row, "implementation")?,
             verification: required(row, "verification")?,
+            verified_commit: verified_commit.map(str::to_owned),
+            verification_evidence: verification_evidence.map(str::to_owned),
             dependencies,
         });
     }
@@ -425,6 +462,8 @@ mod tests {
             evidence: "not yet checked".to_owned(),
             implementation: "review".to_owned(),
             verification: "test".to_owned(),
+            verified_commit: None,
+            verification_evidence: None,
             dependencies: dependencies.into_iter().map(str::to_owned).collect(),
         };
         let tasks = vec![
