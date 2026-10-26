@@ -292,6 +292,33 @@ fn zip_header(out: &mut Vec<u8>, name: &str, data: &[u8], central: Option<usize>
 
 /// A ZIP archive of `entries`, each stored as it is.
 fn stored_zip(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
+    // ZIP32 cannot represent more than 65,535 members, 4 GiB per member,
+    // or a central-directory offset beyond u32::MAX. Reject unsupported
+    // archives rather than silently saturating ZIP fields into corrupt data.
+    assert!(u16::try_from(entries.len()).is_ok(), "ZIP32 entry count exceeded");
+    let mut local_bytes = 0usize;
+    let mut directory_bytes = 0usize;
+    for (name, data) in entries {
+        assert!(u16::try_from(name.len()).is_ok(), "ZIP32 name length exceeded");
+        assert!(u32::try_from(data.len()).is_ok(), "ZIP32 member size exceeded");
+        local_bytes = local_bytes
+            .checked_add(30)
+            .and_then(|n| n.checked_add(name.len()))
+            .and_then(|n| n.checked_add(data.len()))
+            .expect("ZIP32 local size overflow");
+        directory_bytes = directory_bytes
+            .checked_add(46)
+            .and_then(|n| n.checked_add(name.len()))
+            .expect("ZIP32 directory size overflow");
+    }
+    assert!(u32::try_from(local_bytes).is_ok(), "ZIP32 directory offset exceeded");
+    assert!(u32::try_from(directory_bytes).is_ok(), "ZIP32 directory length exceeded");
+    assert!(
+        local_bytes.checked_add(directory_bytes)
+            .and_then(|n| n.checked_add(22))
+            .is_some_and(|n| u32::try_from(n).is_ok()),
+        "ZIP32 archive size exceeded"
+    );
     let mut out = Vec::new();
     let mut directory = Vec::new();
     for (name, data) in entries {
