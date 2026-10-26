@@ -62,6 +62,8 @@ The security parser uses the **weakest identifiable mode** when advertised capab
 
 **Identifier continuity:** All MITM assessment entry points (native radar, CLI replay, normalized WiGLE JSONL, and direct Rust callers) compare BSSIDs as case-insensitive hexadecimal MAC addresses and report canonical lowercase identifiers. SSIDs remain byte-exact; a spelling change is not proof that two networks are the same. The CLI and Web UI use the shared Rust assessment, with live clock provenance retained only for a live capture. This normalization does not change the report schema, file formats or supported commands.
 
+**Contradictory duplicate records:** When the same canonical SSID/BSSID advertises multiple distinct known security modes, the shared evaluator retains the disagreement as a review-only `bssid_security_conflict_unverified` finding. It does not select the first row, infer a downgrade, or mistake the conflict for variation across different BSSIDs. Missing security metadata alone is not a contradictory mode; verify the current network configuration independently.
+
 ## Response and mitigation
 
 1. **Do not authenticate** to a suspicious AP before verification. Avoid captive portals requesting unrelated credentials or downloads.
