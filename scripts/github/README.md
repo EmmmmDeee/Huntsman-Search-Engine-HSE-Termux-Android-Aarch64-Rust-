@@ -37,12 +37,29 @@ The repository app integration can read rulesets but currently does not have
 permission to change them (branch-protection detail returned HTTP 403). `apply`
 must run through an administrator-authorized GitHub CLI outside that integration.
 
+## Enable GraphQL auto-merge on an eligible PR
+
+After the main ruleset is active, a PR is out of draft and has its reviewed
+head commit, use the expected-head-guarded GraphQL controller:
+
+```sh
+bash scripts/github/enable-pr-automerge.sh 1434 check
+bash scripts/github/enable-pr-automerge.sh 1434 enable
+```
+
+The second command uses `enablePullRequestAutoMerge` with `SQUASH` and
+`expectedHeadOid`; it refuses any missing/weak main ruleset, draft or closed PR,
+wrong target or moving head. GitHub's protected branch remains the authority for
+required CI. **Enabling auto-merge may merge immediately when all conditions
+already pass**, so the `enable` operation is intentionally explicit.
+
 ## Tests
 
 ```sh
-bash -n scripts/github/merge-policy.sh tests/github-merge-policy.sh
+bash -n scripts/github/merge-policy.sh scripts/github/enable-pr-automerge.sh tests/github-merge-policy.sh tests/github-automerge.sh
 jq -e '.' scripts/github/merge-policy.json
 bash tests/github-merge-policy.sh
+bash tests/github-automerge.sh
 ```
 
 The mock-based tests cover both successful and refused changes; GitHub Actions
