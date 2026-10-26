@@ -102,6 +102,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
         "network" => NETWORK_HELP,
+        "osint" => super::osint::OSINT_HELP,
         "crypto" => huntsman_recon::crypto_cli::CRYPTO_HELP,
         "itunes" => huntsman_recon::itunes_cli::ITUNES_HELP,
         "geocode" => huntsman_recon::nominatim_cli::GEOCODE_HELP,
