@@ -471,7 +471,8 @@ pub fn render_many_text_bounded(
     let write = || -> Result<Vec<u8>, usize> {
         let mut header = vec!["Scan Name"];
         header.extend(ELEMENT_COLUMNS);
-        append(&mut body, header.join(std::str::from_utf8(separator).unwrap_or(",")).as_bytes())?;
+        let separator_text = if format == "csv" { "," } else { "\t" };
+        append(&mut body, header.join(separator_text).as_bytes())?;
         append(&mut body, b"\r\n")?;
         for &(scan, results) in scans {
             for (element, source) in rows(results, kind) {
