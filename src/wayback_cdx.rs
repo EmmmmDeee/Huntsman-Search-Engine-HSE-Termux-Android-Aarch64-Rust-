@@ -263,7 +263,32 @@ fn failed(
 }
 
 fn valid_timestamp(raw: &str) -> bool {
-    raw.len() == 14 && raw.bytes().all(|byte| byte.is_ascii_digit())
+    if raw.len() != 14 || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    let parse = |start: usize, end: usize| raw[start..end].parse::<u32>().ok();
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
+        parse(0, 4),
+        parse(4, 6),
+        parse(6, 8),
+        parse(8, 10),
+        parse(10, 12),
+        parse(12, 14),
+    ) else {
+        return false;
+    };
+    if year == 0 || hour > 23 || minute > 59 || second > 59 {
+        return false;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day)
 }
 
 #[cfg(test)]
@@ -314,6 +339,32 @@ mod tests {
         );
         let bad = r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://fakeexample.org/a","200","ABC"]]"#;
         assert!(parse_response(&response(bad), "example.org", "scan", NOW).is_err());
+    }
+
+    #[test]
+    fn timestamp_rejects_impossible_calendar_dates_and_times() {
+        for invalid in [
+            "00000101000000",
+            "20261301000000",
+            "20260001000000",
+            "20260431000000",
+            "20230229000000",
+            "19000229000000",
+            "20240230000000",
+            "20240101240000",
+            "20240101236000",
+            "20240101235960",
+            "2024010123595x",
+        ] {
+            assert!(!valid_timestamp(invalid), "{invalid}");
+        }
+        for valid in [
+            "20000229000000",
+            "20240229235959",
+            "20241231235959",
+        ] {
+            assert!(valid_timestamp(valid), "{valid}");
+        }
     }
 
     #[test]
