@@ -99,7 +99,12 @@ pub fn quantity_decimal(value: &str) -> Option<String> {
         }
     }
     let start = digits.iter().position(|digit| *digit != 0).unwrap_or(77);
-    Some(digits[start..].iter().map(|d| char::from(b'0' + d)).collect())
+    Some(
+        digits[start..]
+            .iter()
+            .map(|d| char::from(b'0' + d))
+            .collect(),
+    )
 }
 
 /// Decode one complete public JSON-RPC batch. Unknown IDs, duplicates, a wrong
@@ -107,68 +112,133 @@ pub fn quantity_decimal(value: &str) -> Option<String> {
 fn interpret(fetched: &Fetched, selector: &str, scan_id: &str, now: u64) -> Report {
     let response = match whole_response(fetched, "Base RPC") {
         Ok(response) => response,
-        Err(outcome) => return Report { entities: Vec::new(), outcome },
+        Err(outcome) => {
+            return Report {
+                entities: Vec::new(),
+                outcome,
+            };
+        }
     };
     if let Err(outcome) = answer(fetched, "Base RPC") {
-        return Report { entities: Vec::new(), outcome };
+        return Report {
+            entities: Vec::new(),
+            outcome,
+        };
     }
     let records: Vec<Value> = match decode_json(response, SOURCE, now, "Base RPC") {
         Ok(rows) => rows,
-        Err(outcome) => return Report { entities: Vec::new(), outcome },
+        Err(outcome) => {
+            return Report {
+                entities: Vec::new(),
+                outcome,
+            };
+        }
     };
     if records.len() != 4 {
-        return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
-            "Base RPC returned a partial or unexpected batch");
+        return failed(
+            now,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "Base RPC returned a partial or unexpected batch",
+        );
     }
     let mut answers: [Option<&Value>; 4] = [None, None, None, None];
     for row in &records {
         if row.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-            return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
-                "Base RPC response protocol mismatch");
+            return failed(
+                now,
+                SourceOutcomeKind::SchemaDrift,
+                Some(response.status),
+                "Base RPC response protocol mismatch",
+            );
         }
         if row.get("error").is_some() {
-            return failed(now, SourceOutcomeKind::Inconclusive, Some(response.status),
-                "Base RPC returned a JSON-RPC error; no account observation admitted");
+            return failed(
+                now,
+                SourceOutcomeKind::Inconclusive,
+                Some(response.status),
+                "Base RPC returned a JSON-RPC error; no account observation admitted",
+            );
         }
-        let Some(index) = row.get("id").and_then(Value::as_u64).and_then(|id| id.checked_sub(1))
-            .and_then(|index| usize::try_from(index).ok()).filter(|index| *index < 4) else {
-            return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
-                "Base RPC response identifier mismatch");
+        let Some(index) = row
+            .get("id")
+            .and_then(Value::as_u64)
+            .and_then(|id| id.checked_sub(1))
+            .and_then(|index| usize::try_from(index).ok())
+            .filter(|index| *index < 4)
+        else {
+            return failed(
+                now,
+                SourceOutcomeKind::SchemaDrift,
+                Some(response.status),
+                "Base RPC response identifier mismatch",
+            );
         };
         let Some(result) = row.get("result") else {
-            return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
-                "Base RPC omitted a result");
+            return failed(
+                now,
+                SourceOutcomeKind::SchemaDrift,
+                Some(response.status),
+                "Base RPC omitted a result",
+            );
         };
         if answers[index].replace(result).is_some() {
-            return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
-                "Base RPC duplicated a response identifier");
+            return failed(
+                now,
+                SourceOutcomeKind::SchemaDrift,
+                Some(response.status),
+                "Base RPC duplicated a response identifier",
+            );
         }
     }
     let [Some(chain), Some(balance), Some(nonce), Some(code)] = answers else {
-        return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
-            "Base RPC omitted a requested method");
+        return failed(
+            now,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "Base RPC omitted a requested method",
+        );
     };
     let (Some(chain_hex), Some(balance_wei), Some(outgoing_nonce), Some(code_hex)) = (
         parse_hex(chain, 16),
         balance.as_str().and_then(quantity_decimal),
         nonce.as_str().and_then(quantity_decimal),
-        code.as_str().filter(|s| s.starts_with("0x")).map(|s| &s[2..])
-            .filter(|s| s.len() <= MAX_CODE_HEX && s.len() % 2 == 0 &&
-                s.bytes().all(|byte| byte.is_ascii_hexdigit())),
+        code.as_str()
+            .filter(|s| s.starts_with("0x"))
+            .map(|s| &s[2..])
+            .filter(|s| {
+                s.len() <= MAX_CODE_HEX
+                    && s.len() % 2 == 0
+                    && s.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }),
     ) else {
-        return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
-            "Base RPC returned a malformed quantity or contract-code field");
+        return failed(
+            now,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "Base RPC returned a malformed quantity or contract-code field",
+        );
     };
     if u64::from_str_radix(chain_hex, 16).ok() != Some(CHAIN_ID) {
-        return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
-            "Base RPC replied for the wrong chain");
+        return failed(
+            now,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "Base RPC replied for the wrong chain",
+        );
     }
     let Some(normalized) = canonical_selector(selector) else {
-        return failed(now, SourceOutcomeKind::SchemaDrift, Some(response.status),
-            "Base selector was not canonical");
+        return failed(
+            now,
+            SourceOutcomeKind::SchemaDrift,
+            Some(response.status),
+            "Base selector was not canonical",
+        );
     };
     let address = normalized.strip_prefix("base:").unwrap_or("");
-    let code_presence = if code_hex.is_empty() { "no_code_at_finalized_block" } else {
+    let code_presence = if code_hex.is_empty() {
+        "no_code_at_finalized_block"
+    } else {
         "contract_code_present"
     };
     let evidence = Evidence::new(
@@ -182,8 +252,14 @@ fn interpret(fetched: &Fetched, selector: &str, scan_id: &str, now: u64) -> Repo
     .with_attr("code_presence", code_presence)
     .with_attr("block_tag", "finalized")
     .with_attr("rpc_origin", RPC_URL)
-    .with_attr("source_url", format!("https://basescan.org/address/{address}"))
-    .with_attr("does_not_show", "address ownership, identity, full transaction history, or one atomic block snapshot");
+    .with_attr(
+        "source_url",
+        format!("https://basescan.org/address/{address}"),
+    )
+    .with_attr(
+        "does_not_show",
+        "address ownership, identity, full transaction history, or one atomic block snapshot",
+    );
     let mut entities = Vec::with_capacity(1);
     push_entity(
         &mut entities,
@@ -196,8 +272,7 @@ fn interpret(fetched: &Fetched, selector: &str, scan_id: &str, now: u64) -> Repo
     );
     Report {
         entities,
-        outcome: SourceExecutionOutcome::success(SOURCE, now, 1)
-            .with_http_status(response.status),
+        outcome: SourceExecutionOutcome::success(SOURCE, now, 1).with_http_status(response.status),
     }
 }
 
@@ -214,9 +289,18 @@ pub fn lookup<T: Transport + ?Sized>(
     now: u64,
 ) -> Result<Report, Error> {
     let Some(request) = request(selector) else {
-        return Err(Error::invalid_value("expected base:0x followed by 40 hex digits"));
+        return Err(Error::invalid_value(
+            "expected base:0x followed by 40 hex digits",
+        ));
     };
-    let fetched = fetch(transport, request, None, &FetchOptions::no_redirects().paced(), SOURCE, now)?;
+    let fetched = fetch(
+        transport,
+        request,
+        None,
+        &FetchOptions::no_redirects().paced(),
+        SOURCE,
+        now,
+    )?;
     Ok(interpret(&fetched, selector, scan_id, now))
 }
 
@@ -239,8 +323,10 @@ mod tests {
         assert_eq!(canonical_selector(&WALLET.to_uppercase()), None);
         for candidate in [
             "0x1111111111111111111111111111111111111111",
-            "base:0x111", "base:0x111111111111111111111111111111111111111g",
-            "base:https://example.org", "base:0x1111111111111111111111111111111111111111\n"
+            "base:0x111",
+            "base:0x111111111111111111111111111111111111111g",
+            "base:https://example.org",
+            "base:0x1111111111111111111111111111111111111111\n",
         ] {
             assert!(canonical_selector(candidate).is_none(), "{candidate}");
         }
@@ -254,15 +340,24 @@ mod tests {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         let rows = body.as_array().unwrap();
         assert_eq!(rows.len(), 4);
-        assert!(rows.iter().all(|row| row["method"].as_str().unwrap().starts_with("eth_")));
+        assert!(
+            rows.iter()
+                .all(|row| row["method"].as_str().unwrap().starts_with("eth_"))
+        );
         assert!(rows.iter().all(|row| row["params"].as_array().is_some()));
-        assert!(rows.iter().all(|row| !row.to_string().contains("privateKey")));
+        assert!(
+            rows.iter()
+                .all(|row| !row.to_string().contains("privateKey"))
+        );
     }
 
     #[test]
     fn decimal_u256_preserves_exact_wei() {
         assert_eq!(quantity_decimal("0x0").as_deref(), Some("0"));
-        assert_eq!(quantity_decimal("0xde0b6b3a7640000").as_deref(), Some("1000000000000000000"));
+        assert_eq!(
+            quantity_decimal("0xde0b6b3a7640000").as_deref(),
+            Some("1000000000000000000")
+        );
         assert_eq!(
             quantity_decimal(&format!("0x{}", "f".repeat(64))).as_deref(),
             Some("115792089237316195423570985008687907853269984665640564039457584007913129639935")
@@ -278,9 +373,15 @@ mod tests {
         assert_eq!(found.outcome.kind, SourceOutcomeKind::Success);
         assert_eq!(found.entities.len(), 1);
         let evidence = &found.entities[0].evidence[0];
-        assert_eq!(evidence.attributes.get("balance_wei").unwrap(), "1000000000000000000");
+        assert_eq!(
+            evidence.attributes.get("balance_wei").unwrap(),
+            "1000000000000000000"
+        );
         assert_eq!(evidence.attributes.get("outgoing_nonce").unwrap(), "42");
-        assert_eq!(evidence.attributes.get("code_presence").unwrap(), "contract_code_present");
+        assert_eq!(
+            evidence.attributes.get("code_presence").unwrap(),
+            "contract_code_present"
+        );
         assert_eq!(evidence.provenance.source, SOURCE);
         assert!(evidence.attributes["does_not_show"].contains("ownership"));
     }
@@ -290,7 +391,10 @@ mod tests {
         for body in [
             BATCH.replace("0x2105", "0x1"),
             BATCH.replace(r#""id":3"#, r#""id":2"#),
-            BATCH.replace(r#""result":"0x2a""#, r#""error":{"message":"quota exceeded"}"#),
+            BATCH.replace(
+                r#""result":"0x2a""#,
+                r#""error":{"message":"quota exceeded"}"#,
+            ),
         ] {
             let result = lookup(&OneResponse::json(200, &body), WALLET, "scan", 1).unwrap();
             assert!(result.entities.is_empty());
