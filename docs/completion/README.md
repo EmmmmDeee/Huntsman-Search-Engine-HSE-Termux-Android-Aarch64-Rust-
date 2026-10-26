@@ -88,6 +88,8 @@ huntsman.completion/1, and a list of objects containing:
 | evidence | Grounded observation or explicitly identified uncertainty |
 | implementation | Precise instructions preserving existing contracts |
 | verification | Executable tests and measurable acceptance conditions |
+| verified_commit | Required only for VERIFIED: 40-character tested Git commit SHA |
+| verification_evidence | Required only for VERIFIED: one-line executed check/run reference |
 
 All required fields must be nonempty; arbitrary shell commands and credentials must not be
 inserted into structured labels. The renderer rejects missing IDs, invalid states, unsafe paths,
@@ -96,6 +98,12 @@ dependency-ready task with stable ID tie-breaking.
 
 A dependency is ordering information, NOT an assertion that its acceptance tests have passed.
 Before proceeding past a prerequisite, consult its actual evidence and verification results.
+
+The generator rejects VERIFIED tasks without both a syntactically valid pinned commit and a
+nonempty, single-line verification receipt. Unverified tasks cannot carry those fields. This
+validates the shape of evidence, not its truth: an agent must open the referenced CI run, confirm
+pass status at the exact pinned revision, and revalidate any changed interface or implementation
+before treating historical evidence as proof of current operation.
 
 ## Frontier-LLM execution protocol
 
