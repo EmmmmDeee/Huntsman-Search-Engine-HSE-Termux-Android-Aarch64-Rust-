@@ -595,12 +595,10 @@ mod tests {
         );
         assert_eq!(report.findings.len(), 2);
         assert!(report.findings.iter().any(|finding| {
-            finding.code == "trusted_ssid_security_unverified"
-                && finding.severity == "review"
+            finding.code == "trusted_ssid_security_unverified" && finding.severity == "review"
         }));
         assert!(report.findings.iter().any(|finding| {
-            finding.code == "bssid_not_on_operator_allowlist"
-                && finding.severity == "review"
+            finding.code == "bssid_not_on_operator_allowlist" && finding.severity == "review"
         }));
         assert!(!report.mitm_confirmed);
     }
