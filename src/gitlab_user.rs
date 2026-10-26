@@ -15,7 +15,7 @@ use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const SRC: &str = "gitlab_user";
 const API: &str = "https://gitlab.com/api/v4/users";
-const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_GITLAB_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_USERNAME: usize = 128;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,7 +109,7 @@ fn parse(
     scan_id: &str,
     now_unix: u64,
 ) -> Result<Report, SourceExecutionOutcome> {
-    if response.body.len() > MAX_RESPONSE_BYTES {
+    if response.body.len() > MAX_GITLAB_RESPONSE_BYTES {
         return Err(failed(
             SourceOutcomeKind::ParserDrift,
             response.status,
