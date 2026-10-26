@@ -125,91 +125,8 @@ fn parse_response(
     let mut entities = Vec::new();
     let mut skipped_query_urls = 0usize;
     for row in rows.iter().skip(1) {
-        if row.len() != FIELDS.len() || !valid_timestamp(&row[0]) || row[2] != "200" {
-            return Err(failed(
-                SourceOutcomeKind::SchemaDrift,
-                now_unix,
-                response.status,
-                "Wayback CDX capture row violates the documented contract",
-            ));
-        }
-        let original = row[1].as_str();
-        if original.len() > MAX_URL_BYTES {
-            return Err(failed(
-                SourceOutcomeKind::SemanticDrift,
-                now_unix,
-                response.status,
-                "Wayback CDX capture URL exceeds local evidence limits",
-            ));
-        }
-        let Some(canonical) = canonical_url(original) else {
-            return Err(failed(
-                SourceOutcomeKind::SemanticDrift,
-                now_unix,
-                response.status,
-                "Wayback CDX returned an invalid HTTP(S) URL",
-            ));
-        };
-        let host = host_only(&canonical)
-            .trim_end_matches('.')
-            .to_ascii_lowercase();
-        if host != domain
-            && !host
-                .strip_suffix(domain)
-                .is_some_and(|prefix| prefix.ends_with('.'))
-        {
-            return Err(failed(
-                SourceOutcomeKind::SemanticDrift,
-                now_unix,
-                response.status,
-                "Wayback CDX returned a URL outside the requested domain",
-            ));
-        }
-        // Do not persist historical session tokens, emails or other query values
-        // that may have been accidentally exposed in archived URL parameters.
-        if original
-            .bytes()
-            .any(|byte| matches!(byte, b'?' | b'#' | b'@'))
-        {
+        if parse_capture(row, domain, scan_id, now_unix, response.status, &mut entities)? {
             skipped_query_urls += 1;
-            continue;
-        }
-        let timestamp = &row[0];
-        let mut evidence = Evidence::new(
-            EvidenceProvenance::for_scan(SOURCE, scan_id),
-            "URL observed in the Internet Archive CDX index (historical, unverified)",
-        )
-        .with_attr("dataset", "Internet Archive Wayback CDX")
-        .with_attr("capture_timestamp_utc", timestamp)
-        .with_attr("original_url", &canonical)
-        .with_attr("capture_http_status", "200")
-        .with_attr(
-            "archive_snapshot_url",
-            format!("{ARCHIVE}/{timestamp}/{canonical}"),
-        );
-        if !row[3].is_empty() {
-            evidence = evidence.with_attr("cdx_digest", &row[3]);
-        }
-        push_entity(
-            &mut entities,
-            EntityKind::Url,
-            &canonical,
-            0.65,
-            scan_id,
-            evidence.clone(),
-            &[SOURCE, "historical_capture"],
-        );
-        // Historical subdomains are leads, not currently resolving infrastructure.
-        if host != domain {
-            push_entity(
-                &mut entities,
-                EntityKind::Domain,
-                &host,
-                0.55,
-                scan_id,
-                evidence,
-                &[SOURCE, "historical_subdomain"],
-            );
         }
     }
     if entities.is_empty() {
@@ -229,6 +146,104 @@ fn parse_response(
         ));
     }
     Ok(Report { entities, outcome })
+}
+
+/// Validate and record one CDX capture, returning true only for a deliberately
+/// excluded sensitive URL. No evidence is admitted for an invalid CDX capture.
+fn parse_capture(
+    row: &[String],
+    domain: &str,
+    scan_id: &str,
+    now_unix: u64,
+    status: u16,
+    entities: &mut Vec<Entity>,
+) -> Result<bool, SourceExecutionOutcome> {
+    if row.len() != FIELDS.len() || !valid_timestamp(&row[0]) || row[2] != "200" {
+        return Err(failed(
+            SourceOutcomeKind::SchemaDrift,
+            now_unix,
+            status,
+            "Wayback CDX capture row violates the documented contract",
+        ));
+    }
+    let original = row[1].as_str();
+    if original.len() > MAX_URL_BYTES {
+        return Err(failed(
+            SourceOutcomeKind::SemanticDrift,
+            now_unix,
+            status,
+            "Wayback CDX capture URL exceeds local evidence limits",
+        ));
+    }
+    let Some(canonical) = canonical_url(original) else {
+        return Err(failed(
+            SourceOutcomeKind::SemanticDrift,
+            now_unix,
+            status,
+            "Wayback CDX returned an invalid HTTP(S) URL",
+        ));
+    };
+    let host = host_only(&canonical)
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host != domain
+        && !host
+            .strip_suffix(domain)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+    {
+        return Err(failed(
+            SourceOutcomeKind::SemanticDrift,
+            now_unix,
+            status,
+            "Wayback CDX returned a URL outside the requested domain",
+        ));
+    }
+    // Do not persist historical session tokens, emails or other query values
+    // that may have been accidentally exposed in archived URL parameters.
+    if original
+        .bytes()
+        .any(|byte| matches!(byte, b'?' | b'#' | b'@'))
+    {
+        return Ok(true);
+    }
+    let timestamp = &row[0];
+    let mut evidence = Evidence::new(
+        EvidenceProvenance::for_scan(SOURCE, scan_id),
+        "URL observed in the Internet Archive CDX index (historical, unverified)",
+    )
+    .with_attr("dataset", "Internet Archive Wayback CDX")
+    .with_attr("capture_timestamp_utc", timestamp)
+    .with_attr("original_url", &canonical)
+    .with_attr("capture_http_status", "200")
+    .with_attr(
+        "archive_snapshot_url",
+        format!("{ARCHIVE}/{timestamp}/{canonical}"),
+    );
+    if !row[3].is_empty() {
+        evidence = evidence.with_attr("cdx_digest", &row[3]);
+    }
+    push_entity(
+        &mut entities,
+        EntityKind::Url,
+        &canonical,
+        0.65,
+        scan_id,
+        evidence.clone(),
+        &[SOURCE, "historical_capture"],
+    );
+    // Historical subdomains are leads, not currently resolving infrastructure.
+    if host != domain {
+        push_entity(
+            &mut entities,
+            EntityKind::Domain,
+            &host,
+            0.55,
+            scan_id,
+            evidence,
+            &[SOURCE, "historical_subdomain"],
+        );
+    }
+    Ok(false)
 }
 
 fn failed(
