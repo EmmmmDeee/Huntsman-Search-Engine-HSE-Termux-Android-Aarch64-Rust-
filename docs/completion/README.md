@@ -99,6 +99,10 @@ dependency-ready task with stable ID tie-breaking.
 A dependency is ordering information, NOT an assertion that its acceptance tests have passed.
 Before proceeding past a prerequisite, consult its actual evidence and verification results.
 
+The generated outstanding queue excludes verified tasks but retains their dependency IDs for
+ordering. A separate historical receipt section preserves proof and traceability without making
+completed work appear to be a new implementation requirement.
+
 The generator rejects VERIFIED tasks without both a syntactically valid pinned commit and a
 nonempty, single-line verification receipt. Unverified tasks cannot carry those fields. This
 validates the shape of evidence, not its truth: an agent must open the referenced CI run, confirm
