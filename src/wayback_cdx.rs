@@ -153,7 +153,7 @@ fn parse_response(
         let host = host_only(&canonical)
             .trim_end_matches('.')
             .to_ascii_lowercase();
-        if host != domain && !host.ends_with(&format!(".{domain}")) {
+        if host != domain && !host.strip_suffix(domain).is_some_and(|prefix| prefix.ends_with('.')) {
             return Err(failed(
                 SourceOutcomeKind::SemanticDrift,
                 now_unix,
@@ -273,6 +273,15 @@ mod tests {
             ev.attr_values("capture_timestamp_utc")
                 .any(|a| a == "20200102030405")
         })));
+    }
+
+    #[test]
+    fn domain_boundary_accepts_only_actual_subdomains() {
+        let body = r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://deep.old.example.org/a","200","ABC"]]"#;
+        let report = parse_response(&response(body), "example.org", "scan", NOW).expect("nested subdomain");
+        assert!(report.entities.iter().any(|e| e.value == "deep.old.example.org"));
+        let bad = r#"[["timestamp","original","statuscode","digest"],["20200102030405","https://fakeexample.org/a","200","ABC"]]"#;
+        assert!(parse_response(&response(bad), "example.org", "scan", NOW).is_err());
     }
 
     #[test]
