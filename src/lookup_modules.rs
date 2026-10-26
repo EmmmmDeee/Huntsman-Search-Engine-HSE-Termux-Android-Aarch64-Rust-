@@ -110,9 +110,15 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         ScanKind::CryptoAddress => vec![blockchain::SOURCE],
         ScanKind::Place => vec![nominatim::SOURCE],
     };
-    let mut seen = std::collections::BTreeSet::new();
-    modules.retain(|module| seen.insert(*module));
-    modules
+    // Stable deduplication keeps each source's first execution position and
+    // avoids a tree allocation for the small, bounded module list.
+    let mut unique = Vec::with_capacity(modules.len());
+    for module in modules {
+        if !unique.contains(&module) {
+            unique.push(module);
+        }
+    }
+    unique
 }
 
 /// Whether `kind`'s lookup asks any module `selection` runs. **Pure.**
