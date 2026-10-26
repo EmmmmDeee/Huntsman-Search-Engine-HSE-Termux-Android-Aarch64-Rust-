@@ -229,11 +229,13 @@ fn wayback_leg<T: Transport + ?Sized>(
             found.outcomes.push(captures.outcome);
         }
         Err(Error::Network(reason)) => {
-            found.outcomes.push(SourceExecutionOutcome::refused_before_sending(
-                wayback_cdx::SOURCE,
-                now_unix,
-                reason,
-            ));
+            found
+                .outcomes
+                .push(SourceExecutionOutcome::refused_before_sending(
+                    wayback_cdx::SOURCE,
+                    now_unix,
+                    reason,
+                ));
         }
         Err(error) => {
             found.outcomes.push(SourceExecutionOutcome::inconclusive(
