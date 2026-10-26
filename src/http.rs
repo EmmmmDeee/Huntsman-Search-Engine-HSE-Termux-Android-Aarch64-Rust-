@@ -354,37 +354,131 @@ fn udp_exchange(
 /// reported as such instead of holding up the lookup.
 pub const RESOLVE_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Ask the system resolver for `name` on a worker thread, waiting at most `timeout`. A name the
-/// resolver says does not exist, or has no address, resolves to none. **Opens no socket itself:**
-/// the C library's resolver does.
+/// Maximum live native resolver calls, including calls whose waiting client timed out.
+/// Native getaddrinfo cannot be cancelled; capacity is returned only when its worker exits.
+const MAX_SYSTEM_RESOLVERS: usize = 8;
+static LIVE_SYSTEM_RESOLVERS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+struct ResolverWorkerSlot(&'static std::sync::atomic::AtomicUsize);
+
+impl Drop for ResolverWorkerSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+fn reserve_resolver_worker(
+    active: &'static std::sync::atomic::AtomicUsize,
+    capacity: usize,
+) -> Option<ResolverWorkerSlot> {
+    use std::sync::atomic::Ordering;
+    let mut count = active.load(Ordering::Acquire);
+    loop {
+        if count >= capacity {
+            return None;
+        }
+        match active.compare_exchange_weak(count, count + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Some(ResolverWorkerSlot(active)),
+            Err(observed) => count = observed,
+        }
+    }
+}
+
+/// Ask the native resolver on a bounded worker thread. Timed-out workers continue to
+/// occupy capacity until they exit, preventing unbounded native-thread accumulation.
 fn system_resolve(name: &str, timeout: Duration) -> Result<Vec<IpAddr>, TransportFailure> {
     use std::net::ToSocketAddrs as _;
+    let asked = name.to_owned();
+    system_resolve_with(
+        name,
+        timeout,
+        &LIVE_SYSTEM_RESOLVERS,
+        MAX_SYSTEM_RESOLVERS,
+        move || {
+            (asked.as_str(), 0).to_socket_addrs().map(|addresses| {
+                let mut ips: Vec<IpAddr> = addresses.map(|address| address.ip()).collect();
+                ips.sort_unstable();
+                ips.dedup();
+                ips
+            })
+        },
+    )
+}
+
+/// Resolver injection keeps saturation and worker-lifetime tests offline and deterministic.
+fn system_resolve_with<F>(
+    name: &str,
+    timeout: Duration,
+    active: &'static std::sync::atomic::AtomicUsize,
+    capacity: usize,
+    resolve: F,
+) -> Result<Vec<IpAddr>, TransportFailure>
+where
+    F: FnOnce() -> io::Result<Vec<IpAddr>> + Send + 'static,
+{
+    system_resolve_with_spawner(
+        name,
+        timeout,
+        active,
+        capacity,
+        resolve,
+        |permit, sender, resolve| {
+            std::thread::Builder::new()
+                .name("resolve".into())
+                .spawn(move || {
+                    // Owned by the worker, not the timed-out caller. Also released on panic.
+                    let _permit = permit;
+                    let _ = sender.send(resolve());
+                })
+                .map(|_| ())
+        },
+    )
+}
+
+/// The injected spawner makes failed thread creation testable without exhausting OS resources.
+fn system_resolve_with_spawner<F, S>(
+    name: &str,
+    timeout: Duration,
+    active: &'static std::sync::atomic::AtomicUsize,
+    capacity: usize,
+    resolve: F,
+    spawn: S,
+) -> Result<Vec<IpAddr>, TransportFailure>
+where
+    F: FnOnce() -> io::Result<Vec<IpAddr>> + Send + 'static,
+    S: FnOnce(
+        ResolverWorkerSlot,
+        std::sync::mpsc::Sender<io::Result<Vec<IpAddr>>>,
+        F,
+    ) -> io::Result<()>,
+{
     let failure = |detail: String| TransportFailure {
         kind: SourceOutcomeKind::DnsFailure,
         detail,
         blocked: false,
     };
+    if timeout.is_zero() {
+        // An expired deadline must not launch a native call that cannot be cancelled.
+        return Err(failure(format!("{name}: no answer within 0s")));
+    }
+    let permit = reserve_resolver_worker(active, capacity).ok_or_else(|| {
+        failure(format!(
+            "{name}: native resolver capacity exhausted ({capacity} workers in flight)"
+        ))
+    })?;
     let (sender, receiver) = std::sync::mpsc::channel();
-    let asked = name.to_owned();
-    std::thread::Builder::new()
-        .name("resolve".into())
-        .spawn(move || {
-            let answer = (asked.as_str(), 0).to_socket_addrs().map(|addresses| {
-                let mut ips: Vec<IpAddr> = addresses.map(|address| address.ip()).collect();
-                ips.sort_unstable();
-                ips.dedup();
-                ips
-            });
-            let _ = sender.send(answer);
-        })
-        .map_err(|e| failure(format!("resolver thread: {e}")))?;
+    spawn(permit, sender, resolve).map_err(|e| failure(format!("resolver thread: {e}")))?;
     match receiver.recv_timeout(timeout) {
         Ok(Ok(addresses)) => Ok(addresses),
         Ok(Err(error)) if names_no_address(&error.to_string()) => Ok(Vec::new()),
         Ok(Err(error)) => Err(failure(format!("{name}: {error}"))),
-        Err(_) => Err(failure(format!(
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(failure(format!(
             "{name}: no answer within {}s",
             timeout.as_secs()
+        ))),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(failure(format!(
+            "{name}: native resolver worker stopped without an answer"
         ))),
     }
 }
@@ -907,6 +1001,141 @@ pub fn retry_after_secs(value: &str, now_unix: u64) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expired_resolver_deadline_does_not_spawn_a_worker() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        let err = super::system_resolve_with(
+            "expired.invalid",
+            std::time::Duration::ZERO,
+            &ACTIVE,
+            1,
+            || -> std::io::Result<Vec<std::net::IpAddr>> {
+                panic!("expired deadline must not spawn a native resolver");
+            },
+        )
+        .expect_err("zero budget cannot produce an answer");
+        assert_eq!(err.kind, super::SourceOutcomeKind::DnsFailure);
+        assert!(err.detail.contains("no answer within 0s"));
+        assert_eq!(ACTIVE.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn native_resolver_workers_stay_bounded_after_caller_timeouts() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        const CAP: usize = 2;
+        let mut release = Vec::new();
+        for _ in 0..CAP {
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+            let err = super::system_resolve_with(
+                "stalled.invalid",
+                std::time::Duration::from_millis(30),
+                &ACTIVE,
+                CAP,
+                move || {
+                    started_tx.send(()).expect("signal worker start");
+                    release_rx.recv().expect("release worker");
+                    Ok(Vec::new())
+                },
+            )
+            .expect_err("blocked worker must time out");
+            started_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("worker started");
+            assert!(err.detail.contains("no answer within"), "{}", err.detail);
+            release.push(release_tx);
+        }
+        assert_eq!(ACTIVE.load(Ordering::Acquire), CAP);
+        for _ in 0..(CAP * 3) {
+            let err = super::system_resolve_with(
+                "stalled.invalid",
+                std::time::Duration::from_secs(1),
+                &ACTIVE,
+                CAP,
+                || panic!("saturated resolver must not spawn"),
+            )
+            .expect_err("capacity must refuse new work");
+            assert!(err.detail.contains("capacity exhausted"), "{}", err.detail);
+            assert_eq!(err.kind, super::SourceOutcomeKind::DnsFailure);
+            assert_eq!(ACTIVE.load(Ordering::Acquire), CAP);
+        }
+        for sender in release {
+            sender.send(()).expect("release blocked worker");
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while ACTIVE.load(Ordering::Acquire) != 0 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(ACTIVE.load(Ordering::Acquire), 0);
+        let address = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let result = super::system_resolve_with(
+            "recovered.invalid",
+            std::time::Duration::from_secs(1),
+            &ACTIVE,
+            CAP,
+            move || Ok(vec![address]),
+        )
+        .expect("capacity recovered");
+        assert_eq!(result, vec![address]);
+    }
+
+    #[test]
+    fn native_resolver_spawn_failure_releases_capacity() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        let err = super::system_resolve_with_spawner(
+            "spawn.invalid",
+            std::time::Duration::from_secs(1),
+            &ACTIVE,
+            1,
+            || -> std::io::Result<Vec<std::net::IpAddr>> {
+                panic!("failed spawn must never invoke resolver");
+            },
+            |_permit, _sender, _resolve| {
+                Err(std::io::Error::other("injected thread-spawn failure"))
+            },
+        )
+        .expect_err("failed spawn must be reported as DNS failure");
+        assert_eq!(err.kind, super::SourceOutcomeKind::DnsFailure);
+        assert!(
+            err.detail
+                .contains("resolver thread: injected thread-spawn failure"),
+            "{}",
+            err.detail
+        );
+        assert_eq!(ACTIVE.load(Ordering::Acquire), 0);
+        let address = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let result = super::system_resolve_with(
+            "recovered.invalid",
+            std::time::Duration::from_secs(1),
+            &ACTIVE,
+            1,
+            move || Ok(vec![address]),
+        )
+        .expect("failed spawn must not consume future capacity");
+        assert_eq!(result, vec![address]);
+    }
+
+    #[test]
+    fn native_resolver_worker_panic_releases_capacity() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        let err = super::system_resolve_with(
+            "panic.invalid",
+            std::time::Duration::from_secs(1),
+            &ACTIVE,
+            1,
+            || -> std::io::Result<Vec<std::net::IpAddr>> {
+                panic!("injected resolver panic");
+            },
+        )
+        .expect_err("worker panic is not a negative DNS answer");
+        assert!(err.detail.contains("worker stopped"), "{}", err.detail);
+        assert_eq!(ACTIVE.load(Ordering::Acquire), 0);
+    }
+
     fn bundle_transport(path: &Path) -> UreqTransport {
         UreqTransport::new(&TransportConfig {
             trust: TrustRoots::Bundle(path.to_path_buf()),
