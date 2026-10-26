@@ -211,10 +211,7 @@ fn generate(root: &Path) -> Result<String> {
         );
         let _ = writeln!(report, "- Implement: {}", escape_md(&task.implementation));
         let _ = writeln!(report, "- Verify: {}", escape_md(&task.verification));
-        if let (Some(commit), Some(proof)) = (
-            &task.verified_commit,
-            &task.verification_evidence,
-        ) {
+        if let (Some(commit), Some(proof)) = (&task.verified_commit, &task.verification_evidence) {
             let _ = writeln!(report, "- Verified at revision: {}", escape_md(commit));
             let _ = writeln!(report, "- Executed test evidence: {}", escape_md(proof));
             report.push_str("  Historical verification does not prove current deployment or unchanged contracts.\n");
@@ -516,7 +513,10 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].state, "VERIFIED");
         doc["implementations"][0]["state"] = serde_json::json!("REVIEW");
-        assert!(check(&doc).is_err(), "unverified tasks cannot carry receipts");
+        assert!(
+            check(&doc).is_err(),
+            "unverified tasks cannot carry receipts"
+        );
         fs::remove_dir_all(&root).expect("remove fixture");
     }
 
