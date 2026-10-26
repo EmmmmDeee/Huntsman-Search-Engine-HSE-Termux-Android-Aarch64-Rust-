@@ -1559,6 +1559,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn multi_export_rejects_invalid_format_before_loading_saved_results() {
+        let (api, dir) = api("multi-export-invalid-format");
+        let id = finished(&api);
+        let path = dir.join(&id).join("results.json");
+        // Deliberately corrupt saved evidence. An invalid format must be rejected
+        // before attempting to parse or load the evidence file.
+        std::fs::write(&path, b"not valid JSON").unwrap();
+        let invalid = Params(vec![
+            ("ids".into(), id.clone()),
+            ("format".into(), "unsupported".into()),
+        ]);
+        let response = api.export_many_with_budget(&invalid, 1024);
+        assert_eq!(response.status, 400, "{}", response.text());
+        assert!(
+            response.text().contains("unsupported multi-scan export format"),
+            "{}",
+            response.text()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Spiderfoot's search box over one scan or all of them: text anywhere, a wildcard as the
     /// whole value, a regex anywhere, in the data, the source's data or the module.
     #[test]
