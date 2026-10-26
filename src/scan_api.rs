@@ -33,6 +33,28 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// A saved multi-export can materialize several scan records. Admit only one
+/// process-wide to prevent concurrent exports multiplying peak memory on phones.
+static MULTI_EXPORT_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct MultiExportPermit;
+
+impl MultiExportPermit {
+    fn try_acquire() -> Option<Self> {
+        MULTI_EXPORT_ACTIVE
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for MultiExportPermit {
+    fn drop(&mut self) {
+        MULTI_EXPORT_ACTIVE.store(false, Ordering::Release);
+    }
+}
 
 use serde_json::{Value, json};
 
@@ -1003,6 +1025,11 @@ impl ScanApi {
     }
 
     fn export_many_with_budget(&self, param: &Params, max_bytes: u64) -> ApiResponse {
+        // Acquire before loading any saved evidence. RAII releases on every
+        // return and during unwinding; contention never queues large exports.
+        let Some(_permit) = MultiExportPermit::try_acquire() else {
+            return error(503, "another multi-scan export is already running");
+        };
         let ids: Vec<&str> = param
             .get("ids")
             .unwrap_or_default()
