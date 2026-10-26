@@ -226,8 +226,9 @@ fn interpret(fetched: &Fetched, selector: &str, scan_id: &str, now: u64) -> Repo
     .with_attr("code_presence", code_presence)
     .with_attr("block_tag", "finalized")
     .with_attr("rpc_origin", RPC_URL)
+    .with_attr("source_url", RPC_URL)
     .with_attr(
-        "source_url",
+        "explorer_url",
         format!("https://basescan.org/address/{address}"),
     )
     .with_attr(
@@ -357,6 +358,12 @@ mod tests {
             "contract_code_present"
         );
         assert_eq!(evidence.provenance.source, SOURCE);
+        assert_eq!(evidence.attributes["source_url"], RPC_URL);
+        assert_eq!(evidence.attributes["rpc_origin"], RPC_URL);
+        assert_eq!(
+            evidence.attributes["explorer_url"],
+            "https://basescan.org/address/0x1111111111111111111111111111111111111111"
+        );
         assert!(evidence.attributes["does_not_show"].contains("ownership"));
     }
 
