@@ -98,6 +98,15 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
+      - name: Generate immutable implementation handoff
+        id: implementation_map
+        if: matrix.toolchain == '1.99'
+        run: |
+          set -euo pipefail
+          cargo run --locked -p xtask -- roadmap check
+          mkdir -p target/implementation-map
+          cargo run --locked -p xtask -- roadmap markdown > target/implementation-map/HUNTSMAN_IMPLEMENTATION_MAP.md
+          cargo run --locked -p xtask -- roadmap json > target/implementation-map/HUNTSMAN_IMPLEMENTATION_MAP.json
       - name: Run deterministic repair gate (1.99)
         if: matrix.toolchain == '1.99'
         run: cargo run --locked -p xtask -- gate full
@@ -110,6 +119,14 @@ jobs:
       - name: Check accented names match as ASCII names do (offline)
         if: matrix.toolchain == '1.99'
         run: cargo run --locked --example name_match_bench
+      - name: Upload implementation handoff for this checkout
+        if: always() && steps.implementation_map.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: implementation-map
+          path: target/implementation-map/
+          if-no-files-found: error
+          retention-days: 14
 
 
   container:
