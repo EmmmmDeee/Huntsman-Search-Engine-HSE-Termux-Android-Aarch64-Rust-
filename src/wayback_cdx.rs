@@ -223,7 +223,7 @@ fn parse_capture(
         evidence = evidence.with_attr("cdx_digest", &row[3]);
     }
     push_entity(
-        &mut entities,
+        entities,
         EntityKind::Url,
         &canonical,
         0.65,
@@ -234,7 +234,7 @@ fn parse_capture(
     // Historical subdomains are leads, not currently resolving infrastructure.
     if host != domain {
         push_entity(
-            &mut entities,
+            entities,
             EntityKind::Domain,
             &host,
             0.55,
