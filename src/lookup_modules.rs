@@ -52,6 +52,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             let mut domain = vec![
                 "crtsh",
                 certspotter::SOURCE,
+                crate::wayback_cdx::SOURCE,
                 "dns",
                 rdap::SOURCE,
                 mnemonic::SOURCE,
