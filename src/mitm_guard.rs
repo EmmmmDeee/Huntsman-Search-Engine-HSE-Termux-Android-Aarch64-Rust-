@@ -293,7 +293,10 @@ pub fn assess(
                         ),
                         resolution: "Do not authenticate via this access point. Manually leave/forget the network and verify the BSSID, WPA mode and enterprise certificate with its administrator.",
                     });
-                } else if !enrolled {
+                }
+                // Inventory membership is independent of advertised security.
+                // The downgrade finding already records an unlisted BSSID.
+                if !enrolled && !downgrade {
                     findings.push(Finding {
                         code: "bssid_not_on_operator_allowlist",
                         severity: "review",
@@ -576,6 +579,30 @@ mod tests {
         assert_eq!(r.findings.len(), 1);
         assert_eq!(r.findings[0].severity, "high");
         assert!(!r.mitm_confirmed);
+    }
+
+    #[test]
+    fn unknown_capabilities_do_not_mask_unlisted_trusted_network_bssid() {
+        let baseline = parse_baseline(
+            br#"{"networks":[{"ssid":"Corp","bssids":["3c:5a:b4:11:22:33"],"minimum_security":"WPA3"}]}"#,
+        )
+        .unwrap();
+        let report = assess(
+            &[ap("Corp", "3c:5a:b4:22:33:44", Security::Unknown)],
+            Some(&baseline),
+            "fixture",
+            0,
+        );
+        assert_eq!(report.findings.len(), 2);
+        assert!(report.findings.iter().any(|finding| {
+            finding.code == "trusted_ssid_security_unverified"
+                && finding.severity == "review"
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.code == "bssid_not_on_operator_allowlist"
+                && finding.severity == "review"
+        }));
+        assert!(!report.mitm_confirmed);
     }
 
     #[test]
