@@ -158,7 +158,7 @@ pub fn review(input: &CaseInput) -> Result<CaseReview, Error> {
         return Err(Error::invalid("invalid case name or too many records"));
     }
     let mut ids = BTreeSet::new();
-    let mut grouped: BTreeMap<(String, String, Option<i64>), Vec<&Observation>> = BTreeMap::new();
+    let mut grouped: ClaimGroups<'_> = BTreeMap::new();
     let mut receipts = Vec::new();
     let mut timeline = Vec::new();
     for row in &input.observations {
@@ -214,6 +214,20 @@ pub fn review(input: &CaseInput) -> Result<CaseReview, Error> {
     }
     receipts.sort_by(|a, b| a.id.cmp(&b.id));
     timeline.sort_by(|a, b| (a.event_at_unix, &a.id).cmp(&(b.event_at_unix, &b.id)));
+    let (claims, next_actions) = summarize_claims(grouped);
+    Ok(CaseReview {
+        case_id: input.case_id.clone(),
+        observations: receipts.len(),
+        receipts,
+        claims,
+        timeline,
+        next_actions,
+        evidence_status: "unverified_source_assertions_not_independent_corroboration",
+    })
+}
+type ClaimGroups<'a> = BTreeMap<(String, String, Option<i64>), Vec<&'a Observation>>;
+
+fn summarize_claims(grouped: ClaimGroups<'_>) -> (Vec<ClaimReview>, Vec<NextAction>) {
     let mut claims = Vec::new();
     let mut next_actions = Vec::new();
     for ((subject, predicate, event_at_unix), rows) in grouped {
@@ -263,16 +277,9 @@ pub fn review(input: &CaseInput) -> Result<CaseReview, Error> {
     next_actions.sort_by(|a, b| {
         (a.priority, &a.subject, &a.predicate).cmp(&(b.priority, &b.subject, &b.predicate))
     });
-    Ok(CaseReview {
-        case_id: input.case_id.clone(),
-        observations: receipts.len(),
-        receipts,
-        claims,
-        timeline,
-        next_actions,
-        evidence_status: "unverified_source_assertions_not_independent_corroboration",
-    })
+    (claims, next_actions)
 }
+
 /// Parse an input with strict JSON schema and a 256 KiB memory bound.
 /// # Errors
 /// Oversized input or invalid case record.
