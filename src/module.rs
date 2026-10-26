@@ -1147,6 +1147,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "certificate-transparency lookup",
     },
     ReachableModule {
+        name: "wayback_cdx",
+        command: "domain DOMAIN | scan -k domain DOMAIN",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::DnsRecon,
+        attack_techniques: &["T1593.002"],
+        description: "bounded Internet Archive CDX capture metadata, historical URL and subdomain pivots; no playback fetch",
+    },
+    ReachableModule {
         name: "certspotter",
         command: "domain DOMAIN",
         access: "keyless",
