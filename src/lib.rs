@@ -91,6 +91,7 @@ pub mod geohash;
 pub mod geoint;
 pub mod gexf;
 pub mod github_user;
+pub mod gitlab_user;
 pub mod graph;
 pub mod graph_exec;
 pub mod gravatar;

@@ -407,6 +407,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "bounded deterministic username variants",
     },
     ReachableModule {
+        name: "gitlab_user",
+        command: "username HANDLE | scan -k username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.003"],
+        description: "exact public GitLab.com user profile via GitLab Users API; no inferred cross-platform attribution",
+    },
+    ReachableModule {
         name: "github_user",
         command: "username HANDLE",
         access: "keyless",

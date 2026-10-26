@@ -1,6 +1,6 @@
 //! End-to-end front-end for `huntsman-recon username`.
 //!
-//! Derives deterministic handle variants and queries the keyless public GitHub, Bluesky, Keybase
+//! Derives deterministic handle variants and queries the keyless public GitHub, GitLab, Bluesky, Keybase
 //! and Mastodon profiles, `TikTok` public-bio contacts, and the handle's recent public Wikipedia edits, all at once. When no
 //! profile source answered, the lookup ends from its rows through
 //! [`crate::source_outcome::SourceReach`]: a request refused before sending is a refusal (exit
@@ -15,6 +15,7 @@ use crate::concurrent::{self, Job};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
 use crate::github_user;
+use crate::gitlab_user;
 use crate::http::Transport;
 use crate::keybase;
 use crate::keys::Keys;
@@ -30,7 +31,7 @@ use crate::wikipedia;
 pub const USERNAME_USAGE: &str = "usage: huntsman-recon username HANDLE [--save FILE]";
 pub const USERNAME_HELP: &str = "\
 username HANDLE [--save FILE]
-Derive handle variants and query public GitHub, Bluesky, Keybase, Mastodon, TikTok self-published bio contacts and Wikipedia contributions. Email contacts are self-declared candidates, never verified account email owners. --save FILE writes an unverified ledger that verify can reload.";
+Derive handle variants and query public GitHub, GitLab, Bluesky, Keybase, Mastodon, TikTok self-published bio contacts and Wikipedia contributions. Email contacts are self-declared candidates, never verified account email owners. --save FILE writes an unverified ledger that verify can reload.";
 
 /// One source's answer: what it found and its outcome, or the refusal that stopped it.
 type Found = Result<(Vec<Entity>, SourceExecutionOutcome), Error>;
@@ -62,34 +63,27 @@ impl UsernameArgs {
 /// [`UsernameRun::Failed`] (exit 69); otherwise it prints.
 pub type UsernameRun = SourceRun<Report>;
 
-/// Run deterministic variants and the keyless public-profile sources, each when the transport's
-/// lookup asks its module ([`Transport::runs_module`]), all at once.
-#[must_use]
-pub fn run<T: Transport + Sync + ?Sized>(
-    transport: &T,
-    keys: &Keys,
-    username: &str,
+/// Public-source fan-out is independent of report assembly. The tuple order is
+/// stable across CLI scans and Web UI investigations, regardless of completion order.
+fn public_sources<'a, T: Transport + Sync + ?Sized>(
+    transport: &'a T,
+    keys: &'a Keys,
+    name: &'a str,
+    scan: &'a str,
     now_unix: u64,
-) -> UsernameRun {
-    let username = match canonical_username(username) {
-        Ok(username) => username,
-        Err(error) => return UsernameRun::Failed(error.to_string()),
-    };
-    let scan_id = crate::entity::scan_id("username", &username);
-    let mut report = Report {
-        entities: derived_entities(&username, &scan_id),
-        outcomes: Vec::new(),
-    };
-
-    // Each source asks a different server about the handle alone, so they run at once and the
-    // lookup takes as long as the slowest of them. Their answers are folded in this order, so the
-    // report is the one they gave when they ran one after another.
-    let (name, scan) = (username.as_str(), scan_id.as_str());
-    let sources: [(&str, Job<'_, Found>); 6] = [
+) -> [(&'static str, Job<'a, Found>); 7] {
+    [
         (
             github_user::SRC,
             Box::new(move || {
                 github_user::lookup(transport, keys, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            gitlab_user::SRC,
+            Box::new(move || {
+                gitlab_user::lookup(transport, name, scan, now_unix)
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
@@ -128,7 +122,32 @@ pub fn run<T: Transport + Sync + ?Sized>(
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
-    ];
+    ]
+}
+
+/// Run deterministic variants and the keyless public-profile sources, each when the transport's
+/// lookup asks its module ([`Transport::runs_module`]), all at once.
+#[must_use]
+pub fn run<T: Transport + Sync + ?Sized>(
+    transport: &T,
+    keys: &Keys,
+    username: &str,
+    now_unix: u64,
+) -> UsernameRun {
+    let username = match canonical_username(username) {
+        Ok(username) => username,
+        Err(error) => return UsernameRun::Failed(error.to_string()),
+    };
+    let scan_id = crate::entity::scan_id("username", &username);
+    let mut report = Report {
+        entities: derived_entities(&username, &scan_id),
+        outcomes: Vec::new(),
+    };
+
+    // Each source asks a different server about the handle alone, so they run at once and the
+    // lookup takes as long as the slowest of them. Their answers are folded in this order, so the
+    // report is the one they gave when they ran one after another.
+    let sources = public_sources(transport, keys, &username, &scan_id, now_unix);
     let (modules, jobs): (Vec<&str>, Vec<Job<'_, Found>>) = sources
         .into_iter()
         .filter(|(module, _)| transport.runs_module(module))
@@ -259,6 +278,7 @@ mod tests {
     use crate::test_support::unexpected_controls;
 
     const GITHUB: &str = "api.github.com";
+    const GITLAB: &str = "gitlab.com";
     const BLUESKY: &str = "public.api.bsky.app";
     const KEYBASE: &str = "keybase.io";
     const WIKIPEDIA: &str = "en.wikipedia.org";
@@ -422,6 +442,7 @@ mod tests {
         let keybase = r#"{"status":{"code":0,"name":"OK"},"them":[null]}"#;
         let fake = Fake::new(vec![
             (GITHUB, response(404, "")),
+            (GITLAB, response(200, "[]")),
             (BLUESKY, response(200, bluesky)),
             (KEYBASE, response(200, keybase)),
             (WIKIPEDIA, response(200, r#"{"query":{"usercontribs":[]}}"#)),
@@ -430,8 +451,9 @@ mod tests {
         match run(&fake, &Keys::default(), "nobody", 1) {
             UsernameRun::Printed { report, text } => {
                 assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
-                assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::Success);
-                assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::ValidZero);
+                assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::ValidZero);
+                assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::Success);
+                assert_eq!(report.outcomes[3].kind, SourceOutcomeKind::ValidZero);
                 assert!(text.contains("keybase\t"), "{text}");
                 assert!(
                     report
@@ -484,6 +506,7 @@ mod tests {
     fn every_source_answers_in_a_fixed_order() {
         let fake = Fake::new(vec![
             (GITHUB, response(404, "")),
+            (GITLAB, response(200, "[]")),
             (BLUESKY, response(200, r#"{"handle":"max.bsky.social"}"#)),
             (
                 KEYBASE,
@@ -502,6 +525,7 @@ mod tests {
                 modules,
                 [
                     github_user::SRC,
+                    gitlab_user::SRC,
                     bluesky_user::SRC,
                     keybase::SRC,
                     wikipedia::SRC,
@@ -512,7 +536,7 @@ mod tests {
         }
     }
 
-    /// Each source waits on its own server, so six that take 200 ms each answer in about 200 ms,
+    /// Each source waits on its own server, so seven that take 200 ms each answer in about 200 ms,
     /// not the second they took one after another.
     #[test]
     fn the_sources_run_at_once() {
@@ -525,6 +549,7 @@ mod tests {
         }
         let slow = Slow(Fake::new(vec![
             (GITHUB, response(404, "")),
+            (GITLAB, response(200, "[]")),
             (
                 BLUESKY,
                 response(200, r#"{"handle":"maxslow.bsky.social"}"#),
@@ -542,10 +567,10 @@ mod tests {
             panic!("the lookup should print a report");
         };
         let took = started.elapsed();
-        assert_eq!(report.outcomes.len(), 6);
+        assert_eq!(report.outcomes.len(), 7);
         assert!(
             took < std::time::Duration::from_millis(800),
-            "six 200 ms sources took {took:?}"
+            "seven 200 ms sources took {took:?}"
         );
     }
 

@@ -82,6 +82,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         }
         ScanKind::Username => vec![
             github_user::SRC,
+            crate::gitlab_user::SRC,
             bluesky_user::SRC,
             keybase::SRC,
             wikipedia::SRC,
