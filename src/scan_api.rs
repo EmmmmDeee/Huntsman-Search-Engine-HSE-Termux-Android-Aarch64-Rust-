@@ -33,6 +33,28 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// A saved multi-export can materialize several scan records. Admit only one
+/// process-wide to prevent concurrent exports multiplying peak memory on phones.
+static MULTI_EXPORT_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct MultiExportPermit;
+
+impl MultiExportPermit {
+    fn try_acquire() -> Option<Self> {
+        MULTI_EXPORT_ACTIVE
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for MultiExportPermit {
+    fn drop(&mut self) {
+        MULTI_EXPORT_ACTIVE.store(false, Ordering::Release);
+    }
+}
 
 use serde_json::{Value, json};
 
@@ -998,6 +1020,23 @@ impl ScanApi {
     }
 
     fn export_many(&self, param: &Params) -> ApiResponse {
+        let limit = u64::try_from(PipelineLimits::default().max_export_bytes).unwrap_or(u64::MAX);
+        self.export_many_with_budget(param, limit)
+    }
+
+    fn export_many_with_budget(&self, param: &Params, max_bytes: u64) -> ApiResponse {
+        // Reject unsupported formats before reading or deserializing saved evidence.
+        // Preserve SpiderFoot's `excel` alias for XLSX.
+        let format = param.get("format").unwrap_or("json");
+        let normalized = format.trim().to_ascii_lowercase();
+        let normalized = if normalized == "excel" {
+            "xlsx"
+        } else {
+            normalized.as_str()
+        };
+        if !scan_export::MANY_FORMATS.contains(&normalized) {
+            return error(400, "unsupported multi-scan export format");
+        }
         let ids: Vec<&str> = param
             .get("ids")
             .unwrap_or_default()
@@ -1014,26 +1053,69 @@ impl ScanApi {
                 &format!("export takes at most {MAX_EXPORT_SCANS} scans"),
             );
         }
-        let mut scans = Vec::new();
+        // Validate the request before acquiring the process-wide export permit.
+        // RAII releases on every return and during unwinding.
+        let Some(_permit) = MultiExportPermit::try_acquire() else {
+            return error(503, "another multi-scan export is already running");
+        };
+        // Reserve only the bounded number of scan slots, avoiding incremental
+        // vector growth while evidence is loaded under the aggregate budget.
+        let mut scans = Vec::with_capacity(ids.len());
+        let mut remaining = max_bytes;
         for id in ids {
-            match self.results(id) {
-                Ok((record, results)) => {
-                    let results = results.unwrap_or_else(|| empty_results(&record));
-                    scans.push((record, results));
-                }
+            let record = match self.record(id) {
+                Ok(record) => record,
                 Err(response) => return response,
-            }
+            };
+            let (results, charged) =
+                match self.service.store().results_with_byte_budget(id, remaining) {
+                    Ok(found) => found,
+                    Err(crate::scan_store::StoreError::Invalid(message)) => {
+                        return error(413, &message);
+                    }
+                    Err(failure) => return service_error(&failure.into()),
+                };
+            remaining = remaining.saturating_sub(charged);
+            let results = results.unwrap_or_else(|| empty_results(&record));
+            scans.push((record, results));
         }
         let pairs: Vec<(&ScanRecord, &ScanResults)> = scans
             .iter()
             .map(|(record, results)| (record, results))
             .collect();
-        match scan_export::render_many(
+        let kind = param.get("type").filter(|kind| !kind.is_empty());
+        if format.trim().eq_ignore_ascii_case("json") {
+            return match scan_export::render_many_json_bounded(
+                &pairs,
+                kind,
+                usize::try_from(max_bytes).unwrap_or(usize::MAX),
+            ) {
+                Ok(Ok(export)) => ApiResponse::export(export),
+                Ok(Err(_)) => error(413, "export output budget exceeded"),
+                Err(message) => error(400, &message),
+            };
+        }
+        if matches!(format.trim().to_ascii_lowercase().as_str(), "csv" | "tsv") {
+            return match scan_export::render_many_text_bounded(
+                &pairs,
+                format,
+                kind,
+                usize::try_from(max_bytes).unwrap_or(usize::MAX),
+            ) {
+                Ok(Ok(export)) => ApiResponse::export(export),
+                Ok(Err(_)) => error(413, "export output budget exceeded"),
+                Err(message) => error(400, &message),
+            };
+        }
+        // Preflight a conservative upper bound before constructing XLSX XML
+        // and ZIP buffers. The saved-result input budget was enforced above.
+        match scan_export::render_many_xlsx_bounded(
             &pairs,
-            param.get("format").unwrap_or("json"),
-            param.get("type").filter(|kind| !kind.is_empty()),
+            kind,
+            usize::try_from(max_bytes).unwrap_or(usize::MAX),
         ) {
-            Ok(export) => ApiResponse::export(export),
+            Ok(Ok(export)) => ApiResponse::export(export),
+            Ok(Err(_)) => error(413, "export output budget exceeded"),
             Err(message) => error(400, &message),
         }
     }
@@ -1456,6 +1538,70 @@ mod tests {
             })
             .unwrap()
             .id
+    }
+
+    #[test]
+    fn multi_export_enforces_aggregate_serialized_input_budget() {
+        let (api, dir) = api("multi-export-budget");
+        let id = finished(&api);
+        let saved = std::fs::metadata(dir.join(&id).join("results.json"))
+            .unwrap()
+            .len();
+        assert!(saved > 1);
+        let one = Params(vec![("ids".into(), id.clone())]);
+        let too_small = api.export_many_with_budget(&one, saved - 1);
+        assert_eq!(too_small.status, 413, "{}", too_small.text());
+        let repeated = Params(vec![("ids".into(), format!("{id},{id}"))]);
+        let aggregate = api.export_many_with_budget(&repeated, saved);
+        assert_eq!(aggregate.status, 413, "{}", aggregate.text());
+        // Existing duplicate-ID SpiderFoot export semantics are preserved.
+        assert_eq!(
+            api.handle("GET", "/api/scans/export", &format!("ids={id},{id}"))
+                .status,
+            200
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bounded_multi_export_xlsx_preserves_download_and_rejects_tiny_budget() {
+        let (api, dir) = api("multi-export-xlsx");
+        let id = finished(&api);
+        let params = Params(vec![
+            ("ids".into(), id.clone()),
+            ("format".into(), "xlsx".into()),
+        ]);
+        let small = api.export_many_with_budget(&params, 1024);
+        assert_eq!(small.status, 413, "{}", small.text());
+        let normal = api.handle("GET", "/api/scans/export", &format!("ids={id}&format=xlsx"));
+        assert_eq!(normal.status, 200, "{}", normal.text());
+        assert_eq!(normal.filename.as_deref(), Some("1.1.1.1-Huntsman.xlsx"));
+        assert!(normal.body.starts_with(b"PK\x03\x04"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn multi_export_rejects_invalid_format_before_loading_saved_results() {
+        let (api, dir) = api("multi-export-invalid-format");
+        let id = finished(&api);
+        let path = dir.join(&id).join("results.json");
+        // Deliberately corrupt saved evidence. An invalid format must be rejected
+        // before attempting to parse or load the evidence file.
+        std::fs::write(&path, b"not valid JSON").unwrap();
+        let invalid = Params(vec![
+            ("ids".into(), id.clone()),
+            ("format".into(), "unsupported".into()),
+        ]);
+        let response = api.export_many_with_budget(&invalid, 1024);
+        assert_eq!(response.status, 400, "{}", response.text());
+        assert!(
+            response
+                .text()
+                .contains("unsupported multi-scan export format"),
+            "{}",
+            response.text()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Spiderfoot's search box over one scan or all of them: text anywhere, a wildcard as the
@@ -2331,7 +2477,9 @@ mod tests {
             "/api/scans/export",
             &format!("ids={id}&format=excel"),
         );
+        assert_eq!(book.status, 200, "{}", book.text());
         assert_eq!(book.filename.as_deref(), Some("1.1.1.1-Huntsman.xlsx"));
+        assert!(book.body.starts_with(b"PK\x03\x04"));
         let correlations = api.handle(
             "GET",
             &format!("/api/scans/{id}/correlations"),

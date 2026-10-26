@@ -130,18 +130,24 @@ fn worksheet(rows: &[Vec<String>]) -> String {
         let number = row_index + 1;
         let _ = write!(xml, "<row r=\"{number}\">");
         let mut overflow = Vec::new();
-        let cells = row.iter().map(|value| {
+        // Write primary cells directly; only overflow fragments need staging.
+        // This avoids an additional allocation proportional to every row's width.
+        for (at, value) in row.iter().enumerate() {
             let mut parts = pieces(value).into_iter();
             let first = parts.next().unwrap_or_default();
             overflow.extend(parts);
-            first
-        });
-        let cells: Vec<&str> = cells.collect();
-        for (at, value) in cells.into_iter().chain(overflow).enumerate() {
             let _ = write!(
                 xml,
                 "<c r=\"{}{number}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{}</t></is></c>",
                 column(at),
+                cell_text(first)
+            );
+        }
+        for (index, value) in overflow.into_iter().enumerate() {
+            let _ = write!(
+                xml,
+                "<c r=\"{}{number}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{}</t></is></c>",
+                column(row.len() + index),
                 cell_text(value)
             );
         }
@@ -286,6 +292,49 @@ fn zip_header(out: &mut Vec<u8>, name: &str, data: &[u8], central: Option<usize>
 
 /// A ZIP archive of `entries`, each stored as it is.
 fn stored_zip(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
+    // ZIP32 cannot represent more than 65,535 members, 4 GiB per member,
+    // or a central-directory offset beyond u32::MAX. Reject unsupported
+    // archives rather than silently saturating ZIP fields into corrupt data.
+    assert!(
+        u16::try_from(entries.len()).is_ok(),
+        "ZIP32 entry count exceeded"
+    );
+    let mut local_bytes = 0usize;
+    let mut directory_bytes = 0usize;
+    for (name, data) in entries {
+        assert!(
+            u16::try_from(name.len()).is_ok(),
+            "ZIP32 name length exceeded"
+        );
+        assert!(
+            u32::try_from(data.len()).is_ok(),
+            "ZIP32 member size exceeded"
+        );
+        local_bytes = local_bytes
+            .checked_add(30)
+            .and_then(|n| n.checked_add(name.len()))
+            .and_then(|n| n.checked_add(data.len()))
+            .expect("ZIP32 local size overflow");
+        directory_bytes = directory_bytes
+            .checked_add(46)
+            .and_then(|n| n.checked_add(name.len()))
+            .expect("ZIP32 directory size overflow");
+    }
+    assert!(
+        u32::try_from(local_bytes).is_ok(),
+        "ZIP32 directory offset exceeded"
+    );
+    assert!(
+        u32::try_from(directory_bytes).is_ok(),
+        "ZIP32 directory length exceeded"
+    );
+    assert!(
+        local_bytes
+            .checked_add(directory_bytes)
+            .and_then(|n| n.checked_add(22))
+            .is_some_and(|n| u32::try_from(n).is_ok()),
+        "ZIP32 archive size exceeded"
+    );
     let mut out = Vec::new();
     let mut directory = Vec::new();
     for (name, data) in entries {

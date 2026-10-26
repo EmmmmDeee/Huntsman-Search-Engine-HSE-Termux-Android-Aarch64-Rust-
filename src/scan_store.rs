@@ -622,14 +622,44 @@ impl ScanStore {
     /// [`StoreError::NotFound`] when there is no such scan; [`StoreError::Io`] when the results
     /// cannot be read or parsed.
     pub fn results(&self, id: &str) -> Result<Option<ScanResults>, StoreError> {
+        self.results_with_byte_budget(id, MAX_RESULTS_BYTES)
+            .map(|(results, _)| results)
+    }
+
+    /// Read one saved result under a caller's remaining aggregate byte budget.
+    /// Return the exact serialized bytes charged, not the deserialized object's size.
+    /// The bounded descriptor read enforces the limit even if a writer replaces the file
+    /// after the preliminary size check. Existing unrestricted readers retain their API.
+    ///
+    /// # Errors
+    /// [`StoreError::Invalid`] when the saved file exceeds the export budget;
+    /// otherwise the same errors as [`Self::results`].
+    pub fn results_with_byte_budget(
+        &self,
+        id: &str,
+        max_bytes: u64,
+    ) -> Result<(Option<ScanResults>, u64), StoreError> {
         let dir = self.scan_dir(id)?;
         self.require_row(id)?;
         let path = dir.join(RESULTS_FILE);
         if optional_file_missing(&path, fs::symlink_metadata(&path))? {
-            return Ok(None);
+            return Ok((None, 0));
         }
-        let bytes = crate::fsio::read_bounded_replacing(&path, MAX_RESULTS_BYTES)
-            .map_err(|e| fsio_error(&e))?;
+        let limit = max_bytes.min(MAX_RESULTS_BYTES);
+        // This check classifies an ordinary oversized export as a client error.
+        // It is not the security boundary: read_bounded_replacing checks the opened
+        // descriptor and enforces the same limit after any atomic replacement.
+        if limit < MAX_RESULTS_BYTES {
+            let meta = fs::symlink_metadata(&path).map_err(|e| io_error(&path, &e))?;
+            if meta.is_file() && meta.len() > limit {
+                return Err(StoreError::Invalid(format!(
+                    "export input budget exceeded ({limit} bytes)"
+                )));
+            }
+        }
+        let bytes =
+            crate::fsio::read_bounded_replacing(&path, limit).map_err(|e| fsio_error(&e))?;
+        let charged = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let results: ScanResults = serde_json::from_slice(&bytes)
             .map_err(|error| StoreError::Io(format!("{}: {error}", path.display())))?;
         if results.format_version != FORMAT_VERSION || results.scan_id != id {
@@ -638,7 +668,7 @@ impl ScanStore {
                 path.display()
             )));
         }
-        Ok(Some(results))
+        Ok((Some(results), charged))
     }
 
     /// Append one entry to a scan's log. Past [`MAX_LOG_BYTES`] the entry is dropped, after a

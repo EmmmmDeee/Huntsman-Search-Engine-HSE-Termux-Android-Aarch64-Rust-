@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+use serde::ser::{Serialize, SerializeSeq, Serializer};
 use serde_json::{Value, json};
 
 use crate::gexf::escape_xml;
@@ -375,6 +376,201 @@ pub fn render_many(
         content_type,
         filename,
     })
+}
+
+/// Serialize JSON multi-export rows one at a time, without building an unbounded Value array.
+/// The wire representation is identical to `json_rows(...).to_string()`.
+struct JsonRows<'a, 'b> {
+    scans: &'a [(&'b ScanRecord, &'b ScanResults)],
+    kind: Option<&'a str>,
+}
+
+impl Serialize for JsonRows<'_, '_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(None)?;
+        for &(scan, results) in self.scans {
+            for (element, source) in rows(results, self.kind) {
+                sequence.serialize_element(&json!({
+                    "data": element.data,
+                    "event_type": element.kind,
+                    "module": element.module,
+                    "source_data": source,
+                    "false_positive": u8::from(element.fp),
+                    "last_seen": timestamp(element.created),
+                    "scan_id": scan.id,
+                    "scan_name": scan.name,
+                    "scan_target": scan.target,
+                    "id": element.id,
+                    "source": element.source,
+                    "confidence": element.confidence,
+                    "raw": element.raw,
+                }))?;
+            }
+        }
+        sequence.end()
+    }
+}
+
+/// Bounded JSON multi-export. An over-budget response is never materialized as
+/// a complete JSON array; the outer error reports serialization failure and
+/// the inner error reports the required byte count.
+///
+/// # Errors
+/// A JSON serialization failure.
+pub fn render_many_json_bounded(
+    scans: &[(&ScanRecord, &ScanResults)],
+    kind: Option<&str>,
+    max_bytes: usize,
+) -> Result<Result<Export, usize>, String> {
+    let filename = match scans {
+        [(scan, _)] => file_name(scan, "json"),
+        _ => "Huntsman.json".to_owned(),
+    };
+    crate::json::to_bounded_json(&JsonRows { scans, kind }, max_bytes, false)
+        .map(|body| {
+            body.map(|body| Export {
+                body,
+                content_type: "application/json; charset=utf-8",
+                filename,
+            })
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// Write multi-scan CSV/TSV directly into a bounded byte buffer. Each escaped
+/// cell is checked before append; a rejected response is never returned partially.
+///
+/// # Errors
+/// An unsupported format.
+pub fn render_many_text_bounded(
+    scans: &[(&ScanRecord, &ScanResults)],
+    format: &str,
+    kind: Option<&str>,
+    max_bytes: usize,
+) -> Result<Result<Export, usize>, String> {
+    let format = format_name(format);
+    let (separator, content_type): (&[u8], _) = match format.as_str() {
+        "csv" => (b",", "text/csv; charset=utf-8"),
+        "tsv" => (b"\t", "text/tab-separated-values; charset=utf-8"),
+        _ => return Err(format!("unknown bounded tabular export format {format}")),
+    };
+    let filename = match scans {
+        [(scan, _)] => file_name(scan, &format),
+        _ => format!("Huntsman.{format}"),
+    };
+    let mut body = Vec::new();
+    let append = |body: &mut Vec<u8>, bytes: &[u8]| -> Result<(), usize> {
+        let required = body.len().saturating_add(bytes.len());
+        if required > max_bytes {
+            Err(required)
+        } else {
+            body.extend_from_slice(bytes);
+            Ok(())
+        }
+    };
+    let write = || -> Result<Vec<u8>, usize> {
+        let mut header = vec!["Scan Name"];
+        header.extend(ELEMENT_COLUMNS);
+        let separator_text = if format == "csv" { "," } else { "\t" };
+        append(&mut body, header.join(separator_text).as_bytes())?;
+        append(&mut body, b"\r\n")?;
+        for &(scan, results) in scans {
+            for (element, source) in rows(results, kind) {
+                let mut line = vec![scan.name.clone()];
+                line.extend(element_line(element, source));
+                for (index, cell) in line.iter().enumerate() {
+                    if index != 0 {
+                        append(&mut body, separator)?;
+                    }
+                    let escaped = if format == "csv" {
+                        csv_cell(cell)
+                    } else {
+                        tsv_cell(cell)
+                    };
+                    append(&mut body, escaped.as_bytes())?;
+                }
+                append(&mut body, b"\r\n")?;
+            }
+        }
+        Ok(body)
+    };
+    Ok(write().map(|body| Export {
+        body,
+        content_type,
+        filename,
+    }))
+}
+
+/// Build a multi-scan XLSX only after a pessimistic output-size preflight.
+/// The preflight bounds worksheet/XML expansion before the legacy workbook
+/// renderer allocates its intermediate strings and ZIP buffers. It deliberately
+/// errs toward rejecting an export rather than exceeding the phone's budget.
+/// The caller must also bound the deserialized saved results.
+///
+/// # Errors
+/// Invalid export configuration.
+pub fn render_many_xlsx_bounded(
+    scans: &[(&ScanRecord, &ScanResults)],
+    kind: Option<&str>,
+    max_bytes: usize,
+) -> Result<Result<Export, usize>, String> {
+    // Each XML-escaped input byte expands to at most seven output bytes.
+    // Reserve generously for XML cell tags, row tags, workbook relationships,
+    // ZIP headers, the central directory and a separate sheet per data type.
+    const FIXED_BYTES: usize = 8192;
+    const SHEET_BYTES: usize = 4096;
+    const CELL_BYTES: usize = 160;
+    const ROW_BYTES: usize = 64;
+    let mut estimate = FIXED_BYTES;
+    let mut seen_sheets = std::collections::BTreeSet::new();
+    let mut lines = Vec::new();
+    for &(scan, results) in scans {
+        for (element, source) in rows(results, kind) {
+            let mut line = vec![scan.name.clone()];
+            line.extend(element_line(element, source));
+            // The multi-export header is Scan Name, Updated, Type, ...
+            // and the Type column becomes the worksheet name.
+            if seen_sheets.insert(line[2].clone()) {
+                estimate = estimate.saturating_add(SHEET_BYTES);
+            }
+            estimate = estimate.saturating_add(ROW_BYTES);
+            for (index, cell) in line.iter().enumerate() {
+                if index == 2 {
+                    continue;
+                }
+                let units = cell.encode_utf16().count();
+                let pieces = units.saturating_add(xlsx::MAX_CELL_UNITS - 1) / xlsx::MAX_CELL_UNITS;
+                estimate = estimate.saturating_add(
+                    cell.len()
+                        .saturating_mul(7)
+                        .saturating_add(pieces.max(1).saturating_mul(CELL_BYTES)),
+                );
+            }
+            if estimate > max_bytes {
+                return Ok(Err(estimate));
+            }
+            lines.push(line);
+        }
+    }
+    if estimate > max_bytes {
+        return Ok(Err(estimate));
+    }
+    let mut header = vec!["Scan Name"];
+    header.extend(ELEMENT_COLUMNS);
+    let (body, content_type) = tabular("xlsx", &header, lines, 2)
+        .ok_or_else(|| "XLSX multi-export is unavailable".to_owned())?;
+    if body.len() > max_bytes {
+        return Ok(Err(body.len()));
+    }
+    let filename = match scans {
+        [(scan, _)] => file_name(scan, "xlsx"),
+        _ => "Huntsman.xlsx".to_owned(),
+    };
+    Ok(Ok(Export {
+        body,
+        content_type,
+        filename,
+    }))
 }
 
 /// Spiderfoot's `scanexportjsonmulti` rows for several scans, each element with its raw evidence
@@ -822,6 +1018,48 @@ mod tests {
             termination: None,
         };
         (record, results)
+    }
+
+    #[test]
+    fn bounded_json_multi_export_preserves_bytes_and_rejects_at_exact_boundary() {
+        let (scan, results) = scan();
+        let scans = [(&scan, &results), (&scan, &results)];
+        let original = render_many(&scans, "json", None).unwrap();
+        let exact = render_many_json_bounded(&scans, None, original.body.len())
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact, original);
+        assert_eq!(
+            render_many_json_bounded(&scans, None, original.body.len() - 1)
+                .unwrap()
+                .unwrap_err(),
+            original.body.len()
+        );
+        let filtered = render_many(&scans, "json", Some("TCP_PORT_OPEN")).unwrap();
+        assert_eq!(
+            render_many_json_bounded(&scans, Some("TCP_PORT_OPEN"), filtered.body.len())
+                .unwrap()
+                .unwrap(),
+            filtered
+        );
+    }
+
+    #[test]
+    fn bounded_text_multi_export_matches_spiderfoot_and_enforces_limit() {
+        let (scan, results) = scan();
+        let scans = [(&scan, &results), (&scan, &results)];
+        for format in ["csv", "tsv"] {
+            let original = render_many(&scans, format, None).unwrap();
+            let exact = render_many_text_bounded(&scans, format, None, original.body.len())
+                .unwrap()
+                .unwrap();
+            assert_eq!(exact, original);
+            assert!(
+                render_many_text_bounded(&scans, format, None, original.body.len() - 1)
+                    .unwrap()
+                    .is_err()
+            );
+        }
     }
 
     #[test]
