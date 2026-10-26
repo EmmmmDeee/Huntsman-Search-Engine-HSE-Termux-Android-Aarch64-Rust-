@@ -506,7 +506,12 @@ mod tests {
         let low = ap("Office", "3C:5A:B4:11:22:33", Security::Wpa);
         let high = ap("Office", "3c:5a:b4:11:22:33", Security::Wpa3);
         let unknown = ap("Office", "3c:5a:b4:11:22:33", Security::Unknown);
-        let first = assess(&[low.clone(), high.clone(), unknown.clone()], Some(&baseline), "fixture", 0);
+        let first = assess(
+            &[low.clone(), high.clone(), unknown.clone()],
+            Some(&baseline),
+            "fixture",
+            0,
+        );
         let last = assess(&[unknown, high, low], Some(&baseline), "fixture", 0);
         assert_eq!(first, last);
         assert_eq!(first.evaluated_access_points, 1);
