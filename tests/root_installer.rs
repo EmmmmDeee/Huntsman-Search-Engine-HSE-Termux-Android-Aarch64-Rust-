@@ -781,6 +781,7 @@ impl Prebuilt {
             .env_remove("HUNTSMAN_BUILD_SHA")
             .env_remove("HUNTSMAN_REV")
             .env_remove("HUNTSMAN_FROM_SOURCE")
+            .env_remove("HUNTSMAN_REQUIRE_PREBUILT")
             .env_remove("HUNTSMAN_SERVE_SERVICE")
             .env_remove("CARGO_BUILD_JOBS")
             .env("SVDIR", self.temp.join("service"))
@@ -1058,6 +1059,103 @@ fn when_main_has_no_build_yet_the_newest_published_commit_is_installed() {
             "fallback must not mix newer launcher code with older binary: {calls}"
         );
     }
+}
+
+#[test]
+fn prebuilt_only_refuses_unpublished_revision_without_compiling_or_replacing() {
+    let t = Prebuilt::new();
+    fs::create_dir_all(t.root.join("bin")).unwrap();
+    fs::write(t.installed(), b"prior installation").unwrap();
+
+    let out = t.run(
+        &[
+            ("HUNTSMAN_REV", BUILT_REV),
+            ("HUNTSMAN_REQUIRE_PREBUILT", "1"),
+        ],
+        BUILT_REV,
+    );
+    assert!(!out.status.success(), "missing release cannot succeed");
+    assert!(
+        stderr(&out).contains("source build and older-release fallback disabled"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !t.calls().contains("cargo") && !t.calls().contains("rust clang"),
+        "prebuilt-only must not invoke Rust compilation: {}",
+        t.calls()
+    );
+    assert_eq!(fs::read(t.installed()).unwrap(), b"prior installation");
+    assert!(
+        t.provenance().is_empty(),
+        "a refused install records no new provenance"
+    );
+}
+
+#[test]
+fn prebuilt_only_uses_verified_matching_binary_and_never_calls_cargo() {
+    let t = Prebuilt::new();
+    let bytes = b"#!/bin/sh\n# verified release build\n";
+    publish_release(&t.releases, BUILT_REV, bytes, bytes);
+    let out = t.run(
+        &[
+            ("HUNTSMAN_REV", BUILT_REV),
+            ("HUNTSMAN_REQUIRE_PREBUILT", "1"),
+        ],
+        BUILT_REV,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(fs::read(t.installed()).unwrap(), bytes);
+    assert!(!t.calls().contains("cargo"), "{}", t.calls());
+    assert_private_state(&t.temp, BUILT_REV);
+}
+
+#[test]
+fn prebuilt_only_rejects_explicit_source_build_even_when_release_exists() {
+    let t = Prebuilt::new();
+    publish_release(&t.releases, BUILT_REV, b"ready", b"ready");
+    let out = t.run(
+        &[
+            ("HUNTSMAN_REV", BUILT_REV),
+            ("HUNTSMAN_REQUIRE_PREBUILT", "1"),
+            ("HUNTSMAN_FROM_SOURCE", "1"),
+        ],
+        BUILT_REV,
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("conflicts with HUNTSMAN_FROM_SOURCE=1"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!t.calls().contains("cargo"), "{}", t.calls());
+}
+
+#[test]
+fn prebuilt_only_does_not_fall_back_to_published_ancestor_of_main() {
+    let t = Prebuilt::new();
+    let older = "1111111111111111111111111111111111111111";
+    publish_release(&t.releases, older, b"older build", b"older build");
+    let history = t.temp.join("history");
+    fs::write(
+        &history,
+        format!("2222222222222222222222222222222222222222\n{older}\n"),
+    )
+    .unwrap();
+    let out = t.run(
+        &[
+            ("HUNTSMAN_REQUIRE_PREBUILT", "1"),
+            ("FAKE_MAIN_HISTORY", history.to_str().unwrap()),
+        ],
+        DEFAULT_MAIN_REV,
+    );
+    assert!(!out.status.success());
+    assert!(!t.calls().contains("cargo"), "{}", t.calls());
+    assert!(
+        !t.calls().contains("commits/main~"),
+        "prebuilt-only must not search older releases: {}",
+        t.calls()
+    );
 }
 
 #[test]
