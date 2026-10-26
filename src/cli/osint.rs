@@ -81,7 +81,7 @@ fn fail_error(error: Error) -> ExitCode {
 pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
     let now = clock::unix_now();
     match args {
-        [mode, path] if mode == "case" => match read_bounded(Path::new(path), MAX_CASE_BYTES) {
+        [mode, path] if mode == "case" => match read_bounded(Path::new(path), MAX_CASE_BYTES as u64) {
             Ok(data) => match osint_casework::review_json(&data) {
                 Ok(report) => emit(&report, true),
                 Err(error) => fail_error(error),
@@ -204,7 +204,7 @@ fn area_report(
     category: &str,
 ) -> Result<osint_area_risk::AreaEstimate, Error> {
     let (lat, lon) = geoint::parse_latlon(coords)?;
-    let bytes = read_bounded(Path::new(path), MAX_RISK_BYTES)?;
+    let bytes = read_bounded(Path::new(path), MAX_RISK_BYTES as u64)?;
     let dataset = osint_area_risk::input_json(&bytes)?;
     osint_area_risk::estimate(&dataset, lat, lon, radius, category)
 }
