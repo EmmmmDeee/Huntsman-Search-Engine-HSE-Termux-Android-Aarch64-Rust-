@@ -128,6 +128,8 @@ const TRACK_PATH: &str = "/api/radar/track";
 /// Free text in (an advert, a message thread, a page), the actionable entities in it out: the
 /// `investigate` command for text pasted in the browser. The text is the body, read whole within
 /// [`MAX_FORM_BYTES`]; a longer text is for `investigate --file` in Termux.
+const OSINT_CASE_PATH: &str = "/api/osint/case";
+const OSINT_RISK_PATH: &str = "/api/osint/area-risk";
 const INVESTIGATE_PATH: &str = "/api/investigate";
 /// The largest file `/api/inspect` reads: the bound the `exif` and `docmeta` commands read from
 /// disk, so the page reads what the commands read (64 MiB).
@@ -1034,6 +1036,8 @@ fn takes_post(path: &str) -> bool {
         || path == INSPECT_PATH
         || path == TRACK_PATH
         || path == INVESTIGATE_PATH
+        || path == OSINT_CASE_PATH
+        || path == OSINT_RISK_PATH
 }
 
 /// `none` is a typed URL or bookmark; `same-origin` is this page. Anything else came from another
@@ -1378,6 +1382,8 @@ fn route(
             | TRACK_PATH
             | KEYS_PATH
             | INSPECT_PATH
+            | OSINT_CASE_PATH
+            | OSINT_RISK_PATH
             | INVESTIGATE_PATH
     ) || ScanApi::handles(parsed.path);
     if protected && !authorized(parsed, config) {
@@ -1420,6 +1426,8 @@ fn route(
         "/api/evidence" => dossier_json_response(parsed, config),
         KEYS_PATH => keys_response(parsed, routes.keys_home.as_deref()),
         INSPECT_PATH => inspect_response(parsed, upload, routes),
+        OSINT_CASE_PATH => osint_offline_response(parsed, false),
+        OSINT_RISK_PATH => osint_offline_response(parsed, true),
         INVESTIGATE_PATH => investigate_response(parsed, routes.investigate.as_ref()),
         "/favicon.svg" => response(200, "image/svg+xml", FAVICON_SVG, head),
         "/favicon.ico" => response(204, "image/x-icon", "", head),
@@ -1979,6 +1987,49 @@ fn key_slots(home: &Path, head: bool, imported: Option<&Imported>) -> String {
 /// `GET /api/analyze?seeds=…`: the offline multi-hop analysis of up to [`MAX_ANALYZE_SEEDS`]
 /// seeds, one per line. It is refused cross-site like a lookup, but needs no lookup header: it
 /// makes no network request and spends no key.
+/// Reuse Huntsman's existing authorization and same-site gates for both
+/// bounded, offline JSON OSINT methods. No remote provider request is made.
+fn osint_offline_response(parsed: &ParsedRequest<'_>, risk: bool) -> String {
+    if parsed.method != Method::Post {
+        return json_error(405, "OSINT source analysis requires POST");
+    }
+    if let Some(refusal) = page_refusal(parsed, "OSINT source analysis", true) {
+        return refusal;
+    }
+    if !parsed.query.is_empty() {
+        return json_error(400, "OSINT analysis accepts JSON body, not query parameters");
+    }
+    let Some(length) = parsed.content_length else {
+        return json_error(400, "OSINT analysis needs content length");
+    };
+    if length == 0 || length > MAX_FORM_BYTES {
+        return json_error(413, "OSINT body size exceeded; use the CLI for larger datasets");
+    }
+    let Some(body) = parsed.body else {
+        return json_error(400, "OSINT analysis body missing");
+    };
+    if body.len() != length {
+        return json_error(400, "OSINT analysis body incomplete or invalid UTF-8");
+    }
+    if risk {
+        match crate::osint_area_risk::estimate_json(body.as_bytes()) {
+            Ok(report) => serde_json::to_string(&report).map_or_else(
+                |_| json_error(500, "OSINT area result serialization failed"),
+                |json| json_ok(&json, false),
+            ),
+            Err(_) => json_error(400, "OSINT area input invalid"),
+        }
+    } else {
+        match crate::osint_casework::review_json(body.as_bytes()) {
+            Ok(report) => serde_json::to_string(&report).map_or_else(
+                |_| json_error(500, "OSINT case result serialization failed"),
+                |json| json_ok(&json, false),
+            ),
+            Err(_) => json_error(400, "OSINT case input invalid"),
+        }
+    }
+}
+
 fn analyze_response(parsed: &ParsedRequest<'_>, analyze: Option<&AnalyzeHandler>) -> String {
     let Some(analyze) = analyze else {
         return json_error(404, "analysis is not enabled on this server");
