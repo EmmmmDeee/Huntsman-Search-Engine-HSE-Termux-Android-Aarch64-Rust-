@@ -998,8 +998,7 @@ impl ScanApi {
     }
 
     fn export_many(&self, param: &Params) -> ApiResponse {
-        let limit = u64::try_from(PipelineLimits::default().max_export_bytes)
-            .unwrap_or(u64::MAX);
+        let limit = u64::try_from(PipelineLimits::default().max_export_bytes).unwrap_or(u64::MAX);
         self.export_many_with_budget(param, limit)
     }
 
@@ -1027,19 +1026,19 @@ impl ScanApi {
                 Ok(record) => record,
                 Err(response) => return response,
             };
-            let (results, charged) = match self
-                .service
-                .store()
-                .results_with_byte_budget(id, remaining)
-            {
-                Ok(found) => found,
-                Err(crate::scan_store::StoreError::Invalid(message)) => {
-                    return error(413, &message);
-                }
-                Err(failure) => return service_error(&failure.into()),
-            };
+            let (results, charged) =
+                match self.service.store().results_with_byte_budget(id, remaining) {
+                    Ok(found) => found,
+                    Err(crate::scan_store::StoreError::Invalid(message)) => {
+                        return error(413, &message);
+                    }
+                    Err(failure) => return service_error(&failure.into()),
+                };
             remaining = remaining.saturating_sub(charged);
-            scans.push((record.clone(), results.unwrap_or_else(|| empty_results(&record))));
+            scans.push((
+                record.clone(),
+                results.unwrap_or_else(|| empty_results(&record)),
+            ));
         }
         let pairs: Vec<(&ScanRecord, &ScanResults)> = scans
             .iter()
