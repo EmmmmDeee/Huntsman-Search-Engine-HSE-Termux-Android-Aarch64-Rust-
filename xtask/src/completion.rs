@@ -169,12 +169,16 @@ fn generate(root: &Path) -> Result<String> {
     tree.append(&mut report, "");
     report.push_str(&fence);
     report.push_str("\n\n");
-    report.push_str("## Dependency-ordered implementation queue\n\n");
+    report.push_str("## Dependency-ordered outstanding implementation queue\n\n");
     report.push_str(
         "P0 = foundational or critical verification; P1 = integration; P2 = improvement; P3 = optional. \
          Priority breaks ties only among dependency-ready tasks. No task status is inferred from a filename.\n\n",
     );
-    for (sequence, index) in ordered.iter().enumerate() {
+    for (sequence, index) in ordered
+        .iter()
+        .filter(|&&index| tasks[index].state != "VERIFIED")
+        .enumerate()
+    {
         let task = &tasks[*index];
         let _ = writeln!(
             report,
@@ -218,6 +222,24 @@ fn generate(root: &Path) -> Result<String> {
         }
         report.push('\n');
     }
+    report.push_str("## Historically verified implementation receipts\n\n");
+    for index in ordered.iter().copied().filter(|&i| tasks[i].state == "VERIFIED") {
+        let task = &tasks[index];
+        if let (Some(commit), Some(proof)) =
+            (&task.verified_commit, &task.verification_evidence)
+        {
+            let _ = writeln!(
+                report,
+                "- P{} {}: {} (verified at {}; evidence: {}).",
+                task.priority,
+                escape_md(&task.id),
+                escape_md(&task.path),
+                escape_md(commit),
+                escape_md(proof)
+            );
+        }
+    }
+    report.push('\n');
     report.push_str(
         "## Completion and continuity gates\n\n\
          - Every tracked path must remain represented, including non-overlapping files and files not selected for modification.\n\
