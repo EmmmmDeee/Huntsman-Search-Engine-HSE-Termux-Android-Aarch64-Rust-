@@ -6,9 +6,9 @@ that can be enforced by committing source alone. The `merge-policy.sh` controlle
 
 **Verified baseline:** `main` must require pull requests, exact source CI checks
 from the GitHub Actions app (integration ID `15368`), up-to-date PRs, resolved
-review threads, no force pushes, no deletion, and zero bypass actors. The twelve
+review threads, no force pushes, no deletion, and zero bypass actors. The nine always-running
 checks include native Rust/MSRV, Android AArch64, QEMU, browser, container, MITM,
-completion, and release-preflight gates. The post-merge-only origin and release
+completion gates. Conditional release-preflight jobs are not required. The post-merge-only origin and release
 publication checks are deliberately not listed as PR requirements.
 
 ## Apply only from a repository-admin GitHub session
