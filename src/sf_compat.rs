@@ -422,6 +422,10 @@ pub fn target_type(kind: ScanKind, canonical: &str) -> &'static str {
             "PHYSICAL_COORDINATES"
         }
         ScanKind::Place => "PHYSICAL_ADDRESS",
+        ScanKind::News => "HSE_NEWS_QUERY",
+        ScanKind::Notices => "HSE_NOTICE_QUERY",
+        ScanKind::Web => "HSE_WEB_QUERY",
+        ScanKind::Dossier => "HSE_DOSSIER_QUERY",
     }
 }
 

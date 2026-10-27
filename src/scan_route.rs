@@ -41,11 +41,19 @@ pub enum ScanKind {
     /// Not inferred as a kind of its own: free text is a person's name to `scan` and a bare
     /// coordinate pair is a `WiFi` area, so a geocode is asked for explicitly.
     Place,
+    /// Keyless GDELT news articles that mention the query. A lead, not a verified fact.
+    News,
+    /// Keyless FBI wanted notices that mention the query. Source-claimed and time-sensitive.
+    Notices,
+    /// Keyless web meta-search over Huntsman's existing engines. A lead, not corroboration.
+    Web,
+    /// The news, notices and web routes together, for one query.
+    Dossier,
 }
 
 impl ScanKind {
     /// Every kind, in the order the CLI usage and the Web UI list them.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 16] = [
         Self::People,
         Self::Email,
         Self::Exposure,
@@ -58,6 +66,10 @@ impl ScanKind {
         Self::Network,
         Self::CryptoAddress,
         Self::Place,
+        Self::News,
+        Self::Notices,
+        Self::Web,
+        Self::Dossier,
     ];
 
     #[must_use]
@@ -75,6 +87,10 @@ impl ScanKind {
             Self::Network => "network",
             Self::CryptoAddress => "crypto",
             Self::Place => "geocode",
+            Self::News => "news",
+            Self::Notices => "notices",
+            Self::Web => "web",
+            Self::Dossier => "dossier",
         }
     }
 }
@@ -101,6 +117,10 @@ pub fn parse_kind(value: &str) -> Result<ScanKind, &str> {
         "network" | "wifi" | "bssid" | "ssid" | "wigle" => Ok(ScanKind::Network),
         "crypto" | "bitcoin" | "btc" => Ok(ScanKind::CryptoAddress),
         "geocode" | "place" | "location" => Ok(ScanKind::Place),
+        "news" => Ok(ScanKind::News),
+        "notices" | "fbi" => Ok(ScanKind::Notices),
+        "web" => Ok(ScanKind::Web),
+        "dossier" => Ok(ScanKind::Dossier),
         other => Err(other),
     }
 }
@@ -122,6 +142,9 @@ pub fn canonical_selector(kind: ScanKind, raw: &str) -> Option<String> {
         ScanKind::CryptoAddress => crate::crypto_cli::canonical_address(raw).ok(),
         // The query as the geocode keys on it; a `lat,lon` point is read by the lookup itself.
         ScanKind::Place => crate::nominatim_cli::canonical_query(raw).ok(),
+        ScanKind::News | ScanKind::Notices | ScanKind::Web | ScanKind::Dossier => {
+            crate::public_osint::canonical_query(raw)
+        }
         // The people command owns the two-token rule and its offline skip path;
         // here only an empty name is non-canonical.
         ScanKind::People => {

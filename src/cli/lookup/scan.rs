@@ -209,11 +209,25 @@ fn per_seed_save_path(dir: &str, index: usize, seed: &str) -> PathBuf {
     Path::new(dir).join(file)
 }
 
+/// The public-OSINT kinds run the `public-osint` front-end over the selector. They take no options:
+/// an extra option is refused with usage, never read as part of the query.
+fn public_kind_cmd(route: ScanKind, forwarded: &[String]) -> ExitCode {
+    match forwarded {
+        [selector] => {
+            crate::cli::public_osint::run(&[route.command().to_owned(), selector.clone()])
+        }
+        _ => fail(
+            EX_USAGE,
+            "scan news|notices|web|dossier takes one query and no options; pass the query alone",
+        ),
+    }
+}
+
 fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
     let Some(selector) = forwarded.first() else {
         return fail(
             EX_USAGE,
-            "usage: huntsman-recon scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save FILE] | scan --input-file FILE [-k KIND] [--save-dir DIR]",
+            "usage: huntsman-recon scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode|news|notices|web|dossier] [--save FILE] | scan --input-file FILE [-k KIND] [--save-dir DIR]",
         );
     };
     // A leading space must not hide an option from this check, or the selector would be judged
@@ -269,6 +283,9 @@ fn scan_one(forwarded: &[String], kind: Option<&str>) -> ExitCode {
         ScanKind::People => people_cmd(&forwarded),
         ScanKind::CryptoAddress => crypto_cmd(&forwarded),
         ScanKind::Place => geocode_cmd(&forwarded),
+        ScanKind::News | ScanKind::Notices | ScanKind::Web | ScanKind::Dossier => {
+            public_kind_cmd(route, &forwarded)
+        }
     }
 }
 

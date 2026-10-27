@@ -15,6 +15,7 @@ use crate::circuit::{BackoffPolicy, ResponseCache};
 use crate::error::Error;
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Response, Transport, append_query_param};
+use crate::module_selection::Selection;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, classify_fetch};
 use crate::textnorm::{decode_html_entities, escape_controls};
 use crate::value_syntax::find_ascii_ci_bytes;
@@ -107,8 +108,21 @@ pub fn search<T: Transport + ?Sized>(
     query: &str,
     now_unix: u64,
 ) -> Result<SearchReport, Error> {
+    search_selected(transport, query, now_unix, &Selection::all())
+}
+
+/// Query only the engines `chosen` runs. An engine it leaves out is never asked.
+///
+/// # Errors
+/// Returns only network-boundary errors that prevent a request from being sent.
+pub fn search_selected<T: Transport + ?Sized>(
+    transport: &T,
+    query: &str,
+    now_unix: u64,
+    chosen: &Selection,
+) -> Result<SearchReport, Error> {
     let query = checked_query(query, "query")?;
-    let (report, _) = search_with_observations(transport, &query, now_unix)?;
+    let (report, _) = search_with_observations(transport, &query, now_unix, chosen)?;
     Ok(report)
 }
 
@@ -132,10 +146,14 @@ fn search_with_observations<T: Transport + ?Sized>(
     transport: &T,
     query: &str,
     now_unix: u64,
+    chosen: &Selection,
 ) -> Result<(SearchReport, Vec<SearchHit>), Error> {
     let mut hits = Vec::new();
     let mut outcomes = Vec::new();
-    for engine in ENGINES {
+    for engine in ENGINES
+        .into_iter()
+        .filter(|engine| chosen.runs(engine.name))
+    {
         let result = search_engine(transport, engine, query, now_unix)?;
         hits.extend(result.hits);
         outcomes.push(result.outcome);
@@ -187,7 +205,8 @@ fn append_round<T: Transport + ?Sized>(
     reports: &mut Vec<AdaptiveRound>,
     seen: &mut BTreeMap<String, HitObservation>,
 ) -> Result<usize, Error> {
-    let (report, observations) = search_with_observations(transport, query, now_unix)?;
+    let (report, observations) =
+        search_with_observations(transport, query, now_unix, &Selection::all())?;
     let mut novel = 0;
     for hit in &observations {
         let entry = seen.entry(hit.url.clone()).or_insert_with(|| {

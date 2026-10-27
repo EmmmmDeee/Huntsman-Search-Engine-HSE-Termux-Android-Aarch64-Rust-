@@ -1,3 +1,5 @@
+use crate::lookup_modules::public_source;
+use crate::public_osint;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -191,6 +193,19 @@ fn verdict<N: Transport + Clone + Send + Sync + 'static>(
         ScanKind::Place => ended(nominatim_cli::run(&transport, target, now), |report| {
             report.outcomes
         }),
+        ScanKind::News | ScanKind::Notices | ScanKind::Web | ScanKind::Dossier => {
+            match public_osint::search_selected(
+                &transport,
+                public_source(kind).expect("a public kind"),
+                target,
+                "scan",
+                now,
+                chosen,
+            ) {
+                Ok(report) => Verdict::Printed(report.outcomes),
+                Err(why) => Verdict::Unavailable(why.to_owned()),
+            }
+        }
         ScanKind::Email => match email_cli::run_keyed(&transport, &keys, target, now) {
             email_cli::EmailRun::Printed { report, .. } => Verdict::Printed(report.outcomes),
             email_cli::EmailRun::Network(why) => Verdict::Refused(why),
@@ -275,6 +290,9 @@ const fn target(kind: ScanKind) -> &'static str {
         ScanKind::Network => "00:11:22:33:44:55",
         ScanKind::CryptoAddress => "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
         ScanKind::Place => "Eiffel Tower",
+        ScanKind::News => "climate summit",
+        ScanKind::Notices => "wanted",
+        ScanKind::Web | ScanKind::Dossier => "huntsman search",
     }
 }
 
@@ -350,7 +368,11 @@ fn anchor(kind: ScanKind) -> Option<&'static str> {
         | ScanKind::Network
         | ScanKind::Exposure
         | ScanKind::CryptoAddress
-        | ScanKind::Place => None,
+        | ScanKind::Place
+        | ScanKind::News
+        | ScanKind::Notices
+        | ScanKind::Web
+        | ScanKind::Dossier => None,
     }
 }
 
@@ -438,6 +460,15 @@ fn every_use_case_leaves_each_lookup_a_module_to_ask() {
     for usecase in crate::scan_service::USE_CASES {
         let chosen = crate::module::use_case_selection(usecase, &Selection::all());
         for kind in ScanKind::ALL {
+            // `investigate` excludes the search and web categories by definition: a web lookup
+            // widens a footprint rather than suspecting a target, so it has nothing to ask there.
+            if usecase == "investigate" && kind == ScanKind::Web {
+                assert!(
+                    !asks_any(kind, &chosen),
+                    "investigate must not ask web search"
+                );
+                continue;
+            }
             assert!(
                 asks_any(kind, &chosen),
                 "{usecase} leaves the {kind:?} lookup nothing to ask"

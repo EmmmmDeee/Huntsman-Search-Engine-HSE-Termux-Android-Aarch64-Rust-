@@ -30,10 +30,11 @@ use huntsman_recon::http::{Transport, TransportConfig, UreqTransport};
 use huntsman_recon::ip_cli::{IP_USAGE, IpArgs};
 use huntsman_recon::itunes_cli::{self, ITUNES_USAGE, ItunesArgs};
 use huntsman_recon::keys::Keys;
+use huntsman_recon::lookup_modules::public_source;
 use huntsman_recon::lookup_save::{
     self, ASN_POLICY, CRYPTO_POLICY, DOMAIN_POLICY, EMAIL_EXPOSURE_POLICY, EMAIL_POLICY,
     EXPOSURE_POLICY, IP_POLICY, NETBLOCK_POLICY, NETWORK_POLICY, PEOPLE_POLICY, PHONE_POLICY,
-    PLACE_POLICY, SavePolicy, USERNAME_EXPOSURE_POLICY, USERNAME_POLICY,
+    PLACE_POLICY, PUBLIC_POLICY, SavePolicy, USERNAME_EXPOSURE_POLICY, USERNAME_POLICY,
 };
 use huntsman_recon::module_selection::{Selected, Selection};
 use huntsman_recon::netblock_cli::{NETBLOCK_USAGE, NetblockArgs};
@@ -42,6 +43,7 @@ use huntsman_recon::nominatim_cli::{self, GEOCODE_USAGE, GeocodeArgs};
 use huntsman_recon::oathnet;
 use huntsman_recon::people_cli::{self, PEOPLE_USAGE, PeopleArgs, PeopleRun};
 use huntsman_recon::phone_cli::{PHONE_USAGE, PhoneArgs, PhoneRun};
+use huntsman_recon::public_osint;
 use huntsman_recon::scan_route::ScanKind;
 use huntsman_recon::seeknow_collector::LookupLeg;
 use huntsman_recon::source_outcome::{SourceExecutionOutcome, SourceRun};
@@ -111,6 +113,9 @@ pub(in crate::cli) fn collect(
         ScanKind::Network => network(selector, now, chosen),
         ScanKind::CryptoAddress => crypto(selector, now, chosen),
         ScanKind::Place => place(selector, now, chosen),
+        ScanKind::News | ScanKind::Notices | ScanKind::Web | ScanKind::Dossier => {
+            public(kind, selector, now, chosen)
+        }
     }
 }
 
@@ -551,6 +556,22 @@ fn crypto(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Ref
 }
 
 /// The Nominatim leg for a place name, street address or `lat,lon` point, keyless.
+fn public(
+    kind: ScanKind,
+    selector: &str,
+    now: u64,
+    chosen: &Selection,
+) -> Result<Collected, Refused> {
+    let transport = transport(&TransportConfig::default(), chosen);
+    let source = public_source(kind).expect("a public kind");
+    let scan = huntsman_recon::entity::scan_id("public-osint", selector);
+    let report = public_osint::search_selected(&transport, source, selector, &scan, now, chosen)
+        .map_err(|message| Refused::Unavailable(message.into()))?;
+    let text = huntsman_recon::lookup_report::render(&report.entities, &report.outcomes)
+        .map_err(Refused::Unavailable)?;
+    Ok(done(text, report.entities, report.outcomes, PUBLIC_POLICY))
+}
+
 fn place(selector: &str, now: u64, chosen: &Selection) -> Result<Collected, Refused> {
     let transport = transport(&TransportConfig::default(), chosen);
     let (text, report) = source_report(nominatim_cli::run(&transport, selector, now))?;

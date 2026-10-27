@@ -286,6 +286,20 @@ fn place_provenance(source: &str) -> (&str, &'static str) {
     }
 }
 
+fn public_provenance(source: &str) -> (&str, &'static str) {
+    match source {
+        crate::public_osint::WEB => (source, "src/web_query.rs"),
+        _ => (source, "src/public_osint.rs"),
+    }
+}
+
+pub const PUBLIC_POLICY: SavePolicy = SavePolicy {
+    default_source: crate::public_osint::NEWS,
+    does_not_show: "a public news article, notice or search hit is a lead that mentions the query, not a verified fact or an identity",
+    outcome_provenance: public_provenance,
+    entity_provenance: public_provenance,
+};
+
 pub const PLACE_POLICY: SavePolicy = SavePolicy {
     default_source: "nominatim",
     does_not_show: "a geocoded place is where a name or address resolves on the map, not that anyone is or was there",

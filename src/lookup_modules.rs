@@ -111,6 +111,14 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         ScanKind::Exposure => BREACH.to_vec(),
         ScanKind::CryptoAddress => vec![blockchain::SOURCE, crate::base_rpc::SOURCE],
         ScanKind::Place => vec![nominatim::SOURCE],
+        ScanKind::News => vec![crate::public_osint::NEWS],
+        ScanKind::Notices => vec![crate::public_osint::NOTICES],
+        ScanKind::Web => web_engines(),
+        ScanKind::Dossier => {
+            let mut dossier = vec![crate::public_osint::NEWS, crate::public_osint::NOTICES];
+            dossier.extend(web_engines());
+            dossier
+        }
     };
     // Stable deduplication keeps each source's first execution position and
     // avoids a tree allocation for the small, bounded module list.
@@ -121,6 +129,27 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         }
     }
     unique
+}
+
+/// The keyless web engines a web lookup asks, by their module names.
+fn web_engines() -> Vec<&'static str> {
+    crate::web_query::ENGINES
+        .iter()
+        .map(|engine| engine.name)
+        .collect()
+}
+
+/// The public-OSINT front-end a news, notices, web or dossier kind runs. `None` for every other
+/// kind. **Pure.**
+#[must_use]
+pub const fn public_source(kind: ScanKind) -> Option<crate::public_osint::Source> {
+    match kind {
+        ScanKind::News => Some(crate::public_osint::Source::News),
+        ScanKind::Notices => Some(crate::public_osint::Source::Notices),
+        ScanKind::Web => Some(crate::public_osint::Source::Web),
+        ScanKind::Dossier => Some(crate::public_osint::Source::All),
+        _ => None,
+    }
 }
 
 /// Whether `kind`'s lookup asks any module `selection` runs. **Pure.**
@@ -160,7 +189,11 @@ pub fn offline_runs(kind: ScanKind) -> Vec<&'static str> {
         | ScanKind::People
         | ScanKind::Exposure
         | ScanKind::CryptoAddress
-        | ScanKind::Place => Vec::new(),
+        | ScanKind::Place
+        | ScanKind::News
+        | ScanKind::Notices
+        | ScanKind::Web
+        | ScanKind::Dossier => Vec::new(),
     }
 }
 

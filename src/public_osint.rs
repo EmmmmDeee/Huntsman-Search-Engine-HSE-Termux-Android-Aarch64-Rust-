@@ -11,12 +11,15 @@ use serde_json::Value;
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid, push_entity};
 use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Transport, append_query_param};
+use crate::module_selection::Selection;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
 pub const MAX_PUBLIC_QUERY_BYTES: usize = 160;
 const MAX_ROWS: usize = 20;
-const NEWS: &str = "gdelt_doc";
-const NOTICES: &str = "fbi_wanted";
+pub const NEWS: &str = "gdelt_doc";
+pub const NOTICES: &str = "fbi_wanted";
+/// The keyless web meta-search module (`web_query`), one of the public-OSINT routes.
+pub const WEB: &str = "web_query";
 const GDELT_URL: &str = "https://api.gdeltproject.org/api/v2/doc/doc";
 const FBI_URL: &str = "https://api.fbi.gov/wanted/v1/list";
 
@@ -34,6 +37,20 @@ pub struct Report {
     pub entities: Vec<Entity>,
     pub outcomes: Vec<SourceExecutionOutcome>,
     pub limitations: Vec<&'static str>,
+}
+
+/// The module a news or notices provider is listed as, so a selection can name it.
+const fn provider_module(provider: Source) -> &'static str {
+    match provider {
+        Source::Notices => NOTICES,
+        _ => NEWS,
+    }
+}
+
+/// The canonical public-OSINT query: trimmed, bounded, and free of control characters and quotes.
+#[must_use]
+pub fn canonical_query(raw: &str) -> Option<String> {
+    checked_query(raw).ok()
 }
 
 fn checked_query(raw: &str) -> Result<String, &'static str> {
@@ -352,12 +369,13 @@ fn web_search<T: Transport + ?Sized>(
     query: &str,
     scan_id: &str,
     now: u64,
+    chosen: &Selection,
 ) -> (Vec<Entity>, Vec<SourceExecutionOutcome>) {
-    let Ok(found) = crate::web_query::search(transport, query, now) else {
+    let Ok(found) = crate::web_query::search_selected(transport, query, now, chosen) else {
         return (
             Vec::new(),
             vec![SourceExecutionOutcome::refused_before_sending(
-                "web_query",
+                WEB,
                 now,
                 "search request was refused",
             )],
@@ -400,6 +418,29 @@ pub fn search<T: Transport + ?Sized>(
     scan_id: &str,
     now: u64,
 ) -> Result<Report, &'static str> {
+    search_selected(
+        transport,
+        source,
+        raw_query,
+        scan_id,
+        now,
+        &Selection::all(),
+    )
+}
+
+/// Search only the sources `chosen` runs: a news or notice source it leaves out is never asked,
+/// and the web search asks only the engines it names.
+///
+/// # Errors
+/// Refuses an invalid query before any request is sent.
+pub fn search_selected<T: Transport + ?Sized>(
+    transport: &T,
+    source: Source,
+    raw_query: &str,
+    scan_id: &str,
+    now: u64,
+    chosen: &Selection,
+) -> Result<Report, &'static str> {
     let query = checked_query(raw_query)?;
     let mut entities = Vec::new();
     let mut outcomes = Vec::new();
@@ -409,12 +450,15 @@ pub fn search<T: Transport + ?Sized>(
         Source::Web => &[][..],
         Source::All => &[Source::News, Source::Notices][..],
     } {
+        if !chosen.runs(provider_module(*provider)) {
+            continue;
+        }
         let (mut found, outcome) = collect(transport, *provider, &query, scan_id, now);
         entities.append(&mut found);
         outcomes.push(outcome);
     }
     if matches!(source, Source::Web | Source::All) {
-        let (mut found, web_outcomes) = web_search(transport, &query, scan_id, now);
+        let (mut found, web_outcomes) = web_search(transport, &query, scan_id, now, chosen);
         entities.append(&mut found);
         outcomes.extend(web_outcomes);
     }

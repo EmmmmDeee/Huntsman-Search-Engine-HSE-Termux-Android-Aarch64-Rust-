@@ -169,7 +169,7 @@ fn help_and_version_are_available() {
         ("phone", "phone NUMBER [--save FILE]"),
         (
             "scan",
-            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode]",
+            "scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode|news|notices|web|dossier]",
         ),
         ("investigate", "investigate TEXT..."),
         ("modules", "modules [--json]"),
