@@ -39,7 +39,10 @@ fn root_installer_changes_trigger_release_dry_run_on_pull_requests() {
         .split_once("\npermissions:")
         .expect("pull_request paths must precede permissions")
         .0;
-    for required in ["      - \"install.sh\"", "      - \"tests/root_installer.rs\""] {
+    for required in [
+        "      - \"install.sh\"",
+        "      - \"tests/root_installer.rs\"",
+    ] {
         assert!(
             paths.lines().any(|line| line == required),
             "release PR dry-run must include {required:?}"
