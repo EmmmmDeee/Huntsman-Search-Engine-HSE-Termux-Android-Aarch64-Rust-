@@ -988,6 +988,68 @@ fn scans_notify_posts_a_phone_notification_without_the_target() {
 
 /// `scans prune --keep N` lists the ended scans beyond the newest N of each target and deletes
 /// them only with `--apply`, keeping the newest; it refuses to run without a `--keep` of at least 1.
+/// `scans cycle` is one continuous cycle a scheduler can run: off until targets are configured,
+/// it then runs the due target's scan to its end, and the next run finds nothing due; a keys-file
+/// setting is read as serve reads it, and a wrong one is refused naming it.
+#[test]
+fn scans_cycle_runs_what_is_due_once_and_then_nothing() {
+    let home = scratch("scans-cycle");
+    let run = |args: &[&str], env: &[(&str, &str)]| {
+        let mut command = bin();
+        command.args(args).env("HOME", &home);
+        for name in [
+            "HUNTSMAN_HOME",
+            "HUNTSMAN_ENV_FILE",
+            "HUNTSMAN_CONTINUOUS_TARGETS",
+            "HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES",
+            "HUNTSMAN_CONTINUOUS_NOTIFY",
+            "HUNTSMAN_CONTINUOUS_KEEP",
+        ] {
+            command.env_remove(name);
+        }
+        command.envs(env.iter().copied()).output().unwrap()
+    };
+    let off = run(&["scans", "cycle"], &[]);
+    assert_eq!(off.status.code(), Some(78));
+    assert!(String::from_utf8_lossy(&off.stderr).contains("HUNTSMAN_CONTINUOUS_TARGETS"));
+    assert_eq!(run(&["scans", "cycle", "x"], &[]).status.code(), Some(64));
+
+    let keys = home.join(".huntsman.env");
+    fs::write(&keys, "HUNTSMAN_CONTINUOUS_TARGETS=+61412345678\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&keys, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let first = run(&["scans", "cycle", "--json"], &[]);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let tally: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(tally["collected"], 1, "{tally}");
+    assert_eq!(tally["failed"], 0, "{tally}");
+    let listed = run(&["scans", "list", "--json"], &[]);
+    let rows: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["status"], "FINISHED", "run to its end before exit");
+
+    let again = run(&["scans", "cycle"], &[]);
+    assert_eq!(again.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&again.stdout).starts_with("cycle: 0 scans collected, 0 failed"),
+        "{}",
+        String::from_utf8_lossy(&again.stdout)
+    );
+
+    let wrong = run(&["scans", "cycle"], &[("HUNTSMAN_CONTINUOUS_KEEP", "none")]);
+    assert_eq!(wrong.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("HUNTSMAN_CONTINUOUS_KEEP"));
+    let _ = fs::remove_dir_all(&home);
+}
+
 #[test]
 fn scans_prune_lists_then_deletes_only_what_is_beyond_the_newest() {
     let home = scratch("scans-prune");
