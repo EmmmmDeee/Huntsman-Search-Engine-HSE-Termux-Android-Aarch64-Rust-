@@ -104,6 +104,26 @@ check_case 'wrong branch target is rejected' drift_target check fail 0 'DRIFT:'
 check_case 'inactive branch enforcement is rejected' unprotected check fail 0 'NOT ENFORCED:'
 check_case 'auto-merge disabled is rejected' auto_disabled check fail 0 'NOT READY:'
 
+# A policy can retain ten contexts while silently replacing the RustSec gate.
+# Run the real controller against a mutated local policy and require fail-closed
+# validation before any GitHub API request.
+mkdir -p "$tmp/mutated"
+cp -- "$script" "$tmp/mutated/merge-policy.sh"
+jq '(.rules[] | select(.type == "required_status_checks") |
+  .parameters.required_status_checks[0].context) = "unrelated replacement"' \
+  "$POLICY_FILE" > "$tmp/mutated/merge-policy.json"
+original_script="$script"
+original_policy="$POLICY_FILE"
+script="$tmp/mutated/merge-policy.sh"
+export POLICY_FILE="$tmp/mutated/merge-policy.json"
+check_case 'same-count policy with substituted RustSec gate fails closed' none check fail 0 'invalid or weakened local merge policy'
+if [[ -f "$MOCK_LOG" ]]; then
+  echo 'FAIL: invalid local policy reached the GitHub API' >&2
+  fail=$((fail + 1))
+fi
+script="$original_script"
+export POLICY_FILE="$original_policy"
+
 if [[ "$fail" -ne 0 ]]; then
   echo "$fail failed / $pass passed" >&2
   exit 1

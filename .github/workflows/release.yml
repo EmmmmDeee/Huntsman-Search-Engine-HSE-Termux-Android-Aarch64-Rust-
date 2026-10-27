@@ -69,6 +69,7 @@ on:
       - ".github/workflows/release.yml"
       - ".github/scripts/scan-for-keys.sh"
       - ".github/scripts/install-termux.sh"
+      - "install.sh"
       - ".github/actions/setup-ndk-aarch64/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -83,6 +84,7 @@ on:
       # rather than waiting for the main-branch release build to find regressions.
       - "scripts/termux-runtime-acceptance.sh"
       - "tests/termux_runtime_acceptance.rs"
+      - "tests/root_installer.rs"
       - "xtask/**"
       - ".cargo/**"
 
