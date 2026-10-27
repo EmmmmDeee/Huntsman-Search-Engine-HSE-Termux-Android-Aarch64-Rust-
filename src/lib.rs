@@ -12,6 +12,7 @@ pub mod abuseipdb;
 pub mod address_au;
 pub mod analysis;
 pub mod api_leg;
+pub mod apk_intel;
 pub mod artifacts;
 pub mod asic_director;
 pub mod asic_persons;

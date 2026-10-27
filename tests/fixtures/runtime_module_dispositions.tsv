@@ -2,6 +2,7 @@ abuseipdb	adapter	AbuseIPDB check leg reached through ip_cli from ip, scan -k ip
 address_au	leaf	Australian address and phone normalization utility
 analysis	runtime	shared analysis fan-out
 api_leg	runtime	shared request path, key binding and status mapping of the free-tier API legs
+apk_intel	adapter	bounded offline APK archive inventory reached by the shipped apk CLI with source-labelled evidence
 artifacts	exporter	bounded shared-state artifact renderer
 asic_director	adapter	ASIC director source client
 asic_persons	adapter	ASIC people source client
