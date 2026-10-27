@@ -284,7 +284,7 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Uncertainty
 
     // A terminal people scan may omit a selected leg without an outcome.
     // Do not mistake such a gap for an accepted negative or invent a provider failure.
-    if !record.status.is_active() {
+    if !record.status.is_active() && results.is_some() {
         if let Some(coverage) = crate::scan_coverage::derive(record, results) {
             for source in coverage.sources {
                 if source.status == crate::scan_coverage::PeopleSourceStatus::NotObserved {
@@ -485,6 +485,17 @@ mod tests {
         assert_eq!(missing.module.as_deref(), Some("asic_director"));
         assert_eq!(missing.category, "missing_observations");
         assert_eq!(register.unresolved_executions, 0);
+        // With no saved results, the execution record is unavailable, not proof
+        // that each selected source failed to record its own execution.
+        let unavailable = derive(&people, None);
+        assert_eq!(
+            unavailable
+                .items
+                .iter()
+                .filter(|item| item.id.starts_with("sources:not_observed:"))
+                .count(),
+            0
+        );
     }
 
     #[test]
