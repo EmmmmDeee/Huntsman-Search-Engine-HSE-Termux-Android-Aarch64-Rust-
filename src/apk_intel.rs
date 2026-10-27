@@ -74,7 +74,9 @@ fn checked_range(data: &[u8], at: usize, size: usize) -> Option<&[u8]> {
 /// Find the last complete ZIP EOCD record. The comment length must end at EOF.
 fn eocd(data: &[u8]) -> Result<usize, Error> {
     if data.len() < 22 {
-        return Err(Error::invalid_value("APK is too short for a ZIP end record"));
+        return Err(Error::invalid_value(
+            "APK is too short for a ZIP end record",
+        ));
     }
     let start = data.len().saturating_sub(22 + 65535);
     for pos in (start..=data.len() - 22).rev() {
@@ -88,7 +90,10 @@ fn eocd(data: &[u8]) -> Result<usize, Error> {
 }
 
 fn dex_name(name: &str) -> bool {
-    let Some(suffix) = name.strip_prefix("classes").and_then(|s| s.strip_suffix(".dex")) else {
+    let Some(suffix) = name
+        .strip_prefix("classes")
+        .and_then(|s| s.strip_suffix(".dex"))
+    else {
         return false;
     };
     suffix.is_empty() || suffix.bytes().all(|c| c.is_ascii_digit())
@@ -125,7 +130,9 @@ fn signing_block(data: &[u8], central_at: usize) -> SigningBlock {
     let Some(start) = central_at.checked_sub(total) else {
         return found;
     };
-    let Ok(size_u64) = u64::try_from(size) else { return found; };
+    let Ok(size_u64) = u64::try_from(size) else {
+        return found;
+    };
     if size < 24 || le64(data, start) != Some(size_u64) || start + 8 > footer_at {
         return found;
     }
@@ -144,9 +151,15 @@ fn signing_block(data: &[u8], central_at: usize) -> SigningBlock {
             return SigningBlock::default();
         };
         match id {
-            0x7109_871a => { found.schemes.insert("v2"); },
-            0xf053_68c0 => { found.schemes.insert("v3"); },
-            0x1b93_ad61 => { found.schemes.insert("v3.1"); },
+            0x7109_871a => {
+                found.schemes.insert("v2");
+            }
+            0xf053_68c0 => {
+                found.schemes.insert("v3");
+            }
+            0x1b93_ad61 => {
+                found.schemes.insert("v3.1");
+            }
             _ => {}
         }
         pos = next;
@@ -173,18 +186,36 @@ fn member<'a>(
         return Err(Error::invalid_value("invalid ZIP central directory entry"));
     }
     let flags = le16(data, pos + 8).ok_or_else(|| Error::invalid_value("truncated ZIP flags"))?;
-    let method = le16(data, pos + 10).ok_or_else(|| Error::invalid_value("truncated ZIP compression"))?;
-    let packed = usize::try_from(le32(data, pos + 20).ok_or_else(|| Error::invalid_value("missing compressed size"))?)
-        .map_err(|_| Error::invalid_value("compressed size overflow"))?;
-    let name_len = usize::from(le16(data, pos + 28).ok_or_else(|| Error::invalid_value("missing ZIP name size"))?);
-    let extra = usize::from(le16(data, pos + 30).ok_or_else(|| Error::invalid_value("missing ZIP extra size"))?);
-    let comment = usize::from(le16(data, pos + 32).ok_or_else(|| Error::invalid_value("missing ZIP comment size"))?);
-    let local_at = usize::try_from(le32(data, pos + 42).ok_or_else(|| Error::invalid_value("missing local offset"))?)
-        .map_err(|_| Error::invalid_value("local offset overflow"))?;
-    let name_at = pos.checked_add(46).ok_or_else(|| Error::invalid_value("ZIP name offset overflow"))?;
-    let raw = checked_range(data, name_at, name_len).ok_or_else(|| Error::invalid_value("truncated ZIP entry name"))?;
-    let name = std::str::from_utf8(raw).map_err(|_| Error::invalid_value("non UTF-8 APK entry name"))?;
-    let next = name_at.checked_add(name_len).and_then(|n| n.checked_add(extra)).and_then(|n| n.checked_add(comment))
+    let method =
+        le16(data, pos + 10).ok_or_else(|| Error::invalid_value("truncated ZIP compression"))?;
+    let packed = usize::try_from(
+        le32(data, pos + 20).ok_or_else(|| Error::invalid_value("missing compressed size"))?,
+    )
+    .map_err(|_| Error::invalid_value("compressed size overflow"))?;
+    let name_len = usize::from(
+        le16(data, pos + 28).ok_or_else(|| Error::invalid_value("missing ZIP name size"))?,
+    );
+    let extra = usize::from(
+        le16(data, pos + 30).ok_or_else(|| Error::invalid_value("missing ZIP extra size"))?,
+    );
+    let comment = usize::from(
+        le16(data, pos + 32).ok_or_else(|| Error::invalid_value("missing ZIP comment size"))?,
+    );
+    let local_at = usize::try_from(
+        le32(data, pos + 42).ok_or_else(|| Error::invalid_value("missing local offset"))?,
+    )
+    .map_err(|_| Error::invalid_value("local offset overflow"))?;
+    let name_at = pos
+        .checked_add(46)
+        .ok_or_else(|| Error::invalid_value("ZIP name offset overflow"))?;
+    let raw = checked_range(data, name_at, name_len)
+        .ok_or_else(|| Error::invalid_value("truncated ZIP entry name"))?;
+    let name =
+        std::str::from_utf8(raw).map_err(|_| Error::invalid_value("non UTF-8 APK entry name"))?;
+    let next = name_at
+        .checked_add(name_len)
+        .and_then(|n| n.checked_add(extra))
+        .and_then(|n| n.checked_add(comment))
         .ok_or_else(|| Error::invalid_value("ZIP entry overflow"))?;
     if next > dir_end {
         return Err(Error::invalid_value("ZIP entry exceeds directory boundary"));
@@ -192,19 +223,36 @@ fn member<'a>(
     if checked_range(data, local_at, 4) != Some(LOCAL_SIGNATURE) {
         return Err(Error::invalid_value("ZIP entry has invalid local header"));
     }
-    let local_name_len = usize::from(le16(data, local_at + 26).ok_or_else(|| Error::invalid_value("missing local name"))?);
-    let local_extra_len = usize::from(le16(data, local_at + 28).ok_or_else(|| Error::invalid_value("missing local extra"))?);
-    let local_name_at = local_at.checked_add(30).ok_or_else(|| Error::invalid_value("local header overflow"))?;
+    let local_name_len = usize::from(
+        le16(data, local_at + 26).ok_or_else(|| Error::invalid_value("missing local name"))?,
+    );
+    let local_extra_len = usize::from(
+        le16(data, local_at + 28).ok_or_else(|| Error::invalid_value("missing local extra"))?,
+    );
+    let local_name_at = local_at
+        .checked_add(30)
+        .ok_or_else(|| Error::invalid_value("local header overflow"))?;
     if checked_range(data, local_name_at, local_name_len) != Some(raw) {
-        return Err(Error::invalid_value("central/local ZIP entry names disagree"));
+        return Err(Error::invalid_value(
+            "central/local ZIP entry names disagree",
+        ));
     }
-    let payload_end = local_name_at.checked_add(local_name_len).and_then(|n| n.checked_add(local_extra_len))
+    let payload_end = local_name_at
+        .checked_add(local_name_len)
+        .and_then(|n| n.checked_add(local_extra_len))
         .and_then(|n| n.checked_add(packed))
         .ok_or_else(|| Error::invalid_value("ZIP payload range overflow"))?;
     if payload_end > dir_start {
-        return Err(Error::invalid_value("ZIP payload exceeds start of central directory"));
+        return Err(Error::invalid_value(
+            "ZIP payload exceeds start of central directory",
+        ));
     }
-    Ok(Member { name, flags, method, next })
+    Ok(Member {
+        name,
+        flags,
+        method,
+        next,
+    })
 }
 
 /// Inspect ZIP metadata only. No untrusted payload is decompressed or executed.
@@ -216,26 +264,38 @@ pub fn inventory(data: &[u8]) -> Result<Inventory, Error> {
     let end = eocd(data)?;
     let disks = (le16(data, end + 4), le16(data, end + 6));
     if disks != (Some(0), Some(0)) {
-        return Err(Error::invalid_value("multi-disk ZIP archives are unsupported"));
+        return Err(Error::invalid_value(
+            "multi-disk ZIP archives are unsupported",
+        ));
     }
     let count = le16(data, end + 10).ok_or_else(|| Error::invalid_value("missing ZIP count"))?;
     if le16(data, end + 8) != Some(count) {
         return Err(Error::invalid_value("inconsistent ZIP entry counts"));
     }
-    let size = le32(data, end + 12).ok_or_else(|| Error::invalid_value("missing ZIP directory size"))?;
-    let start = le32(data, end + 16).ok_or_else(|| Error::invalid_value("missing ZIP directory offset"))?;
+    let size =
+        le32(data, end + 12).ok_or_else(|| Error::invalid_value("missing ZIP directory size"))?;
+    let start =
+        le32(data, end + 16).ok_or_else(|| Error::invalid_value("missing ZIP directory offset"))?;
     if count == u16::MAX || size == u32::MAX || start == u32::MAX {
         return Err(Error::invalid_value("ZIP64 APK archives are unsupported"));
     }
     let count = usize::from(count);
     if count == 0 || count > MAX_ENTRIES {
-        return Err(Error::invalid_value("empty APK or APK exceeds 8192 ZIP entries"));
+        return Err(Error::invalid_value(
+            "empty APK or APK exceeds 8192 ZIP entries",
+        ));
     }
-    let dir_start = usize::try_from(start).map_err(|_| Error::invalid_value("directory offset overflow"))?;
-    let dir_end = dir_start.checked_add(usize::try_from(size).map_err(|_| Error::invalid_value("directory size overflow"))?)
+    let dir_start =
+        usize::try_from(start).map_err(|_| Error::invalid_value("directory offset overflow"))?;
+    let dir_end = dir_start
+        .checked_add(
+            usize::try_from(size).map_err(|_| Error::invalid_value("directory size overflow"))?,
+        )
         .ok_or_else(|| Error::invalid_value("directory range overflow"))?;
     if dir_end > end {
-        return Err(Error::invalid_value("ZIP directory extends beyond end record"));
+        return Err(Error::invalid_value(
+            "ZIP directory extends beyond end record",
+        ));
     }
 
     let mut pos = dir_start;
@@ -253,31 +313,56 @@ pub fn inventory(data: &[u8]) -> Result<Inventory, Error> {
     for _ in 0..count {
         let entry = member(data, pos, dir_start, dir_end)?;
         pos = entry.next;
-        let Member { name, flags, method, .. } = entry;
-        if method != 0 { compressed += 1; }
-        if flags & 1 != 0 { encrypted += 1; }
-        if suspicious(name) { unsafe_paths += 1; }
-        if name == "AndroidManifest.xml" { manifest = true; }
+        let Member {
+            name,
+            flags,
+            method,
+            ..
+        } = entry;
+        if method != 0 {
+            compressed += 1;
+        }
+        if flags & 1 != 0 {
+            encrypted += 1;
+        }
+        if suspicious(name) {
+            unsafe_paths += 1;
+        }
+        if name == "AndroidManifest.xml" {
+            manifest = true;
+        }
         if dex_name(name) {
             dex_count += 1;
-            if dex.len() < MAX_LISTED { dex.push(name.to_owned()); }
+            if dex.len() < MAX_LISTED {
+                dex.push(name.to_owned());
+            }
         }
-        if let Some((abi, filename)) = name.strip_prefix("lib/").and_then(|rest| rest.split_once('/')) {
+        if let Some((abi, filename)) = name
+            .strip_prefix("lib/")
+            .and_then(|rest| rest.split_once('/'))
+        {
             if !abi.is_empty() && !filename.contains('/') && filename.ends_with(".so") {
                 native_count += 1;
                 abis.insert(abi.to_owned());
             }
         }
         if let Some(name_without_prefix) = name.strip_prefix("META-INF/") {
-            if !name_without_prefix.contains('/') && [".RSA", ".DSA", ".EC", ".SF"]
-                .iter().any(|extension| name_without_prefix.ends_with(extension)) {
+            if !name_without_prefix.contains('/')
+                && [".RSA", ".DSA", ".EC", ".SF"]
+                    .iter()
+                    .any(|extension| name_without_prefix.ends_with(extension))
+            {
                 v1_count += 1;
-                if v1.len() < MAX_LISTED { v1.push(name.to_owned()); }
+                if v1.len() < MAX_LISTED {
+                    v1.push(name.to_owned());
+                }
             }
         }
     }
     if pos != dir_end {
-        return Err(Error::invalid_value("ZIP entry count does not match directory size"));
+        return Err(Error::invalid_value(
+            "ZIP entry count does not match directory size",
+        ));
     }
     if !manifest {
         return Err(Error::invalid_value("archive has no AndroidManifest.xml"));
@@ -298,7 +383,9 @@ pub fn inventory(data: &[u8]) -> Result<Inventory, Error> {
         apk_signing_block_present: sig.present,
         signing_scheme_ids_detected_unverified: if sig.present {
             sig.schemes.into_iter().map(str::to_owned).collect()
-        } else { Vec::new() },
+        } else {
+            Vec::new()
+        },
         compressed_entries: compressed,
         encrypted_entries: encrypted,
         suspicious_paths: unsafe_paths,
@@ -322,20 +409,44 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
     .with_attr("file_size_bytes", inventory.file_size_bytes.to_string())
     .with_attr("apk_zip_entries", inventory.entries.to_string())
     .with_attr("apk_dex_count", inventory.dex_count.to_string())
-    .with_attr("apk_native_libraries", inventory.native_library_count.to_string())
+    .with_attr(
+        "apk_native_libraries",
+        inventory.native_library_count.to_string(),
+    )
     .with_attr("apk_native_abis", inventory.native_abis.join(","))
-    .with_attr("apk_signing_block_detected_unverified", inventory.apk_signing_block_present.to_string())
-    .with_attr("apk_compressed_entries", inventory.compressed_entries.to_string())
-    .with_attr("apk_encrypted_entries", inventory.encrypted_entries.to_string())
-    .with_attr("apk_suspicious_paths", inventory.suspicious_paths.to_string());
+    .with_attr(
+        "apk_signing_block_detected_unverified",
+        inventory.apk_signing_block_present.to_string(),
+    )
+    .with_attr(
+        "apk_compressed_entries",
+        inventory.compressed_entries.to_string(),
+    )
+    .with_attr(
+        "apk_encrypted_entries",
+        inventory.encrypted_entries.to_string(),
+    )
+    .with_attr(
+        "apk_suspicious_paths",
+        inventory.suspicious_paths.to_string(),
+    );
     let mut entities = Vec::new();
     push_entity(
-        &mut entities, EntityKind::Document, label, 0.9, sid.as_str(), evidence,
+        &mut entities,
+        EntityKind::Document,
+        label,
+        0.9,
+        sid.as_str(),
+        evidence,
         &[SOURCE, "offline", "apk"],
     );
     Ok(Report {
         inventory,
-        outcomes: vec![SourceExecutionOutcome::success(SOURCE, now_unix, entities.len())],
+        outcomes: vec![SourceExecutionOutcome::success(
+            SOURCE,
+            now_unix,
+            entities.len(),
+        )],
         entities,
     })
 }
@@ -384,8 +495,11 @@ mod tests {
     #[test]
     fn indexes_apk_without_decompression_or_network() {
         let data = sample(&[
-            "AndroidManifest.xml", "classes.dex", "classes2.dex",
-            "lib/arm64-v8a/libprobe.so", "META-INF/APP.RSA",
+            "AndroidManifest.xml",
+            "classes.dex",
+            "classes2.dex",
+            "lib/arm64-v8a/libprobe.so",
+            "META-INF/APP.RSA",
         ]);
         let result = inventory(&data).unwrap();
         assert_eq!(result.entries, 5);
@@ -440,7 +554,11 @@ mod tests {
         assert_eq!(block.len(), 44);
         bytes.splice(old_directory..old_directory, block);
         let end = bytes.len() - 22;
-        put32(&mut bytes, end + 16, u32::try_from(old_directory + 44).unwrap());
+        put32(
+            &mut bytes,
+            end + 16,
+            u32::try_from(old_directory + 44).unwrap(),
+        );
         let parsed = inventory(&bytes).unwrap();
         assert!(parsed.apk_signing_block_present);
         assert_eq!(parsed.signing_scheme_ids_detected_unverified, ["v2"]);
@@ -449,5 +567,4 @@ mod tests {
         let parsed = inventory(&bytes).unwrap();
         assert!(!parsed.apk_signing_block_present);
     }
-
 }
