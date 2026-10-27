@@ -176,12 +176,7 @@ struct Member<'a> {
     next: usize,
 }
 
-fn member(
-    data: &[u8],
-    pos: usize,
-    dir_start: usize,
-    dir_end: usize,
-) -> Result<Member<'_>, Error> {
+fn member(data: &[u8], pos: usize, dir_start: usize, dir_end: usize) -> Result<Member<'_>, Error> {
     if checked_range(data, pos, 4) != Some(CENTRAL_SIGNATURE) {
         return Err(Error::invalid_value("invalid ZIP central directory entry"));
     }
