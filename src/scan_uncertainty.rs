@@ -214,6 +214,37 @@ fn grouped_provider_issues(outcomes: &[SourceExecutionOutcome]) -> (usize, Vec<U
     (unresolved_executions, groups.into_values().collect())
 }
 
+fn missing_people_source_issues(
+    record: &ScanRecord,
+    results: Option<&ScanResults>,
+) -> Vec<UncertaintyItem> {
+    // Missing scan results are an artifact problem, not five independent provider misses.
+    if record.status.is_active() || results.is_none() {
+        return Vec::new();
+    }
+    let Some(coverage) = crate::scan_coverage::derive(record, results) else {
+        return Vec::new();
+    };
+    coverage
+        .sources
+        .into_iter()
+        .filter(|source| source.status == crate::scan_coverage::PeopleSourceStatus::NotObserved)
+        .map(|source| UncertaintyItem {
+            id: format!("sources:not_observed:{}", source.module),
+            priority: 1,
+            category: "missing_observations",
+            module: Some(source.module.to_owned()),
+            outcome: None,
+            observations: 0,
+            first_observed_unix: None,
+            last_observed_unix: None,
+            evidence_path: "results.json#outcomes",
+            uncertainty: "A selected people source has no recorded execution outcome; target absence cannot be inferred.",
+            next_action: "Inspect source selection, dispatch and logs; rerun the missing source after repair.",
+        })
+        .collect()
+}
+
 /// Derive the register solely from saved scan evidence. Never infer an unrecorded
 /// source failure, an unobserved target, or an identity from the absence of findings.
 #[must_use]
@@ -282,29 +313,7 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Uncertainty
         ));
     }
 
-    // A terminal people scan may omit a selected leg without an outcome.
-    // Do not mistake such a gap for an accepted negative or invent a provider failure.
-    if !record.status.is_active() && results.is_some() {
-        if let Some(coverage) = crate::scan_coverage::derive(record, results) {
-            for source in coverage.sources {
-                if source.status == crate::scan_coverage::PeopleSourceStatus::NotObserved {
-                    items.push(UncertaintyItem {
-                        id: format!("sources:not_observed:{}", source.module),
-                        priority: 1,
-                        category: "missing_observations",
-                        module: Some(source.module.to_owned()),
-                        outcome: None,
-                        observations: 0,
-                        first_observed_unix: None,
-                        last_observed_unix: None,
-                        evidence_path: "results.json#outcomes",
-                        uncertainty: "A selected people source has no recorded execution outcome; target absence cannot be inferred.",
-                        next_action: "Inspect source selection, dispatch and logs; rerun the missing source after repair.",
-                    });
-                }
-            }
-        }
-    }
+    items.extend(missing_people_source_issues(record, results));
 
     items.push(general(
         "scope:exhaustiveness_unverified",
