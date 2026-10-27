@@ -155,6 +155,58 @@ fn signing_block(data: &[u8], central_at: usize) -> SigningBlock {
     found
 }
 
+/// One archive member verified against both its central and local ZIP headers.
+struct Member<'a> {
+    name: &'a str,
+    flags: u16,
+    method: u16,
+    next: usize,
+}
+
+fn member<'a>(
+    data: &'a [u8],
+    pos: usize,
+    dir_start: usize,
+    dir_end: usize,
+) -> Result<Member<'a>, Error> {
+    if checked_range(data, pos, 4) != Some(CENTRAL_SIGNATURE) {
+        return Err(Error::invalid_value("invalid ZIP central directory entry"));
+    }
+    let flags = le16(data, pos + 8).ok_or_else(|| Error::invalid_value("truncated ZIP flags"))?;
+    let method = le16(data, pos + 10).ok_or_else(|| Error::invalid_value("truncated ZIP compression"))?;
+    let packed = usize::try_from(le32(data, pos + 20).ok_or_else(|| Error::invalid_value("missing compressed size"))?)
+        .map_err(|_| Error::invalid_value("compressed size overflow"))?;
+    let name_len = usize::from(le16(data, pos + 28).ok_or_else(|| Error::invalid_value("missing ZIP name size"))?);
+    let extra = usize::from(le16(data, pos + 30).ok_or_else(|| Error::invalid_value("missing ZIP extra size"))?);
+    let comment = usize::from(le16(data, pos + 32).ok_or_else(|| Error::invalid_value("missing ZIP comment size"))?);
+    let local_at = usize::try_from(le32(data, pos + 42).ok_or_else(|| Error::invalid_value("missing local offset"))?)
+        .map_err(|_| Error::invalid_value("local offset overflow"))?;
+    let name_at = pos.checked_add(46).ok_or_else(|| Error::invalid_value("ZIP name offset overflow"))?;
+    let raw = checked_range(data, name_at, name_len).ok_or_else(|| Error::invalid_value("truncated ZIP entry name"))?;
+    let name = std::str::from_utf8(raw).map_err(|_| Error::invalid_value("non UTF-8 APK entry name"))?;
+    let next = name_at.checked_add(name_len).and_then(|n| n.checked_add(extra)).and_then(|n| n.checked_add(comment))
+        .ok_or_else(|| Error::invalid_value("ZIP entry overflow"))?;
+    if next > dir_end {
+        return Err(Error::invalid_value("ZIP entry exceeds directory boundary"));
+    }
+    if checked_range(data, local_at, 4) != Some(LOCAL_SIGNATURE) {
+        return Err(Error::invalid_value("ZIP entry has invalid local header"));
+    }
+    let local_name_len = usize::from(le16(data, local_at + 26).ok_or_else(|| Error::invalid_value("missing local name"))?);
+    let local_extra_len = usize::from(le16(data, local_at + 28).ok_or_else(|| Error::invalid_value("missing local extra"))?);
+    let local_name_at = local_at.checked_add(30).ok_or_else(|| Error::invalid_value("local header overflow"))?;
+    if checked_range(data, local_name_at, local_name_len) != Some(raw) {
+        return Err(Error::invalid_value("central/local ZIP entry names disagree"));
+    }
+    let payload_end = local_name_at.checked_add(local_name_len).and_then(|n| n.checked_add(local_extra_len))
+        .and_then(|n| n.checked_add(packed))
+        .ok_or_else(|| Error::invalid_value("ZIP payload range overflow"))?;
+    if payload_end > dir_start {
+        return Err(Error::invalid_value("ZIP payload exceeds start of central directory"));
+    }
+    Ok(Member { name, flags, method, next })
+}
+
 /// Inspect ZIP metadata only. No untrusted payload is decompressed or executed.
 ///
 /// # Errors
@@ -199,41 +251,9 @@ pub fn inventory(data: &[u8]) -> Result<Inventory, Error> {
     let mut unsafe_paths = 0_usize;
 
     for _ in 0..count {
-        if checked_range(data, pos, 4) != Some(CENTRAL_SIGNATURE) {
-            return Err(Error::invalid_value("invalid ZIP central directory entry"));
-        }
-        let flags = le16(data, pos + 8).ok_or_else(|| Error::invalid_value("truncated ZIP flags"))?;
-        let method = le16(data, pos + 10).ok_or_else(|| Error::invalid_value("truncated ZIP compression"))?;
-        let packed = usize::try_from(le32(data, pos + 20).ok_or_else(|| Error::invalid_value("missing compressed size"))?)
-            .map_err(|_| Error::invalid_value("compressed size overflow"))?;
-        let name_len = usize::from(le16(data, pos + 28).ok_or_else(|| Error::invalid_value("missing ZIP name size"))?);
-        let extra = usize::from(le16(data, pos + 30).ok_or_else(|| Error::invalid_value("missing ZIP extra size"))?);
-        let comment = usize::from(le16(data, pos + 32).ok_or_else(|| Error::invalid_value("missing ZIP comment size"))?);
-        let local_at = usize::try_from(le32(data, pos + 42).ok_or_else(|| Error::invalid_value("missing local offset"))?)
-            .map_err(|_| Error::invalid_value("local offset overflow"))?;
-        let name_at = pos.checked_add(46).ok_or_else(|| Error::invalid_value("ZIP name offset overflow"))?;
-        let raw = checked_range(data, name_at, name_len).ok_or_else(|| Error::invalid_value("truncated ZIP entry name"))?;
-        let name = std::str::from_utf8(raw).map_err(|_| Error::invalid_value("non UTF-8 APK entry name"))?;
-        pos = name_at.checked_add(name_len).and_then(|n| n.checked_add(extra)).and_then(|n| n.checked_add(comment))
-            .ok_or_else(|| Error::invalid_value("ZIP entry overflow"))?;
-        if pos > dir_end {
-            return Err(Error::invalid_value("ZIP entry exceeds directory boundary"));
-        }
-        if checked_range(data, local_at, 4) != Some(LOCAL_SIGNATURE) {
-            return Err(Error::invalid_value("ZIP entry has invalid local header"));
-        }
-        let local_name_len = usize::from(le16(data, local_at + 26).ok_or_else(|| Error::invalid_value("missing local name"))?);
-        let local_extra_len = usize::from(le16(data, local_at + 28).ok_or_else(|| Error::invalid_value("missing local extra"))?);
-        let local_name_at = local_at.checked_add(30).ok_or_else(|| Error::invalid_value("local header overflow"))?;
-        if checked_range(data, local_name_at, local_name_len) != Some(raw) {
-            return Err(Error::invalid_value("central/local ZIP entry names disagree"));
-        }
-        let payload_end = local_name_at.checked_add(local_name_len).and_then(|n| n.checked_add(local_extra_len))
-            .and_then(|n| n.checked_add(packed))
-            .ok_or_else(|| Error::invalid_value("ZIP payload range overflow"))?;
-        if payload_end > dir_start {
-            return Err(Error::invalid_value("ZIP payload exceeds start of central directory"));
-        }
+        let entry = member(data, pos, dir_start, dir_end)?;
+        pos = entry.next;
+        let Member { name, flags, method, .. } = entry;
         if method != 0 { compressed += 1; }
         if flags & 1 != 0 { encrypted += 1; }
         if suspicious(name) { unsafe_paths += 1; }
