@@ -282,6 +282,30 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Uncertainty
         ));
     }
 
+    // A terminal people scan may omit a selected leg without an outcome.
+    // Do not mistake such a gap for an accepted negative or invent a provider failure.
+    if !record.status.is_active() {
+        if let Some(coverage) = crate::scan_coverage::derive(record, results) {
+            for source in coverage.sources {
+                if source.status == crate::scan_coverage::PeopleSourceStatus::NotObserved {
+                    items.push(UncertaintyItem {
+                        id: format!("sources:not_observed:{}", source.module),
+                        priority: 1,
+                        category: "missing_observations",
+                        module: Some(source.module.to_owned()),
+                        outcome: None,
+                        observations: 0,
+                        first_observed_unix: None,
+                        last_observed_unix: None,
+                        evidence_path: "results.json#outcomes",
+                        uncertainty: "A selected people source has no recorded execution outcome; target absence cannot be inferred.",
+                        next_action: "Inspect source selection, dispatch and logs; rerun the missing source after repair.",
+                    });
+                }
+            }
+        }
+    }
+
     items.push(general(
         "scope:exhaustiveness_unverified",
         3,
@@ -444,6 +468,19 @@ mod tests {
             .find(|i| i.module.as_deref() == Some("ripestat"))
             .expect("the transport failure is an issue");
         assert_eq!(silent.category, "transport_failure");
+    }
+
+    #[test]
+    fn a_missing_selected_people_leg_is_a_named_uncertainty() {
+        let mut people = record(ScanStatus::Finished);
+        people.kind = "people".into();
+        people.options.usecase = "all".into();
+        people.options.modules = vec!["asic_director".into()];
+        let register = derive(&people, Some(&saved(Vec::new())));
+        let missing = register.items.iter().find(|item| item.id == "sources:not_observed:asic_director").expect("missing source named");
+        assert_eq!(missing.module.as_deref(), Some("asic_director"));
+        assert_eq!(missing.category, "missing_observations");
+        assert_eq!(register.unresolved_executions, 0);
     }
 
     #[test]

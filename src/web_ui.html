@@ -991,6 +991,7 @@ $('rawdownload').onclick=async()=>{
     };
     append('SCAN_METADATA',snapshot);
     append('SOURCE_EXECUTIONS',snapshot.sources||[]);
+    append('PEOPLE_SOURCE_COVERAGE',snapshot.people_source_coverage??null);
     append('UNCERTAINTY_REGISTER',snapshot.uncertainty_register??null);
     append('DATA_ELEMENTS',allElements);
     append('CORRELATIONS',allCorrelations);
@@ -1027,7 +1028,14 @@ async function summary(){
   if(!types.length)box.append(el('p','help',live(scan.status)?'No data yet. This section updates while the scan runs.':'No data.'));
   $('bars-n').textContent=types.length;
   const src=scan.sources||[];$('srcs-n').textContent=src.length;
-  $('srcs-coverage').textContent=coverage(scan.source_execution_summary);
+  const people=scan.people_source_coverage;
+  const peopleNote=people&&people.scope==='people_lookup_catalogue'?
+    ' People catalogue: '+people.accepted_sources+' / '+people.selected_sources+' selected sources accepted; '+
+    people.not_configured_sources+' unconfigured; '+people.unresolved_sources+' unresolved; '+
+    people.not_observed_sources+' without a recorded outcome.'+
+    (people.sources||[]).filter(row=>row.status==='not_observed').map(row=>' Missing: '+row.module+'.').join('')+
+    ' External public-record coverage remains unverified.':'';
+  $('srcs-coverage').textContent=coverage(scan.source_execution_summary)+peopleNote;
   fill('srcs',src,o=>[o.module,'',when(o.observed_at_unix*1000),why(o)]);
   [...$('srcs').rows].forEach((tr,i)=>{const o=src[i];if(o)tr.cells[1].replaceChildren(el('span','label '+(tone[o.outcome]||'bad'),o.outcome))});
   const register=scan.uncertainty_register;
