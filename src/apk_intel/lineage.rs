@@ -71,8 +71,7 @@ fn fingerprints(data: &[u8]) -> Result<BTreeMap<String, Fingerprint>, Error> {
         let at = pos;
         let entry = member(data, at, dir_start, dir_end)?;
         pos = entry.next;
-        let crc32 = le32(data, at + 16)
-            .ok_or_else(|| Error::invalid_value("missing ZIP CRC32"))?;
+        let crc32 = le32(data, at + 16).ok_or_else(|| Error::invalid_value("missing ZIP CRC32"))?;
         let unpacked_size = le32(data, at + 24)
             .ok_or_else(|| Error::invalid_value("missing ZIP uncompressed size"))?;
         let stored = checked_range(data, entry.payload_start, entry.payload_len)
@@ -89,7 +88,9 @@ fn fingerprints(data: &[u8]) -> Result<BTreeMap<String, Fingerprint>, Error> {
         }
     }
     if pos != dir_end {
-        return Err(Error::invalid_value("ZIP entry count does not match directory size"));
+        return Err(Error::invalid_value(
+            "ZIP entry count does not match directory size",
+        ));
     }
     if !entries.contains_key("AndroidManifest.xml") {
         return Err(Error::invalid_value("archive has no AndroidManifest.xml"));
@@ -238,10 +239,22 @@ mod tests {
             ("lib/arm64-v8a/libx.so", b"native"),
         ]);
         let result = compare(&a, &b).unwrap();
-        assert_eq!((result.added, result.removed, result.modified, result.unchanged), (1, 1, 1, 2));
+        assert_eq!(
+            (
+                result.added,
+                result.removed,
+                result.modified,
+                result.unchanged
+            ),
+            (1, 1, 1, 2)
+        );
         assert!(result.archive_bytes_differ);
         assert_eq!(
-            result.changes.iter().map(|c| (c.path.as_str(), c.disposition, c.component)).collect::<Vec<_>>(),
+            result
+                .changes
+                .iter()
+                .map(|c| (c.path.as_str(), c.disposition, c.component))
+                .collect::<Vec<_>>(),
             [
                 ("assets/new.txt", "added", "assets"),
                 ("assets/old.txt", "removed", "assets"),
@@ -277,7 +290,10 @@ mod tests {
         for i in 0..72 {
             entries.push((format!("assets/{i:03}.dat"), vec![u8::try_from(i).unwrap()]));
         }
-        let borrowed = entries.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect::<Vec<_>>();
+        let borrowed = entries
+            .iter()
+            .map(|(n, b)| (n.as_str(), b.as_slice()))
+            .collect::<Vec<_>>();
         let new = apk(&borrowed);
         let out = compare(&old, &new).unwrap();
         assert_eq!(out.added, 72);
