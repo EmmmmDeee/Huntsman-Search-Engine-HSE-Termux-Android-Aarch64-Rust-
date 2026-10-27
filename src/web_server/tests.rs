@@ -1,4 +1,5 @@
 use super::analysis::inspect_label;
+use super::lookup::header_filename;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -6,7 +7,8 @@ use super::*;
 use crate::keys;
 use crate::keys::Keys;
 use crate::provider_credentials::PROVIDERS;
-use crate::scan_service::INSPECT_KIND;
+use crate::scan_service::{INSPECT_KIND, ScanService};
+use crate::scan_store::ScanStatus;
 use std::thread;
 
 /// A loopback bind for the pure-router tests. The DNS-rebinding guard is active
