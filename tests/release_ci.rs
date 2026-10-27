@@ -4003,7 +4003,6 @@ fn the_identity_probe_matches_the_usage_line_it_proves() {
     );
 }
 
-
 /// Release publication must not race the independent exact-main CI workflow:
 /// QEMU aarch64 library tests are part of CI, not the release's quality jobs.
 #[test]
