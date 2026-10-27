@@ -268,7 +268,8 @@ mod tests {
                     truncated: response.truncated,
                 });
             }
-            Ok(html_ok(""))
+            // Explicit negative fixture: an arbitrary 2xx page is inconclusive.
+            Ok(html_ok("<html><body>no matches</body></html>"))
         }
     }
 
