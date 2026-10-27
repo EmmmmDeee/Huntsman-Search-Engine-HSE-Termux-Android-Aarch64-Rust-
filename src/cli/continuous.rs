@@ -715,9 +715,13 @@ fn collect_due(
             Ok(record)
                 if collect == Collect::Background || record.status == ScanStatus::Finished =>
             {
+                // A scan this cycle started or ran, by the configured target's lookup kind. The
+                // scan id is kept out of the log because the target can be a username, and a
+                // collection cycle's stderr goes to a file (the job-scheduler recipe); the id is
+                // in `scans list` and this run's normalisation lines below.
                 eprintln!(
-                    "continuous: scan {} {}",
-                    record.id,
+                    "continuous: {} scan {}",
+                    request.kind.as_deref().unwrap_or("auto"),
                     match collect {
                         Collect::Background => "scheduled",
                         Collect::Foreground => "finished",
@@ -727,8 +731,8 @@ fn collect_due(
             }
             Ok(record) => {
                 eprintln!(
-                    "continuous: scan {} ended {}",
-                    record.id,
+                    "continuous: {} scan ended {}",
+                    request.kind.as_deref().unwrap_or("auto"),
                     record.status.as_str()
                 );
                 tally.failed += 1;
