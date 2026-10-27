@@ -904,6 +904,88 @@ fn scans_alerts_keeps_a_history_of_every_decision() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// `--notify` posts a phone notification through `termux-notification` when an alert is raised,
+/// naming the risk and rule but never the target; without the helper it exits 69; a decision
+/// that raises nothing posts nothing. A fake helper on PATH stands in for Termux:API.
+#[cfg(unix)]
+#[test]
+fn scans_notify_posts_a_phone_notification_without_the_target() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = scratch("scans-notify");
+    let rules = write_phone_rule(&home);
+    let helpers = home.join("bin");
+    let nothing = home.join("empty");
+    fs::create_dir_all(&helpers).unwrap();
+    fs::create_dir_all(&nothing).unwrap();
+    let notified = home.join("notified");
+    let helper = helpers.join("termux-notification");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            notified.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |path: &Path, args: &[&str]| {
+        bin()
+            .args(args)
+            .env("HOME", &home)
+            .env("PATH", path)
+            .output()
+            .unwrap()
+    };
+    let earlier = {
+        let out = run(
+            &helpers,
+            &["scans", "run", "+61412345678", "-u", "passive", "--json"],
+        );
+        assert_eq!(out.status.code(), Some(0));
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+    let rules = rules.to_str().unwrap();
+
+    let raised = run(
+        &helpers,
+        &["scans", "watch", &earlier, "--rules", rules, "--notify"],
+    );
+    assert_eq!(
+        raised.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&raised.stderr)
+    );
+    let posted = fs::read_to_string(&notified).unwrap();
+    assert!(posted.contains("Huntsman alert"), "{posted}");
+    assert!(posted.contains("HIGH phone_present"), "{posted}");
+    assert!(!posted.contains("+61412345678"), "{posted}");
+
+    let missing = run(
+        &nothing,
+        &["scans", "watch", &earlier, "--rules", rules, "--notify"],
+    );
+    assert_eq!(missing.status.code(), Some(69));
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("termux-notification"),
+        "{}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+
+    fs::remove_file(&notified).unwrap();
+    let quiet = run(
+        &helpers,
+        &["scans", "alert", &earlier, &earlier, "--notify"],
+    );
+    assert_eq!(quiet.status.code(), Some(0));
+    assert!(
+        !notified.exists(),
+        "a decision that raises nothing posts nothing"
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
 /// `scans search` finds elements in every saved scan, or only the ones named, each with its scan.
 #[test]
 fn scans_search_finds_values_in_every_scan_or_the_ones_named() {

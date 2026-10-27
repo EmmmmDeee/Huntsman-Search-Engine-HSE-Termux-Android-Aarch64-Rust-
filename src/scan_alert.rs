@@ -18,6 +18,7 @@ use crate::error::Error;
 use crate::fsio::{read_bounded, write_atomic_private};
 use crate::scan_compare::Comparison;
 use crate::sf_correlate::Risk;
+use crate::textnorm::one_line;
 
 /// The most entries the alert history keeps; the oldest go first.
 pub const MAX_ALERT_HISTORY_ENTRIES: usize = 1_000;
@@ -119,6 +120,35 @@ pub fn read_history(path: &Path) -> Result<Vec<Value>, Error> {
             })
         })
         .collect()
+}
+
+/// The title of the phone notification an alert raises.
+pub const NOTIFICATION_TITLE: &str = "Huntsman alert";
+/// The most characters a notification's text holds.
+const MAX_NOTIFICATION_CHARS: usize = 240;
+
+/// The text of the phone notification a raised alert posts: each reason's risk and rule, or the
+/// count of new values, on one line. Like the history it never names the target or a finding's
+/// text, because a notification shows on the lock screen.
+#[must_use]
+pub fn notification_text(alert: &Alert) -> String {
+    let parts: Vec<String> = alert
+        .reasons
+        .iter()
+        .map(|reason| match reason {
+            Reason::Correlation { risk, rule, .. } => {
+                format!("{} {}", risk.as_str(), one_line(rule))
+            }
+            Reason::NewValues { count } => format!("{count} new values"),
+        })
+        .collect();
+    let text = parts.join("; ");
+    if text.chars().count() <= MAX_NOTIFICATION_CHARS {
+        return text;
+    }
+    let mut short: String = text.chars().take(MAX_NOTIFICATION_CHARS - 1).collect();
+    short.push('\u{2026}');
+    short
 }
 
 /// A risk level as an operator writes it: `HIGH`, `MEDIUM`, `LOW` or `INFO`, in any case.
@@ -324,5 +354,40 @@ mod tests {
             MAX_ALERT_HISTORY_ENTRIES as u64
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_notification_names_risks_rules_and_counts_but_no_finding_text() {
+        let alert = Alert {
+            raised: true,
+            reasons: vec![
+                Reason::Correlation {
+                    risk: Risk::High,
+                    rule: "phone_present".into(),
+                    title: "Phone number found: +61412345678".into(),
+                },
+                Reason::NewValues { count: 3 },
+            ],
+        };
+        let text = notification_text(&alert);
+        assert_eq!(text, "HIGH phone_present; 3 new values");
+        assert!(!text.contains("+61412345678"));
+    }
+
+    #[test]
+    fn a_long_notification_is_cut_to_its_bound() {
+        let alert = Alert {
+            raised: true,
+            reasons: (0..100)
+                .map(|n| Reason::Correlation {
+                    risk: Risk::Low,
+                    rule: format!("rule_{n}"),
+                    title: String::new(),
+                })
+                .collect(),
+        };
+        let text = notification_text(&alert);
+        assert_eq!(text.chars().count(), MAX_NOTIFICATION_CHARS);
+        assert!(text.ends_with('\u{2026}'));
     }
 }

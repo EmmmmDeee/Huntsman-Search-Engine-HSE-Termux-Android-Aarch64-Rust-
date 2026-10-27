@@ -7,8 +7,10 @@ use std::env;
 use std::ffi::OsString;
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use super::lookup::{Refused, collect};
 use super::{fail, terminal_json_pretty};
@@ -28,8 +30,8 @@ use huntsman_recon::sf_types;
 use huntsman_recon::textnorm::one_line;
 use serde_json::{Value, json};
 
-pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [-m MODULE[,MODULE...]] [--depth N] [--json] | scans list [--json] | scans show ID | scans summary ID | scans analyze ID [--json] | scans reality ID ENTITY_UID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans evidence ID [--delta BASELINE_ID] [-f raw|json] [-o FILE] | scans matrix ID [-f raw|json] [-o FILE] | scans export ID|ID,ID... [-f csv|tsv|xlsx|json|gexf|html] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans compare EARLIER LATER [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans alert EARLIER LATER [--min-risk HIGH|MEDIUM|LOW|INFO] [--values] [--json] | scans watch ID [--min-risk HIGH|MEDIUM|LOW|INFO] [--values] [--json] | scans alerts [--json] | scans search VALUE [ID...] [-t TYPE] [--hide-fp] [--json] | scans rules [--json] | scans types
-Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous, and -k geocode runs a place name, street address or LAT,LON through the geocode lookup, which no target is routed to on its own. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. scans analyze runs shared offline analysis over saved entities without mutating them; derived relations are available, while upstream evidence ancestry and provider coverage cannot be reconstructed and are explicitly marked unavailable. scans reality ID ENTITY_UID gives the recorded attribution, possible conflicting statements and provenance of one stored entity without asserting that its identity, ownership or source independence is proven; both commands refuse evidence flagged false positive. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read or loaded, a rules path that could not be listed and a directory past 500 rule files, whose first 500 are still read, and exits 65 if it names any; scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. --depth N follows what the scan finds, as Spiderfoot does: each email, username, domain, phone, IP address and BSSID a lookup finds is looked up in turn, N hops past the target (0, the default, runs the target's lookup only), under the shared lookup and entity budgets; each element then names the element it was found from, so the elements form the scan's discovery tree. -t keeps only those element types; -u footprint leaves out the threat, blocklist and reputation sources; -u investigate runs them with the basic footprint and without the social, search, people and corporate sources; -u passive skips the keyed breach lookup of every email. -m (or --modules) asks only the modules named, by Huntsman's name (see modules) or Spiderfoot's, where sfp_whois stands for every module that does its work: a module not chosen sends nothing, a lookup that asks none of them is skipped, a target none of them looks up is refused, and offline modules always run. fp flags elements as false positives, and with them every element found from them; --unset clears them the same way, refused while an element's source is still flagged. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); xlsx (or excel) is Spiderfoot's workbook, a sheet per element type, with every value whole and never read as a formula; several ids give one export with the Scan Name first, JSON unless -f says csv, tsv or xlsx. compare sets a later scan against an earlier one, which Spiderfoot cannot: the change in each data type, then every element it found that the earlier did not (+) and every one it no longer finds (-), matched by type and value, and the correlations each has that the other lacks; -f writes the added and removed elements as CSV, TSV or Excel. alert decides whether the later scan of one target warrants attention over the earlier one, for a schedule: it exits 1 and prints ALERT when a new correlation at or above --min-risk (default HIGH) is there, and with --values also when any value is new; a value that has gone never raises one. It refuses scans of different targets, and exits 0 with no alert. watch runs the target of a saved scan again, as rerun does, saves the new scan, and then alerts on what it finds over the scan it ran again from; it makes network requests, as run does. Every decision alert and watch make is kept beside the scans, raised or not, and alerts lists them, oldest first, the newest 1,000 kept; a decision that cannot be recorded exits 74. search finds elements in every saved scan, or the scans named, as Spiderfoot's search box reads a query: /regex/ anywhere, a *wildcard* as the whole value, or text anywhere, all regardless of case, in an element's data, its source element's data or its module; -t keeps one type, and an empty VALUE with -t lists that type everywhere. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
+pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [-m MODULE[,MODULE...]] [--depth N] [--json] | scans list [--json] | scans show ID | scans summary ID | scans analyze ID [--json] | scans reality ID ENTITY_UID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans evidence ID [--delta BASELINE_ID] [-f raw|json] [-o FILE] | scans matrix ID [-f raw|json] [-o FILE] | scans export ID|ID,ID... [-f csv|tsv|xlsx|json|gexf|html] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans compare EARLIER LATER [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans alert EARLIER LATER [--min-risk HIGH|MEDIUM|LOW|INFO] [--values] [--notify] [--json] | scans watch ID [--min-risk HIGH|MEDIUM|LOW|INFO] [--values] [--notify] [--json] | scans alerts [--json] | scans search VALUE [ID...] [-t TYPE] [--hide-fp] [--json] | scans rules [--json] | scans types
+Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous, and -k geocode runs a place name, street address or LAT,LON through the geocode lookup, which no target is routed to on its own. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. scans analyze runs shared offline analysis over saved entities without mutating them; derived relations are available, while upstream evidence ancestry and provider coverage cannot be reconstructed and are explicitly marked unavailable. scans reality ID ENTITY_UID gives the recorded attribution, possible conflicting statements and provenance of one stored entity without asserting that its identity, ownership or source independence is proven; both commands refuse evidence flagged false positive. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read or loaded, a rules path that could not be listed and a directory past 500 rule files, whose first 500 are still read, and exits 65 if it names any; scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. --depth N follows what the scan finds, as Spiderfoot does: each email, username, domain, phone, IP address and BSSID a lookup finds is looked up in turn, N hops past the target (0, the default, runs the target's lookup only), under the shared lookup and entity budgets; each element then names the element it was found from, so the elements form the scan's discovery tree. -t keeps only those element types; -u footprint leaves out the threat, blocklist and reputation sources; -u investigate runs them with the basic footprint and without the social, search, people and corporate sources; -u passive skips the keyed breach lookup of every email. -m (or --modules) asks only the modules named, by Huntsman's name (see modules) or Spiderfoot's, where sfp_whois stands for every module that does its work: a module not chosen sends nothing, a lookup that asks none of them is skipped, a target none of them looks up is refused, and offline modules always run. fp flags elements as false positives, and with them every element found from them; --unset clears them the same way, refused while an element's source is still flagged. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); xlsx (or excel) is Spiderfoot's workbook, a sheet per element type, with every value whole and never read as a formula; several ids give one export with the Scan Name first, JSON unless -f says csv, tsv or xlsx. compare sets a later scan against an earlier one, which Spiderfoot cannot: the change in each data type, then every element it found that the earlier did not (+) and every one it no longer finds (-), matched by type and value, and the correlations each has that the other lacks; -f writes the added and removed elements as CSV, TSV or Excel. alert decides whether the later scan of one target warrants attention over the earlier one, for a schedule: it exits 1 and prints ALERT when a new correlation at or above --min-risk (default HIGH) is there, and with --values also when any value is new; a value that has gone never raises one. It refuses scans of different targets, and exits 0 with no alert. watch runs the target of a saved scan again, as rerun does, saves the new scan, and then alerts on what it finds over the scan it ran again from; it makes network requests, as run does. Every decision alert and watch make is kept beside the scans, raised or not, and alerts lists them, oldest first, the newest 1,000 kept; a decision that cannot be recorded exits 74. --notify also posts a phone notification through termux-notification (pkg termux-api and the Termux:API app, no root) when an alert is raised; it names only each reason's risk and rule, or the count of new values, never the target or a finding's text, and an alert whose notification cannot be posted exits 69. search finds elements in every saved scan, or the scans named, as Spiderfoot's search box reads a query: /regex/ anywhere, a *wildcard* as the whole value, or text anywhere, all regardless of case, in an element's data, its source element's data or its module; -t keeps one type, and an empty VALUE with -t lists that type everywhere. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
 
 /// The synopsis line of [`SCANS_HELP`], for a usage error.
 fn usage() -> &'static str {
@@ -153,7 +155,14 @@ const VALUED: [(&str, &str); 20] = [
 ];
 
 /// Options that stand alone.
-const SWITCHES: [&str; 5] = ["--json", "--unique", "--hide-fp", "--unset", "--values"];
+const SWITCHES: [&str; 6] = [
+    "--json",
+    "--unique",
+    "--hide-fp",
+    "--unset",
+    "--values",
+    "--notify",
+];
 
 /// The words of a `scans` command line, and its options.
 struct Parsed {
@@ -760,10 +769,66 @@ fn decide(
             &format!("scans alert: the decision was not recorded: {error}"),
         );
     }
+    if decision.raised && parsed.on("--notify") {
+        if let Err(error) = notify(&scan_alert::notification_text(&decision)) {
+            return fail(
+                EX_UNAVAILABLE,
+                &format!(
+                    "scans alert: the alert was raised, but no notification was posted: {error}"
+                ),
+            );
+        }
+    }
     if decision.raised {
         ExitCode::from(ALERT_RAISED)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// How long `termux-notification` may run before it is stopped.
+const NOTIFY_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Post an Android notification through Termux:API, without root. Its stdio is closed, so a
+/// helper that keeps running cannot hold a pipe open, and one that does not finish is stopped.
+fn notify(text: &str) -> Result<(), String> {
+    let mut child = Command::new("termux-notification")
+        .args([
+            "--id",
+            "huntsman-alert",
+            "--title",
+            scan_alert::NOTIFICATION_TITLE,
+            "--content",
+            text,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "cannot launch termux-notification ({error}); install pkg termux-api and the Termux:API Android app, then allow its notifications"
+            )
+        })?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => return Err(format!("termux-notification exited with {status}")),
+            Ok(None) if started.elapsed() < NOTIFY_DEADLINE => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("termux-notification did not finish within 10 seconds".into());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("termux-notification failed: {error}"));
+            }
+        }
     }
 }
 
