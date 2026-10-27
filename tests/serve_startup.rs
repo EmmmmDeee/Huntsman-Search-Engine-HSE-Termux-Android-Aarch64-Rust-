@@ -27,6 +27,8 @@ fn serve(args: &[&str], envs: &[(&str, &str)]) -> Command {
         "PREFIX",
         "HUNTSMAN_CONTINUOUS_TARGETS",
         "HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES",
+        "HUNTSMAN_CONTINUOUS_NOTIFY",
+        "HUNTSMAN_CONTINUOUS_KEEP",
     ] {
         command.env_remove(name);
     }
@@ -347,6 +349,24 @@ fn continuous_normalisation_is_read_from_the_keys_file_and_shown_in_settings() {
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
         "continuous: HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES must be 60..=10080\n"
+    );
+
+    let out = serve(
+        &["--bind", "127.0.0.1:0"],
+        &[
+            ("HOME", env!("CARGO_TARGET_TMPDIR")),
+            ("HUNTSMAN_CONTINUOUS_TARGETS", "*"),
+            ("HUNTSMAN_CONTINUOUS_KEEP", "0"),
+        ],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(out.status.code(), Some(i32::from(EX_DATAERR)));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "continuous: HUNTSMAN_CONTINUOUS_KEEP must be 1..=4096\n",
+        "a retention setting that would be ignored stops serve before it binds"
     );
     let _ = fs::remove_dir_all(&home);
 }
