@@ -170,8 +170,60 @@ fn a_healthy_install_has_no_failure_and_no_repair() {
     assert_eq!(report.status(), Status::Warn);
     let text = render(&report);
     assert!(
-        text.ends_with("doctor=warn ok=11 warn=1 fail=0\n"),
+        text.ends_with("doctor=warn ok=12 warn=1 fail=0\n"),
         "{text}"
+    );
+}
+
+/// The scan store's fill against its capacity: ok below nine tenths, a warning from there and a
+/// failure when full, each naming the retention plan; only scan-id directories count.
+#[test]
+fn a_filling_scan_store_warns_then_fails_and_names_prune() {
+    let scratch = Scratch::new("scans");
+    let scans = scratch.path(STATE_DIR).join("scans");
+    fs::create_dir_all(&scans).expect("scans");
+    fs::write(scans.join("alerts.jsonl"), "").expect("history beside the scans");
+    fs::create_dir_all(scans.join("not-a-scan")).expect("other directory");
+    let make = |from: usize, to: usize| {
+        for n in from..to {
+            fs::create_dir(scans.join(format!("{n:016x}"))).expect("scan dir");
+        }
+    };
+    make(0, 3);
+    let check = scratch
+        .examine(&FakeHost::default())
+        .get("scans")
+        .cloned()
+        .expect("scans");
+    assert_eq!(check.status, Status::Ok, "{check:?}");
+    assert!(
+        check.message.starts_with("3 of 4096 saved scans"),
+        "{check:?}"
+    );
+
+    make(3, crate::scan_store::MAX_SCANS * 9 / 10 + 1);
+    let check = scratch
+        .examine(&FakeHost::default())
+        .get("scans")
+        .cloned()
+        .expect("scans");
+    assert_eq!(check.status, Status::Warn, "{check:?}");
+    assert_eq!(check.fix.as_deref(), Some(PRUNE));
+
+    make(
+        crate::scan_store::MAX_SCANS * 9 / 10 + 1,
+        crate::scan_store::MAX_SCANS,
+    );
+    let check = scratch
+        .examine(&FakeHost::default())
+        .get("scans")
+        .cloned()
+        .expect("scans");
+    assert_eq!(check.status, Status::Fail, "{check:?}");
+    assert!(check.message.contains("new scans are refused"), "{check:?}");
+    assert!(
+        !check.auto_fix,
+        "deleting scans is never an automatic repair"
     );
 }
 

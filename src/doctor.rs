@@ -28,6 +28,7 @@ use crate::keys::{
 };
 use crate::ledger::load_chain;
 use crate::provider_credentials::{self, ProbeState, ProviderProbeStatus};
+use crate::scan_store::{MAX_SCANS, valid_id};
 use crate::serve_probe::{AddrSource, ServeProbe, ServeState};
 
 /// The repository `install.sh` builds from.
@@ -289,11 +290,63 @@ pub fn examine(ctx: &Context<'_>, host: &dyn Host) -> Report {
         ledgers(ctx),
         selfcheck(host),
         serve(ctx),
+        saved_scans(ctx),
         disk(ctx, host, &provenance),
         build_cache(ctx, host, &provenance),
         termux(ctx),
     ];
     Report { checks }
+}
+
+/// Entries the saved-scan count reads at most, so a directory full of other files cannot stall
+/// `doctor`.
+const MAX_SCAN_DIR_ENTRIES: usize = 65_536;
+
+/// What to run when the scan store is filling: the retention plan, reviewed before it deletes.
+const PRUNE: &str = "huntsman-recon scans prune --keep 20 (review the plan, then add --apply)";
+
+/// How full the scan store is against [`MAX_SCANS`]. A store that keeps collecting (continuous
+/// mode, a scheduled `scans watch`) refuses new scans once full, so this warns from nine tenths
+/// full and fails when full, naming the retention command. It counts scan directories without
+/// reading a scan.
+fn saved_scans(ctx: &Context<'_>) -> Check {
+    const ID: &str = "scans";
+    let Some(dir) = ctx.state_dir().map(|state| state.join("scans")) else {
+        return Check::ok(ID, "no state directory, so no saved scans");
+    };
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Check::ok(ID, "no saved scans yet");
+        }
+        Err(error) => {
+            return Check::warn(
+                ID,
+                format!("{} cannot be listed: {error}", ctx.show(&dir)),
+                "huntsman-recon scans list",
+            );
+        }
+    };
+    let count = entries
+        .take(MAX_SCAN_DIR_ENTRIES)
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.file_name().to_str().is_some_and(valid_id)
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        })
+        .count();
+    let shown = format!("{count} of {MAX_SCANS} saved scans in {}", ctx.show(&dir));
+    if count >= MAX_SCANS {
+        Check::fail(
+            ID,
+            format!("{shown}: full, so new scans are refused"),
+            PRUNE,
+        )
+    } else if count * 10 >= MAX_SCANS * 9 {
+        Check::warn(ID, format!("{shown}: nearly full"), PRUNE)
+    } else {
+        Check::ok(ID, shown)
+    }
 }
 
 fn sha7(sha: &str) -> &str {

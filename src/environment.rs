@@ -50,6 +50,9 @@ pub const NOMINATIM_BASE_URL_ENV: &str = "HUNTSMAN_NOMINATIM_BASE_URL";
 pub const CONTINUOUS_TARGETS_ENV: &str = "HUNTSMAN_CONTINUOUS_TARGETS";
 /// Minutes between collections of each continuous target, 60 to 10080; 1440 when unset.
 pub const CONTINUOUS_INTERVAL_ENV: &str = "HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES";
+/// `1` to post a phone notification through Termux:API's `termux-notification` whenever
+/// continuous collection raises an alert; `0` or unset posts none.
+pub const CONTINUOUS_NOTIFY_ENV: &str = "HUNTSMAN_CONTINUOUS_NOTIFY";
 
 // Credential slots: keys-file names that `keys::Keys::get` also reads from the environment.
 pub const ABUSECH_KEY_ENV: &str = "HUNTSMAN_ABUSECH_KEY";
@@ -125,6 +128,7 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     NOMINATIM_BASE_URL_ENV,
     CONTINUOUS_TARGETS_ENV,
     CONTINUOUS_INTERVAL_ENV,
+    CONTINUOUS_NOTIFY_ENV,
     ABUSECH_KEY_ENV,
     ABUSEIPDB_KEY_ENV,
     BRAVE_KEY_ENV,

@@ -245,6 +245,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div id="allhits" hidden><div class="toolbar"><span class="when grow" id="allcount"></span><button class="btn" id="allclose" type="button">Close</button></div><div class="panel" id="allresults"></div></div>
 <div class="toolbar" id="sbulk" hidden><span class="when" id="snsel"></span><button class="btn" id="sstop" type="button">Stop</button><button class="btn" id="srerun" type="button">Re-run</button><button class="btn" id="scompare" type="button">Compare</button><details class="menu" id="sexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-mformat="csv">CSV</button><button type="button" data-mformat="xlsx">Excel</button><button type="button" data-mformat="json">JSON</button><button type="button" data-mformat="tsv">TSV</button></div></details><button class="btn btn-danger" id="sdelete" type="button">Delete</button></div>
 <div class="panel"><div class="table-wrap"><table class="sortable"><thead><tr><th>Name</th><th>Target</th><th>Started</th><th>Finished</th><th>Status</th><th>Elements</th><th>Correlations</th><th>Action</th></tr></thead><tbody id="scans"></tbody></table></div></div>
+<div class="panel"><div class="panel-heading">Alerts <span class="badge" id="alerts-n"></span> <button class="btn" id="alertsload" type="button">Show</button></div><div class="table-wrap" id="alertswrap" hidden><table><thead><tr><th>When</th><th>Raised</th><th>Earlier</th><th>Later</th><th>Reasons</th></tr></thead><tbody id="alerts"></tbody></table></div></div>
 </div>
 </section>
 <section id="view-newscan" hidden>
@@ -312,7 +313,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 </section>
 <section id="view-inspect" hidden>
 <h1>File metadata</h1>
-<p class="help">EXIF, GPS, XMP edit history, PDF /Info with values an edit replaced, PNG text: what a file embeds, read by this server alone, no key. Each field is the file's claim.</p>
+<p class="help">EXIF, GPS, XMP edit history, PDF /Info, PNG text and offline APK archive inventory: what a file embeds, read locally without a key. Embedded fields are claims, not verified ownership.</p>
 <form class="toolbar" id="inspect"><input type="file" id="ifile" class="grow" aria-label="File to inspect"><button class="btn btn-primary" id="irun" type="submit">Inspect</button></form>
 <p class="alert" id="ierror" role="alert" hidden></p>
 <p class="note" id="istatus" role="status">No file inspected.</p>
@@ -402,6 +403,7 @@ main{padding-top:calc(112px + env(safe-area-inset-top));padding-bottom:40px}
 <div class="toolbar"><button class="btn" id="cmpswap" type="button">Swap</button><details class="menu" id="cmpexport"><summary class="btn">Export</summary><div class="menu-list"><button type="button" data-xformat="csv">CSV</button><button type="button" data-xformat="xlsx">Excel</button><button type="button" data-xformat="json">JSON</button><button type="button" data-xformat="tsv">TSV</button></div></details></div>
 <p class="alert" id="cmperror" role="alert" hidden></p>
 <p class="help pad" id="cmpcoverage" role="status"></p>
+<p class="help pad" id="cmpalert" role="status"></p>
 <div class="panel"><div class="panel-heading">Data Types</div><div class="table-wrap"><table class="sortable"><thead><tr><th>Type</th><th>Earlier</th><th>Later</th><th>Added</th><th>Removed</th><th>Kept</th></tr></thead><tbody id="cmptypes"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Correlations <span class="badge" id="cmpcorr-n"></span></div><div class="table-wrap"><table><thead><tr><th>Change</th><th>Risk</th><th>Correlation</th></tr></thead><tbody id="cmpcorr"></tbody></table></div></div>
 <div class="panel"><div class="panel-heading">Added <span class="badge" id="cmpadd-n"></span></div><p class="help pad">Found by the later scan and not by the earlier one.</p><div id="cmpadd"></div></div>
@@ -1333,7 +1335,7 @@ $('gsave').onclick=()=>{
 let cmp=[];
 const compareScans=(a,b)=>{location.hash='#/compare/'+enc(a)+'/'+enc(b)};
 async function openCompare(ids){
-  const g=gen;cmp=ids;$('cmperror').hidden=true;$('cmpexport').open=false;$('cmpmeta').textContent='Comparing…';$('cmpcoverage').textContent='';
+  const g=gen;cmp=ids;$('cmperror').hidden=true;$('cmpexport').open=false;$('cmpmeta').textContent='Comparing…';$('cmpcoverage').textContent='';$('cmpalert').textContent='';
   try{
     const c=await api('/api/scans/compare?'+new URLSearchParams({ids:cmp.join(',')}));if(g!==gen)return;
     const side=(label,s)=>label+': '+(s.name||s.target)+' ('+s.target+', '+when(s.started||s.created)+')';
@@ -1350,9 +1352,12 @@ async function openCompare(ids){
     [...$('cmpcorr').rows].forEach((tr,i)=>{const x=cs[i]&&cs[i][1];if(x)tr.cells[1].replaceChildren(el('span','label '+riskTone(x.risk),x.risk))});
     $('cmpadd-n').textContent=c.added.length;$('cmpadd').replaceChildren(elemTable(c.added,true));
     $('cmprem-n').textContent=c.removed.length;$('cmprem').replaceChildren(elemTable(c.removed,true));
+    api('/api/scans/alert?'+new URLSearchParams({ids:cmp.join(',')})).then(a=>{if(g===gen)$('cmpalert').textContent=a.alert.raised?'Alert: '+a.alert.reasons.map(r=>r.risk+' '+r.rule).join('; '):'No alert at HIGH risk.'},e=>{if(g===gen)$('cmpalert').textContent=e.message});
   }catch(e){if(g===gen){fail('cmperror',e.message);$('cmpmeta').textContent=''}}
 }
 $('cmpswap').onclick=()=>compareScans(cmp[1],cmp[0]);
+// The alert history is read only when asked for, so a cold load stays at its four requests.
+$('alertsload').onclick=()=>api('/api/scans/alerts').then(h=>{$('alertswrap').hidden=false;fill('alerts',h.slice(-20).reverse(),x=>[when(x.at),x.raised?'yes':'no',x.earlier,x.later,x.reasons.map(r=>r.rule||r.count+' new values').join('; ')])},e=>fail('serror',e.message));
 $('cmpexport').addEventListener('click',async e=>{
   const b=e.target.closest('button[data-xformat]');if(!b)return;
   $('cmpexport').open=false;
