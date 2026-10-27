@@ -126,6 +126,9 @@ fn web_investigate(text: &str) -> Result<LookupReport, LookupError> {
 
 /// `/api/lookup` over the same routing and front-ends as `scan`.
 fn web_lookup(query: &LookupQuery) -> Result<LookupReport, LookupError> {
+    if let Some(result) = super::public_osint::web_lookup(query) {
+        return result;
+    }
     let selector = vec![query.selector.clone()];
     let kind = if query.kind == "auto" {
         let kind = infer_kind(&query.selector);

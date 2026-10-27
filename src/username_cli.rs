@@ -14,6 +14,7 @@ use crate::canonical::canonical_handle;
 use crate::concurrent::{self, Job};
 use crate::entity::{Entity, EntityKind, Evidence, EvidenceProvenance, merge_by_uid};
 use crate::error::Error;
+use crate::github_repos;
 use crate::github_user;
 use crate::gitlab_user;
 use crate::http::Transport;
@@ -31,7 +32,7 @@ use crate::wikipedia;
 pub const USERNAME_USAGE: &str = "usage: huntsman-recon username HANDLE [--save FILE]";
 pub const USERNAME_HELP: &str = "\
 username HANDLE [--save FILE]
-Derive handle variants and query public GitHub, GitLab, Bluesky, Keybase, Mastodon, TikTok self-published bio contacts and Wikipedia contributions. Email contacts are self-declared candidates, never verified account email owners. --save FILE writes an unverified ledger that verify can reload.";
+Derive handle variants and query public GitHub profiles and repositories, GitLab, Bluesky, Keybase, Mastodon, TikTok self-published bio contacts and Wikipedia contributions. Email contacts are self-declared candidates, never verified account email owners. --save FILE writes an unverified ledger that verify can reload.";
 
 /// One source's answer: what it found and its outcome, or the refusal that stopped it.
 type Found = Result<(Vec<Entity>, SourceExecutionOutcome), Error>;
@@ -71,12 +72,19 @@ fn public_sources<'a, T: Transport + Sync + ?Sized>(
     name: &'a str,
     scan: &'a str,
     now_unix: u64,
-) -> [(&'static str, Job<'a, Found>); 7] {
+) -> [(&'static str, Job<'a, Found>); 8] {
     [
         (
             github_user::SRC,
             Box::new(move || {
                 github_user::lookup(transport, keys, name, scan, now_unix)
+                    .map(|found| (found.entities, found.outcome))
+            }),
+        ),
+        (
+            github_repos::SRC,
+            Box::new(move || {
+                github_repos::lookup(transport, keys, name, scan, now_unix)
                     .map(|found| (found.entities, found.outcome))
             }),
         ),
@@ -452,8 +460,9 @@ mod tests {
             UsernameRun::Printed { report, text } => {
                 assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::ValidZero);
                 assert_eq!(report.outcomes[1].kind, SourceOutcomeKind::ValidZero);
-                assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::Success);
-                assert_eq!(report.outcomes[3].kind, SourceOutcomeKind::ValidZero);
+                assert_eq!(report.outcomes[2].kind, SourceOutcomeKind::ValidZero);
+                assert_eq!(report.outcomes[3].kind, SourceOutcomeKind::Success);
+                assert_eq!(report.outcomes[4].kind, SourceOutcomeKind::ValidZero);
                 assert!(text.contains("keybase\t"), "{text}");
                 assert!(
                     report
@@ -525,6 +534,7 @@ mod tests {
                 modules,
                 [
                     github_user::SRC,
+                    github_repos::SRC,
                     gitlab_user::SRC,
                     bluesky_user::SRC,
                     keybase::SRC,
@@ -536,7 +546,7 @@ mod tests {
         }
     }
 
-    /// Each source waits on its own server, so seven that take 200 ms each answer in about 200 ms,
+    /// Each source waits on its own server, so eight that take 200 ms each answer in about 200 ms,
     /// not the second they took one after another.
     #[test]
     fn the_sources_run_at_once() {
@@ -567,10 +577,10 @@ mod tests {
             panic!("the lookup should print a report");
         };
         let took = started.elapsed();
-        assert_eq!(report.outcomes.len(), 7);
+        assert_eq!(report.outcomes.len(), 8);
         assert!(
             took < std::time::Duration::from_millis(800),
-            "seven 200 ms sources took {took:?}"
+            "eight 200 ms sources took {took:?}"
         );
     }
 
