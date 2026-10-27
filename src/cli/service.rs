@@ -60,6 +60,32 @@ fn web_analyze(
 /// findings and says why in an inconclusive `exif` outcome.
 fn web_inspect(label: &str, bytes: &[u8]) -> Result<LookupReport, LookupError> {
     let now = clock::unix_now();
+    // Reuse the CLI's bounded offline parser. Archive names and signing-block IDs
+    // remain unverified observations, never proof of package ownership.
+    if label
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("apk"))
+    {
+        let report = huntsman_recon::apk_intel::run(bytes, label, now).map_err(|error| {
+            LookupError {
+                status: 422,
+                message: error.to_string(),
+            }
+        })?;
+        let text = huntsman_recon::lookup_report::render(&report.entities, &report.outcomes)
+            .map_err(|message| LookupError {
+                status: 500,
+                message,
+            })?;
+        return Ok(LookupReport {
+            route: "inspect",
+            text,
+            entities: report.entities,
+            outcomes: report.outcomes,
+            scan: None,
+            status: None,
+        });
+    }
     let mut entities = Vec::new();
     let mut outcomes = Vec::new();
     match huntsman_recon::exif::run(bytes, label, now) {
@@ -470,6 +496,53 @@ mod tests {
         png.extend_from_slice(&kind);
         png.extend_from_slice(body);
         png.extend_from_slice(&[0; 4]);
+    }
+
+    /// Valid APK uploads use only the offline APK reader; malformed APKs fail closed
+    /// instead of being silently interpreted as unrelated image/document metadata.
+    #[test]
+    fn uploaded_apk_uses_canonical_inventory_and_rejects_invalid_zip() {
+        let name = b"AndroidManifest.xml";
+        let len = u16::try_from(name.len()).unwrap();
+        let mut apk = vec![0_u8; 30];
+        apk[..4].copy_from_slice(b"PK\x03\x04");
+        apk[26..28].copy_from_slice(&len.to_le_bytes());
+        apk.extend_from_slice(name);
+        let offset = u32::try_from(apk.len()).unwrap();
+        let mut directory = vec![0_u8; 46];
+        directory[..4].copy_from_slice(b"PK\x01\x02");
+        directory[28..30].copy_from_slice(&len.to_le_bytes());
+        directory.extend_from_slice(name);
+        let directory_len = u32::try_from(directory.len()).unwrap();
+        apk.extend_from_slice(&directory);
+        let mut end = vec![0_u8; 22];
+        end[..4].copy_from_slice(b"PK\x05\x06");
+        end[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        end[10..12].copy_from_slice(&1_u16.to_le_bytes());
+        end[12..16].copy_from_slice(&directory_len.to_le_bytes());
+        end[16..20].copy_from_slice(&offset.to_le_bytes());
+        apk.extend_from_slice(&end);
+
+        let report = web_inspect("EXAMPLE.APK", &apk).expect("valid APK ZIP");
+        assert_eq!(report.route, "inspect");
+        assert_eq!(report.entities.len(), 1);
+        assert_eq!(report.entities[0].kind, EntityKind::Document);
+        assert_eq!(
+            attribute(&report.entities[0], "apk_zip_entries"),
+            Some("1")
+        );
+        assert_eq!(report.outcomes.len(), 1);
+        assert_eq!(report.outcomes[0].module, "apk_intel");
+        assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
+        let expected_hash = huntsman_recon::sha256::hex32(
+            &huntsman_recon::sha256::sha256(&apk),
+        );
+        assert_eq!(
+            attribute(&report.entities[0], "file_sha256"),
+            Some(expected_hash.as_str())
+        );
+        let invalid = web_inspect("broken.apk", b"not an APK").expect_err("invalid APK");
+        assert_eq!(invalid.status, 422);
     }
 
     /// A file `exif` cannot decode keeps `docmeta`'s findings, and the `exif` outcome says why.
