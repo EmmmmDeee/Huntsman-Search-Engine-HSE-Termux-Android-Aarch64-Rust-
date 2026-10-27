@@ -43,6 +43,7 @@ use crate::scan_store::{
     FORMAT_VERSION, LogEntry, LogLevel, Risk, RiskCounts, ScanCorrelation, ScanOptions, ScanRecord,
     ScanResults, ScanStatus, ScanStore, StoreError, new_id,
 };
+use crate::serve_events::{Event, EventHub};
 use crate::sf_compat::target_type;
 use crate::sf_correlate::{self, Rule, RuleError};
 use crate::sf_elements::{self, DataElement, Target};
@@ -848,6 +849,9 @@ pub struct ScanService {
     admission: Arc<LookupAdmission>,
     worker_slots: Arc<AtomicUsize>,
     sequence: AtomicU64,
+    /// Every committed scan-status change is published here, so `serve` can stream it to the Web
+    /// UI. Always present; publishing with no subscriber is a cheap no-op.
+    events: Arc<EventHub>,
 }
 
 impl ScanService {
@@ -856,6 +860,12 @@ impl ScanService {
     #[must_use]
     pub fn new(store: ScanStore, lookup: ScanLookup) -> Arc<Self> {
         Self::with_rules(store, lookup, sf_correlate::shipped().to_vec(), Vec::new())
+    }
+
+    /// The hub every committed scan-status change is published to, for `serve`'s event stream.
+    #[must_use]
+    pub fn events(&self) -> &Arc<EventHub> {
+        &self.events
     }
 
     /// A service whose scans run `rules` (see [`sf_correlate::with_dir`]) beside Huntsman's own.
@@ -885,6 +895,7 @@ impl ScanService {
             admission: Arc::new(LookupAdmission::default()),
             worker_slots: Arc::new(AtomicUsize::new(0)),
             sequence: AtomicU64::new(0),
+            events: Arc::new(EventHub::new()),
         })
     }
 
@@ -1279,6 +1290,7 @@ impl ScanService {
         // Keep the state lock over read/modify/write so a stop cannot be overwritten.
         let mut state = self.state();
         let mut wrote_row = false;
+        let mut committed: Option<ScanStatus> = None;
         let result: Result<(), StoreError> = (|| {
             let mut record = self.store.get(id)?;
             if !record.status.is_active() {
@@ -1304,6 +1316,7 @@ impl ScanService {
             }
             persist(&record)?;
             wrote_row = true;
+            committed = Some(status);
             Ok(())
         })();
         if let Err(error) = &result {
@@ -1316,6 +1329,16 @@ impl ScanService {
             // Only a committed transition can clear an earlier storage error.
             // An ignored transition (terminal row or pending abort) is not recovery.
             state.status_failures.remove(id);
+        }
+        // Published after the state lock is released, so a slow subscriber never holds it. The id
+        // is the scan's, not a target; the status is a non-sensitive enum.
+        drop(state);
+        if let Some(status) = committed {
+            self.events.publish(Event::Scan {
+                id: id.to_owned(),
+                status: status.as_str().to_owned(),
+                at: clock::unix_now_millis(),
+            });
         }
         result.map_err(ServiceError::from)
     }
@@ -2160,6 +2183,49 @@ mod tests {
             Some(file.id.as_str()),
             "{elements:?}"
         );
+    }
+
+    /// Running a scan publishes its status transitions to the service's event hub, so `serve` can
+    /// stream them live. The id is the scan's; no target text is published.
+    #[test]
+    fn scan_status_transitions_are_published_to_the_event_hub() {
+        use std::time::Duration;
+        let (service, dir) = with_lookup(
+            "events",
+            Arc::new(|kind: ScanKind, selector: &str, _: &Selection| Ok(found(kind, selector))),
+        );
+        let mut sub = service.events().subscribe();
+        let record = service
+            .run(&ScanRequest {
+                target: "1.1.1.1".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap();
+        assert_eq!(record.status, ScanStatus::Finished);
+        let mut statuses = Vec::new();
+        loop {
+            let batch = sub.recv(Duration::from_millis(50));
+            if batch.events.is_empty() {
+                break;
+            }
+            for event in batch.events {
+                match event {
+                    crate::serve_events::Event::Scan { id, status, .. } => {
+                        assert_eq!(id, record.id, "the scan id, never the target");
+                        statuses.push(status);
+                    }
+                    crate::serve_events::Event::Alert { .. } => {
+                        panic!("a scan run raises no alert event")
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            statuses,
+            ["STARTING", "RUNNING", "FINISHED"],
+            "each committed transition, in order"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn found(kind: ScanKind, selector: &str) -> LookupOutput {

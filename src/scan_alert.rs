@@ -127,12 +127,12 @@ pub const NOTIFICATION_TITLE: &str = "Huntsman alert";
 /// The most characters a notification's text holds.
 const MAX_NOTIFICATION_CHARS: usize = 240;
 
-/// The text of the phone notification a raised alert posts: each reason's risk and rule, or the
-/// count of new values, on one line. Like the history it never names the target or a finding's
-/// text, because a notification shows on the lock screen.
+/// Each reason of a raised alert as "RISK rule", or "N new values": the risk and rule only, never
+/// the target or a correlation's title (which can carry a finding's value). Shared by the phone
+/// notification and the live event stream.
 #[must_use]
-pub fn notification_text(alert: &Alert) -> String {
-    let parts: Vec<String> = alert
+pub fn reason_labels(alert: &Alert) -> Vec<String> {
+    alert
         .reasons
         .iter()
         .map(|reason| match reason {
@@ -141,8 +141,14 @@ pub fn notification_text(alert: &Alert) -> String {
             }
             Reason::NewValues { count } => format!("{count} new values"),
         })
-        .collect();
-    let text = parts.join("; ");
+        .collect()
+}
+
+/// The lock-screen text for a raised alert: each reason's risk and rule (or new-value count),
+/// joined, capped to a safe length. Never the target or a finding's value.
+#[must_use]
+pub fn notification_text(alert: &Alert) -> String {
+    let text = reason_labels(alert).join("; ");
     if text.chars().count() <= MAX_NOTIFICATION_CHARS {
         return text;
     }

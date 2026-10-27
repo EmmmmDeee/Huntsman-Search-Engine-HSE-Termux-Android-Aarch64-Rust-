@@ -1077,7 +1077,7 @@ fn a_client_that_sends_nothing_gets_a_408_when_its_read_times_out() {
         .unwrap();
     let mut response = String::new();
     client.read_to_string(&mut response).unwrap();
-    assert!(handle.join().unwrap().is_ok());
+    handle.join().unwrap().unwrap();
     assert!(
         response.starts_with("HTTP/1.1 408 Request Timeout"),
         "{response}"
@@ -3304,4 +3304,66 @@ fn a_key_save_cut_short_is_refused_for_what_it_is() {
     ));
     assert!(answer.starts_with("HTTP/1.1 400"), "{answer}");
     assert!(answer.contains("ended before its head did"), "{answer}");
+}
+
+/// `/api/events` streams scan events as Server-Sent Events: the stream announces its media type,
+/// then each published event arrives as a `data:` frame of its JSON, and the connection ends when
+/// the client goes away.
+#[test]
+fn the_event_stream_pushes_published_events_as_sse_frames() {
+    use crate::serve_events::{Event, EventHub};
+    use std::io::Read as _;
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::Arc;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut client = TcpStream::connect(addr).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let (mut server, _) = listener.accept().unwrap();
+    server
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+
+    let hub = Arc::new(EventHub::new());
+    let streaming = Arc::clone(&hub);
+    let handle = thread::spawn(move || stream_events(&mut server, &streaming));
+
+    // The subscription is taken at the start of stream_events; publish once it is live so the
+    // event is not missed, then read until its frame arrives.
+    thread::sleep(Duration::from_millis(150));
+    hub.publish(Event::Scan {
+        id: "abc123".into(),
+        status: "RUNNING".into(),
+        at: 7,
+    });
+
+    let mut received = String::new();
+    let mut buf = [0_u8; 4096];
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while std::time::Instant::now() < deadline {
+        match client.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                received.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if received.contains("\"id\":\"abc123\"") {
+                    break;
+                }
+            }
+            Ok(_) | Err(_) => break,
+        }
+    }
+    assert!(
+        received.contains("Content-Type: text/event-stream"),
+        "{received}"
+    );
+    assert!(received.contains("retry: 3000"), "{received}");
+    assert!(
+        received.contains("data: {\"kind\":\"scan\",\"id\":\"abc123\",\"status\":\"RUNNING\""),
+        "a published scan event is one SSE data frame: {received}"
+    );
+    // The client going away ends the stream at the server's next write, not after the full bound.
+    drop(client);
+    handle.join().unwrap();
 }
