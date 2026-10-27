@@ -149,7 +149,7 @@ fn cargo_never_runs_with_a_write_token() {
         );
     }
     assert!(publish.contains(
-        "    permissions:\n      contents: write     # create the tags and pre-releases\n      id-token: write     # Sigstore-backed provenance\n      attestations: write # record the attestation\n"
+        "    permissions:\n      contents: write     # create the tags and pre-releases\n      actions: read       # inspect exact-commit main CI before publishing\n      id-token: write     # Sigstore-backed provenance\n      attestations: write # record the attestation\n"
     ));
     assert!(publish.contains(
         "    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.resolve.outputs.publish == 'true'\n"
@@ -4001,4 +4001,38 @@ fn the_identity_probe_matches_the_usage_line_it_proves() {
         !bre_dotstar_matches(&pattern, &without_verify),
         "the probe still matches after `verify LEDGER` is gone, so it proves nothing"
     );
+}
+
+/// Release publication must not race the independent exact-main CI workflow:
+/// QEMU aarch64 library tests are part of CI, not the release's quality jobs.
+#[test]
+fn release_publication_waits_for_successful_exact_main_ci() {
+    let wf = release();
+    let publish = job(&wf, "publish");
+    let gate = publish
+        .find("      - name: Require successful exact-main CI before publishing")
+        .expect("publish must wait for exact-main CI");
+    let download = publish
+        .find("      - name: Download staged release files")
+        .expect("publish must download release assets");
+    assert!(
+        gate < download,
+        "CI gate must precede all publication steps"
+    );
+    for required in [
+        "      actions: read",
+        "actions/workflows/ci.yml/runs",
+        "-f head_sha=\"$GITHUB_SHA\"",
+        "-f event=push",
+        ".head_sha == $sha",
+        ".event == \"push\"",
+        "completed:success",
+        "completed:*",
+        "timeout-minutes: 65",
+    ] {
+        assert!(
+            publish.contains(required),
+            "release publication is missing exact-CI gate contract: {required:?}"
+        );
+    }
 }

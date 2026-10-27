@@ -77,6 +77,7 @@ gap	runtime	coverage and expansion gap analysis
 geohash	leaf	geohash codec
 geoint	leaf	GEOINT distance and parsing helpers
 gexf	exporter	GEXF graph output
+github_repos	adapter	bounded public GitHub repository evidence collector
 gitlab_user	adapter	keyless exact GitLab public user lookup through username_cli and scan, retaining only public profile fields and source provenance
 github_user	adapter	public GitHub profile source client
 graph	runtime	shared deterministic graph model
