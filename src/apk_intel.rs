@@ -10,6 +10,7 @@
 
 mod axml;
 mod dex;
+mod sdk;
 mod signer;
 
 use std::borrow::Cow;
@@ -45,7 +46,7 @@ const MAX_APK_INFLATED_BYTES: usize = 256 * 1024 * 1024;
 const MAX_HOST_ENTITIES: usize = 64;
 const LIMITATIONS: &str = "Offline static reading: the manifest is the archive's own claim, signing certificates are those the archive presents (no signature is verified), and a URL in code is a lead, not proof the app contacts it. Nothing is executed or fetched.";
 
-pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. No decompression, certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
+pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts), summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER (NOT verifying any signature), and list the URLs and third-party SDKs the DEX code references. Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. No decompression, certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Inventory {
@@ -70,6 +71,7 @@ pub struct Inventory {
 
 pub use axml::{Component, Exposure, Manifest};
 pub use dex::CodeUrls;
+pub use sdk::Tracker;
 pub use signer::Certificate;
 
 /// What reading the archive's members found.
@@ -692,6 +694,16 @@ fn document_evidence(
         (analysis.code.urls.len() + analysis.code.urls_omitted).to_string(),
     );
     put(
+        "apk_bundled_sdks",
+        analysis
+            .code
+            .trackers
+            .iter()
+            .map(|tracker| format!("{} ({})", tracker.name, tracker.category))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    put(
         "apk_evasion_indicators",
         analysis.evasion_indicators.join("; "),
     );
@@ -1067,6 +1079,7 @@ mod tests {
                     "classes.dex",
                     dex::tests::dex_with(&[
                         "Lcom/example/field/Main;",
+                        "Lcom/appsflyer/AppsFlyerLib;",
                         "https://api.fieldtrack.io/v2/report",
                         "http://schemas.android.com/apk/res/android",
                     ]),
@@ -1105,6 +1118,14 @@ mod tests {
             "the v2 signer, then the v1 signer"
         );
         assert_eq!(analysis.code.urls, ["https://api.fieldtrack.io/v2/report"]);
+        assert_eq!(
+            analysis.code.trackers,
+            [Tracker {
+                name: "AppsFlyer".into(),
+                category: "attribution".into()
+            }],
+            "the bundled SDK is named from the DEX type descriptors"
+        );
 
         let document = &report.entities[0];
         assert_eq!(attr(document, "apk_package"), Some("com.example.field"));
@@ -1115,6 +1136,10 @@ mod tests {
             Some("android.permission.INTERNET,android.permission.READ_SMS")
         );
         assert_eq!(attr(document, "apk_reachable_components"), Some("2"));
+        assert_eq!(
+            attr(document, "apk_bundled_sdks"),
+            Some("AppsFlyer (attribution)")
+        );
         assert_eq!(
             attr(document, "apk_signer_subject"),
             Some("CN=Field Apps, O=Example Pty Ltd, C=AU")
