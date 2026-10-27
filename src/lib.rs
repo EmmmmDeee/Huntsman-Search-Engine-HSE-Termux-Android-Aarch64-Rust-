@@ -167,6 +167,7 @@ pub mod postcode_au;
 pub mod profiles;
 pub mod proof;
 pub mod provider_credentials;
+pub mod public_osint;
 pub mod pulsedive;
 pub mod radar;
 pub mod rdap;

@@ -156,7 +156,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "verify" => {
             "verify LEDGER\nVerify a ledger file and print its entry count, admitted count, and tip."
         }
-        _ => return None,
+        _ => return (command == "public-osint").then_some(super::public_osint::HELP),
     };
     Some(help)
 }

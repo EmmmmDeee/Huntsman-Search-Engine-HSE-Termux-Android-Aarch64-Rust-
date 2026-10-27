@@ -200,6 +200,7 @@ cargo run -- scan "0412 345 678"            # auto-route to the rebuilt phone fr
 cargo run -- investigate "mail ada@example.com visit https://example.org"  # offline entity extraction
 cargo run -- plan ada@example.com example.com  # offline spine: entities, relations, planned routes; nothing fetched
 cargo run -- osint plan example.com  # offline osint planning graph; nothing fetched
+cargo run -- public-osint --help  # independent GDELT news, FBI notices and public dossier help; no lookup performed
 cargo run -- query "OpenAI research"          # network: Bing/Brave/Mojeek subset
 cargo run -- sf -M                         # SpiderFoot-style reachable-module listing; offline
 cargo run -- scans types                   # Spiderfoot 4.0's 172 data-element types plus Huntsman's own; offline
