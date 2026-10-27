@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
+use super::sdk::{self, Tracker};
 use crate::validation::is_placeholder_domain;
 use crate::value_syntax::{canonical_domain, host_only, is_iana_tld};
 
@@ -44,10 +45,14 @@ pub struct CodeUrls {
     pub urls_omitted: usize,
     /// The distinct registrable-looking hosts of those URLs, lowercased.
     pub hosts: Vec<String>,
+    /// The third-party SDKs the DEX code references, by their package signatures.
+    pub trackers: Vec<Tracker>,
     #[serde(skip)]
     seen: BTreeSet<String>,
     #[serde(skip)]
     host_set: BTreeSet<String>,
+    #[serde(skip)]
+    tracker_set: BTreeSet<&'static str>,
 }
 
 fn le32(data: &[u8], at: usize) -> Option<usize> {
@@ -146,6 +151,7 @@ impl CodeUrls {
             let offset = le32(dex, ids + i * 4).ok_or("truncated DEX string table")?;
             let text = string_at(dex, offset).ok_or("DEX string lies outside the file")?;
             self.take(text);
+            self.detect_sdk(text);
         }
         self.dex_files_read += 1;
         self.strings_read += read;
@@ -153,10 +159,23 @@ impl CodeUrls {
         Ok(())
     }
 
+    /// Records the SDK a type descriptor names, once per SDK, the first time it is seen.
+    fn detect_sdk(&mut self, text: &[u8]) {
+        if let Some(signature) = sdk::detect(text) {
+            if self.tracker_set.insert(signature.name) {
+                self.trackers.push(Tracker {
+                    name: signature.name.to_owned(),
+                    category: signature.category.to_owned(),
+                });
+            }
+        }
+    }
+
     /// Sorts what was found, for a stable report.
     pub fn finish(&mut self) {
         self.urls.sort();
         self.hosts.sort();
+        self.trackers.sort();
     }
 }
 
@@ -221,6 +240,45 @@ pub(super) mod tests {
         assert_eq!(
             found.hosts,
             ["203.0.113.9", "api.fieldtrack.io", "cdn.fieldtrack.io"]
+        );
+    }
+
+    #[test]
+    fn bundled_sdks_are_named_from_the_type_descriptors_in_code() {
+        let mut found = CodeUrls::default();
+        found
+            .read(&dex_with(&[
+                "Lcom/example/field/Main;",
+                "Lcom/appsflyer/AppsFlyerLib;",
+                "Lcom/google/firebase/analytics/FirebaseAnalytics;",
+                "Lcom/google/firebase/analytics/internal/Helper;",
+                "Lcom/facebook/ads/InterstitialAd;",
+                "Lcom/facebook/login/LoginManager;",
+                "https://api.fieldtrack.io/",
+            ]))
+            .expect("dex");
+        found.finish();
+        assert_eq!(
+            found.trackers,
+            [
+                Tracker {
+                    name: "AppsFlyer".into(),
+                    category: "attribution".into()
+                },
+                Tracker {
+                    name: "Google Firebase Analytics".into(),
+                    category: "analytics".into()
+                },
+                Tracker {
+                    name: "Meta (Facebook) SDK".into(),
+                    category: "social".into()
+                },
+                Tracker {
+                    name: "Meta Audience Network".into(),
+                    category: "advertising".into()
+                },
+            ],
+            "each SDK once, sorted, with the longest prefix winning and URLs ignored"
         );
     }
 
