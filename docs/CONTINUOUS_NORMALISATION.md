@@ -28,11 +28,24 @@ For every configured target with at least two finished scans, each cycle decides
 
 Set HUNTSMAN_CONTINUOUS_NOTIFY=1 (read like the other two settings) to also post a phone notification through Termux:API's `termux-notification` when a decision raises an alert. Install `pkg termux-api` and the Termux:API Android app and allow its notifications. No root is needed. The notification names only each reason's risk and rule, never the target or a finding's text, because it shows on the lock screen. `0` or unset posts none, and any other value stops serve before it binds, naming the setting. A notification that cannot be posted is written to serve's standard error and not retried: the decision is already recorded, and posting it later would announce the same alert twice. The Settings page's continuous entry says when notifications are on.
 
+## Scheduled cycles without a resident serve
+
+Android may stop a background `serve`, and the controller stops with it. `huntsman-recon scans cycle` runs one cycle in the foreground instead and exits, so Android's own scheduler can drive collection through Termux:API's `termux-job-scheduler` (`pkg termux-api` and the Termux:API app, no root). It reads the same three settings and HUNTSMAN_CONTINUOUS_KEEP from `~/.huntsman.env`. It runs each due target's scan to its end, then decides the scan's alert over the one before it, posts the notification when HUNTSMAN_CONTINUOUS_NOTIFY=1, applies retention and re-normalises, all before it exits. The scheduler's period only sets how often the cycle looks; HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES still decides when a target is due. It prints one line saying how many scans it collected, failed, decided and deleted (`--json` for an object). It exits 0, 69 when a due scan could not run (the rest of the cycle still ran, and the next run tries again), 65 for a wrong setting, or 78 when no targets are set.
+
+```sh
+printf '%s\n' '#!/data/data/com.termux/files/usr/bin/sh' \
+  'exec huntsman-recon scans cycle >"$HOME/.huntsman/cycle.log" 2>&1' > ~/.huntsman/cycle.sh
+chmod 700 ~/.huntsman/cycle.sh
+termux-job-scheduler --job-id 4717 --script ~/.huntsman/cycle.sh --period-ms 3600000 --network any --persisted true
+```
+
+`--persisted true` keeps the job across reboots, and Android's minimum period is 900000 ms (15 minutes). `~/.huntsman/cycle.log` holds the last run's output. `termux-job-scheduler --pending` lists the job, and `--cancel --job-id 4717` removes it. Android may end a job that runs for long. A scan whose process has gone is settled as ended by the scan store and is due again at the next run, so keep the target list short. Use either the scheduled cycle or serve's controller, not both, because each collects what it finds due.
+
 ## Lifecycle
 
 READ CONFIG -> CANONICALISE -> READ SCAN STORE -> SELECT LATEST SCAN PER CANONICAL TARGET -> DECIDE ALERTS FOR NEWLY FINISHED SCANS -> DELETE ENDED SCANS BEYOND THE KEPT (WHEN CONFIGURED) -> ANALYSE COMPLETED SCANS -> ATOMICALLY SAVE DERIVED REPORT -> CHECK RECENCY AND RETRY WINDOWS -> START OR JOIN DUE SCANS -> SLEEP 60 SECONDS -> REPEAT.
 
-This is an evidence normalisation and refreshing controller, not an unattended software-editing agent. It cannot ensure that providers respond or that the Termux process keeps running. Android may suspend a background Termux server; see docs/INSTALL.md. Service restarts derive cadence from saved scan timestamps.
+This is an evidence normalisation and refreshing controller, not an unattended software-editing agent. It cannot ensure that providers respond or that the Termux process keeps running. Android may suspend a background Termux server; see docs/INSTALL.md. Service restarts derive cadence from saved scan timestamps. Each current report records the source revision it was derived from and the build that derived it (`normalisation.analyser`). A restarted serve or a scheduled `scans cycle` analyses a scan again only when its evidence or the build has changed, so `.previous.json` keeps the last different report rather than a copy of the current one.
 
 ## Verification
 
