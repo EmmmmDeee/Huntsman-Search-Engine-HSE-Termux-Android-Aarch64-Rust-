@@ -1,5 +1,5 @@
-//! Release publication must be gated on the independent exact-main RustSec and
-//! CodeQL workflows, not only on Rust CI. These are source-level contracts;
+//! Release publication must be gated on the independent exact-main `RustSec` and
+//! `CodeQL` workflows, not only on Rust CI. These are source-level contracts;
 //! live GitHub Actions verification remains a separate acceptance requirement.
 
 use std::fs;
