@@ -12,7 +12,7 @@ use huntsman_recon::lookup_report;
 use super::{fail, terminal_json_pretty};
 
 pub(super) fn apk_cmd(args: &[String]) -> ExitCode {
-    if args == ["--help"] {
+    if matches!(args, [flag] if flag == "--help") {
         println!("{APK_HELP}");
         return ExitCode::SUCCESS;
     }
