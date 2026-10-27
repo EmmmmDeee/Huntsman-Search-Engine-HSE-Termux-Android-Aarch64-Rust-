@@ -104,7 +104,7 @@ check_case 'wrong branch target is rejected' drift_target check fail 0 'DRIFT:'
 check_case 'inactive branch enforcement is rejected' unprotected check fail 0 'NOT ENFORCED:'
 check_case 'auto-merge disabled is rejected' auto_disabled check fail 0 'NOT READY:'
 
-# A policy can retain ten contexts while silently replacing the RustSec gate.
+# A policy can retain twelve contexts while silently replacing RustSec or CodeQL gates.
 # Run the real controller against a mutated local policy and require fail-closed
 # validation before any GitHub API request.
 mkdir -p "$tmp/mutated"
@@ -119,6 +119,16 @@ export POLICY_FILE="$tmp/mutated/merge-policy.json"
 check_case 'same-count policy with substituted RustSec gate fails closed' none check fail 0 'invalid or weakened local merge policy'
 if [[ -f "$MOCK_LOG" ]]; then
   echo 'FAIL: invalid local policy reached the GitHub API' >&2
+  fail=$((fail + 1))
+fi
+# Replacing the newly mandatory CodeQL gate must also fail before any API call.
+jq '(.rules[] | select(.type == "required_status_checks") |
+  .parameters.required_status_checks[] | select(.context == "CodeQL rust") |
+  .context) = "unrelated replacement"' \
+  "$original_policy" > "$tmp/mutated/merge-policy.json"
+check_case 'same-count policy with substituted CodeQL gate fails closed' none check fail 0 'invalid or weakened local merge policy'
+if [[ -f "$MOCK_LOG" ]]; then
+  echo 'FAIL: invalid CodeQL policy reached the GitHub API' >&2
   fail=$((fail + 1))
 fi
 script="$original_script"
