@@ -791,7 +791,7 @@ const NOTIFY_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Post an Android notification through Termux:API, without root. Its stdio is closed, so a
 /// helper that keeps running cannot hold a pipe open, and one that does not finish is stopped.
-fn notify(text: &str) -> Result<(), String> {
+pub(super) fn notify(text: &str) -> Result<(), String> {
     let mut child = Command::new("termux-notification")
         .args([
             "--id",
