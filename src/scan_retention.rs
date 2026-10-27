@@ -3,17 +3,24 @@
 //!
 //! Scans are grouped by what they looked up: one target by one lookup kind. In each group the
 //! newest `keep` scans are kept, by creation time, and at least one always is. Of the rest only
-//! scans that have ended may go, because an active scan still has a worker writing to it. The
-//! plan deletes nothing itself: `scans prune` shows it and deletes only when told to.
+//! scans that have ended may go, because an active scan still has a worker writing to it, and
+//! never the group's newest finished scan: it is the target's last complete evidence and the
+//! baseline the next scan's alert is decided over, however many failed or aborted scans followed
+//! it. The plan deletes nothing itself: `scans prune` and continuous collection's opt-in
+//! retention act on it.
 
 use std::collections::BTreeMap;
 
-use crate::scan_store::ScanRecord;
+use crate::scan_store::{ScanRecord, ScanStatus};
 
 /// The scans a pass keeping the newest `keep` of each target and lookup kind would delete, oldest
-/// first. A `keep` of 0 keeps one, so a target's newest scan is never planned for deletion.
+/// first. A `keep` of 0 keeps one, so a target's newest scan is never planned for deletion, and
+/// neither is its newest finished scan, wherever it falls.
 #[must_use]
-pub fn prunable(records: &[ScanRecord], keep: usize) -> Vec<&ScanRecord> {
+pub fn prunable<'a>(
+    records: impl IntoIterator<Item = &'a ScanRecord>,
+    keep: usize,
+) -> Vec<&'a ScanRecord> {
     let keep = keep.max(1);
     let mut groups: BTreeMap<(&str, &str), Vec<&ScanRecord>> = BTreeMap::new();
     for record in records {
@@ -25,12 +32,13 @@ pub fn prunable(records: &[ScanRecord], keep: usize) -> Vec<&ScanRecord> {
     let mut plan: Vec<&ScanRecord> = Vec::new();
     for mut group in groups.into_values() {
         group.sort_by(|a, b| b.created.cmp(&a.created).then_with(|| b.id.cmp(&a.id)));
-        plan.extend(
-            group
-                .into_iter()
-                .skip(keep)
-                .filter(|record| !record.status.is_active()),
-        );
+        let last_finished = group
+            .iter()
+            .find(|record| record.status == ScanStatus::Finished)
+            .map(|record| record.id.as_str());
+        plan.extend(group.iter().skip(keep).copied().filter(|record| {
+            !record.status.is_active() && Some(record.id.as_str()) != last_finished
+        }));
     }
     plan.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
     plan
@@ -39,7 +47,7 @@ pub fn prunable(records: &[ScanRecord], keep: usize) -> Vec<&ScanRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan_store::{FORMAT_VERSION, RiskCounts, ScanOptions, ScanStatus};
+    use crate::scan_store::{FORMAT_VERSION, RiskCounts, ScanOptions};
 
     fn record(id: &str, target: &str, kind: &str, created: u64, status: ScanStatus) -> ScanRecord {
         ScanRecord {
@@ -104,9 +112,21 @@ mod tests {
     fn keeping_none_still_keeps_the_newest() {
         let records = vec![
             record("a1", "example.com", "domain", 1, ScanStatus::Finished),
-            record("a2", "example.com", "domain", 2, ScanStatus::ErrorFailed),
+            record("a2", "example.com", "domain", 2, ScanStatus::Finished),
         ];
         assert_eq!(ids(&prunable(&records, 0)), vec!["a1"]);
+    }
+
+    #[test]
+    fn the_newest_finished_scan_survives_the_failures_after_it() {
+        let records = vec![
+            record("good", "example.com", "domain", 1, ScanStatus::Finished),
+            record("older", "example.com", "domain", 0, ScanStatus::Finished),
+            record("bad1", "example.com", "domain", 2, ScanStatus::ErrorFailed),
+            record("bad2", "example.com", "domain", 3, ScanStatus::Aborted),
+        ];
+        assert_eq!(ids(&prunable(&records, 1)), vec!["older", "bad1"]);
+        assert_eq!(ids(&prunable(&records, 2)), vec!["older"]);
     }
 
     #[test]

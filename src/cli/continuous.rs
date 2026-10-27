@@ -12,16 +12,17 @@ use std::time::Duration;
 
 use huntsman_recon::clock;
 use huntsman_recon::environment::{
-    CONTINUOUS_INTERVAL_ENV, CONTINUOUS_NOTIFY_ENV, CONTINUOUS_TARGETS_ENV,
+    CONTINUOUS_INTERVAL_ENV, CONTINUOUS_KEEP_ENV, CONTINUOUS_NOTIFY_ENV, CONTINUOUS_TARGETS_ENV,
 };
 use huntsman_recon::fsio::{read_bounded, write_atomic_private};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::scan_alert::{self, Policy};
 use huntsman_recon::scan_api::ScanApi;
 use huntsman_recon::scan_compare;
+use huntsman_recon::scan_retention;
 use huntsman_recon::scan_service::{ScanRequest, plan};
 use huntsman_recon::scan_store::{
-    MAX_RESULTS_BYTES, ScanOptions, ScanRecord, ScanStatus, ScanStore,
+    MAX_RESULTS_BYTES, MAX_SCANS, ScanOptions, ScanRecord, ScanStatus, ScanStore,
 };
 use huntsman_recon::sf_correlate::Risk;
 use huntsman_recon::sha256::{hex32, sha256};
@@ -43,6 +44,9 @@ pub(super) struct Config {
     normalise_all: bool,
     /// Whether a raised alert also posts a phone notification ([`CONTINUOUS_NOTIFY_ENV`]).
     notify: bool,
+    /// How many of each target's newest scans retention keeps ([`CONTINUOUS_KEEP_ENV`]); `None`
+    /// deletes nothing.
+    keep: Option<usize>,
 }
 
 impl Config {
@@ -70,6 +74,11 @@ impl Config {
         );
         if self.notify {
             summary.push_str("; a raised alert posts a phone notification");
+        }
+        if let Some(keep) = self.keep {
+            summary.push_str("; keeps the newest ");
+            summary.push_str(&keep.to_string());
+            summary.push_str(" scans of each target and deletes older ended ones");
         }
         summary
     }
@@ -99,6 +108,7 @@ pub(super) fn configure(keys: &Keys) -> Result<Option<Config>, String> {
         .ok_or("continuous normalisation requires an absolute state directory")?;
     let mut config = config(&targets, &minutes, state.join("normalised"))?;
     config.notify = notify_setting(keys)?;
+    config.keep = keep_setting(keys)?;
     Ok(Some(config))
 }
 
@@ -110,6 +120,21 @@ fn notify_setting(keys: &Keys) -> Result<bool, String> {
         Some("1") => Ok(true),
         Some(_) => Err(format!("{CONTINUOUS_NOTIFY_ENV} must be 1 or 0")),
     }
+}
+
+/// [`CONTINUOUS_KEEP_ENV`] as `keys` resolves it: a count from 1 to [`MAX_SCANS`], or `None`
+/// when unset. Anything else is an error naming the setting, because a retention setting that is
+/// silently ignored lets the store fill until new scans are refused.
+fn keep_setting(keys: &Keys) -> Result<Option<usize>, String> {
+    keys.setting(CONTINUOUS_KEEP_ENV)
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .ok()
+                .filter(|keep| (1..=MAX_SCANS).contains(keep))
+                .ok_or_else(|| format!("{CONTINUOUS_KEEP_ENV} must be 1..={MAX_SCANS}"))
+        })
+        .transpose()
 }
 
 /// The two settings as `keys` resolves them: the target list and the interval, `1440` when the
@@ -206,6 +231,7 @@ fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, St
         normalised_dir: directory,
         normalise_all,
         notify: false,
+        keep: None,
     })
 }
 
@@ -286,6 +312,33 @@ fn record_alerts(
         recorded += 1;
     }
     Ok(recorded)
+}
+
+/// Deletes the ended scans of the configured `targets` beyond the newest `keep` of each, as
+/// `scans prune --keep N --apply` plans them: never an active scan, a target's newest, or its
+/// newest finished scan (the baseline the next alert is decided over). Scans of other targets are
+/// the operator's and are left alone. Each deletion goes through the scan service, which refuses
+/// a scan that is running by then. Returns how many were deleted.
+fn retain(api: &ScanApi, records: &[ScanRecord], targets: &[ScanRequest], keep: usize) -> usize {
+    let configured = records
+        .iter()
+        .filter(|record| targets.iter().any(|request| scans(record, request)));
+    let mut deleted = 0;
+    for record in scan_retention::prunable(configured, keep) {
+        match api.service().delete(&record.id) {
+            Ok(()) => deleted += 1,
+            Err(error) => eprintln!(
+                "continuous: retention did not delete scan {}: {error}",
+                record.id
+            ),
+        }
+    }
+    if deleted > 0 {
+        eprintln!(
+            "continuous: retention deleted {deleted} scans beyond the newest {keep} of each target"
+        );
+    }
+    deleted
 }
 
 /// Do not reschedule a scan until a full cadence has elapsed after completion.
@@ -622,8 +675,15 @@ fn cycle(
         }
     }
     let notifier: Option<Notifier<'_>> = config.notify.then_some(&notify);
-    if let Err(error) = record_alerts(api, &records, &config.targets, now, notifier) {
-        eprintln!("continuous: alert decision not recorded: {error}");
+    match record_alerts(api, &records, &config.targets, now, notifier) {
+        // Retention runs only once this cycle's alert decisions are recorded, so a scan an
+        // undecided alert still compares against is never deleted first.
+        Ok(_) => {
+            if let Some(keep) = config.keep {
+                retain(api, &records, &config.targets, keep);
+            }
+        }
+        Err(error) => eprintln!("continuous: alert decision not recorded: {error}"),
     }
     for record in normalise {
         if record.status.is_active() {
@@ -1155,6 +1215,92 @@ mod tests {
             1
         );
         std::fs::remove_dir_all(&directory).expect("remove fixture");
+    }
+
+    /// With a keep setting, a cycle first decides the newest scan's alert over the one before it,
+    /// then deletes the configured target's ended scans beyond the newest kept; another target's
+    /// scans are the operator's and survive, and a cycle without the setting deletes nothing.
+    #[test]
+    fn retention_runs_after_the_alert_decision_and_only_on_configured_targets() {
+        use huntsman_recon::scan_alert;
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-continuous-retain-{}-{}",
+            std::process::id(),
+            huntsman_recon::clock::unix_now_millis()
+        ));
+        let scans_dir = directory.join("scans");
+        let (api, first) = offline_scan_fixture(&scans_dir);
+        let mut configured = config("1.1.1.1", "60", directory.join("normalised")).expect("target");
+        let mut newest = first;
+        for _ in 0..3 {
+            newest = api.service().run(&configured.targets[0]).expect("scan");
+        }
+        let other = api
+            .service()
+            .run(&ScanRequest {
+                target: "8.8.8.8".to_owned(),
+                ..configured.targets[0].clone()
+            })
+            .expect("another target");
+        let store = api.service().store();
+        let ids = |store: &ScanStore| -> Vec<String> {
+            let mut ids: Vec<String> = store
+                .list()
+                .unwrap()
+                .into_iter()
+                .map(|record| record.id)
+                .collect();
+            ids.sort();
+            ids
+        };
+
+        cycle(
+            &api,
+            &configured,
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .expect("cycle");
+        assert_eq!(ids(store).len(), 5, "no keep setting deletes nothing");
+
+        configured.keep = Some(1);
+        assert!(setting_value(Some(&configured)).contains("keeps the newest 1 scans"));
+        cycle(
+            &api,
+            &configured,
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .expect("cycle");
+        let mut left = vec![newest.id.clone(), other.id.clone()];
+        left.sort();
+        assert_eq!(ids(store), left);
+        let history = scan_alert::read_history(&scans_dir.join(scan_alert::HISTORY_FILE)).unwrap();
+        assert_eq!(history.len(), 1, "decided once, before its baseline went");
+        assert_eq!(history[0]["later"], newest.id.as_str());
+        std::fs::remove_dir_all(&directory).expect("remove fixture");
+    }
+
+    /// The keep setting is a count from 1 to the store's capacity; anything else stops serve.
+    #[test]
+    fn the_keep_setting_is_strict() {
+        let keys = |text: &str| Keys::parse(text).expect("keys");
+        assert_eq!(
+            super::keep_setting(&keys("HUNTSMAN_CONTINUOUS_KEEP=20\n")),
+            Ok(Some(20))
+        );
+        assert_eq!(
+            super::keep_setting(&keys("HUNTSMAN_CONTINUOUS_TARGETS=1.1.1.1\n")),
+            Ok(None)
+        );
+        for wrong in ["0", "4097", "-1", "all"] {
+            assert!(
+                super::keep_setting(&keys(&format!("HUNTSMAN_CONTINUOUS_KEEP={wrong}\n")))
+                    .unwrap_err()
+                    .contains("HUNTSMAN_CONTINUOUS_KEEP"),
+                "{wrong}"
+            );
+        }
     }
 
     /// The notification opt-in is `1` or `0`; anything else stops serve, naming the setting.

@@ -16,7 +16,11 @@ The 60-second revision hint is **not a cryptographic content digest or cross-pro
 
 The passive scan use case and zero recursion depth are used. Other configured provider quotas may still apply. No source failure, failed analysis or missing ancestry is promoted to a verified absence or identity. A refused analysis must not leave the last successful derived report represented as current; the previous report is preserved as historical evidence.
 
-After a completed, aborted or failed scan, collection waits for the full configured interval following its terminal end timestamp (falling back to creation time for legacy rows without an end timestamp); admission failures back off at least 15 minutes. Existing active scans are joined, not duplicated. The scheduler never silently deletes old scans. Once the store reaches its 4096-record capacity, that limit remains observable; indefinite fresh collection requires a separately approved archival/retention procedure. `huntsman-recon scans prune --keep N` is that procedure, run by the operator. It lists the ended scans beyond the newest N of each target and lookup, oldest first, and deletes them only with `--apply`, never an active scan or a target's newest. The scheduler itself still never deletes. Alert history entries that name a pruned scan keep their scan IDs.
+After a completed, aborted or failed scan, collection waits for the full configured interval following its terminal end timestamp (falling back to creation time for legacy rows without an end timestamp); admission failures back off at least 15 minutes. Existing active scans are joined, not duplicated. The scheduler never silently deletes old scans. Once the store reaches its 4096-record capacity, that limit remains observable (`huntsman-recon doctor` warns from 90%); indefinite fresh collection requires an approved retention procedure. `huntsman-recon scans prune --keep N` is that procedure, run by the operator. It lists the ended scans beyond the newest N of each target and lookup, oldest first, and deletes them only with `--apply`, never an active scan, a target's newest, or its newest finished scan. Alert history entries that name a pruned scan keep their scan IDs.
+
+## Retention (opt-in)
+
+Set HUNTSMAN_CONTINUOUS_KEEP=N (1 to 4096, read like the other settings) to have each cycle apply that same plan to the configured targets: after the cycle's alert decisions are recorded, the ended scans of each configured target beyond its newest N are deleted through the scan service, as `scans prune --keep N --apply` would. A cycle whose alert decisions could not be recorded deletes nothing, so a scan an undecided alert still compares against is never removed first. A target's newest finished scan is kept however many failed or aborted scans followed it, because it is the last complete evidence and the next alert's baseline. Scans of targets that are not configured, including every target `*` re-normalises, are the operator's and are never deleted. Each deletion is written to serve's standard error. Unset, the scheduler deletes nothing; any other value stops serve before it binds, naming the setting. The Settings page's continuous entry says how many scans are kept.
 
 ## Alerts on recurring collection
 
@@ -26,7 +30,7 @@ Set HUNTSMAN_CONTINUOUS_NOTIFY=1 (read like the other two settings) to also post
 
 ## Lifecycle
 
-READ CONFIG -> CANONICALISE -> READ SCAN STORE -> SELECT LATEST SCAN PER CANONICAL TARGET -> DECIDE ALERTS FOR NEWLY FINISHED SCANS -> ANALYSE COMPLETED SCANS -> ATOMICALLY SAVE DERIVED REPORT -> CHECK RECENCY AND RETRY WINDOWS -> START OR JOIN DUE SCANS -> SLEEP 60 SECONDS -> REPEAT.
+READ CONFIG -> CANONICALISE -> READ SCAN STORE -> SELECT LATEST SCAN PER CANONICAL TARGET -> DECIDE ALERTS FOR NEWLY FINISHED SCANS -> DELETE ENDED SCANS BEYOND THE KEPT (WHEN CONFIGURED) -> ANALYSE COMPLETED SCANS -> ATOMICALLY SAVE DERIVED REPORT -> CHECK RECENCY AND RETRY WINDOWS -> START OR JOIN DUE SCANS -> SLEEP 60 SECONDS -> REPEAT.
 
 This is an evidence normalisation and refreshing controller, not an unattended software-editing agent. It cannot ensure that providers respond or that the Termux process keeps running. Android may suspend a background Termux server; see docs/INSTALL.md. Service restarts derive cadence from saved scan timestamps.
 

@@ -53,6 +53,9 @@ pub const CONTINUOUS_INTERVAL_ENV: &str = "HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES"
 /// `1` to post a phone notification through Termux:API's `termux-notification` whenever
 /// continuous collection raises an alert; `0` or unset posts none.
 pub const CONTINUOUS_NOTIFY_ENV: &str = "HUNTSMAN_CONTINUOUS_NOTIFY";
+/// How many of each continuous target's newest scans to keep, 1 to 4096: every cycle deletes its
+/// ended scans beyond them, as `scans prune --keep N --apply` would. Unset, nothing is deleted.
+pub const CONTINUOUS_KEEP_ENV: &str = "HUNTSMAN_CONTINUOUS_KEEP";
 
 // Credential slots: keys-file names that `keys::Keys::get` also reads from the environment.
 pub const ABUSECH_KEY_ENV: &str = "HUNTSMAN_ABUSECH_KEY";
@@ -129,6 +132,7 @@ pub const KNOWN_VARIABLES: &[&str] = &[
     CONTINUOUS_TARGETS_ENV,
     CONTINUOUS_INTERVAL_ENV,
     CONTINUOUS_NOTIFY_ENV,
+    CONTINUOUS_KEEP_ENV,
     ABUSECH_KEY_ENV,
     ABUSEIPDB_KEY_ENV,
     BRAVE_KEY_ENV,
