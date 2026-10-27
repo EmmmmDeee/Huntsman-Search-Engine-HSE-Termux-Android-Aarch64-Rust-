@@ -471,6 +471,44 @@ jobs:
             fi
             sleep 30
           done
+      - name: Require successful exact-main RustSec and CodeQL before publishing
+        # These independent workflows must succeed for the exact main push.
+        # A passing CI workflow alone does not establish dependency or code-analysis acceptance.
+        # Do not publish when either workflow is absent, pending, failed or cancelled.
+        timeout-minutes: 65
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          workflows=(audit.yml codeql.yml)
+          for attempt in $(seq 1 120); do
+            pending=0
+            for workflow in "${workflows[@]}"; do
+              verdict="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs" \
+                -f head_sha="$GITHUB_SHA" -f event=push -f per_page=100 \
+                | jq -r --arg sha "$GITHUB_SHA" \
+                  '[.workflow_runs[] | select(.head_sha == $sha and .event == "push")] |
+                   sort_by(.created_at, .run_attempt) | last |
+                   if . == null then "missing" else "\(.status):\(.conclusion // "pending")" end')"
+              case "$verdict" in
+                completed:success) ;;
+                completed:*)
+                  echo "::error::exact-main ${workflow} did not pass for ${GITHUB_SHA}: ${verdict}"
+                  exit 1
+                  ;;
+                *) pending=1 ;;
+              esac
+            done
+            if [ "$pending" -eq 0 ]; then
+              echo "Exact-main RustSec and CodeQL passed for ${GITHUB_SHA}"
+              exit 0
+            fi
+            if [ "$attempt" -eq 120 ]; then
+              echo "::error::exact-main RustSec or CodeQL not successful after bounded wait for ${GITHUB_SHA}"
+              exit 1
+            fi
+            sleep 30
+          done
       - name: Download staged release files
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:

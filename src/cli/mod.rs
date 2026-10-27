@@ -8,7 +8,7 @@ use std::env;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION]|HASH | coarsen LAT,LON | case-check CASE-JSON ORIGINAL-ADVERT-TEXT | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR|HANDLE [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | netblock CIDR [--save FILE] | asn AS-NUMBER [--save FILE] | network BSSID|LAT,LON|ssid:NAME|cell:MCC:MNC:AREA:CELL [--save FILE] | crypto BITCOIN-ADDRESS|base:0xADDRESS [--save FILE] | itunes KEYWORD | geocode PLACE|LAT,LON [--save FILE] | exif IMAGE-FILE | docmeta FILE | mitm audit [--file FILE] [--baseline FILE] [--json] | radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | osint SUBCOMMAND [ARGS] | public-osint news|notices|web|dossier QUERY... | query [--adaptive|--exa] QUERY... | sf [-M|-T|-V]|-s TARGET [options] | scans run|list|show|summary|elements|correlations|log|export|fp|delete|rerun|types [ARGS] | serve [--bind ADDR] [--history DIR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE|set SLOT --stdin|remove SLOT | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
+const USAGE: &str = "usage: huntsman-recon [check | doctor [serve] [--fix] [--json] [--probe] [--bind ADDR] | fix [--json] [--probe] [--bind ADDR] | diagnostics [--json] | build-sha | command | directive check|sync [ROOT] | geo LAT,LON LAT,LON | geohash LAT,LON [PRECISION]|HASH | coarsen LAT,LON | case-check CASE-JSON ORIGINAL-ADVERT-TEXT | id TOKEN... | search QUERY [DIR] | sources QUERY... | domain-lifecycle analyze INPUT --as-of TIME [--output FILE] | people NAME [--save FILE] | email ADDR [--save FILE] | exposure ADDR|HANDLE [--save FILE] | username HANDLE [--save FILE] | phone NUMBER [--save FILE] | domain DOMAIN [--save FILE] | ip ADDRESS [--save FILE] | netblock CIDR [--save FILE] | asn AS-NUMBER [--save FILE] | network BSSID|LAT,LON|ssid:NAME|cell:MCC:MNC:AREA:CELL [--save FILE] | crypto BITCOIN-ADDRESS|base:0xADDRESS [--save FILE] | itunes KEYWORD | geocode PLACE|LAT,LON [--save FILE] | exif IMAGE-FILE | docmeta FILE | apk FILE [--json] | apk diff OLD NEW [--json] | mitm audit [--file FILE] [--baseline FILE] [--json] | radar wifi|cells [--json] [--file TERMUX_SCAN_JSON] | radar track [--json] [--wifi-file FILE] [--cells-file FILE] [--log FILE] | scan SELECTOR [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save FILE] | scan --input-file FILE [-k people|email|exposure|username|phone|domain|ip|netblock|asn|network|crypto|geocode] [--save-dir DIR] | investigate TEXT...|--file FILE | plan [--session-dir DIR] SEED... | plan --load-session DIR ID | osint SUBCOMMAND [ARGS] | public-osint news|notices|web|dossier QUERY... | query [--adaptive|--exa] QUERY... | sf [-M|-T|-V]|-s TARGET [options] | scans run|list|show|summary|elements|correlations|log|export|fp|delete|rerun|types [ARGS] | serve [--bind ADDR] [--history DIR] | modules [--json] | attack SUBCOMMAND | classify STATUS BODY... | fetch URL [options] | hibp SUBCOMMAND | dehashed SUBCOMMAND | recon crtsh TARGET|dns TARGET|stolen-tax QUERY [--keys FILE] | seeknow SUBCOMMAND | keys FILE|set SLOT --stdin|remove SLOT | credential-status [--probe] [FILE] | verify LEDGER | correlate ARTIFACT [--history DIR] | run-history record|show [options]]";
 const RECON_USAGE: &str = "usage: huntsman-recon recon crtsh TARGET | recon dns TARGET | recon stolen-tax QUERY [--keys FILE]";
 const HELP: &str = "\
 Huntsman Recon — local search, guarded fetch, and evidence-ledger tools
@@ -50,6 +50,7 @@ Commands:
   geocode               Geocode a place, address or lat,lon point (keyless, OpenStreetMap Nominatim)
   exif                  Extract EXIF metadata and GPS coordinates from a local image (keyless, offline)
   docmeta               Extract XMP-packet and PDF /Info metadata, with embedded GPS, from a local file (keyless, offline)
+  apk                   Inventory or compare two APK ZIP archives offline (keyless, no root)
   mitm                  Offline or live advisory MITM/evil-twin audit\n  radar                 Read rootless Termux:API OS-cached WiFi and cellular observations; track logs sweeps and flags devices that follow you
   scan                  Route one selector or bounded seed-list into rebuilt lookup front-ends
   investigate           Extract actionable entities from local text or one bounded file
@@ -80,6 +81,7 @@ egress policy is public-only.";
 /// The largest plain file a command reads or writes: a seed list, or a self-check scratch file.
 /// A saved artifact has its own ceiling, `scan_artifact::MAX_ARTIFACT_BYTES`.
 const MAX_PLAIN_FILE_BYTES: u64 = 1_048_576;
+mod apk;
 mod case_audit;
 mod continuous;
 mod credentials;
@@ -162,6 +164,7 @@ pub(crate) fn run(args: Vec<OsString>) -> ExitCode {
         Some("geocode") => lookup::geocode_cmd(&remaining.collect::<Vec<_>>()),
         Some("exif") => lookup::exif_cmd(&remaining.collect::<Vec<_>>()),
         Some("docmeta") => lookup::docmeta_cmd(&remaining.collect::<Vec<_>>()),
+        Some("apk") => apk::apk_cmd(&remaining.collect::<Vec<_>>()),
         Some("radar") => radar::radar_cmd(&remaining.collect::<Vec<_>>()),
         Some("mitm") => mitm::mitm_cmd(&remaining.collect::<Vec<_>>()),
         Some("scan") => lookup::scan_cmd(&remaining.collect::<Vec<_>>()),

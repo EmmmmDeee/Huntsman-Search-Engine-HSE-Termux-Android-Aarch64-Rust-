@@ -11,16 +11,25 @@ use std::thread;
 use std::time::Duration;
 
 use huntsman_recon::clock;
-use huntsman_recon::environment::{CONTINUOUS_INTERVAL_ENV, CONTINUOUS_TARGETS_ENV};
+use huntsman_recon::diagnostics;
+use huntsman_recon::environment::{
+    CONTINUOUS_INTERVAL_ENV, CONTINUOUS_KEEP_ENV, CONTINUOUS_NOTIFY_ENV, CONTINUOUS_TARGETS_ENV,
+};
 use huntsman_recon::fsio::{read_bounded, write_atomic_private};
 use huntsman_recon::keys::Keys;
+use huntsman_recon::scan_alert::{self, Policy};
 use huntsman_recon::scan_api::ScanApi;
+use huntsman_recon::scan_compare;
+use huntsman_recon::scan_retention;
 use huntsman_recon::scan_service::{ScanRequest, plan};
-use huntsman_recon::scan_store::{MAX_RESULTS_BYTES, ScanOptions, ScanRecord, ScanStore};
+use huntsman_recon::scan_store::{
+    MAX_RESULTS_BYTES, MAX_SCANS, ScanOptions, ScanRecord, ScanStatus, ScanStore,
+};
+use huntsman_recon::sf_correlate::Risk;
 use huntsman_recon::sha256::{hex32, sha256};
 use serde_json::{Value, json};
 
-use super::scans::default_scan_dir;
+use super::scans::{default_scan_dir, notify};
 
 const MAX_TARGETS: usize = 32;
 const MAX_TARGET_CONFIG_BYTES: usize = 8192;
@@ -34,6 +43,11 @@ pub(super) struct Config {
     cadence_ms: u64,
     normalised_dir: PathBuf,
     normalise_all: bool,
+    /// Whether a raised alert also posts a phone notification ([`CONTINUOUS_NOTIFY_ENV`]).
+    notify: bool,
+    /// How many of each target's newest scans retention keeps ([`CONTINUOUS_KEEP_ENV`]); `None`
+    /// deletes nothing.
+    keep: Option<usize>,
 }
 
 impl Config {
@@ -54,11 +68,20 @@ impl Config {
         if self.normalise_all {
             parts.push("every saved target, re-normalised only".to_owned());
         }
-        format!(
+        let mut summary = format!(
             "every {} minutes: {}",
             self.cadence_ms / 60_000,
             parts.join(", ")
-        )
+        );
+        if self.notify {
+            summary.push_str("; a raised alert posts a phone notification");
+        }
+        if let Some(keep) = self.keep {
+            summary.push_str("; keeps the newest ");
+            summary.push_str(&keep.to_string());
+            summary.push_str(" scans of each target and deletes older ended ones");
+        }
+        summary
     }
 }
 
@@ -78,13 +101,48 @@ pub(super) fn setting_value(config: Option<&Config>) -> String {
 /// [`CONTINUOUS_INTERVAL_ENV`] from `~/.huntsman.env`, then the process environment. `None` when
 /// no targets are set, so the controller stays off; an error names the setting that is wrong.
 pub(super) fn configure(keys: &Keys) -> Result<Option<Config>, String> {
+    configure_in(keys, default_scan_dir().as_deref())
+}
+
+/// [`configure`] for the scan store at `scans`: normalised reports go beside it, in the
+/// `normalised` directory of its parent, as they do beside the default store.
+pub(super) fn configure_in(keys: &Keys, scans: Option<&Path>) -> Result<Option<Config>, String> {
     let Some((targets, minutes)) = settings(keys)? else {
         return Ok(None);
     };
-    let state = default_scan_dir()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
+    let state = scans
+        .and_then(Path::parent)
+        .filter(|path| path.is_absolute())
         .ok_or("continuous normalisation requires an absolute state directory")?;
-    config(&targets, &minutes, state.join("normalised")).map(Some)
+    let mut config = config(&targets, &minutes, state.join("normalised"))?;
+    config.notify = notify_setting(keys)?;
+    config.keep = keep_setting(keys)?;
+    Ok(Some(config))
+}
+
+/// [`CONTINUOUS_NOTIFY_ENV`] as `keys` resolves it: `1` on, `0` or unset off. Any other value is
+/// an error naming the setting, so a misspelt opt-in does not pass silently as off.
+fn notify_setting(keys: &Keys) -> Result<bool, String> {
+    match keys.setting(CONTINUOUS_NOTIFY_ENV).as_deref() {
+        None | Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(_) => Err(format!("{CONTINUOUS_NOTIFY_ENV} must be 1 or 0")),
+    }
+}
+
+/// [`CONTINUOUS_KEEP_ENV`] as `keys` resolves it: a count from 1 to [`MAX_SCANS`], or `None`
+/// when unset. Anything else is an error naming the setting, because a retention setting that is
+/// silently ignored lets the store fill until new scans are refused.
+fn keep_setting(keys: &Keys) -> Result<Option<usize>, String> {
+    keys.setting(CONTINUOUS_KEEP_ENV)
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .ok()
+                .filter(|keep| (1..=MAX_SCANS).contains(keep))
+                .ok_or_else(|| format!("{CONTINUOUS_KEEP_ENV} must be 1..={MAX_SCANS}"))
+        })
+        .transpose()
 }
 
 /// The two settings as `keys` resolves them: the target list and the interval, `1440` when the
@@ -180,16 +238,137 @@ fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, St
         cadence_ms: minutes * 60 * 1000,
         normalised_dir: directory,
         normalise_all,
+        notify: false,
+        keep: None,
     })
+}
+
+/// How a cycle collects a due target: [`Collect::Background`] starts or joins its scan and moves
+/// on, as serve does every minute; [`Collect::Foreground`] runs it to the end first, so a
+/// one-shot `scans cycle` started by a scheduler decides its alert before the process exits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Collect {
+    Background,
+    Foreground,
+}
+
+/// What one cycle did, for `scans cycle` to report; serve's loop logs each step instead.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Tally {
+    /// Scans started (or, in the foreground, run to their end).
+    pub(super) collected: usize,
+    /// Due targets whose scan could not be started or did not run.
+    pub(super) failed: usize,
+    /// Alert decisions recorded this cycle.
+    pub(super) decided: usize,
+    /// Scans retention deleted.
+    pub(super) deleted: usize,
+}
+
+/// Posts a raised alert's notification text; [`notify`] when serve runs, a recorder in tests.
+type Notifier<'a> = &'a dyn Fn(&str) -> Result<(), String>;
+
+/// Whether `record` is a scan of the configured `request`: its target, by the same lookup.
+fn scans(record: &ScanRecord, request: &ScanRequest) -> bool {
+    record.target == request.target && request.kind.as_deref() == Some(record.kind.as_str())
 }
 
 fn latest<'a>(records: &'a [ScanRecord], request: &ScanRequest) -> Option<&'a ScanRecord> {
     records
         .iter()
-        .filter(|record| {
-            record.target == request.target && request.kind.as_deref() == Some(record.kind.as_str())
-        })
+        .filter(|record| scans(record, request))
         .max_by_key(|record| (record.created, record.id.as_str()))
+}
+
+/// For each configured target, whether its newest finished scan raises an alert over the
+/// finished scan before it, decided once per newest scan with the default policy (a new HIGH
+/// correlation) and kept in the alert history `scans alerts`, the scan API and the Web UI read.
+/// The history is the record of what was decided, so a restarted controller does not decide
+/// again. It reads only saved scans and requests nothing. Returns how many it recorded.
+fn record_alerts(
+    api: &ScanApi,
+    records: &[ScanRecord],
+    targets: &[ScanRequest],
+    now: u64,
+    notifier: Option<Notifier<'_>>,
+) -> Result<usize, String> {
+    let store = api.service().store();
+    let path = store.dir().join(scan_alert::HISTORY_FILE);
+    let decided: BTreeSet<String> = scan_alert::read_history(&path)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .filter_map(|entry| entry["later"].as_str().map(str::to_owned))
+        .collect();
+    let policy = Policy {
+        min_risk: Risk::High,
+        new_values: false,
+    };
+    let mut recorded = 0;
+    for request in targets {
+        let mut finished: Vec<&ScanRecord> = records
+            .iter()
+            .filter(|record| scans(record, request) && record.status == ScanStatus::Finished)
+            .collect();
+        finished.sort_by_key(|record| (record.created, record.id.as_str()));
+        let [.., earlier, later] = finished.as_slice() else {
+            continue;
+        };
+        if decided.contains(&later.id) {
+            continue;
+        }
+        let saved = |id: &str| store.results(id).map_err(|error| error.to_string());
+        let (Some(base), Some(other)) = (saved(&earlier.id)?, saved(&later.id)?) else {
+            continue;
+        };
+        let alert = scan_alert::assess(&scan_compare::compare(&base, &other), policy);
+        let entry = scan_alert::history_entry(now, &earlier.id, &later.id, &alert);
+        scan_alert::append_history(&path, &entry).map_err(|error| error.to_string())?;
+        if alert.raised {
+            eprintln!(
+                "continuous: alert raised for scan {} over {}",
+                later.id, earlier.id
+            );
+            // The decision is already recorded, so a notification that fails is reported, not
+            // retried: posting it again later would announce the same alert twice.
+            if let Some(post) = notifier {
+                if let Err(error) = post(&scan_alert::notification_text(&alert)) {
+                    eprintln!(
+                        "continuous: alert raised for scan {}, but no notification was posted: {error}",
+                        later.id
+                    );
+                }
+            }
+        }
+        recorded += 1;
+    }
+    Ok(recorded)
+}
+
+/// Deletes the ended scans of the configured `targets` beyond the newest `keep` of each, as
+/// `scans prune --keep N --apply` plans them: never an active scan, a target's newest, or its
+/// newest finished scan (the baseline the next alert is decided over). Scans of other targets are
+/// the operator's and are left alone. Each deletion goes through the scan service, which refuses
+/// a scan that is running by then. Returns how many were deleted.
+fn retain(api: &ScanApi, records: &[ScanRecord], targets: &[ScanRequest], keep: usize) -> usize {
+    let configured = records
+        .iter()
+        .filter(|record| targets.iter().any(|request| scans(record, request)));
+    let mut deleted = 0;
+    for record in scan_retention::prunable(configured, keep) {
+        match api.service().delete(&record.id) {
+            Ok(()) => deleted += 1,
+            Err(error) => eprintln!(
+                "continuous: retention did not delete scan {}: {error}",
+                record.id
+            ),
+        }
+    }
+    if deleted > 0 {
+        eprintln!(
+            "continuous: retention deleted {deleted} scans beyond the newest {keep} of each target"
+        );
+    }
+    deleted
 }
 
 /// Do not reschedule a scan until a full cadence has elapsed after completion.
@@ -322,6 +501,35 @@ fn invalidate_saved(
         .map_err(|error| format!("cannot invalidate stale report: {error}"))
 }
 
+/// Which build wrote a normalised report: its version and source commit. A report another build
+/// wrote is analysed again, since the analysis it holds may differ from what this build derives.
+fn analyser() -> String {
+    format!(
+        "{}+{}",
+        env!("CARGO_PKG_VERSION"),
+        diagnostics::embedded_build_sha()
+    )
+}
+
+/// Whether the saved report for `record` is already this build's current analysis of the evidence
+/// at `revision`. The report on disk is the record of what was normalised, so a one-shot
+/// `scans cycle` or a restarted serve does not analyse unchanged evidence again and push the real
+/// historical report out of `.previous.json` with a copy of the current one. Anything unreadable
+/// or different reads as not current, so the scan is analysed as before.
+fn already_current(record: &ScanRecord, directory: &Path, revision: &str) -> bool {
+    let Ok(saved) = read_bounded(&normalised_path(record, directory), MAX_ANALYSIS_BYTES) else {
+        return false;
+    };
+    let Ok(saved) = serde_json::from_slice::<Value>(&saved) else {
+        return false;
+    };
+    let metadata = &saved["normalisation"];
+    metadata["state"] == "current"
+        && metadata["scan_id"] == record.id.as_str()
+        && metadata["source_revision_hint"] == revision
+        && metadata["analyser"] == analyser().as_str()
+}
+
 fn persist_normalised_report(
     record: &ScanRecord,
     directory: &Path,
@@ -340,6 +548,7 @@ fn persist_normalised_report(
             "source_revision_hint": revision,
             "results_sha256": before_digest,
             "scan_id": record.id,
+            "analyser": analyser(),
             "checked_at_ms": clock::unix_now_millis(),
         }),
     );
@@ -480,18 +689,81 @@ fn prune_tracking_state(
     });
 }
 
+/// Starts, joins or (in the foreground) runs the scan of every configured target that is due and
+/// not backing off, counting each into `tally`.
+fn collect_due(
+    api: &ScanApi,
+    config: &Config,
+    records: &[ScanRecord],
+    collect: Collect,
+    retry_after: &mut BTreeMap<RetryKey, u64>,
+    tally: &mut Tally,
+) {
+    let now = clock::unix_now_millis();
+    for request in &config.targets {
+        let key = RetryKey::collection(request);
+        if !due(latest(records, request), now, config.cadence_ms)
+            || retry_after.get(&key).is_some_and(|until| now < *until)
+        {
+            continue;
+        }
+        let outcome = match collect {
+            Collect::Background => api.service().start_or_join(request),
+            Collect::Foreground => api.service().run(request),
+        };
+        match outcome {
+            Ok(record)
+                if collect == Collect::Background || record.status == ScanStatus::Finished =>
+            {
+                // A scan this cycle started or ran, by the configured target's lookup kind. The
+                // scan id is kept out of the log because the target can be a username, and a
+                // collection cycle's stderr goes to a file (the job-scheduler recipe); the id is
+                // in `scans list` and this run's normalisation lines below.
+                eprintln!(
+                    "continuous: {} scan {}",
+                    request.kind.as_deref().unwrap_or("auto"),
+                    match collect {
+                        Collect::Background => "scheduled",
+                        Collect::Foreground => "finished",
+                    }
+                );
+                tally.collected += 1;
+            }
+            Ok(record) => {
+                eprintln!(
+                    "continuous: {} scan ended {}",
+                    request.kind.as_deref().unwrap_or("auto"),
+                    record.status.as_str()
+                );
+                tally.failed += 1;
+                retry_after.insert(key, now.saturating_add(RETRY));
+            }
+            Err(error) => {
+                eprintln!("continuous: scan schedule failed: {error}");
+                tally.failed += 1;
+                retry_after.insert(key, now.saturating_add(RETRY));
+            }
+        }
+    }
+}
+
 fn cycle(
     api: &ScanApi,
     config: &Config,
+    collect: Collect,
     observed: &mut BTreeMap<String, String>,
     retry_after: &mut BTreeMap<RetryKey, u64>,
-) -> Result<(), String> {
+) -> Result<Tally, String> {
+    let store = api.service().store();
+    let list = || store.list().map_err(|error| error.to_string());
+    let mut tally = Tally::default();
+    // A foreground cycle collects first, so the scans it ran are decided, retained and
+    // normalised before it returns rather than by a next cycle that may be hours away.
+    if collect == Collect::Foreground {
+        collect_due(api, config, &list()?, collect, retry_after, &mut tally);
+    }
     let now = clock::unix_now_millis();
-    let records = api
-        .service()
-        .store()
-        .list()
-        .map_err(|error| error.to_string())?;
+    let records = list()?;
     prune_tracking_state(&records, &config.targets, now, observed, retry_after);
     // ScanStore::list returns newest first. Keep one latest scan per canonical kind/target;
     // normalise-all does not schedule collection of arbitrary observed identities.
@@ -505,25 +777,28 @@ fn cycle(
         }
     }
 
-    for request in &config.targets {
-        let key = RetryKey::collection(request);
-        let last = latest(&records, request);
-        if !config.normalise_all {
-            if let Some(record) = last {
-                normalise.push(record);
+    if !config.normalise_all {
+        normalise.extend(
+            config
+                .targets
+                .iter()
+                .filter_map(|request| latest(&records, request)),
+        );
+    }
+    if collect == Collect::Background {
+        collect_due(api, config, &records, collect, retry_after, &mut tally);
+    }
+    let notifier: Option<Notifier<'_>> = config.notify.then_some(&notify);
+    match record_alerts(api, &records, &config.targets, now, notifier) {
+        // Retention runs only once this cycle's alert decisions are recorded, so a scan an
+        // undecided alert still compares against is never deleted first.
+        Ok(decided) => {
+            tally.decided = decided;
+            if let Some(keep) = config.keep {
+                tally.deleted = retain(api, &records, &config.targets, keep);
             }
         }
-        if due(last, now, config.cadence_ms)
-            && retry_after.get(&key).is_none_or(|until| now >= *until)
-        {
-            match api.service().start_or_join(request) {
-                Ok(record) => eprintln!("continuous: scan {} scheduled", record.id),
-                Err(error) => {
-                    eprintln!("continuous: scan schedule failed: {error}");
-                    retry_after.insert(key, now.saturating_add(RETRY));
-                }
-            }
-        }
+        Err(error) => eprintln!("continuous: alert decision not recorded: {error}"),
     }
     for record in normalise {
         if record.status.is_active() {
@@ -550,6 +825,10 @@ fn cycle(
                 .get(&analysis_key)
                 .is_none_or(|until| now >= *until)
         {
+            if already_current(record, &config.normalised_dir, &revision) {
+                observed.insert(record.id.clone(), revision);
+                continue;
+            }
             match normalise_saved(api, record, &config.normalised_dir, &revision) {
                 Ok(true) => {
                     observed.insert(record.id.clone(), revision);
@@ -564,7 +843,21 @@ fn cycle(
             }
         }
     }
-    Ok(())
+    Ok(tally)
+}
+
+/// One cycle in the foreground, for `scans cycle`: every due target's scan is run to its end,
+/// then its alert decided (and notified), retention applied and saved scans re-normalised, as
+/// serve's loop does over two cycles. Back-off state lives only for this call, so the scheduler
+/// that runs it is the retry cadence.
+pub(super) fn run_once(api: &ScanApi, config: &Config) -> Result<Tally, String> {
+    cycle(
+        api,
+        config,
+        Collect::Foreground,
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+    )
 }
 
 /// Starts the controller [`configure`] described, if any; it shares the server's scan service,
@@ -589,7 +882,13 @@ pub(super) fn launch(config: Option<Config>, scans: Option<&Arc<ScanApi>>) -> Re
             let mut observed = BTreeMap::new();
             let mut retry_after = BTreeMap::new();
             loop {
-                if let Err(error) = cycle(&api, &config, &mut observed, &mut retry_after) {
+                if let Err(error) = cycle(
+                    &api,
+                    &config,
+                    Collect::Background,
+                    &mut observed,
+                    &mut retry_after,
+                ) {
                     eprintln!("continuous: {error}");
                 }
                 thread::sleep(TICK);
@@ -602,7 +901,7 @@ pub(super) fn launch(config: Option<Config>, scans: Option<&Arc<ScanApi>>) -> Re
 #[cfg(test)]
 mod tests {
     use super::{
-        RetryKey, archive_previous, config, cycle, due, file_stamp, invalidate_saved,
+        Collect, RetryKey, archive_previous, config, cycle, due, file_stamp, invalidate_saved,
         normalised_path, prune_tracking_state, results_digest, setting_value, settings,
         source_revision,
     };
@@ -861,6 +1160,16 @@ mod tests {
         std::fs::remove_dir_all(&directory).expect("remove fixture");
     }
 
+    /// A serve cycle, as the background loop runs it.
+    fn background(
+        api: &ScanApi,
+        configured: &super::Config,
+        observed: &mut BTreeMap<String, String>,
+        retry_after: &mut BTreeMap<RetryKey, u64>,
+    ) -> Result<super::Tally, String> {
+        cycle(api, configured, Collect::Background, observed, retry_after)
+    }
+
     #[test]
     fn wildcard_cycle_reconciles_false_positive_edits_without_network_collection() {
         let directory = std::env::temp_dir().join(format!(
@@ -879,7 +1188,7 @@ mod tests {
         let mut retry_after = BTreeMap::new();
         let source_path = scans_dir.join(&record.id).join("results.json");
         let saved_evidence = std::fs::read(&source_path).expect("source bytes");
-        cycle(&api, &configured, &mut observed, &mut retry_after).expect("first cycle");
+        background(&api, &configured, &mut observed, &mut retry_after).expect("first cycle");
         let report_path = normalised_path(&record, &configured.normalised_dir);
         let first: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
@@ -912,7 +1221,7 @@ mod tests {
                 .status,
             409
         );
-        cycle(&api, &configured, &mut observed, &mut retry_after).expect("flagged cycle");
+        background(&api, &configured, &mut observed, &mut retry_after).expect("flagged cycle");
         let stale: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
         assert_eq!(stale["normalisation"]["state"], "stale");
@@ -949,16 +1258,17 @@ mod tests {
             .expect("remove false positive");
         // Emulate expiry of the documented 15-minute retry back-off without sleeping.
         retry_after.clear();
-        cycle(&api, &configured, &mut observed, &mut retry_after).expect("recovered cycle");
+        background(&api, &configured, &mut observed, &mut retry_after).expect("recovered cycle");
         let recovered: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
         assert_eq!(recovered["normalisation"]["state"], "current");
         assert_eq!(recovered["scan"]["id"], record.id);
 
-        // A restarted controller recomputes the latest saved scan without remote requests.
+        // A restarted controller re-checks the latest saved scan without remote requests and
+        // finds its saved report current, so it tracks it without analysing it again.
         let mut restarted_observed = BTreeMap::new();
         let mut restarted_retries = BTreeMap::new();
-        cycle(
+        background(
             &api,
             &configured,
             &mut restarted_observed,
@@ -969,6 +1279,265 @@ mod tests {
         assert!(restarted_retries.is_empty());
         assert_eq!(service.store().list().unwrap().len(), 1);
         std::fs::remove_dir_all(&directory).expect("remove offline fixture");
+    }
+
+    /// A configured target's newest finished scan is decided once against the one before it and
+    /// kept in the alert history; deciding again, as a restarted controller would, records nothing.
+    #[test]
+    fn a_configured_targets_new_scan_is_decided_once_into_the_alert_history() {
+        use huntsman_recon::scan_alert;
+        use huntsman_recon::scan_store::ScanCorrelation;
+        use huntsman_recon::sf_correlate::Risk;
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-continuous-alert-{}-{}",
+            std::process::id(),
+            huntsman_recon::clock::unix_now_millis()
+        ));
+        let scans_dir = directory.join("scans");
+        let (api, first) = offline_scan_fixture(&scans_dir);
+        let configured = config("1.1.1.1", "60", directory.join("normalised")).expect("target");
+        let store = api.service().store();
+        let records = store.list().unwrap();
+        assert_eq!(
+            super::record_alerts(&api, &records, &configured.targets, 1, None).unwrap(),
+            0,
+            "one finished scan has nothing to be compared with"
+        );
+
+        let second = api
+            .service()
+            .run(&configured.targets[0])
+            .expect("second scan");
+        assert_eq!(second.status, ScanStatus::Finished);
+        assert_eq!(
+            second.kind, first.kind,
+            "both scans are of the configured lookup"
+        );
+        let mut results = store.results(&second.id).unwrap().expect("saved results");
+        results.correlations.push(ScanCorrelation {
+            id: "fresh".into(),
+            rule: "fresh_exposure".into(),
+            name: "Fresh exposure".into(),
+            title: "Port 443 newly exposed on 1.1.1.1".into(),
+            risk: Risk::High,
+            description: String::new(),
+            origin: "huntsman".into(),
+            logic: String::new(),
+            elements: Vec::new(),
+        });
+        store.save_results(&results).expect("save correlation");
+
+        let records = store.list().unwrap();
+        let posted = std::sync::Mutex::new(Vec::new());
+        let post = |text: &str| -> Result<(), String> {
+            posted.lock().unwrap().push(text.to_owned());
+            Err("no termux-notification here".to_owned())
+        };
+        assert_eq!(
+            super::record_alerts(&api, &records, &configured.targets, 2, Some(&post)).unwrap(),
+            1
+        );
+        let history = scan_alert::read_history(&scans_dir.join(scan_alert::HISTORY_FILE)).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["earlier"], first.id.as_str());
+        assert_eq!(history[0]["later"], second.id.as_str());
+        assert_eq!(history[0]["raised"], true);
+        assert_eq!(history[0]["reasons"][0]["rule"], "fresh_exposure");
+        assert_eq!(
+            *posted.lock().unwrap(),
+            vec!["HIGH fresh_exposure".to_owned()],
+            "one notification, naming the risk and rule; its failure does not undo the decision"
+        );
+        assert!(
+            !history[0].to_string().contains("1.1.1.1"),
+            "no target in the history"
+        );
+
+        assert_eq!(
+            super::record_alerts(&api, &records, &configured.targets, 3, None).unwrap(),
+            0,
+            "a decided scan is not decided again"
+        );
+        assert_eq!(
+            scan_alert::read_history(&scans_dir.join(scan_alert::HISTORY_FILE))
+                .unwrap()
+                .len(),
+            1
+        );
+        std::fs::remove_dir_all(&directory).expect("remove fixture");
+    }
+
+    /// With a keep setting, a cycle first decides the newest scan's alert over the one before it,
+    /// then deletes the configured target's ended scans beyond the newest kept; another target's
+    /// scans are the operator's and survive, and a cycle without the setting deletes nothing.
+    #[test]
+    fn retention_runs_after_the_alert_decision_and_only_on_configured_targets() {
+        use huntsman_recon::scan_alert;
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-continuous-retain-{}-{}",
+            std::process::id(),
+            huntsman_recon::clock::unix_now_millis()
+        ));
+        let scans_dir = directory.join("scans");
+        let (api, first) = offline_scan_fixture(&scans_dir);
+        let mut configured = config("1.1.1.1", "60", directory.join("normalised")).expect("target");
+        let mut newest = first;
+        for _ in 0..3 {
+            newest = api.service().run(&configured.targets[0]).expect("scan");
+        }
+        let other = api
+            .service()
+            .run(&ScanRequest {
+                target: "8.8.8.8".to_owned(),
+                ..configured.targets[0].clone()
+            })
+            .expect("another target");
+        let store = api.service().store();
+        let ids = |store: &ScanStore| -> Vec<String> {
+            let mut ids: Vec<String> = store
+                .list()
+                .unwrap()
+                .into_iter()
+                .map(|record| record.id)
+                .collect();
+            ids.sort();
+            ids
+        };
+
+        cycle(
+            &api,
+            &configured,
+            Collect::Background,
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .expect("cycle");
+        assert_eq!(ids(store).len(), 5, "no keep setting deletes nothing");
+
+        configured.keep = Some(1);
+        assert!(setting_value(Some(&configured)).contains("keeps the newest 1 scans"));
+        cycle(
+            &api,
+            &configured,
+            Collect::Background,
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .expect("cycle");
+        let mut left = vec![newest.id.clone(), other.id.clone()];
+        left.sort();
+        assert_eq!(ids(store), left);
+        let history = scan_alert::read_history(&scans_dir.join(scan_alert::HISTORY_FILE)).unwrap();
+        assert_eq!(history.len(), 1, "decided once, before its baseline went");
+        assert_eq!(history[0]["later"], newest.id.as_str());
+        std::fs::remove_dir_all(&directory).expect("remove fixture");
+    }
+
+    /// A one-shot cycle runs a due target's scan to its end and, in the same call, decides its
+    /// alert over the scan before it and applies retention, so a scheduler that starts the
+    /// process and lets it exit loses nothing to a next cycle that never comes.
+    #[test]
+    fn a_foreground_cycle_collects_decides_and_retains_before_it_returns() {
+        use huntsman_recon::scan_alert;
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-continuous-once-{}-{}",
+            std::process::id(),
+            huntsman_recon::clock::unix_now_millis()
+        ));
+        let scans_dir = directory.join("scans");
+        let (api, first) = offline_scan_fixture(&scans_dir);
+        let mut configured = config("1.1.1.1", "60", directory.join("normalised")).expect("target");
+        assert_eq!(
+            super::run_once(&api, &configured).expect("cycle"),
+            super::Tally::default(),
+            "the fixture's scan is recent, so nothing is due"
+        );
+
+        // Due at once from here on, as a target last scanned a full interval ago would be.
+        configured.cadence_ms = 0;
+        configured.keep = Some(1);
+        let tally = super::run_once(&api, &configured).expect("cycle");
+        assert_eq!(
+            tally,
+            super::Tally {
+                collected: 1,
+                failed: 0,
+                decided: 1,
+                deleted: 1,
+            }
+        );
+        let left = api.service().store().list().unwrap();
+        assert_eq!(left.len(), 1);
+        assert_ne!(
+            left[0].id, first.id,
+            "the scan before it was the one retention deleted"
+        );
+        assert_eq!(left[0].status, ScanStatus::Finished);
+        let history = scan_alert::read_history(&scans_dir.join(scan_alert::HISTORY_FILE)).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["earlier"], first.id.as_str());
+        assert_eq!(history[0]["later"], left[0].id.as_str());
+        let report = normalised_path(&left[0], &configured.normalised_dir);
+        let current = std::fs::read(&report).expect("the new scan is normalised in the same call");
+        let previous_of = || -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(report.with_extension("previous.json")).unwrap())
+                .unwrap()
+        };
+        assert_eq!(previous_of()["normalisation"]["scan_id"], first.id.as_str());
+
+        // The next scheduled run finds nothing due and the evidence unchanged: the saved report is
+        // the record that it is current, so it is neither rewritten nor rotated into the history.
+        configured.cadence_ms = 60 * 60 * 1000;
+        assert_eq!(
+            super::run_once(&api, &configured).expect("idle cycle"),
+            super::Tally::default()
+        );
+        assert_eq!(std::fs::read(&report).unwrap(), current);
+        assert_eq!(
+            previous_of()["normalisation"]["scan_id"],
+            first.id.as_str(),
+            "the real historical report survives an idle cycle"
+        );
+        std::fs::remove_dir_all(&directory).expect("remove fixture");
+    }
+
+    /// The keep setting is a count from 1 to the store's capacity; anything else stops serve.
+    #[test]
+    fn the_keep_setting_is_strict() {
+        let keys = |text: &str| Keys::parse(text).expect("keys");
+        assert_eq!(
+            super::keep_setting(&keys("HUNTSMAN_CONTINUOUS_KEEP=20\n")),
+            Ok(Some(20))
+        );
+        assert_eq!(
+            super::keep_setting(&keys("HUNTSMAN_CONTINUOUS_TARGETS=1.1.1.1\n")),
+            Ok(None)
+        );
+        for wrong in ["0", "4097", "-1", "all"] {
+            assert!(
+                super::keep_setting(&keys(&format!("HUNTSMAN_CONTINUOUS_KEEP={wrong}\n")))
+                    .unwrap_err()
+                    .contains("HUNTSMAN_CONTINUOUS_KEEP"),
+                "{wrong}"
+            );
+        }
+    }
+
+    /// The notification opt-in is `1` or `0`; anything else stops serve, naming the setting.
+    #[test]
+    fn the_notification_setting_is_strict() {
+        let on = Keys::parse("HUNTSMAN_CONTINUOUS_NOTIFY=1\n").expect("keys");
+        assert_eq!(super::notify_setting(&on), Ok(true));
+        let off = Keys::parse("HUNTSMAN_CONTINUOUS_NOTIFY=0\n").expect("keys");
+        assert_eq!(super::notify_setting(&off), Ok(false));
+        let unset = Keys::parse("HUNTSMAN_CONTINUOUS_TARGETS=1.1.1.1\n").expect("keys");
+        assert_eq!(super::notify_setting(&unset), Ok(false));
+        let wrong = Keys::parse("HUNTSMAN_CONTINUOUS_NOTIFY=yes\n").expect("keys");
+        assert!(
+            super::notify_setting(&wrong)
+                .unwrap_err()
+                .contains("HUNTSMAN_CONTINUOUS_NOTIFY")
+        );
     }
 
     #[test]

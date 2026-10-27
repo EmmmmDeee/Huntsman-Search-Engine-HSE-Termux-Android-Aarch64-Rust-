@@ -193,6 +193,9 @@ cargo run -- itunes "Example Co"  # keyless App Store search by keyword: matchin
 cargo run -- geocode "1600 Amphitheatre Parkway, Mountain View"  # keyless OpenStreetMap Nominatim: a place or address to coordinates + full address (a LAT,LON argument is reverse-geocoded instead); network
 cargo run -- exif --help                  # keyless, offline EXIF metadata + GPS coordinates from a local image
 cargo run -- docmeta --help               # keyless, offline XMP packets + edit history + PDF /Info (with values an edit superseded) + embedded GPS from a local file
+cargo run -- apk --help                   # offline Android APK archive intelligence: structural ZIP/DEX/ABI/signing indicators, exact-byte SHA-256
+# Example after creating two local archives: huntsman-recon apk diff old.apk new.apk --json
+# Diff compares exact stored ZIP-member bytes and structural metadata, not verified signatures or decoded code.
 cargo run -- radar --help                 # no root, explain Termux:API Wi-Fi cache acquisition; offline
 cargo run -- mitm audit --file docs/mitm-example.json --json  # synthetic offline Wi-Fi replay; advisory only
 cargo run -- mitm baseline --ssid LabNet --bssid 02:11:22:33:44:55 --minimum-security WPA2 --output trusted-wifi.json --confirmed  # explicit operator-supplied inventory; never auto-trust a scan

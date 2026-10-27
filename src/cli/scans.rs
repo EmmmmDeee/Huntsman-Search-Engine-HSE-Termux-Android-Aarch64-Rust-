@@ -7,27 +7,34 @@ use std::env;
 use std::ffi::OsString;
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use super::lookup::{Refused, collect};
 use super::{fail, terminal_json_pretty};
 use huntsman_recon::doctor::STATE_DIR;
-use huntsman_recon::environment::HUNTSMAN_HOME_ENV;
-use huntsman_recon::exit::{EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_PIPE, EX_UNAVAILABLE, EX_USAGE};
+use huntsman_recon::environment::{CONTINUOUS_TARGETS_ENV, HUNTSMAN_HOME_ENV};
+use huntsman_recon::exit::{
+    EX_CONFIG, EX_DATAERR, EX_IOERR, EX_NOINPUT, EX_PIPE, EX_UNAVAILABLE, EX_USAGE,
+};
 use huntsman_recon::fsio::write_atomic_private;
 use huntsman_recon::http::percent_encode_component;
+use huntsman_recon::scan_alert::{self, Policy};
 use huntsman_recon::scan_api::{ApiResponse, ScanApi, SlotCheck, correlation_rules};
+use huntsman_recon::scan_compare;
+use huntsman_recon::scan_retention;
 use huntsman_recon::scan_service::{LookupOutput, ScanLookup, ScanRequest, ScanService};
-use huntsman_recon::scan_store::{ScanOptions, ScanRecord, ScanStatus, ScanStore};
+use huntsman_recon::scan_store::{ScanOptions, ScanRecord, ScanResults, ScanStatus, ScanStore};
 use huntsman_recon::sf_compat::{self, SfScan};
-use huntsman_recon::sf_correlate;
+use huntsman_recon::sf_correlate::{self, Risk};
 use huntsman_recon::sf_types;
 use huntsman_recon::textnorm::one_line;
-use serde_json::Value;
+use serde_json::{Value, json};
 
-pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [-m MODULE[,MODULE...]] [--depth N] [--json] | scans list [--json] | scans show ID | scans summary ID | scans analyze ID [--json] | scans reality ID ENTITY_UID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans evidence ID [--delta BASELINE_ID] [-f raw|json] [-o FILE] | scans matrix ID [-f raw|json] [-o FILE] | scans export ID|ID,ID... [-f csv|tsv|xlsx|json|gexf|html] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans compare EARLIER LATER [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans search VALUE [ID...] [-t TYPE] [--hide-fp] [--json] | scans rules [--json] | scans types
-Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous, and -k geocode runs a place name, street address or LAT,LON through the geocode lookup, which no target is routed to on its own. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. scans analyze runs shared offline analysis over saved entities without mutating them; derived relations are available, while upstream evidence ancestry and provider coverage cannot be reconstructed and are explicitly marked unavailable. scans reality ID ENTITY_UID gives the recorded attribution, possible conflicting statements and provenance of one stored entity without asserting that its identity, ownership or source independence is proven; both commands refuse evidence flagged false positive. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read or loaded, a rules path that could not be listed and a directory past 500 rule files, whose first 500 are still read, and exits 65 if it names any; scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. --depth N follows what the scan finds, as Spiderfoot does: each email, username, domain, phone, IP address and BSSID a lookup finds is looked up in turn, N hops past the target (0, the default, runs the target's lookup only), under the shared lookup and entity budgets; each element then names the element it was found from, so the elements form the scan's discovery tree. -t keeps only those element types; -u footprint leaves out the threat, blocklist and reputation sources; -u investigate runs them with the basic footprint and without the social, search, people and corporate sources; -u passive skips the keyed breach lookup of every email. -m (or --modules) asks only the modules named, by Huntsman's name (see modules) or Spiderfoot's, where sfp_whois stands for every module that does its work: a module not chosen sends nothing, a lookup that asks none of them is skipped, a target none of them looks up is refused, and offline modules always run. fp flags elements as false positives, and with them every element found from them; --unset clears them the same way, refused while an element's source is still flagged. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); xlsx (or excel) is Spiderfoot's workbook, a sheet per element type, with every value whole and never read as a formula; several ids give one export with the Scan Name first, JSON unless -f says csv, tsv or xlsx. compare sets a later scan against an earlier one, which Spiderfoot cannot: the change in each data type, then every element it found that the earlier did not (+) and every one it no longer finds (-), matched by type and value, and the correlations each has that the other lacks; -f writes the added and removed elements as CSV, TSV or Excel. search finds elements in every saved scan, or the scans named, as Spiderfoot's search box reads a query: /regex/ anywhere, a *wildcard* as the whole value, or text anywhere, all regardless of case, in an element's data, its source element's data or its module; -t keeps one type, and an empty VALUE with -t lists that type everywhere. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
+pub(super) const SCANS_HELP: &str = "scans run TARGET [-k KIND] [-n NAME] [-u all|footprint|investigate|passive] [-t TYPE[,TYPE...]] [-m MODULE[,MODULE...]] [--depth N] [--json] | scans list [--json] | scans show ID | scans summary ID | scans analyze ID [--json] | scans reality ID ENTITY_UID | scans elements ID [-t TYPE] [--unique] [--hide-fp] [--json] | scans correlations ID [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans correlate ID [--json] | scans log ID [--level INFO|WARNING|ERROR] | scans evidence ID [--delta BASELINE_ID] [-f raw|json] [-o FILE] | scans matrix ID [-f raw|json] [-o FILE] | scans export ID|ID,ID... [-f csv|tsv|xlsx|json|gexf|html] [-t TYPE] [-o FILE] | scans fp ID ELEMENT[,ELEMENT...] [--unset] | scans delete ID | scans rerun ID | scans compare EARLIER LATER [-f csv|tsv|xlsx|json] [-o FILE] [--json] | scans alert EARLIER LATER [--min-risk HIGH|MEDIUM|LOW|INFO] [--values] [--notify] [--json] | scans watch ID [--min-risk HIGH|MEDIUM|LOW|INFO] [--values] [--notify] [--json] | scans alerts [--json] | scans prune --keep N [--apply] [--json] | scans cycle [--json] | scans search VALUE [ID...] [-t TYPE] [--hide-fp] [--json] | scans rules [--json] | scans types
+Saved scans, as Spiderfoot keeps them: run one on a target, then list, read, export, flag, rerun or delete it. TARGET is anything scan routes (a domain, IP address, email, phone, username, name, BSSID or LAT,LON); -k picks the lookup when the target is ambiguous, and -k geocode runs a place name, street address or LAT,LON through the geocode lookup, which no target is routed to on its own. A scan keeps every result whole: the lookup's report, every entity with its evidence, every source outcome, its Spiderfoot data elements (see scans types) and its correlations. scans analyze runs shared offline analysis over saved entities without mutating them; derived relations are available, while upstream evidence ancestry and provider coverage cannot be reconstructed and are explicitly marked unavailable. scans reality ID ENTITY_UID gives the recorded attribution, possible conflicting statements and provenance of one stored entity without asserting that its identity, ownership or source independence is proven; both commands refuse evidence flagged false positive. Correlations come from Huntsman's own rules and Spiderfoot 4.0's 37 rules, run unchanged, plus any Spiderfoot-format YAML rule in $HUNTSMAN_HOME/correlations, else ~/.huntsman/correlations, or --rules DIR (a rule there with a shipped rule's id replaces it; one holding only enabled: false turns it off); scans rules lists them and names any file that could not be read or loaded, a rules path that could not be listed and a directory past 500 rule files, whose first 500 are still read, and exits 65 if it names any; scans correlate runs them again over a saved scan, after flagging false positives or adding a rule. --depth N follows what the scan finds, as Spiderfoot does: each email, username, domain, phone, IP address and BSSID a lookup finds is looked up in turn, N hops past the target (0, the default, runs the target's lookup only), under the shared lookup and entity budgets; each element then names the element it was found from, so the elements form the scan's discovery tree. -t keeps only those element types; -u footprint leaves out the threat, blocklist and reputation sources; -u investigate runs them with the basic footprint and without the social, search, people and corporate sources; -u passive skips the keyed breach lookup of every email. -m (or --modules) asks only the modules named, by Huntsman's name (see modules) or Spiderfoot's, where sfp_whois stands for every module that does its work: a module not chosen sends nothing, a lookup that asks none of them is skipped, a target none of them looks up is refused, and offline modules always run. fp flags elements as false positives, and with them every element found from them; --unset clears them the same way, refused while an element's source is still flagged. Exports use Spiderfoot's columns (Updated, Type, Module, Source, F/P, Data); xlsx (or excel) is Spiderfoot's workbook, a sheet per element type, with every value whole and never read as a formula; several ids give one export with the Scan Name first, JSON unless -f says csv, tsv or xlsx. compare sets a later scan against an earlier one, which Spiderfoot cannot: the change in each data type, then every element it found that the earlier did not (+) and every one it no longer finds (-), matched by type and value, and the correlations each has that the other lacks; -f writes the added and removed elements as CSV, TSV or Excel. alert decides whether the later scan of one target warrants attention over the earlier one, for a schedule: it exits 1 and prints ALERT when a new correlation at or above --min-risk (default HIGH) is there, and with --values also when any value is new; a value that has gone never raises one. It refuses scans of different targets, and exits 0 with no alert. watch runs the target of a saved scan again, as rerun does, saves the new scan, and then alerts on what it finds over the scan it ran again from; it makes network requests, as run does. Every decision alert and watch make is kept beside the scans, raised or not, and alerts lists them, oldest first, the newest 1,000 kept; a decision that cannot be recorded exits 74. --notify also posts a phone notification through termux-notification (pkg termux-api and the Termux:API app, no root) when an alert is raised; it names only each reason's risk and rule, or the count of new values, never the target or a finding's text, and an alert whose notification cannot be posted exits 69. prune keeps the newest N scans of each target and lookup and lists the ended scans beyond them, oldest first, so a store that keeps collecting stays under its 4,096 scans; it deletes them only with --apply, each as delete does, never an active scan, a target's newest or its newest finished scan (its last complete evidence and the next alert's baseline), and exits 74 if any could not be deleted. cycle runs one cycle of the continuous collection serve runs while HUNTSMAN_CONTINUOUS_TARGETS is set (docs/CONTINUOUS_NORMALISATION.md), reading the same settings, for termux-job-scheduler or crond to start instead of a resident serve: it runs every due target's scan to its end, decides and notifies its alert, applies HUNTSMAN_CONTINUOUS_KEEP and re-normalises, prints what it did, and exits 0, 69 when a due scan could not run, or 78 when no targets are set; it makes network requests, as run does. search finds elements in every saved scan, or the scans named, as Spiderfoot's search box reads a query: /regex/ anywhere, a *wildcard* as the whole value, or text anywhere, all regardless of case, in an element's data, its source element's data or its module; -t keeps one type, and an empty VALUE with -t lists that type everywhere. Scans live in $HUNTSMAN_HOME/scans, else ~/.huntsman/scans; every subcommand but rules and types takes --dir DIR. serve shows and starts the same scans. run makes network requests; the others are offline.";
 
 /// The synopsis line of [`SCANS_HELP`], for a usage error.
 fn usage() -> &'static str {
@@ -127,7 +134,7 @@ fn open_api_with(
 }
 
 /// Options that take a value, by every spelling, and the name each is read back by.
-const VALUED: [(&str, &str); 19] = [
+const VALUED: [(&str, &str); 21] = [
     ("--delta", "baseline"),
     ("--dir", "dir"),
     ("--depth", "depth"),
@@ -147,10 +154,20 @@ const VALUED: [(&str, &str); 19] = [
     ("-o", "output"),
     ("--output", "output"),
     ("--level", "level"),
+    ("--min-risk", "min_risk"),
+    ("--keep", "keep"),
 ];
 
 /// Options that stand alone.
-const SWITCHES: [&str; 4] = ["--json", "--unique", "--hide-fp", "--unset"];
+const SWITCHES: [&str; 7] = [
+    "--json",
+    "--unique",
+    "--hide-fp",
+    "--unset",
+    "--values",
+    "--notify",
+    "--apply",
+];
 
 /// The words of a `scans` command line, and its options.
 struct Parsed {
@@ -352,6 +369,22 @@ fn types_listing() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The subcommands that read no saved scan through the API: the correlation rules, the data
+/// types and the alert history. `None` for every other subcommand.
+fn without_api(command: &str, rest: &[&str], parsed: &Parsed) -> Option<ExitCode> {
+    let listing: fn(&Parsed) -> ExitCode = match command {
+        "rules" => rules_listing,
+        "alerts" => alerts_listing,
+        "types" => |_| types_listing(),
+        _ => return None,
+    };
+    Some(if rest.is_empty() {
+        listing(parsed)
+    } else {
+        fail(EX_USAGE, &format!("scans {command} takes no argument"))
+    })
+}
+
 pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
     let parsed = match parse(args) {
         Ok(parsed) => parsed,
@@ -376,19 +409,8 @@ pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
             ),
         );
     }
-    if command == "rules" {
-        return if rest.is_empty() {
-            rules_listing(&parsed)
-        } else {
-            fail(EX_USAGE, "scans rules takes no argument")
-        };
-    }
-    if command == "types" {
-        return if rest.is_empty() {
-            types_listing()
-        } else {
-            fail(EX_USAGE, "scans types takes no argument")
-        };
+    if let Some(code) = without_api(command, rest, &parsed) {
+        return code;
     }
     let api = match open(&parsed) {
         Ok(api) => api,
@@ -423,6 +445,17 @@ pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
         ),
         ("list", _) => fail(EX_USAGE, "scans list takes no argument"),
         ("compare", [earlier, later]) => compare(&api, &parsed, earlier, later),
+        ("alert", [earlier, later]) => alert(&api, &parsed, earlier, later),
+        ("alert", _) => fail(EX_USAGE, "scans alert takes an earlier and a later scan id"),
+        ("prune", []) => prune(&api, &parsed),
+        ("cycle", []) => cycle(&api, &parsed),
+        ("cycle", _) => fail(EX_USAGE, "scans cycle takes no argument"),
+        ("prune", _) => fail(
+            EX_USAGE,
+            "scans prune takes no scan id; it plans by --keep N",
+        ),
+        ("watch", [id]) => watch(&api, &parsed, id),
+        ("watch", _) => fail(EX_USAGE, "scans watch takes one scan id"),
         ("reality", [id, uid]) => emit(&api.handle(
             "GET",
             &format!("/api/scans/{id}/reality"),
@@ -444,7 +477,12 @@ pub(super) fn scans_cmd(args: &[String]) -> ExitCode {
 }
 
 /// Every `scans` subcommand.
-const SUBCOMMANDS: [&str; 20] = [
+const SUBCOMMANDS: [&str; 25] = [
+    "cycle",
+    "prune",
+    "alert",
+    "alerts",
+    "watch",
     "matrix",
     "evidence",
     "run",
@@ -594,6 +632,390 @@ fn compare(api: &ScanApi, parsed: &Parsed, earlier: &str, later: &str) -> ExitCo
         return deliver(&response, parsed.value("output"));
     }
     table_or_json(&response, parsed, print_comparison)
+}
+
+/// Exit status when an alert is raised: a condition for a schedule to act on, not a failure.
+const ALERT_RAISED: u8 = 1;
+
+/// The `--min-risk` level, High when none is given.
+fn min_risk(parsed: &Parsed) -> Result<Risk, ExitCode> {
+    match parsed.value("min_risk") {
+        None => Ok(Risk::High),
+        Some(text) => scan_alert::parse_min_risk(text).ok_or_else(|| {
+            fail(
+                EX_USAGE,
+                "scans alert: --min-risk takes HIGH, MEDIUM, LOW or INFO",
+            )
+        }),
+    }
+}
+
+/// A saved scan's record and results, or the status that says why they cannot be read.
+fn load_scan(store: &ScanStore, id: &str) -> Result<(ScanRecord, ScanResults), ExitCode> {
+    let record = store.get(id).map_err(|error| {
+        fail(
+            EX_NOINPUT,
+            &format!("scans alert: {}: {error}", one_line(id)),
+        )
+    })?;
+    let results = store
+        .results(id)
+        .map_err(|error| fail(EX_IOERR, &format!("scans alert: {}: {error}", one_line(id))))?
+        .ok_or_else(|| {
+            fail(
+                EX_NOINPUT,
+                &format!(
+                    "scans alert: {} has no saved results to compare",
+                    one_line(id)
+                ),
+            )
+        })?;
+    Ok((record, results))
+}
+
+/// Whether the later scan raises an alert over the earlier one. Exits 1 when it does.
+fn alert(api: &ScanApi, parsed: &Parsed, earlier: &str, later: &str) -> ExitCode {
+    let min_risk = match min_risk(parsed) {
+        Ok(risk) => risk,
+        Err(code) => return code,
+    };
+    let store = api.service().store();
+    let (base_record, base) = match load_scan(store, earlier) {
+        Ok(loaded) => loaded,
+        Err(code) => return code,
+    };
+    let (other_record, other) = match load_scan(store, later) {
+        Ok(loaded) => loaded,
+        Err(code) => return code,
+    };
+    if base_record.target != other_record.target {
+        return fail(
+            EX_USAGE,
+            "scans alert: the two scans have different targets, so no change between them is an alert",
+        );
+    }
+    let dir = match scan_dir(parsed) {
+        Ok(dir) => dir,
+        Err(code) => return code,
+    };
+    decide(parsed, min_risk, &dir, (earlier, &base), (later, &other))
+}
+
+/// Run the target of scan `id` again, then alert on what the new scan finds over `id`. The new
+/// scan is saved like any other; the network requests are the same ones `scans rerun` makes.
+fn watch(api: &ScanApi, parsed: &Parsed, id: &str) -> ExitCode {
+    let min_risk = match min_risk(parsed) {
+        Ok(risk) => risk,
+        Err(code) => return code,
+    };
+    let service = api.service();
+    let (_, base) = match load_scan(service.store(), id) {
+        Ok(loaded) => loaded,
+        Err(code) => return code,
+    };
+    let record = match service
+        .rerun_request(id)
+        .and_then(|request| service.run(&request))
+    {
+        Ok(record) => record,
+        Err(error) => return fail(status_exit(error.status()), &format!("scans: {error}")),
+    };
+    if !matches!(record.status, ScanStatus::Finished) {
+        return finished(&record, parsed.on("--json"));
+    }
+    let (_, other) = match load_scan(service.store(), &record.id) {
+        Ok(loaded) => loaded,
+        Err(code) => return code,
+    };
+    let dir = match scan_dir(parsed) {
+        Ok(dir) => dir,
+        Err(code) => return code,
+    };
+    decide(parsed, min_risk, &dir, (id, &base), (&record.id, &other))
+}
+
+/// Print the alert between two saved scans and exit 1 when it is raised, 0 when not.
+fn decide(
+    parsed: &Parsed,
+    min_risk: Risk,
+    dir: &Path,
+    (earlier, base): (&str, &ScanResults),
+    (later, other): (&str, &ScanResults),
+) -> ExitCode {
+    let policy = Policy {
+        min_risk,
+        new_values: parsed.on("--values"),
+    };
+    let decision = scan_alert::assess(&scan_compare::compare(base, other), policy);
+    let entry = scan_alert::history_entry(
+        huntsman_recon::clock::unix_now_millis(),
+        earlier,
+        later,
+        &decision,
+    );
+    let recorded = scan_alert::append_history(&dir.join(scan_alert::HISTORY_FILE), &entry);
+    if parsed.on("--json") {
+        let body = json!({ "earlier": earlier, "later": later, "alert": decision });
+        println!("{body}");
+    } else if decision.raised {
+        println!("ALERT\t{earlier}\t{later}");
+        for reason in &decision.reasons {
+            match reason {
+                scan_alert::Reason::Correlation { risk, rule, title } => println!(
+                    "{}\tcorrelation\t{}\t{}",
+                    risk.as_str(),
+                    one_line(rule),
+                    one_line(title),
+                ),
+                scan_alert::Reason::NewValues { count } => {
+                    println!("NEW\tvalues\t{count}");
+                }
+            }
+        }
+    } else {
+        println!("no alert\t{earlier}\t{later}");
+    }
+    if let Err(error) = recorded {
+        return fail(
+            EX_IOERR,
+            &format!("scans alert: the decision was not recorded: {error}"),
+        );
+    }
+    if decision.raised && parsed.on("--notify") {
+        if let Err(error) = notify(&scan_alert::notification_text(&decision)) {
+            return fail(
+                EX_UNAVAILABLE,
+                &format!(
+                    "scans alert: the alert was raised, but no notification was posted: {error}"
+                ),
+            );
+        }
+    }
+    if decision.raised {
+        ExitCode::from(ALERT_RAISED)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// How long `termux-notification` may run before it is stopped.
+const NOTIFY_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Post an Android notification through Termux:API, without root. Its stdio is closed, so a
+/// helper that keeps running cannot hold a pipe open, and one that does not finish is stopped.
+pub(super) fn notify(text: &str) -> Result<(), String> {
+    let mut child = Command::new("termux-notification")
+        .args([
+            "--id",
+            "huntsman-alert",
+            "--title",
+            scan_alert::NOTIFICATION_TITLE,
+            "--content",
+            text,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "cannot launch termux-notification ({error}); install pkg termux-api and the Termux:API Android app, then allow its notifications"
+            )
+        })?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => return Err(format!("termux-notification exited with {status}")),
+            Ok(None) if started.elapsed() < NOTIFY_DEADLINE => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("termux-notification did not finish within 10 seconds".into());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("termux-notification failed: {error}"));
+            }
+        }
+    }
+}
+
+/// `scans cycle`: one continuous cycle in the foreground, for a scheduler such as
+/// `termux-job-scheduler` or crond to run instead of a resident serve. It reads the continuous
+/// settings as serve does, runs every due target's scan to its end, decides and notifies its
+/// alert, applies retention and re-normalises, then exits: 0 when every due scan finished, 69
+/// when one could not run (the rest of the cycle still ran), 78 when no targets are configured.
+fn cycle(api: &ScanApi, parsed: &Parsed) -> ExitCode {
+    let dir = match scan_dir(parsed) {
+        Ok(dir) => dir,
+        Err(code) => return code,
+    };
+    let config = match super::continuous::configure_in(
+        &super::credentials::lookup_keys(),
+        Some(&dir),
+    ) {
+        Ok(Some(config)) => config,
+        Ok(None) => {
+            return fail(
+                EX_CONFIG,
+                &format!(
+                    "scans cycle: continuous collection is off: set {CONTINUOUS_TARGETS_ENV} in ~/.huntsman.env or the environment"
+                ),
+            );
+        }
+        Err(error) => return fail(EX_DATAERR, &format!("scans cycle: {error}")),
+    };
+    let tally = match super::continuous::run_once(api, &config) {
+        Ok(tally) => tally,
+        Err(error) => return fail(EX_IOERR, &format!("scans cycle: {error}")),
+    };
+    if parsed.on("--json") {
+        println!(
+            "{}",
+            json!({
+                "collected": tally.collected,
+                "failed": tally.failed,
+                "decided": tally.decided,
+                "deleted": tally.deleted,
+            })
+        );
+    } else {
+        println!(
+            "cycle: {} scans collected, {} failed, {} alert decisions recorded, {} scans deleted",
+            tally.collected, tally.failed, tally.decided, tally.deleted
+        );
+    }
+    if tally.failed > 0 {
+        ExitCode::from(EX_UNAVAILABLE)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// `scans prune --keep N`: the ended scans beyond the newest N of each target and lookup, listed,
+/// and deleted only with `--apply`, each through the route `scans delete` uses.
+fn prune(api: &ScanApi, parsed: &Parsed) -> ExitCode {
+    let Some(keep) = parsed
+        .value("keep")
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|keep| *keep >= 1)
+    else {
+        return fail(
+            EX_USAGE,
+            "scans prune needs --keep N with N of at least 1: the newest N scans of each target are kept",
+        );
+    };
+    let records = match api.service().records() {
+        Ok(records) => records,
+        Err(error) => return fail(EX_IOERR, &format!("scans prune: {error}")),
+    };
+    let plan = scan_retention::prunable(&records, keep);
+    let apply = parsed.on("--apply");
+    let mut failed: Vec<(String, String)> = Vec::new();
+    if apply {
+        for record in &plan {
+            let answer = api.handle("POST", &format!("/api/scans/{}/delete", record.id), "");
+            if answer.status != 200 {
+                failed.push((record.id.clone(), answer.text().into_owned()));
+            }
+        }
+    }
+    let gone = |id: &str| !failed.iter().any(|(failed_id, _)| failed_id == id);
+    if parsed.on("--json") {
+        let rows: Vec<Value> = plan
+            .iter()
+            .map(|record| {
+                json!({
+                    "id": record.id,
+                    "target": record.target,
+                    "kind": record.kind,
+                    "created": record.created,
+                    "status": record.status,
+                    "deleted": apply && gone(&record.id),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            json!({ "keep": keep, "applied": apply, "scans": rows })
+        );
+    } else {
+        let verb = if apply { "deleted" } else { "would delete" };
+        for record in plan.iter().filter(|record| gone(&record.id)) {
+            println!(
+                "{verb}\t{}\t{}\t{}\t{}",
+                record.id,
+                one_line(&record.target),
+                record.kind,
+                millis(&json!(record.created)),
+            );
+        }
+        println!(
+            "{} of {} saved scans {verb}{}",
+            plan.len() - failed.len(),
+            records.len(),
+            if apply {
+                ""
+            } else {
+                "; pass --apply to delete them"
+            }
+        );
+    }
+    for (id, error) in &failed {
+        eprintln!("scans prune: {id} not deleted: {}", one_line(error));
+    }
+    if failed.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EX_IOERR)
+    }
+}
+
+/// The directory the scans live in, from `--dir` or the default.
+fn scan_dir(parsed: &Parsed) -> Result<PathBuf, ExitCode> {
+    parsed
+        .value("dir")
+        .map(PathBuf::from)
+        .or_else(default_scan_dir)
+        .ok_or_else(|| {
+            fail(
+                EX_UNAVAILABLE,
+                "scans: no scan directory: set HOME or HUNTSMAN_HOME to an absolute path, or pass --dir DIR",
+            )
+        })
+}
+
+/// Every decision `alert` and `watch` made, raised or not, oldest first.
+fn alerts_listing(parsed: &Parsed) -> ExitCode {
+    let dir = match scan_dir(parsed) {
+        Ok(dir) => dir,
+        Err(code) => return code,
+    };
+    let entries = match scan_alert::read_history(&dir.join(scan_alert::HISTORY_FILE)) {
+        Ok(entries) => entries,
+        Err(error) => return fail(EX_IOERR, &format!("scans alerts: {error}")),
+    };
+    if parsed.on("--json") {
+        println!("{}", Value::Array(entries));
+        return ExitCode::SUCCESS;
+    }
+    println!("AT\tRAISED\tEARLIER\tLATER\tREASONS");
+    for entry in &entries {
+        let text = |name: &str| one_line(entry[name].as_str().unwrap_or_default());
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            millis(&entry["at"]),
+            if entry["raised"] == true { "yes" } else { "no" },
+            text("earlier"),
+            text("later"),
+            entry["reasons"].as_array().map_or(0, Vec::len),
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 fn print_comparison(compared: &Value) {

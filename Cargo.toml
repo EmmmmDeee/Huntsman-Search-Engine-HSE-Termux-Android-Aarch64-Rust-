@@ -29,6 +29,11 @@ thiserror = "2.0"
 ureq = "3"
 # DNSSEC signature verification (RSA, ECDSA, Ed25519).
 ring = "0.17"
+# Raw-deflate inflation of APK members (manifest, DEX, signature files), bounded per call;
+# already built into the binary through ureq's gzip support, so it adds no crate.
+miniz_oxide = "0.9"
+# The ZIP CRC-32 each inflated APK member is checked against; already built in through ureq.
+crc32fast = "1.5"
 
 # Every release build uses this profile: the phone's `cargo install` (install.sh), CI's Android
 # cross-build, the portable container (Dockerfile) and the trusted xtask builds in the issue-fix

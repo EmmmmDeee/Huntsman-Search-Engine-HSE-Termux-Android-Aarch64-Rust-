@@ -687,6 +687,451 @@ fn scans_compare_lists_what_a_later_scan_added_and_removed() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// A local Spiderfoot-format rule, under `home`, that raises a HIGH correlation for any phone
+/// number. Returns the directory holding it.
+fn write_phone_rule(home: &Path) -> PathBuf {
+    let rules = home.join("rules");
+    fs::create_dir_all(&rules).unwrap();
+    fs::write(
+        rules.join("phone_present.yaml"),
+        "id: phone_present\nversion: 1\nmeta:\n  name: Phone number present\n  description: >\n    A phone number is in the scan.\n  risk: HIGH\ncollections:\n  - collect:\n      - method: exact\n        field: type\n        value: PHONE_NUMBER\naggregation:\n  field: data\nheadline:\n  text: \"Phone number found: {data}\"\n  publish_collections:\n    - 1\n",
+    )
+    .unwrap();
+    rules
+}
+
+/// `scans alert` decides whether a later scan of one target warrants attention: a new correlation
+/// at or above `--min-risk` raises it and exits 1; a correlation that has gone never does; scans of
+/// different targets are refused. The rule here is a local Spiderfoot-format file, so nothing is
+/// fetched.
+#[test]
+fn scans_alert_raises_on_a_new_correlation_and_never_on_one_that_went() {
+    let home = scratch("scans-alert");
+    let rules = write_phone_rule(&home);
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let id = |args: &[&str]| {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+    let earlier = id(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+    let later = id(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+    let other = id(&["scans", "run", "+61412345679", "-u", "passive", "--json"]);
+
+    let quiet = run(&["scans", "alert", &earlier, &later]);
+    assert_eq!(quiet.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&quiet.stdout).starts_with("no alert\t"),
+        "{}",
+        String::from_utf8_lossy(&quiet.stdout)
+    );
+
+    let correlated = run(&[
+        "scans",
+        "correlate",
+        &later,
+        "--rules",
+        rules.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(
+        correlated.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&correlated.stderr)
+    );
+
+    let raised = run(&["scans", "alert", &earlier, &later]);
+    assert_eq!(raised.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&raised.stdout);
+    assert!(stdout.starts_with("ALERT\t"), "{stdout}");
+    assert!(
+        stdout.contains("HIGH\tcorrelation\tphone_present\t"),
+        "{stdout}"
+    );
+
+    let json = run(&["scans", "alert", &earlier, &later, "--json"]);
+    assert_eq!(json.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(json["alert"]["raised"], true);
+    assert_eq!(json["alert"]["reasons"][0]["kind"], "correlation");
+    assert_eq!(json["alert"]["reasons"][0]["risk"], "HIGH");
+
+    let medium = run(&["scans", "alert", &earlier, &later, "--min-risk", "medium"]);
+    assert_eq!(medium.status.code(), Some(1));
+
+    let gone = run(&["scans", "alert", &later, &earlier]);
+    assert_eq!(
+        gone.status.code(),
+        Some(0),
+        "a correlation that went away must not raise an alert"
+    );
+
+    let refused = run(&["scans", "alert", &earlier, &other]);
+    assert_eq!(refused.status.code(), Some(64));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("different targets"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(run(&["scans", "alert", &earlier]).status.code(), Some(64));
+    assert_eq!(
+        run(&["scans", "alert", &earlier, &later, "--min-risk", "urgent"])
+            .status
+            .code(),
+        Some(64)
+    );
+    assert_eq!(
+        run(&["scans", "alert", &earlier, "0000000000000000"])
+            .status
+            .code(),
+        Some(66)
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// `scans watch` runs a saved scan's target again, saves the new scan, and alerts on what it finds
+/// that the earlier scan did not.
+#[test]
+fn scans_watch_runs_the_target_again_and_alerts_on_what_is_new() {
+    let home = scratch("scans-watch");
+    let rules = write_phone_rule(&home);
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let earlier = {
+        let out = run(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+        assert_eq!(out.status.code(), Some(0));
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+
+    let watched = run(&[
+        "scans",
+        "watch",
+        &earlier,
+        "--rules",
+        rules.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(
+        watched.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&watched.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&watched.stdout).unwrap();
+    assert_eq!(json["earlier"], earlier.as_str());
+    assert_ne!(json["later"], earlier.as_str(), "watch saves a new scan");
+    assert_eq!(json["alert"]["raised"], true);
+    assert_eq!(json["alert"]["reasons"][0]["rule"], "phone_present");
+
+    let listed = run(&["scans", "list", "--json"]);
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(
+        listed.as_array().map(Vec::len),
+        Some(2),
+        "the earlier scan and the one watch ran"
+    );
+
+    let quiet = run(&["scans", "watch", &earlier]);
+    assert_eq!(quiet.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&quiet.stdout).starts_with("no alert\t"),
+        "{}",
+        String::from_utf8_lossy(&quiet.stdout)
+    );
+
+    assert_eq!(run(&["scans", "watch"]).status.code(), Some(64));
+    assert_eq!(
+        run(&["scans", "watch", "0000000000000000"]).status.code(),
+        Some(66)
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// `scans alerts` lists every decision `alert` and `watch` made, raised or not, oldest first.
+#[test]
+fn scans_alerts_keeps_a_history_of_every_decision() {
+    let home = scratch("scans-alerts");
+    let rules = write_phone_rule(&home);
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let earlier = {
+        let out = run(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+        assert_eq!(out.status.code(), Some(0));
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+    assert_eq!(
+        run(&["scans", "alert", &earlier, &earlier]).status.code(),
+        Some(0)
+    );
+    let watched = run(&[
+        "scans",
+        "watch",
+        &earlier,
+        "--rules",
+        rules.to_str().unwrap(),
+    ]);
+    assert_eq!(watched.status.code(), Some(1));
+
+    let json = run(&["scans", "alerts", "--json"]);
+    assert_eq!(json.status.code(), Some(0));
+    let entries: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let entries = entries.as_array().unwrap();
+    assert_eq!(entries.len(), 2, "one quiet decision and one raised one");
+    assert_eq!(entries[0]["raised"], false);
+    assert_eq!(entries[0]["earlier"], earlier.as_str());
+    assert_eq!(entries[1]["raised"], true);
+    assert_eq!(entries[1]["reasons"][0]["rule"], "phone_present");
+    assert!(
+        entries[0].get("target").is_none(),
+        "the history keeps no target"
+    );
+
+    let table = run(&["scans", "alerts"]);
+    let stdout = String::from_utf8_lossy(&table.stdout);
+    assert!(
+        stdout.starts_with("AT\tRAISED\tEARLIER\tLATER\tREASONS\n"),
+        "{stdout}"
+    );
+    assert_eq!(stdout.lines().count(), 3, "{stdout}");
+    assert_eq!(run(&["scans", "alerts", "extra"]).status.code(), Some(64));
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// `--notify` posts a phone notification through `termux-notification` when an alert is raised,
+/// naming the risk and rule but never the target; without the helper it exits 69; a decision
+/// that raises nothing posts nothing. A fake helper on PATH stands in for Termux:API.
+#[cfg(unix)]
+#[test]
+fn scans_notify_posts_a_phone_notification_without_the_target() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = scratch("scans-notify");
+    let rules = write_phone_rule(&home);
+    let helpers = home.join("bin");
+    let nothing = home.join("empty");
+    fs::create_dir_all(&helpers).unwrap();
+    fs::create_dir_all(&nothing).unwrap();
+    let notified = home.join("notified");
+    let helper = helpers.join("termux-notification");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+            notified.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |path: &Path, args: &[&str]| {
+        bin()
+            .args(args)
+            .env("HOME", &home)
+            .env("PATH", path)
+            .output()
+            .unwrap()
+    };
+    let earlier = {
+        let out = run(
+            &helpers,
+            &["scans", "run", "+61412345678", "-u", "passive", "--json"],
+        );
+        assert_eq!(out.status.code(), Some(0));
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+    let rules = rules.to_str().unwrap();
+
+    let raised = run(
+        &helpers,
+        &["scans", "watch", &earlier, "--rules", rules, "--notify"],
+    );
+    assert_eq!(
+        raised.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&raised.stderr)
+    );
+    let posted = fs::read_to_string(&notified).unwrap();
+    assert!(posted.contains("Huntsman alert"), "{posted}");
+    assert!(posted.contains("HIGH phone_present"), "{posted}");
+    assert!(!posted.contains("+61412345678"), "{posted}");
+
+    let missing = run(
+        &nothing,
+        &["scans", "watch", &earlier, "--rules", rules, "--notify"],
+    );
+    assert_eq!(missing.status.code(), Some(69));
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("termux-notification"),
+        "{}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+
+    fs::remove_file(&notified).unwrap();
+    let quiet = run(
+        &helpers,
+        &["scans", "alert", &earlier, &earlier, "--notify"],
+    );
+    assert_eq!(quiet.status.code(), Some(0));
+    assert!(
+        !notified.exists(),
+        "a decision that raises nothing posts nothing"
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// `scans prune --keep N` lists the ended scans beyond the newest N of each target and deletes
+/// them only with `--apply`, keeping the newest; it refuses to run without a `--keep` of at least 1.
+/// `scans cycle` is one continuous cycle a scheduler can run: off until targets are configured,
+/// it then runs the due target's scan to its end, and the next run finds nothing due; a keys-file
+/// setting is read as serve reads it, and a wrong one is refused naming it.
+#[test]
+fn scans_cycle_runs_what_is_due_once_and_then_nothing() {
+    let home = scratch("scans-cycle");
+    let run = |args: &[&str], env: &[(&str, &str)]| {
+        let mut command = bin();
+        command.args(args).env("HOME", &home);
+        for name in [
+            "HUNTSMAN_HOME",
+            "HUNTSMAN_ENV_FILE",
+            "HUNTSMAN_CONTINUOUS_TARGETS",
+            "HUNTSMAN_CONTINUOUS_INTERVAL_MINUTES",
+            "HUNTSMAN_CONTINUOUS_NOTIFY",
+            "HUNTSMAN_CONTINUOUS_KEEP",
+        ] {
+            command.env_remove(name);
+        }
+        command.envs(env.iter().copied()).output().unwrap()
+    };
+    let off = run(&["scans", "cycle"], &[]);
+    assert_eq!(off.status.code(), Some(78));
+    assert!(String::from_utf8_lossy(&off.stderr).contains("HUNTSMAN_CONTINUOUS_TARGETS"));
+    assert_eq!(run(&["scans", "cycle", "x"], &[]).status.code(), Some(64));
+
+    let keys = home.join(".huntsman.env");
+    fs::write(&keys, "HUNTSMAN_CONTINUOUS_TARGETS=+61412345678\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&keys, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let first = run(&["scans", "cycle", "--json"], &[]);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let tally: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(tally["collected"], 1, "{tally}");
+    assert_eq!(tally["failed"], 0, "{tally}");
+    let listed = run(&["scans", "list", "--json"], &[]);
+    let rows: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["status"], "FINISHED", "run to its end before exit");
+
+    let again = run(&["scans", "cycle"], &[]);
+    assert_eq!(again.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&again.stdout).starts_with("cycle: 0 scans collected, 0 failed"),
+        "{}",
+        String::from_utf8_lossy(&again.stdout)
+    );
+
+    let wrong = run(&["scans", "cycle"], &[("HUNTSMAN_CONTINUOUS_KEEP", "none")]);
+    assert_eq!(wrong.status.code(), Some(65));
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("HUNTSMAN_CONTINUOUS_KEEP"));
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn scans_prune_lists_then_deletes_only_what_is_beyond_the_newest() {
+    let home = scratch("scans-prune");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let out = run(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+        assert_eq!(out.status.code(), Some(0));
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        ids.push(record["id"].as_str().unwrap().to_owned());
+    }
+    let listed = |run: &dyn Fn(&[&str]) -> std::process::Output| -> Vec<String> {
+        let out = run(&["scans", "list", "--json"]);
+        let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    let dry = run(&["scans", "prune", "--keep", "1"]);
+    assert_eq!(dry.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&dry.stdout);
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("would delete\t"))
+            .count(),
+        2,
+        "{stdout}"
+    );
+    assert!(stdout.contains("pass --apply"), "{stdout}");
+    assert_eq!(listed(&run).len(), 3, "a dry run deletes nothing");
+
+    let json = run(&["scans", "prune", "--keep", "1", "--json"]);
+    let plan: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let planned: Vec<&str> = plan["scans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        planned,
+        vec![ids[0].as_str(), ids[1].as_str()],
+        "oldest first"
+    );
+
+    let applied = run(&["scans", "prune", "--keep", "1", "--apply"]);
+    assert_eq!(
+        applied.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    assert_eq!(
+        listed(&run),
+        vec![ids[2].clone()],
+        "only the newest is left"
+    );
+    let again = run(&["scans", "prune", "--keep", "1", "--apply"]);
+    assert!(String::from_utf8_lossy(&again.stdout).starts_with("0 of 1 saved scans deleted"));
+
+    assert_eq!(run(&["scans", "prune"]).status.code(), Some(64));
+    assert_eq!(
+        run(&["scans", "prune", "--keep", "0"]).status.code(),
+        Some(64)
+    );
+    assert_eq!(
+        run(&["scans", "prune", "--keep", "x"]).status.code(),
+        Some(64)
+    );
+    assert_eq!(
+        run(&["scans", "prune", "extra", "--keep", "1"])
+            .status
+            .code(),
+        Some(64)
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
 /// `scans search` finds elements in every saved scan, or only the ones named, each with its scan.
 #[test]
 fn scans_search_finds_values_in_every_scan_or_the_ones_named() {
