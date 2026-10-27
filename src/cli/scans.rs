@@ -608,22 +608,11 @@ fn compare(api: &ScanApi, parsed: &Parsed, earlier: &str, later: &str) -> ExitCo
 /// Exit status when an alert is raised: a condition for a schedule to act on, not a failure.
 const ALERT_RAISED: u8 = 1;
 
-/// `--min-risk`'s level, read the way the report prints it.
-fn parse_risk(text: &str) -> Option<Risk> {
-    match text.to_ascii_uppercase().as_str() {
-        "HIGH" => Some(Risk::High),
-        "MEDIUM" => Some(Risk::Medium),
-        "LOW" => Some(Risk::Low),
-        "INFO" => Some(Risk::Info),
-        _ => None,
-    }
-}
-
 /// The `--min-risk` level, High when none is given.
 fn min_risk(parsed: &Parsed) -> Result<Risk, ExitCode> {
     match parsed.value("min_risk") {
         None => Ok(Risk::High),
-        Some(text) => parse_risk(text).ok_or_else(|| {
+        Some(text) => scan_alert::parse_min_risk(text).ok_or_else(|| {
             fail(
                 EX_USAGE,
                 "scans alert: --min-risk takes HIGH, MEDIUM, LOW or INFO",

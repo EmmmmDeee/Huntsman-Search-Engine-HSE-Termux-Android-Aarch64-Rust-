@@ -24,6 +24,7 @@
 //! | `scaneventresultexport`, `scanviz?gexf=1` | `GET /api/scans/ID/export?format=csv|tsv|xlsx|json|gexf|html[&type=T]` |
 //! | `scaneventresultexportmulti`, `scanexportjsonmulti` | `GET /api/scans/export?ids=A,B[&format=json|csv|tsv|xlsx][&type=T]` |
 //! | (none: Spiderfoot cannot compare scans) | `GET /api/scans/compare?ids=EARLIER,LATER[&format=json|csv|tsv|xlsx]` |
+//! | (none: Spiderfoot cannot alert on scans) | `GET /api/scans/alert?ids=EARLIER,LATER[&min_risk=HIGH\|MEDIUM\|LOW\|INFO][&values=1]` |
 //! | `search` (one scan, or every scan here) | `GET /api/scans/search?value=V[&type=T][&ids=A,B][&hidefp=1]` |
 //! | `stopscan`, `scandelete`, `rerunscan` | `POST /api/scans/ID/stop|delete|rerun` |
 //! | `resultsetfp` | `POST /api/scans/ID/fp?ids=A,B&fp=1|0` |
@@ -65,6 +66,7 @@ use crate::entity_reality;
 use crate::evidence_register;
 use crate::module::reachable_modules;
 use crate::pipeline::{PipelineLimits, snapshot_from_entities};
+use crate::scan_alert::{self, Policy};
 use crate::scan_compare;
 use crate::scan_export;
 use crate::scan_search;
@@ -304,6 +306,7 @@ impl ScanApi {
             (["scans"], true) => self.start(&param),
             (["scans", "export"], false) => self.export_many(&param),
             (["scans", "compare"], false) => self.compare(&param),
+            (["scans", "alert"], false) => self.alert(&param),
             (["scans", "search"], false) => self.search(&param),
             (["scans", id], false) => self.status(id),
             (["scans", id, "summary"], false) => self.summary(id),
@@ -861,6 +864,56 @@ impl ScanApi {
             }
         }
         ok(200, &Value::Array(rows))
+    }
+
+    /// `GET /api/scans/alert?ids=EARLIER,LATER[&min_risk=HIGH|MEDIUM|LOW|INFO][&values=1]`: whether
+    /// the later scan raises an alert over the earlier one, the decision `scans alert` makes
+    /// ([`scan_alert`]). Read-only and offline; scans of different targets are refused.
+    fn alert(&self, param: &Params) -> ApiResponse {
+        let ids: Vec<&str> = param
+            .get("ids")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .collect();
+        let &[earlier, later] = ids.as_slice() else {
+            return error(400, "alert takes two scan ids: ids=EARLIER,LATER");
+        };
+        let min_risk = match param.get("min_risk").filter(|text| !text.is_empty()) {
+            None => Risk::High,
+            Some(text) => match scan_alert::parse_min_risk(text) {
+                Some(risk) => risk,
+                None => return error(400, "min_risk takes HIGH, MEDIUM, LOW or INFO"),
+            },
+        };
+        let policy = Policy {
+            min_risk,
+            new_values: matches!(param.get("values"), Some("1" | "true")),
+        };
+        let mut scans = Vec::with_capacity(2);
+        for id in [earlier, later] {
+            match self.results(id) {
+                Ok((record, results)) => {
+                    let results = results.unwrap_or_else(|| empty_results(&record));
+                    scans.push((record, results));
+                }
+                Err(response) => return response,
+            }
+        }
+        let [(base, base_results), (other, other_results)] = [&scans[0], &scans[1]];
+        if base.target != other.target {
+            return error(
+                400,
+                "alert: the two scans have different targets, so no change between them is an alert",
+            );
+        }
+        let decision =
+            scan_alert::assess(&scan_compare::compare(base_results, other_results), policy);
+        ok(
+            200,
+            &json!({ "earlier": earlier, "later": later, "alert": decision }),
+        )
     }
 
     fn compare(&self, param: &Params) -> ApiResponse {
@@ -1689,6 +1742,56 @@ mod tests {
         assert_eq!(search("value=x&ids=0000000000000000").status, 404);
         assert_eq!(
             api.handle("POST", "/api/scans/search", "value=x").status,
+            405
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_scans_of_one_target_alert_only_on_what_is_new() {
+        let (api, dir) = api("alert");
+        let earlier = finished(&api);
+        let later = api
+            .service()
+            .run(&ScanRequest {
+                target: api.service().store().get(&earlier).unwrap().target,
+                ..ScanRequest::default()
+            })
+            .unwrap()
+            .id;
+        let answer = api.handle("GET", "/api/scans/alert", &format!("ids={earlier},{later}"));
+        assert_eq!(answer.status, 200, "{}", answer.text());
+        let decided = body(&answer);
+        assert_eq!(decided["earlier"], earlier.as_str());
+        assert_eq!(decided["alert"]["raised"], false);
+        let bad_risk = api.handle(
+            "GET",
+            "/api/scans/alert",
+            &format!("ids={earlier},{later}&min_risk=urgent"),
+        );
+        assert_eq!(bad_risk.status, 400);
+        assert_eq!(
+            api.handle("GET", "/api/scans/alert", &format!("ids={earlier}"))
+                .status,
+            400
+        );
+        let other = api
+            .service()
+            .run(&ScanRequest {
+                target: "8.8.8.8".into(),
+                ..ScanRequest::default()
+            })
+            .unwrap()
+            .id;
+        let refused = api.handle("GET", "/api/scans/alert", &format!("ids={earlier},{other}"));
+        assert_eq!(refused.status, 400);
+        assert_eq!(
+            api.handle(
+                "POST",
+                "/api/scans/alert",
+                &format!("ids={earlier},{later}")
+            )
+            .status,
             405
         );
         let _ = std::fs::remove_dir_all(&dir);

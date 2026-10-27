@@ -45,6 +45,18 @@ pub struct Alert {
     pub reasons: Vec<Reason>,
 }
 
+/// A risk level as an operator writes it: `HIGH`, `MEDIUM`, `LOW` or `INFO`, in any case.
+#[must_use]
+pub fn parse_min_risk(text: &str) -> Option<Risk> {
+    match text.to_ascii_uppercase().as_str() {
+        "HIGH" => Some(Risk::High),
+        "MEDIUM" => Some(Risk::Medium),
+        "LOW" => Some(Risk::Low),
+        "INFO" => Some(Risk::Info),
+        _ => None,
+    }
+}
+
 /// Decide whether `comparison`, the later scan against the earlier one, raises an alert.
 #[must_use]
 pub fn assess(comparison: &Comparison<'_>, policy: Policy) -> Alert {
