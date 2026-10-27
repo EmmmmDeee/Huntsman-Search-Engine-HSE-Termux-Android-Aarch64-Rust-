@@ -176,12 +176,12 @@ struct Member<'a> {
     next: usize,
 }
 
-fn member<'a>(
-    data: &'a [u8],
+fn member(
+    data: &[u8],
     pos: usize,
     dir_start: usize,
     dir_end: usize,
-) -> Result<Member<'a>, Error> {
+) -> Result<Member<'_>, Error> {
     if checked_range(data, pos, 4) != Some(CENTRAL_SIGNATURE) {
         return Err(Error::invalid_value("invalid ZIP central directory entry"));
     }
@@ -255,12 +255,7 @@ fn member<'a>(
     })
 }
 
-/// Inspect ZIP metadata only. No untrusted payload is decompressed or executed.
-///
-/// # Errors
-/// Malformed, multi-disk or ZIP64 archives, invalid local-header offsets, or archives
-/// with over 8,192 entries are explicitly refused, not interpreted partially.
-pub fn inventory(data: &[u8]) -> Result<Inventory, Error> {
+fn directory_bounds(data: &[u8]) -> Result<(usize, usize, usize), Error> {
     let end = eocd(data)?;
     let disks = (le16(data, end + 4), le16(data, end + 6));
     if disks != (Some(0), Some(0)) {
@@ -297,6 +292,17 @@ pub fn inventory(data: &[u8]) -> Result<Inventory, Error> {
             "ZIP directory extends beyond end record",
         ));
     }
+
+    Ok((count, dir_start, dir_end))
+}
+
+/// Inspect ZIP metadata only. No untrusted payload is decompressed or executed.
+///
+/// # Errors
+/// Malformed, multi-disk or ZIP64 archives, invalid local-header offsets, or archives
+/// with over 8,192 entries are explicitly refused, not interpreted partially.
+pub fn inventory(data: &[u8]) -> Result<Inventory, Error> {
+    let (count, dir_start, dir_end) = directory_bounds(data)?;
 
     let mut pos = dir_start;
     let mut manifest = false;
@@ -341,7 +347,12 @@ pub fn inventory(data: &[u8]) -> Result<Inventory, Error> {
             .strip_prefix("lib/")
             .and_then(|rest| rest.split_once('/'))
         {
-            if !abi.is_empty() && !filename.contains('/') && filename.ends_with(".so") {
+            if !abi.is_empty()
+                && !filename.contains('/')
+                && std::path::Path::new(filename)
+                    .extension()
+                    .is_some_and(|ext| ext == "so")
+            {
                 native_count += 1;
                 abis.insert(abi.to_owned());
             }
