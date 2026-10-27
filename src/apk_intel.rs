@@ -13,6 +13,8 @@ use crate::error::Error;
 use crate::sha256::{hex32, sha256};
 use crate::source_outcome::SourceExecutionOutcome;
 
+pub mod lineage;
+
 pub const SOURCE: &str = "apk_intel";
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ENTRIES: usize = 8192;
@@ -174,6 +176,8 @@ struct Member<'a> {
     flags: u16,
     method: u16,
     next: usize,
+    payload_start: usize,
+    payload_len: usize,
 }
 
 fn member(data: &[u8], pos: usize, dir_start: usize, dir_end: usize) -> Result<Member<'_>, Error> {
@@ -232,10 +236,12 @@ fn member(data: &[u8], pos: usize, dir_start: usize, dir_end: usize) -> Result<M
             "central/local ZIP entry names disagree",
         ));
     }
-    let payload_end = local_name_at
+    let payload_start = local_name_at
         .checked_add(local_name_len)
         .and_then(|n| n.checked_add(local_extra_len))
-        .and_then(|n| n.checked_add(packed))
+        .ok_or_else(|| Error::invalid_value("ZIP payload range overflow"))?;
+    let payload_end = payload_start
+        .checked_add(packed)
         .ok_or_else(|| Error::invalid_value("ZIP payload range overflow"))?;
     if payload_end > dir_start {
         return Err(Error::invalid_value(
@@ -247,6 +253,8 @@ fn member(data: &[u8], pos: usize, dir_start: usize, dir_end: usize) -> Result<M
         flags,
         method,
         next,
+        payload_start,
+        payload_len: packed,
     })
 }
 
