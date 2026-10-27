@@ -1,4 +1,6 @@
+use super::analysis::inspect_label;
 use super::*;
+use crate::scan_service::INSPECT_KIND;
 use std::thread;
 
 /// A loopback bind for the pure-router tests. The DNS-rebinding guard is active
