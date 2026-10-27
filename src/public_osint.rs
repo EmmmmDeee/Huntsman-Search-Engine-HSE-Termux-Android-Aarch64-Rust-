@@ -13,7 +13,7 @@ use crate::fetch::{FetchOptions, fetch};
 use crate::http::{Request, Transport, append_query_param};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 
-pub const MAX_QUERY_BYTES: usize = 160;
+pub const MAX_PUBLIC_QUERY_BYTES: usize = 160;
 const MAX_ROWS: usize = 20;
 const NEWS: &str = "gdelt_doc";
 const NOTICES: &str = "fbi_wanted";
@@ -38,7 +38,7 @@ pub struct Report {
 
 fn checked_query(raw: &str) -> Result<String, &'static str> {
     let query = raw.trim();
-    if query.is_empty() || query.len() > MAX_QUERY_BYTES {
+    if query.is_empty() || query.len() > MAX_PUBLIC_QUERY_BYTES {
         return Err("query must be between 1 and 160 UTF-8 bytes");
     }
     if query
