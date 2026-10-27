@@ -14,9 +14,14 @@ use huntsman_recon::clock;
 use huntsman_recon::environment::{CONTINUOUS_INTERVAL_ENV, CONTINUOUS_TARGETS_ENV};
 use huntsman_recon::fsio::{read_bounded, write_atomic_private};
 use huntsman_recon::keys::Keys;
+use huntsman_recon::scan_alert::{self, Policy};
 use huntsman_recon::scan_api::ScanApi;
+use huntsman_recon::scan_compare;
 use huntsman_recon::scan_service::{ScanRequest, plan};
-use huntsman_recon::scan_store::{MAX_RESULTS_BYTES, ScanOptions, ScanRecord, ScanStore};
+use huntsman_recon::scan_store::{
+    MAX_RESULTS_BYTES, ScanOptions, ScanRecord, ScanStatus, ScanStore,
+};
+use huntsman_recon::sf_correlate::Risk;
 use huntsman_recon::sha256::{hex32, sha256};
 use serde_json::{Value, json};
 
@@ -183,13 +188,69 @@ fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, St
     })
 }
 
+/// Whether `record` is a scan of the configured `request`: its target, by the same lookup.
+fn scans(record: &ScanRecord, request: &ScanRequest) -> bool {
+    record.target == request.target && request.kind.as_deref() == Some(record.kind.as_str())
+}
+
 fn latest<'a>(records: &'a [ScanRecord], request: &ScanRequest) -> Option<&'a ScanRecord> {
     records
         .iter()
-        .filter(|record| {
-            record.target == request.target && request.kind.as_deref() == Some(record.kind.as_str())
-        })
+        .filter(|record| scans(record, request))
         .max_by_key(|record| (record.created, record.id.as_str()))
+}
+
+/// For each configured target, whether its newest finished scan raises an alert over the
+/// finished scan before it, decided once per newest scan with the default policy (a new HIGH
+/// correlation) and kept in the alert history `scans alerts`, the scan API and the Web UI read.
+/// The history is the record of what was decided, so a restarted controller does not decide
+/// again. It reads only saved scans and requests nothing. Returns how many it recorded.
+fn record_alerts(
+    api: &ScanApi,
+    records: &[ScanRecord],
+    targets: &[ScanRequest],
+    now: u64,
+) -> Result<usize, String> {
+    let store = api.service().store();
+    let path = store.dir().join(scan_alert::HISTORY_FILE);
+    let decided: BTreeSet<String> = scan_alert::read_history(&path)
+        .map_err(|error| error.to_string())?
+        .iter()
+        .filter_map(|entry| entry["later"].as_str().map(str::to_owned))
+        .collect();
+    let policy = Policy {
+        min_risk: Risk::High,
+        new_values: false,
+    };
+    let mut recorded = 0;
+    for request in targets {
+        let mut finished: Vec<&ScanRecord> = records
+            .iter()
+            .filter(|record| scans(record, request) && record.status == ScanStatus::Finished)
+            .collect();
+        finished.sort_by_key(|record| (record.created, record.id.as_str()));
+        let [.., earlier, later] = finished.as_slice() else {
+            continue;
+        };
+        if decided.contains(&later.id) {
+            continue;
+        }
+        let saved = |id: &str| store.results(id).map_err(|error| error.to_string());
+        let (Some(base), Some(other)) = (saved(&earlier.id)?, saved(&later.id)?) else {
+            continue;
+        };
+        let alert = scan_alert::assess(&scan_compare::compare(&base, &other), policy);
+        let entry = scan_alert::history_entry(now, &earlier.id, &later.id, &alert);
+        scan_alert::append_history(&path, &entry).map_err(|error| error.to_string())?;
+        if alert.raised {
+            eprintln!(
+                "continuous: alert raised for scan {} over {}",
+                later.id, earlier.id
+            );
+        }
+        recorded += 1;
+    }
+    Ok(recorded)
 }
 
 /// Do not reschedule a scan until a full cadence has elapsed after completion.
@@ -524,6 +585,9 @@ fn cycle(
                 }
             }
         }
+    }
+    if let Err(error) = record_alerts(api, &records, &config.targets, now) {
+        eprintln!("continuous: alert decision not recorded: {error}");
     }
     for record in normalise {
         if record.status.is_active() {
@@ -969,6 +1033,82 @@ mod tests {
         assert!(restarted_retries.is_empty());
         assert_eq!(service.store().list().unwrap().len(), 1);
         std::fs::remove_dir_all(&directory).expect("remove offline fixture");
+    }
+
+    /// A configured target's newest finished scan is decided once against the one before it and
+    /// kept in the alert history; deciding again, as a restarted controller would, records nothing.
+    #[test]
+    fn a_configured_targets_new_scan_is_decided_once_into_the_alert_history() {
+        use huntsman_recon::scan_alert;
+        use huntsman_recon::scan_store::ScanCorrelation;
+        use huntsman_recon::sf_correlate::Risk;
+        let directory = std::env::temp_dir().join(format!(
+            "huntsman-continuous-alert-{}-{}",
+            std::process::id(),
+            huntsman_recon::clock::unix_now_millis()
+        ));
+        let scans_dir = directory.join("scans");
+        let (api, first) = offline_scan_fixture(&scans_dir);
+        let configured = config("1.1.1.1", "60", directory.join("normalised")).expect("target");
+        let store = api.service().store();
+        let records = store.list().unwrap();
+        assert_eq!(
+            super::record_alerts(&api, &records, &configured.targets, 1).unwrap(),
+            0,
+            "one finished scan has nothing to be compared with"
+        );
+
+        let second = api
+            .service()
+            .run(&configured.targets[0])
+            .expect("second scan");
+        assert_eq!(second.status, ScanStatus::Finished);
+        assert_eq!(
+            second.kind, first.kind,
+            "both scans are of the configured lookup"
+        );
+        let mut results = store.results(&second.id).unwrap().expect("saved results");
+        results.correlations.push(ScanCorrelation {
+            id: "fresh".into(),
+            rule: "fresh_exposure".into(),
+            name: "Fresh exposure".into(),
+            title: "Port 443 newly exposed on 1.1.1.1".into(),
+            risk: Risk::High,
+            description: String::new(),
+            origin: "huntsman".into(),
+            logic: String::new(),
+            elements: Vec::new(),
+        });
+        store.save_results(&results).expect("save correlation");
+
+        let records = store.list().unwrap();
+        assert_eq!(
+            super::record_alerts(&api, &records, &configured.targets, 2).unwrap(),
+            1
+        );
+        let history = scan_alert::read_history(&scans_dir.join(scan_alert::HISTORY_FILE)).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["earlier"], first.id.as_str());
+        assert_eq!(history[0]["later"], second.id.as_str());
+        assert_eq!(history[0]["raised"], true);
+        assert_eq!(history[0]["reasons"][0]["rule"], "fresh_exposure");
+        assert!(
+            !history[0].to_string().contains("1.1.1.1"),
+            "no target in the history"
+        );
+
+        assert_eq!(
+            super::record_alerts(&api, &records, &configured.targets, 3).unwrap(),
+            0,
+            "a decided scan is not decided again"
+        );
+        assert_eq!(
+            scan_alert::read_history(&scans_dir.join(scan_alert::HISTORY_FILE))
+                .unwrap()
+                .len(),
+            1
+        );
+        std::fs::remove_dir_all(&directory).expect("remove fixture");
     }
 
     #[test]
