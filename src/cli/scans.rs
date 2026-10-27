@@ -616,9 +616,6 @@ fn compare(api: &ScanApi, parsed: &Parsed, earlier: &str, later: &str) -> ExitCo
 /// Exit status when an alert is raised: a condition for a schedule to act on, not a failure.
 const ALERT_RAISED: u8 = 1;
 
-/// The file, beside the scans, that keeps every alert decision.
-const HISTORY_FILE: &str = "alerts.jsonl";
-
 /// The `--min-risk` level, High when none is given.
 fn min_risk(parsed: &Parsed) -> Result<Risk, ExitCode> {
     match parsed.value("min_risk") {
@@ -751,7 +748,7 @@ fn decide(
         target,
         &decision,
     );
-    let recorded = scan_alert::append_history(&dir.join(HISTORY_FILE), &entry);
+    let recorded = scan_alert::append_history(&dir.join(scan_alert::HISTORY_FILE), &entry);
     if parsed.on("--json") {
         let body = json!({ "earlier": earlier, "later": later, "alert": decision });
         println!("{body}");
@@ -806,7 +803,7 @@ fn alerts_listing(parsed: &Parsed) -> ExitCode {
         Ok(dir) => dir,
         Err(code) => return code,
     };
-    let entries = match scan_alert::read_history(&dir.join(HISTORY_FILE)) {
+    let entries = match scan_alert::read_history(&dir.join(scan_alert::HISTORY_FILE)) {
         Ok(entries) => entries,
         Err(error) => return fail(EX_IOERR, &format!("scans alerts: {error}")),
     };

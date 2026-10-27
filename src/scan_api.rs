@@ -24,6 +24,7 @@
 //! | `scaneventresultexport`, `scanviz?gexf=1` | `GET /api/scans/ID/export?format=csv|tsv|xlsx|json|gexf|html[&type=T]` |
 //! | `scaneventresultexportmulti`, `scanexportjsonmulti` | `GET /api/scans/export?ids=A,B[&format=json|csv|tsv|xlsx][&type=T]` |
 //! | (none: Spiderfoot cannot compare scans) | `GET /api/scans/compare?ids=EARLIER,LATER[&format=json|csv|tsv|xlsx]` |
+//! | (none: Spiderfoot cannot keep an alert history) | `GET /api/scans/alerts` |
 //! | (none: Spiderfoot cannot alert on scans) | `GET /api/scans/alert?ids=EARLIER,LATER[&min_risk=HIGH\|MEDIUM\|LOW\|INFO][&values=1]` |
 //! | `search` (one scan, or every scan here) | `GET /api/scans/search?value=V[&type=T][&ids=A,B][&hidefp=1]` |
 //! | `stopscan`, `scandelete`, `rerunscan` | `POST /api/scans/ID/stop|delete|rerun` |
@@ -307,6 +308,7 @@ impl ScanApi {
             (["scans", "export"], false) => self.export_many(&param),
             (["scans", "compare"], false) => self.compare(&param),
             (["scans", "alert"], false) => self.alert(&param),
+            (["scans", "alerts"], false) => self.alerts(),
             (["scans", "search"], false) => self.search(&param),
             (["scans", id], false) => self.status(id),
             (["scans", id, "summary"], false) => self.summary(id),
@@ -864,6 +866,20 @@ impl ScanApi {
             }
         }
         ok(200, &Value::Array(rows))
+    }
+
+    /// `GET /api/scans/alert?ids=EARLIER,LATER[&min_risk=HIGH|MEDIUM|LOW|INFO][&values=1]`: whether
+    /// the later scan raises an alert over the earlier one, the decision `scans alert` makes
+    /// ([`scan_alert`]). Read-only and offline; scans of different targets are refused.
+    /// `GET /api/scans/alerts`: every decision `scans alert` and `scans watch` made, raised or not,
+    /// oldest first, from the history kept beside the scans ([`scan_alert`]). Empty until one is
+    /// made.
+    fn alerts(&self) -> ApiResponse {
+        let path = self.service.store().dir().join(scan_alert::HISTORY_FILE);
+        match scan_alert::read_history(&path) {
+            Ok(entries) => ok(200, &Value::Array(entries)),
+            Err(failure) => error(500, &failure.to_string()),
+        }
     }
 
     /// `GET /api/scans/alert?ids=EARLIER,LATER[&min_risk=HIGH|MEDIUM|LOW|INFO][&values=1]`: whether
@@ -1794,6 +1810,24 @@ mod tests {
             .status,
             405
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_alert_history_is_served_as_it_is_kept() {
+        let (api, dir) = api("alert-history");
+        let empty = api.handle("GET", "/api/scans/alerts", "");
+        assert_eq!(empty.status, 200, "{}", empty.text());
+        assert_eq!(body(&empty), json!([]));
+        scan_alert::append_history(
+            &dir.join(scan_alert::HISTORY_FILE),
+            &json!({ "at": 1, "raised": true, "reasons": [] }),
+        )
+        .unwrap();
+        let kept = api.handle("GET", "/api/scans/alerts", "");
+        assert_eq!(kept.status, 200);
+        assert_eq!(body(&kept)[0]["raised"], true);
+        assert_eq!(api.handle("POST", "/api/scans/alerts", "").status, 405);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

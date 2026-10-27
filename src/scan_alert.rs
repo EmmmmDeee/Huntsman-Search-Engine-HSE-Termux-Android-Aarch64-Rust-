@@ -21,6 +21,8 @@ use crate::sf_correlate::Risk;
 
 /// The most entries the alert history keeps; the oldest go first.
 pub const MAX_ALERT_HISTORY_ENTRIES: usize = 1_000;
+/// The file, beside the scans, that keeps every alert decision.
+pub const HISTORY_FILE: &str = "alerts.jsonl";
 /// The largest history file read or written.
 const MAX_ALERT_HISTORY_BYTES: u64 = 2 * 1024 * 1024;
 
