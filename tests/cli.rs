@@ -687,13 +687,9 @@ fn scans_compare_lists_what_a_later_scan_added_and_removed() {
     let _ = fs::remove_dir_all(&home);
 }
 
-/// `scans alert` decides whether a later scan of one target warrants attention: a new correlation
-/// at or above `--min-risk` raises it and exits 1; a correlation that has gone never does; scans of
-/// different targets are refused. The rule here is a local Spiderfoot-format file, so nothing is
-/// fetched.
-#[test]
-fn scans_alert_raises_on_a_new_correlation_and_never_on_one_that_went() {
-    let home = scratch("scans-alert");
+/// A local Spiderfoot-format rule, under `home`, that raises a HIGH correlation for any phone
+/// number. Returns the directory holding it.
+fn write_phone_rule(home: &Path) -> PathBuf {
     let rules = home.join("rules");
     fs::create_dir_all(&rules).unwrap();
     fs::write(
@@ -701,6 +697,17 @@ fn scans_alert_raises_on_a_new_correlation_and_never_on_one_that_went() {
         "id: phone_present\nversion: 1\nmeta:\n  name: Phone number present\n  description: >\n    A phone number is in the scan.\n  risk: HIGH\ncollections:\n  - collect:\n      - method: exact\n        field: type\n        value: PHONE_NUMBER\naggregation:\n  field: data\nheadline:\n  text: \"Phone number found: {data}\"\n  publish_collections:\n    - 1\n",
     )
     .unwrap();
+    rules
+}
+
+/// `scans alert` decides whether a later scan of one target warrants attention: a new correlation
+/// at or above `--min-risk` raises it and exits 1; a correlation that has gone never does; scans of
+/// different targets are refused. The rule here is a local Spiderfoot-format file, so nothing is
+/// fetched.
+#[test]
+fn scans_alert_raises_on_a_new_correlation_and_never_on_one_that_went() {
+    let home = scratch("scans-alert");
+    let rules = write_phone_rule(&home);
     let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
     let id = |args: &[&str]| {
         let out = run(args);
@@ -784,6 +791,64 @@ fn scans_alert_raises_on_a_new_correlation_and_never_on_one_that_went() {
         run(&["scans", "alert", &earlier, "0000000000000000"])
             .status
             .code(),
+        Some(66)
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// `scans watch` runs a saved scan's target again, saves the new scan, and alerts on what it finds
+/// that the earlier scan did not.
+#[test]
+fn scans_watch_runs_the_target_again_and_alerts_on_what_is_new() {
+    let home = scratch("scans-watch");
+    let rules = write_phone_rule(&home);
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let earlier = {
+        let out = run(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+        assert_eq!(out.status.code(), Some(0));
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+
+    let watched = run(&[
+        "scans",
+        "watch",
+        &earlier,
+        "--rules",
+        rules.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(
+        watched.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&watched.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&watched.stdout).unwrap();
+    assert_eq!(json["earlier"], earlier.as_str());
+    assert_ne!(json["later"], earlier.as_str(), "watch saves a new scan");
+    assert_eq!(json["alert"]["raised"], true);
+    assert_eq!(json["alert"]["reasons"][0]["rule"], "phone_present");
+
+    let listed = run(&["scans", "list", "--json"]);
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(
+        listed.as_array().map(Vec::len),
+        Some(2),
+        "the earlier scan and the one watch ran"
+    );
+
+    let quiet = run(&["scans", "watch", &earlier]);
+    assert_eq!(quiet.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&quiet.stdout).starts_with("no alert\t"),
+        "{}",
+        String::from_utf8_lossy(&quiet.stdout)
+    );
+
+    assert_eq!(run(&["scans", "watch"]).status.code(), Some(64));
+    assert_eq!(
+        run(&["scans", "watch", "0000000000000000"]).status.code(),
         Some(66)
     );
     let _ = fs::remove_dir_all(&home);
