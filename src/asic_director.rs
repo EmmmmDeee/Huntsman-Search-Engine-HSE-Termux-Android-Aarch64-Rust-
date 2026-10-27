@@ -151,7 +151,8 @@ fn parse_fetched(
             SourceOutcomeKind::Inconclusive,
             Some(response.status),
             Some(
-                "ASIC Connect HTTP 2xx body has neither matching records nor an explicit empty-result marker; target absence is unverified".into(),
+                "ASIC Connect HTTP 2xx body has neither matching records nor an explicit empty-result marker; target absence is unverified"
+                    .into(),
             ),
         );
     }
@@ -446,7 +447,7 @@ mod tests {
         ] {
             let fake = ScriptedTransport::new(vec![Ok(html_ok(html))]);
             let error = lookup(&fake, "Haigen Bamford", "scan", 1).expect_err("not proven empty");
-            assert!(matches!(error, Error::Invalid(_)));
+            assert!(matches!(&error, Error::Invalid(_)));
             assert!(
                 error.to_string().contains("target absence is unverified"),
                 "{error}"
