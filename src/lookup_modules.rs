@@ -52,6 +52,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             let mut domain = vec![
                 "crtsh",
                 certspotter::SOURCE,
+                crate::wayback_cdx::SOURCE,
                 "dns",
                 rdap::SOURCE,
                 mnemonic::SOURCE,
@@ -81,6 +82,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         }
         ScanKind::Username => vec![
             github_user::SRC,
+            crate::gitlab_user::SRC,
             bluesky_user::SRC,
             keybase::SRC,
             wikipedia::SRC,
@@ -109,8 +111,8 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         ScanKind::CryptoAddress => vec![blockchain::SOURCE, crate::base_rpc::SOURCE],
         ScanKind::Place => vec![nominatim::SOURCE],
     };
-    // Preserve the source execution order while removing duplicates. Module lists are
-    // small; avoiding a tree allocation keeps this path lightweight on Termux.
+    // Stable deduplication keeps each source's first execution position and
+    // avoids a tree allocation for the small, bounded module list.
     let mut unique = Vec::with_capacity(modules.len());
     for module in modules {
         if !unique.contains(&module) {

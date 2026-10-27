@@ -29,7 +29,19 @@ jq -e '
   ([.rules[] | select(.type == "required_status_checks") | .parameters]
      | length == 1) and
   ([.rules[] | select(.type == "required_status_checks") |
-     .parameters.required_status_checks[] | .context] | length == 9) and
+     .parameters.required_status_checks[] | .context] | sort) ==
+  ([
+    "cargo audit (RustSec advisories)",
+    "test (1.87)",
+    "test (1.99)",
+    "Android aarch64 cross-build",
+    "Library tests on aarch64 under qemu",
+    "Web UI in a phone browser",
+    "Self-hosted container smoke test",
+    "Canonical Huntsman directive lock",
+    "Offline MITM eligibility fixtures",
+    "Generate the full repository completion register"
+  ] | sort) and
   (all(.rules[] | select(.type == "required_status_checks") |
      .parameters.required_status_checks[]; .integration_id == 15368))
 ' "$policy" >/dev/null || { echo 'invalid or weakened local merge policy' >&2; exit 2; }
@@ -104,4 +116,4 @@ if ! jq -e '.allow_auto_merge == true and .allow_squash_merge == true' <<< "$set
   exit 1
 fi
 
-echo "VERIFIED: $repo/main protected by '$name' ($id); 9 required GitHub Actions CI checks"
+echo "VERIFIED: $repo/main protected by '$name' ($id); 10 required GitHub Actions CI checks"
