@@ -66,12 +66,11 @@ fn web_inspect(label: &str, bytes: &[u8]) -> Result<LookupReport, LookupError> {
         .rsplit_once('.')
         .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("apk"))
     {
-        let report = huntsman_recon::apk_intel::run(bytes, label, now).map_err(|error| {
-            LookupError {
+        let report =
+            huntsman_recon::apk_intel::run(bytes, label, now).map_err(|error| LookupError {
                 status: 422,
                 message: error.to_string(),
-            }
-        })?;
+            })?;
         let text = huntsman_recon::lookup_report::render(&report.entities, &report.outcomes)
             .map_err(|message| LookupError {
                 status: 500,
@@ -527,16 +526,11 @@ mod tests {
         assert_eq!(report.route, "inspect");
         assert_eq!(report.entities.len(), 1);
         assert_eq!(report.entities[0].kind, EntityKind::Document);
-        assert_eq!(
-            attribute(&report.entities[0], "apk_zip_entries"),
-            Some("1")
-        );
+        assert_eq!(attribute(&report.entities[0], "apk_zip_entries"), Some("1"));
         assert_eq!(report.outcomes.len(), 1);
         assert_eq!(report.outcomes[0].module, "apk_intel");
         assert_eq!(report.outcomes[0].kind, SourceOutcomeKind::Success);
-        let expected_hash = huntsman_recon::sha256::hex32(
-            &huntsman_recon::sha256::sha256(&apk),
-        );
+        let expected_hash = huntsman_recon::sha256::hex32(&huntsman_recon::sha256::sha256(&apk));
         assert_eq!(
             attribute(&report.entities[0], "file_sha256"),
             Some(expected_hash.as_str())
