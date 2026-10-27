@@ -82,11 +82,16 @@ fn release_gate_rejects_missing_bypassed_and_reordered_checks() {
         ("workflows=(audit.yml codeql.yml)", "workflows=(codeql.yml)"),
         ("-f head_sha=\"$GITHUB_SHA\" -f event=push", "-f event=push"),
         ("completed:*)", "completed:failure)"),
-        ("if . == null then \"missing\"", "if . == null then \"completed:success\""),
+        (
+            "if . == null then \"missing\"",
+            "if . == null then \"completed:success\"",
+        ),
         ("if [ \"$attempt\" -eq 120 ]; then", "if false; then"),
     ] {
         let start = workflow
-            .find("      - name: Require successful exact-main RustSec and CodeQL before publishing")
+            .find(
+                "      - name: Require successful exact-main RustSec and CodeQL before publishing",
+            )
             .expect("security gate");
         let mutated = format!(
             "{}{}",
