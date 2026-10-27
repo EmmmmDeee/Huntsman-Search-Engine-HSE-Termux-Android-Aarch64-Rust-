@@ -72,7 +72,11 @@ fn failed(now: u64, kind: SourceOutcomeKind, status: Option<u16>, detail: &str) 
 
 fn parse_hex(value: &Value, cap: usize) -> Option<&str> {
     let raw = value.as_str()?.strip_prefix("0x")?;
-    if raw.is_empty() || raw.len() > cap || !raw.bytes().all(|c| c.is_ascii_hexdigit()) {
+    if raw.is_empty()
+        || raw.len() > cap
+        || (raw.len() > 1 && raw.starts_with('0'))
+        || !raw.bytes().all(|c| c.is_ascii_hexdigit())
+    {
         return None;
     }
     Some(raw)
@@ -83,7 +87,7 @@ fn parse_hex(value: &Value, cap: usize) -> Option<&str> {
 #[must_use]
 pub fn quantity_decimal(value: &str) -> Option<String> {
     let hex = value.strip_prefix("0x")?;
-    if hex.is_empty() || hex.len() > MAX_QUANTITY_HEX {
+    if hex.is_empty() || hex.len() > MAX_QUANTITY_HEX || (hex.len() > 1 && hex.starts_with('0')) {
         return None;
     }
     let mut digits = [0_u8; 78];
@@ -339,6 +343,9 @@ mod tests {
         );
         assert!(quantity_decimal("0x").is_none());
         assert!(quantity_decimal("0xGG").is_none());
+        for noncanonical in ["0x00", "0x01", "0x0a", "0x0001"] {
+            assert!(quantity_decimal(noncanonical).is_none(), "{noncanonical}");
+        }
         assert!(quantity_decimal(&format!("0x{}", "f".repeat(65))).is_none());
     }
 
@@ -371,6 +378,9 @@ mod tests {
     fn wrong_chain_duplicate_ids_and_rpc_errors_do_not_become_evidence() {
         for body in [
             BATCH.replace("0x2105", "0x1"),
+            BATCH.replace("0x2105", "0x02105"),
+            BATCH.replace("0x2a", "0x02a"),
+            BATCH.replace("0xde0b6b3a7640000", "0x0de0b6b3a7640000"),
             BATCH.replace(r#""id":3"#, r#""id":2"#),
             BATCH.replace(
                 r#""result":"0x2a""#,
