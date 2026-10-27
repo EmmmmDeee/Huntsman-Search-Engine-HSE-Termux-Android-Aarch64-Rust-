@@ -277,7 +277,11 @@ mod tests {
             .iter()
             .find(|flag| flag.id == "exported_components")
             .unwrap();
-        assert!(exported.detail.contains("permissions and platform restrictions"));
+        assert!(
+            exported
+                .detail
+                .contains("permissions and platform restrictions")
+        );
     }
 
     #[test]
