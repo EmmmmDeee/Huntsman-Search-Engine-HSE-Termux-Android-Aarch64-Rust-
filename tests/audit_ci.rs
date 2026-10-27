@@ -1,5 +1,5 @@
-//! The `RustSec` audit must run on every PR as a required check, and on dependency-changing
-//! pushes, schedules and manual dispatch. It remains read-only, pins actions by SHA,
+//! The `RustSec` audit must run on every PR as a required check, and on every
+//! main pushes, schedules and manual dispatch. It remains read-only, pins actions by SHA,
 //! and fails on vulnerabilities in the locked dependency graph.
 
 use std::fs;
@@ -61,51 +61,35 @@ fn audit_step_installs_a_pinned_cargo_audit() {
 }
 
 #[test]
-fn audit_runs_on_every_pr_and_scoped_pushes() {
+fn audit_runs_on_every_pr_and_every_main_push() {
     let audit = audit_workflow();
     for trigger in [
         "schedule:",
         "cron: \"0 6 * * 1\"",
         "workflow_dispatch:",
-        "push:",
-        "pull_request:",
-        "\"**/Cargo.toml\"",
-        "\"**/Cargo.lock\"",
-        "\".github/workflows/audit.yml\"",
+        "  push:\n    branches: [main]\n  pull_request:",
     ] {
         assert!(audit.contains(trigger), "{AUDIT} must contain {trigger}");
     }
-    // Every PR must emit the required audit check, even for source-only changes.
     assert!(
         audit.contains("  pull_request:\n\npermissions:"),
         "pull_request must have no paths filter"
     );
-    // Main pushes need only audit dependency and workflow changes.
-    let event = "push:";
-    let marker = format!("  {event}\n");
-    let section = audit
-        .split_once(&marker)
-        .map(|(_, tail)| {
-            tail.lines()
-                .take_while(|line| line.starts_with("    ") || line.trim().is_empty())
-                .collect::<Vec<_>>()
-        })
-        .expect("event trigger must have a scoped paths section");
     assert!(
-        section.iter().any(|line| line.trim() == "paths:"),
-        "{event} must declare paths"
+        !audit.contains("    paths:"),
+        "main push audit must not be path-filtered: every main SHA needs a RustSec verdict"
     );
-    let actual = section
-        .iter()
-        .filter_map(|line| line.trim().strip_prefix("- "))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        actual,
-        [
-            "\"**/Cargo.toml\"",
-            "\"**/Cargo.lock\"",
-            "\".github/workflows/audit.yml\"",
-        ],
-        "{event} must include exactly the audited paths"
+}
+
+#[test]
+fn audit_does_not_cancel_previous_main_sha_verdicts() {
+    let audit = audit_workflow();
+    assert!(
+        audit.contains("group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}"),
+        "main push audits must use a unique run id; PRs may share a ref"
+    );
+    assert!(
+        audit.contains("cancel-in-progress: ${{ github.event_name == 'pull_request' }}"),
+        "only superseded PR audits may be cancelled"
     );
 }

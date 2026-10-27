@@ -214,6 +214,37 @@ fn grouped_provider_issues(outcomes: &[SourceExecutionOutcome]) -> (usize, Vec<U
     (unresolved_executions, groups.into_values().collect())
 }
 
+fn missing_people_source_issues(
+    record: &ScanRecord,
+    results: Option<&ScanResults>,
+) -> Vec<UncertaintyItem> {
+    // Missing scan results are an artifact problem, not five independent provider misses.
+    if record.status.is_active() || results.is_none() {
+        return Vec::new();
+    }
+    let Some(coverage) = crate::scan_coverage::derive(record, results) else {
+        return Vec::new();
+    };
+    coverage
+        .sources
+        .into_iter()
+        .filter(|source| source.status == crate::scan_coverage::PeopleSourceStatus::NotObserved)
+        .map(|source| UncertaintyItem {
+            id: format!("sources:not_observed:{}", source.module),
+            priority: 1,
+            category: "missing_observations",
+            module: Some(source.module.to_owned()),
+            outcome: None,
+            observations: 0,
+            first_observed_unix: None,
+            last_observed_unix: None,
+            evidence_path: "results.json#outcomes",
+            uncertainty: "A selected people source has no recorded execution outcome; target absence cannot be inferred.",
+            next_action: "Inspect source selection, dispatch and logs; rerun the missing source after repair.",
+        })
+        .collect()
+}
+
 /// Derive the register solely from saved scan evidence. Never infer an unrecorded
 /// source failure, an unobserved target, or an identity from the absence of findings.
 #[must_use]
@@ -281,6 +312,8 @@ pub fn derive(record: &ScanRecord, results: Option<&ScanResults>) -> Uncertainty
             "Check scan state and storage errors before drawing conclusions.",
         ));
     }
+
+    items.extend(missing_people_source_issues(record, results));
 
     items.push(general(
         "scope:exhaustiveness_unverified",
@@ -444,6 +477,34 @@ mod tests {
             .find(|i| i.module.as_deref() == Some("ripestat"))
             .expect("the transport failure is an issue");
         assert_eq!(silent.category, "transport_failure");
+    }
+
+    #[test]
+    fn a_missing_selected_people_leg_is_a_named_uncertainty() {
+        let mut people = record(ScanStatus::Finished);
+        people.kind = "people".into();
+        people.options.usecase = "all".into();
+        people.options.modules = vec!["asic_director".into()];
+        let register = derive(&people, Some(&saved(Vec::new())));
+        let missing = register
+            .items
+            .iter()
+            .find(|item| item.id == "sources:not_observed:asic_director")
+            .expect("missing source named");
+        assert_eq!(missing.module.as_deref(), Some("asic_director"));
+        assert_eq!(missing.category, "missing_observations");
+        assert_eq!(register.unresolved_executions, 0);
+        // With no saved results, the execution record is unavailable, not proof
+        // that each selected source failed to record its own execution.
+        let unavailable = derive(&people, None);
+        assert_eq!(
+            unavailable
+                .items
+                .iter()
+                .filter(|item| item.id.starts_with("sources:not_observed:"))
+                .count(),
+            0
+        );
     }
 
     #[test]
