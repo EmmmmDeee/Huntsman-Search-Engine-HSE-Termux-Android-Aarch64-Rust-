@@ -4015,7 +4015,10 @@ fn release_publication_waits_for_successful_exact_main_ci() {
     let download = publish
         .find("      - name: Download staged release files")
         .expect("publish must download release assets");
-    assert!(gate < download, "CI gate must precede all publication steps");
+    assert!(
+        gate < download,
+        "CI gate must precede all publication steps"
+    );
     for required in [
         "      actions: read",
         "actions/workflows/ci.yml/runs",
