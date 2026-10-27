@@ -51,6 +51,7 @@ No credential values are required in CLI arguments, logs or source control.
 | OpenCelliD | `HUNTSMAN_OPENCELLID_KEY` | required for `network cell:MCC:MNC:AREA:CELL` and for the cell sites around a point in `network LAT,LON`: without it each OpenCelliD search is `not_configured` and sends nothing; free account key, 1,000 credits a day |
 | Censys Platform | `HUNTSMAN_CENSYS_TOKEN` | v3 IP host lookup (`ip`, `scan -k ip`, web UI); free accounts support host lookup with a Personal Access Token, account limits apply; a 404 means no host, failures remain explicit |
 | Censys Legacy | `HUNTSMAN_CENSYS_ID`, `HUNTSMAN_CENSYS_SECRET` | legacy slots retained for import/backward compatibility but not used by Platform v3; create a new PAT to use the active source |
+| X Recent Search | `HUNTSMAN_X_BEARER_TOKEN` | operator-owned official X API bearer token for `osint x-api` only; account limits and credits apply; `osint x` indexed discovery is keyless |
 
 ## Importing keys from Spiderfoot
 
@@ -128,6 +129,7 @@ HUNTSMAN_OPENCELLID_KEY=
 HUNTSMAN_CENSYS_TOKEN=
 HUNTSMAN_CENSYS_ID=
 HUNTSMAN_CENSYS_SECRET=
+HUNTSMAN_X_BEARER_TOKEN=
 ```
 
 Never place populated values in this repository, release artifacts, logs,
