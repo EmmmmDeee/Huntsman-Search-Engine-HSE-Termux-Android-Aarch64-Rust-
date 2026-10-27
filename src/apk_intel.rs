@@ -38,9 +38,7 @@ pub struct Inventory {
     pub v1_signing_artifacts: Vec<String>,
     pub v1_signing_artifacts_omitted: usize,
     pub apk_signing_block_present: bool,
-    pub v2_signer_block_present: bool,
-    pub v3_signer_block_present: bool,
-    pub v31_signer_block_present: bool,
+    pub signing_scheme_ids_detected_unverified: Vec<String>,
     pub compressed_entries: usize,
     pub encrypted_entries: usize,
     pub suspicious_paths: usize,
@@ -106,9 +104,7 @@ fn suspicious(name: &str) -> bool {
 #[derive(Default)]
 struct SigningBlock {
     present: bool,
-    v2: bool,
-    v3: bool,
-    v31: bool,
+    schemes: Vec<&'static str>,
 }
 
 /// Inspect *structural* signing IDs. A matching ID is never a verified signature.
@@ -129,7 +125,8 @@ fn signing_block(data: &[u8], central_at: usize) -> SigningBlock {
     let Some(start) = central_at.checked_sub(total) else {
         return found;
     };
-    if size < 24 || le64(data, start) != Some(size as u64) || start + 8 > footer_at {
+    let Ok(size_u64) = u64::try_from(size) else { return found; };
+    if size < 24 || le64(data, start) != Some(size_u64) || start + 8 > footer_at {
         return found;
     }
     let mut pos = start + 8;
@@ -147,9 +144,9 @@ fn signing_block(data: &[u8], central_at: usize) -> SigningBlock {
             return SigningBlock::default();
         };
         match id {
-            0x7109_871a => found.v2 = true,
-            0xf053_68c0 => found.v3 = true,
-            0x1b93_ad61 => found.v31 = true,
+            0x7109_871a => found.schemes.push("v2"),
+            0xf053_68c0 => found.schemes.push("v3"),
+            0x1b93_ad61 => found.schemes.push("v3.1"),
             _ => {}
         }
         pos = next;
@@ -281,9 +278,9 @@ pub fn inventory(data: &[u8]) -> Result<Inventory, Error> {
         v1_signing_artifacts_omitted: v1_count - v1.len(),
         v1_signing_artifacts: v1,
         apk_signing_block_present: sig.present,
-        v2_signer_block_present: sig.present && sig.v2,
-        v3_signer_block_present: sig.present && sig.v3,
-        v31_signer_block_present: sig.present && sig.v31,
+        signing_scheme_ids_detected_unverified: if sig.present {
+            sig.schemes.into_iter().map(str::to_owned).collect()
+        } else { Vec::new() },
         compressed_entries: compressed,
         encrypted_entries: encrypted,
         suspicious_paths: unsafe_paths,
@@ -299,10 +296,10 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
     let inventory = inventory(data)?;
     let sid = scan_id(SOURCE, label);
     let evidence = Evidence::new(
-        EvidenceProvenance::for_scan(SOURCE, &sid),
+        EvidenceProvenance::for_scan(SOURCE, sid.as_str()),
         format!("Offline ZIP inventory of Android application archive {label}"),
     )
-    .with_attr("file_sha256", &inventory.sha256)
+    .with_attr("file_sha256", inventory.sha256.as_str())
     .with_attr("file_hash_scope", "exact_input_bytes")
     .with_attr("file_size_bytes", inventory.file_size_bytes.to_string())
     .with_attr("apk_zip_entries", inventory.entries.to_string())
@@ -315,7 +312,7 @@ pub fn run(data: &[u8], label: &str, now_unix: u64) -> Result<Report, Error> {
     .with_attr("apk_suspicious_paths", inventory.suspicious_paths.to_string());
     let mut entities = Vec::new();
     push_entity(
-        &mut entities, EntityKind::Document, label, 0.9, &sid, evidence,
+        &mut entities, EntityKind::Document, label, 0.9, sid.as_str(), evidence,
         &[SOURCE, "offline", "apk"],
     );
     Ok(Report {
@@ -377,7 +374,7 @@ mod tests {
         assert_eq!(result.dex_count, 2);
         assert_eq!(result.native_abis, ["arm64-v8a"]);
         assert_eq!(result.v1_signing_artifacts, ["META-INF/APP.RSA"]);
-        assert!(!result.v2_signer_block_present);
+        assert!(result.signing_scheme_ids_detected_unverified.is_empty());
         assert_eq!(result.sha256, hex32(&sha256(&data)));
         let report = run(&data, "sample.apk", 100).unwrap();
         assert_eq!(report.entities.len(), 1);
@@ -412,4 +409,27 @@ mod tests {
         put16(&mut a, end + 10, u16::MAX);
         assert!(inventory(&a).is_err());
     }
+    #[test]
+    fn signature_ids_are_structural_indicators_not_verified_signatures() {
+        let mut bytes = sample(&["AndroidManifest.xml"]);
+        let old_directory = usize::try_from(le32(&bytes, bytes.len() - 22 + 16).unwrap()).unwrap();
+        let mut block = Vec::new();
+        block.extend_from_slice(&36_u64.to_le_bytes());
+        block.extend_from_slice(&4_u64.to_le_bytes());
+        block.extend_from_slice(&0x7109_871a_u32.to_le_bytes());
+        block.extend_from_slice(&36_u64.to_le_bytes());
+        block.extend_from_slice(APK_SIG_MAGIC);
+        assert_eq!(block.len(), 44);
+        bytes.splice(old_directory..old_directory, block);
+        let end = bytes.len() - 22;
+        put32(&mut bytes, end + 16, u32::try_from(old_directory + 44).unwrap());
+        let parsed = inventory(&bytes).unwrap();
+        assert!(parsed.apk_signing_block_present);
+        assert_eq!(parsed.signing_scheme_ids_detected_unverified, ["v2"]);
+        // Corrupt the first length copy: a signature-looking magic alone does not count.
+        bytes[old_directory] ^= 1;
+        let parsed = inventory(&bytes).unwrap();
+        assert!(!parsed.apk_signing_block_present);
+    }
+
 }
