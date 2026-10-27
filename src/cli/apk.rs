@@ -12,6 +12,10 @@ use huntsman_recon::lookup_report;
 use super::{fail, terminal_json_pretty};
 
 pub(super) fn apk_cmd(args: &[String]) -> ExitCode {
+    if args == ["--help"] {
+        println!("{APK_HELP}");
+        return ExitCode::SUCCESS;
+    }
     let (file, as_json) = match args {
         [file] => (file.as_str(), false),
         [file, flag] if flag == "--json" => (file.as_str(), true),
