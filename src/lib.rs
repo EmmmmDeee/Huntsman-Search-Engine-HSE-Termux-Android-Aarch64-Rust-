@@ -191,6 +191,7 @@ pub mod scan_batch;
 pub mod scan_compare;
 pub mod scan_coverage;
 pub mod scan_export;
+pub mod scan_retention;
 pub mod scan_route;
 pub mod scan_search;
 pub mod scan_service;
