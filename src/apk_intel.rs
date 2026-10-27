@@ -255,6 +255,30 @@ fn member(
     })
 }
 
+fn native_abi(name: &str) -> Option<&str> {
+    let (abi, filename) = name.strip_prefix("lib/")?.split_once('/')?;
+    if !abi.is_empty()
+        && !filename.contains('/')
+        && std::path::Path::new(filename)
+            .extension()
+            .is_some_and(|ext| ext == "so")
+    {
+        Some(abi)
+    } else {
+        None
+    }
+}
+
+fn is_v1_signing_artifact(name: &str) -> bool {
+    let Some(filename) = name.strip_prefix("META-INF/") else {
+        return false;
+    };
+    !filename.contains('/')
+        && [".RSA", ".DSA", ".EC", ".SF"]
+            .iter()
+            .any(|extension| filename.ends_with(extension))
+}
+
 fn directory_bounds(data: &[u8]) -> Result<(usize, usize, usize), Error> {
     let end = eocd(data)?;
     let disks = (le16(data, end + 4), le16(data, end + 6));
@@ -343,30 +367,14 @@ pub fn inventory(data: &[u8]) -> Result<Inventory, Error> {
                 dex.push(name.to_owned());
             }
         }
-        if let Some((abi, filename)) = name
-            .strip_prefix("lib/")
-            .and_then(|rest| rest.split_once('/'))
-        {
-            if !abi.is_empty()
-                && !filename.contains('/')
-                && std::path::Path::new(filename)
-                    .extension()
-                    .is_some_and(|ext| ext == "so")
-            {
-                native_count += 1;
-                abis.insert(abi.to_owned());
-            }
+        if let Some(abi) = native_abi(name) {
+            native_count += 1;
+            abis.insert(abi.to_owned());
         }
-        if let Some(name_without_prefix) = name.strip_prefix("META-INF/") {
-            if !name_without_prefix.contains('/')
-                && [".RSA", ".DSA", ".EC", ".SF"]
-                    .iter()
-                    .any(|extension| name_without_prefix.ends_with(extension))
-            {
-                v1_count += 1;
-                if v1.len() < MAX_LISTED {
-                    v1.push(name.to_owned());
-                }
+        if is_v1_signing_artifact(name) {
+            v1_count += 1;
+            if v1.len() < MAX_LISTED {
+                v1.push(name.to_owned());
             }
         }
     }
