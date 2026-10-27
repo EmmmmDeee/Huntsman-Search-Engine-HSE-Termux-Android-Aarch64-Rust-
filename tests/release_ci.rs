@@ -4002,3 +4002,35 @@ fn the_identity_probe_matches_the_usage_line_it_proves() {
         "the probe still matches after `verify LEDGER` is gone, so it proves nothing"
     );
 }
+
+
+/// Release publication must not race the independent exact-main CI workflow:
+/// QEMU aarch64 library tests are part of CI, not the release's quality jobs.
+#[test]
+fn release_publication_waits_for_successful_exact_main_ci() {
+    let wf = release();
+    let publish = job(&wf, "publish");
+    let gate = publish
+        .find("      - name: Require successful exact-main CI before publishing")
+        .expect("publish must wait for exact-main CI");
+    let download = publish
+        .find("      - name: Download staged release files")
+        .expect("publish must download release assets");
+    assert!(gate < download, "CI gate must precede all publication steps");
+    for required in [
+        "      actions: read",
+        "actions/workflows/ci.yml/runs",
+        "-f head_sha=\"$GITHUB_SHA\"",
+        "-f event=push",
+        ".head_sha == $sha",
+        ".event == \"push\"",
+        "completed:success",
+        "completed:*",
+        "timeout-minutes: 65",
+    ] {
+        assert!(
+            publish.contains(required),
+            "release publication is missing exact-CI gate contract: {required:?}"
+        );
+    }
+}
