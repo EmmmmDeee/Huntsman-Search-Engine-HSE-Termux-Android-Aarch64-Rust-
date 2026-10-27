@@ -10,6 +10,7 @@
 
 mod axml;
 mod dex;
+mod risk;
 mod sdk;
 mod signer;
 
@@ -46,7 +47,7 @@ const MAX_APK_INFLATED_BYTES: usize = 256 * 1024 * 1024;
 const MAX_HOST_ENTITIES: usize = 64;
 const LIMITATIONS: &str = "Offline static reading: the manifest is the archive's own claim, signing certificates are those the archive presents (no signature is verified), and a URL in code is a lead, not proof the app contacts it. Nothing is executed or fetched.";
 
-pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts), summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER (NOT verifying any signature), and list the URLs and third-party SDKs the DEX code references. Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. No decompression, certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
+pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts), summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER (NOT verifying any signature), and list the URLs and third-party SDKs the DEX code references, and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. No decompression, certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Inventory {
@@ -71,6 +72,7 @@ pub struct Inventory {
 
 pub use axml::{Component, Exposure, Manifest};
 pub use dex::CodeUrls;
+pub use risk::Flag;
 pub use sdk::Tracker;
 pub use signer::Certificate;
 
@@ -83,6 +85,8 @@ pub struct Analysis {
     /// Each distinct signing certificate, its schemes joined when several present it.
     pub signers: Vec<Certificate>,
     pub code: CodeUrls,
+    /// The manifest's security-posture flags, highest risk first.
+    pub risk_flags: Vec<Flag>,
     /// Members that were not read, with why.
     pub unread: Vec<String>,
     /// Archive tricks that make analysis tools fail while Android still installs the app.
@@ -582,7 +586,10 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
     if let Some(member) = &archive.manifest {
         match read(member, MAX_APK_MANIFEST_BYTES, &mut analysis) {
             Some(bytes) => match axml::manifest(&bytes) {
-                Ok(manifest) => analysis.manifest = Some(manifest),
+                Ok(manifest) => {
+                    analysis.risk_flags = risk::flags(&manifest);
+                    analysis.manifest = Some(manifest);
+                }
                 Err(error) => analysis.manifest_error = Some(error),
             },
             None => {
@@ -693,6 +700,18 @@ fn document_evidence(
         "apk_code_url_count",
         (analysis.code.urls.len() + analysis.code.urls_omitted).to_string(),
     );
+    if let Some(highest) = risk::highest(&analysis.risk_flags) {
+        put("apk_risk_highest", highest.as_str().to_owned());
+        put(
+            "apk_risk_flags",
+            analysis
+                .risk_flags
+                .iter()
+                .map(|flag| format!("{} {}: {}", flag.risk.as_str(), flag.id, flag.detail))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+    }
     put(
         "apk_bundled_sdks",
         analysis
@@ -1126,9 +1145,30 @@ mod tests {
             }],
             "the bundled SDK is named from the DEX type descriptors"
         );
+        // The manifest is debuggable and permits cleartext, so the highest risk flag is HIGH.
+        assert_eq!(
+            risk::highest(&analysis.risk_flags),
+            Some(crate::sf_correlate::Risk::High)
+        );
+        assert!(
+            analysis
+                .risk_flags
+                .iter()
+                .any(|flag| flag.id == "debuggable"),
+            "{:?}",
+            analysis.risk_flags
+        );
 
         let document = &report.entities[0];
         assert_eq!(attr(document, "apk_package"), Some("com.example.field"));
+        assert_eq!(attr(document, "apk_risk_highest"), Some("HIGH"));
+        assert!(
+            attr(document, "apk_risk_flags")
+                .unwrap()
+                .contains("HIGH debuggable"),
+            "{:?}",
+            attr(document, "apk_risk_flags")
+        );
         assert_eq!(attr(document, "apk_target_sdk"), Some("34"));
         assert_eq!(attr(document, "apk_debuggable"), Some("true"));
         assert_eq!(
