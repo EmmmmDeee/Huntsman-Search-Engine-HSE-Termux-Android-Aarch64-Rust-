@@ -888,12 +888,15 @@ fn scans_alerts_keeps_a_history_of_every_decision() {
     assert_eq!(entries[0]["earlier"], earlier.as_str());
     assert_eq!(entries[1]["raised"], true);
     assert_eq!(entries[1]["reasons"][0]["rule"], "phone_present");
-    assert_eq!(entries[0]["target"], "+61412345678");
+    assert!(
+        entries[0].get("target").is_none(),
+        "the history keeps no target"
+    );
 
     let table = run(&["scans", "alerts"]);
     let stdout = String::from_utf8_lossy(&table.stdout);
     assert!(
-        stdout.starts_with("AT\tRAISED\tEARLIER\tLATER\tTARGET\tREASONS\n"),
+        stdout.starts_with("AT\tRAISED\tEARLIER\tLATER\tREASONS\n"),
         "{stdout}"
     );
     assert_eq!(stdout.lines().count(), 3, "{stdout}");

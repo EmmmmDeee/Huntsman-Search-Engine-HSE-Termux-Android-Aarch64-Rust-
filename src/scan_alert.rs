@@ -57,17 +57,28 @@ pub struct Alert {
     pub reasons: Vec<Reason>,
 }
 
-/// One decision as the history records it: when it was made, the two scans, the target and the
-/// alert, whether raised or not.
+/// One decision as the history records it: when it was made, the two scans and whether an alert
+/// was raised, with each reason's risk and rule. The target and a correlation's title are left
+/// out: the target is the scan's own, and a title can carry the value it names, so the history
+/// holds neither a second copy of an identifier nor the text of a finding.
 #[must_use]
-pub fn history_entry(at_ms: u64, earlier: &str, later: &str, target: &str, alert: &Alert) -> Value {
+pub fn history_entry(at_ms: u64, earlier: &str, later: &str, alert: &Alert) -> Value {
+    let reasons: Vec<Value> = alert
+        .reasons
+        .iter()
+        .map(|reason| match reason {
+            Reason::Correlation { risk, rule, .. } => {
+                json!({ "kind": "correlation", "risk": risk, "rule": rule })
+            }
+            Reason::NewValues { count } => json!({ "kind": "new_values", "count": count }),
+        })
+        .collect();
     json!({
         "at": at_ms,
         "earlier": earlier,
         "later": later,
-        "target": target,
         "raised": alert.raised,
-        "reasons": alert.reasons,
+        "reasons": reasons,
     })
 }
 

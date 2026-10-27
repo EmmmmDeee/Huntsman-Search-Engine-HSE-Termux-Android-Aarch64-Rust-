@@ -677,14 +677,7 @@ fn alert(api: &ScanApi, parsed: &Parsed, earlier: &str, later: &str) -> ExitCode
         Ok(dir) => dir,
         Err(code) => return code,
     };
-    decide(
-        parsed,
-        min_risk,
-        &dir,
-        &base_record.target,
-        (earlier, &base),
-        (later, &other),
-    )
+    decide(parsed, min_risk, &dir, (earlier, &base), (later, &other))
 }
 
 /// Run the target of scan `id` again, then alert on what the new scan finds over `id`. The new
@@ -717,14 +710,7 @@ fn watch(api: &ScanApi, parsed: &Parsed, id: &str) -> ExitCode {
         Ok(dir) => dir,
         Err(code) => return code,
     };
-    decide(
-        parsed,
-        min_risk,
-        &dir,
-        &record.target,
-        (id, &base),
-        (&record.id, &other),
-    )
+    decide(parsed, min_risk, &dir, (id, &base), (&record.id, &other))
 }
 
 /// Print the alert between two saved scans and exit 1 when it is raised, 0 when not.
@@ -732,7 +718,6 @@ fn decide(
     parsed: &Parsed,
     min_risk: Risk,
     dir: &Path,
-    target: &str,
     (earlier, base): (&str, &ScanResults),
     (later, other): (&str, &ScanResults),
 ) -> ExitCode {
@@ -745,7 +730,6 @@ fn decide(
         huntsman_recon::clock::unix_now_millis(),
         earlier,
         later,
-        target,
         &decision,
     );
     let recorded = scan_alert::append_history(&dir.join(scan_alert::HISTORY_FILE), &entry);
@@ -811,16 +795,15 @@ fn alerts_listing(parsed: &Parsed) -> ExitCode {
         println!("{}", Value::Array(entries));
         return ExitCode::SUCCESS;
     }
-    println!("AT\tRAISED\tEARLIER\tLATER\tTARGET\tREASONS");
+    println!("AT\tRAISED\tEARLIER\tLATER\tREASONS");
     for entry in &entries {
         let text = |name: &str| one_line(entry[name].as_str().unwrap_or_default());
         println!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}",
             millis(&entry["at"]),
             if entry["raised"] == true { "yes" } else { "no" },
             text("earlier"),
             text("later"),
-            text("target"),
             entry["reasons"].as_array().map_or(0, Vec::len),
         );
     }
