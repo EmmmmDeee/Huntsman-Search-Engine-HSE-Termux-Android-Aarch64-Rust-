@@ -85,7 +85,14 @@ fn release_gate_rejects_missing_bypassed_and_reordered_checks() {
         ("if . == null then \"missing\"", "if . == null then \"completed:success\""),
         ("if [ \"$attempt\" -eq 120 ]; then", "if false; then"),
     ] {
-        let mutated = workflow.replacen(needle, replacement, 1);
+        let start = workflow
+            .find("      - name: Require successful exact-main RustSec and CodeQL before publishing")
+            .expect("security gate");
+        let mutated = format!(
+            "{}{}",
+            &workflow[..start],
+            workflow[start..].replacen(needle, replacement, 1)
+        );
         assert_ne!(mutated, workflow, "mutation fixture must change source");
         assert!(
             check_release_gate(&mutated).is_err(),
