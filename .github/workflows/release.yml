@@ -432,6 +432,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write     # create the tags and pre-releases
+      actions: read       # inspect exact-commit main CI before publishing
       id-token: write     # Sigstore-backed provenance
       attestations: write # record the attestation
     env:
@@ -440,6 +441,36 @@ jobs:
       ASSET_SHA256: ${{ needs.build.outputs.asset_sha256 }}
       DIST_SHA256: ${{ needs.build.outputs.dist_sha256 }}
     steps:
+      - name: Require successful exact-main CI before publishing
+        # The independent CI workflow includes aarch64 QEMU tests that the
+        # release's own quality jobs do not execute. Never publish while that
+        # exact main-commit CI is pending or has failed.
+        timeout-minutes: 65
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 120); do
+            verdict="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+              -f head_sha="$GITHUB_SHA" -f event=push -f per_page=100 \
+              | jq -r --arg sha "$GITHUB_SHA" \
+                '[.workflow_runs[] | select(.head_sha == $sha and .event == "push")] |
+                 sort_by(.created_at, .run_attempt) | last |
+                 if . == null then "missing" else "\(.status):\(.conclusion // "pending")" end')"
+            if [[ "$verdict" == "completed:success" ]]; then
+              echo "Exact-main CI passed for ${GITHUB_SHA}"
+              exit 0
+            fi
+            if [[ "$verdict" == completed:* ]]; then
+              echo "::error::exact-main CI did not pass for ${GITHUB_SHA}: ${verdict}"
+              exit 1
+            fi
+            if [ "$attempt" -eq 120 ]; then
+              echo "::error::exact-main CI not successful after bounded wait: ${verdict}"
+              exit 1
+            fi
+            sleep 30
+          done
       - name: Download staged release files
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
