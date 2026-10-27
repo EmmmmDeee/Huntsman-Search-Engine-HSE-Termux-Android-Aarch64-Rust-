@@ -184,6 +184,7 @@ pub mod robtex;
 pub mod roi;
 pub mod run_history;
 pub mod runtime;
+pub mod scan_alert;
 pub mod scan_api;
 pub mod scan_artifact;
 pub mod scan_batch;

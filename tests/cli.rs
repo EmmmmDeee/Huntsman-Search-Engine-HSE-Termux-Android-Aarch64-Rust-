@@ -687,6 +687,108 @@ fn scans_compare_lists_what_a_later_scan_added_and_removed() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// `scans alert` decides whether a later scan of one target warrants attention: a new correlation
+/// at or above `--min-risk` raises it and exits 1; a correlation that has gone never does; scans of
+/// different targets are refused. The rule here is a local Spiderfoot-format file, so nothing is
+/// fetched.
+#[test]
+fn scans_alert_raises_on_a_new_correlation_and_never_on_one_that_went() {
+    let home = scratch("scans-alert");
+    let rules = home.join("rules");
+    fs::create_dir_all(&rules).unwrap();
+    fs::write(
+        rules.join("phone_present.yaml"),
+        "id: phone_present\nversion: 1\nmeta:\n  name: Phone number present\n  description: >\n    A phone number is in the scan.\n  risk: HIGH\ncollections:\n  - collect:\n      - method: exact\n        field: type\n        value: PHONE_NUMBER\naggregation:\n  field: data\nheadline:\n  text: \"Phone number found: {data}\"\n  publish_collections:\n    - 1\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let id = |args: &[&str]| {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+    let earlier = id(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+    let later = id(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+    let other = id(&["scans", "run", "+61412345679", "-u", "passive", "--json"]);
+
+    let quiet = run(&["scans", "alert", &earlier, &later]);
+    assert_eq!(quiet.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&quiet.stdout).starts_with("no alert\t"),
+        "{}",
+        String::from_utf8_lossy(&quiet.stdout)
+    );
+
+    let correlated = run(&[
+        "scans",
+        "correlate",
+        &later,
+        "--rules",
+        rules.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(
+        correlated.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&correlated.stderr)
+    );
+
+    let raised = run(&["scans", "alert", &earlier, &later]);
+    assert_eq!(raised.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&raised.stdout);
+    assert!(stdout.starts_with("ALERT\t"), "{stdout}");
+    assert!(
+        stdout.contains("HIGH\tcorrelation\tphone_present\t"),
+        "{stdout}"
+    );
+
+    let json = run(&["scans", "alert", &earlier, &later, "--json"]);
+    assert_eq!(json.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(json["alert"]["raised"], true);
+    assert_eq!(json["alert"]["reasons"][0]["kind"], "correlation");
+    assert_eq!(json["alert"]["reasons"][0]["risk"], "HIGH");
+
+    let medium = run(&["scans", "alert", &earlier, &later, "--min-risk", "medium"]);
+    assert_eq!(medium.status.code(), Some(1));
+
+    let gone = run(&["scans", "alert", &later, &earlier]);
+    assert_eq!(
+        gone.status.code(),
+        Some(0),
+        "a correlation that went away must not raise an alert"
+    );
+
+    let refused = run(&["scans", "alert", &earlier, &other]);
+    assert_eq!(refused.status.code(), Some(64));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("different targets"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(run(&["scans", "alert", &earlier]).status.code(), Some(64));
+    assert_eq!(
+        run(&["scans", "alert", &earlier, &later, "--min-risk", "urgent"])
+            .status
+            .code(),
+        Some(64)
+    );
+    assert_eq!(
+        run(&["scans", "alert", &earlier, "0000000000000000"])
+            .status
+            .code(),
+        Some(66)
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
 /// `scans search` finds elements in every saved scan, or only the ones named, each with its scan.
 #[test]
 fn scans_search_finds_values_in_every_scan_or_the_ones_named() {

@@ -167,6 +167,7 @@ robtex	adapter	Robtex leg reached through indicator_legs from ip, domain, scan a
 roi	runtime	dispatch utility scoring
 run_history	leaf	durable test-run history and regression verdict
 runtime	runtime	high-level investigation composition root
+scan_alert	runtime	whether a later scan of one target raises an alert over the earlier one, reached through scans alert
 scan_api	runtime	Spiderfoot-shaped saved-scan API router reached through scans and serve
 scan_artifact	exporter	versioned re-loadable scan results and correlation rerun
 scan_batch	leaf	bounded ordered scan seed-list parsing
