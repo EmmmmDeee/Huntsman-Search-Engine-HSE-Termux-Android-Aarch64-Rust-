@@ -2,7 +2,7 @@
 //! bounded JSON error and success shapes. Every answer's Content-Security-Policy is chosen here.
 //! Behaviour is unchanged from the helpers that lived in `web_server.rs`.
 
-use super::{DOSSIER_POLICY, OTHER_POLICY, PAGE_POLICY};
+use super::page::{DOSSIER_POLICY, OTHER_POLICY, PAGE_POLICY};
 
 /// The answer to a protected request without the server's token. It names the remedy, because the
 /// page shows it as it is and a bare `unauthorized` left the operator nowhere to go.
