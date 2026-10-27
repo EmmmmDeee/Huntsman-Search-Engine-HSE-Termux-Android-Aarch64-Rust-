@@ -146,6 +146,16 @@ fn parse_fetched(
     }
 
     let rows = parse_asic_html(&html, full_name);
+    if rows.is_empty() && !explicit_empty_response(&html) {
+        return some_status(
+            SourceOutcomeKind::Inconclusive,
+            Some(response.status),
+            Some(
+                "ASIC Connect HTTP 2xx body has neither matching records nor an explicit empty-result marker; target absence is unverified"
+                    .into(),
+            ),
+        );
+    }
     let mut entities = Vec::new();
     for (company, acn, address) in &rows {
         entities.extend(build_director_entities(
@@ -162,6 +172,22 @@ fn parse_fetched(
         SourceExecutionOutcome::success(SRC, now_unix, rows.len()).with_http_status(response.status)
     };
     (outcome, entities)
+}
+
+// A 2xx response may be a landing, session, or unexpected error page.
+// A parser with zero matches is not proof of an empty register search.
+fn explicit_empty_response(html: &str) -> bool {
+    let text = clean_html(html).to_ascii_lowercase();
+    [
+        "no matches",
+        "no results",
+        "no records found",
+        "no matching records",
+        "0 results",
+        "0 matches",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
 }
 
 fn provenance(scan_id: &str) -> EvidenceProvenance {
@@ -411,6 +437,22 @@ mod tests {
         })]);
         let err = lookup(&fake, "Haigen Bamford", "scan", 1).expect_err("403");
         assert!(matches!(err, Error::Invalid(_)), "{err}");
+    }
+
+    #[test]
+    fn unrelated_successful_html_is_not_a_confirmed_negative() {
+        for html in [
+            "<html><body>Welcome to ASIC Connect</body></html>",
+            "<html><body>Please sign in to continue</body></html>",
+        ] {
+            let fake = ScriptedTransport::new(vec![Ok(html_ok(html))]);
+            let error = lookup(&fake, "Haigen Bamford", "scan", 1).expect_err("not proven empty");
+            assert!(matches!(&error, Error::Invalid(_)));
+            assert!(
+                error.to_string().contains("target absence is unverified"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
