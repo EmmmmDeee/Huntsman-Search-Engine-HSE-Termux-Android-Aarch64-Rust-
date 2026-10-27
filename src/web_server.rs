@@ -1019,58 +1019,6 @@ fn inspect_admits(head: &str, config: &ServeConfig, routes: &Routes) -> Option<(
     Some((length, Slot::take_of(&inspect.live, MAX_INSPECTIONS)?))
 }
 
-/// Only the scan API and the key save change state, so only they take POST, with the file
-/// inspection, whose upload is too large for a query string.
-fn takes_post(path: &str) -> bool {
-    ScanApi::handles(path)
-        || path == KEYS_PATH
-        || path == INSPECT_PATH
-        || path == TRACK_PATH
-        || path == INVESTIGATE_PATH
-        || path == OSINT_CASE_PATH
-        || path == OSINT_RISK_PATH
-}
-
-/// `none` is a typed URL or bookmark; `same-origin` is this page. Anything else came from another
-/// site.
-fn same_site(sec_fetch_site: Option<&str>) -> bool {
-    sec_fetch_site.is_none_or(|site| matches!(site, "same-origin" | "none"))
-}
-
-/// The `403` a browser-facing API route answers before anything else, naming the route as `noun`:
-/// a fetch another site started, or, when the route `needs_header`, one without the page's
-/// `X-Huntsman-Lookup: 1` header, which another origin cannot send without a CORS preflight this
-/// server never approves. `None` when the request may go on. Every such route asks this one
-/// function, so their guards cannot drift apart.
-fn page_refusal(parsed: &ParsedRequest<'_>, noun: &str, needs_header: bool) -> Option<String> {
-    if !same_site(parsed.sec_fetch_site) {
-        return Some(json_error(403, &format!("cross-site {noun} refused")));
-    }
-    (needs_header && !parsed.lookup_header).then(|| {
-        json_error(
-            403,
-            &format!("{noun} needs the X-Huntsman-Lookup: 1 header"),
-        )
-    })
-}
-
-/// Whether the request carries the bearer token this server needs, or the server needs none.
-fn authorized(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> bool {
-    config
-        .bearer_token
-        .as_deref()
-        .is_none_or(|expected| bearer_matches(parsed.authorization, expected))
-}
-
-/// The DNS-rebinding guard. A loopback server is reached from a page whose origin is a public name
-/// rebound to a loopback address, so the browser sends that public name in `Host`: a loopback
-/// server answers only loopback authorities (or an absent `Host`). A non-loopback bind is
-/// intentionally public, gated by the bearer token, and its legitimate `Host` is not known here, so
-/// the guard passes it.
-fn host_allowed(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> bool {
-    !config.bind.ip().is_loopback() || host_is_allowed_for_loopback(parsed.host)
-}
-
 /// The body to read after a request's `head`: the `Content-Length` it announces, when that is at
 /// most [`MAX_FORM_BYTES`]. A larger body is not read; the route answers without it.
 fn form_body_len(head: &[u8]) -> usize {
@@ -1190,40 +1138,6 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
         content_length,
         body: request.split_once("\r\n\r\n").map(|(_, body)| body),
     })
-}
-
-/// Whether a loopback server should answer a request carrying this `Host`.
-///
-/// A DNS-rebinding attack reaches a loopback bind from a page whose origin is a
-/// public name rebound to a loopback address, so the browser sends that public
-/// name in `Host`. Accepting only loopback authorities refuses the rebound
-/// request while real local clients (which send `localhost`, `127.0.0.1`, or
-/// `[::1]`) are unaffected. A missing or empty `Host` is allowed: a browser never
-/// omits it, so its absence is not a rebinding vector and a raw client stays
-/// answerable.
-fn host_is_allowed_for_loopback(host: Option<&str>) -> bool {
-    let Some(host) = host else {
-        return true;
-    };
-    let host = host.trim();
-    if host.is_empty() {
-        return true;
-    }
-    let name = if let Some(rest) = host.strip_prefix('[') {
-        // IPv6 literal in brackets: `[::1]` or `[::1]:port`.
-        match rest.split_once(']') {
-            Some((inner, _)) => inner,
-            None => return false,
-        }
-    } else {
-        // `host` or `host:port`; strip only a trailing port.
-        host.rsplit_once(':').map_or(host, |(name, _)| name)
-    };
-    if name.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    name.parse::<std::net::IpAddr>()
-        .is_ok_and(|ip| ip.is_loopback())
 }
 
 #[derive(Debug, Serialize)]
@@ -1483,41 +1397,15 @@ fn dossier_json_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> St
 }
 
 mod analysis;
+mod guard;
 mod lookup;
 mod response;
 mod settings;
 use analysis::{analyze_response, inspect_response, investigate_response, osint_offline_response};
+use guard::{authorized, host_allowed, page_refusal, takes_post};
 use lookup::{lookup_response, scans_response, sensor_response};
 use response::{UNAUTHORIZED, json_error, json_ok, response, response_bytes};
 use settings::keys_response;
-
-fn bearer_matches(header: Option<&str>, expected: &str) -> bool {
-    let Some(header) = header else {
-        return false;
-    };
-    let mut parts = header.split_whitespace();
-    let Some(scheme) = parts.next() else {
-        return false;
-    };
-    let Some(actual) = parts.next() else {
-        return false;
-    };
-    if !scheme.eq_ignore_ascii_case("bearer") || parts.next().is_some() {
-        return false;
-    }
-    fixed_time_eq(actual.as_bytes(), expected.as_bytes())
-}
-
-fn fixed_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut diff = 0_u8;
-    for (a, b) in left.iter().zip(right.iter()) {
-        diff |= a ^ b;
-    }
-    diff == 0
-}
 
 /// Why `addr` could not be bound, and what to do about it. Port 8080 is also the default of other
 /// servers people run in Termux, and Termux has no root for a port below 1024.

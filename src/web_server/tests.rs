@@ -1,4 +1,5 @@
 use super::analysis::inspect_label;
+use super::guard::{fixed_time_eq, host_is_allowed_for_loopback};
 use super::lookup::header_filename;
 use super::response::response_head;
 use std::collections::BTreeSet;
