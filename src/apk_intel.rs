@@ -13,6 +13,8 @@ use crate::error::Error;
 use crate::sha256::{hex32, sha256};
 use crate::source_outcome::SourceExecutionOutcome;
 
+pub mod lineage;
+
 pub const SOURCE: &str = "apk_intel";
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ENTRIES: usize = 8192;
@@ -22,7 +24,7 @@ const CENTRAL_SIGNATURE: &[u8] = b"PK\x01\x02";
 const LOCAL_SIGNATURE: &[u8] = b"PK\x03\x04";
 const APK_SIG_MAGIC: &[u8] = b"APK Sig Block 42";
 
-pub const APK_HELP: &str = "apk FILE [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. No decompression, certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership.";
+pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. No decompression, certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Inventory {
@@ -174,6 +176,8 @@ struct Member<'a> {
     flags: u16,
     method: u16,
     next: usize,
+    payload_start: usize,
+    payload_len: usize,
 }
 
 fn member(data: &[u8], pos: usize, dir_start: usize, dir_end: usize) -> Result<Member<'_>, Error> {
@@ -232,10 +236,12 @@ fn member(data: &[u8], pos: usize, dir_start: usize, dir_end: usize) -> Result<M
             "central/local ZIP entry names disagree",
         ));
     }
-    let payload_end = local_name_at
+    let payload_start = local_name_at
         .checked_add(local_name_len)
         .and_then(|n| n.checked_add(local_extra_len))
-        .and_then(|n| n.checked_add(packed))
+        .ok_or_else(|| Error::invalid_value("ZIP payload range overflow"))?;
+    let payload_end = payload_start
+        .checked_add(packed)
         .ok_or_else(|| Error::invalid_value("ZIP payload range overflow"))?;
     if payload_end > dir_start {
         return Err(Error::invalid_value(
@@ -247,6 +253,8 @@ fn member(data: &[u8], pos: usize, dir_start: usize, dir_end: usize) -> Result<M
         flags,
         method,
         next,
+        payload_start,
+        payload_len: packed,
     })
 }
 
