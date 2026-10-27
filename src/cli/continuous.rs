@@ -11,7 +11,9 @@ use std::thread;
 use std::time::Duration;
 
 use huntsman_recon::clock;
-use huntsman_recon::environment::{CONTINUOUS_INTERVAL_ENV, CONTINUOUS_TARGETS_ENV};
+use huntsman_recon::environment::{
+    CONTINUOUS_INTERVAL_ENV, CONTINUOUS_NOTIFY_ENV, CONTINUOUS_TARGETS_ENV,
+};
 use huntsman_recon::fsio::{read_bounded, write_atomic_private};
 use huntsman_recon::keys::Keys;
 use huntsman_recon::scan_alert::{self, Policy};
@@ -25,7 +27,7 @@ use huntsman_recon::sf_correlate::Risk;
 use huntsman_recon::sha256::{hex32, sha256};
 use serde_json::{Value, json};
 
-use super::scans::default_scan_dir;
+use super::scans::{default_scan_dir, notify};
 
 const MAX_TARGETS: usize = 32;
 const MAX_TARGET_CONFIG_BYTES: usize = 8192;
@@ -39,6 +41,8 @@ pub(super) struct Config {
     cadence_ms: u64,
     normalised_dir: PathBuf,
     normalise_all: bool,
+    /// Whether a raised alert also posts a phone notification ([`CONTINUOUS_NOTIFY_ENV`]).
+    notify: bool,
 }
 
 impl Config {
@@ -59,11 +63,15 @@ impl Config {
         if self.normalise_all {
             parts.push("every saved target, re-normalised only".to_owned());
         }
-        format!(
+        let mut summary = format!(
             "every {} minutes: {}",
             self.cadence_ms / 60_000,
             parts.join(", ")
-        )
+        );
+        if self.notify {
+            summary.push_str("; a raised alert posts a phone notification");
+        }
+        summary
     }
 }
 
@@ -89,7 +97,19 @@ pub(super) fn configure(keys: &Keys) -> Result<Option<Config>, String> {
     let state = default_scan_dir()
         .and_then(|path| path.parent().map(Path::to_path_buf))
         .ok_or("continuous normalisation requires an absolute state directory")?;
-    config(&targets, &minutes, state.join("normalised")).map(Some)
+    let mut config = config(&targets, &minutes, state.join("normalised"))?;
+    config.notify = notify_setting(keys)?;
+    Ok(Some(config))
+}
+
+/// [`CONTINUOUS_NOTIFY_ENV`] as `keys` resolves it: `1` on, `0` or unset off. Any other value is
+/// an error naming the setting, so a misspelt opt-in does not pass silently as off.
+fn notify_setting(keys: &Keys) -> Result<bool, String> {
+    match keys.setting(CONTINUOUS_NOTIFY_ENV).as_deref() {
+        None | Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(_) => Err(format!("{CONTINUOUS_NOTIFY_ENV} must be 1 or 0")),
+    }
 }
 
 /// The two settings as `keys` resolves them: the target list and the interval, `1440` when the
@@ -185,8 +205,12 @@ fn config(targets: &str, minutes: &str, directory: PathBuf) -> Result<Config, St
         cadence_ms: minutes * 60 * 1000,
         normalised_dir: directory,
         normalise_all,
+        notify: false,
     })
 }
+
+/// Posts a raised alert's notification text; [`notify`] when serve runs, a recorder in tests.
+type Notifier<'a> = &'a dyn Fn(&str) -> Result<(), String>;
 
 /// Whether `record` is a scan of the configured `request`: its target, by the same lookup.
 fn scans(record: &ScanRecord, request: &ScanRequest) -> bool {
@@ -210,6 +234,7 @@ fn record_alerts(
     records: &[ScanRecord],
     targets: &[ScanRequest],
     now: u64,
+    notifier: Option<Notifier<'_>>,
 ) -> Result<usize, String> {
     let store = api.service().store();
     let path = store.dir().join(scan_alert::HISTORY_FILE);
@@ -247,6 +272,16 @@ fn record_alerts(
                 "continuous: alert raised for scan {} over {}",
                 later.id, earlier.id
             );
+            // The decision is already recorded, so a notification that fails is reported, not
+            // retried: posting it again later would announce the same alert twice.
+            if let Some(post) = notifier {
+                if let Err(error) = post(&scan_alert::notification_text(&alert)) {
+                    eprintln!(
+                        "continuous: alert raised for scan {}, but no notification was posted: {error}",
+                        later.id
+                    );
+                }
+            }
         }
         recorded += 1;
     }
@@ -586,7 +621,8 @@ fn cycle(
             }
         }
     }
-    if let Err(error) = record_alerts(api, &records, &config.targets, now) {
+    let notifier: Option<Notifier<'_>> = config.notify.then_some(&notify);
+    if let Err(error) = record_alerts(api, &records, &config.targets, now, notifier) {
         eprintln!("continuous: alert decision not recorded: {error}");
     }
     for record in normalise {
@@ -1053,7 +1089,7 @@ mod tests {
         let store = api.service().store();
         let records = store.list().unwrap();
         assert_eq!(
-            super::record_alerts(&api, &records, &configured.targets, 1).unwrap(),
+            super::record_alerts(&api, &records, &configured.targets, 1, None).unwrap(),
             0,
             "one finished scan has nothing to be compared with"
         );
@@ -1082,8 +1118,13 @@ mod tests {
         store.save_results(&results).expect("save correlation");
 
         let records = store.list().unwrap();
+        let posted = std::sync::Mutex::new(Vec::new());
+        let post = |text: &str| -> Result<(), String> {
+            posted.lock().unwrap().push(text.to_owned());
+            Err("no termux-notification here".to_owned())
+        };
         assert_eq!(
-            super::record_alerts(&api, &records, &configured.targets, 2).unwrap(),
+            super::record_alerts(&api, &records, &configured.targets, 2, Some(&post)).unwrap(),
             1
         );
         let history = scan_alert::read_history(&scans_dir.join(scan_alert::HISTORY_FILE)).unwrap();
@@ -1092,13 +1133,18 @@ mod tests {
         assert_eq!(history[0]["later"], second.id.as_str());
         assert_eq!(history[0]["raised"], true);
         assert_eq!(history[0]["reasons"][0]["rule"], "fresh_exposure");
+        assert_eq!(
+            *posted.lock().unwrap(),
+            vec!["HIGH fresh_exposure".to_owned()],
+            "one notification, naming the risk and rule; its failure does not undo the decision"
+        );
         assert!(
             !history[0].to_string().contains("1.1.1.1"),
             "no target in the history"
         );
 
         assert_eq!(
-            super::record_alerts(&api, &records, &configured.targets, 3).unwrap(),
+            super::record_alerts(&api, &records, &configured.targets, 3, None).unwrap(),
             0,
             "a decided scan is not decided again"
         );
@@ -1109,6 +1155,23 @@ mod tests {
             1
         );
         std::fs::remove_dir_all(&directory).expect("remove fixture");
+    }
+
+    /// The notification opt-in is `1` or `0`; anything else stops serve, naming the setting.
+    #[test]
+    fn the_notification_setting_is_strict() {
+        let on = Keys::parse("HUNTSMAN_CONTINUOUS_NOTIFY=1\n").expect("keys");
+        assert_eq!(super::notify_setting(&on), Ok(true));
+        let off = Keys::parse("HUNTSMAN_CONTINUOUS_NOTIFY=0\n").expect("keys");
+        assert_eq!(super::notify_setting(&off), Ok(false));
+        let unset = Keys::parse("HUNTSMAN_CONTINUOUS_TARGETS=1.1.1.1\n").expect("keys");
+        assert_eq!(super::notify_setting(&unset), Ok(false));
+        let wrong = Keys::parse("HUNTSMAN_CONTINUOUS_NOTIFY=yes\n").expect("keys");
+        assert!(
+            super::notify_setting(&wrong)
+                .unwrap_err()
+                .contains("HUNTSMAN_CONTINUOUS_NOTIFY")
+        );
     }
 
     #[test]
