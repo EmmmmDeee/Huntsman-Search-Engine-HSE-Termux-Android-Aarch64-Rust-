@@ -174,6 +174,7 @@ scan_batch	leaf	bounded ordered scan seed-list parsing
 scan_compare	runtime	what changed between two saved scans, reached through scans compare and the scan API
 scan_coverage	runtime	read-only selected people-source coverage reached through scan_api and the loopback mobile Summary view; never claims global discovery completeness
 scan_export	exporter	Spiderfoot-layout CSV, TSV, Excel, JSON and GEXF exports of saved scans through scans export and the scan API
+scan_retention	runtime	which ended scans a retention pass may delete, reached through scans prune
 scan_route	runtime	deterministic lookup-front-end selector routing
 scan_search	runtime	Spiderfoot's search over one or every saved scan, reached through scans search, the scan API and the console
 scan_service	runtime	saved-scan runner reached through scans run and the scan API

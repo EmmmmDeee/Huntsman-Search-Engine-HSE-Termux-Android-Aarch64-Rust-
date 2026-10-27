@@ -986,6 +986,90 @@ fn scans_notify_posts_a_phone_notification_without_the_target() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// `scans prune --keep N` lists the ended scans beyond the newest N of each target and deletes
+/// them only with `--apply`, keeping the newest; it refuses to run without a `--keep` of at least 1.
+#[test]
+fn scans_prune_lists_then_deletes_only_what_is_beyond_the_newest() {
+    let home = scratch("scans-prune");
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let out = run(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+        assert_eq!(out.status.code(), Some(0));
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        ids.push(record["id"].as_str().unwrap().to_owned());
+    }
+    let listed = |run: &dyn Fn(&[&str]) -> std::process::Output| -> Vec<String> {
+        let out = run(&["scans", "list", "--json"]);
+        let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    let dry = run(&["scans", "prune", "--keep", "1"]);
+    assert_eq!(dry.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&dry.stdout);
+    assert_eq!(
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("would delete\t"))
+            .count(),
+        2,
+        "{stdout}"
+    );
+    assert!(stdout.contains("pass --apply"), "{stdout}");
+    assert_eq!(listed(&run).len(), 3, "a dry run deletes nothing");
+
+    let json = run(&["scans", "prune", "--keep", "1", "--json"]);
+    let plan: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let planned: Vec<&str> = plan["scans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        planned,
+        vec![ids[0].as_str(), ids[1].as_str()],
+        "oldest first"
+    );
+
+    let applied = run(&["scans", "prune", "--keep", "1", "--apply"]);
+    assert_eq!(
+        applied.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    assert_eq!(
+        listed(&run),
+        vec![ids[2].clone()],
+        "only the newest is left"
+    );
+    let again = run(&["scans", "prune", "--keep", "1", "--apply"]);
+    assert!(String::from_utf8_lossy(&again.stdout).starts_with("0 of 1 saved scans deleted"));
+
+    assert_eq!(run(&["scans", "prune"]).status.code(), Some(64));
+    assert_eq!(
+        run(&["scans", "prune", "--keep", "0"]).status.code(),
+        Some(64)
+    );
+    assert_eq!(
+        run(&["scans", "prune", "--keep", "x"]).status.code(),
+        Some(64)
+    );
+    assert_eq!(
+        run(&["scans", "prune", "extra", "--keep", "1"])
+            .status
+            .code(),
+        Some(64)
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
 /// `scans search` finds elements in every saved scan, or only the ones named, each with its scan.
 #[test]
 fn scans_search_finds_values_in_every_scan_or_the_ones_named() {
