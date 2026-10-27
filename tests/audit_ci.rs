@@ -1,6 +1,6 @@
-//! The advisory audit workflow reports vulnerabilities in the locked dependency graph. It must stay
-//! read-only, pin each action by full commit SHA, run on a schedule and on dependency-changing pushes and PRs, and
-//! fail only on vulnerabilities. These checks keep an edit from weakening any of those properties.
+//! The `RustSec` audit must run on every PR as a required check, and on dependency-changing
+//! pushes, schedules and manual dispatch. It remains read-only, pins actions by SHA,
+//! and fails on vulnerabilities in the locked dependency graph.
 
 use std::fs;
 
@@ -44,7 +44,7 @@ fn audit_workflow_pins_its_two_actions_by_full_commit_sha() {
 }
 
 #[test]
-fn audit_step_is_advisory_and_installs_a_pinned_cargo_audit() {
+fn audit_step_installs_a_pinned_cargo_audit() {
     let audit = audit_workflow();
     assert!(
         audit.contains("cargo install cargo-audit --locked --version =0.22.2"),
@@ -61,7 +61,7 @@ fn audit_step_is_advisory_and_installs_a_pinned_cargo_audit() {
 }
 
 #[test]
-fn audit_runs_on_schedule_dispatch_and_dependency_changes_only() {
+fn audit_runs_on_every_pr_and_scoped_pushes() {
     let audit = audit_workflow();
     for trigger in [
         "schedule:",
@@ -75,33 +75,37 @@ fn audit_runs_on_schedule_dispatch_and_dependency_changes_only() {
     ] {
         assert!(audit.contains(trigger), "{AUDIT} must contain {trigger}");
     }
-    // Only dependency changes and changes to the audit gate itself schedule a PR audit.
-    for event in ["push:", "pull_request:"] {
-        let marker = format!("  {event}\n");
-        let section = audit
-            .split_once(&marker)
-            .map(|(_, tail)| {
-                tail.lines()
-                    .take_while(|line| line.starts_with("    ") || line.trim().is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .expect("event trigger must have a scoped paths section");
-        assert!(
-            section.iter().any(|line| line.trim() == "paths:"),
-            "{event} must declare paths"
-        );
-        let actual = section
-            .iter()
-            .filter_map(|line| line.trim().strip_prefix("- "))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            actual,
-            [
-                "\"**/Cargo.toml\"",
-                "\"**/Cargo.lock\"",
-                "\".github/workflows/audit.yml\"",
-            ],
-            "{event} must include exactly the audited paths"
-        );
-    }
+    // Every PR must emit the required audit check, even for source-only changes.
+    assert!(
+        audit.contains("  pull_request:\n\npermissions:"),
+        "pull_request must have no paths filter"
+    );
+    // Main pushes need only audit dependency and workflow changes.
+    let event = "push:";
+    let marker = format!("  {event}\n");
+    let section = audit
+        .split_once(&marker)
+        .map(|(_, tail)| {
+            tail.lines()
+                .take_while(|line| line.starts_with("    ") || line.trim().is_empty())
+                .collect::<Vec<_>>()
+        })
+        .expect("event trigger must have a scoped paths section");
+    assert!(
+        section.iter().any(|line| line.trim() == "paths:"),
+        "{event} must declare paths"
+    );
+    let actual = section
+        .iter()
+        .filter_map(|line| line.trim().strip_prefix("- "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        [
+            "\"**/Cargo.toml\"",
+            "\"**/Cargo.lock\"",
+            "\".github/workflows/audit.yml\"",
+        ],
+        "{event} must include exactly the audited paths"
+    );
 }
