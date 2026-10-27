@@ -41,7 +41,10 @@ fn diff_cmd(old: &str, new: &str, as_json: bool) -> ExitCode {
         );
         for change in &delta.changes {
             // Debug formatting escapes control characters from untrusted member names.
-            println!("{} {:?} [{}]", change.disposition, change.path, change.component);
+            println!(
+                "{} {:?} [{}]",
+                change.disposition, change.path, change.component
+            );
         }
         println!("{}", delta.limitations);
     }
