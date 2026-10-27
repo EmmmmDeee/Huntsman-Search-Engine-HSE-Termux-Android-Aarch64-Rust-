@@ -183,6 +183,12 @@ pub struct ProviderProbeStatus {
 
 pub const PROVIDERS: &[Provider] = &[
     Provider {
+        name: "X Recent Search",
+        get_key_url: "https://console.x.com/",
+        free_tier: "operator-managed API; only osint x-api spends quota",
+        slots: &[crate::environment::X_BEARER_TOKEN_ENV],
+    },
+    Provider {
         name: "WiGLE",
         get_key_url: "https://wigle.net/account",
         free_tier: "free; USER is the API Name, TOKEN the API Token (not the encoded value); daily search limit",

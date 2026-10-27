@@ -56,6 +56,8 @@ const CASE_HELP: &str = "case-check CASE-JSON ORIGINAL-ADVERT-TEXT\nCheck bounde
 const GEO_HELP: &str =
     "geo LAT,LON LAT,LON\nPrint the great-circle distance between two coordinates in metres.";
 
+const FIX_HELP: &str = "fix [--json] [--probe] [--bind ADDR]\nThe same as doctor --fix: run every doctor check, make each repair that can be undone, then check again. It creates ~/.huntsman (mode 700) and an empty ~/.huntsman.env (mode 600) when they are missing, tightens loose permissions, re-runs the install acceptance before recording this binary as installed (the old record is kept as installed-revision.bak-TIME), and removes the Rust build cache only when Cargo tagged it and it is stale or the disk is nearly full. It never deletes a ledger or scan data and never writes or prints a key. Exit 0 when nothing fails afterwards, 78 when something still does.";
+
 /// The help text of a dispatched command, or `None` for a word that is not one.
 pub(super) fn command_help(command: &str) -> Option<&'static str> {
     let help = match command {
@@ -66,9 +68,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
             "diagnostics [--json]\nPrint offline build provenance, target/runtime context, reachable-module counts, ATT&CK-mapped collector counts, and provider credential completeness without values or network access."
         }
         "doctor" => DOCTOR_HELP,
-        "fix" => {
-            "fix [--json] [--probe] [--bind ADDR]\nThe same as doctor --fix: run every doctor check, make each repair that can be undone, then check again. It creates ~/.huntsman (mode 700) and an empty ~/.huntsman.env (mode 600) when they are missing, tightens loose permissions, re-runs the install acceptance before recording this binary as installed (the old record is kept as installed-revision.bak-TIME), and removes the Rust build cache only when Cargo tagged it and it is stale or the disk is nearly full. It never deletes a ledger or scan data and never writes or prints a key. Exit 0 when nothing fails afterwards, 78 when something still does."
-        }
+        "fix" => FIX_HELP,
         "build-sha" => {
             "build-sha\nPrint the source commit embedded at build time, or unknown for builds without provenance metadata."
         }
@@ -102,6 +102,7 @@ pub(super) fn command_help(command: &str) -> Option<&'static str> {
         "username" => USERNAME_HELP,
         "phone" => PHONE_HELP,
         "network" => NETWORK_HELP,
+        "osint" => super::osint::OSINT_HELP,
         "crypto" => huntsman_recon::crypto_cli::CRYPTO_HELP,
         "itunes" => huntsman_recon::itunes_cli::ITUNES_HELP,
         "geocode" => huntsman_recon::nominatim_cli::GEOCODE_HELP,
