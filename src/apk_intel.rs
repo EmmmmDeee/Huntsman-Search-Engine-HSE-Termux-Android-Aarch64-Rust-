@@ -91,7 +91,7 @@ fn dex_name(name: &str) -> bool {
     let Some(suffix) = name.strip_prefix("classes").and_then(|s| s.strip_suffix(".dex")) else {
         return false;
     };
-    suffix.is_empty() || (!suffix.is_empty() && suffix.bytes().all(|c| c.is_ascii_digit()))
+    suffix.is_empty() || suffix.bytes().all(|c| c.is_ascii_digit())
 }
 
 fn suspicious(name: &str) -> bool {
@@ -104,7 +104,7 @@ fn suspicious(name: &str) -> bool {
 #[derive(Default)]
 struct SigningBlock {
     present: bool,
-    schemes: Vec<&'static str>,
+    schemes: BTreeSet<&'static str>,
 }
 
 /// Inspect *structural* signing IDs. A matching ID is never a verified signature.
@@ -144,9 +144,9 @@ fn signing_block(data: &[u8], central_at: usize) -> SigningBlock {
             return SigningBlock::default();
         };
         match id {
-            0x7109_871a => found.schemes.push("v2"),
-            0xf053_68c0 => found.schemes.push("v3"),
-            0x1b93_ad61 => found.schemes.push("v3.1"),
+            0x7109_871a => { found.schemes.insert("v2"); },
+            0xf053_68c0 => { found.schemes.insert("v3"); },
+            0x1b93_ad61 => { found.schemes.insert("v3.1"); },
             _ => {}
         }
         pos = next;
@@ -262,12 +262,10 @@ pub fn inventory(data: &[u8]) -> Result<Inventory, Error> {
             dex_count += 1;
             if dex.len() < MAX_LISTED { dex.push(name.to_owned()); }
         }
-        if let Some(rest) = name.strip_prefix("lib/") {
-            if let Some((abi, filename)) = rest.split_once('/') {
-                if !abi.is_empty() && !filename.contains('/') && filename.ends_with(".so") {
-                    native_count += 1;
-                    abis.insert(abi.to_owned());
-                }
+        if let Some((abi, filename)) = name.strip_prefix("lib/").and_then(|rest| rest.split_once('/')) {
+            if !abi.is_empty() && !filename.contains('/') && filename.ends_with(".so") {
+                native_count += 1;
+                abis.insert(abi.to_owned());
             }
         }
         if let Some(name_without_prefix) = name.strip_prefix("META-INF/") {
