@@ -149,7 +149,7 @@ fn cargo_never_runs_with_a_write_token() {
         );
     }
     assert!(publish.contains(
-        "    permissions:\n      contents: write     # create the tags and pre-releases\n      id-token: write     # Sigstore-backed provenance\n      attestations: write # record the attestation\n"
+        "    permissions:\n      contents: write     # create the tags and pre-releases\n      actions: read       # inspect exact-commit main CI before publishing\n      id-token: write     # Sigstore-backed provenance\n      attestations: write # record the attestation\n"
     ));
     assert!(publish.contains(
         "    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.resolve.outputs.publish == 'true'\n"
