@@ -100,7 +100,7 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
         add(
             Risk::High,
             "debuggable",
-            "the application is marked debuggable, so any user can attach a debugger to it and read its memory".to_owned(),
+            "the application declares itself debuggable; an authorized debugger may inspect its process, subject to device debugging access and Android restrictions".to_owned(),
         );
     }
     if manifest.uses_cleartext_traffic == Some(true) {
@@ -118,12 +118,13 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
                 .to_owned(),
         );
     }
-    // allowBackup defaults to true before Android 12, so absence is itself the permissive case.
+    // allowBackup defaults to true, but effective backup and device-transfer behavior depends on
+    // Android version, device policy and extraction rules. This is a declaration, not proof of extraction.
     if manifest.allow_backup != Some(false) {
         add(
             Risk::Low,
             "backup_allowed",
-            "the application's data may be backed up and extracted over adb (allowBackup is not false)".to_owned(),
+            "the manifest does not disable backup (allowBackup is not false); actual cloud backup and device transfer depend on Android version, device policy and extraction rules".to_owned(),
         );
     }
     if manifest.shared_user_id.is_some() {
@@ -146,7 +147,7 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
             Risk::Low,
             "exported_components",
             format!(
-                "{exported} components are exported, so other apps on the device can start them"
+                "{exported} components declare exported=true; other apps may invoke them subject to permissions and platform restrictions"
             ),
         );
     }
@@ -253,6 +254,30 @@ mod tests {
         };
         assert!(flags(&hardened).is_empty());
         assert_eq!(highest(&flags(&hardened)), None);
+    }
+
+    #[test]
+    fn posture_flags_do_not_claim_unrestricted_device_access_or_confirmed_extraction() {
+        let observations = flags(&manifest());
+        let debuggable = observations
+            .iter()
+            .find(|flag| flag.id == "debuggable")
+            .unwrap();
+        assert!(debuggable.detail.contains("authorized debugger"));
+        assert!(!debuggable.detail.contains("any user"));
+
+        let backup = observations
+            .iter()
+            .find(|flag| flag.id == "backup_allowed")
+            .unwrap();
+        assert!(backup.detail.contains("device policy"));
+        assert!(!backup.detail.contains("extracted over adb"));
+
+        let exported = observations
+            .iter()
+            .find(|flag| flag.id == "exported_components")
+            .unwrap();
+        assert!(exported.detail.contains("permissions and platform restrictions"));
     }
 
     #[test]
