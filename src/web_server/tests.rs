@@ -1,5 +1,9 @@
 use super::analysis::inspect_label;
+use super::guard::{fixed_time_eq, host_is_allowed_for_loopback};
 use super::lookup::header_filename;
+use super::page::{INDEX_HTML, PAGE_ID, PAGE_ID_SLOT};
+use super::response::response_head;
+use crate::base64;
 use std::collections::BTreeSet;
 use std::path::Path;
 

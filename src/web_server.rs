@@ -24,13 +24,12 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::base64;
 use crate::cell_radar::CellScan;
 use crate::engineering_command;
 use crate::entity::Entity;
@@ -38,7 +37,6 @@ use crate::error::Error;
 use crate::module::reachable_modules;
 use crate::radar::TrackReport;
 use crate::scan_api::ScanApi;
-use crate::sha256::sha256;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::wifi_radar::WifiScan;
 
@@ -1019,58 +1017,6 @@ fn inspect_admits(head: &str, config: &ServeConfig, routes: &Routes) -> Option<(
     Some((length, Slot::take_of(&inspect.live, MAX_INSPECTIONS)?))
 }
 
-/// Only the scan API and the key save change state, so only they take POST, with the file
-/// inspection, whose upload is too large for a query string.
-fn takes_post(path: &str) -> bool {
-    ScanApi::handles(path)
-        || path == KEYS_PATH
-        || path == INSPECT_PATH
-        || path == TRACK_PATH
-        || path == INVESTIGATE_PATH
-        || path == OSINT_CASE_PATH
-        || path == OSINT_RISK_PATH
-}
-
-/// `none` is a typed URL or bookmark; `same-origin` is this page. Anything else came from another
-/// site.
-fn same_site(sec_fetch_site: Option<&str>) -> bool {
-    sec_fetch_site.is_none_or(|site| matches!(site, "same-origin" | "none"))
-}
-
-/// The `403` a browser-facing API route answers before anything else, naming the route as `noun`:
-/// a fetch another site started, or, when the route `needs_header`, one without the page's
-/// `X-Huntsman-Lookup: 1` header, which another origin cannot send without a CORS preflight this
-/// server never approves. `None` when the request may go on. Every such route asks this one
-/// function, so their guards cannot drift apart.
-fn page_refusal(parsed: &ParsedRequest<'_>, noun: &str, needs_header: bool) -> Option<String> {
-    if !same_site(parsed.sec_fetch_site) {
-        return Some(json_error(403, &format!("cross-site {noun} refused")));
-    }
-    (needs_header && !parsed.lookup_header).then(|| {
-        json_error(
-            403,
-            &format!("{noun} needs the X-Huntsman-Lookup: 1 header"),
-        )
-    })
-}
-
-/// Whether the request carries the bearer token this server needs, or the server needs none.
-fn authorized(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> bool {
-    config
-        .bearer_token
-        .as_deref()
-        .is_none_or(|expected| bearer_matches(parsed.authorization, expected))
-}
-
-/// The DNS-rebinding guard. A loopback server is reached from a page whose origin is a public name
-/// rebound to a loopback address, so the browser sends that public name in `Host`: a loopback
-/// server answers only loopback authorities (or an absent `Host`). A non-loopback bind is
-/// intentionally public, gated by the bearer token, and its legitimate `Host` is not known here, so
-/// the guard passes it.
-fn host_allowed(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> bool {
-    !config.bind.ip().is_loopback() || host_is_allowed_for_loopback(parsed.host)
-}
-
 /// The body to read after a request's `head`: the `Content-Length` it announces, when that is at
 /// most [`MAX_FORM_BYTES`]. A larger body is not read; the route answers without it.
 fn form_body_len(head: &[u8]) -> usize {
@@ -1190,40 +1136,6 @@ fn parse_request(request: &str) -> Option<ParsedRequest<'_>> {
         content_length,
         body: request.split_once("\r\n\r\n").map(|(_, body)| body),
     })
-}
-
-/// Whether a loopback server should answer a request carrying this `Host`.
-///
-/// A DNS-rebinding attack reaches a loopback bind from a page whose origin is a
-/// public name rebound to a loopback address, so the browser sends that public
-/// name in `Host`. Accepting only loopback authorities refuses the rebound
-/// request while real local clients (which send `localhost`, `127.0.0.1`, or
-/// `[::1]`) are unaffected. A missing or empty `Host` is allowed: a browser never
-/// omits it, so its absence is not a rebinding vector and a raw client stays
-/// answerable.
-fn host_is_allowed_for_loopback(host: Option<&str>) -> bool {
-    let Some(host) = host else {
-        return true;
-    };
-    let host = host.trim();
-    if host.is_empty() {
-        return true;
-    }
-    let name = if let Some(rest) = host.strip_prefix('[') {
-        // IPv6 literal in brackets: `[::1]` or `[::1]:port`.
-        match rest.split_once(']') {
-            Some((inner, _)) => inner,
-            None => return false,
-        }
-    } else {
-        // `host` or `host:port`; strip only a trailing port.
-        host.rsplit_once(':').map_or(host, |(name, _)| name)
-    };
-    if name.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    name.parse::<std::net::IpAddr>()
-        .is_ok_and(|ip| ip.is_loopback())
 }
 
 #[derive(Debug, Serialize)]
@@ -1482,67 +1394,19 @@ fn dossier_json_response(parsed: &ParsedRequest<'_>, config: &ServeConfig) -> St
     }
 }
 
-/// The answer to a protected request without the server's token. It names the remedy, because the
-/// page shows it as it is and a bare `unauthorized` left the operator nowhere to go.
-const UNAUTHORIZED: &str = "{\"error\":\"unauthorized: this server was started with HSE_AUTH_TOKEN set; enter that value in the token field under About\"}\n";
-
-fn json_error(status: u16, message: &str) -> String {
-    let body = serde_json::json!({ "error": message }).to_string();
-    response(
-        status,
-        "application/json; charset=utf-8",
-        &format!("{body}\n"),
-        false,
-    )
-}
-
-/// A `200 OK` answer carrying an already-rendered JSON `body`. It owns the one JSON success
-/// contract the route handlers share, as [`json_error`] owns the failure one: the
-/// `application/json; charset=utf-8` content type and the single trailing newline every answer
-/// ends with. `head` drops the body for a `HEAD` request while keeping its `Content-Length`.
-fn json_ok(body: &str, head: bool) -> String {
-    response(
-        200,
-        "application/json; charset=utf-8",
-        &format!("{body}\n"),
-        head,
-    )
-}
-
 mod analysis;
+mod guard;
 mod lookup;
+mod page;
+mod response;
 mod settings;
 use analysis::{analyze_response, inspect_response, investigate_response, osint_offline_response};
+use guard::{authorized, host_allowed, page_refusal, takes_post};
 use lookup::{lookup_response, scans_response, sensor_response};
+use page::{FAVICON_SVG, PAGE, PAGE_ID};
+pub(crate) use page::{hash_source, inline_block};
+use response::{UNAUTHORIZED, json_error, json_ok, response, response_bytes};
 use settings::keys_response;
-
-fn bearer_matches(header: Option<&str>, expected: &str) -> bool {
-    let Some(header) = header else {
-        return false;
-    };
-    let mut parts = header.split_whitespace();
-    let Some(scheme) = parts.next() else {
-        return false;
-    };
-    let Some(actual) = parts.next() else {
-        return false;
-    };
-    if !scheme.eq_ignore_ascii_case("bearer") || parts.next().is_some() {
-        return false;
-    }
-    fixed_time_eq(actual.as_bytes(), expected.as_bytes())
-}
-
-fn fixed_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut diff = 0_u8;
-    for (a, b) in left.iter().zip(right.iter()) {
-        diff |= a ^ b;
-    }
-    diff == 0
-}
 
 /// Why `addr` could not be bound, and what to do about it. Port 8080 is also the default of other
 /// servers people run in Termux, and Termux has no root for a port below 1024.
@@ -1562,138 +1426,6 @@ fn bind_failure(addr: SocketAddr, error: &std::io::Error) -> Error {
     };
     Error::Store(format!("serve bind {addr}: {reason}"))
 }
-
-/// The page's policy. Its one inline script and its one inline style run because their SHA-256
-/// is listed, so injected markup cannot run script. Nothing loads from elsewhere, requests go
-/// only to this server, and no other page may frame it. Without that last rule, a site open in
-/// the same phone browser could lay this page under its own and turn taps into lookups that
-/// spend the operator's keys.
-static PAGE_POLICY: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "default-src 'none'; script-src '{}'; style-src '{}'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-        hash_source(inline_block(INDEX_HTML, "script")),
-        hash_source(inline_block(INDEX_HTML, "style")),
-    )
-});
-
-/// Dedicated, script-free CSP for locally rendered dossier pages.
-static DOSSIER_POLICY: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "default-src 'none'; script-src 'none'; style-src '{}'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-        hash_source(crate::dossier_view::STYLE)
-    )
-});
-
-/// Every other response loads nothing and may not be framed.
-const OTHER_POLICY: &str = "default-src 'none'; frame-ancestors 'none'";
-
-/// The text between `<tag>` and `</tag>`, the part a browser hashes for a CSP hash source.
-pub(crate) fn inline_block<'a>(page: &'a str, tag: &str) -> &'a str {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    match (page.find(&open), page.find(&close)) {
-        (Some(start), Some(end)) if start + open.len() <= end => &page[start + open.len()..end],
-        _ => "",
-    }
-}
-
-pub(crate) fn hash_source(content: &str) -> String {
-    format!("sha256-{}", base64::standard(&sha256(content.as_bytes())))
-}
-
-fn response(status: u16, content_type: &str, body: &str, head: bool) -> String {
-    response_with(status, content_type, body, head, "")
-}
-
-/// [`response`] with `extra`, whole `Name: value\r\n` header lines, after the standard ones.
-fn response_with(status: u16, content_type: &str, body: &str, head: bool, extra: &str) -> String {
-    let mut out = response_head(status, content_type, body.len(), extra);
-    if !head {
-        out.push_str(body);
-    }
-    out
-}
-
-/// [`response_with`] for a body of bytes, such as an Excel export.
-fn response_bytes(
-    status: u16,
-    content_type: &str,
-    body: &[u8],
-    head: bool,
-    extra: &str,
-) -> Vec<u8> {
-    let mut out = response_head(status, content_type, body.len(), extra).into_bytes();
-    if !head {
-        out.extend_from_slice(body);
-    }
-    out
-}
-
-/// The status line and headers of an answer whose body is `content_length` bytes, through the
-/// blank line that ends them.
-fn response_head(status: u16, content_type: &str, content_length: usize, extra: &str) -> String {
-    let reason = match status {
-        200 => "OK",
-        202 => "Accepted",
-        204 => "No Content",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        408 => "Request Timeout",
-        409 => "Conflict",
-        413 => "Payload Too Large",
-        422 => "Unprocessable Content",
-        500 => "Internal Server Error",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        504 => "Gateway Timeout",
-        _ => "Error",
-    };
-    let status_header = match status {
-        503 => "Retry-After: 1\r\n",
-        401 => "WWW-Authenticate: Bearer realm=\"huntsman-recon\"\r\n",
-        _ => "",
-    };
-    let policy = if content_type.ends_with("; hse=dossier") {
-        DOSSIER_POLICY.as_str()
-    } else if content_type.starts_with("text/html") {
-        PAGE_POLICY.as_str()
-    } else {
-        OTHER_POLICY
-    };
-    format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\n{status_header}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: {policy}\r\n{extra}\r\n"
-    )
-}
-
-/// The page: one inline style and one inline script, so the policy can pin both by hash. It is
-/// the HSE console's look (app bar, bottom tabs on a phone, panels), over this server's routes.
-const INDEX_HTML: &str = include_str!("web_ui.html");
-
-/// The empty page id [`PAGE`] fills in, in the page's head and outside its script and style, so
-/// filling it leaves the hashes [`PAGE_POLICY`] lists unchanged.
-const PAGE_ID_SLOT: &str = r#"<meta name="huntsman-page" content="">"#;
-
-/// The first 16 hex digits of the SHA-256 of the page this build embeds. Every page an upgrade
-/// changes gets a new id, a build without provenance metadata included.
-static PAGE_ID: LazyLock<String> =
-    LazyLock::new(|| crate::sha256::hex32(&sha256(INDEX_HTML.as_bytes()))[..16].to_owned());
-
-/// The page as served: [`INDEX_HTML`] carrying its [`PAGE_ID`], which the page compares with
-/// the one every health answer names.
-static PAGE: LazyLock<String> = LazyLock::new(|| {
-    INDEX_HTML.replacen(
-        PAGE_ID_SLOT,
-        &format!(r#"<meta name="huntsman-page" content="{}">"#, *PAGE_ID),
-        1,
-    )
-});
-
-/// The console's locator mark, as the tab icon. It is a file of its own because the page policy
-/// loads images only from this server.
-const FAVICON_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"6\" fill=\"#0a0d11\"/><circle cx=\"16\" cy=\"16\" r=\"8\" fill=\"none\" stroke=\"#1cb8f5\" stroke-width=\"2\"/><circle cx=\"16\" cy=\"16\" r=\"2.4\" fill=\"#1cb8f5\"/><path d=\"M16 2v6M16 24v6M2 16h6M24 16h6\" stroke=\"#1cb8f5\" stroke-width=\"2\"/></svg>\n";
 
 #[cfg(test)]
 mod tests;
