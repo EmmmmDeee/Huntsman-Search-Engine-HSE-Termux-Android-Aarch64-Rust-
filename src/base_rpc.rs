@@ -87,7 +87,10 @@ fn parse_hex(value: &Value, cap: usize) -> Option<&str> {
 #[must_use]
 pub fn quantity_decimal(value: &str) -> Option<String> {
     let hex = value.strip_prefix("0x")?;
-    if hex.is_empty() || hex.len() > MAX_QUANTITY_HEX || (hex.len() > 1 && hex.starts_with('0')) {
+    if hex.is_empty()
+        || hex.len() > MAX_QUANTITY_HEX
+        || (hex.len() > 1 && hex.starts_with('0'))
+    {
         return None;
     }
     let mut digits = [0_u8; 78];
