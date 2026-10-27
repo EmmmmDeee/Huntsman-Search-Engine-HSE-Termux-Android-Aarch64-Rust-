@@ -451,7 +451,11 @@ pub(super) mod tests {
     fn malformed_structures_yield_nothing_rather_than_a_partial_certificate() {
         let der = certificate_der("Field Apps");
         for cut in [1, 10, der.len() / 2, der.len() - 1] {
-            assert!(certificate(&der[..cut], "v2").is_none(), "cut at {cut}");
+            let rejected = certificate(&der[..cut], "v2").is_none();
+            assert!(
+                rejected,
+                "a certificate truncated at {cut} bytes is rejected"
+            );
         }
         assert!(
             pkcs7(b"\x30\x80\x00\x00", "x").is_empty(),
