@@ -8,9 +8,7 @@ use huntsman_recon::clock;
 use huntsman_recon::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
 use huntsman_recon::error::Error;
 use huntsman_recon::exit::{EX_DATAERR, EX_NOINPUT, EX_NOPERM, EX_UNAVAILABLE, EX_USAGE};
-use huntsman_recon::federated_osint::{
-    self, ALCHEMY_KEY_SLOT, BASE_ALCHEMY_ORIGIN, X_API_ORIGIN, X_BEARER_SLOT,
-};
+use huntsman_recon::federated_osint::{self, X_API_ORIGIN, X_BEARER_SLOT};
 use huntsman_recon::fetch::{AuthStyle, Credential};
 use huntsman_recon::fsio::read_bounded;
 use huntsman_recon::geoint;
@@ -20,13 +18,12 @@ use huntsman_recon::osint_area_risk::{self, MAX_RISK_BYTES};
 use huntsman_recon::osint_casework::{self, MAX_CASE_BYTES};
 use huntsman_recon::source_outcome::SourceOutcomeKind;
 
-pub(super) const OSINT_HELP: &str = "osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint wallet ADDRESS [--alchemy] | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
+pub(super) const OSINT_HELP: &str = "osint case FILE | osint area-risk FILE LAT,LON [RADIUS_M] [CATEGORY] | osint area-compare FILE LAT,LON LAT,LON [CATEGORY] | osint x QUERY... | osint x-api QUERY... | osint local QUERY DIR | osint plan SEED... | osint lookup KIND SELECTOR [--save FILE]\n\
   case: source-linked receipts, claims, chronology, conflicts and verification priorities.\n\
   area-risk: bounded public-event pressure, never a safety guarantee.\n\
   area-compare: two locations under the same heuristic and dataset.\n\
   x: public search-engine indexed X leads (keyless; not Grok's private search).\n\
   x-api: one page of official X recent-search results; requires operator-owned HUNTSMAN_X_BEARER_TOKEN; may consume credits.\n\
-  wallet: read-only Base mainnet native ETH balance via public RPC. --alchemy requires operator-owned HUNTSMAN_ALCHEMY_KEY; may consume credits.\n\
   local: offline search of your own .txt/.md evidence directory; no third-party API required.\n\
   plan: offline graph and source planning using the existing Huntsman engine.\n\
   lookup: existing Huntsman typed provider lookup with public and operator-configured enrichment.\n\
@@ -156,10 +153,6 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
         }
         [mode, query, dir] if mode == "local" => lookup::search_cmd(&[query.clone(), dir.clone()]),
         [mode, seeds @ ..] if mode == "plan" && !seeds.is_empty() => lookup::plan_cmd(seeds),
-        [mode, address] if mode == "wallet" => wallet(address, false, now),
-        [mode, address, flag] if mode == "wallet" && flag == "--alchemy" => {
-            wallet(address, true, now)
-        }
         [mode, kind, selector, rest @ ..] if mode == "lookup" => {
             // Reuse the same CLI collection path as 'scan', including its evidence ledger,
             // source outcome classification, redaction, and optional --save support.
@@ -174,31 +167,6 @@ pub(super) fn osint_cmd(args: &[String]) -> ExitCode {
     }
 }
 
-fn wallet(address: &str, use_alchemy: bool, now: u64) -> ExitCode {
-    let transport = UreqTransport::new(&TransportConfig::default());
-    let credential = if use_alchemy {
-        let keys = super::credentials::lookup_keys();
-        match optional_credential(
-            &keys,
-            ALCHEMY_KEY_SLOT,
-            "alchemy_base",
-            BASE_ALCHEMY_ORIGIN,
-            now,
-        ) {
-            Ok(credential) => Some(credential),
-            Err(error) => return fail_error(&error),
-        }
-    } else {
-        None
-    };
-    match federated_osint::base_balance(&transport, address, credential.as_ref(), now) {
-        Ok(report) => {
-            let accepted = report.outcome.kind == SourceOutcomeKind::Success;
-            emit(&report, accepted)
-        }
-        Err(error) => fail_error(&error),
-    }
-}
 fn area_report(
     path: &str,
     coords: &str,

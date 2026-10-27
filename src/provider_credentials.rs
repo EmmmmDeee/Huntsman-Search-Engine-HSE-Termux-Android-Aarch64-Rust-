@@ -183,12 +183,6 @@ pub struct ProviderProbeStatus {
 
 pub const PROVIDERS: &[Provider] = &[
     Provider {
-        name: "Alchemy Base",
-        get_key_url: "https://dashboard.alchemy.com/",
-        free_tier: "operator-managed subscription; only osint wallet --alchemy spends quota",
-        slots: &[crate::environment::ALCHEMY_KEY_ENV],
-    },
-    Provider {
         name: "X Recent Search",
         get_key_url: "https://console.x.com/",
         free_tier: "operator-managed API; only osint x-api spends quota",

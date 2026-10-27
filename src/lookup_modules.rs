@@ -32,7 +32,7 @@ const BREACH: [&str; 4] = [
 /// Every module `kind`'s lookup may ask, each once, in the order it asks them. **Pure.**
 #[must_use]
 pub fn modules(kind: ScanKind) -> Vec<&'static str> {
-    let mut modules: Vec<&'static str> = match kind {
+    let modules: Vec<&'static str> = match kind {
         ScanKind::Ip => {
             let mut ip = vec![
                 crate::dns::RESOLVE_SOURCE,
@@ -52,6 +52,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             let mut domain = vec![
                 "crtsh",
                 certspotter::SOURCE,
+                crate::wayback_cdx::SOURCE,
                 "dns",
                 rdap::SOURCE,
                 mnemonic::SOURCE,
@@ -81,6 +82,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         }
         ScanKind::Username => vec![
             github_user::SRC,
+            crate::gitlab_user::SRC,
             bluesky_user::SRC,
             keybase::SRC,
             wikipedia::SRC,
@@ -106,12 +108,18 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             network
         }
         ScanKind::Exposure => BREACH.to_vec(),
-        ScanKind::CryptoAddress => vec![blockchain::SOURCE],
+        ScanKind::CryptoAddress => vec![blockchain::SOURCE, crate::base_rpc::SOURCE],
         ScanKind::Place => vec![nominatim::SOURCE],
     };
-    let mut seen = std::collections::BTreeSet::new();
-    modules.retain(|module| seen.insert(*module));
-    modules
+    // Stable deduplication keeps each source's first execution position and
+    // avoids a tree allocation for the small, bounded module list.
+    let mut unique = Vec::with_capacity(modules.len());
+    for module in modules {
+        if !unique.contains(&module) {
+            unique.push(module);
+        }
+    }
+    unique
 }
 
 /// Whether `kind`'s lookup asks any module `selection` runs. **Pure.**

@@ -1,10 +1,10 @@
-//! Independent, read-only OSINT federation for indexed X links and Base account state.
+//! Independent, read-only OSINT federation for indexed X links.
 //!
 //! No borrowed backend access, shared provider credentials or transaction signing.
 //! A search result is a discovery lead, not corroboration of a claim or identity.
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::error::Error;
 use crate::fetch::{Credential, FetchOptions, answer, decode_json, fetch, whole_response};
@@ -12,19 +12,10 @@ use crate::http::{Request, Transport, append_query_param, parse_http_uri};
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind};
 use crate::web_query::{self, SearchHit};
 
-pub const BASE_PUBLIC_RPC: &str = "https://mainnet.base.org";
-pub use crate::environment::{
-    ALCHEMY_KEY_ENV as ALCHEMY_KEY_SLOT, X_BEARER_TOKEN_ENV as X_BEARER_SLOT,
-};
-
-pub const BASE_ALCHEMY_RPC: &str = "https://base-mainnet.g.alchemy.com/v2";
-pub const BASE_ALCHEMY_ORIGIN: &str = "https://base-mainnet.g.alchemy.com:443";
+pub use crate::environment::X_BEARER_TOKEN_ENV as X_BEARER_SLOT;
 
 pub const X_API_URL: &str = "https://api.x.com/2/tweets/search/recent";
 pub const X_API_ORIGIN: &str = "https://api.x.com:443";
-
-const BASE_CHAIN_ID: u64 = 8453;
-const BASE_MODULE: &str = "base_rpc";
 
 /// URLs are discovery leads only. The indexed mode does not access Grok/X's private index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -193,241 +184,6 @@ pub fn search_official_x<T: Transport + ?Sized>(
     Ok(report)
 }
 
-/// Exact Base mainnet balance. Never attributes a wallet to a person and never signs anything.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct BaseBalanceReport {
-    pub address: String,
-    pub chain: &'static str,
-    pub chain_id: Option<u64>,
-    pub provider: &'static str,
-    pub observed_at_unix: u64,
-    pub balance_wei: Option<String>,
-    pub balance_eth: Option<String>,
-    pub block_height: Option<u64>,
-    pub block_tag: String,
-    pub evidence_role: &'static str,
-    pub outcome: SourceExecutionOutcome,
-}
-
-fn valid_evm_address(address: &str) -> bool {
-    address.len() == 42
-        && address.starts_with("0x")
-        && address.as_bytes()[2..].iter().all(u8::is_ascii_hexdigit)
-}
-
-/// Inspect Base using its keyless public endpoint, or operator-owned Alchemy credentials.
-/// Alchemy credentials must be a bearer token origin-bound to `BASE_ALCHEMY_ORIGIN`; callers
-/// should use Huntsman's `Credential` constructor rather than adding headers manually.
-/// A bad Alchemy response is surfaced, not silently retried on an unrelated endpoint.
-///
-/// # Errors
-/// Invalid wallet address or outbound policy refusal.
-pub fn base_balance<T: Transport + ?Sized>(
-    transport: &T,
-    address: &str,
-    alchemy: Option<&Credential>,
-    now_unix: u64,
-) -> Result<BaseBalanceReport, Error> {
-    if !valid_evm_address(address) {
-        return Err(Error::invalid_value(
-            "expected 0x-prefixed, 20-byte hexadecimal EVM address",
-        ));
-    }
-    let (provider, endpoint) = if alchemy.is_some() {
-        ("alchemy_operator_key", BASE_ALCHEMY_RPC)
-    } else {
-        ("base_public_rpc", BASE_PUBLIC_RPC)
-    };
-    let mut report = BaseBalanceReport {
-        address: address.to_ascii_lowercase(),
-        chain: "base_mainnet",
-        chain_id: None,
-        provider,
-        observed_at_unix: now_unix,
-        balance_wei: None,
-        balance_eth: None,
-        block_height: None,
-        block_tag: "latest".to_owned(),
-        evidence_role: "onchain_observation_not_wallet_ownership_attribution",
-        outcome: SourceExecutionOutcome::failed(
-            BASE_MODULE,
-            now_unix,
-            SourceOutcomeKind::Inconclusive,
-            None,
-            "RPC not checked",
-        ),
-    };
-    let Some(chain_hex) = rpc_read(
-        transport,
-        endpoint,
-        alchemy,
-        "eth_chainId",
-        &json!([]),
-        now_unix,
-        &mut report,
-    )?
-    else {
-        return Ok(report);
-    };
-    let Some(chain_id) = parse_quantity(&chain_hex).and_then(|n| n.parse::<u64>().ok()) else {
-        report.outcome = schema_drift(now_unix, "invalid RPC chain ID");
-        return Ok(report);
-    };
-    report.chain_id = Some(chain_id);
-    if chain_id != BASE_CHAIN_ID {
-        report.outcome = schema_drift(now_unix, "RPC chain ID is not Base mainnet");
-        return Ok(report);
-    }
-    // Pin the observation to a numbered block, not a moving 'latest' head.
-    let Some(height_hex) = rpc_read(
-        transport,
-        endpoint,
-        alchemy,
-        "eth_blockNumber",
-        &json!([]),
-        now_unix,
-        &mut report,
-    )?
-    else {
-        return Ok(report);
-    };
-    let Some(height) = parse_quantity(&height_hex).and_then(|n| n.parse::<u64>().ok()) else {
-        report.outcome = schema_drift(now_unix, "RPC block height is invalid");
-        return Ok(report);
-    };
-    report.block_height = Some(height);
-    report.block_tag = height_hex;
-    let block_tag = report.block_tag.clone();
-    let Some(balance_hex) = rpc_read(
-        transport,
-        endpoint,
-        alchemy,
-        "eth_getBalance",
-        &json!([report.address.as_str(), block_tag]),
-        now_unix,
-        &mut report,
-    )?
-    else {
-        return Ok(report);
-    };
-    let Some(wei) = parse_quantity(&balance_hex) else {
-        report.outcome = schema_drift(now_unix, "invalid RPC balance quantity");
-        return Ok(report);
-    };
-    report.balance_eth = Some(wei_to_eth(&wei));
-    report.balance_wei = Some(wei);
-    report.outcome =
-        SourceExecutionOutcome::success(BASE_MODULE, now_unix, 1).with_http_status(200);
-    Ok(report)
-}
-
-fn schema_drift(now: u64, reason: &'static str) -> SourceExecutionOutcome {
-    SourceExecutionOutcome::failed(
-        BASE_MODULE,
-        now,
-        SourceOutcomeKind::SchemaDrift,
-        Some(200),
-        reason,
-    )
-}
-
-fn rpc_read<T: Transport + ?Sized>(
-    transport: &T,
-    endpoint: &str,
-    credential: Option<&Credential>,
-    method: &'static str,
-    params: &Value,
-    now: u64,
-    report: &mut BaseBalanceReport,
-) -> Result<Option<String>, Error> {
-    let body = json!({"jsonrpc":"2.0", "id":1, "method":method, "params":params});
-    let request = Request::post(endpoint, body.to_string().into_bytes())
-        .header("accept", "application/json")
-        .header("content-type", "application/json");
-    let fetched = fetch(
-        transport,
-        request,
-        credential,
-        &FetchOptions::no_redirects().paced(),
-        BASE_MODULE,
-        now,
-    )?;
-    let decoded = whole_response(&fetched, "Base RPC").and_then(|response| {
-        answer(&fetched, "Base RPC")?;
-        decode_json::<Value>(response, BASE_MODULE, now, "Base RPC")
-    });
-    let value = match decoded {
-        Ok(value) => value,
-        Err(outcome) => {
-            report.outcome = outcome;
-            return Ok(None);
-        }
-    };
-    if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
-        || value.get("id").and_then(Value::as_u64) != Some(1)
-        || value.get("error").is_some()
-    {
-        report.outcome = schema_drift(now, "RPC error or invalid envelope");
-        return Ok(None);
-    }
-    let Some(result) = value.get("result").and_then(Value::as_str) else {
-        report.outcome = schema_drift(now, "RPC result missing");
-        return Ok(None);
-    };
-    Ok(Some(result.to_owned()))
-}
-
-/// Exact uint256 to decimal without floating point; refuses noncanonical quantities.
-fn parse_quantity(raw: &str) -> Option<String> {
-    let digits = raw.strip_prefix("0x")?;
-    if digits.is_empty()
-        || digits.len() > 64
-        || (digits.len() > 1 && digits.starts_with('0'))
-        || !digits.bytes().all(|b| b.is_ascii_hexdigit())
-    {
-        return None;
-    }
-    let mut decimal = vec![0_u8];
-    for digit in digits.bytes() {
-        let digit = digit.to_ascii_lowercase();
-        let mut carry = if digit.is_ascii_digit() {
-            digit - b'0'
-        } else {
-            digit - b'a' + 10
-        };
-        for cell in &mut decimal {
-            let n = u16::from(*cell) * 16 + u16::from(carry);
-            *cell = (n % 10) as u8;
-            carry = u8::try_from(n / 10).expect("bounded decimal carry");
-        }
-        while carry != 0 {
-            decimal.push(carry % 10);
-            carry /= 10;
-        }
-    }
-    Some(
-        decimal
-            .iter()
-            .rev()
-            .map(|n| char::from(b'0' + *n))
-            .collect(),
-    )
-}
-
-fn wei_to_eth(wei: &str) -> String {
-    let mut padded = wei.to_owned();
-    if padded.len() <= 18 {
-        padded.insert_str(0, &"0".repeat(19 - padded.len()));
-    }
-    let split = padded.len() - 18;
-    let fraction = padded[split..].trim_end_matches('0');
-    if fraction.is_empty() {
-        padded[..split].to_owned()
-    } else {
-        format!("{}.{}", &padded[..split], fraction)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,63 +235,6 @@ mod tests {
     }
 
     #[test]
-    fn quantities_remain_exact() {
-        assert_eq!(parse_quantity("0x0").as_deref(), Some("0"));
-        assert_eq!(
-            parse_quantity("0xde0b6b3a7640000").as_deref(),
-            Some("1000000000000000000")
-        );
-        assert_eq!(wei_to_eth("1000000000000000000"), "1");
-        assert_eq!(wei_to_eth("1"), "0.000000000000000001");
-        assert!(parse_quantity("0x00").is_none());
-        assert!(parse_quantity("0x-1").is_none());
-        assert!(parse_quantity(&format!("0x{}", "f".repeat(65))).is_none());
-    }
-
-    #[test]
-    fn verified_base_chain_before_balance() {
-        let fake = Fake::new(&[
-            r#"{"jsonrpc":"2.0","id":1,"result":"0x2105"}"#,
-            r#"{"jsonrpc":"2.0","id":1,"result":"0x123"}"#,
-            r#"{"jsonrpc":"2.0","id":1,"result":"0xde0b6b3a7640000"}"#,
-        ]);
-        let report = base_balance(
-            &fake,
-            "0x0000000000000000000000000000000000000001",
-            None,
-            100,
-        )
-        .expect("read");
-        assert_eq!(report.outcome.kind, SourceOutcomeKind::Success);
-        assert_eq!(report.balance_eth.as_deref(), Some("1"));
-        assert_eq!(report.chain_id, Some(8453));
-        assert_eq!(report.block_height, Some(291));
-        assert_eq!(report.block_tag, "0x123");
-        let requests = fake.requests.lock().expect("requests");
-        assert_eq!(requests.len(), 3);
-        assert!(String::from_utf8_lossy(&requests[2].body).contains("0x123"));
-        assert!(
-            requests
-                .iter()
-                .all(|request| request.url == BASE_PUBLIC_RPC)
-        );
-    }
-
-    #[test]
-    fn wrong_chain_never_queries_balance() {
-        let fake = Fake::new(&[r#"{"jsonrpc":"2.0","id":1,"result":"0x1"}"#]);
-        let report = base_balance(
-            &fake,
-            "0x0000000000000000000000000000000000000001",
-            None,
-            100,
-        )
-        .expect("read");
-        assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
-        assert_eq!(fake.requests.lock().expect("requests").len(), 1);
-    }
-
-    #[test]
     fn official_x_uses_pinned_auth_and_filters_invalid_post_identifiers() {
         use crate::credential_origin::{AuthenticationAuthority, OperatorCredentialRef};
         use crate::fetch::AuthStyle;
@@ -572,23 +271,8 @@ mod tests {
     }
 
     #[test]
-    fn malformed_rpc_envelope_never_reaches_balance() {
-        let fake = Fake::new(&[r#"{"jsonrpc":"2.0","id":2,"result":"0x2105"}"#]);
-        let report = base_balance(
-            &fake,
-            "0x0000000000000000000000000000000000000001",
-            None,
-            100,
-        )
-        .expect("read");
-        assert_eq!(report.outcome.kind, SourceOutcomeKind::SchemaDrift);
-        assert_eq!(fake.requests.lock().expect("requests").len(), 1);
-    }
-
-    #[test]
-    fn reject_invalid_wallet_and_spoofed_social_host_without_io() {
+    fn reject_spoofed_social_host_and_invalid_query_without_io() {
         let fake = Fake::default();
-        assert!(base_balance(&fake, "0xabc", None, 100).is_err());
         assert!(is_public_x_url("https://x.com/u/status/1"));
         assert!(!is_public_x_url("https://x.com.attacker.example/status/1"));
         assert!(!is_public_x_url("http://x.com/u/status/1"));

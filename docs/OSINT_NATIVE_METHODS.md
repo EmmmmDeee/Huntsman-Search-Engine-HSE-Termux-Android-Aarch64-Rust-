@@ -9,7 +9,7 @@ Independent Huntsman implementations: **no H1DR4 runtime connection**. The sourc
 - `huntsman-recon osint area-compare docs/OSINT_AREA_EVENTS.json -26.8,152.9 -27.0,152.0`: same imported source set, equal radius, independently computed scores.
 - `huntsman-recon osint x "query"`: public index discovery leads, not a private X/Grok corpus.
 - `huntsman-recon osint x-api "query"`: official X recent-search first page, requires independently authorized `HUNTSMAN_X_BEARER_TOKEN`.
-- `huntsman-recon osint wallet 0xADDRESS [--alchemy]`: read-only Base balance with chain ID and block height; the optional Alchemy key is bound to its origin.
+- Base account state is provided by `huntsman-recon crypto base:0xADDRESS` (keyless public RPC, canonical owner `src/base_rpc.rs`); this branch adds no separate Base or Alchemy path.
 - `huntsman-recon osint plan SEED...`, `osint local QUERY DIRECTORY`, and `osint lookup KIND SELECTOR`: reuse existing graph, local search and provider connectors.
 
 Web UI: Analysis > Source-backed OSINT methods. APIs `POST /api/osint/case` and `POST /api/osint/area-risk` use existing authorization, origin and body-size controls. The area-risk API JSON includes `as_of_unix`, `events`, `center_lat`, `center_lon`, `radius_m`, `category`.

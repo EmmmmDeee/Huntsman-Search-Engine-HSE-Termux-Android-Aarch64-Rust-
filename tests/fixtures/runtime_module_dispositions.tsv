@@ -15,6 +15,7 @@ au_id	leaf	Australian identifier normalization
 base64	leaf	RFC 4648 base64 codec for CSP hashes, PKCE values and certificate DER
 benchmark	diagnostic	benchmarking support
 blockchain	adapter	blockchain.info Bitcoin address source client reached through crypto_cli
+base_rpc	adapter	keyless Base mainnet account observations through crypto_cli, scan and shared Web UI lookup; provenance retained without ownership attribution
 bluesky_user	adapter	public Bluesky profile source client
 breach_hybrid	runtime	breach command gating and exposure order consumed by the CLI
 canonical	runtime	canonicalization for entities and provenance
@@ -76,6 +77,7 @@ gap	runtime	coverage and expansion gap analysis
 geohash	leaf	geohash codec
 geoint	leaf	GEOINT distance and parsing helpers
 gexf	exporter	GEXF graph output
+gitlab_user	adapter	keyless exact GitLab public user lookup through username_cli and scan, retaining only public profile fields and source provenance
 github_user	adapter	public GitHub profile source client
 graph	runtime	shared deterministic graph model
 graph_exec	leaf	public evidence-gated DAG execution and checkpoint API; exported library surface awaiting scan-service integration
@@ -217,6 +219,7 @@ username_variants	leaf	deterministic handle normalization variants
 validation	runtime	seed/entity validation
 value_syntax	leaf	dependency-free domain mailbox URL-host E.164 and TXT-record tag syntax primitives
 virustotal	adapter	VirusTotal leg reached through ip_cli and domain_cli when its key is set
+wayback_cdx	adapter	keyless Internet Archive CDX historical capture collector reached through domain_cli from domain, scan -k domain and /api/lookup; emits provenance-backed historical URL and hostname leads
 web_query	adapter	keyless web meta-search subset
 web_server	runtime	embedded Web UI and read-only HTTP API
 whoxy	adapter	Whoxy WHOIS leg reached through indicator_legs from domain, scan -k domain and /api/lookup when its key is set
@@ -233,3 +236,6 @@ opencellid	adapter	OpenCelliD cell position leg reached through indicator_legs f
 exif	adapter	image EXIF metadata and GPS source reached from the exif command
 docmeta	adapter	document XMP packet and PDF /Info metadata and embedded GPS source reached from the docmeta command
 exa	adapter	Exa explicit query --exa source: fixed HTTPS origin, privately keyed, five lead-only web results
+federated_osint	adapter	indexed X recent-search clients reached through osint x and osint x-api; the bearer token is operator-owned and origin-bound
+osint_casework	leaf	source-linked casework model reached through osint case; receipts, chronology and conflicts without identity attribution
+osint_area_risk	leaf	bounded public-event pressure estimator reached through osint area-risk and area-compare; never a safety guarantee
