@@ -2214,7 +2214,9 @@ mod tests {
                         assert_eq!(id, record.id, "the scan id, never the target");
                         statuses.push(status);
                     }
-                    other => panic!("unexpected event {other:?}"),
+                    crate::serve_events::Event::Alert { .. } => {
+                        panic!("a scan run raises no alert event")
+                    }
                 }
             }
         }

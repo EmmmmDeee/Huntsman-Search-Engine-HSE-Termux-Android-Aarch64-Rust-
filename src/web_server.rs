@@ -37,6 +37,7 @@ use crate::error::Error;
 use crate::module::reachable_modules;
 use crate::radar::TrackReport;
 use crate::scan_api::ScanApi;
+use crate::serve_events::EventHub;
 use crate::source_outcome::SourceExecutionOutcome;
 use crate::wifi_radar::WifiScan;
 
@@ -128,6 +129,16 @@ const MAX_INSPECT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_INSPECTIONS: usize = 1;
 /// Time to receive one inspection upload: 64 MiB over a slow phone Wi-Fi link (about 1 MB/s).
 const INSPECT_DEADLINE: Duration = Duration::from_secs(90);
+/// The Server-Sent Events endpoint the Web UI opens to receive scan-status and alert pushes
+/// instead of polling.
+const EVENTS_PATH: &str = "/api/events";
+/// One `/api/events` connection streams for at most this long, then closes so the browser's
+/// `EventSource` reconnects. It bounds how long a streaming connection holds one of the
+/// [`MAX_CONNECTIONS`] places, no longer than a slow upload's [`INSPECT_DEADLINE`].
+const EVENTS_STREAM_MAX: Duration = Duration::from_secs(25);
+/// How long a streaming connection waits for an event before writing a keepalive comment; shorter
+/// than [`IO_TIMEOUT`] so a keepalive write never races the per-write timeout.
+const EVENTS_KEEPALIVE: Duration = Duration::from_secs(3);
 /// The slowest a reader may take a response, past the time it is given to start. A reader that
 /// takes a little at a time, each within [`IO_TIMEOUT`], would otherwise hold its connection, and
 /// its place among [`MAX_CONNECTIONS`], for as long as it liked.
@@ -759,6 +770,11 @@ fn handle_stream_with(
     })?;
     // A whole request: the connection is busy now, not idle, and is no longer closed early.
     drop(waiting);
+    // A GET of the event stream takes over the connection and streams until it closes, instead of
+    // the buffered router answering it once.
+    if let Some(result) = maybe_stream_events(&request, config, routes, &mut stream) {
+        return result;
+    }
     let response = respond_with(&request, upload.as_ref(), config, routes);
     // The file is done with once the answer is built. The inspection place is held until the
     // answer is written, so one inspection's answer is in memory at a time, and a slow reader holds
@@ -1214,6 +1230,111 @@ fn respond_with(
         }
     }
     bytes
+}
+
+/// If `request` is a `GET /api/events`, serve it as a Server-Sent Events stream and return the
+/// outcome; otherwise return `None` so the normal buffered router answers it. The host and token
+/// guards every protected route shares apply first, and the stream needs the saved-scan service,
+/// which owns the event hub.
+fn maybe_stream_events(
+    request: &str,
+    config: &ServeConfig,
+    routes: &Routes,
+    stream: &mut TcpStream,
+) -> Option<Result<(), Error>> {
+    let parsed = parse_request(request)?;
+    if parsed.path != EVENTS_PATH || parsed.method != Method::Get {
+        return None;
+    }
+    if !host_allowed(&parsed, config) {
+        return Some(write_now(
+            stream,
+            &response(
+                403,
+                "text/plain; charset=utf-8",
+                "host not allowed\n",
+                false,
+            ),
+        ));
+    }
+    if !authorized(&parsed, config) {
+        return Some(write_now(
+            stream,
+            &response(401, "application/json; charset=utf-8", UNAUTHORIZED, false),
+        ));
+    }
+    let Some(api) = routes.scans.as_ref() else {
+        return Some(write_now(
+            stream,
+            &response(
+                503,
+                "text/plain; charset=utf-8",
+                "saved scans are off\n",
+                false,
+            ),
+        ));
+    };
+    stream_events(stream, api.service().events());
+    Some(Ok(()))
+}
+
+/// Writes a complete, already-built response and flushes it, for the refusal paths of
+/// [`maybe_stream_events`] that do not stream.
+fn write_now(stream: &mut TcpStream, response: &str) -> Result<(), Error> {
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|error| Error::Store(format!("serve events refusal: {error}")))?;
+    stream
+        .flush()
+        .map_err(|error| Error::Store(format!("serve events flush: {error}")))
+}
+
+/// Streams scan-status and alert events to one client until [`EVENTS_STREAM_MAX`] elapses or the
+/// client goes away. Each event is one SSE `data:` frame of its JSON; a quiet interval sends a
+/// comment keepalive; a subscriber that fell a whole buffer behind is told to resync from the
+/// REST API. Writes use the connection's existing write timeout, so a stalled client ends the
+/// stream at its first timed-out write, and a write error (the client closed) ends it cleanly.
+fn stream_events(stream: &mut TcpStream, hub: &EventHub) {
+    const HEAD: &str = concat!(
+        "HTTP/1.1 200 OK\r\n",
+        "Content-Type: text/event-stream; charset=utf-8\r\n",
+        "Cache-Control: no-store\r\n",
+        "Connection: close\r\n",
+        "X-Content-Type-Options: nosniff\r\n",
+        "X-Frame-Options: DENY\r\n\r\n",
+        "retry: 3000\n\n",
+    );
+    if write_frame(stream, HEAD.as_bytes()).is_err() {
+        return;
+    }
+    let mut sub = hub.subscribe();
+    let deadline = Instant::now() + EVENTS_STREAM_MAX;
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        let batch = sub.recv(EVENTS_KEEPALIVE.min(remaining));
+        let mut frame = String::new();
+        if batch.lagged {
+            frame.push_str("event: resync\ndata: {}\n\n");
+        }
+        for event in &batch.events {
+            if let Ok(json) = serde_json::to_string(event) {
+                frame.push_str("data: ");
+                frame.push_str(&json);
+                frame.push_str("\n\n");
+            }
+        }
+        if frame.is_empty() {
+            frame.push_str(": keepalive\n\n");
+        }
+        if write_frame(stream, frame.as_bytes()).is_err() {
+            return;
+        }
+    }
+}
+
+/// Writes one SSE frame and flushes it; an error means the client has gone, ending the stream.
+fn write_frame(stream: &mut TcpStream, bytes: &[u8]) -> std::io::Result<()> {
+    stream.write_all(bytes)?;
+    stream.flush()
 }
 
 /// Render the health contract without inflating the shared request router.

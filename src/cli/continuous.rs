@@ -25,6 +25,7 @@ use huntsman_recon::scan_service::{ScanRequest, plan};
 use huntsman_recon::scan_store::{
     MAX_RESULTS_BYTES, MAX_SCANS, ScanOptions, ScanRecord, ScanStatus, ScanStore,
 };
+use huntsman_recon::serve_events::Event;
 use huntsman_recon::sf_correlate::Risk;
 use huntsman_recon::sha256::{hex32, sha256};
 use serde_json::{Value, json};
@@ -328,6 +329,13 @@ fn record_alerts(
                 "continuous: alert raised for scan {} over {}",
                 later.id, earlier.id
             );
+            // Push it to any live Web UI stream. The scan id is the scan's, and the reasons carry
+            // only each risk and rule, never the target.
+            api.service().events().publish(Event::Alert {
+                scan: later.id.clone(),
+                at: now,
+                reasons: scan_alert::reason_labels(&alert),
+            });
             // The decision is already recorded, so a notification that fails is reported, not
             // retried: posting it again later would announce the same alert twice.
             if let Some(post) = notifier {
@@ -1333,9 +1341,21 @@ mod tests {
             posted.lock().unwrap().push(text.to_owned());
             Err("no termux-notification here".to_owned())
         };
+        let mut stream = api.service().events().subscribe();
         assert_eq!(
             super::record_alerts(&api, &records, &configured.targets, 2, Some(&post)).unwrap(),
             1
+        );
+        // A raised alert is also pushed to the live event stream, with the scan id and reasons but
+        // no target.
+        let pushed = stream.recv(std::time::Duration::from_millis(50)).events;
+        assert_eq!(
+            pushed,
+            vec![huntsman_recon::serve_events::Event::Alert {
+                scan: second.id.clone(),
+                at: 2,
+                reasons: vec!["HIGH fresh_exposure".to_owned()],
+            }]
         );
         let history = scan_alert::read_history(&scans_dir.join(scan_alert::HISTORY_FILE)).unwrap();
         assert_eq!(history.len(), 1);
