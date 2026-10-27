@@ -477,7 +477,11 @@ mod tests {
         people.options.usecase = "all".into();
         people.options.modules = vec!["asic_director".into()];
         let register = derive(&people, Some(&saved(Vec::new())));
-        let missing = register.items.iter().find(|item| item.id == "sources:not_observed:asic_director").expect("missing source named");
+        let missing = register
+            .items
+            .iter()
+            .find(|item| item.id == "sources:not_observed:asic_director")
+            .expect("missing source named");
         assert_eq!(missing.module.as_deref(), Some("asic_director"));
         assert_eq!(missing.category, "missing_observations");
         assert_eq!(register.unresolved_executions, 0);

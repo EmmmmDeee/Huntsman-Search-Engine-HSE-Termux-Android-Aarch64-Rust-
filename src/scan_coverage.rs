@@ -208,10 +208,7 @@ mod tests {
         assert_eq!(coverage.accepted_sources, 1);
         assert_eq!(coverage.not_observed_sources, 4);
         assert!(!coverage.complete_within_catalogue);
-        assert_eq!(
-            coverage.sources[0].status,
-            PeopleSourceStatus::NotObserved
-        );
+        assert_eq!(coverage.sources[0].status, PeopleSourceStatus::NotObserved);
     }
 
     #[test]
@@ -247,7 +244,11 @@ mod tests {
         let mut selected = record();
         selected.options.modules = vec!["asic_director".into()];
         selected.status = ScanStatus::Running;
-        assert!(!derive(&selected, Some(&observations)).unwrap().complete_within_catalogue);
+        assert!(
+            !derive(&selected, Some(&observations))
+                .unwrap()
+                .complete_within_catalogue
+        );
         selected.status = ScanStatus::Finished;
         assert!(!derive(&selected, None).unwrap().complete_within_catalogue);
         selected.kind = "domain".into();

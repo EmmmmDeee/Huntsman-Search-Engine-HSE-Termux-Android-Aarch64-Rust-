@@ -723,7 +723,8 @@ impl ScanApi {
         let mut value = json!(record);
         value["sources"] = Value::Array(sources);
         value["uncertainty_register"] = json!(uncertainty_register);
-        value["people_source_coverage"] = json!(crate::scan_coverage::derive(&record, results.as_ref()));
+        value["people_source_coverage"] =
+            json!(crate::scan_coverage::derive(&record, results.as_ref()));
         value["source_execution_summary"] = results.as_ref().map_or(Value::Null, |saved| {
             source_execution_summary(&saved.outcomes)
         });
