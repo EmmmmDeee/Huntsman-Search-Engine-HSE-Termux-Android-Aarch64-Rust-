@@ -61,12 +61,36 @@ pub struct AttributedAssertion {
     pub status: &'static str,
 }
 
+/// Chronology describes when Huntsman recorded evidence, never when a fact was true.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ValueObservation {
+    pub value: String,
+    pub evidence_indices: Vec<usize>,
+    pub first_observed_unix: Option<u64>,
+    pub last_observed_unix: Option<u64>,
+    /// Unknown source timestamps prevent an apparently ordered sequence from proving order.
+    pub has_undated_observations: bool,
+}
+
+/// Triage labels are observational, not assertions of supersession or contradiction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TemporalPattern {
+    SharedEvidenceRecord,
+    OrderedObservationWindows,
+    OverlappingObservationWindows,
+    InsufficientTimestamps,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CompetingValues {
     pub attribute: String,
     pub values: Vec<String>,
     /// Different values may represent temporal change, scope differences or error.
     pub interpretation: &'static str,
+    pub temporal_pattern: TemporalPattern,
+    /// Bounded by the same assertion limit as the parent report, in value order.
+    pub observations: Vec<ValueObservation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -125,18 +149,82 @@ fn dimension(name: &str) -> Dimension {
 
 type AttributeIndex = BTreeMap<(String, String), (BTreeSet<usize>, BTreeSet<String>)>;
 
+fn observation_window(value: String, indices: &[usize], entity: &Entity) -> ValueObservation {
+    let mut first_observed_unix: Option<u64> = None;
+    let mut last_observed_unix: Option<u64> = None;
+    let mut has_undated_observations = false;
+    for &index in indices {
+        let Some(evidence) = entity.evidence.get(index) else {
+            continue;
+        };
+        // A folded observation retains its additional source timestamps; the
+        // primary timestamp alone would invent non-overlapping observation windows.
+        for provenance in
+            std::iter::once(&evidence.provenance).chain(&evidence.merged_provenance)
+        {
+            let time = provenance.recorded_at_unix;
+            if time == 0 {
+                has_undated_observations = true;
+                continue;
+            }
+            first_observed_unix = Some(first_observed_unix.map_or(time, |prior| prior.min(time)));
+            last_observed_unix = Some(last_observed_unix.map_or(time, |prior| prior.max(time)));
+        }
+    }
+    ValueObservation {
+        value,
+        evidence_indices: indices.to_vec(),
+        first_observed_unix,
+        last_observed_unix,
+        has_undated_observations,
+    }
+}
+
+fn temporal_pattern(observations: &[ValueObservation]) -> TemporalPattern {
+    for (index, left) in observations.iter().enumerate() {
+        if observations[index + 1..].iter().any(|right| {
+            left.evidence_indices
+                .iter()
+                .any(|id| right.evidence_indices.contains(id))
+        }) {
+            return TemporalPattern::SharedEvidenceRecord;
+        }
+    }
+    if observations.iter().any(|window| {
+        window.has_undated_observations
+            || window.first_observed_unix.is_none()
+            || window.last_observed_unix.is_none()
+    }) {
+        return TemporalPattern::InsufficientTimestamps;
+    }
+    let mut chronological = observations.iter().collect::<Vec<_>>();
+    chronological.sort_by_key(|window| window.first_observed_unix);
+    if chronological.windows(2).all(|pair| {
+        pair[0]
+            .last_observed_unix
+            .zip(pair[1].first_observed_unix)
+            .is_some_and(|(previous, next)| previous < next)
+    }) {
+        TemporalPattern::OrderedObservationWindows
+    } else {
+        TemporalPattern::OverlappingObservationWindows
+    }
+}
+
 fn summarise_assertions(
     grouped: AttributeIndex,
     traces: &[EvidenceTrace],
+    entity: &Entity,
 ) -> (Vec<AttributedAssertion>, Vec<CompetingValues>) {
-    let mut by_attribute = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut by_attribute = BTreeMap::<String, Vec<ValueObservation>>::new();
     let assertions = grouped
         .into_iter()
         .map(|((attribute, value), (indices, families))| {
+            let evidence_indices = indices.iter().copied().collect::<Vec<_>>();
             by_attribute
                 .entry(attribute.clone())
                 .or_default()
-                .insert(value.clone());
+                .push(observation_window(value.clone(), &evidence_indices, entity));
             let status = if indices
                 .iter()
                 .all(|index| traces[*index].role == EvidenceRole::OperatorSeed)
@@ -159,7 +247,7 @@ fn summarise_assertions(
                 dimension: dimension(&attribute),
                 attribute,
                 value,
-                evidence_indices: indices.into_iter().collect(),
+                evidence_indices,
                 reported_source_families: families.into_iter().collect(),
                 status,
             }
@@ -167,11 +255,13 @@ fn summarise_assertions(
         .collect();
     let competing_values = by_attribute
         .into_iter()
-        .filter_map(|(attribute, values)| {
-            (values.len() > 1).then(|| CompetingValues {
+        .filter_map(|(attribute, observations)| {
+            (observations.len() > 1).then(|| CompetingValues {
                 attribute,
-                values: values.into_iter().collect(),
+                values: observations.iter().map(|window| window.value.clone()).collect(),
                 interpretation: "competing_recorded_values_not_proven_contradiction",
+                temporal_pattern: temporal_pattern(&observations),
+                observations,
             })
         })
         .collect();
@@ -242,7 +332,7 @@ pub fn assess(entity: &Entity) -> EntityReality {
         }
     }
 
-    let (assertions, competing_values) = summarise_assertions(grouped, &traces);
+    let (assertions, competing_values) = summarise_assertions(grouped, &traces, entity);
 
     EntityReality {
         uid: entity.uid.clone(),
@@ -331,6 +421,80 @@ mod tests {
             report.competing_values[0].interpretation,
             "competing_recorded_values_not_proven_contradiction"
         );
+    }
+
+    fn timed_owner(source: &str, value: &str, recorded_at_unix: u64) -> Evidence {
+        let mut provenance = EvidenceProvenance::new(source);
+        provenance.recorded_at_unix = recorded_at_unix;
+        Evidence::new(provenance, "public registry result").with_attr("owner", value)
+    }
+
+    #[test]
+    fn ordered_observations_are_leads_not_proven_ownership_changes() {
+        let subject = Entity::builder(EntityKind::Organisation, "Example", 0.9, "scan")
+            .evidence(timed_owner("registry-a", "Old", 100))
+            .evidence(timed_owner("registry-b", "New", 300))
+            .build();
+        let report = assess(&subject);
+        let issue = &report.competing_values[0];
+        assert_eq!(issue.temporal_pattern, TemporalPattern::OrderedObservationWindows);
+        assert_eq!(issue.observations[0].value, "New");
+        assert_eq!(issue.observations[0].first_observed_unix, Some(300));
+        assert_eq!(issue.observations[1].value, "Old");
+        assert_eq!(issue.observations[1].last_observed_unix, Some(100));
+        assert_eq!(
+            issue.interpretation,
+            "competing_recorded_values_not_proven_contradiction"
+        );
+        let json = serde_json::to_value(report).unwrap();
+        assert_eq!(
+            json["competing_values"][0]["temporal_pattern"],
+            "ordered_observation_windows"
+        );
+    }
+
+    #[test]
+    fn values_in_one_evidence_record_do_not_imply_a_chronological_transition() {
+        let subject = Entity::builder(EntityKind::Organisation, "Example", 0.9, "scan")
+            .evidence(
+                timed_owner("registry", "A", 100).with_attr("owner", "B"),
+            )
+            .build();
+        let report = assess(&subject);
+        let issue = &report.competing_values[0];
+        assert_eq!(issue.temporal_pattern, TemporalPattern::SharedEvidenceRecord);
+        assert_eq!(issue.observations[0].evidence_indices, vec![0]);
+        assert_eq!(issue.observations[1].evidence_indices, vec![0]);
+    }
+
+    #[test]
+    fn folded_provenance_blocks_false_temporal_order() {
+        let mut earlier = timed_owner("registry-a", "A", 100);
+        let mut merged = EvidenceProvenance::new("registry-a");
+        merged.recorded_at_unix = 400;
+        earlier.merged_provenance.push(merged);
+        let subject = Entity::builder(EntityKind::Organisation, "Example", 0.9, "scan")
+            .evidence(earlier)
+            .evidence(timed_owner("registry-b", "B", 200))
+            .build();
+        let report = assess(&subject);
+        let issue = &report.competing_values[0];
+        assert_eq!(issue.temporal_pattern, TemporalPattern::OverlappingObservationWindows);
+        assert_eq!(issue.observations[0].first_observed_unix, Some(100));
+        assert_eq!(issue.observations[0].last_observed_unix, Some(400));
+    }
+
+    #[test]
+    fn unknown_source_time_fails_closed() {
+        let subject = Entity::builder(EntityKind::Organisation, "Example", 0.9, "scan")
+            .evidence(timed_owner("registry-a", "A", 0))
+            .evidence(timed_owner("registry-b", "B", 200))
+            .build();
+        let report = assess(&subject);
+        let issue = &report.competing_values[0];
+        assert_eq!(issue.temporal_pattern, TemporalPattern::InsufficientTimestamps);
+        assert_eq!(issue.observations[0].first_observed_unix, None);
+        assert!(issue.observations[0].has_undated_observations);
     }
 
     #[test]
