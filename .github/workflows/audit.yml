@@ -2,7 +2,7 @@ name: Security audit
 
 # Required PR supply-chain check: reports RUSTSEC vulnerabilities in the locked dependency graph.
 # It is a separate workflow from ci.yml. It runs on every pull request,
-# dependency-changing main pushes, the weekly schedule and manual dispatch.
+# every main push, the weekly schedule and manual dispatch.
 # The RustSec job must report a required status even for source-only PRs.
 # The job reads the repository and fetches the public advisory database; it has no write scopes.
 
@@ -11,18 +11,16 @@ on:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC
   workflow_dispatch:
   push:
-    paths:
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - ".github/workflows/audit.yml"
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Keep independent verdicts for every main SHA; cancel only superseded PR audits.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   audit:
