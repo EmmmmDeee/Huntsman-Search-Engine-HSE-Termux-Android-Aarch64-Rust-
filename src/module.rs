@@ -407,6 +407,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         description: "bounded deterministic username variants",
     },
     ReachableModule {
+        name: "github_repos",
+        command: "username HANDLE",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Social,
+        attack_techniques: &["T1593.003"],
+        description: "bounded public GitHub repository footprint; self-declared metadata is not identity proof",
+    },
+    ReachableModule {
         name: "gitlab_user",
         command: "username HANDLE | scan -k username HANDLE",
         access: "keyless",
@@ -468,6 +477,15 @@ const REACHABLE_MODULES: &[ReachableModule] = &[
         category: ModuleCategory::Social,
         attack_techniques: &["T1593.001"],
         description: "recent public Wikipedia page edits attributed to a handle, keyless (MediaWiki usercontribs)",
+    },
+    ReachableModule {
+        name: "base_rpc",
+        command: "crypto base:0xADDRESS | scan -k crypto base:0xADDRESS",
+        access: "keyless",
+        network: true,
+        category: ModuleCategory::Other,
+        attack_techniques: &["T1596"],
+        description: "read-only Base mainnet wallet balances, outgoing nonce, and contract-code presence at finalized block tag via public JSON-RPC; no identity attribution",
     },
     ReachableModule {
         name: "blockchain",

@@ -66,6 +66,11 @@ impl Transport for Everywhere {
                 200,
                 br#"{"success":true,"result":{"records":[],"total":0}}"#,
             )
+        } else if url == crate::base_rpc::RPC_URL {
+            (
+                200,
+                br#"[{"jsonrpc":"2.0","id":1,"result":"0x2105"},{"jsonrpc":"2.0","id":2,"result":"0x0"},{"jsonrpc":"2.0","id":3,"result":"0x0"},{"jsonrpc":"2.0","id":4,"result":"0x"}]"#,
+            )
         } else if url.contains("nominatim") {
             (
                 200,
@@ -355,8 +360,17 @@ fn a_lookup_asks_only_the_chosen_modules() {
         for module in modules(kind) {
             let net = Everywhere::default();
             let chosen: Vec<&str> = std::iter::once(module).chain(anchor(kind)).collect();
-            let rows = rows(kind, &Selection::only(chosen.clone()), &net)
-                .unwrap_or_else(|why| panic!("{kind:?} with {chosen:?} printed no report: {why}"));
+            let address = if kind == ScanKind::CryptoAddress && module == crate::base_rpc::SOURCE {
+                "base:0x1111111111111111111111111111111111111111"
+            } else {
+                target(kind)
+            };
+            let rows = match verdict(kind, address, &Selection::only(chosen.clone()), &net, NOW) {
+                Verdict::Printed(rows) => rows,
+                Verdict::Refused(why) | Verdict::Unavailable(why) => {
+                    panic!("{kind:?} with {chosen:?} printed no report: {why}")
+                }
+            };
             for row in rows {
                 let asked = module_of(&row.module);
                 assert!(
@@ -579,6 +593,7 @@ const ASKS_NOTHING: &[(ScanKind, &str, &str)] = &[
     (ScanKind::Email, "oathnet", "ada@huntsman-shop.net"),
     (ScanKind::Email, "dehashed", "ada@huntsman-shop.net"),
     (ScanKind::Username, "github_user", "ada_lovelace"),
+    (ScanKind::Username, "github_repos", "ada_lovelace"),
     (ScanKind::Username, "bluesky_user", "ada_lovelace"),
     (ScanKind::Username, "seeknow", "ada_lovelace"),
     (ScanKind::Username, "seeknow", "adalovelace"),

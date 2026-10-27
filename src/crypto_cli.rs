@@ -1,8 +1,9 @@
-//! End-to-end front-end for `huntsman-recon crypto` and the crypto arm of `scan`: one Bitcoin
-//! address, Spiderfoot's `BITCOIN_ADDRESS` target, enriched with its on-chain balance and totals.
+//! Shared crypto front-end: Bitcoin address summaries and explicitly prefixed Base
+//! mainnet account snapshots, both routed through CLI, saved scans and Web UI.
 
 use std::path::PathBuf;
 
+use crate::base_rpc;
 use crate::blockchain;
 use crate::canonical::canonical_bitcoin_address;
 use crate::entity::{Entity, merge_by_uid};
@@ -12,10 +13,11 @@ use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::source_outcome::{SourceExecutionOutcome, SourceRun};
 
-pub const CRYPTO_USAGE: &str = "usage: huntsman-recon crypto BITCOIN-ADDRESS [--save FILE]";
+pub const CRYPTO_USAGE: &str =
+    "usage: huntsman-recon crypto BITCOIN-ADDRESS|base:0xADDRESS [--save FILE]";
 pub const CRYPTO_HELP: &str = "\
-crypto BITCOIN-ADDRESS [--save FILE]
-Look up one Bitcoin address: its balance, lifetime received and sent totals and transaction count, confirmed on-chain and keyless from blockchain.info. Base58 (1…, 3…) and bech32 (bc1…) mainnet addresses are accepted. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
+crypto BITCOIN-ADDRESS|base:0xADDRESS [--save FILE]
+Bitcoin: balance, lifetime received/sent and transaction count from blockchain.info. Base: 40-hex-digit EVM address explicitly prefixed base:, with finalized balance in exact wei, outgoing nonce and contract-code presence via the rate-limited public Base JSON-RPC. No keys, full transaction history or ownership assertion. --save FILE writes an unverified ledger; verify can reload it. Makes network requests.";
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -34,7 +36,8 @@ impl CryptoArgs {
     /// [`Error::Invalid`] for a missing or extra argument, [`Error::InvalidValue`] for a value that
     /// is not a Bitcoin mainnet address.
     pub fn parse(args: &[String]) -> Result<Self, Error> {
-        let (raw, save) = LookupTokens::single(args, "crypto needs exactly one Bitcoin address")?;
+        let (raw, save) =
+            LookupTokens::single(args, "crypto needs exactly one Bitcoin or Base address")?;
         let address = canonical_address(&raw)?;
         Ok(Self { address, save })
     }
@@ -48,7 +51,10 @@ pub type CryptoRun = SourceRun<Report>;
 /// [`Error::InvalidValue`] for a value that is not a Bitcoin mainnet address.
 pub fn canonical_address(raw: &str) -> Result<String, Error> {
     canonical_bitcoin_address(raw)
-        .ok_or_else(|| Error::invalid_value("not a Bitcoin mainnet address (1…, 3… or bc1…)"))
+        .or_else(|| base_rpc::canonical_selector(raw))
+        .ok_or_else(|| {
+            Error::invalid_value("expected Bitcoin mainnet address or base:0x plus 40 hex digits")
+        })
 }
 
 /// Look up `address`, the blockchain leg only when the transport's lookup asks its module
@@ -62,7 +68,15 @@ pub fn run<T: Transport + ?Sized>(transport: &T, address: &str, now_unix: u64) -
     let scan_id = crate::entity::scan_id("crypto", &address);
     let mut report = Report::default();
 
-    if transport.runs_module(blockchain::SOURCE) {
+    if address.starts_with("base:") && transport.runs_module(base_rpc::SOURCE) {
+        match base_rpc::lookup(transport, &address, &scan_id, now_unix) {
+            Ok(found) => {
+                report.entities.extend(found.entities);
+                report.outcomes.push(found.outcome);
+            }
+            Err(error) => return CryptoRun::Network(error.to_string()),
+        }
+    } else if !address.starts_with("base:") && transport.runs_module(blockchain::SOURCE) {
         match blockchain::lookup(transport, &address, &scan_id, now_unix) {
             Ok(found) => {
                 report.entities.extend(found.entities);
@@ -107,8 +121,11 @@ mod tests {
 
     #[test]
     fn rejects_non_bitcoin_selectors() {
-        // An Ethereum address is a crypto address but not one this lookup can resolve.
+        // A bare EVM address is ambiguous across chains; only base: is supported.
         assert!(CryptoArgs::parse(&["0x0000000000000000000000000000000000000000".into()]).is_err());
+        assert!(
+            CryptoArgs::parse(&["base:0x0000000000000000000000000000000000000000".into()]).is_ok()
+        );
         assert!(CryptoArgs::parse(&["not-an-address".into()]).is_err());
         let _ = Keys::default();
     }

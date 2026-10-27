@@ -16,9 +16,9 @@ use crate::scan_route::ScanKind;
 use crate::threat_feeds;
 use crate::{
     abuseipdb, asic_director, asic_persons, blockchain, bluesky_user, certspotter, dehashed,
-    duolingo, exposure_cli, github_user, gravatar, greynoise, hunter, internetdb, keybase,
-    mnemonic, nominatim, numverify, oathnet, openpgp_keys, rdap, ripestat, seeknow_collector,
-    tiktok_public_contact, virustotal, wigle, wikipedia,
+    duolingo, exposure_cli, github_repos, github_user, gravatar, greynoise, hunter, internetdb,
+    keybase, mnemonic, nominatim, numverify, oathnet, openpgp_keys, rdap, ripestat,
+    seeknow_collector, tiktok_public_contact, virustotal, wigle, wikipedia,
 };
 
 /// The breach legs an email address's lookup folds in.
@@ -82,6 +82,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
         }
         ScanKind::Username => vec![
             github_user::SRC,
+            github_repos::SRC,
             crate::gitlab_user::SRC,
             bluesky_user::SRC,
             keybase::SRC,
@@ -108,7 +109,7 @@ pub fn modules(kind: ScanKind) -> Vec<&'static str> {
             network
         }
         ScanKind::Exposure => BREACH.to_vec(),
-        ScanKind::CryptoAddress => vec![blockchain::SOURCE],
+        ScanKind::CryptoAddress => vec![blockchain::SOURCE, crate::base_rpc::SOURCE],
         ScanKind::Place => vec![nominatim::SOURCE],
     };
     // Stable deduplication keeps each source's first execution position and

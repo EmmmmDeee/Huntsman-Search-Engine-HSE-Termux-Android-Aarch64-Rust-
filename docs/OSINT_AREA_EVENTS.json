@@ -1,0 +1,23 @@
+{
+  "as_of_unix": 1793059200,
+  "events": [
+    {
+      "id": "event-1",
+      "source_url": "https://example.org/public-event-1",
+      "lat": -26.8,
+      "lon": 152.9,
+      "occurred_at_unix": 1792972800,
+      "category": "property",
+      "severity": 2
+    },
+    {
+      "id": "event-2",
+      "source_url": "https://example.net/public-event-2",
+      "lat": -27,
+      "lon": 152,
+      "occurred_at_unix": 1792800000,
+      "category": "parking",
+      "severity": 4
+    }
+  ]
+}

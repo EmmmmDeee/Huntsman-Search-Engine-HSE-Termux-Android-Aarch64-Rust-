@@ -1,0 +1,25 @@
+{
+  "case_id": "synthetic-case",
+  "observations": [
+    {
+      "id": "source-a",
+      "subject": "example.org",
+      "predicate": "published_contact",
+      "value": "first@example.org",
+      "source_url": "https://example.org/about",
+      "source_root": "example.org",
+      "observed_at_unix": 1793050000,
+      "event_at_unix": 1793000000
+    },
+    {
+      "id": "source-b",
+      "subject": "example.org",
+      "predicate": "published_contact",
+      "value": "second@example.org",
+      "source_url": "https://example.net/archive",
+      "source_root": "example.net",
+      "observed_at_unix": 1793050100,
+      "event_at_unix": 1793000000
+    }
+  ]
+}
