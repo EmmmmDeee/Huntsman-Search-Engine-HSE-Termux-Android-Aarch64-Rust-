@@ -159,9 +159,7 @@ fn observation_window(value: String, indices: &[usize], entity: &Entity) -> Valu
         };
         // A folded observation retains its additional source timestamps; the
         // primary timestamp alone would invent non-overlapping observation windows.
-        for provenance in
-            std::iter::once(&evidence.provenance).chain(&evidence.merged_provenance)
-        {
+        for provenance in std::iter::once(&evidence.provenance).chain(&evidence.merged_provenance) {
             let time = provenance.recorded_at_unix;
             if time == 0 {
                 has_undated_observations = true;
@@ -258,7 +256,10 @@ fn summarise_assertions(
         .filter_map(|(attribute, observations)| {
             (observations.len() > 1).then(|| CompetingValues {
                 attribute,
-                values: observations.iter().map(|window| window.value.clone()).collect(),
+                values: observations
+                    .iter()
+                    .map(|window| window.value.clone())
+                    .collect(),
                 interpretation: "competing_recorded_values_not_proven_contradiction",
                 temporal_pattern: temporal_pattern(&observations),
                 observations,
@@ -437,7 +438,10 @@ mod tests {
             .build();
         let report = assess(&subject);
         let issue = &report.competing_values[0];
-        assert_eq!(issue.temporal_pattern, TemporalPattern::OrderedObservationWindows);
+        assert_eq!(
+            issue.temporal_pattern,
+            TemporalPattern::OrderedObservationWindows
+        );
         assert_eq!(issue.observations[0].value, "New");
         assert_eq!(issue.observations[0].first_observed_unix, Some(300));
         assert_eq!(issue.observations[1].value, "Old");
@@ -456,13 +460,14 @@ mod tests {
     #[test]
     fn values_in_one_evidence_record_do_not_imply_a_chronological_transition() {
         let subject = Entity::builder(EntityKind::Organisation, "Example", 0.9, "scan")
-            .evidence(
-                timed_owner("registry", "A", 100).with_attr("owner", "B"),
-            )
+            .evidence(timed_owner("registry", "A", 100).with_attr("owner", "B"))
             .build();
         let report = assess(&subject);
         let issue = &report.competing_values[0];
-        assert_eq!(issue.temporal_pattern, TemporalPattern::SharedEvidenceRecord);
+        assert_eq!(
+            issue.temporal_pattern,
+            TemporalPattern::SharedEvidenceRecord
+        );
         assert_eq!(issue.observations[0].evidence_indices, vec![0]);
         assert_eq!(issue.observations[1].evidence_indices, vec![0]);
     }
@@ -479,7 +484,10 @@ mod tests {
             .build();
         let report = assess(&subject);
         let issue = &report.competing_values[0];
-        assert_eq!(issue.temporal_pattern, TemporalPattern::OverlappingObservationWindows);
+        assert_eq!(
+            issue.temporal_pattern,
+            TemporalPattern::OverlappingObservationWindows
+        );
         assert_eq!(issue.observations[0].first_observed_unix, Some(100));
         assert_eq!(issue.observations[0].last_observed_unix, Some(400));
     }
@@ -492,7 +500,10 @@ mod tests {
             .build();
         let report = assess(&subject);
         let issue = &report.competing_values[0];
-        assert_eq!(issue.temporal_pattern, TemporalPattern::InsufficientTimestamps);
+        assert_eq!(
+            issue.temporal_pattern,
+            TemporalPattern::InsufficientTimestamps
+        );
         assert_eq!(issue.observations[0].first_observed_unix, None);
         assert!(issue.observations[0].has_undated_observations);
     }
