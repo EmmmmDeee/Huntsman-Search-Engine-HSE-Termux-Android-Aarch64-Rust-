@@ -900,7 +900,6 @@ $('newscan').onsubmit=async ev=>{
   try{const r=await api('/api/scans?'+p,{method:'POST'});location.hash='#/scan/'+enc(r.id)+'/summary'}
   catch(e){fail('nerror',e.message)}finally{b.disabled=false}
 };
-// One scan: Spiderfoot's sections over the scan API. Answers are cached for the scan and dropped
 // at each poll while it runs, so a section shows what the scan has found so far.
 const TABS=['summary','correlations','browse','graph','analysis','settings','log'];
 let sid='',scan=null,tab='summary',btype='',cache={},bmode='full',blist=[],polls=0;const fpsel=new Set();
@@ -960,7 +959,6 @@ $('sccompare').onclick=async()=>{
 };
 $('scdelete').onclick=()=>act1('delete',[sid]);
 const errors=s=>Array.isArray(s.errors)?s.errors.length:(s.errors||0);
-// A source's outcome as the scan saved it: what it found, its HTTP status, when to retry, and why.
 const why=o=>[o.found!=null&&'found '+o.found,o.http_status&&'HTTP '+o.http_status,o.retry_after_secs&&'retry after '+o.retry_after_secs+' s',o.detail].filter(Boolean).join(' · ');
 $('uncdownload').onclick=()=>{if(scan?.uncertainty_register)save(scan.uncertainty_register,'huntsman-uncertainties-'+sid)};
 
@@ -1007,7 +1005,6 @@ $('rawdownload').onclick=async()=>{
   }
 };
 
-// These are saved source execution outcomes, not a claim that all available sources ran.
 const coverage=s=>!s||s.unit!=='source_execution'?'Execution coverage unavailable; inspect the source outcomes.':
   !s.total?'No recorded source executions; coverage is unknown.':
   s.accepted+' of '+s.total+' recorded executions accepted ('+s.success+' with results, '+s.valid_zero+' confirmed zero); '+
@@ -1028,14 +1025,8 @@ async function summary(){
   if(!types.length)box.append(el('p','help',live(scan.status)?'No data yet. This section updates while the scan runs.':'No data.'));
   $('bars-n').textContent=types.length;
   const src=scan.sources||[];$('srcs-n').textContent=src.length;
-  const people=scan.people_source_coverage;
-  const peopleNote=people&&people.scope==='people_lookup_catalogue'?
-    ' People catalogue: '+people.accepted_sources+' / '+people.selected_sources+' selected sources accepted; '+
-    people.not_configured_sources+' unconfigured; '+people.unresolved_sources+' unresolved; '+
-    people.not_observed_sources+' without a recorded outcome.'+
-    (people.sources||[]).filter(row=>row.status==='not_observed').map(row=>' Missing: '+row.module+'.').join('')+
-    ' External public-record coverage remains unverified.':'';
-  $('srcs-coverage').textContent=coverage(scan.source_execution_summary)+peopleNote;
+  const p=scan.people_source_coverage;
+  $('srcs-coverage').textContent=coverage(scan.source_execution_summary)+(p?' People: '+p.accepted_sources+'/'+p.selected_sources+' accepted, '+p.not_configured_sources+' unconfigured, '+p.unresolved_sources+' unresolved, '+p.not_observed_sources+' missing; discovery unverified.':'');
   fill('srcs',src,o=>[o.module,'',when(o.observed_at_unix*1000),why(o)]);
   [...$('srcs').rows].forEach((tr,i)=>{const o=src[i];if(o)tr.cells[1].replaceChildren(el('span','label '+(tone[o.outcome]||'bad'),o.outcome))});
   const register=scan.uncertainty_register;
@@ -1051,7 +1042,6 @@ async function summary(){
     i.next_action
   ]);
 }
-// A data element as Spiderfoot lists it, opening to the whole raw record it came from.
 function value(v){
   if(v==null||v==='')return el('span','',v==null?'none':'(empty)');
   if(typeof v!=='object')return el('span','data',v);
