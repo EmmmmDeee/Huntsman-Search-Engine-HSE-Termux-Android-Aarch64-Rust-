@@ -854,6 +854,53 @@ fn scans_watch_runs_the_target_again_and_alerts_on_what_is_new() {
     let _ = fs::remove_dir_all(&home);
 }
 
+/// `scans alerts` lists every decision `alert` and `watch` made, raised or not, oldest first.
+#[test]
+fn scans_alerts_keeps_a_history_of_every_decision() {
+    let home = scratch("scans-alerts");
+    let rules = write_phone_rule(&home);
+    let run = |args: &[&str]| bin().args(args).env("HOME", &home).output().unwrap();
+    let earlier = {
+        let out = run(&["scans", "run", "+61412345678", "-u", "passive", "--json"]);
+        assert_eq!(out.status.code(), Some(0));
+        let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        record["id"].as_str().unwrap().to_owned()
+    };
+    assert_eq!(
+        run(&["scans", "alert", &earlier, &earlier]).status.code(),
+        Some(0)
+    );
+    let watched = run(&[
+        "scans",
+        "watch",
+        &earlier,
+        "--rules",
+        rules.to_str().unwrap(),
+    ]);
+    assert_eq!(watched.status.code(), Some(1));
+
+    let json = run(&["scans", "alerts", "--json"]);
+    assert_eq!(json.status.code(), Some(0));
+    let entries: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let entries = entries.as_array().unwrap();
+    assert_eq!(entries.len(), 2, "one quiet decision and one raised one");
+    assert_eq!(entries[0]["raised"], false);
+    assert_eq!(entries[0]["earlier"], earlier.as_str());
+    assert_eq!(entries[1]["raised"], true);
+    assert_eq!(entries[1]["reasons"][0]["rule"], "phone_present");
+    assert_eq!(entries[0]["target"], "+61412345678");
+
+    let table = run(&["scans", "alerts"]);
+    let stdout = String::from_utf8_lossy(&table.stdout);
+    assert!(
+        stdout.starts_with("AT\tRAISED\tEARLIER\tLATER\tTARGET\tREASONS\n"),
+        "{stdout}"
+    );
+    assert_eq!(stdout.lines().count(), 3, "{stdout}");
+    assert_eq!(run(&["scans", "alerts", "extra"]).status.code(), Some(64));
+    let _ = fs::remove_dir_all(&home);
+}
+
 /// `scans search` finds elements in every saved scan, or only the ones named, each with its scan.
 #[test]
 fn scans_search_finds_values_in_every_scan_or_the_ones_named() {
