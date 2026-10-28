@@ -80,7 +80,9 @@ pub fn lookup(
     let url = url(&cell);
     match api_leg::get(transport, &API, keys, &url, now_unix)? {
         Answer::Body(body) => decode(&body),
-        Answer::NotFound(_) => Ok(None),
+        // OpenCelliD documents missing cells as HTTP 200 / code 1.
+        // HTTP 404 means an endpoint is unavailable or misconfigured, not zero results.
+        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
     }
 }
 
@@ -88,6 +90,33 @@ pub fn lookup(
 /// No clamping: an out-of-range provider value must not become a real location. **Pure.**
 fn valid_position(lat: f64, lon: f64) -> bool {
     (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)
+}
+
+/// Classify provider-declared errors without copying the error message into diagnostics:
+/// `OpenCelliD`'s invalid-key response may echo the caller's credential. **Pure.**
+///
+/// Only an explicit "Cell not found" is a genuine zero. Provider error code 1
+/// with a different message is treated as temporary upstream unavailability.
+/// The legacy un-coded "Cell not found" body remains compatible. Unknown codes
+/// are schema drift, not invented HTTP meanings.
+fn provider_error(value: &serde_json::Value) -> Option<Result<(), LegError>> {
+    let message = value.get("error")?;
+    let missing = message
+        .as_str()
+        .is_some_and(|text| text.trim().eq_ignore_ascii_case("Cell not found"));
+    let code = value.get("code").and_then(serde_json::Value::as_u64);
+    Some(match code {
+        Some(1) if missing => Ok(()),
+        Some(1) => Err(LegError::Server(503)),
+        None if value.get("code").is_none() && missing => Ok(()),
+        Some(2) => Err(LegError::Unauthorized),
+        Some(3) => Err(LegError::BadRequest(400)),
+        Some(5) => Err(LegError::Server(500)),
+        Some(7) => Err(LegError::RateLimited { retry_after: None }),
+        _ => Err(LegError::Decode(
+            "OpenCelliD returned an unrecognised error response".into(),
+        )),
+    })
 }
 
 /// One answer body. **Pure.**
@@ -99,13 +128,16 @@ pub fn decode(body: &[u8]) -> Result<Option<Finding>, LegError> {
         std::str::from_utf8(body).map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|_| LegError::Decode("answer is not JSON".into()))?;
-    if value.get("error").is_some() {
+    if let Some(result) = provider_error(&value) {
+        result?;
         return Ok(None);
     }
     let lat = value.get("lat").and_then(serde_json::Value::as_f64);
     let lon = value.get("lon").and_then(serde_json::Value::as_f64);
     let Some((lat, lon)) = lat.zip(lon) else {
-        return Ok(None);
+        return Err(LegError::Decode(
+            "OpenCelliD response has no position".into(),
+        ));
     };
     if !valid_position(lat, lon) {
         return Err(LegError::Decode("OpenCelliD position out of range".into()));
@@ -211,7 +243,8 @@ pub fn area<T: Transport + ?Sized>(
         now_unix,
     )? {
         Answer::Body(body) => decode_area(&body),
-        Answer::NotFound(_) => Ok(Area::default()),
+        // A zero area is HTTP 200 with an empty cells array (or code 1).
+        Answer::NotFound(_) => Err(LegError::Unexpected(404)),
     }
 }
 
@@ -229,11 +262,9 @@ pub fn decode_area(body: &[u8]) -> Result<Area, LegError> {
         std::str::from_utf8(body).map_err(|_| LegError::Decode("answer is not UTF-8".into()))?;
     let value: Value =
         serde_json::from_str(text).map_err(|_| LegError::Decode("answer is not JSON".into()))?;
-    if let Some(error) = value.get("error") {
-        if value.get("code").and_then(Value::as_u64) == Some(1) {
-            return Ok(Area::default());
-        }
-        return Err(LegError::Decode(format!("OpenCelliD error: {error}")));
+    if let Some(result) = provider_error(&value) {
+        result?;
+        return Ok(Area::default());
     }
     let cells = value
         .get("cells")
@@ -333,8 +364,61 @@ mod tests {
     }
 
     #[test]
-    fn an_error_body_is_none() {
-        assert!(decode(br#"{"error":"Cell not found"}"#).unwrap().is_none());
+    fn only_a_genuine_missing_cell_is_an_empty_result() {
+        for body in [
+            &br#"{"error":"Cell not found"}"#[..],
+            br#"{"error":"Cell not found","code":1}"#,
+            br#"{"error":"cell not found","code":1,"notice":"coverage varies"}"#,
+        ] {
+            assert!(decode(body).unwrap().is_none());
+        }
+        assert_eq!(
+            decode(br#"{"error":"temporarily unavailable","code":1}"#),
+            Err(LegError::Server(503))
+        );
+        for body in [
+            &br#"{"error":"Invalid API key"}"#[..],
+            br#"{"error":"Forbidden","code":4}"#,
+            br#"{"error":"Too many requests","code":6}"#,
+            br#"{"error":"unrecognised: secret-for-log","code":999}"#,
+            br#"{"error":"Cell not found","code":"1"}"#,
+            br#"{"lat":12}"#,
+            br"{}",
+        ] {
+            assert!(matches!(decode(body), Err(LegError::Decode(_))));
+        }
+    }
+
+    #[test]
+    fn provider_failures_preserve_classification_without_leaking_keys() {
+        let cases: &[(&[u8], LegError)] = &[
+            (
+                br#"{"error":"API Key not known: test-secret-should-not-appear","code":2}"#,
+                LegError::Unauthorized,
+            ),
+            (
+                br#"{"error":"Invalid input data","code":3}"#,
+                LegError::BadRequest(400),
+            ),
+            (
+                br#"{"error":"Internal server error","code":5}"#,
+                LegError::Server(500),
+            ),
+            (
+                br#"{"error":"Daily limit exceeded","code":7}"#,
+                LegError::RateLimited { retry_after: None },
+            ),
+        ];
+        for (body, expected) in cases {
+            let failure = decode(body).expect_err("provider failure must not be a zero");
+            assert_eq!(&failure, expected);
+            assert!(
+                !failure
+                    .to_string()
+                    .contains("test-secret-should-not-appear")
+            );
+            assert_eq!(decode_area(body), Err(expected.clone()));
+        }
     }
 
     #[test]
@@ -381,11 +465,15 @@ mod tests {
             decode_area(br#"{"error":"Cell not found","code":1}"#).unwrap(),
             Area::default()
         );
-        for body in [
-            &br#"{"error":"Invalid input data","code":3}"#[..],
-            br#"{"count":3}"#,
-            b"<kml stat=\"fail\"/>",
-        ] {
+        assert_eq!(
+            decode_area(br#"{"error":"Cell not found"}"#).unwrap(),
+            Area::default()
+        );
+        assert_eq!(
+            decode_area(br#"{"error":"Invalid input data","code":3}"#),
+            Err(LegError::BadRequest(400))
+        );
+        for body in [&br#"{"count":3}"#[..], b"<kml stat=\"fail\"/>"] {
             assert!(
                 matches!(decode_area(body), Err(LegError::Decode(_))),
                 "{}",
