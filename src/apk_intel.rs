@@ -1870,10 +1870,10 @@ mod tests {
             .build();
         let resources = arsc::tests::table(&["res/xml/pins.xml"], id, 0);
         let mut xml = Axml::new(&["digest", "expiration"]);
-        xml.start("network-security-config", [])
-            .start("domain-config", []);
+        xml.start("network-security-config", &[])
+            .start("domain-config", &[]);
         for domain in domains {
-            xml.start("domain", []).text(domain).end("domain");
+            xml.start("domain", &[]).text(domain).end("domain");
         }
         xml.start("pin-set", &[("expiration", Val::Str("2030-01-01"))])
             .start("pin", &[("digest", Val::Str("SHA-256"))])
