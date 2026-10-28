@@ -112,6 +112,51 @@ fn inherited_cleartext(
     base
 }
 
+/// Preserve the declaring domain-config and refuse malformed pin text. A digest is only
+/// a declared candidate pivot; this routine never contacts a server or verifies TLS.
+fn record_pin(nodes: &[XmlNode], node: &XmlNode, policy: &mut NetworkPolicy) {
+    let Some(parent) = node.parent else {
+        return;
+    };
+    if nodes[parent].name != "pin-set" {
+        return;
+    }
+    let Some(owner) = nodes[parent].parent else {
+        return;
+    };
+    if nodes[owner].name != "domain-config" {
+        return;
+    }
+    policy.pin_count = policy.pin_count.saturating_add(1);
+    if node.attr("digest") != Some("SHA-256") {
+        return;
+    }
+    let digest = node.text.trim();
+    if !canonical_sha256_pin(digest) {
+        return;
+    }
+    let declared_domains: Vec<String> = nodes
+        .iter()
+        .filter(|domain| domain.name == "domain" && domain.parent == Some(owner))
+        .map(|domain| domain.text.trim())
+        .filter(|domain| !domain.is_empty() && domain.len() <= 253)
+        .map(str::to_owned)
+        .collect();
+    if declared_domains.is_empty() {
+        return;
+    }
+    if policy.pin_fingerprints.len() == MAX_PIN_FINGERPRINTS {
+        policy.pin_fingerprints_omitted += 1;
+        return;
+    }
+    policy.pin_fingerprints.push(PinFingerprint {
+        digest_algorithm: "SHA-256".to_owned(),
+        digest_base64: digest.to_owned(),
+        declared_domains,
+        expiration: nodes[parent].attr("expiration").map(str::to_owned),
+    });
+}
+
 /// Parse a compiled network-security-config XML document from the exact ZIP member
 /// resolved through the manifest reference and resources.arsc. No external requests.
 ///
@@ -200,46 +245,7 @@ pub fn parse(data: &[u8], resource_id: u32, resource_path: &str) -> Result<Netwo
                     }
                 }
             }
-            "pin" => {
-                let Some(parent) = node.parent else { continue };
-                if nodes[parent].name != "pin-set" {
-                    continue;
-                }
-                let Some(owner) = nodes[parent].parent else {
-                    continue;
-                };
-                if nodes[owner].name != "domain-config" {
-                    continue;
-                }
-                policy.pin_count = policy.pin_count.saturating_add(1);
-                if node.attr("digest") != Some("SHA-256") {
-                    continue;
-                }
-                let digest = node.text.trim();
-                if !canonical_sha256_pin(digest) {
-                    continue;
-                }
-                let declared_domains: Vec<String> = nodes
-                    .iter()
-                    .filter(|domain| domain.name == "domain" && domain.parent == Some(owner))
-                    .map(|domain| domain.text.trim())
-                    .filter(|domain| !domain.is_empty() && domain.len() <= 253)
-                    .map(str::to_owned)
-                    .collect();
-                if declared_domains.is_empty() {
-                    continue;
-                }
-                if policy.pin_fingerprints.len() == MAX_PIN_FINGERPRINTS {
-                    policy.pin_fingerprints_omitted += 1;
-                    continue;
-                }
-                policy.pin_fingerprints.push(PinFingerprint {
-                    digest_algorithm: "SHA-256".to_owned(),
-                    digest_base64: digest.to_owned(),
-                    declared_domains,
-                    expiration: nodes[parent].attr("expiration").map(str::to_owned),
-                });
-            }
+            "pin" => record_pin(&nodes, node, &mut policy),
             _ => {}
         }
     }
