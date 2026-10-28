@@ -3,6 +3,7 @@ address_au	leaf	Australian address and phone normalization utility
 analysis	runtime	shared analysis fan-out
 api_leg	runtime	shared request path, key binding and status mapping of the free-tier API legs
 apk_intel	adapter	bounded offline APK archive intelligence reached by the shipped apk CLI and the serve upload path: ZIP inventory, binary AndroidManifest.xml, v1/v2/v3 signer certificates and DEX code URLs as source-labelled evidence and pivot entities
+archived_page	leaf	the one archived-page contact reader (capture choice, web-page bound, mailto/tel and text contacts, URL admission, CDX timestamp) shared by wayback_cdx and common_crawl
 artifacts	exporter	bounded shared-state artifact renderer
 asic_director	adapter	ASIC director source client
 asic_persons	adapter	ASIC people source client
@@ -31,6 +32,7 @@ clock	leaf	the wall clock as Unix time, read through one module
 collection	runtime	provider-neutral execution/observation bridge
 collector	adapter	source-agnostic collection boundary
 commercial_readiness	diagnostic	machine-checkable capability proof and benchmark readiness reporting
+common_crawl	adapter	keyless Common Crawl index collector reached through domain_cli from domain, scan -k domain and /api/lookup; reads up to 3 crawled pages by WARC byte range for historical contacts
 community	runtime	graph community analysis through intelligence report
 concurrent	runtime	runs a lookup's independent sources at once for exposure_cli and every email, username and name lookup
 confidence	runtime	entity confidence and verification helpers
