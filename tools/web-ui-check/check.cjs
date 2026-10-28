@@ -134,8 +134,15 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       page.on('request', r => paths.push(new URL(r.url()).pathname));
       await page.addInitScript(() => document.addEventListener('securitypolicyviolation', e => (window.__csp = window.__csp || []).push(e.violatedDirective)));
       await page.goto(base + '/', { waitUntil: 'networkidle' });
-      // The page's own health call settles the pill; a browser can go network-idle just before.
+      // Health and the scan list settle independently. Network-idle and an online
+      // pill do not prove that the initial scan-list response has been rendered.
       await page.waitForFunction(() => document.getElementById('state').textContent !== 'connecting', null, { timeout: 5000 }).catch(() => {});
+      await page.waitForFunction(() => {
+        const spinner = document.getElementById('sspin');
+        const empty = document.getElementById('sempty');
+        const list = document.getElementById('slist');
+        return spinner.hidden && (!empty.hidden || !list.hidden);
+      }, null, { timeout: 10000 }).catch(() => {});
       const m = await page.evaluate(() => {
         const n = performance.getEntriesByType('navigation')[0], f = performance.getEntriesByName('first-contentful-paint')[0];
         return {
