@@ -57,7 +57,7 @@ const MAX_APK_INFLATED_BYTES: usize = 256 * 1024 * 1024;
 const MAX_HOST_ENTITIES: usize = 64;
 const LIMITATIONS: &str = "Offline static reading: manifest claims and signing certificates are unverified; code URLs and native ELF build-ids are candidate leads, not proof of network contact, identical binaries, provenance or authorship. Nothing is executed or fetched.";
 
-pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts) and resolve the app's displayed name from resources.arsc, summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER (NOT verifying any signature), list the URLs and third-party SDKs the DEX code references, read each native library's GNU build-id (a cross-APK build pivot), SONAME and linked libraries (DT_NEEDED) from its ELF structures, name the cross-platform framework or game engine it is built on (Flutter, Unity, React Native and more) from those libraries, and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX, native ELF and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
+pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts) and resolve the app's displayed name from resources.arsc, summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER and of their public key (NOT verifying any signature), list the URLs and third-party SDKs the DEX code references, read each native library's GNU build-id (a cross-APK build pivot), SONAME and linked libraries (DT_NEEDED) from its ELF structures, name the cross-platform framework or game engine it is built on (Flutter, Unity, React Native and more) from those libraries, and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX, native ELF and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Inventory {
@@ -805,15 +805,7 @@ fn document_evidence(
         "apk_app_label",
         analysis.app_label.clone().unwrap_or_default(),
     );
-    put(
-        "apk_signer_certificate_sha256_unverified",
-        analysis
-            .signers
-            .iter()
-            .map(|signer| signer.sha256.as_str())
-            .collect::<Vec<_>>()
-            .join(","),
-    );
+    signer_digest_attrs(analysis, &mut put);
     if let Some(signer) = analysis.signers.first() {
         put("apk_signer_subject", signer.subject.clone());
         put("apk_signer_valid_from", signer.not_before.clone());
@@ -858,6 +850,27 @@ fn document_evidence(
     extra.into_iter().fold(evidence, |evidence, (key, value)| {
         evidence.with_attr(key, value)
     })
+}
+
+/// The signing certificates' and keys' digests as document-evidence attributes, one comma-joined
+/// list each.
+fn signer_digest_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, String)) {
+    let join = |pick: fn(&Certificate) -> &str| {
+        analysis
+            .signers
+            .iter()
+            .map(pick)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    put(
+        "apk_signer_certificate_sha256_unverified",
+        join(|signer| signer.sha256.as_str()),
+    );
+    put(
+        "apk_signer_public_key_sha256_unverified",
+        join(|signer| signer.public_key_sha256.as_str()),
+    );
 }
 
 /// The native libraries' build-ids, dependency fingerprint and detected frameworks as
@@ -958,6 +971,33 @@ fn native_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut V
     }
 }
 
+/// The signing-key pivot for each distinct public key across the certificates. Keyed on the
+/// `SubjectPublicKeyInfo` digest, it pivots across certificates that re-wrap the same key (Play
+/// app-signing, a renewed certificate), which the per-certificate digest cannot.
+fn signer_key_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec<Entity>) {
+    let mut seen = std::collections::BTreeSet::new();
+    for signer in &analysis.signers {
+        if signer.public_key_sha256.is_empty() || !seen.insert(signer.public_key_sha256.clone()) {
+            continue;
+        }
+        push_entity(
+            entities,
+            EntityKind::Other,
+            &format!("apk-signer-pubkey-sha256:{}", signer.public_key_sha256),
+            0.9,
+            sid,
+            Evidence::new(
+                EvidenceProvenance::for_scan(SOURCE, sid),
+                format!(
+                    "Signing key {label} uses (SHA-256 of its SubjectPublicKeyInfo); a matching key is a candidate lead, not a verified signature",
+                ),
+            )
+            .with_attr("public_key_sha256", signer.public_key_sha256.as_str()),
+            &[SOURCE, "offline", "apk_signer"],
+        );
+    }
+}
+
 fn lead_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec<Entity>) {
     let evidence = |text: String| Evidence::new(EvidenceProvenance::for_scan(SOURCE, sid), text);
     for signer in &analysis.signers {
@@ -972,6 +1012,7 @@ fn lead_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec
                 signer.scheme
             ))
             .with_attr("certificate_sha256", signer.sha256.as_str())
+            .with_attr("public_key_sha256", signer.public_key_sha256.as_str())
             .with_attr("certificate_subject", signer.subject.as_str())
             .with_attr("certificate_issuer", signer.issuer.as_str())
             .with_attr("certificate_serial", signer.serial.as_str())
@@ -982,6 +1023,7 @@ fn lead_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec
             &[SOURCE, "offline", "apk_signer"],
         );
     }
+    signer_key_entities(analysis, label, sid, entities);
     native_entities(analysis, label, sid, entities);
     let host_entity = |host: &str| {
         if host.parse::<std::net::Ipv4Addr>().is_ok() {
@@ -1388,6 +1430,15 @@ mod tests {
         assert!(
             values.contains(&(EntityKind::Other, release_pivot.as_str())),
             "{values:?}"
+        );
+        // Each distinct signing key is its own pivot entity (two keys here).
+        let key_pivots = values
+            .iter()
+            .filter(|(_, value)| value.starts_with("apk-signer-pubkey-sha256:"))
+            .count();
+        assert_eq!(
+            key_pivots, 2,
+            "one pubkey pivot per distinct key: {values:?}"
         );
         assert!(
             values.contains(&(EntityKind::Domain, "api.fieldtrack.io")),
