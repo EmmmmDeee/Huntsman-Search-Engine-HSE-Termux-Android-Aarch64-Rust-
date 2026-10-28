@@ -1932,7 +1932,10 @@ mod tests {
             .iter()
             .find(|entity| entity.value.starts_with("apk-tls-spki-sha256:"))
             .unwrap();
-        assert_eq!(pivots[0].uid, other.uid, "same digest yields same pivot UID");
+        assert_eq!(
+            pivots[0].uid, other.uid,
+            "same digest yields same pivot UID"
+        );
         assert_eq!(attr(other, "declared_domains"), Some("other.example.net"));
         assert_eq!(first.outcomes[0].found, Some(first.entities.len()));
     }
