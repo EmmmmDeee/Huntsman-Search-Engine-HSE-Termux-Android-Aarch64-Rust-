@@ -8,8 +8,13 @@
 //! Nothing is executed, no signature is verified and no network request is made; every value is
 //! the archive's own claim, and a certificate name or a URL in code is never proof of authorship.
 
+mod arsc;
 mod axml;
 mod dex;
+mod elf;
+mod native_framework;
+mod risk;
+mod sdk;
 mod signer;
 
 use std::borrow::Cow;
@@ -34,8 +39,15 @@ const LOCAL_SIGNATURE: &[u8] = b"PK\x03\x04";
 const APK_SIG_MAGIC: &[u8] = b"APK Sig Block 42";
 /// The most a compiled manifest may inflate to; real ones are kilobytes.
 const MAX_APK_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+/// The most the resource table (`resources.arsc`) may inflate to when resolving the app label.
+const MAX_APK_RESOURCES_BYTES: usize = 64 * 1024 * 1024;
 /// The most one DEX file may inflate to.
 const MAX_APK_DEX_BYTES: usize = 128 * 1024 * 1024;
+/// The most one native library read for its build-id may inflate to.
+const MAX_APK_NATIVE_BYTES: usize = 64 * 1024 * 1024;
+/// At most this many native libraries are read for build-ids, so an archive packed with `.so`
+/// files cannot make the phone inflate every one.
+const MAX_NATIVE_LIBS_READ: usize = 64;
 /// The most one v1 signature file may inflate to.
 const MAX_APK_SIGNATURE_FILE_BYTES: usize = 1024 * 1024;
 /// The most one APK's members may inflate to in total, so a small archive cannot make the phone
@@ -43,9 +55,9 @@ const MAX_APK_SIGNATURE_FILE_BYTES: usize = 1024 * 1024;
 const MAX_APK_INFLATED_BYTES: usize = 256 * 1024 * 1024;
 /// Hosts and URLs turned into entities, each; the report lists more.
 const MAX_HOST_ENTITIES: usize = 64;
-const LIMITATIONS: &str = "Offline static reading: the manifest is the archive's own claim, signing certificates are those the archive presents (no signature is verified), and a URL in code is a lead, not proof the app contacts it. Nothing is executed or fetched.";
+const LIMITATIONS: &str = "Offline static reading: manifest claims and signing certificates are unverified; code URLs and native ELF build-ids are candidate leads, not proof of network contact, identical binaries, provenance or authorship. Nothing is executed or fetched.";
 
-pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. No decompression, certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
+pub const APK_HELP: &str = "apk FILE [--json] | apk diff OLD NEW [--json]\nInspect one local Android APK offline. Read at most 64 MiB, refuse symlinks, validate ZIP directory and local headers, inventory DEX files and native ABIs, count compressed/encrypted entries, and identify signing artifacts and APK v2/v3 signing-block IDs (presence only, NOT signature verification). Decode the binary AndroidManifest (package, versions, permissions, exported components, deep-link hosts) and resolve the app's displayed name from resources.arsc, summarise the v1/v2/v3 signing certificates by the SHA-256 of their DER and of their public key (NOT verifying any signature), list the URLs and third-party SDKs the DEX code references, read each native library's GNU build-id (a cross-APK build pivot), SONAME and linked libraries (DT_NEEDED) from its ELF structures, name the cross-platform framework or game engine it is built on (Flutter, Unity, React Native and more) from those libraries, and grade the manifest's security posture (debuggable, cleartext traffic, exported components, sensitive permissions). Emit the SHA-256 of exact input bytes and provenance-bearing document evidence. Only bounded decompression of selected manifest, DEX, native ELF and signature members; no certificate validation, code execution, network request or root. A name in an archive is not proof of valid code or ownership. diff compares two complete, bounded APK files by exact stored-member bytes and selected ZIP metadata; it detects added, removed and changed structural components without decompression or signature verification. Archive-only differences may reflect signing blocks, order or alignment.";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Inventory {
@@ -70,7 +82,23 @@ pub struct Inventory {
 
 pub use axml::{Component, Exposure, Manifest};
 pub use dex::CodeUrls;
+pub use risk::Flag;
+pub use sdk::Tracker;
 pub use signer::Certificate;
+
+/// One native library and what its ELF structures declare about it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct NativeLibrary {
+    /// The ABI directory the library sits in (`arm64-v8a`, …).
+    pub abi: String,
+    pub name: String,
+    /// The GNU build-id as lowercase hex, or empty when the library carries none.
+    pub build_id: String,
+    /// The library's own recorded name (`DT_SONAME`), when it declares one.
+    pub soname: Option<String>,
+    /// The shared libraries it links against (`DT_NEEDED`); a native dependency fingerprint.
+    pub needed: Vec<String>,
+}
 
 /// What reading the archive's members found.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -81,6 +109,17 @@ pub struct Analysis {
     /// Each distinct signing certificate, its schemes joined when several present it.
     pub signers: Vec<Certificate>,
     pub code: CodeUrls,
+    /// The app's displayed name (`android:label`), resolved from `resources.arsc` when it is a
+    /// resource reference, or taken inline when the manifest gives a literal. The manifest's own
+    /// claim, never verified against a store listing.
+    pub app_label: Option<String>,
+    /// The manifest's security-posture flags, highest risk first.
+    pub risk_flags: Vec<Flag>,
+    /// The GNU build-id of each native library read, with its ABI. Candidate pivot only.
+    pub native_build_ids: Vec<NativeLibrary>,
+    /// Cross-platform frameworks / game engines named from the bundled native libraries
+    /// (Flutter, Unity, React Native, …). A classification of the app, not a cross-APK pivot.
+    pub native_frameworks: Vec<String>,
     /// Members that were not read, with why.
     pub unread: Vec<String>,
     /// Archive tricks that make analysis tools fail while Android still installs the app.
@@ -388,8 +427,11 @@ fn directory_bounds(data: &[u8]) -> Result<(usize, usize, usize), Error> {
 #[derive(Default)]
 struct Archive<'a> {
     manifest: Option<Member<'a>>,
+    resources: Option<Member<'a>>,
     dex: Vec<Member<'a>>,
     v1: Vec<Member<'a>>,
+    /// Native libraries (`lib/*/*.so`), each with the ABI directory it sits in.
+    native: Vec<(&'a str, Member<'a>)>,
     signing_values: Vec<(&'static str, &'a [u8])>,
 }
 
@@ -440,6 +482,9 @@ fn walk(data: &[u8]) -> Result<(Inventory, Archive<'_>), Error> {
             manifest = true;
             archive.manifest.get_or_insert(entry);
         }
+        if name == "resources.arsc" {
+            archive.resources.get_or_insert(entry);
+        }
         if dex_name(name) {
             archive.dex.push(entry);
             dex_count += 1;
@@ -450,6 +495,9 @@ fn walk(data: &[u8]) -> Result<(Inventory, Archive<'_>), Error> {
         if let Some(abi) = native_abi(name) {
             native_count += 1;
             abis.insert(abi.to_owned());
+            if archive.native.len() < MAX_NATIVE_LIBS_READ {
+                archive.native.push((abi, entry));
+            }
         }
         if is_v1_signing_artifact(name) {
             if is_v1_certificate(name) && archive.v1.len() < MAX_LISTED {
@@ -580,7 +628,10 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
     if let Some(member) = &archive.manifest {
         match read(member, MAX_APK_MANIFEST_BYTES, &mut analysis) {
             Some(bytes) => match axml::manifest(&bytes) {
-                Ok(manifest) => analysis.manifest = Some(manifest),
+                Ok(manifest) => {
+                    analysis.risk_flags = risk::flags(&manifest);
+                    analysis.manifest = Some(manifest);
+                }
                 Err(error) => analysis.manifest_error = Some(error),
             },
             None => {
@@ -618,10 +669,91 @@ fn analyse(data: &[u8], archive: &Archive<'_>) -> Analysis {
         }
     }
     analysis.code.finish();
+    for (abi, member) in &archive.native {
+        if let Some(bytes) = read(member, MAX_APK_NATIVE_BYTES, &mut analysis) {
+            let build_id = elf::build_id(&bytes);
+            let dynamic = elf::dynamic(&bytes).unwrap_or_default();
+            // Record a library only when it declares something we read; an unreadable or empty ELF
+            // adds no entry.
+            if build_id.is_some() || dynamic.soname.is_some() || !dynamic.needed.is_empty() {
+                analysis.native_build_ids.push(NativeLibrary {
+                    abi: (*abi).to_owned(),
+                    name: member
+                        .name
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(member.name)
+                        .to_owned(),
+                    build_id: build_id.unwrap_or_default(),
+                    soname: dynamic.soname,
+                    needed: dynamic.needed,
+                });
+            }
+        }
+    }
+    analysis.native_build_ids.sort();
+    analysis.native_frameworks = native_frameworks(&analysis.native_build_ids);
+    // The displayed app name: an inline manifest label, or the resources.arsc string its
+    // android:label references. Resolution that fails leaves it unknown, never guessed.
+    let (inline_label, label_ref) = analysis.manifest.as_ref().map_or((None, None), |manifest| {
+        (manifest.label.clone(), manifest.label_resource_id)
+    });
+    if inline_label.is_some() {
+        analysis.app_label = inline_label;
+    } else if let (Some(id), Some(member)) = (label_ref, &archive.resources) {
+        if let Some(bytes) = read(member, MAX_APK_RESOURCES_BYTES, &mut analysis) {
+            analysis.app_label = arsc::string_resource(&bytes, id);
+        }
+    }
     analysis
 }
 
+/// The frameworks / engines named by the bundled native libraries, deduplicated and sorted. A
+/// library's own name, its `SONAME` and each `DT_NEEDED` entry are all considered, so an app that
+/// merely links against an engine is named as well as one that bundles it.
+fn native_frameworks(libraries: &[NativeLibrary]) -> Vec<String> {
+    let mut found = std::collections::BTreeSet::new();
+    for library in libraries {
+        let names = std::iter::once(library.name.as_str())
+            .chain(library.soname.as_deref())
+            .chain(library.needed.iter().map(String::as_str));
+        for name in names {
+            if let Some(framework) = native_framework::framework_of(name) {
+                found.insert(framework);
+            }
+        }
+    }
+    found.into_iter().map(str::to_owned).collect()
+}
+
 /// The document entity's evidence: the archive inventory, then what its members declare.
+/// The native build-ids as one evidence line: `name (abi): build_id`, comma-separated. Libraries
+/// that carry no build-id are left out.
+fn native_build_ids_summary(analysis: &Analysis) -> String {
+    analysis
+        .native_build_ids
+        .iter()
+        .filter(|lib| !lib.build_id.is_empty())
+        .map(|lib| format!("{} ({}): {}", lib.name, lib.abi, lib.build_id))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The native dependency fingerprint as one evidence line: for each library that declares a
+/// `SONAME` or a `DT_NEEDED` list, `name [soname] -> needed, libraries`.
+fn native_dependencies_summary(analysis: &Analysis) -> String {
+    analysis
+        .native_build_ids
+        .iter()
+        .filter(|lib| lib.soname.is_some() || !lib.needed.is_empty())
+        .map(|lib| {
+            let soname = lib.soname.as_deref().unwrap_or(&lib.name);
+            format!("{soname} -> {}", lib.needed.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn document_evidence(
     inventory: &Inventory,
     analysis: &Analysis,
@@ -670,14 +802,10 @@ fn document_evidence(
         (None, None) => {}
     }
     put(
-        "apk_signer_certificate_sha256_unverified",
-        analysis
-            .signers
-            .iter()
-            .map(|signer| signer.sha256.as_str())
-            .collect::<Vec<_>>()
-            .join(","),
+        "apk_app_label",
+        analysis.app_label.clone().unwrap_or_default(),
     );
+    signer_digest_attrs(analysis, &mut put);
     if let Some(signer) = analysis.signers.first() {
         put("apk_signer_subject", signer.subject.clone());
         put("apk_signer_valid_from", signer.not_before.clone());
@@ -691,6 +819,29 @@ fn document_evidence(
         "apk_code_url_count",
         (analysis.code.urls.len() + analysis.code.urls_omitted).to_string(),
     );
+    if let Some(highest) = risk::highest(&analysis.risk_flags) {
+        put("apk_risk_highest", highest.as_str().to_owned());
+        put(
+            "apk_risk_flags",
+            analysis
+                .risk_flags
+                .iter()
+                .map(|flag| format!("{} {}: {}", flag.risk.as_str(), flag.id, flag.detail))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+    }
+    native_attrs(analysis, &mut put);
+    put(
+        "apk_bundled_sdks",
+        analysis
+            .code
+            .trackers
+            .iter()
+            .map(|tracker| format!("{} ({})", tracker.name, tracker.category))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
     put(
         "apk_evasion_indicators",
         analysis.evasion_indicators.join("; "),
@@ -699,6 +850,41 @@ fn document_evidence(
     extra.into_iter().fold(evidence, |evidence, (key, value)| {
         evidence.with_attr(key, value)
     })
+}
+
+/// The signing certificates' and keys' digests as document-evidence attributes, one comma-joined
+/// list each.
+fn signer_digest_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, String)) {
+    let join = |pick: fn(&Certificate) -> &str| {
+        analysis
+            .signers
+            .iter()
+            .map(pick)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    put(
+        "apk_signer_certificate_sha256_unverified",
+        join(|signer| signer.sha256.as_str()),
+    );
+    put(
+        "apk_signer_public_key_sha256_unverified",
+        join(|signer| signer.public_key_sha256.as_str()),
+    );
+}
+
+/// The native libraries' build-ids, dependency fingerprint and detected frameworks as
+/// document-evidence attributes.
+fn native_attrs(analysis: &Analysis, put: &mut impl FnMut(&'static str, String)) {
+    put("apk_native_build_ids", native_build_ids_summary(analysis));
+    put(
+        "apk_native_dependencies",
+        native_dependencies_summary(analysis),
+    );
+    put(
+        "apk_native_frameworks",
+        analysis.native_frameworks.join(", "),
+    );
 }
 
 /// The manifest's facts as document-evidence attributes.
@@ -749,6 +935,69 @@ fn manifest_attrs(manifest: &Manifest, put: &mut impl FnMut(&'static str, String
 /// The pivots the archive names, each its own entity so scans of other APKs, domains and
 /// addresses meet it in the graph: its signing certificates, the hosts it claims as deep links,
 /// and the hosts and URLs in its code. Each says where in the archive it came from.
+/// The build-id pivot entity for each native library that carries one, enriched with its SONAME and
+/// linked libraries. A library without a build-id is kept in the document evidence, not here.
+fn native_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec<Entity>) {
+    for lib in analysis
+        .native_build_ids
+        .iter()
+        .filter(|lib| !lib.build_id.is_empty())
+    {
+        let mut lib_evidence = Evidence::new(
+            EvidenceProvenance::for_scan(SOURCE, sid),
+            format!(
+                "Native library {} ({}) in {label} declares this GNU build-id; a matching ID is a candidate lead, not proof of identical bytes, provenance or authorship",
+                lib.name, lib.abi
+            ),
+        )
+        .with_attr("native_library", lib.name.as_str())
+        .with_attr("abi", lib.abi.as_str())
+        .with_attr("build_id", lib.build_id.as_str());
+        if let Some(soname) = &lib.soname {
+            lib_evidence = lib_evidence.with_attr("soname", soname.as_str());
+        }
+        if !lib.needed.is_empty() {
+            lib_evidence = lib_evidence.with_attr("needed_libraries", lib.needed.join(", "));
+        }
+        push_entity(
+            entities,
+            EntityKind::Other,
+            &format!("apk-native-buildid:{}", lib.build_id),
+            0.9,
+            sid,
+            lib_evidence,
+            &[SOURCE, "offline", "apk_native"],
+        );
+    }
+}
+
+/// The signing-key pivot for each distinct public key across the certificates. Keyed on the
+/// `SubjectPublicKeyInfo` digest, it pivots across certificates that re-wrap the same key (Play
+/// app-signing, a renewed certificate), which the per-certificate digest cannot.
+fn signer_key_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec<Entity>) {
+    let mut seen = std::collections::BTreeSet::new();
+    for signer in &analysis.signers {
+        if signer.public_key_sha256.is_empty() || !seen.insert(signer.public_key_sha256.clone()) {
+            continue;
+        }
+        push_entity(
+            entities,
+            EntityKind::Other,
+            &format!("apk-signer-pubkey-sha256:{}", signer.public_key_sha256),
+            0.9,
+            sid,
+            Evidence::new(
+                EvidenceProvenance::for_scan(SOURCE, sid),
+                format!(
+                    "Signing key {label} uses (SHA-256 of its SubjectPublicKeyInfo); a matching key is a candidate lead, not a verified signature",
+                ),
+            )
+            .with_attr("public_key_sha256", signer.public_key_sha256.as_str()),
+            &[SOURCE, "offline", "apk_signer"],
+        );
+    }
+}
+
 fn lead_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec<Entity>) {
     let evidence = |text: String| Evidence::new(EvidenceProvenance::for_scan(SOURCE, sid), text);
     for signer in &analysis.signers {
@@ -763,6 +1012,7 @@ fn lead_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec
                 signer.scheme
             ))
             .with_attr("certificate_sha256", signer.sha256.as_str())
+            .with_attr("public_key_sha256", signer.public_key_sha256.as_str())
             .with_attr("certificate_subject", signer.subject.as_str())
             .with_attr("certificate_issuer", signer.issuer.as_str())
             .with_attr("certificate_serial", signer.serial.as_str())
@@ -773,6 +1023,8 @@ fn lead_entities(analysis: &Analysis, label: &str, sid: &str, entities: &mut Vec
             &[SOURCE, "offline", "apk_signer"],
         );
     }
+    signer_key_entities(analysis, label, sid, entities);
+    native_entities(analysis, label, sid, entities);
     let host_entity = |host: &str| {
         if host.parse::<std::net::Ipv4Addr>().is_ok() {
             EntityKind::IpAddress
@@ -1067,6 +1319,7 @@ mod tests {
                     "classes.dex",
                     dex::tests::dex_with(&[
                         "Lcom/example/field/Main;",
+                        "Lcom/appsflyer/AppsFlyerLib;",
                         "https://api.fieldtrack.io/v2/report",
                         "http://schemas.android.com/apk/res/android",
                     ]),
@@ -1076,6 +1329,20 @@ mod tests {
                     "META-INF/CERT.SF",
                     b"Signature-Version: 1.0\r\n".to_vec(),
                     8,
+                ),
+                part(
+                    "lib/arm64-v8a/libfield.so",
+                    elf::tests::elf_with_build_id(true, &[0xca, 0xfe, 0xba, 0xbe]),
+                    0,
+                ),
+                part(
+                    "lib/arm64-v8a/libengine.so",
+                    elf::tests::elf_with_dynamic(
+                        true,
+                        Some("libengine.so"),
+                        &["libflutter.so", "libc.so"],
+                    ),
+                    0,
                 ),
                 part("META-INF/CERT.RSA", signer::tests::pkcs7_der(&debug), 8),
             ],
@@ -1105,9 +1372,37 @@ mod tests {
             "the v2 signer, then the v1 signer"
         );
         assert_eq!(analysis.code.urls, ["https://api.fieldtrack.io/v2/report"]);
-
+        assert_eq!(
+            analysis.code.trackers,
+            [Tracker {
+                name: "AppsFlyer".into(),
+                category: "attribution".into()
+            }],
+            "the bundled SDK is named from the DEX type descriptors"
+        );
+        // The manifest is debuggable and permits cleartext, so the highest risk flag is HIGH.
+        assert_eq!(
+            risk::highest(&analysis.risk_flags),
+            Some(crate::sf_correlate::Risk::High)
+        );
+        assert!(
+            analysis
+                .risk_flags
+                .iter()
+                .any(|flag| flag.id == "debuggable"),
+            "{:?}",
+            analysis.risk_flags
+        );
         let document = &report.entities[0];
         assert_eq!(attr(document, "apk_package"), Some("com.example.field"));
+        assert_eq!(attr(document, "apk_risk_highest"), Some("HIGH"));
+        assert!(
+            attr(document, "apk_risk_flags")
+                .unwrap()
+                .contains("HIGH debuggable"),
+            "{:?}",
+            attr(document, "apk_risk_flags")
+        );
         assert_eq!(attr(document, "apk_target_sdk"), Some("34"));
         assert_eq!(attr(document, "apk_debuggable"), Some("true"));
         assert_eq!(
@@ -1116,6 +1411,10 @@ mod tests {
         );
         assert_eq!(attr(document, "apk_reachable_components"), Some("2"));
         assert_eq!(
+            attr(document, "apk_bundled_sdks"),
+            Some("AppsFlyer (attribution)")
+        );
+        assert_eq!(
             attr(document, "apk_signer_subject"),
             Some("CN=Field Apps, O=Example Pty Ltd, C=AU")
         );
@@ -1123,10 +1422,23 @@ mod tests {
             .iter()
             .map(|entity| (entity.kind.clone(), entity.value.as_str()))
             .collect();
+        assert!(
+            values.contains(&(EntityKind::Other, "apk-native-buildid:cafebabe")),
+            "{values:?}"
+        );
         let release_pivot = format!("apk-signer-sha256:{}", hex32(&sha256(&release)));
         assert!(
             values.contains(&(EntityKind::Other, release_pivot.as_str())),
             "{values:?}"
+        );
+        // Each distinct signing key is its own pivot entity (two keys here).
+        let key_pivots = values
+            .iter()
+            .filter(|(_, value)| value.starts_with("apk-signer-pubkey-sha256:"))
+            .count();
+        assert_eq!(
+            key_pivots, 2,
+            "one pubkey pivot per distinct key: {values:?}"
         );
         assert!(
             values.contains(&(EntityKind::Domain, "api.fieldtrack.io")),
@@ -1140,6 +1452,90 @@ mod tests {
             "a placeholder deep-link host is listed in the manifest but is no entity"
         );
         assert_eq!(report.outcomes[0].found, Some(report.entities.len()));
+    }
+
+    #[test]
+    fn reads_the_native_libraries_build_ids_and_dependencies_of_a_built_apk() {
+        let (bytes, ..) = field_apk(8);
+        let report = run(&bytes, "field.apk", 100).expect("apk");
+        assert_eq!(
+            report.analysis.native_build_ids,
+            [
+                // Sorted by name: the dynamic-only engine library (SONAME + NEEDED, no build-id)
+                // then the build-id-only library.
+                NativeLibrary {
+                    abi: "arm64-v8a".into(),
+                    name: "libengine.so".into(),
+                    build_id: String::new(),
+                    soname: Some("libengine.so".into()),
+                    needed: vec!["libflutter.so".into(), "libc.so".into()],
+                },
+                NativeLibrary {
+                    abi: "arm64-v8a".into(),
+                    name: "libfield.so".into(),
+                    build_id: "cafebabe".into(),
+                    soname: None,
+                    needed: Vec::new(),
+                },
+            ],
+            "the native libraries' build-id and SONAME/NEEDED are read from their ELF structures"
+        );
+        let document = &report.entities[0];
+        assert_eq!(
+            attr(document, "apk_native_build_ids"),
+            Some("libfield.so (arm64-v8a): cafebabe"),
+            "a library with no build-id is left out of the build-id line"
+        );
+        assert_eq!(
+            attr(document, "apk_native_dependencies"),
+            Some("libengine.so -> libflutter.so, libc.so")
+        );
+        // libengine.so links against libflutter.so, so the app is named a Flutter build.
+        assert_eq!(report.analysis.native_frameworks, ["Flutter"]);
+        assert_eq!(attr(document, "apk_native_frameworks"), Some("Flutter"));
+        let values: Vec<&str> = report.entities[1..]
+            .iter()
+            .map(|entity| entity.value.as_str())
+            .collect();
+        assert!(
+            values.contains(&"apk-native-buildid:cafebabe"),
+            "{values:?}"
+        );
+        assert!(
+            !values.contains(&"apk-native-buildid:"),
+            "a library with no build-id must not create an empty build-id pivot: {values:?}"
+        );
+    }
+
+    #[test]
+    fn the_app_label_is_resolved_from_resources_arsc_when_the_manifest_references_it() {
+        use axml::tests::{Axml, Val};
+        let manifest = Axml::new(&["package"])
+            .start("manifest", &[("package", Val::Str("com.example.field"))])
+            .start("application", &[("label", Val::Ref(0x7f0e_0001))])
+            .end("application")
+            .end("manifest")
+            .build();
+        // resources.arsc resolves id 0x7f0e0001 (package 7f, type 0e, entry 1) to string index 2.
+        let resources =
+            arsc::tests::table(&["", "com.example.field", "Field Tracker"], 0x7f0e_0001, 2);
+        let bytes = apk(
+            &[
+                part("AndroidManifest.xml", manifest, 8),
+                part("resources.arsc", resources, 0),
+            ],
+            None,
+        );
+        let report = run(&bytes, "labelled.apk", 100).expect("apk");
+        assert_eq!(
+            report.analysis.app_label.as_deref(),
+            Some("Field Tracker"),
+            "the displayed name is resolved through the resource reference"
+        );
+        assert_eq!(
+            attr(&report.entities[0], "apk_app_label"),
+            Some("Field Tracker")
+        );
     }
 
     #[test]

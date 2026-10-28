@@ -203,6 +203,7 @@ pub mod securitytrails;
 pub mod seeknow;
 pub mod seeknow_cli;
 pub mod seeknow_collector;
+pub mod serve_events;
 pub mod serve_probe;
 pub mod service_defs;
 pub mod session;

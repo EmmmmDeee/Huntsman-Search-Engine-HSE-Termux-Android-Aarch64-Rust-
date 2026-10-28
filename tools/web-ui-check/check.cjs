@@ -148,7 +148,7 @@ const DOTS = want => { const n = [...document.querySelectorAll('#gnodes path:not
       check('policy violations on load', m.csp.length === 0, m.csp);
       await fits(page, 'cold load');
       check('page weight', m.htmlBytes <= PAGE_BUDGET, `${m.htmlBytes} bytes, budget ${PAGE_BUDGET}`);
-      check('cold load asks only for the page, health, the scan list and icon', paths.every(p => ['/', '/api/health', '/api/scans', '/favicon.svg'].includes(p)) && paths.includes('/api/scans'), paths);
+      check('cold load asks only for the page, health, the scan list, icon and event stream', paths.every(p => ['/', '/api/health', '/api/scans', '/favicon.svg', '/api/events'].includes(p)) && paths.includes('/api/scans'), paths);
       check('server shown online', m.pill === 'online', m.pill);
       check('the scan list opens first and says there are no scans yet', m.empty, m);
 

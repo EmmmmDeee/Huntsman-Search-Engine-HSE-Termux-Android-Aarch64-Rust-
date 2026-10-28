@@ -1664,8 +1664,19 @@ $('investigate').onsubmit=async ev=>{
   if(raw)try{const s=JSON.parse(raw);$('seeds').value=s.seeds;showAnalysis(s)}catch(_){sess.set('hse-analysis','');$('aresult').hidden=true}
 }
 $('refresh').onclick=()=>{health();details()};
+// Live updates: the server pushes scan state and raised alerts over Server-Sent Events, so the
+// open view refreshes the instant something changes instead of only on the poll timer. The stream
+// is a nudge; the REST calls stay the source of truth and polling stays as the fallback.
+let stream=null,nudgeTimer=0;
+function nudge(){clearTimeout(nudgeTimer);nudgeTimer=setTimeout(()=>{if(document.hidden)return;if(view==='scans')loadScans();else if(view==='scan')loadScan(false)},250)}
+function liveStream(){
+  if(stream||!window.EventSource)return;
+  try{stream=new EventSource('/api/events')}catch(_){return}
+  stream.onmessage=nudge;stream.addEventListener('resync',nudge);
+  stream.onerror=()=>{};// the browser reconnects on its own after the bounded stream closes
+}
 // Settings and About show the version and sign-in the first health answer carries.
-const started=health();route();
+const started=health();route();liveStream();
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){health();if(resume){clearTimeout(timer);resume()}}});
 </script>
 </html>
