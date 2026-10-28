@@ -80,6 +80,11 @@ pub struct Component {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Manifest {
     pub package: Option<String>,
+    /// The application label when the manifest gives it inline as a literal string.
+    pub label: Option<String>,
+    /// The resource id the application label references (`android:label="@0x…"`), to resolve from
+    /// `resources.arsc`; the displayed app name is almost always a reference, not a literal.
+    pub label_resource_id: Option<u32>,
     pub version_code: Option<String>,
     pub version_name: Option<String>,
     pub shared_user_id: Option<String>,
@@ -204,6 +209,9 @@ struct Attribute {
     name: String,
     value: String,
     boolean: Option<bool>,
+    /// The raw resource id when the attribute is a reference (`android:label="@0x…"`), for a later
+    /// `resources.arsc` lookup; `None` for an inline value.
+    reference: Option<u32>,
 }
 
 struct Document {
@@ -258,10 +266,12 @@ impl Document {
             } else {
                 self.string(raw).unwrap_or_default().to_owned()
             };
+            let reference = (kind == TYPE_REFERENCE && raw == NO_INDEX).then_some(value);
             attributes.push(Attribute {
                 name,
                 value: text,
                 boolean,
+                reference,
             });
         }
         Some(attributes)
@@ -273,6 +283,13 @@ fn value<'a>(attributes: &'a [Attribute], name: &str) -> Option<&'a str> {
         .iter()
         .find(|attribute| attribute.name == name)
         .map(|attribute| attribute.value.as_str())
+}
+
+fn reference(attributes: &[Attribute], name: &str) -> Option<u32> {
+    attributes
+        .iter()
+        .find(|attribute| attribute.name == name)
+        .and_then(|attribute| attribute.reference)
 }
 
 fn flag(attributes: &[Attribute], name: &str) -> Option<bool> {
@@ -353,6 +370,13 @@ impl Reader {
                 }
             }
             "application" => {
+                manifest.label_resource_id = reference(attributes, "label");
+                if manifest.label_resource_id.is_none() {
+                    // A literal, non-reference label is the displayed name as-is.
+                    manifest.label = value(attributes, "label")
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_owned);
+                }
                 manifest.debuggable = flag(attributes, "debuggable");
                 manifest.test_only = flag(attributes, "testOnly");
                 manifest.allow_backup = flag(attributes, "allowBackup");
@@ -522,6 +546,8 @@ pub(super) mod tests {
         Str(&'a str),
         Int(i32),
         Bool(bool),
+        /// A resource reference carrying a raw resource id (`android:label="@0x…"`).
+        Ref(u32),
     }
 
     impl Axml {
@@ -568,6 +594,7 @@ pub(super) mod tests {
                         u32::from_le_bytes(number.to_le_bytes()),
                     ),
                     Val::Bool(on) => (NO_INDEX, TYPE_INT_BOOLEAN, if *on { u32::MAX } else { 0 }),
+                    Val::Ref(id) => (NO_INDEX, TYPE_REFERENCE, *id),
                 };
                 encoded.extend_from_slice(&NO_INDEX.to_le_bytes());
                 encoded.extend_from_slice(&attr.to_le_bytes());
@@ -809,6 +836,29 @@ pub(super) mod tests {
         assert_eq!(manifest.reachable_components.len(), 2);
         // `package` has no framework ID, so it is still read by its (unblanked) name.
         assert_eq!(manifest.package.as_deref(), Some("com.example.field"));
+    }
+
+    #[test]
+    fn the_application_label_is_captured_as_a_reference_or_an_inline_string() {
+        let referenced = Axml::new(&["package"])
+            .start("manifest", &[("package", Val::Str("com.example.field"))])
+            .start("application", &[("label", Val::Ref(0x7f0e_0001))])
+            .end("application")
+            .end("manifest")
+            .build();
+        let decoded = manifest(&referenced).expect("manifest");
+        assert_eq!(decoded.label_resource_id, Some(0x7f0e_0001));
+        assert_eq!(decoded.label, None, "a reference is not an inline label");
+
+        let inline = Axml::new(&["package"])
+            .start("manifest", &[("package", Val::Str("com.example.field"))])
+            .start("application", &[("label", Val::Str("Field Tracker"))])
+            .end("application")
+            .end("manifest")
+            .build();
+        let decoded = manifest(&inline).expect("manifest");
+        assert_eq!(decoded.label.as_deref(), Some("Field Tracker"));
+        assert_eq!(decoded.label_resource_id, None);
     }
 
     #[test]
