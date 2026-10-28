@@ -19,7 +19,7 @@ pub const GEOCODE_USAGE: &str =
     "usage: huntsman-recon geocode PLACE-OR-ADDRESS [--save FILE] | geocode LAT,LON [--save FILE]";
 pub const GEOCODE_HELP: &str = "\
 geocode QUERY [--save FILE]
-Geocode one query through OpenStreetMap's Nominatim, keyless. A `lat,lon` point is reverse-geocoded to the address at that spot, and the keyless Earth Search STAC catalogue is asked which Sentinel-2 and Landsat scenes covered it in the last 90 days, newest first, at most ten, each a catalogue record with its collection, platform, acquisition time, cloud cover, footprint and thumbnail (a satellite pass, not what the imagery shows; its footprint is an area, not the point); any other text is a place name or street address, forward-geocoded to the coordinates and address of each match (at most ten). Each match becomes a coordinates entity for its point and an address entity for its written address, with every field Nominatim returns -- each separate address component included -- kept as evidence. --save FILE writes an unverified ledger that verify can reload. The same lookup is the geocode scan kind: scan QUERY -k geocode, scans run QUERY -k geocode and the web UI's Place target type run it and save it as a scan, whose written addresses are PHYSICAL_ADDRESS elements and whose points are PHYSICAL_COORDINATES; no target is routed to it on its own, since free text is a name and LAT,LON a WiFi area to scan. Makes network requests. Nominatim permits one request per second across the application. Data © OpenStreetMap contributors, ODbL 1.0. Configure HUNTSMAN_NOMINATIM_BASE_URL to select an operator-managed HTTPS service.";
+Geocode one query through OpenStreetMap's Nominatim, keyless. A `lat,lon` point is reverse-geocoded to the address at that spot, and the keyless Earth Search STAC catalogue is asked which Sentinel-2 and Landsat scenes covered it in the last 90 days, newest first, at most ten, each a catalogue record with its collection, platform, acquisition time, cloud cover, footprint and thumbnail (a satellite pass, not what the imagery shows; its footprint is an area, not the point), and the keyless OpenSky Network is asked which aircraft its receivers last reported within half a degree of it, nearest first, at most fifty, each a transponder address with its callsign, position and reporting time, altitude, speed, track and squawk (an airframe, not anyone aboard, and not where it is now; OpenSky data is for non-commercial research); any other text is a place name or street address, forward-geocoded to the coordinates and address of each match (at most ten). Each match becomes a coordinates entity for its point and an address entity for its written address, with every field Nominatim returns -- each separate address component included -- kept as evidence. --save FILE writes an unverified ledger that verify can reload. The same lookup is the geocode scan kind: scan QUERY -k geocode, scans run QUERY -k geocode and the web UI's Place target type run it and save it as a scan, whose written addresses are PHYSICAL_ADDRESS elements and whose points are PHYSICAL_COORDINATES; no target is routed to it on its own, since free text is a name and LAT,LON a WiFi area to scan. Makes network requests. Nominatim permits one request per second across the application. Data © OpenStreetMap contributors, ODbL 1.0. Configure HUNTSMAN_NOMINATIM_BASE_URL to select an operator-managed HTTPS service.";
 
 /// The longest query a geocode takes, in bytes. A longer string is not an address a gazetteer
 /// would match.
@@ -115,6 +115,16 @@ pub fn run<T: Transport + ?Sized>(transport: &T, query: &str, now_unix: u64) -> 
             Err(error) => return GeocodeRun::Network(error.to_string()),
         }
     }
+    // ... and which aircraft OpenSky's receivers last reported around it.
+    if let Some((lat, lon)) = point.filter(|_| transport.runs_module(crate::opensky::SOURCE)) {
+        match crate::opensky::observe(transport, lat, lon, &scan_id, now_unix) {
+            Ok(found) => {
+                report.entities.extend(found.entities);
+                report.outcomes.push(found.outcome);
+            }
+            Err(error) => return GeocodeRun::Network(error.to_string()),
+        }
+    }
     merge_by_uid(&mut report.entities);
 
     if !report
@@ -184,12 +194,13 @@ mod tests {
     }
 
     #[test]
-    fn a_lat_lon_query_is_reverse_geocoded_and_asks_the_imagery_catalogue() {
+    fn a_lat_lon_query_is_reverse_geocoded_and_asks_imagery_and_aircraft() {
         let transport = crate::test_support::ScriptedTransport::new(vec![
             Ok(crate::test_support::json_ok(PLACE)),
             Ok(crate::test_support::json_ok(
                 r#"{"type":"FeatureCollection","features":[]}"#,
             )),
+            Ok(crate::test_support::json_ok(r#"{"time":1,"states":null}"#)),
         ]);
         match run(&transport, "48.8584, 2.2945", 1) {
             GeocodeRun::Printed { report, .. } => {
@@ -200,7 +211,11 @@ mod tests {
                     .collect();
                 assert_eq!(
                     legs,
-                    [(nominatim::SOURCE, true), (crate::stac::SOURCE, true)]
+                    [
+                        (nominatim::SOURCE, true),
+                        (crate::stac::SOURCE, true),
+                        (crate::opensky::SOURCE, true)
+                    ]
                 );
             }
             GeocodeRun::Network(why) | GeocodeRun::Failed(why) => panic!("{why}"),
@@ -208,10 +223,17 @@ mod tests {
         let seen = transport.seen.borrow();
         assert!(seen[0].url.contains("/reverse?"), "{}", seen[0].url);
         assert!(seen[1].url.contains("earth-search"), "{}", seen[1].url);
+        assert!(
+            seen[2]
+                .url
+                .contains("opensky-network.org/api/states/all?lamin="),
+            "{}",
+            seen[2].url
+        );
     }
 
     #[test]
-    fn a_place_name_never_asks_the_imagery_catalogue() {
+    fn a_place_name_never_asks_for_imagery_or_aircraft() {
         let transport = crate::test_support::ScriptedTransport::new(vec![Ok(
             crate::test_support::json_ok("[]"),
         )]);
