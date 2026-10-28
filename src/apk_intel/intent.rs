@@ -177,11 +177,13 @@ pub fn analyze(manifest: &Manifest) -> IntentAnalysis {
         }
 
         // Sensitive broadcast receiver actions.
-        if matches!(def.component_kind.as_str(), "receiver" | "broadcast_receiver")
-            && def
-                .actions
-                .iter()
-                .any(|a| SENSITIVE_BROADCAST_ACTIONS.iter().any(|s| a.contains(s)))
+        if matches!(
+            def.component_kind.as_str(),
+            "receiver" | "broadcast_receiver"
+        ) && def
+            .actions
+            .iter()
+            .any(|a| SENSITIVE_BROADCAST_ACTIONS.iter().any(|s| a.contains(s)))
         {
             if sensitive_count < MAX_LISTED {
                 analysis.sensitive_intent_handlers.push(format!(
