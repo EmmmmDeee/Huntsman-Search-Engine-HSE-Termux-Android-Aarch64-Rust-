@@ -24,7 +24,7 @@ pub struct ContentDigestCheck {
 
 /// Compute AOSP's SHA-256 content digest of sections 1, 3 and 4, omitting the
 /// signing block and rewriting the EOCD central-directory offset to block start.
-fn chunked_sha256(
+pub(super) fn chunked_sha256(
     apk: &[u8],
     signing_start: usize,
     directory_start: usize,

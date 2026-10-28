@@ -1744,6 +1744,43 @@ mod tests {
     }
 
     #[test]
+    fn full_apk_report_compares_declared_content_digest_and_preserves_evidence() {
+        let cert = signer::tests::certificate_der("Digest Fixture");
+        let parts = [part(
+            "AndroidManifest.xml",
+            axml::tests::sample_manifest().build(),
+            0,
+        )];
+        let placeholder = signer::tests::signing_value_with_sha256_digest(&cert, &[0_u8; 32]);
+        let fixture = apk(&parts, Some(&placeholder));
+        let (_, archive) = walk(&fixture).unwrap();
+        let digest = content_digest::chunked_sha256(
+            &fixture,
+            archive.signing_start.unwrap(),
+            archive.directory_start,
+            eocd(&fixture).unwrap(),
+        )
+        .unwrap();
+        let signed_value = signer::tests::signing_value_with_sha256_digest(&cert, &digest);
+        let signed = apk(&parts, Some(&signed_value));
+        let report = run(&signed, "digest-fixture.apk", 100).unwrap();
+        assert_eq!(report.analysis.content_digest_checks.len(), 1);
+        assert!(report.analysis.content_digest_checks[0].matches);
+        assert!(!report.analysis.content_digest_checks[0].signature_authenticated);
+        assert!(report.entities.iter().any(|entity| entity.evidence.iter().any(
+            |evidence| evidence.attributes.get("apk_content_digest_signature_authenticated")
+                .is_some_and(|value| value == "false")
+        )));
+
+        // Tamper with the actual local manifest payload, not the untrusted digest claim.
+        let mut tampered = signed;
+        tampered[30 + "AndroidManifest.xml".len()] ^= 1;
+        let report = run(&tampered, "tampered-fixture.apk", 100).unwrap();
+        assert_eq!(report.analysis.content_digest_checks.len(), 1);
+        assert!(!report.analysis.content_digest_checks[0].matches);
+    }
+
+    #[test]
     fn reads_the_manifest_signers_and_code_urls_of_a_built_apk() {
         let (bytes, release, debug) = field_apk(8);
         let report = run(&bytes, "field.apk", 100).expect("apk");
