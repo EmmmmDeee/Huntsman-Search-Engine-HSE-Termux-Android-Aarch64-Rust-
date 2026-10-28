@@ -40,6 +40,7 @@ use crate::keys::Keys;
 use crate::lookup_args::LookupTokens;
 use crate::lookup_report;
 use crate::ripestat;
+use crate::routing_context;
 use crate::source_outcome::{SourceExecutionOutcome, SourceReach, SourceRun};
 use crate::tags;
 use crate::threat_feeds::{self, Feeds};
@@ -152,6 +153,32 @@ impl Lookup<'_> {
     }
 }
 
+/// The routing record of the address, with the RPKI state of each origin and the other origins
+/// the covering prefix's routing history saw announcing a prefix containing the address.
+fn routing_legs<T: Transport + ?Sized>(
+    transport: &T,
+    lookup: &mut Lookup<'_>,
+    routing: &ripestat::Routing,
+) {
+    let rpki = routing_context::rpki_states(transport, routing, lookup.now_unix);
+    let address: Option<std::net::IpAddr> = lookup.ip.parse().ok();
+    let history = routing_context::routing_history(
+        transport,
+        routing,
+        |announced| {
+            address.is_some_and(|address| {
+                crate::netblock::Netblock::parse(announced)
+                    .is_some_and(|block| block.contains(address))
+            })
+        },
+        lookup.now_unix,
+    );
+    ripestat_leg(lookup, routing, &rpki);
+    if let Some(history) = &history {
+        routing_history_leg(lookup, routing, history);
+    }
+}
+
 /// Run every IP leg for `ip`, then check it and everything the legs found against the threat
 /// `feeds`. Keyed legs run only when `keys` holds their key, and each leg only when the
 /// transport's lookup asks its module ([`Transport::runs_module`]).
@@ -197,14 +224,7 @@ pub fn run<T: Transport + ?Sized>(
             ripestat_place_leg(&mut lookup, place);
         }
         match routing {
-            Ok(routing) => {
-                let rpki = rpki_states(transport, &routing, now_unix);
-                let history = routing_history(transport, &routing, &ip, now_unix);
-                ripestat_leg(&mut lookup, &routing, &rpki);
-                if let Some(history) = &history {
-                    routing_history_leg(&mut lookup, &routing, history);
-                }
-            }
+            Ok(routing) => routing_legs(transport, &mut lookup, &routing),
             Err(err) => lookup.failed(&ripestat::API, &err),
         }
         if let Err(err) = &place {
@@ -392,114 +412,23 @@ fn internetdb_leg(lookup: &mut Lookup<'_>, host: &internetdb::Host) {
     lookup.found(api, 1 + host.hostnames.len());
 }
 
-/// The RPKI state of the covering prefix for each of its first
-/// [`ripestat::MAX_RPKI_ORIGINS`] public origin AS numbers, when the prefix is announced: one
-/// request each, keyed by AS number.
-fn rpki_states<T: Transport + ?Sized>(
-    transport: &T,
-    routing: &ripestat::Routing,
-    now_unix: u64,
-) -> Vec<(u32, Result<ripestat::Rpki, LegError>)> {
-    let Some(prefix) = routing.prefix.as_deref().filter(|_| routing.announced) else {
-        return Vec::new();
-    };
-    routing
-        .public_origins()
-        .take(ripestat::MAX_RPKI_ORIGINS)
-        .map(|origin| {
-            (
-                origin.asn,
-                ripestat::rpki_validation(transport, origin.asn, prefix, now_unix),
-            )
-        })
-        .collect()
-}
-
-/// The routing history of the announced covering prefix, keeping only announcements whose
-/// prefix contains the address: one request. `None` when there is no announcement to ask about.
-fn routing_history<T: Transport + ?Sized>(
-    transport: &T,
-    routing: &ripestat::Routing,
-    ip: &str,
-    now_unix: u64,
-) -> Option<Result<ripestat::RoutingHistory, LegError>> {
-    let prefix = routing.prefix.as_deref().filter(|_| routing.announced)?;
-    let address: std::net::IpAddr = ip.parse().ok()?;
-    let covers = |announced: &str| {
-        crate::netblock::Netblock::parse(announced).is_some_and(|block| block.contains(address))
-    };
-    Some(ripestat::routing_history(
-        transport, prefix, covers, now_unix,
-    ))
-}
-
-/// Who else announced the covering prefix, as a record on the address: every origin AS other
-/// than the current ones that RIS peers saw announcing a prefix containing the address, most
-/// recently seen first. A read that failed says so; it is never an empty history.
+/// Who else announced the covering prefix, as a record on the address.
 fn routing_history_leg(
     lookup: &mut Lookup<'_>,
     routing: &ripestat::Routing,
     history: &Result<ripestat::RoutingHistory, LegError>,
 ) {
-    let api = &ripestat::API;
-    let prefix = routing.prefix.as_deref().unwrap_or_default();
-    let history = match history {
-        Ok(history) => history,
-        Err(error) => {
-            let evidence = lookup
-                .evidence(api, format!("Routing history of {prefix} not read"))
-                .with_attr("routing_history_check", format!("failed: {error}"));
-            lookup.on_address(evidence, &[]);
-            return;
-        }
-    };
-    let past: Vec<&ripestat::OriginHistory> = history
-        .origins
-        .iter()
-        .filter(|origin| !routing.origins.iter().any(|now| now.asn == origin.asn))
-        .collect();
-    let base = |summary: String| {
-        lookup
-            .evidence(api, summary)
-            .with_attr("prefix", prefix)
-            .with_attr(
-                "routing_history_min_peers",
-                ripestat::ROUTING_MIN_PEERS.to_string(),
-            )
-            .with_attr("past_origin_count", past.len().to_string())
-            .with_optional_attrs([("routing_history_window", history.window.as_deref())])
-    };
-    let Some(latest) = past.first() else {
-        let evidence = base(format!(
-            "Routing history of {prefix}: no origin AS but the current one seen announcing it by {} or more RIS peers",
-            ripestat::ROUTING_MIN_PEERS
-        ));
-        lookup.on_address(evidence, &[]);
-        return;
-    };
-    let listed: Vec<String> = past
-        .iter()
-        .take(ripestat::MAX_PAST_ORIGINS)
-        .map(|origin| origin.line())
-        .collect();
-    let evidence = base(format!(
-        "Routing history of {prefix}: {} other origin AS number(s) announced a prefix containing the address, most recently AS{} until {}; a transfer, an anycast or multi-homed operator, a leak or a hijack, not proof of any",
-        past.len(),
-        latest.asn,
-        latest.last_seen
-    ))
-    .with_attr("past_origins_listed", listed.len().to_string());
-    // One value per origin, so each is its own attribute value.
-    let evidence = listed.iter().fold(evidence, |evidence, line| {
-        evidence.with_attr("past_origins", line)
-    });
-    lookup.on_address(evidence, &["prefix_origin_history"]);
+    let (evidence, tag) =
+        routing_context::history_record(routing, history, "containing the address", |summary| {
+            lookup.evidence(&ripestat::API, summary)
+        });
+    lookup.on_address(evidence, tag.as_slice());
 }
 
 fn ripestat_leg(
     lookup: &mut Lookup<'_>,
     routing: &ripestat::Routing,
-    rpki: &[(u32, Result<ripestat::Rpki, LegError>)],
+    rpki: &routing_context::RpkiStates,
 ) {
     let api = &ripestat::API;
     if !routing.says_anything() {
@@ -513,48 +442,19 @@ fn ripestat_leg(
     lookup.on_address(evidence, &[]);
     for origin in routing.public_origins() {
         let asn = format!("AS{}", origin.asn);
-        let mut evidence = lookup
+        let evidence = lookup
             .evidence(api, "Origin AS of the prefix covering the address")
             .with_attr("ip", lookup.ip)
             .with_optional_attrs([
                 ("prefix", routing.prefix.as_deref()),
                 ("holder", origin.holder.as_deref()),
             ]);
-        match rpki
-            .iter()
-            .find(|(asn, _)| *asn == origin.asn)
-            .map(|(_, state)| state)
-        {
-            Some(Ok(state)) => {
-                evidence = evidence
-                    .with_attr("rpki_state", state.state.as_str())
-                    .with_attr("rpki_meaning", state.state.meaning())
-                    .with_optional_attrs([("rpki_validator", state.validator.as_deref())]);
-                if !state.roas.is_empty() {
-                    evidence = evidence.with_attr("rpki_roas", state.roas_text());
-                }
-                if state.state.is_invalid() {
-                    let invalid = lookup
-                        .evidence(
-                            api,
-                            format!(
-                                "RPKI {}: {asn} announcing {} contradicts a published ROA",
-                                state.state.as_str(),
-                                routing.prefix.as_deref().unwrap_or_default()
-                            ),
-                        )
-                        .with_attr("asn", &asn)
-                        .with_attr("rpki_state", state.state.as_str())
-                        .with_attr("rpki_meaning", state.state.meaning())
-                        .with_attr("rpki_roas", state.roas_text());
-                    lookup.on_address(invalid, &["rpki_invalid_origin"]);
-                }
-            }
-            // A failed check is not an unknown state.
-            Some(Err(error)) => {
-                evidence = evidence.with_attr("rpki_check", format!("failed: {error}"));
-            }
-            None => {}
+        let (evidence, invalid) =
+            routing_context::with_rpki(evidence, origin.asn, routing, rpki, |summary| {
+                lookup.evidence(api, summary)
+            });
+        if let Some(invalid) = invalid {
+            lookup.on_address(invalid, &[tags::RPKI_INVALID_ORIGIN]);
         }
         lookup.pivot(EntityKind::Asn, &asn, evidence);
         if let Some((operator, kind)) = origin.holder.as_deref().and_then(au_operator) {

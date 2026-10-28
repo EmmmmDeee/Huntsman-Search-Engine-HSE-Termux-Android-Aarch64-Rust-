@@ -3,7 +3,8 @@
 //!
 //! Runs, for the block, its RDAP registration (the smallest registered network that holds all of
 //! it, see [`crate::rdap_legs`]), `RIPEstat` routing (the announced prefix that covers it and the
-//! AS numbers that originate it), and reverse DNS of every address in it, as Spiderfoot's
+//! AS numbers that originate it, with the RPKI state of each origin's announcement and the other
+//! origins the prefix's routing history saw, see [`crate::routing_context`]), and reverse DNS of every address in it, as Spiderfoot's
 //! `sfp_dnsresolve` does for a netblock target with its default limits: a block of at most 256
 //! addresses (an IPv4 /24, an IPv6 /120) is swept over the `DoH` resolvers, several addresses at a
 //! time, and a larger block's row says it was not swept and why. Each address with a PTR record is
@@ -31,6 +32,7 @@ use crate::lookup_report;
 use crate::netblock::Netblock;
 use crate::rdap_legs;
 use crate::ripestat;
+use crate::routing_context;
 use crate::source_outcome::{SourceExecutionOutcome, SourceOutcomeKind, SourceReach, SourceRun};
 use crate::tags;
 use crate::threat_feeds::{self, Feeds};
@@ -38,7 +40,7 @@ use crate::threat_feeds::{self, Feeds};
 pub const NETBLOCK_USAGE: &str = "usage: huntsman-recon netblock CIDR [--save FILE]";
 pub const NETBLOCK_HELP: &str = "\
 netblock CIDR [--save FILE]
-Look up one public IPv4 or IPv6 address block, written ADDRESS/PREFIX (host bits are cleared, so 1.1.1.7/24 is 1.1.1.0/24): its RDAP registration (the network that holds it, its holder, contacts and the record as published), the announced prefix covering it and its origin AS from RIPEstat, and the PTR records of every address in a block of at most 256 addresses (a /24 or an IPv6 /120, Spiderfoot's limits), all keyless. The block and every address and name found in it are checked against the threat feeds Spiderfoot downloads (abuse.ch Feodo Tracker and URLhaus, AlienVault IP Reputation, blocklist.de, botvrij.eu, CINS Army, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black's hosts, Tor's exit relays, VoIPBL and VXVault): a block is listed by every listed address or block inside or around it. Each feed is downloaded once and kept in $HUNTSMAN_HOME/feeds, else ~/.huntsman/feeds, until it is older than Spiderfoot keeps it. A block whose first address is private, loopback, documentation or otherwise non-public is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
+Look up one public IPv4 or IPv6 address block, written ADDRESS/PREFIX (host bits are cleared, so 1.1.1.7/24 is 1.1.1.0/24): its RDAP registration (the network that holds it, its holder, contacts and the record as published), the announced prefix covering it and its origin AS from RIPEstat, with the RPKI validation state of each origin's announcement and every other origin AS the prefix's routing history saw announcing a prefix overlapping the block (a lead, never proof of a hijack), and the PTR records of every address in a block of at most 256 addresses (a /24 or an IPv6 /120, Spiderfoot's limits), all keyless. The block and every address and name found in it are checked against the threat feeds Spiderfoot downloads (abuse.ch Feodo Tracker and URLhaus, AlienVault IP Reputation, blocklist.de, botvrij.eu, CINS Army, CoinBlocker, CyberCrime-Tracker, Emerging Threats, GreenSnow, OpenPhish, PhishTank, Steven Black's hosts, Tor's exit relays, VoIPBL and VXVault): a block is listed by every listed address or block inside or around it. Each feed is downloaded once and kept in $HUNTSMAN_HOME/feeds, else ~/.huntsman/feeds, until it is older than Spiderfoot keeps it. A block whose first address is private, loopback, documentation or otherwise non-public is refused before any request. --save FILE writes an unverified ledger that verify can reload. Makes network requests.";
 
 /// Host bits of the largest block whose addresses are swept: 256 addresses, Spiderfoot's
 /// `sfp_dnsresolve` defaults (`maxnetblock` 24, `maxv6netblock` 120).
@@ -104,7 +106,26 @@ pub fn run<T: Transport + ?Sized + Sync>(
             Ok(routing) if !routing.says_anything() => report.outcomes.push(
                 SourceExecutionOutcome::valid_zero(ripestat::SOURCE, now_unix),
             ),
-            Ok(routing) => routing_leg(&mut report, &value, &scan_id, &routing, now_unix),
+            Ok(routing) => {
+                let rpki = routing_context::rpki_states(transport, &routing, now_unix);
+                // An announcement touches the block when one of the two prefixes holds the other.
+                let history = routing_context::routing_history(
+                    transport,
+                    &routing,
+                    |announced| {
+                        Netblock::parse(announced).is_some_and(|announced| {
+                            announced.contains(block.network())
+                                || block.contains(announced.network())
+                        })
+                    },
+                    now_unix,
+                );
+                let context = Context {
+                    rpki: &rpki,
+                    history: history.as_ref(),
+                };
+                routing_leg(&mut report, &value, &scan_id, &routing, &context, now_unix);
+            }
             Err(err) => report.outcomes.push(err.outcome(&ripestat::API, now_unix)),
         }
         match place {
@@ -160,13 +181,21 @@ fn place_leg(report: &mut Report, block: &str, scan_id: &str, place: &ripestat::
     );
 }
 
+/// The RPKI states and routing history of the announced covering prefix.
+struct Context<'a> {
+    rpki: &'a routing_context::RpkiStates,
+    history: Option<&'a Result<ripestat::RoutingHistory, crate::api_leg::LegError>>,
+}
+
 /// Everything `RIPEstat` says about the block on it ([`ripestat::Routing::attributes`]), and each
-/// public origin AS and its holder as a pivot tied to the block.
+/// public origin AS and its holder as a pivot tied to the block, with the
+/// RPKI state of each and the other origins the prefix's routing history saw.
 fn routing_leg(
     report: &mut Report,
     block: &str,
     scan_id: &str,
     routing: &ripestat::Routing,
+    context: &Context<'_>,
     now_unix: u64,
 ) {
     let evidence = |summary: String| {
@@ -198,6 +227,19 @@ fn routing_leg(
                 ("prefix", routing.prefix.as_deref()),
                 ("holder", origin.holder.as_deref()),
             ]);
+        let (found, invalid) =
+            routing_context::with_rpki(found, origin.asn, routing, context.rpki, evidence);
+        if let Some(invalid) = invalid {
+            push_entity(
+                &mut report.entities,
+                EntityKind::Netblock,
+                block,
+                SEED_CONFIDENCE,
+                scan_id,
+                invalid,
+                &[tags::RPKI_INVALID_ORIGIN],
+            );
+        }
         push_entity(
             &mut report.entities,
             EntityKind::Asn,
@@ -219,6 +261,19 @@ fn routing_leg(
                 &[],
             );
         }
+    }
+    if let Some(history) = context.history {
+        let (record, tag) =
+            routing_context::history_record(routing, history, "overlapping the block", evidence);
+        push_entity(
+            &mut report.entities,
+            EntityKind::Netblock,
+            block,
+            SEED_CONFIDENCE,
+            scan_id,
+            record,
+            tag.as_slice(),
+        );
     }
     report.outcomes.push(
         SourceExecutionOutcome::success(ripestat::SOURCE, now_unix, routing.origins.len().max(1))

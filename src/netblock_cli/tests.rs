@@ -1,5 +1,6 @@
 use super::*;
 use crate::rdap::tests::{APNIC, IPV4_BOOTSTRAP};
+use crate::ripestat::tests::{ROUTING_HISTORY, RPKI_VALID};
 use crate::sf_elements::{DataElement, Target, elements};
 use crate::test_support::RoutedTransport;
 
@@ -24,9 +25,25 @@ fn registry(dns: &'static str) -> RoutedTransport {
         ("https://cloudflare-dns.com/", 200, dns),
         ("https://data.iana.org/rdap/ipv4.json", 200, IPV4_BOOTSTRAP),
         ("https://specific.test/ip/1.1.1.0/30", 200, APNIC),
+        RPKI_ROUTE,
+        HISTORY_ROUTE,
         ("https://stat.ripe.net/", 200, RIPESTAT),
     ])
 }
+
+/// The RPKI state of the announced prefix for its origin: valid.
+const RPKI_ROUTE: (&str, u16, &str) = (
+    "https://stat.ripe.net/data/rpki-validation/",
+    200,
+    RPKI_VALID,
+);
+/// The announced prefix's routing history: AS226, AS237 and AS701 announced 1.1.1.0/24 (or the
+/// 1.0.0.0/8 holding it) before AS13335, and AS64496 announced the more-specific 1.1.1.128/25.
+const HISTORY_ROUTE: (&str, u16, &str) = (
+    "https://stat.ripe.net/data/routing-history/",
+    200,
+    ROUTING_HISTORY,
+);
 
 fn printed(run: NetblockRun) -> Report {
     match run {
@@ -85,7 +102,7 @@ fn a_block_is_its_registration_routing_and_the_names_of_its_addresses() {
         .iter()
         .map(|evidence| evidence.provenance.source.as_str())
         .collect();
-    assert_eq!(sources, ["rdap", "ripestat"]);
+    assert_eq!(sources, ["rdap", "ripestat", "ripestat"]);
     assert_eq!(
         block.evidence[0]
             .attributes
@@ -302,6 +319,8 @@ fn routed(routing: &'static str) -> RoutedTransport {
         ("https://cloudflare-dns.com/", 200, UNNAMED),
         ("https://data.iana.org/rdap/ipv4.json", 200, IPV4_BOOTSTRAP),
         ("https://specific.test/ip/1.1.1.0/30", 200, APNIC),
+        RPKI_ROUTE,
+        HISTORY_ROUTE,
         ("https://stat.ripe.net/", 200, routing),
     ])
 }
@@ -368,4 +387,173 @@ fn an_unannounced_block_keeps_its_registry_block() {
     );
     let row = outcome(&report, ripestat::SOURCE);
     assert_eq!(row.kind, SourceOutcomeKind::Success, "{row:?}");
+}
+
+/// The block's routing-history record.
+fn history(report: &Report, block: &str) -> Evidence {
+    find(report, &EntityKind::Netblock, block)
+        .evidence
+        .iter()
+        .find(|evidence| evidence.summary.starts_with("Routing history of "))
+        .cloned()
+        .unwrap_or_else(|| panic!("no routing history in {:#?}", report.entities))
+}
+
+/// The AS numbers of the past origins a history record lists, in order.
+fn past_origins(record: &Evidence) -> Vec<&str> {
+    record
+        .attr_values("past_origins")
+        .map(|line| line.split(' ').next().unwrap_or_default())
+        .collect()
+}
+
+/// Each origin AS of an announced block carries the RPKI state of the prefix it announces, asked
+/// once per origin, and a valid state tags nothing.
+#[test]
+fn each_origin_of_a_block_carries_its_rpki_state() {
+    let transport = registry(UNNAMED);
+    let report = printed(run(&transport, "1.1.1.0/30", 1));
+    let asn = find(&report, &EntityKind::Asn, "AS13335");
+    let held = |key: &str| asn.evidence[0].attributes.get(key).map(String::as_str);
+    assert_eq!(held("rpki_state"), Some("valid"));
+    assert_eq!(held("rpki_validator"), Some("routinator"));
+    assert!(
+        held("rpki_roas").is_some_and(|roas| roas.contains("AS13335")),
+        "{asn:#?}"
+    );
+    let asked: Vec<String> = transport
+        .urls()
+        .into_iter()
+        .filter(|url| url.contains("rpki-validation"))
+        .collect();
+    assert_eq!(
+        asked,
+        [
+            "https://stat.ripe.net/data/rpki-validation/data.json?resource=AS13335&prefix=1.1.1.0%2F24"
+        ]
+    );
+    let block = find(&report, &EntityKind::Netblock, "1.1.1.0/30");
+    assert!(!block.has_tag(tags::RPKI_INVALID_ORIGIN));
+}
+
+/// An RPKI state that contradicts a published ROA is a lead on the block, tagged, naming the
+/// origin and the ROA it contradicts.
+#[test]
+fn an_rpki_invalid_origin_is_a_lead_on_the_block() {
+    const INVALID: &str = r#"{"status":"ok","data":{"resource":"13335","prefix":"1.1.1.0/24","validating_roas":[{"origin":"64496","prefix":"1.1.1.0/24","validity":"invalid_asn","max_length":24}],"status":"invalid_asn","validator":"routinator"}}"#;
+    let mut transport = registry(UNNAMED);
+    for route in &mut transport.routes {
+        if route.0 == RPKI_ROUTE.0 {
+            route.2 = INVALID;
+        }
+    }
+    let report = printed(run(&transport, "1.1.1.0/30", 1));
+    let block = find(&report, &EntityKind::Netblock, "1.1.1.0/30");
+    assert!(block.has_tag(tags::RPKI_INVALID_ORIGIN));
+    let lead = block
+        .evidence
+        .iter()
+        .find(|evidence| evidence.summary.starts_with("RPKI "))
+        .unwrap_or_else(|| panic!("no RPKI lead in {block:#?}"));
+    assert_eq!(
+        lead.summary,
+        "RPKI invalid_asn: AS13335 announcing 1.1.1.0/24 contradicts a published ROA"
+    );
+    assert_eq!(
+        lead.attributes.get("asn").map(String::as_str),
+        Some("AS13335")
+    );
+    assert!(
+        lead.attributes
+            .get("rpki_roas")
+            .is_some_and(|roas| roas.contains("AS64496")),
+        "{lead:#?}"
+    );
+}
+
+/// The block's routing history lists every origin other than the current one that announced a
+/// prefix overlapping the block, most recently seen first, and tags the block; a prefix beside
+/// the block is not listed.
+#[test]
+fn a_block_lists_the_other_origins_of_prefixes_overlapping_it() {
+    let transport = registry(UNNAMED);
+    let report = printed(run(&transport, "1.1.1.4/30", 1));
+    let record = history(&report, "1.1.1.4/30");
+    assert_eq!(past_origins(&record), ["AS226", "AS237", "AS701"]);
+    assert_eq!(
+        record
+            .attributes
+            .get("past_origin_count")
+            .map(String::as_str),
+        Some("3")
+    );
+    assert!(
+        record
+            .summary
+            .contains("3 other origin AS number(s) announced a prefix overlapping the block"),
+        "{}",
+        record.summary
+    );
+    assert!(
+        find(&report, &EntityKind::Netblock, "1.1.1.4/30").has_tag(tags::PREFIX_ORIGIN_HISTORY)
+    );
+    assert!(transport.urls().iter().any(|url| url
+        == "https://stat.ripe.net/data/routing-history/data.json?resource=1.1.1.0%2F24&min_peers=10"));
+
+    // A more-specific inside the block overlaps it too.
+    let report = printed(run(&registry(UNNAMED), "1.1.1.0/24", 1));
+    let record = history(&report, "1.1.1.0/24");
+    assert_eq!(
+        past_origins(&record),
+        ["AS64496", "AS226", "AS237", "AS701"]
+    );
+}
+
+/// A routing history that could not be read says so on the block and tags nothing; it is never
+/// shown as an empty history.
+#[test]
+fn an_unread_routing_history_says_it_failed() {
+    let mut transport = registry(UNNAMED);
+    for route in &mut transport.routes {
+        if route.0 == HISTORY_ROUTE.0 {
+            route.1 = 500;
+        }
+    }
+    let report = printed(run(&transport, "1.1.1.0/30", 1));
+    let record = history(&report, "1.1.1.0/30");
+    assert_eq!(record.summary, "Routing history of 1.1.1.0/24 not read");
+    assert!(
+        record
+            .attributes
+            .get("routing_history_check")
+            .is_some_and(|check| check.starts_with("failed: ")),
+        "{record:#?}"
+    );
+    assert!(!record.attributes.contains_key("past_origin_count"));
+    assert!(
+        !find(&report, &EntityKind::Netblock, "1.1.1.0/30").has_tag(tags::PREFIX_ORIGIN_HISTORY)
+    );
+}
+
+/// A block no AS announces asks for no RPKI state and no routing history.
+#[test]
+fn an_unannounced_block_asks_for_no_rpki_state_or_routing_history() {
+    let transport = routed(UNANNOUNCED);
+    let report = printed(run(&transport, "1.1.1.0/30", 1));
+    assert!(
+        !transport
+            .urls()
+            .iter()
+            .any(|url| url.contains("rpki-validation") || url.contains("routing-history")),
+        "{:?}",
+        transport.urls()
+    );
+    let block = find(&report, &EntityKind::Netblock, "1.1.1.0/30");
+    assert!(
+        !block
+            .evidence
+            .iter()
+            .any(|evidence| evidence.summary.starts_with("Routing history of ")),
+        "{block:#?}"
+    );
 }

@@ -189,6 +189,7 @@ pub mod rf;
 pub mod ripestat;
 pub mod robtex;
 pub mod roi;
+pub mod routing_context;
 pub mod run_history;
 pub mod runtime;
 pub mod scan_alert;
