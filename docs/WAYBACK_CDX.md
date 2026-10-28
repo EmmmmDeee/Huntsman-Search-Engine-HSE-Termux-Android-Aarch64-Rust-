@@ -24,8 +24,28 @@ One GET to `https://web.archive.org/cdx/search/cdx` with `url`, `matchType=domai
 The collector validates the CDX field header, complete JSON, domain boundary,
 HTTP(S) URL syntax, timestamp, row limit and source HTTP status before emitting
 any findings. The shared guarded transport enforces SSRF restrictions, TLS,
-timeouts and a per-host rate-limit circuit breaker. No archive replay,
-captured-page download, JavaScript or arbitrary discovered URL is executed.
+timeouts and a per-host rate-limit circuit breaker. No JavaScript or arbitrary
+discovered URL is executed, and no page is fetched from its own site.
+
+## Archived content
+
+After a successful index answer, at most three of its captures are read for the
+contact details they published: pages whose path names contact, about, team, staff,
+people, impressum, imprint or support first, then the site root, then the rest, each
+group newest first. Each is one GET to the archive's raw replay
+`https://web.archive.org/web/TIMESTAMP` + `id_/URL` (the bytes as captured, without
+the archive's toolbar), with no redirect followed, through the same paced transport.
+A page is read only when it answers 200 as HTML or plain text within 1 MiB.
+Its text, and the targets of its `mailto:` and `tel:` links, go through the shared
+HTML reader (`html_text`) and the offline classifier `investigate` uses. Script and style content,
+comments and attribute values such as image names are not text, so `logo@2x.png`
+or an address inside a script is not a contact. At most 32 e-mail addresses and
+phone numbers are kept from one page, each tagged `historical_content`, with
+confidence capped at 0.6. Each carries the capture timestamp, the original URL and
+the archive snapshot URL, and its summary says it is historical and not proof it is
+current. The outcome's detail names how many pages were read and why any was not
+(an HTTP status, a refused class, not a web page, over 1 MiB); a page not read is
+never treated as one with no contacts.
 
 Each retained record produces an `url` entity tagged `historical_capture`;
 an archived subdomain also produces a conservative `domain` pivot tagged
@@ -56,7 +76,9 @@ the particular bounded index query returned no matches.
 
 `cargo test --locked wayback_cdx` exercises offline fixtures for ordinary captures,
 historic subdomains, empty results, schema/semantic drift, sensitive query suppression,
-and source-bound request construction. Full acceptance requires the existing
+source-bound request construction, the order and bound of archived pages read, the
+contacts one archived page yields with their capture provenance, and that script,
+comment and image text is not taken as a contact. Full acceptance requires the existing
 `cargo run --locked -p xtask -- gate full`, Android aarch64 CI, Web UI/browser
 checks, and exact-head GitHub-hosted results. Live Internet Archive reachability
 varies and has not been claimed from deterministic fixtures.

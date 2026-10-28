@@ -87,6 +87,7 @@ gravatar	adapter	public Gravatar profile source client
 greynoise	adapter	GreyNoise Community leg reached through ip_cli from ip, scan -k ip and /api/lookup
 hackertarget	adapter	HackerTarget leg reached through indicator_legs from ip, domain, scan and /api/lookup
 hibp	adapter	HIBP source adapter
+html_text	leaf	the one HTML-to-text reader (Markup tokenizer, html_to_text, attribute) shared by exposure_cli and wayback_cdx's archived-content reading
 http	leaf	single socket-opening transport boundary
 hudsonrock	adapter	Domain-level Hudson Rock Cavalier aggregate leg reached through indicator_legs from domain, scan and /api/lookup
 hunter	adapter	Hunter domain-search leg reached through domain_cli from domain, scan -k domain and /api/lookup when its key is set
@@ -201,6 +202,7 @@ snake_graph	exporter	compact graph rendering
 source_outcome	runtime	causal provider outcome model
 source_registry	runtime	lead-only discovery route registry
 spf	leaf	SPF parser
+stac	adapter	keyless Earth Search STAC satellite-scene catalogue reached through nominatim_cli's point leg from geocode LAT,LON, scan -k geocode and /api/lookup
 stage	leaf	status/evidence-level primitives
 stdio_failure	leaf	the exit status a failed print becomes, for the binaries' panic hooks
 stix	exporter	STIX output from admitted claims
