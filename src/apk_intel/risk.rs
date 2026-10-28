@@ -114,13 +114,19 @@ pub fn flags(manifest: &Manifest) -> Vec<Flag> {
                     ),
                 );
             } else if target_sdk < 31 {
+                let api_name = if target_sdk == 29 {
+                    "10 (Q)"
+                } else if target_sdk == 30 {
+                    "11 (R)"
+                } else {
+                    "9 (P)"
+                };
                 add(
                     Risk::Medium,
                     "target_sdk_not_current",
                     format!(
                         "the application targets Android SDK {} (API {}); it does not receive protections from Android 12 and later, including restricted implicit intents, package visibility, and restricted non-SDK interfaces",
-                        target_sdk,
-                        if target_sdk == 29 { "10 (Q)" } else if target_sdk == 30 { "11 (R)" } else { "9 (P)" }
+                        target_sdk, api_name
                     ),
                 );
             }
