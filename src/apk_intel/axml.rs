@@ -353,7 +353,7 @@ fn collect_provider_authorities(
     seen: &mut BTreeSet<String>,
     attributes: &[Attribute],
 ) -> Vec<String> {
-    let mut own_authorities = Vec::new();
+    let mut own_authorities: Vec<String> = Vec::new();
     for authority in value(attributes, "authorities")
         .unwrap_or_default()
         .split(';')
