@@ -106,7 +106,7 @@ impl Sandbox {
 case "$1" in
 build)
   mkdir -p "$CARGO_TARGET_DIR/debug" || exit 99
-  printf '#!/bin/sh\\nexit 0\\n' > "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
+  printf '#!/bin/sh\nexit 0\n' > "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
   chmod 755 "$CARGO_TARGET_DIR/debug/huntsman-recon" || exit 99
   ;;
 test) exit {test_exit} ;;
@@ -277,7 +277,7 @@ fn ordinary_changes_are_committed_and_pushed() {
 #[test]
 fn direct_sync_with_failed_tests_never_commits_or_pushes() {
     let sandbox = Sandbox::new("direct-sync-failed-tests");
-    sandbox.write("docs/pending.md", "must not be published\\n");
+    sandbox.write("docs/pending.md", "must not be published\n");
     let previous_head = sandbox.head();
     let previous_remote = sandbox.pushed();
     let output = sandbox.run_with_mock_cargo("sync", 1);
@@ -288,18 +288,18 @@ fn direct_sync_with_failed_tests_never_commits_or_pushes() {
     assert_eq!(sandbox.head(), previous_head, "sync made an unverified commit");
     assert_eq!(sandbox.pushed(), previous_remote, "sync pushed unverified work");
     let state = fs::read_to_string(sandbox.root.join("state/lifecycle-state")).unwrap();
-    assert!(state.contains("phase=test\\nstatus=failed\\n"), "{state}");
+    assert!(state.contains("phase=test\nstatus=failed\n"), "{state}");
 }
 
 #[test]
 fn direct_sync_does_not_trust_a_previous_success_state() {
     let sandbox = Sandbox::new("direct-sync-stale-state");
-    sandbox.write("docs/pending.md", "not verified in this process\\n");
+    sandbox.write("docs/pending.md", "not verified in this process\n");
     let state_dir = sandbox.root.join("state");
     fs::create_dir_all(&state_dir).unwrap();
     fs::write(
         state_dir.join("lifecycle-state"),
-        "updated=old\\nrevision=old\\nphase=sync\\nstatus=ok\\ndetail=old\\n",
+        "updated=old\nrevision=old\nphase=sync\nstatus=ok\ndetail=old\n",
     )
     .unwrap();
     let before = sandbox.head();
