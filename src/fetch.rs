@@ -601,6 +601,10 @@ fn finish(
     if kind == SourceOutcomeKind::AuthRequired && sent.is_some() {
         kind = SourceOutcomeKind::AuthRejected;
     }
+    let throttle = Throttle::of(&response, now_unix);
+    if response.status == 403 && kind != SourceOutcomeKind::BotWaf && throttle.limited() {
+        kind = SourceOutcomeKind::RateLimited;
+    }
     let mut detail = format!("bytes={}", response.body.len());
     if response.truncated {
         detail.push_str(" truncated");
@@ -617,13 +621,13 @@ fn finish(
         .with_detail(scrub(&detail));
     outcome.kind = kind;
     outcome.found = None;
-    if matches!(response.status, 429 | 503) {
-        if let Some(secs) = response
-            .header_value("retry-after")
-            .and_then(|value| crate::http::retry_after_secs(value, now_unix))
-        {
-            outcome = outcome.with_retry_after(secs.min(MAX_RETRY_AFTER_SECS));
-        }
+    let pause = match response.status {
+        503 => throttle.retry_after,
+        _ if kind == SourceOutcomeKind::RateLimited => throttle.pause(),
+        _ => None,
+    };
+    if let Some(secs) = pause {
+        outcome = outcome.with_retry_after(secs.min(MAX_RETRY_AFTER_SECS));
     }
     Fetched {
         outcome,
@@ -633,6 +637,47 @@ fn finish(
         credential_sent: sent,
         redirect_refused: None,
         not_sent_hop: None,
+    }
+}
+
+/// What a response says about the provider's rate limit, as GitHub documents it and other
+/// providers send it: `retry-after` (delta-seconds or an HTTP-date) is the pause to take, and
+/// `x-ratelimit-remaining: 0` an exhausted quota that returns at `x-ratelimit-reset` (UTC epoch
+/// seconds).
+struct Throttle {
+    retry_after: Option<u64>,
+    exhausted: bool,
+    reset_in: Option<u64>,
+}
+
+impl Throttle {
+    fn of(response: &Response, now_unix: u64) -> Self {
+        let retry_after = response
+            .header_value("retry-after")
+            .and_then(|value| crate::http::retry_after_secs(value, now_unix));
+        let exhausted = response
+            .header_value("x-ratelimit-remaining")
+            .is_some_and(|value| value.trim() == "0");
+        let reset_in = response
+            .header_value("x-ratelimit-reset")
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(|reset| reset.saturating_sub(now_unix));
+        Self {
+            retry_after,
+            exhausted,
+            reset_in,
+        }
+    }
+
+    /// Whether the response is a rate limit whatever its status: a pause or an exhausted quota.
+    const fn limited(&self) -> bool {
+        self.retry_after.is_some() || self.exhausted
+    }
+
+    /// How long to wait: `retry-after` first, then the reset of an exhausted quota.
+    fn pause(&self) -> Option<u64> {
+        self.retry_after
+            .or_else(|| self.exhausted.then_some(self.reset_in).flatten())
     }
 }
 
@@ -913,6 +958,119 @@ mod tests {
             assert_eq!(r.outcome.kind, SourceOutcomeKind::Inconclusive);
         }
         assert_ne!(host_state(host), Some(BreakerState::Open));
+    }
+
+    /// GitHub's documented rate-limit answers, which any provider sending the same headers gives:
+    /// a 403 or 429 with `retry-after` is a pause of that many seconds, and one with
+    /// `x-ratelimit-remaining: 0` a pause until `x-ratelimit-reset` (UTC epoch seconds). A 403
+    /// without either stays a refusal, and a challenge page stays a wall.
+    #[test]
+    fn an_exhausted_quota_is_a_rate_limit_until_its_reset() {
+        use SourceOutcomeKind as K;
+        let at = |status, headers: &[(&str, &str)], body: &str| {
+            let f = Fake::new(vec![Ok(resp(status, headers, body))]);
+            let r = fetch(
+                &f,
+                Request::get("https://quota.example/"),
+                None,
+                &FetchOptions::default(),
+                "t",
+                1_000,
+            )
+            .expect("fetch");
+            (r.outcome.kind, r.outcome.retry_after_secs)
+        };
+        let exhausted = [
+            ("x-ratelimit-remaining", "0"),
+            ("x-ratelimit-reset", "1120"),
+        ];
+        assert_eq!(at(403, &exhausted, "{}"), (K::RateLimited, Some(120)));
+        assert_eq!(at(429, &exhausted, "{}"), (K::RateLimited, Some(120)));
+        assert_eq!(
+            at(403, &[("retry-after", "45")], "{}"),
+            (K::RateLimited, Some(45))
+        );
+        // `retry-after` is the documented first rule; it wins over the reset time.
+        let both = [
+            ("retry-after", "45"),
+            ("x-ratelimit-remaining", "0"),
+            ("x-ratelimit-reset", "1120"),
+        ];
+        assert_eq!(at(403, &both, "{}"), (K::RateLimited, Some(45)));
+        // A reset already past is no pause; one far off is capped like any other.
+        let past = [("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", "900")];
+        assert_eq!(at(403, &past, "{}"), (K::RateLimited, Some(0)));
+        let far = [
+            ("x-ratelimit-remaining", "0"),
+            ("x-ratelimit-reset", "99999999"),
+        ];
+        assert_eq!(at(403, &far, "{}"), (K::RateLimited, Some(3600)));
+        // Without a reset time the quota is still exhausted, for an unknown time.
+        assert_eq!(
+            at(403, &[("x-ratelimit-remaining", "0")], "{}"),
+            (K::RateLimited, None)
+        );
+        // Quota left, or no rate-limit header at all, is the refusal it always was.
+        let left = [
+            ("x-ratelimit-remaining", "12"),
+            ("x-ratelimit-reset", "1120"),
+        ];
+        assert_eq!(at(403, &left, "{}"), (K::AuthRejected, None));
+        assert_eq!(at(403, &[], "{}"), (K::AuthRejected, None));
+        // A challenge page is a wall whatever its headers say.
+        let challenge = "<html><title>Just a moment...</title>Cloudflare</html>";
+        assert_eq!(at(403, &exhausted, challenge), (K::BotWaf, None));
+        // Other statuses keep their own meaning; a 503 keeps the pause it asks for.
+        assert_eq!(at(200, &exhausted, "{}"), (K::Inconclusive, None));
+        assert_eq!(
+            at(503, &[("retry-after", "30")], "{}"),
+            (K::Upstream5xx, Some(30))
+        );
+        assert_eq!(at(404, &exhausted, "{}"), (K::Upstream4xx, None));
+    }
+
+    /// A paced fetch that meets an exhausted quota stops every caller sending to that host until
+    /// the reset, and only that host.
+    #[test]
+    fn an_exhausted_quota_paces_its_host_until_the_reset_and_no_other() {
+        let host = "paced-quota.invalid";
+        let url = format!("https://{host}/users/a");
+        let exhausted = resp(
+            403,
+            &[
+                ("x-ratelimit-remaining", "0"),
+                ("x-ratelimit-reset", "5120"),
+            ],
+            "{}",
+        );
+        let f = Fake::new(vec![Ok(exhausted)]);
+        let r = fetch(&f, Request::get(&url), None, &paced(0), "t", 5_000).expect("fetch");
+        assert_eq!(r.outcome.kind, SourceOutcomeKind::RateLimited);
+        assert_eq!(crate::circuit::host_state(host), Some(BreakerState::Open));
+
+        let empty = Fake::new(vec![]);
+        let held = fetch(&empty, Request::get(&url), None, &paced(0), "t", 5_119).expect("fetch");
+        assert!(held.response.is_none());
+        assert!(empty.seen.borrow().is_empty(), "sent before the reset");
+
+        let other = Fake::new(vec![Ok(resp(200, &[], "{}"))]);
+        let elsewhere = fetch(
+            &other,
+            Request::get("https://paced-quota-other.invalid/users/a"),
+            None,
+            &paced(0),
+            "t",
+            5_119,
+        )
+        .expect("fetch");
+        assert_eq!(other.seen.borrow().len(), 1, "an unrelated host was held");
+        assert!(elsewhere.response.is_some());
+
+        let after = Fake::new(vec![Ok(resp(200, &[], "{}"))]);
+        let resumed =
+            fetch(&after, Request::get(&url), None, &paced(0), "t", 5_120).expect("fetch");
+        assert_eq!(after.seen.borrow().len(), 1, "not sent after the reset");
+        assert!(resumed.response.is_some());
     }
 
     #[test]

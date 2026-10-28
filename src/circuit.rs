@@ -148,49 +148,60 @@ impl Breaker {
     }
 }
 
-fn registry() -> &'static Mutex<HashMap<String, Breaker>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<String, Breaker>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+/// Run `f` over the breakers, one per host. In the binary they are shared by every thread, so a
+/// failing host is paced down for every caller. A unit test gets its own on its thread instead:
+/// the tests of one binary run in parallel against the same fake hosts, and a rate limit one of
+/// them provokes must not hold back another's request.
+fn with_breakers<R>(f: impl FnOnce(&mut HashMap<String, Breaker>) -> R) -> R {
+    #[cfg(not(test))]
+    {
+        static REGISTRY: OnceLock<Mutex<HashMap<String, Breaker>>> = OnceLock::new();
+        let mut guard = REGISTRY
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&mut guard)
+    }
+    #[cfg(test)]
+    {
+        thread_local! {
+            static REGISTRY: std::cell::RefCell<HashMap<String, Breaker>> =
+                std::cell::RefCell::new(HashMap::new());
+        }
+        REGISTRY.with(|registry| f(&mut registry.borrow_mut()))
+    }
 }
 
 #[must_use]
 pub fn allow_host(host: &str, now: u64) -> bool {
-    let mut guard = registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard.entry(host.to_string()).or_default().allow(now)
+    with_breakers(|breakers| breakers.entry(host.to_string()).or_default().allow(now))
 }
 
 pub fn record_success(host: &str) {
-    let mut guard = registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard.entry(host.to_string()).or_default().on_success();
+    with_breakers(|breakers| breakers.entry(host.to_string()).or_default().on_success());
 }
 
 pub fn record_failure(host: &str, now: u64) {
-    let mut guard = registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard.entry(host.to_string()).or_default().on_failure(now);
+    with_breakers(|breakers| {
+        breakers
+            .entry(host.to_string())
+            .or_default()
+            .on_failure(now);
+    });
 }
 
 pub fn record_rate_limited(host: &str, now: u64, retry_after_secs: u64) {
-    let mut guard = registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard
-        .entry(host.to_string())
-        .or_default()
-        .on_rate_limited(now, retry_after_secs);
+    with_breakers(|breakers| {
+        breakers
+            .entry(host.to_string())
+            .or_default()
+            .on_rate_limited(now, retry_after_secs);
+    });
 }
 
 #[must_use]
 pub fn host_state(host: &str) -> Option<BreakerState> {
-    let guard = registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard.get(host).map(Breaker::state)
+    with_breakers(|breakers| breakers.get(host).map(Breaker::state))
 }
 
 #[must_use]
