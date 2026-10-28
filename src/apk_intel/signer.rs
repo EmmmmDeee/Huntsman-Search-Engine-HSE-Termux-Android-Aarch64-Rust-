@@ -459,7 +459,8 @@ pub(super) fn verify_sha256_signature(
     if key_end != signer_end {
         return "malformed";
     }
-    let signature = match matching_signature(value, signatures_start, signatures_end, algorithm_id) {
+    let signature = match matching_signature(value, signatures_start, signatures_end, algorithm_id)
+    {
         SignatureRecord::Found(bytes) => bytes,
         SignatureRecord::Missing => return "missing",
         SignatureRecord::Malformed => return "malformed",
@@ -579,8 +580,9 @@ fn matching_signature(
         let Some(id) = le32(value, from).and_then(|n| u32::try_from(n).ok()) else {
             return SignatureRecord::Malformed;
         };
-        let Some((bytes_start, bytes_end)) =
-            from.checked_add(4).and_then(|at| prefixed_one(value, at, to))
+        let Some((bytes_start, bytes_end)) = from
+            .checked_add(4)
+            .and_then(|at| prefixed_one(value, at, to))
         else {
             return SignatureRecord::Malformed;
         };
