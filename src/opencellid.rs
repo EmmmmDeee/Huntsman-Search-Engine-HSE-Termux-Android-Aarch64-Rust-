@@ -93,7 +93,7 @@ fn valid_position(lat: f64, lon: f64) -> bool {
 }
 
 /// Classify provider-declared errors without copying the error message into diagnostics:
-/// OpenCelliD's invalid-key response may echo the caller's credential. **Pure.**
+/// `OpenCelliD`'s invalid-key response may echo the caller's credential. **Pure.**
 ///
 /// Only an explicit "Cell not found" is a genuine zero. Provider error code 1
 /// with a different message is treated as temporary upstream unavailability.
@@ -383,7 +383,7 @@ mod tests {
             br#"{"error":"unrecognised: secret-for-log","code":999}"#,
             br#"{"error":"Cell not found","code":"1"}"#,
             br#"{"lat":12}"#,
-            br#"{}"#,
+            br"{}",
         ] {
             assert!(matches!(decode(body), Err(LegError::Decode(_))));
         }
