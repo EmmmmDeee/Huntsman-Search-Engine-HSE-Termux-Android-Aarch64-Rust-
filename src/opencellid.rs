@@ -400,7 +400,10 @@ mod tests {
                 br#"{"error":"Invalid input data","code":3}"#,
                 LegError::BadRequest(400),
             ),
-            (br#"{"error":"Internal server error","code":5}"#, LegError::Server(500)),
+            (
+                br#"{"error":"Internal server error","code":5}"#,
+                LegError::Server(500),
+            ),
             (
                 br#"{"error":"Daily limit exceeded","code":7}"#,
                 LegError::RateLimited { retry_after: None },
